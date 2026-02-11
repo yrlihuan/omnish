@@ -1,1 +1,1 @@
-// omnish-common
+pub mod config;

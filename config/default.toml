@@ -1,0 +1,28 @@
+# config/default.toml
+# Default omnish configuration — copy to ~/.config/omnish/config.toml
+
+[shell]
+# command = "/bin/bash"    # defaults to $SHELL
+command_prefix = "::"
+
+[daemon]
+# socket_path = "$XDG_RUNTIME_DIR/omnish.sock"
+
+[llm]
+default = "claude"
+
+[llm.backends.claude]
+backend_type = "anthropic"
+model = "claude-sonnet-4-5-20250929"
+api_key_cmd = "pass show anthropic/api-key"
+
+# [llm.backends.openai]
+# backend_type = "openai_compat"
+# model = "gpt-4o"
+# api_key_cmd = "pass show openai/api-key"
+# base_url = "https://api.openai.com/v1"
+
+[llm.auto_trigger]
+on_nonzero_exit = true
+on_stderr_patterns = ["error", "panic", "traceback", "fatal"]
+cooldown_seconds = 5
