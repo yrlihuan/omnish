@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/omnish-common",
+    "crates/omnish-protocol",
+    "crates/omnish-transport",
+    "crates/omnish-pty",
+    "crates/omnish-store",
+    "crates/omnish-llm",
+    "crates/omnish-daemon",
+    "crates/omnish-client",
+]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+nix = { version = "0.29", features = ["term", "pty", "signal", "process"] }
+toml = "0.8"
+reqwest = { version = "0.12", features = ["json"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
