@@ -1,1 +1,1 @@
-// omnish-protocol
+pub mod message;
