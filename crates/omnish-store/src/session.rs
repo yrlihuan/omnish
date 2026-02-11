@@ -1,0 +1,28 @@
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionMeta {
+    pub session_id: String,
+    pub shell: String,
+    pub pid: u32,
+    pub tty: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+}
+
+impl SessionMeta {
+    pub fn save(&self, dir: &Path) -> Result<()> {
+        let path = dir.join("meta.json");
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    pub fn load(dir: &Path) -> Result<Self> {
+        let path = dir.join("meta.json");
+        let json = std::fs::read_to_string(path)?;
+        Ok(serde_json::from_str(&json)?)
+    }
+}
