@@ -4,3 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+omnish-protocol = { path = "../omnish-protocol" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
