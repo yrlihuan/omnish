@@ -1,5 +1,6 @@
 // crates/omnish-client/src/main.rs
 mod commands;
+mod interceptor;
 
 use anyhow::Result;
 use omnish_protocol::message::*;

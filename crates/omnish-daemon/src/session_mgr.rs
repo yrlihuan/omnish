@@ -1,6 +1,7 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use omnish_llm::context::ContextBuilder;
 use omnish_store::session::SessionMeta;
-use omnish_store::stream::StreamWriter;
+use omnish_store::stream::{read_entries, StreamWriter};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::Mutex;
@@ -90,5 +91,46 @@ impl SessionManager {
     pub async fn list_active(&self) -> Vec<String> {
         let sessions = self.sessions.lock().await;
         sessions.keys().cloned().collect()
+    }
+
+    pub async fn get_session_context(&self, session_id: &str) -> Result<String> {
+        let sessions = self.sessions.lock().await;
+        let session = sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow!("session not found: {}", session_id))?;
+
+        let stream_path = session.dir.join("stream.bin");
+        let entries = read_entries(&stream_path)?;
+
+        let mut raw_bytes = Vec::new();
+        for entry in entries {
+            raw_bytes.extend_from_slice(&entry.data);
+        }
+
+        let builder = ContextBuilder::new().max_chars(8000);
+        let cleaned = builder.strip_escapes(&raw_bytes);
+        Ok(builder.truncate(&cleaned).to_string())
+    }
+
+    pub async fn get_all_sessions_context(&self) -> Result<String> {
+        let sessions = self.sessions.lock().await;
+        let mut combined_bytes = Vec::new();
+
+        for (sid, session) in sessions.iter() {
+            let header = format!("\n=== Session {} ===\n", sid);
+            combined_bytes.extend_from_slice(header.as_bytes());
+
+            let stream_path = session.dir.join("stream.bin");
+            if let Ok(entries) = read_entries(&stream_path) {
+                for entry in entries {
+                    combined_bytes.extend_from_slice(&entry.data);
+                }
+            }
+            combined_bytes.push(b'\n');
+        }
+
+        let builder = ContextBuilder::new().max_chars(16000);
+        let cleaned = builder.strip_escapes(&combined_bytes);
+        Ok(builder.truncate(&cleaned).to_string())
     }
 }
