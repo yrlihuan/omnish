@@ -10,6 +10,8 @@ pub struct SessionMeta {
     pub tty: String,
     pub started_at: String,
     pub ended_at: Option<String>,
+    #[serde(default)]
+    pub cwd: String,
 }
 
 impl SessionMeta {

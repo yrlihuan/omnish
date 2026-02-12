@@ -233,12 +233,16 @@ async fn connect_daemon(
     match transport.connect(&socket_path).await {
         Ok(conn) => {
             let tty = std::env::var("TTY").unwrap_or_default();
+            let cwd = std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
             let msg = Message::SessionStart(SessionStart {
                 session_id: session_id.to_string(),
                 shell: shell.to_string(),
                 pid,
                 tty,
                 timestamp_ms: timestamp_ms(),
+                cwd,
             });
             if conn.send(&msg).await.is_ok() {
                 eprintln!("\x1b[32m[omnish]\x1b[0m Connected to daemon (session: {})", &session_id[..8]);

@@ -32,6 +32,7 @@ impl SessionManager {
         shell: &str,
         pid: u32,
         tty: &str,
+        cwd: &str,
     ) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         let session_dir = self.base_dir.join(format!(
@@ -48,6 +49,7 @@ impl SessionManager {
             tty: tty.to_string(),
             started_at: now,
             ended_at: None,
+            cwd: cwd.to_string(),
         };
         meta.save(&session_dir)?;
 

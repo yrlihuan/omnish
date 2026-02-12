@@ -8,6 +8,7 @@ fn test_session_start_roundtrip() {
         pid: 1234,
         tty: "/dev/pts/0".to_string(),
         timestamp_ms: 1707600000000,
+        cwd: "/home/user".to_string(),
     });
     let bytes = msg.to_bytes().unwrap();
     let decoded = Message::from_bytes(&bytes).unwrap();

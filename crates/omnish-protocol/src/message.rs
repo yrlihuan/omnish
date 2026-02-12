@@ -20,6 +20,7 @@ pub struct SessionStart {
     pub pid: u32,
     pub tty: String,
     pub timestamp_ms: u64,
+    pub cwd: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

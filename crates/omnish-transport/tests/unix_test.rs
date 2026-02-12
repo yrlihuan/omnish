@@ -21,6 +21,7 @@ async fn test_unix_send_recv() {
             pid: 42,
             tty: "/dev/pts/0".to_string(),
             timestamp_ms: 0,
+            cwd: "/tmp".to_string(),
         });
         conn.send(&msg).await.unwrap();
     });

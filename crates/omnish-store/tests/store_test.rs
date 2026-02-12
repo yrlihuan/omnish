@@ -12,6 +12,7 @@ fn test_write_and_read_session_meta() {
         tty: "/dev/pts/0".to_string(),
         started_at: "2026-02-11T16:30:00Z".to_string(),
         ended_at: None,
+        cwd: "/home/user".to_string(),
     };
     meta.save(dir.path()).unwrap();
     let loaded = SessionMeta::load(dir.path()).unwrap();

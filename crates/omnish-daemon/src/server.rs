@@ -54,7 +54,7 @@ async fn handle_connection(
 
         match msg {
             Message::SessionStart(s) => {
-                mgr.register(&s.session_id, &s.shell, s.pid, &s.tty).await?;
+                mgr.register(&s.session_id, &s.shell, s.pid, &s.tty, &s.cwd).await?;
             }
             Message::SessionEnd(s) => {
                 mgr.end_session(&s.session_id).await?;
