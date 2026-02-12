@@ -13,6 +13,8 @@ pub enum InterceptAction {
     /// Backspace in buffering mode - erased one char
     /// Contains updated buffer for echo display
     Backspace(Vec<u8>),
+    /// User pressed ESC to cancel chat mode
+    Cancel,
 }
 
 /// Strategy for deciding whether to start intercepting at the current moment.
@@ -107,6 +109,13 @@ impl InputInterceptor {
         // When suppressed (e.g. inside vim), forward everything directly
         if self.suppressed {
             return self.forward(vec![byte]);
+        }
+
+        // Handle ESC — cancel chat mode
+        if byte == 0x1b && (self.in_chat || !self.buffer.is_empty()) {
+            self.buffer.clear();
+            self.in_chat = false;
+            return InterceptAction::Cancel;
         }
 
         // Handle backspace/delete
@@ -415,6 +424,39 @@ mod tests {
 
         // Should start fresh, no leftover buffer
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+    }
+
+    // --- ESC cancel tests ---
+
+    #[test]
+    fn test_esc_cancels_chat_mode() {
+        let mut interceptor = new_interceptor("::");
+        interceptor.feed_byte(b':');
+        interceptor.feed_byte(b':');
+        interceptor.feed_byte(b'h');
+
+        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Cancel);
+
+        // After cancel, normal input resumes
+        assert_eq!(interceptor.feed_byte(b'x'), InterceptAction::Forward(vec![b'x']));
+    }
+
+    #[test]
+    fn test_esc_cancels_prefix_buffering() {
+        let mut interceptor = new_interceptor("::");
+        interceptor.feed_byte(b':');
+
+        // ESC while still matching prefix
+        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Cancel);
+        assert_eq!(interceptor.feed_byte(b'x'), InterceptAction::Forward(vec![b'x']));
+    }
+
+    #[test]
+    fn test_esc_ignored_when_not_buffering() {
+        let mut interceptor = new_interceptor("::");
+
+        // ESC with empty buffer — forward to PTY (could be start of arrow key etc.)
+        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Forward(vec![0x1b]));
     }
 
     // --- Guard-specific tests ---

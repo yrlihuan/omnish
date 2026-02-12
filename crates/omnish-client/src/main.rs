@@ -64,6 +64,8 @@ async fn main() -> Result<()> {
     let guard = TimeGapGuard::new(std::time::Duration::from_secs(1));
     let mut interceptor = InputInterceptor::new(":", Box::new(guard));
     let mut alt_screen_detector = AltScreenDetector::new();
+    let mut col_tracker = CursorColTracker::new();
+    let mut dismiss_col: u16 = 0;
 
     loop {
         let mut fds = [
@@ -97,7 +99,8 @@ async fn main() -> Result<()> {
                 match interceptor.feed_byte(byte) {
                     InterceptAction::Buffering(buf) => {
                         if buf == b":" {
-                            // User just typed ":", show the prompt interface
+                            // Save cursor column before drawing omnish UI
+                            dismiss_col = col_tracker.col;
                             let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
                             let prompt = display::render_prompt(cols);
                             nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
@@ -109,13 +112,17 @@ async fn main() -> Result<()> {
                         }
                     }
                     InterceptAction::Backspace(buf) => {
-                        // If we backspaced back to empty or partial prefix, might need to clear prompt
-                        // For simplicity, just redraw if still showing command input
-                        if !buf.is_empty() && buf.starts_with(b":") {
+                        if buf.is_empty() {
+                            // Backspaced past the prefix — clear omnish UI, restore cursor column
+                            let dismiss = display::render_dismiss();
+                            let restore = format!("\x1b[{}G", dismiss_col + 1);
+                            nix::unistd::write(std::io::stdout(), dismiss.as_bytes()).ok();
+                            nix::unistd::write(std::io::stdout(), restore.as_bytes()).ok();
+                        } else if buf.starts_with(b":") {
                             if buf.len() == 1 {
-                                let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
-                                let prompt = display::render_prompt(cols);
-                                nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
+                                // Only prefix char left — redraw ❯ with no input text
+                                let echo = display::render_input_echo(b"");
+                                nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
                             } else {
                                 // Show the user's input after the prompt
                                 let user_input = &buf[1..]; // Skip ":"
@@ -139,14 +146,22 @@ async fn main() -> Result<()> {
                             let _ = conn.send(&msg).await;
                         }
                     }
+                    InterceptAction::Cancel => {
+                        // ESC pressed — clear omnish UI, restore cursor column
+                        let dismiss = display::render_dismiss();
+                        let restore = format!("\x1b[{}G", dismiss_col + 1); // CHA is 1-indexed
+                        nix::unistd::write(std::io::stdout(), dismiss.as_bytes()).ok();
+                        nix::unistd::write(std::io::stdout(), restore.as_bytes()).ok();
+                    }
                     InterceptAction::Chat(msg) => {
                         // Chat mode message — send to LLM with terminal context
                         if let Some(ref conn) = daemon_conn {
-                            handle_omnish_query(&msg, &session_id, conn).await;
+                            handle_omnish_query(&msg, &session_id, conn, &proxy).await;
                         } else {
-                            // No daemon connection, print error
+                            // No daemon connection, print error then reprompt shell
                             let err = display::render_error("Daemon not connected");
                             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                            proxy.write_all(b"\r").ok();
                         }
                     }
                 }
@@ -159,6 +174,9 @@ async fn main() -> Result<()> {
                 Ok(0) => break,
                 Ok(n) => {
                     nix::unistd::write(std::io::stdout(), &output_buf[..n])?;
+
+                    // Track cursor column for dismiss restore
+                    col_tracker.feed(&output_buf[..n]);
 
                     // Detect alternate screen transitions (vim, less, etc.)
                     if let Some(active) = alt_screen_detector.feed(&output_buf[..n]) {
@@ -258,6 +276,65 @@ fn setup_sigwinch(master_fd: i32) {
 
 static mut MASTER_FD: i32 = -1;
 
+/// Tracks cursor column from PTY output bytes.
+///
+/// Follows `\r` (reset to 0), printable ASCII, UTF-8 start bytes, and
+/// skips ANSI escape sequences (CSI, OSC) so they don't inflate the count.
+/// Used to save/restore cursor column when dismissing the omnish UI.
+struct CursorColTracker {
+    col: u16,
+    state: ColTrackState,
+}
+
+#[derive(Clone, Copy)]
+enum ColTrackState {
+    Normal,
+    Esc,
+    Csi,
+    Osc,
+}
+
+impl CursorColTracker {
+    fn new() -> Self {
+        Self { col: 0, state: ColTrackState::Normal }
+    }
+
+    fn feed(&mut self, data: &[u8]) {
+        for &byte in data {
+            match self.state {
+                ColTrackState::Normal => match byte {
+                    0x1b => self.state = ColTrackState::Esc,
+                    b'\r' => self.col = 0,
+                    b'\n' => {}
+                    0x08 => self.col = self.col.saturating_sub(1),
+                    0x20..=0x7e => self.col += 1,
+                    0xc0.. => self.col += 1, // UTF-8 start byte
+                    _ => {}
+                },
+                ColTrackState::Esc => {
+                    self.state = match byte {
+                        b'[' => ColTrackState::Csi,
+                        b']' => ColTrackState::Osc,
+                        _ => ColTrackState::Normal,
+                    };
+                }
+                ColTrackState::Csi => {
+                    if (0x40..=0x7e).contains(&byte) {
+                        self.state = ColTrackState::Normal;
+                    }
+                }
+                ColTrackState::Osc => {
+                    if byte == 0x07 {
+                        self.state = ColTrackState::Normal;
+                    } else if byte == 0x1b {
+                        self.state = ColTrackState::Esc;
+                    }
+                }
+            }
+        }
+    }
+}
+
 extern "C" fn sigwinch_handler(_sig: libc::c_int) {
     unsafe {
         let mut ws: libc::winsize = std::mem::zeroed();
@@ -348,7 +425,7 @@ impl AltScreenDetector {
     }
 }
 
-async fn handle_omnish_query(query: &str, session_id: &str, conn: &Box<dyn Connection>) {
+async fn handle_omnish_query(query: &str, session_id: &str, conn: &Box<dyn Connection>, proxy: &PtyProxy) {
     // Show thinking status
     let status = display::render_thinking();
     nix::unistd::write(std::io::stdout(), status.as_bytes()).ok();
@@ -393,6 +470,9 @@ async fn handle_omnish_query(query: &str, session_id: &str, conn: &Box<dyn Conne
             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
         }
     }
+
+    // Send empty Enter to PTY so the shell prints a fresh prompt below our output
+    proxy.write_all(b"\r").ok();
 }
 
 async fn handle_command(cmd_str: &str, session_id: &str, conn: &Box<dyn Connection>) {
@@ -606,5 +686,47 @@ mod tests {
 
         // Back to normal: ":" should intercept again
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+    }
+
+    // --- CursorColTracker tests ---
+
+    #[test]
+    fn test_col_tracker_ascii() {
+        let mut t = CursorColTracker::new();
+        t.feed(b"hello");
+        assert_eq!(t.col, 5);
+
+        // \r resets column
+        t.feed(b"\rworld");
+        assert_eq!(t.col, 5);
+
+        // Backspace
+        t.feed(b"\x08");
+        assert_eq!(t.col, 4);
+    }
+
+    #[test]
+    fn test_col_tracker_skips_csi() {
+        let mut t = CursorColTracker::new();
+        // Color escape sequences should not advance column
+        t.feed(b"\x1b[32mgreen\x1b[0m");
+        assert_eq!(t.col, 5); // only "green" counted
+    }
+
+    #[test]
+    fn test_col_tracker_skips_osc() {
+        let mut t = CursorColTracker::new();
+        // OSC title sequence (invisible) then prompt
+        t.feed(b"\x1b]0;my title\x07$ ");
+        assert_eq!(t.col, 2); // only "$ " counted
+    }
+
+    #[test]
+    fn test_col_tracker_typical_prompt() {
+        let mut t = CursorColTracker::new();
+        // Typical colored prompt: \r\n\x1b[32muser@host\x1b[0m:\x1b[34m~\x1b[0m$
+        t.feed(b"\r\n\x1b[32muser@host\x1b[0m:\x1b[34m~\x1b[0m$ ");
+        // "user@host" (9) + ":" (1) + "~" (1) + "$ " (2) = 13
+        assert_eq!(t.col, 13);
     }
 }
