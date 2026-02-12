@@ -276,10 +276,12 @@ async fn handle_command(cmd_str: &str, session_id: &str, conn: &Box<dyn Connecti
             match conn.recv().await {
                 Ok(Message::Response(resp)) if resp.request_id == request_id => {
                     // Clear status line and show response with nice formatting
+                    // In raw mode, need to convert \n to \r\n for proper line breaks
+                    let content = resp.content.replace('\n', "\r\n");
                     let output = format!(
                         "\r\x1b[K\x1b[36m::{}\x1b[0m\r\n\x1b[32m[omnish]\x1b[0m {}\r\n",
                         cmd_str,
-                        resp.content
+                        content
                     );
                     nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
                 }
