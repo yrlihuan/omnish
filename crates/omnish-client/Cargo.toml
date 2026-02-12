@@ -4,3 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+omnish-common = { path = "../omnish-common" }
+omnish-protocol = { path = "../omnish-protocol" }
+omnish-transport = { path = "../omnish-transport" }
+omnish-pty = { path = "../omnish-pty" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+nix = { workspace = true }
+libc = "0.2"
