@@ -18,6 +18,8 @@ pub struct InputInterceptor {
     prefix: Vec<u8>,
     buffer: VecDeque<u8>,
     in_command: bool,
+    /// When true, all input is forwarded directly (e.g. inside vim/less)
+    suppressed: bool,
 }
 
 impl InputInterceptor {
@@ -26,7 +28,18 @@ impl InputInterceptor {
             prefix: prefix.as_bytes().to_vec(),
             buffer: VecDeque::new(),
             in_command: false,
+            suppressed: false,
         }
+    }
+
+    /// Set suppression state (e.g. when alternate screen is active)
+    pub fn set_suppressed(&mut self, suppressed: bool) {
+        if suppressed && !self.suppressed {
+            // Entering suppressed mode: discard any partial buffer
+            self.buffer.clear();
+            self.in_command = false;
+        }
+        self.suppressed = suppressed;
     }
 
     /// Note output from shell (to detect prompt and reset state)
@@ -41,6 +54,11 @@ impl InputInterceptor {
 
     /// Feed a single input byte, returns action
     pub fn feed_byte(&mut self, byte: u8) -> InterceptAction {
+        // When suppressed (e.g. inside vim), forward everything directly
+        if self.suppressed {
+            return InterceptAction::Forward(vec![byte]);
+        }
+
         // Handle backspace/delete
         if byte == 0x7f || byte == 0x08 {
             // If we're buffering or in command mode, handle backspace
@@ -280,5 +298,55 @@ mod tests {
         } else {
             panic!("Expected Backspace action");
         }
+    }
+
+    #[test]
+    fn test_suppressed_forwards_everything() {
+        let mut interceptor = InputInterceptor::new("::");
+        interceptor.set_suppressed(true);
+
+        // "::" prefix should NOT trigger buffering when suppressed
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Forward(vec![b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Forward(vec![b':']));
+        assert_eq!(interceptor.feed_byte(b'a'), InterceptAction::Forward(vec![b'a']));
+        assert_eq!(interceptor.feed_byte(b'\n'), InterceptAction::Forward(vec![b'\n']));
+    }
+
+    #[test]
+    fn test_suppressed_then_resumed() {
+        let mut interceptor = InputInterceptor::new("::");
+        interceptor.set_suppressed(true);
+
+        // Should forward while suppressed
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Forward(vec![b':']));
+
+        // Unsuppress
+        interceptor.set_suppressed(false);
+
+        // Should intercept again
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+    }
+
+    #[test]
+    fn test_suppressed_discards_partial_buffer() {
+        let mut interceptor = InputInterceptor::new("::");
+
+        // Start typing a command
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+        assert_eq!(interceptor.feed_byte(b'a'), InterceptAction::Buffering(vec![b':', b':', b'a']));
+
+        // Enter suppressed mode (e.g. vim opened) - should discard buffer
+        interceptor.set_suppressed(true);
+
+        // Everything forwards
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Forward(vec![b':']));
+
+        // Exit suppressed mode
+        interceptor.set_suppressed(false);
+
+        // Should start fresh, no leftover buffer
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
     }
 }

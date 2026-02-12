@@ -1,5 +1,6 @@
 // crates/omnish-client/src/main.rs
 mod commands;
+mod display;
 mod interceptor;
 
 use anyhow::Result;
@@ -61,6 +62,7 @@ async fn main() -> Result<()> {
     let mut input_buf = [0u8; 4096];
     let mut output_buf = [0u8; 4096];
     let mut interceptor = InputInterceptor::new("::");
+    let mut alt_screen_detector = AltScreenDetector::new();
 
     loop {
         let mut fds = [
@@ -95,15 +97,14 @@ async fn main() -> Result<()> {
                     InterceptAction::Buffering(buf) => {
                         if buf == b"::" {
                             // User just typed "::", show the prompt interface
-                            show_omnish_prompt();
+                            let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+                            let prompt = display::render_prompt(cols);
+                            nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
                         } else if buf.len() > 2 && buf.starts_with(b"::") {
                             // Echo the user's input after the prompt
                             let user_input = &buf[2..]; // Skip "::"
-                            let display = format!(
-                                "\r\x1b[36m❯\x1b[0m {}",
-                                String::from_utf8_lossy(user_input)
-                            );
-                            nix::unistd::write(std::io::stdout(), display.as_bytes()).ok();
+                            let echo = display::render_input_echo(user_input);
+                            nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
                         }
                     }
                     InterceptAction::Backspace(buf) => {
@@ -111,15 +112,14 @@ async fn main() -> Result<()> {
                         // For simplicity, just redraw if still showing command input
                         if !buf.is_empty() && buf.starts_with(b"::") {
                             if buf.len() == 2 {
-                                show_omnish_prompt();
+                                let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+                                let prompt = display::render_prompt(cols);
+                                nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
                             } else {
                                 // Show the user's input after the prompt
                                 let user_input = &buf[2..]; // Skip "::"
-                                let display = format!(
-                                    "\r\x1b[36m❯\x1b[0m {}",
-                                    String::from_utf8_lossy(user_input)
-                                );
-                                nix::unistd::write(std::io::stdout(), display.as_bytes()).ok();
+                                let echo = display::render_input_echo(user_input);
+                                nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
                             }
                         }
                     }
@@ -145,8 +145,8 @@ async fn main() -> Result<()> {
                             handle_omnish_query(&cmd_str, &session_id, conn).await;
                         } else {
                             // No daemon connection, print error
-                            let err_msg = "\r\n\x1b[31m[omnish] Daemon not connected\x1b[0m\r\n";
-                            nix::unistd::write(std::io::stdout(), err_msg.as_bytes()).ok();
+                            let err = display::render_error("Daemon not connected");
+                            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                         }
                     }
                 }
@@ -159,6 +159,11 @@ async fn main() -> Result<()> {
                 Ok(0) => break,
                 Ok(n) => {
                     nix::unistd::write(std::io::stdout(), &output_buf[..n])?;
+
+                    // Detect alternate screen transitions (vim, less, etc.)
+                    if let Some(active) = alt_screen_detector.feed(&output_buf[..n]) {
+                        interceptor.set_suppressed(active);
+                    }
 
                     // Notify interceptor of output (resets command state)
                     interceptor.note_output(&output_buf[..n]);
@@ -262,21 +267,91 @@ extern "C" fn sigwinch_handler(_sig: libc::c_int) {
     }
 }
 
-fn show_omnish_prompt() {
-    // Get terminal width
-    let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+/// Detects alternate screen enter/exit escape sequences in PTY output.
+///
+/// Full-screen programs (vim, less, htop, etc.) switch to the alternate screen
+/// buffer via these CSI sequences:
+///   - Enter: \x1b[?1049h or \x1b[?47h
+///   - Exit:  \x1b[?1049l or \x1b[?47l
+///
+/// We scan output bytes with a small state machine to detect these transitions
+/// without needing a full VTE parser.
+struct AltScreenDetector {
+    active: bool,
+    /// Partial match buffer for escape sequence detection
+    seq_buf: Vec<u8>,
+}
 
-    // Print newline, separator line, and prompt
-    let separator = "\x1b[2m".to_string() + &"─".repeat(cols as usize) + "\x1b[0m";
-    let prompt = format!("\r\n{}\r\n\x1b[36m❯\x1b[0m ", separator);
+impl AltScreenDetector {
+    fn new() -> Self {
+        Self {
+            active: false,
+            seq_buf: Vec::with_capacity(16),
+        }
+    }
 
-    nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
+    /// Feed output bytes and return Some(true/false) if alternate screen state changed.
+    /// Returns None if no state change occurred.
+    fn feed(&mut self, data: &[u8]) -> Option<bool> {
+        let mut changed = false;
+
+        for &byte in data {
+            if byte == 0x1b {
+                // Start of a new escape sequence
+                self.seq_buf.clear();
+                self.seq_buf.push(byte);
+                continue;
+            }
+
+            if !self.seq_buf.is_empty() {
+                self.seq_buf.push(byte);
+
+                // We're looking for patterns like:
+                //   \x1b [ ? 1049 h/l
+                //   \x1b [ ? 47 h/l
+                // Max length we care about: \x1b[?1049h = 9 bytes
+                if self.seq_buf.len() > 10 {
+                    // Too long, not a sequence we care about
+                    self.seq_buf.clear();
+                    continue;
+                }
+
+                // Check for terminal character (h or l)
+                if byte == b'h' || byte == b'l' {
+                    let s = &self.seq_buf;
+                    let entering = byte == b'h';
+
+                    // Check \x1b[?1049h/l
+                    if s == b"\x1b[?1049h" || s == b"\x1b[?1049l"
+                        || s == b"\x1b[?47h" || s == b"\x1b[?47l"
+                    {
+                        if self.active != entering {
+                            self.active = entering;
+                            changed = true;
+                        }
+                    }
+
+                    self.seq_buf.clear();
+                }
+
+                // If we got a character that can't be part of our target sequences,
+                // and it's not a digit, ?, or [, abort
+                if byte != b'[' && byte != b'?' && !byte.is_ascii_digit()
+                    && byte != b'h' && byte != b'l'
+                {
+                    self.seq_buf.clear();
+                }
+            }
+        }
+
+        if changed { Some(self.active) } else { None }
+    }
 }
 
 async fn handle_omnish_query(query: &str, session_id: &str, conn: &Box<dyn Connection>) {
     // Show thinking status
-    let status_msg = "\r\x1b[2m(thinking...)\x1b[0m\r\n";
-    nix::unistd::write(std::io::stdout(), status_msg.as_bytes()).ok();
+    let status = display::render_thinking();
+    nix::unistd::write(std::io::stdout(), status.as_bytes()).ok();
 
     let request_id = Uuid::new_v4().to_string()[..8].to_string();
     let request = Message::Request(Request {
@@ -288,7 +363,8 @@ async fn handle_omnish_query(query: &str, session_id: &str, conn: &Box<dyn Conne
 
     // Send request
     if conn.send(&request).await.is_err() {
-        nix::unistd::write(std::io::stdout(), b"\x1b[31m[omnish] Failed to send request\x1b[0m\r\n").ok();
+        let err = display::render_error("Failed to send request");
+        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
         return;
     }
 
@@ -298,27 +374,23 @@ async fn handle_omnish_query(query: &str, session_id: &str, conn: &Box<dyn Conne
             // Debug: save raw response
             std::fs::write("/tmp/omnish_last_response.txt", &resp.content).ok();
 
-            // Convert line breaks for raw mode and trim lines
-            let content: String = resp.content
-                .lines()
-                .map(|line| line.trim_end())
-                .collect::<Vec<_>>()
-                .join("\r\n");
-
             // Display response
-            let output = format!("\x1b[32m{}\x1b[0m\r\n", content);
+            let output = display::render_response(&resp.content);
             nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
 
             // Add separator after response
             let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
-            let separator = "\x1b[2m".to_string() + &"─".repeat(cols as usize) + "\x1b[0m\r\n";
-            nix::unistd::write(std::io::stdout(), separator.as_bytes()).ok();
+            let separator = display::render_separator(cols);
+            let sep_line = format!("{}\r\n", separator);
+            nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
         }
         Ok(_) => {
-            nix::unistd::write(std::io::stdout(), b"\x1b[31m[omnish] Unexpected response\x1b[0m\r\n").ok();
+            let err = display::render_error("Unexpected response");
+            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
         }
         Err(_) => {
-            nix::unistd::write(std::io::stdout(), b"\x1b[31m[omnish] Failed to receive response\x1b[0m\r\n").ok();
+            let err = display::render_error("Failed to receive response");
+            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
         }
     }
 }
@@ -448,4 +520,92 @@ fn show_response_overlay(cmd_str: &str, content: &str) {
 
     // Wait for any key press (we'll detect it in the main loop)
     // The overlay will stay until user types something
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_alt_screen_detect_1049h() {
+        let mut d = AltScreenDetector::new();
+        assert_eq!(d.feed(b"\x1b[?1049h"), Some(true));
+        assert_eq!(d.feed(b"some output"), None);
+        assert_eq!(d.feed(b"\x1b[?1049l"), Some(false));
+    }
+
+    #[test]
+    fn test_alt_screen_detect_47h() {
+        let mut d = AltScreenDetector::new();
+        assert_eq!(d.feed(b"\x1b[?47h"), Some(true));
+        assert_eq!(d.feed(b"\x1b[?47l"), Some(false));
+    }
+
+    #[test]
+    fn test_alt_screen_no_duplicate_events() {
+        let mut d = AltScreenDetector::new();
+        assert_eq!(d.feed(b"\x1b[?1049h"), Some(true));
+        // Already active, no change
+        assert_eq!(d.feed(b"\x1b[?1049h"), None);
+        assert_eq!(d.feed(b"\x1b[?1049l"), Some(false));
+        // Already inactive, no change
+        assert_eq!(d.feed(b"\x1b[?1049l"), None);
+    }
+
+    #[test]
+    fn test_alt_screen_embedded_in_output() {
+        let mut d = AltScreenDetector::new();
+        // Sequence embedded in larger output (like vim startup)
+        let data = b"some preamble\x1b[?1049hmore stuff";
+        assert_eq!(d.feed(data), Some(true));
+    }
+
+    #[test]
+    fn test_alt_screen_split_across_chunks() {
+        let mut d = AltScreenDetector::new();
+        // Escape sequence split across two read() calls
+        assert_eq!(d.feed(b"\x1b[?104"), None);
+        assert_eq!(d.feed(b"9h"), Some(true));
+    }
+
+    #[test]
+    fn test_alt_screen_ignores_unrelated_sequences() {
+        let mut d = AltScreenDetector::new();
+        // Other CSI sequences should not trigger
+        assert_eq!(d.feed(b"\x1b[?25h"), None); // show cursor
+        assert_eq!(d.feed(b"\x1b[?25l"), None); // hide cursor
+        assert_eq!(d.feed(b"\x1b[2J"), None);   // clear screen
+        assert_eq!(d.active, false);
+    }
+
+    #[test]
+    fn test_alt_screen_integration_with_interceptor() {
+        let mut interceptor = InputInterceptor::new("::");
+        let mut detector = AltScreenDetector::new();
+
+        // Normal mode: interceptor should buffer "::"
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+
+        // Reset for clean test
+        interceptor.note_output(b"reset");
+
+        // vim opens: alternate screen enter
+        if let Some(active) = detector.feed(b"\x1b[?1049h") {
+            interceptor.set_suppressed(active);
+        }
+
+        // Now "::" should forward directly
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Forward(vec![b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Forward(vec![b':']));
+
+        // vim exits: alternate screen leave
+        if let Some(active) = detector.feed(b"\x1b[?1049l") {
+            interceptor.set_suppressed(active);
+        }
+
+        // Back to normal: "::" should intercept again
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+    }
 }
