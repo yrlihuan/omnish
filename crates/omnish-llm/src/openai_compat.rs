@@ -41,10 +41,24 @@ impl LlmBackend for OpenAiCompatBackend {
             .send()
             .await?;
 
+        let status = resp.status();
         let json: serde_json::Value = resp.json().await?;
+
+        // Check for API errors
+        if !status.is_success() {
+            let error_msg = json["error"]["message"]
+                .as_str()
+                .unwrap_or("Unknown API error");
+            return Err(anyhow::anyhow!(
+                "OpenAI API error ({}): {}",
+                status,
+                error_msg
+            ));
+        }
+
         let content = json["choices"][0]["message"]["content"]
             .as_str()
-            .unwrap_or("(no response)")
+            .ok_or_else(|| anyhow::anyhow!("Invalid response format: missing choices[0].message.content"))?
             .to_string();
 
         Ok(LlmResponse {

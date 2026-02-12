@@ -42,10 +42,28 @@ impl LlmBackend for AnthropicBackend {
             .send()
             .await?;
 
+        let status = resp.status();
         let json: serde_json::Value = resp.json().await?;
+
+        // Check for API errors
+        if !status.is_success() {
+            let error_msg = json["error"]["message"]
+                .as_str()
+                .unwrap_or("Unknown API error");
+            let error_type = json["error"]["type"]
+                .as_str()
+                .unwrap_or("unknown");
+            return Err(anyhow::anyhow!(
+                "Anthropic API error ({}): {} - {}",
+                status,
+                error_type,
+                error_msg
+            ));
+        }
+
         let content = json["content"][0]["text"]
             .as_str()
-            .unwrap_or("(no response)")
+            .ok_or_else(|| anyhow::anyhow!("Invalid response format: missing content[0].text"))?
             .to_string();
 
         Ok(LlmResponse {
