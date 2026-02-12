@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, PartialEq)]
 pub enum InterceptAction {
@@ -7,28 +8,77 @@ pub enum InterceptAction {
     Buffering(Vec<u8>),
     /// Forward these bytes to PTY
     Forward(Vec<u8>),
-    /// Command detected and consumed: (command_string)
-    Command(String),
+    /// Chat mode message completed (user pressed Enter after prefix)
+    Chat(String),
     /// Backspace in buffering mode - erased one char
     /// Contains updated buffer for echo display
     Backspace(Vec<u8>),
 }
 
+/// Strategy for deciding whether to start intercepting at the current moment.
+/// Allows swapping between time-gap heuristic, prompt detection, etc.
+pub trait InterceptGuard {
+    /// Record that user input was forwarded to the shell (not intercepted).
+    fn note_input(&mut self);
+    /// Return true if the interceptor should try to match the prefix right now.
+    fn should_intercept(&self) -> bool;
+}
+
+/// Always intercept — used in tests and when no guard logic is needed.
+pub struct AlwaysIntercept;
+
+impl InterceptGuard for AlwaysIntercept {
+    fn note_input(&mut self) {}
+    fn should_intercept(&self) -> bool { true }
+}
+
+/// Intercept only when enough time has elapsed since the last forwarded input.
+/// This heuristic assumes that if the user hasn't typed for a while, they're
+/// at a fresh shell prompt rather than in the middle of a command.
+pub struct TimeGapGuard {
+    last_input: Option<Instant>,
+    min_gap: Duration,
+}
+
+impl TimeGapGuard {
+    pub fn new(min_gap: Duration) -> Self {
+        Self {
+            last_input: None,
+            min_gap,
+        }
+    }
+}
+
+impl InterceptGuard for TimeGapGuard {
+    fn note_input(&mut self) {
+        self.last_input = Some(Instant::now());
+    }
+
+    fn should_intercept(&self) -> bool {
+        match self.last_input {
+            None => true, // No prior input — likely at initial prompt
+            Some(t) => t.elapsed() >= self.min_gap,
+        }
+    }
+}
+
 pub struct InputInterceptor {
     prefix: Vec<u8>,
     buffer: VecDeque<u8>,
-    in_command: bool,
+    in_chat: bool,
     /// When true, all input is forwarded directly (e.g. inside vim/less)
     suppressed: bool,
+    guard: Box<dyn InterceptGuard>,
 }
 
 impl InputInterceptor {
-    pub fn new(prefix: &str) -> Self {
+    pub fn new(prefix: &str, guard: Box<dyn InterceptGuard>) -> Self {
         Self {
             prefix: prefix.as_bytes().to_vec(),
             buffer: VecDeque::new(),
-            in_command: false,
+            in_chat: false,
             suppressed: false,
+            guard,
         }
     }
 
@@ -37,17 +87,17 @@ impl InputInterceptor {
         if suppressed && !self.suppressed {
             // Entering suppressed mode: discard any partial buffer
             self.buffer.clear();
-            self.in_command = false;
+            self.in_chat = false;
         }
         self.suppressed = suppressed;
     }
 
     /// Note output from shell (to detect prompt and reset state)
     pub fn note_output(&mut self, _data: &[u8]) {
-        // On any output from shell, reset command state
+        // On any output from shell, reset chat state
         // This handles Ctrl+C, Ctrl+D, etc. that cancel partial input
-        if self.in_command {
-            self.in_command = false;
+        if self.in_chat {
+            self.in_chat = false;
             self.buffer.clear();
         }
     }
@@ -56,13 +106,13 @@ impl InputInterceptor {
     pub fn feed_byte(&mut self, byte: u8) -> InterceptAction {
         // When suppressed (e.g. inside vim), forward everything directly
         if self.suppressed {
-            return InterceptAction::Forward(vec![byte]);
+            return self.forward(vec![byte]);
         }
 
         // Handle backspace/delete
         if byte == 0x7f || byte == 0x08 {
-            // If we're buffering or in command mode, handle backspace
-            if !self.buffer.is_empty() && (self.in_command || self.buffer.len() <= self.prefix.len()) {
+            // If we're buffering or in chat mode, handle backspace
+            if !self.buffer.is_empty() && (self.in_chat || self.buffer.len() <= self.prefix.len()) {
                 // Delete one UTF-8 character (may be multiple bytes)
                 // Work backwards to find the start of the last character
                 let buf_vec: Vec<u8> = self.buffer.iter().copied().collect();
@@ -75,16 +125,16 @@ impl InputInterceptor {
                     self.buffer = new_str.as_bytes().iter().copied().collect();
                 }
 
-                // Check if we dropped out of command mode
-                if self.in_command && self.buffer.len() < self.prefix.len() {
-                    self.in_command = false;
+                // Check if we dropped out of chat mode
+                if self.in_chat && self.buffer.len() < self.prefix.len() {
+                    self.in_chat = false;
                 }
 
                 let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
                 return InterceptAction::Backspace(current_buf);
             } else {
                 // Not buffering, forward to PTY
-                return InterceptAction::Forward(vec![byte]);
+                return self.forward(vec![byte]);
             }
         }
 
@@ -96,12 +146,19 @@ impl InputInterceptor {
         }
 
         // Check if buffer matches prefix so far
-        if !self.in_command && self.buffer.len() <= self.prefix.len() {
+        if !self.in_chat && self.buffer.len() <= self.prefix.len() {
             if self.buffer.iter().copied().collect::<Vec<_>>() == self.prefix[..self.buffer.len()] {
+                // On first prefix byte, check guard
+                if self.buffer.len() == 1 && !self.guard.should_intercept() {
+                    let flushed: Vec<u8> = self.buffer.iter().copied().collect();
+                    self.buffer.clear();
+                    return self.forward(flushed);
+                }
+
                 // Still matching prefix
                 if self.buffer.len() == self.prefix.len() {
                     // Complete prefix match
-                    self.in_command = true;
+                    self.in_chat = true;
                 }
                 // Keep buffering, don't send to PTY yet, return buffer for echo
                 let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
@@ -110,42 +167,48 @@ impl InputInterceptor {
                 // Prefix mismatch, flush buffer to PTY
                 let flushed: Vec<u8> = self.buffer.iter().copied().collect();
                 self.buffer.clear();
-                return InterceptAction::Forward(flushed);
+                return self.forward(flushed);
             }
         }
 
-        // In command mode, keep buffering and return for echo
-        if self.in_command {
+        // In chat mode, keep buffering and return for echo
+        if self.in_chat {
             let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
             return InterceptAction::Buffering(current_buf);
         }
 
-        // Not in command mode and buffer exceeded prefix length - flush and reset
+        // Not in chat mode and buffer exceeded prefix length - flush and reset
         let flushed: Vec<u8> = self.buffer.iter().copied().collect();
         self.buffer.clear();
-        InterceptAction::Forward(flushed)
+        self.forward(flushed)
+    }
+
+    /// Forward bytes and record input activity for the guard.
+    fn forward(&mut self, bytes: Vec<u8>) -> InterceptAction {
+        self.guard.note_input();
+        InterceptAction::Forward(bytes)
     }
 
     fn handle_enter(&mut self) -> InterceptAction {
         let buffered: Vec<u8> = self.buffer.iter().copied().collect();
         self.buffer.clear();
 
-        if !self.in_command {
-            // Not a command, forward to PTY
-            return InterceptAction::Forward(buffered);
+        if !self.in_chat {
+            // Not in chat mode, forward to PTY
+            return self.forward(buffered);
         }
 
-        // Extract command after prefix
-        self.in_command = false;
+        // Extract chat message after prefix
+        self.in_chat = false;
         if buffered.len() > self.prefix.len() {
             let cmd_bytes = &buffered[self.prefix.len()..buffered.len() - 1]; // exclude final \n
             if let Ok(cmd_str) = std::str::from_utf8(cmd_bytes) {
-                return InterceptAction::Command(cmd_str.to_string());
+                return InterceptAction::Chat(cmd_str.to_string());
             }
         }
 
-        // Empty command or decode error, forward to PTY
-        InterceptAction::Forward(buffered)
+        // Empty message or decode error, forward to PTY
+        self.forward(buffered)
     }
 }
 
@@ -153,9 +216,13 @@ impl InputInterceptor {
 mod tests {
     use super::*;
 
+    fn new_interceptor(prefix: &str) -> InputInterceptor {
+        InputInterceptor::new(prefix, Box::new(AlwaysIntercept))
+    }
+
     #[test]
     fn test_passthrough_normal_input() {
-        let mut interceptor = InputInterceptor::new("::");
+        let mut interceptor = new_interceptor("::");
         // 'l' doesn't match prefix, so buffer is flushed
         assert_eq!(interceptor.feed_byte(b'l'), InterceptAction::Forward(vec![b'l']));
         assert_eq!(interceptor.feed_byte(b's'), InterceptAction::Forward(vec![b's']));
@@ -163,32 +230,32 @@ mod tests {
     }
 
     #[test]
-    fn test_command_detected() {
-        let mut interceptor = InputInterceptor::new("::");
+    fn test_chat_detected() {
+        let mut interceptor = new_interceptor("::");
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
         assert_eq!(interceptor.feed_byte(b'a'), InterceptAction::Buffering(vec![b':', b':', b'a']));
         assert_eq!(interceptor.feed_byte(b's'), InterceptAction::Buffering(vec![b':', b':', b'a', b's']));
         assert_eq!(interceptor.feed_byte(b'k'), InterceptAction::Buffering(vec![b':', b':', b'a', b's', b'k']));
 
-        if let InterceptAction::Command(cmd) = interceptor.feed_byte(b'\n') {
+        if let InterceptAction::Chat(cmd) = interceptor.feed_byte(b'\n') {
             assert_eq!(cmd, "ask");
         } else {
-            panic!("Expected Command action");
+            panic!("Expected Chat action");
         }
     }
 
     #[test]
-    fn test_command_with_query() {
-        let mut interceptor = InputInterceptor::new("::");
+    fn test_chat_with_query() {
+        let mut interceptor = new_interceptor("::");
         let input = b"::ask why did this fail\n";
         for (idx, &byte) in input.iter().enumerate() {
             let action = interceptor.feed_byte(byte);
             if byte == b'\n' {
-                if let InterceptAction::Command(cmd) = action {
+                if let InterceptAction::Chat(cmd) = action {
                     assert_eq!(cmd, "ask why did this fail");
                 } else {
-                    panic!("Expected Command action");
+                    panic!("Expected Chat action");
                 }
             } else {
                 if let InterceptAction::Buffering(buf) = action {
@@ -202,7 +269,7 @@ mod tests {
 
     #[test]
     fn test_partial_prefix_then_mismatch() {
-        let mut interceptor = InputInterceptor::new("::");
+        let mut interceptor = new_interceptor("::");
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
         // Mismatch - should flush ":x"
         assert_eq!(interceptor.feed_byte(b'x'), InterceptAction::Forward(vec![b':', b'x']));
@@ -211,20 +278,20 @@ mod tests {
     }
 
     #[test]
-    fn test_note_output_resets_command_state() {
-        let mut interceptor = InputInterceptor::new("::");
+    fn test_note_output_resets_chat_state() {
+        let mut interceptor = new_interceptor("::");
         interceptor.feed_byte(b':');
         interceptor.feed_byte(b':');
-        // Now in command mode
+        // Now in chat mode
         interceptor.note_output(b"some output");
-        // Command state should be reset
-        assert_eq!(interceptor.in_command, false);
+        // Chat state should be reset
+        assert_eq!(interceptor.in_chat, false);
         assert_eq!(interceptor.buffer.len(), 0);
     }
 
     #[test]
-    fn test_backspace_in_command_mode() {
-        let mut interceptor = InputInterceptor::new("::");
+    fn test_backspace_in_chat_mode() {
+        let mut interceptor = new_interceptor("::");
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
         assert_eq!(interceptor.feed_byte(b'a'), InterceptAction::Buffering(vec![b':', b':', b'a']));
@@ -232,13 +299,13 @@ mod tests {
         // Backspace should remove 'a'
         assert_eq!(interceptor.feed_byte(0x7f), InterceptAction::Backspace(vec![b':', b':']));
 
-        // Still in command mode
+        // Still in chat mode
         assert_eq!(interceptor.feed_byte(b'b'), InterceptAction::Buffering(vec![b':', b':', b'b']));
     }
 
     #[test]
-    fn test_backspace_out_of_command_mode() {
-        let mut interceptor = InputInterceptor::new("::");
+    fn test_backspace_out_of_chat_mode() {
+        let mut interceptor = new_interceptor("::");
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
 
@@ -254,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_backspace_when_not_buffering() {
-        let mut interceptor = InputInterceptor::new("::");
+        let mut interceptor = new_interceptor("::");
         // Type something that doesn't match prefix
         interceptor.feed_byte(b'l');
 
@@ -264,7 +331,7 @@ mod tests {
 
     #[test]
     fn test_backspace_multibyte_chars() {
-        let mut interceptor = InputInterceptor::new("::");
+        let mut interceptor = new_interceptor("::");
         // Type "::ask 中文"
         for &byte in b"::ask " {
             interceptor.feed_byte(byte);
@@ -302,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_suppressed_forwards_everything() {
-        let mut interceptor = InputInterceptor::new("::");
+        let mut interceptor = new_interceptor("::");
         interceptor.set_suppressed(true);
 
         // "::" prefix should NOT trigger buffering when suppressed
@@ -314,7 +381,7 @@ mod tests {
 
     #[test]
     fn test_suppressed_then_resumed() {
-        let mut interceptor = InputInterceptor::new("::");
+        let mut interceptor = new_interceptor("::");
         interceptor.set_suppressed(true);
 
         // Should forward while suppressed
@@ -330,9 +397,9 @@ mod tests {
 
     #[test]
     fn test_suppressed_discards_partial_buffer() {
-        let mut interceptor = InputInterceptor::new("::");
+        let mut interceptor = new_interceptor("::");
 
-        // Start typing a command
+        // Start typing a chat message
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
         assert_eq!(interceptor.feed_byte(b'a'), InterceptAction::Buffering(vec![b':', b':', b'a']));
@@ -348,5 +415,66 @@ mod tests {
 
         // Should start fresh, no leftover buffer
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+    }
+
+    // --- Guard-specific tests ---
+
+    #[test]
+    fn test_time_gap_guard_no_prior_input() {
+        let guard = TimeGapGuard::new(Duration::from_secs(1));
+        // No prior input: should allow interception
+        assert!(guard.should_intercept());
+    }
+
+    #[test]
+    fn test_time_gap_guard_recent_input_blocks() {
+        let mut guard = TimeGapGuard::new(Duration::from_secs(1));
+        guard.note_input();
+        // Just noted input: gap is ~0, should NOT intercept
+        assert!(!guard.should_intercept());
+    }
+
+    #[test]
+    fn test_time_gap_guard_stale_input_allows() {
+        let mut guard = TimeGapGuard::new(Duration::from_millis(10));
+        guard.note_input();
+        std::thread::sleep(Duration::from_millis(15));
+        // Enough time has passed: should intercept
+        assert!(guard.should_intercept());
+    }
+
+    #[test]
+    fn test_guard_blocks_prefix_mid_input() {
+        // Simulate rapid typing: guard says "don't intercept"
+        let mut guard = TimeGapGuard::new(Duration::from_secs(1));
+        guard.note_input(); // just typed something
+
+        let mut interceptor = InputInterceptor::new(":", Box::new(guard));
+
+        // ":" right after other input → guard blocks → Forward
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Forward(vec![b':']));
+    }
+
+    #[test]
+    fn test_guard_allows_prefix_after_gap() {
+        // No prior input → guard allows interception
+        let guard = TimeGapGuard::new(Duration::from_secs(1));
+        let mut interceptor = InputInterceptor::new(":", Box::new(guard));
+
+        // ":" with no prior input → guard allows → Buffering (enters chat mode)
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        assert_eq!(interceptor.feed_byte(b'h'), InterceptAction::Buffering(vec![b':', b'h']));
+    }
+
+    #[test]
+    fn test_guard_forward_updates_timestamp() {
+        let guard = TimeGapGuard::new(Duration::from_secs(1));
+        let mut interceptor = InputInterceptor::new(":", Box::new(guard));
+
+        // 'x' doesn't match prefix → forwarded → guard.note_input() called
+        assert_eq!(interceptor.feed_byte(b'x'), InterceptAction::Forward(vec![b'x']));
+
+        // Immediately type ':' → guard says no (just forwarded 'x')
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Forward(vec![b':']));
     }
 }

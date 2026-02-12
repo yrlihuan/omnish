@@ -5,7 +5,7 @@ mod interceptor;
 
 use anyhow::Result;
 use commands::{parse_command, OmnishCommand};
-use interceptor::{InputInterceptor, InterceptAction};
+use interceptor::{InputInterceptor, InterceptAction, TimeGapGuard};
 use omnish_protocol::message::*;
 use omnish_pty::proxy::PtyProxy;
 use omnish_pty::raw_mode::RawModeGuard;
@@ -61,7 +61,8 @@ async fn main() -> Result<()> {
     // Main I/O loop using poll
     let mut input_buf = [0u8; 4096];
     let mut output_buf = [0u8; 4096];
-    let mut interceptor = InputInterceptor::new("::");
+    let guard = TimeGapGuard::new(std::time::Duration::from_secs(1));
+    let mut interceptor = InputInterceptor::new(":", Box::new(guard));
     let mut alt_screen_detector = AltScreenDetector::new();
 
     loop {
@@ -95,14 +96,14 @@ async fn main() -> Result<()> {
                 let byte = input_buf[i];
                 match interceptor.feed_byte(byte) {
                     InterceptAction::Buffering(buf) => {
-                        if buf == b"::" {
-                            // User just typed "::", show the prompt interface
+                        if buf == b":" {
+                            // User just typed ":", show the prompt interface
                             let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
                             let prompt = display::render_prompt(cols);
                             nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
-                        } else if buf.len() > 2 && buf.starts_with(b"::") {
+                        } else if buf.len() > 1 && buf.starts_with(b":") {
                             // Echo the user's input after the prompt
-                            let user_input = &buf[2..]; // Skip "::"
+                            let user_input = &buf[1..]; // Skip ":"
                             let echo = display::render_input_echo(user_input);
                             nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
                         }
@@ -110,14 +111,14 @@ async fn main() -> Result<()> {
                     InterceptAction::Backspace(buf) => {
                         // If we backspaced back to empty or partial prefix, might need to clear prompt
                         // For simplicity, just redraw if still showing command input
-                        if !buf.is_empty() && buf.starts_with(b"::") {
-                            if buf.len() == 2 {
+                        if !buf.is_empty() && buf.starts_with(b":") {
+                            if buf.len() == 1 {
                                 let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
                                 let prompt = display::render_prompt(cols);
                                 nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
                             } else {
                                 // Show the user's input after the prompt
-                                let user_input = &buf[2..]; // Skip "::"
+                                let user_input = &buf[1..]; // Skip ":"
                                 let echo = display::render_input_echo(user_input);
                                 nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
                             }
@@ -138,11 +139,10 @@ async fn main() -> Result<()> {
                             let _ = conn.send(&msg).await;
                         }
                     }
-                    InterceptAction::Command(cmd_str) => {
-                        // Command detected - the cmd_str is everything after "::"
-                        // Send it directly to LLM with terminal context
+                    InterceptAction::Chat(msg) => {
+                        // Chat mode message — send to LLM with terminal context
                         if let Some(ref conn) = daemon_conn {
-                            handle_omnish_query(&cmd_str, &session_id, conn).await;
+                            handle_omnish_query(&msg, &session_id, conn).await;
                         } else {
                             // No daemon connection, print error
                             let err = display::render_error("Daemon not connected");
@@ -165,7 +165,7 @@ async fn main() -> Result<()> {
                         interceptor.set_suppressed(active);
                     }
 
-                    // Notify interceptor of output (resets command state)
+                    // Notify interceptor of output (resets chat state)
                     interceptor.note_output(&output_buf[..n]);
 
                     if let Some(ref conn) = daemon_conn {
@@ -580,12 +580,13 @@ mod tests {
 
     #[test]
     fn test_alt_screen_integration_with_interceptor() {
-        let mut interceptor = InputInterceptor::new("::");
+        use interceptor::AlwaysIntercept;
+
+        let mut interceptor = InputInterceptor::new(":", Box::new(AlwaysIntercept));
         let mut detector = AltScreenDetector::new();
 
-        // Normal mode: interceptor should buffer "::"
+        // Normal mode: interceptor should buffer ":"
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
 
         // Reset for clean test
         interceptor.note_output(b"reset");
@@ -595,8 +596,7 @@ mod tests {
             interceptor.set_suppressed(active);
         }
 
-        // Now "::" should forward directly
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Forward(vec![b':']));
+        // Now ":" should forward directly
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Forward(vec![b':']));
 
         // vim exits: alternate screen leave
@@ -604,8 +604,7 @@ mod tests {
             interceptor.set_suppressed(active);
         }
 
-        // Back to normal: "::" should intercept again
+        // Back to normal: ":" should intercept again
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
     }
 }
