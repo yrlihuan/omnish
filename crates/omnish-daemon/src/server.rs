@@ -1,16 +1,21 @@
 use omnish_daemon::session_mgr::SessionManager;
 use anyhow::Result;
+use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType};
 use omnish_protocol::message::*;
 use omnish_transport::traits::{Connection, Transport};
 use std::sync::Arc;
 
 pub struct DaemonServer {
     session_mgr: Arc<SessionManager>,
+    llm_backend: Option<Arc<dyn LlmBackend>>,
 }
 
 impl DaemonServer {
-    pub fn new(session_mgr: Arc<SessionManager>) -> Self {
-        Self { session_mgr }
+    pub fn new(session_mgr: Arc<SessionManager>, llm_backend: Option<Arc<dyn LlmBackend>>) -> Self {
+        Self {
+            session_mgr,
+            llm_backend,
+        }
     }
 
     pub async fn run(&self, transport: &dyn Transport, addr: &str) -> Result<()> {
@@ -21,8 +26,9 @@ impl DaemonServer {
             match listener.accept().await {
                 Ok(conn) => {
                     let mgr = self.session_mgr.clone();
+                    let llm = self.llm_backend.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(conn, mgr).await {
+                        if let Err(e) = handle_connection(conn, mgr, llm).await {
                             tracing::error!("connection error: {}", e);
                         }
                     });
@@ -38,6 +44,7 @@ impl DaemonServer {
 async fn handle_connection(
     conn: Box<dyn Connection>,
     mgr: Arc<SessionManager>,
+    llm: Option<Arc<dyn LlmBackend>>,
 ) -> Result<()> {
     loop {
         let msg = match conn.recv().await {
@@ -60,9 +67,21 @@ async fn handle_connection(
                 mgr.write_io(&io.session_id, io.timestamp_ms, dir, &io.data).await?;
             }
             Message::Request(req) => {
+                let content = if let Some(ref backend) = llm {
+                    match handle_llm_request(&req, &mgr, backend).await {
+                        Ok(response) => response.content,
+                        Err(e) => {
+                            tracing::error!("LLM request failed: {}", e);
+                            format!("Error: {}", e)
+                        }
+                    }
+                } else {
+                    "(LLM backend not configured)".to_string()
+                };
+
                 let resp = Message::Response(Response {
                     request_id: req.request_id,
-                    content: "(LLM not yet wired)".to_string(),
+                    content,
                     is_streaming: false,
                     is_final: true,
                 });
@@ -72,4 +91,43 @@ async fn handle_connection(
         }
     }
     Ok(())
+}
+
+async fn handle_llm_request(
+    req: &Request,
+    mgr: &SessionManager,
+    backend: &Arc<dyn LlmBackend>,
+) -> Result<omnish_llm::backend::LlmResponse> {
+    let context = match &req.scope {
+        RequestScope::CurrentSession => {
+            mgr.get_session_context(&req.session_id).await?
+        }
+        RequestScope::AllSessions => {
+            mgr.get_all_sessions_context().await?
+        }
+        RequestScope::Sessions(ids) => {
+            let mut combined = String::new();
+            for sid in ids {
+                match mgr.get_session_context(sid).await {
+                    Ok(ctx) => {
+                        combined.push_str(&format!("\n=== Session {} ===\n", sid));
+                        combined.push_str(&ctx);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to get context for session {}: {}", sid, e);
+                    }
+                }
+            }
+            combined
+        }
+    };
+
+    let llm_req = LlmRequest {
+        context,
+        query: Some(req.query.clone()),
+        trigger: TriggerType::Manual,
+        session_ids: vec![req.session_id.clone()],
+    };
+
+    backend.complete(&llm_req).await
 }
