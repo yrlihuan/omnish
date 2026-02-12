@@ -1,3 +1,4 @@
+use anyhow::Result;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -7,7 +8,18 @@ pub struct OmnishConfig {
     pub shell: ShellConfig,
     #[serde(default)]
     pub daemon: DaemonConfig,
+    #[serde(default)]
     pub llm: LlmConfig,
+}
+
+impl Default for OmnishConfig {
+    fn default() -> Self {
+        Self {
+            shell: ShellConfig::default(),
+            daemon: DaemonConfig::default(),
+            llm: LlmConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,6 +71,7 @@ fn default_socket_path() -> String {
 
 #[derive(Debug, Deserialize)]
 pub struct LlmConfig {
+    #[serde(default = "default_llm_name")]
     pub default: String,
     #[serde(default)]
     pub backends: HashMap<String, LlmBackendConfig>,
@@ -88,4 +101,34 @@ pub struct AutoTriggerConfig {
 
 fn default_cooldown() -> u64 {
     5
+}
+
+fn default_llm_name() -> String {
+    "claude".to_string()
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            default: default_llm_name(),
+            backends: HashMap::new(),
+            auto_trigger: AutoTriggerConfig::default(),
+        }
+    }
+}
+
+pub fn load_config() -> Result<OmnishConfig> {
+    let path = std::env::var("OMNISH_CONFIG")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            dirs::config_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("/etc"))
+                .join("omnish/config.toml")
+        });
+    if path.exists() {
+        let contents = std::fs::read_to_string(&path)?;
+        Ok(toml::from_str(&contents)?)
+    } else {
+        Ok(OmnishConfig::default())
+    }
 }

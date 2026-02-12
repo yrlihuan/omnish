@@ -46,3 +46,12 @@ api_key_cmd = "echo key"
     assert_eq!(config.shell.command_prefix, "::");
     assert!(!config.llm.auto_trigger.on_nonzero_exit);
 }
+
+#[test]
+fn test_load_config_missing_file_returns_default() {
+    std::env::set_var("OMNISH_CONFIG", "/tmp/nonexistent-omnish-test-config.toml");
+    let config = omnish_common::config::load_config().unwrap();
+    assert_eq!(config.shell.command_prefix, "::");
+    assert_eq!(config.llm.default, "claude");
+    std::env::remove_var("OMNISH_CONFIG");
+}
