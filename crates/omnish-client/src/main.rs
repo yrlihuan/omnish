@@ -278,12 +278,19 @@ static mut MASTER_FD: i32 = -1;
 
 /// Tracks cursor column from PTY output bytes.
 ///
-/// Follows `\r` (reset to 0), printable ASCII, UTF-8 start bytes, and
-/// skips ANSI escape sequences (CSI, OSC) so they don't inflate the count.
+/// Follows `\r` (reset to 0), printable ASCII, multi-byte UTF-8 characters,
+/// and skips ANSI escape sequences (CSI, OSC) so they don't inflate the count.
+/// CJK / fullwidth characters are counted as 2 columns using `unicode-width`.
 /// Used to save/restore cursor column when dismissing the omnish UI.
 struct CursorColTracker {
     col: u16,
     state: ColTrackState,
+    /// Buffer for accumulating a multi-byte UTF-8 character.
+    utf8_buf: [u8; 4],
+    /// Number of bytes collected so far for the current UTF-8 character.
+    utf8_len: u8,
+    /// Expected total bytes for the current UTF-8 character.
+    utf8_need: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -296,21 +303,46 @@ enum ColTrackState {
 
 impl CursorColTracker {
     fn new() -> Self {
-        Self { col: 0, state: ColTrackState::Normal }
+        Self {
+            col: 0,
+            state: ColTrackState::Normal,
+            utf8_buf: [0; 4],
+            utf8_len: 0,
+            utf8_need: 0,
+        }
     }
 
     fn feed(&mut self, data: &[u8]) {
+        use unicode_width::UnicodeWidthChar;
+
         for &byte in data {
+            // If we're accumulating a multi-byte UTF-8 character, collect continuation bytes.
+            if self.utf8_need > 0 {
+                if byte & 0xC0 == 0x80 {
+                    // Continuation byte
+                    self.utf8_buf[self.utf8_len as usize] = byte;
+                    self.utf8_len += 1;
+                    if self.utf8_len == self.utf8_need {
+                        // Complete character — decode and measure width
+                        if let Ok(s) = std::str::from_utf8(&self.utf8_buf[..self.utf8_len as usize]) {
+                            if let Some(ch) = s.chars().next() {
+                                self.col += ch.width().unwrap_or(0) as u16;
+                            }
+                        }
+                        self.utf8_need = 0;
+                        self.utf8_len = 0;
+                    }
+                } else {
+                    // Invalid continuation — discard partial and re-process this byte
+                    self.utf8_need = 0;
+                    self.utf8_len = 0;
+                    self.process_normal(byte);
+                }
+                continue;
+            }
+
             match self.state {
-                ColTrackState::Normal => match byte {
-                    0x1b => self.state = ColTrackState::Esc,
-                    b'\r' => self.col = 0,
-                    b'\n' => {}
-                    0x08 => self.col = self.col.saturating_sub(1),
-                    0x20..=0x7e => self.col += 1,
-                    0xc0.. => self.col += 1, // UTF-8 start byte
-                    _ => {}
-                },
+                ColTrackState::Normal => self.process_normal(byte),
                 ColTrackState::Esc => {
                     self.state = match byte {
                         b'[' => ColTrackState::Csi,
@@ -331,6 +363,33 @@ impl CursorColTracker {
                     }
                 }
             }
+        }
+    }
+
+    fn process_normal(&mut self, byte: u8) {
+        match byte {
+            0x1b => self.state = ColTrackState::Esc,
+            b'\r' => self.col = 0,
+            b'\n' => {}
+            0x08 => self.col = self.col.saturating_sub(1),
+            0x20..=0x7e => self.col += 1,
+            // UTF-8 start bytes — begin accumulation
+            0xc0..=0xdf => {
+                self.utf8_buf[0] = byte;
+                self.utf8_len = 1;
+                self.utf8_need = 2;
+            }
+            0xe0..=0xef => {
+                self.utf8_buf[0] = byte;
+                self.utf8_len = 1;
+                self.utf8_need = 3;
+            }
+            0xf0..=0xf7 => {
+                self.utf8_buf[0] = byte;
+                self.utf8_len = 1;
+                self.utf8_need = 4;
+            }
+            _ => {}
         }
     }
 }
@@ -728,5 +787,45 @@ mod tests {
         t.feed(b"\r\n\x1b[32muser@host\x1b[0m:\x1b[34m~\x1b[0m$ ");
         // "user@host" (9) + ":" (1) + "~" (1) + "$ " (2) = 13
         assert_eq!(t.col, 13);
+    }
+
+    #[test]
+    fn test_col_tracker_cjk_wide_chars() {
+        let mut t = CursorColTracker::new();
+        // Chinese characters are fullwidth — each occupies 2 columns
+        t.feed("你好".as_bytes());
+        assert_eq!(t.col, 4); // 2 chars × 2 columns each
+
+        // Mixed: CJK + ASCII
+        t = CursorColTracker::new();
+        t.feed("用户@主机:~$ ".as_bytes());
+        // "用" (2) + "户" (2) + "@" (1) + "主" (2) + "机" (2) + ":" (1) + "~" (1) + "$ " (2) = 13
+        assert_eq!(t.col, 13);
+    }
+
+    #[test]
+    fn test_col_tracker_cjk_with_colors() {
+        let mut t = CursorColTracker::new();
+        // Colored prompt with CJK characters
+        let prompt = format!(
+            "\r\n\x1b[32m{}\x1b[0m:\x1b[34m~\x1b[0m$ ",
+            "用户@主机"
+        );
+        t.feed(prompt.as_bytes());
+        // "用户" (4) + "@" (1) + "主机" (4) + ":" (1) + "~" (1) + "$ " (2) = 13
+        assert_eq!(t.col, 13);
+    }
+
+    #[test]
+    fn test_col_tracker_emoji() {
+        let mut t = CursorColTracker::new();
+        // ❯ (U+276F) is narrow — width 1
+        t.feed("❯ ".as_bytes());
+        assert_eq!(t.col, 2); // ❯ (1) + space (1)
+
+        // 🚀 (U+1F680) is a wide emoji — width 2
+        t = CursorColTracker::new();
+        t.feed("🚀x".as_bytes());
+        assert_eq!(t.col, 3); // 🚀 (2) + x (1)
     }
 }
