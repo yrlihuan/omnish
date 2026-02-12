@@ -95,7 +95,12 @@ async fn main() -> Result<()> {
                     InterceptAction::Buffering(buf) => {
                         // Interceptor is buffering, echo to user so they can see what they're typing
                         // Use colored/styled output to distinguish omnish commands
-                        let display = format!("\r\x1b[36m{}\x1b[0m", String::from_utf8_lossy(&buf));
+                        let display = format!("\r\x1b[K\x1b[36m{}\x1b[0m", String::from_utf8_lossy(&buf));
+                        nix::unistd::write(std::io::stdout(), display.as_bytes()).ok();
+                    }
+                    InterceptAction::Backspace(buf) => {
+                        // Backspace in buffering mode - redraw the line
+                        let display = format!("\r\x1b[K\x1b[36m{}\x1b[0m", String::from_utf8_lossy(&buf));
                         nix::unistd::write(std::io::stdout(), display.as_bytes()).ok();
                     }
                     InterceptAction::Forward(bytes) => {

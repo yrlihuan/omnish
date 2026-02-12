@@ -9,6 +9,9 @@ pub enum InterceptAction {
     Forward(Vec<u8>),
     /// Command detected and consumed: (command_string)
     Command(String),
+    /// Backspace in buffering mode - erased one char
+    /// Contains updated buffer for echo display
+    Backspace(Vec<u8>),
 }
 
 pub struct InputInterceptor {
@@ -38,6 +41,25 @@ impl InputInterceptor {
 
     /// Feed a single input byte, returns action
     pub fn feed_byte(&mut self, byte: u8) -> InterceptAction {
+        // Handle backspace/delete
+        if byte == 0x7f || byte == 0x08 {
+            // If we're buffering or in command mode, handle backspace
+            if !self.buffer.is_empty() && (self.in_command || self.buffer.len() <= self.prefix.len()) {
+                self.buffer.pop_back();
+
+                // Check if we dropped out of command mode
+                if self.in_command && self.buffer.len() < self.prefix.len() {
+                    self.in_command = false;
+                }
+
+                let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
+                return InterceptAction::Backspace(current_buf);
+            } else {
+                // Not buffering, forward to PTY
+                return InterceptAction::Forward(vec![byte]);
+            }
+        }
+
         self.buffer.push_back(byte);
 
         // Check for Enter/newline
@@ -170,5 +192,45 @@ mod tests {
         // Command state should be reset
         assert_eq!(interceptor.in_command, false);
         assert_eq!(interceptor.buffer.len(), 0);
+    }
+
+    #[test]
+    fn test_backspace_in_command_mode() {
+        let mut interceptor = InputInterceptor::new("::");
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+        assert_eq!(interceptor.feed_byte(b'a'), InterceptAction::Buffering(vec![b':', b':', b'a']));
+
+        // Backspace should remove 'a'
+        assert_eq!(interceptor.feed_byte(0x7f), InterceptAction::Backspace(vec![b':', b':']));
+
+        // Still in command mode
+        assert_eq!(interceptor.feed_byte(b'b'), InterceptAction::Buffering(vec![b':', b':', b'b']));
+    }
+
+    #[test]
+    fn test_backspace_out_of_command_mode() {
+        let mut interceptor = InputInterceptor::new("::");
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+
+        // Backspace once
+        assert_eq!(interceptor.feed_byte(0x7f), InterceptAction::Backspace(vec![b':']));
+
+        // Backspace again - should drop out of buffering
+        assert_eq!(interceptor.feed_byte(0x7f), InterceptAction::Backspace(vec![]));
+
+        // Next char should be forwarded normally
+        assert_eq!(interceptor.feed_byte(b'x'), InterceptAction::Forward(vec![b'x']));
+    }
+
+    #[test]
+    fn test_backspace_when_not_buffering() {
+        let mut interceptor = InputInterceptor::new("::");
+        // Type something that doesn't match prefix
+        interceptor.feed_byte(b'l');
+
+        // Backspace should be forwarded to PTY
+        assert_eq!(interceptor.feed_byte(0x7f), InterceptAction::Forward(vec![0x7f]));
     }
 }
