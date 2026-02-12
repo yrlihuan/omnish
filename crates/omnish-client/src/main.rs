@@ -92,9 +92,11 @@ async fn main() -> Result<()> {
             for i in 0..n {
                 let byte = input_buf[i];
                 match interceptor.feed_byte(byte) {
-                    InterceptAction::Buffering => {
-                        // Interceptor is buffering, don't send to PTY yet
-                        continue;
+                    InterceptAction::Buffering(buf) => {
+                        // Interceptor is buffering, echo to user so they can see what they're typing
+                        // Use colored/styled output to distinguish omnish commands
+                        let display = format!("\r\x1b[36m{}\x1b[0m", String::from_utf8_lossy(&buf));
+                        nix::unistd::write(std::io::stdout(), display.as_bytes()).ok();
                     }
                     InterceptAction::Forward(bytes) => {
                         // Forward these bytes to PTY
@@ -235,8 +237,12 @@ async fn handle_command(cmd_str: &str, session_id: &str, conn: &Box<dyn Connecti
 
     match cmd {
         Some(OmnishCommand::Ask { flags, query }) => {
-            // Clear the command line
-            nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
+            // Show what we're doing
+            let status_msg = format!(
+                "\r\x1b[K\x1b[36m::{}\x1b[0m \x1b[2m(thinking...)\x1b[0m",
+                cmd_str
+            );
+            nix::unistd::write(std::io::stdout(), status_msg.as_bytes()).ok();
 
             let scope = if flags.all_sessions {
                 RequestScope::AllSessions
@@ -258,30 +264,35 @@ async fn handle_command(cmd_str: &str, session_id: &str, conn: &Box<dyn Connecti
 
             // Send request
             if conn.send(&request).await.is_err() {
-                nix::unistd::write(std::io::stdout(), b"\r\n[omnish] Failed to send request\r\n").ok();
+                nix::unistd::write(std::io::stdout(), b"\r\n\x1b[31m[omnish] Failed to send request\x1b[0m\r\n").ok();
                 return;
             }
 
             // Wait for response
             match conn.recv().await {
                 Ok(Message::Response(resp)) if resp.request_id == request_id => {
-                    let output = format!("\r\n[omnish] {}\r\n", resp.content);
+                    // Clear status line and show response with nice formatting
+                    let output = format!(
+                        "\r\x1b[K\x1b[36m::{}\x1b[0m\r\n\x1b[32m[omnish]\x1b[0m {}\r\n",
+                        cmd_str,
+                        resp.content
+                    );
                     nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
                 }
                 Ok(_) => {
-                    nix::unistd::write(std::io::stdout(), b"\r\n[omnish] Unexpected response\r\n").ok();
+                    nix::unistd::write(std::io::stdout(), b"\r\n\x1b[31m[omnish] Unexpected response\x1b[0m\r\n").ok();
                 }
                 Err(_) => {
-                    nix::unistd::write(std::io::stdout(), b"\r\n[omnish] Failed to receive response\r\n").ok();
+                    nix::unistd::write(std::io::stdout(), b"\r\n\x1b[31m[omnish] Failed to receive response\x1b[0m\r\n").ok();
                 }
             }
         }
         Some(OmnishCommand::Unknown(s)) => {
-            let msg = format!("\r\n[omnish] Unknown command: {}\r\n", s);
+            let msg = format!("\r\n\x1b[33m[omnish] Unknown command: {}\x1b[0m\r\n", s);
             nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
         }
         _ => {
-            nix::unistd::write(std::io::stdout(), b"\r\n[omnish] Command not yet implemented\r\n").ok();
+            nix::unistd::write(std::io::stdout(), b"\r\n\x1b[33m[omnish] Command not yet implemented\x1b[0m\r\n").ok();
         }
     }
 }
