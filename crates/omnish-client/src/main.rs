@@ -136,6 +136,9 @@ async fn main() -> Result<()> {
         let _ = conn.send(&msg).await;
     }
 
+    // Drop raw mode guard BEFORE process::exit, since exit() skips destructors
+    drop(_raw_guard);
+
     let exit_code = proxy.wait().unwrap_or(1);
     std::process::exit(exit_code);
 }
