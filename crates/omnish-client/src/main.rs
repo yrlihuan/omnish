@@ -93,12 +93,18 @@ async fn main() -> Result<()> {
                 let byte = input_buf[i];
                 match interceptor.feed_byte(byte) {
                     InterceptAction::Buffering(buf) => {
-                        // Check if this is just "::" (the prefix)
                         if buf == b"::" {
                             // User just typed "::", show the prompt interface
                             show_omnish_prompt();
+                        } else if buf.len() > 2 && buf.starts_with(b"::") {
+                            // Echo the user's input after the prompt
+                            let user_input = &buf[2..]; // Skip "::"
+                            let display = format!(
+                                "\r\x1b[36m❯\x1b[0m {}",
+                                String::from_utf8_lossy(user_input)
+                            );
+                            nix::unistd::write(std::io::stdout(), display.as_bytes()).ok();
                         }
-                        // For now, don't echo anything - the prompt is shown above
                     }
                     InterceptAction::Backspace(buf) => {
                         // If we backspaced back to empty or partial prefix, might need to clear prompt
