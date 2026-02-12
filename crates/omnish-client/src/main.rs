@@ -275,9 +275,18 @@ async fn handle_command(cmd_str: &str, session_id: &str, conn: &Box<dyn Connecti
             // Wait for response
             match conn.recv().await {
                 Ok(Message::Response(resp)) if resp.request_id == request_id => {
+                    // Debug: save raw response
+                    std::fs::write("/tmp/omnish_last_response.txt", &resp.content).ok();
+
                     // Clear status line and show response with nice formatting
                     // In raw mode, need to convert \n to \r\n for proper line breaks
-                    let content = resp.content.replace('\n', "\r\n");
+                    // Also trim each line to remove trailing whitespace that may cause display issues
+                    let content: String = resp.content
+                        .lines()
+                        .map(|line| line.trim_end())
+                        .collect::<Vec<_>>()
+                        .join("\r\n");
+
                     let output = format!(
                         "\r\x1b[K\x1b[36m::{}\x1b[0m\r\n\x1b[32m[omnish]\x1b[0m {}\r\n",
                         cmd_str,
