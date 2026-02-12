@@ -89,15 +89,29 @@ async fn main() -> Result<()> {
             }
 
             // Feed bytes to interceptor one by one
-            let mut i = 0;
-            while i < n {
+            for i in 0..n {
                 let byte = input_buf[i];
                 match interceptor.feed_byte(byte) {
-                    InterceptAction::PassThrough => {
-                        // Normal pass-through
-                        i += 1;
+                    InterceptAction::Buffering => {
+                        // Interceptor is buffering, don't send to PTY yet
+                        continue;
                     }
-                    InterceptAction::Command(cmd_str, _buffered) => {
+                    InterceptAction::Forward(bytes) => {
+                        // Forward these bytes to PTY
+                        proxy.write_all(&bytes)?;
+
+                        // Report to daemon async
+                        if let Some(ref conn) = daemon_conn {
+                            let msg = Message::IoData(IoData {
+                                session_id: session_id.clone(),
+                                direction: IoDirection::Input,
+                                timestamp_ms: timestamp_ms(),
+                                data: bytes,
+                            });
+                            let _ = conn.send(&msg).await;
+                        }
+                    }
+                    InterceptAction::Command(cmd_str) => {
                         // Command detected - handle it
                         if let Some(ref conn) = daemon_conn {
                             handle_command(&cmd_str, &session_id, conn).await;
@@ -106,26 +120,7 @@ async fn main() -> Result<()> {
                             let err_msg = "\r\n[omnish] Daemon not connected, command ignored\r\n";
                             nix::unistd::write(std::io::stdout(), err_msg.as_bytes()).ok();
                         }
-                        // Skip the buffered command bytes
-                        i = n;
-                        break;
                     }
-                }
-            }
-
-            // Pass through to PTY (excluding any consumed command bytes)
-            if i > 0 {
-                proxy.write_all(&input_buf[..i])?;
-
-                // Report to daemon async
-                if let Some(ref conn) = daemon_conn {
-                    let msg = Message::IoData(IoData {
-                        session_id: session_id.clone(),
-                        direction: IoDirection::Input,
-                        timestamp_ms: timestamp_ms(),
-                        data: input_buf[..i].to_vec(),
-                    });
-                    let _ = conn.send(&msg).await;
                 }
             }
         }

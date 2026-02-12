@@ -2,10 +2,12 @@ use std::collections::VecDeque;
 
 #[derive(Debug, PartialEq)]
 pub enum InterceptAction {
-    /// Pass through normally
-    PassThrough,
-    /// Command detected and consumed: (command_string, full_buffered_input)
-    Command(String, Vec<u8>),
+    /// Buffering input, don't send to PTY yet
+    Buffering,
+    /// Forward these bytes to PTY
+    Forward(Vec<u8>),
+    /// Command detected and consumed: (command_string)
+    Command(String),
 }
 
 pub struct InputInterceptor {
@@ -50,14 +52,25 @@ impl InputInterceptor {
                     // Complete prefix match
                     self.in_command = true;
                 }
-                return InterceptAction::PassThrough;
+                // Keep buffering, don't send to PTY yet
+                return InterceptAction::Buffering;
             } else {
-                // Prefix mismatch, flush buffer
+                // Prefix mismatch, flush buffer to PTY
+                let flushed: Vec<u8> = self.buffer.iter().copied().collect();
                 self.buffer.clear();
+                return InterceptAction::Forward(flushed);
             }
         }
 
-        InterceptAction::PassThrough
+        // In command mode, keep buffering
+        if self.in_command {
+            return InterceptAction::Buffering;
+        }
+
+        // Not in command mode and buffer exceeded prefix length - flush and reset
+        let flushed: Vec<u8> = self.buffer.iter().copied().collect();
+        self.buffer.clear();
+        InterceptAction::Forward(flushed)
     }
 
     fn handle_enter(&mut self) -> InterceptAction {
@@ -65,21 +78,21 @@ impl InputInterceptor {
         self.buffer.clear();
 
         if !self.in_command {
-            self.in_command = false;
-            return InterceptAction::PassThrough;
+            // Not a command, forward to PTY
+            return InterceptAction::Forward(buffered);
         }
 
         // Extract command after prefix
+        self.in_command = false;
         if buffered.len() > self.prefix.len() {
             let cmd_bytes = &buffered[self.prefix.len()..buffered.len() - 1]; // exclude final \n
             if let Ok(cmd_str) = std::str::from_utf8(cmd_bytes) {
-                self.in_command = false;
-                return InterceptAction::Command(cmd_str.to_string(), buffered);
+                return InterceptAction::Command(cmd_str.to_string());
             }
         }
 
-        self.in_command = false;
-        InterceptAction::PassThrough
+        // Empty command or decode error, forward to PTY
+        InterceptAction::Forward(buffered)
     }
 }
 
@@ -90,23 +103,23 @@ mod tests {
     #[test]
     fn test_passthrough_normal_input() {
         let mut interceptor = InputInterceptor::new("::");
-        assert_eq!(interceptor.feed_byte(b'l'), InterceptAction::PassThrough);
-        assert_eq!(interceptor.feed_byte(b's'), InterceptAction::PassThrough);
-        assert_eq!(interceptor.feed_byte(b'\n'), InterceptAction::PassThrough);
+        // 'l' doesn't match prefix, so buffer is flushed
+        assert_eq!(interceptor.feed_byte(b'l'), InterceptAction::Forward(vec![b'l']));
+        assert_eq!(interceptor.feed_byte(b's'), InterceptAction::Forward(vec![b's']));
+        assert_eq!(interceptor.feed_byte(b'\n'), InterceptAction::Forward(vec![b'\n']));
     }
 
     #[test]
     fn test_command_detected() {
         let mut interceptor = InputInterceptor::new("::");
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::PassThrough);
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::PassThrough);
-        assert_eq!(interceptor.feed_byte(b'a'), InterceptAction::PassThrough);
-        assert_eq!(interceptor.feed_byte(b's'), InterceptAction::PassThrough);
-        assert_eq!(interceptor.feed_byte(b'k'), InterceptAction::PassThrough);
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering);
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering);
+        assert_eq!(interceptor.feed_byte(b'a'), InterceptAction::Buffering);
+        assert_eq!(interceptor.feed_byte(b's'), InterceptAction::Buffering);
+        assert_eq!(interceptor.feed_byte(b'k'), InterceptAction::Buffering);
 
-        if let InterceptAction::Command(cmd, buf) = interceptor.feed_byte(b'\n') {
+        if let InterceptAction::Command(cmd) = interceptor.feed_byte(b'\n') {
             assert_eq!(cmd, "ask");
-            assert_eq!(buf, b"::ask\n");
         } else {
             panic!("Expected Command action");
         }
@@ -118,11 +131,13 @@ mod tests {
         for &byte in b"::ask why did this fail\n" {
             let action = interceptor.feed_byte(byte);
             if byte == b'\n' {
-                if let InterceptAction::Command(cmd, _) = action {
+                if let InterceptAction::Command(cmd) = action {
                     assert_eq!(cmd, "ask why did this fail");
                 } else {
                     panic!("Expected Command action");
                 }
+            } else {
+                assert_eq!(action, InterceptAction::Buffering);
             }
         }
     }
@@ -130,10 +145,11 @@ mod tests {
     #[test]
     fn test_partial_prefix_then_mismatch() {
         let mut interceptor = InputInterceptor::new("::");
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::PassThrough);
-        assert_eq!(interceptor.feed_byte(b'x'), InterceptAction::PassThrough);
-        // Buffer should be cleared after mismatch
-        assert_eq!(interceptor.feed_byte(b'\n'), InterceptAction::PassThrough);
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering);
+        // Mismatch - should flush ":x"
+        assert_eq!(interceptor.feed_byte(b'x'), InterceptAction::Forward(vec![b':', b'x']));
+        // New input after buffer cleared
+        assert_eq!(interceptor.feed_byte(b'\n'), InterceptAction::Forward(vec![b'\n']));
     }
 
     #[test]
