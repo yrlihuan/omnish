@@ -192,13 +192,17 @@ async fn connect_daemon(
                 timestamp_ms: timestamp_ms(),
             });
             if conn.send(&msg).await.is_ok() {
+                eprintln!("\x1b[32m[omnish]\x1b[0m Connected to daemon (session: {})", &session_id[..8]);
                 Some(conn)
             } else {
+                eprintln!("\x1b[33m[omnish]\x1b[0m Connected but failed to register session");
                 None
             }
         }
-        Err(_) => {
-            eprintln!("[omnish] daemon not available, running in passthrough mode");
+        Err(e) => {
+            eprintln!("\x1b[33m[omnish]\x1b[0m Daemon not available ({}), running in passthrough mode", e);
+            eprintln!("\x1b[33m[omnish]\x1b[0m Socket: {}", socket_path);
+            eprintln!("\x1b[33m[omnish]\x1b[0m To start daemon: omnish-daemon or cargo run -p omnish-daemon");
             None
         }
     }
