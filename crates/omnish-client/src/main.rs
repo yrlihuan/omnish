@@ -93,21 +93,29 @@ async fn main() -> Result<()> {
                 let byte = input_buf[i];
                 match interceptor.feed_byte(byte) {
                     InterceptAction::Buffering(buf) => {
-                        // Interceptor is buffering, show in overlay at top of screen
-                        // Save cursor position, move to top, draw overlay, restore cursor
-                        let display = format!(
-                            "\x1b[s\x1b[H\x1b[K\x1b[48;5;235m\x1b[36m {}\x1b[0m\x1b[u",
-                            String::from_utf8_lossy(&buf)
-                        );
-                        nix::unistd::write(std::io::stdout(), display.as_bytes()).ok();
+                        // Check if this is just "::" (the prefix)
+                        if buf == b"::" {
+                            // User just typed "::", show the prompt interface
+                            show_omnish_prompt();
+                        }
+                        // For now, don't echo anything - the prompt is shown above
                     }
                     InterceptAction::Backspace(buf) => {
-                        // Backspace in buffering mode - redraw the overlay
-                        let display = format!(
-                            "\x1b[s\x1b[H\x1b[K\x1b[48;5;235m\x1b[36m {}\x1b[0m\x1b[u",
-                            String::from_utf8_lossy(&buf)
-                        );
-                        nix::unistd::write(std::io::stdout(), display.as_bytes()).ok();
+                        // If we backspaced back to empty or partial prefix, might need to clear prompt
+                        // For simplicity, just redraw if still showing command input
+                        if !buf.is_empty() && buf.starts_with(b"::") {
+                            if buf.len() == 2 {
+                                show_omnish_prompt();
+                            } else {
+                                // Show the user's input after the prompt
+                                let user_input = &buf[2..]; // Skip "::"
+                                let display = format!(
+                                    "\r\x1b[36m❯\x1b[0m {}",
+                                    String::from_utf8_lossy(user_input)
+                                );
+                                nix::unistd::write(std::io::stdout(), display.as_bytes()).ok();
+                            }
+                        }
                     }
                     InterceptAction::Forward(bytes) => {
                         // Forward these bytes to PTY
@@ -125,12 +133,13 @@ async fn main() -> Result<()> {
                         }
                     }
                     InterceptAction::Command(cmd_str) => {
-                        // Command detected - handle it
+                        // Command detected - the cmd_str is everything after "::"
+                        // Send it directly to LLM with terminal context
                         if let Some(ref conn) = daemon_conn {
-                            handle_command(&cmd_str, &session_id, conn).await;
+                            handle_omnish_query(&cmd_str, &session_id, conn).await;
                         } else {
                             // No daemon connection, print error
-                            let err_msg = "\r\n[omnish] Daemon not connected, command ignored\r\n";
+                            let err_msg = "\r\n\x1b[31m[omnish] Daemon not connected\x1b[0m\r\n";
                             nix::unistd::write(std::io::stdout(), err_msg.as_bytes()).ok();
                         }
                     }
@@ -243,6 +252,67 @@ extern "C" fn sigwinch_handler(_sig: libc::c_int) {
         let mut ws: libc::winsize = std::mem::zeroed();
         if libc::ioctl(0, libc::TIOCGWINSZ, &mut ws) == 0 {
             libc::ioctl(MASTER_FD, libc::TIOCSWINSZ, &ws);
+        }
+    }
+}
+
+fn show_omnish_prompt() {
+    // Get terminal width
+    let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+
+    // Print newline, separator line, and prompt
+    let separator = "\x1b[2m".to_string() + &"─".repeat(cols as usize) + "\x1b[0m";
+    let prompt = format!("\r\n{}\r\n\x1b[36m❯\x1b[0m ", separator);
+
+    nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
+}
+
+async fn handle_omnish_query(query: &str, session_id: &str, conn: &Box<dyn Connection>) {
+    // Show thinking status
+    let status_msg = "\r\x1b[2m(thinking...)\x1b[0m\r\n";
+    nix::unistd::write(std::io::stdout(), status_msg.as_bytes()).ok();
+
+    let request_id = Uuid::new_v4().to_string()[..8].to_string();
+    let request = Message::Request(Request {
+        request_id: request_id.clone(),
+        session_id: session_id.to_string(),
+        query: query.to_string(),
+        scope: RequestScope::CurrentSession,
+    });
+
+    // Send request
+    if conn.send(&request).await.is_err() {
+        nix::unistd::write(std::io::stdout(), b"\x1b[31m[omnish] Failed to send request\x1b[0m\r\n").ok();
+        return;
+    }
+
+    // Wait for response
+    match conn.recv().await {
+        Ok(Message::Response(resp)) if resp.request_id == request_id => {
+            // Debug: save raw response
+            std::fs::write("/tmp/omnish_last_response.txt", &resp.content).ok();
+
+            // Convert line breaks for raw mode and trim lines
+            let content: String = resp.content
+                .lines()
+                .map(|line| line.trim_end())
+                .collect::<Vec<_>>()
+                .join("\r\n");
+
+            // Display response
+            let output = format!("\x1b[32m{}\x1b[0m\r\n", content);
+            nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+
+            // Add separator after response
+            let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+            let separator = "\x1b[2m".to_string() + &"─".repeat(cols as usize) + "\x1b[0m\r\n";
+            nix::unistd::write(std::io::stdout(), separator.as_bytes()).ok();
+        }
+        Ok(_) => {
+            nix::unistd::write(std::io::stdout(), b"\x1b[31m[omnish] Unexpected response\x1b[0m\r\n").ok();
+        }
+        Err(_) => {
+            nix::unistd::write(std::io::stdout(), b"\x1b[31m[omnish] Failed to receive response\x1b[0m\r\n").ok();
         }
     }
 }
