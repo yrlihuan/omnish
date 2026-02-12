@@ -45,7 +45,17 @@ impl InputInterceptor {
         if byte == 0x7f || byte == 0x08 {
             // If we're buffering or in command mode, handle backspace
             if !self.buffer.is_empty() && (self.in_command || self.buffer.len() <= self.prefix.len()) {
-                self.buffer.pop_back();
+                // Delete one UTF-8 character (may be multiple bytes)
+                // Work backwards to find the start of the last character
+                let buf_vec: Vec<u8> = self.buffer.iter().copied().collect();
+                let as_str = String::from_utf8_lossy(&buf_vec);
+                let mut chars = as_str.chars().collect::<Vec<_>>();
+
+                if !chars.is_empty() {
+                    chars.pop(); // Remove last character
+                    let new_str: String = chars.into_iter().collect();
+                    self.buffer = new_str.as_bytes().iter().copied().collect();
+                }
 
                 // Check if we dropped out of command mode
                 if self.in_command && self.buffer.len() < self.prefix.len() {
@@ -232,5 +242,43 @@ mod tests {
 
         // Backspace should be forwarded to PTY
         assert_eq!(interceptor.feed_byte(0x7f), InterceptAction::Forward(vec![0x7f]));
+    }
+
+    #[test]
+    fn test_backspace_multibyte_chars() {
+        let mut interceptor = InputInterceptor::new("::");
+        // Type "::ask 中文"
+        for &byte in b"::ask " {
+            interceptor.feed_byte(byte);
+        }
+
+        // Add Chinese characters "中文" (each is 3 bytes in UTF-8)
+        let chinese = "中文";
+        for &byte in chinese.as_bytes() {
+            interceptor.feed_byte(byte);
+        }
+
+        // Buffer should contain "::ask 中文"
+        let buf_before = interceptor.buffer.iter().copied().collect::<Vec<_>>();
+        let str_before = String::from_utf8_lossy(&buf_before);
+        assert_eq!(str_before, "::ask 中文");
+
+        // Backspace should remove "文" (3 bytes)
+        let action = interceptor.feed_byte(0x7f);
+        if let InterceptAction::Backspace(buf) = action {
+            let result = String::from_utf8_lossy(&buf);
+            assert_eq!(result, "::ask 中");
+        } else {
+            panic!("Expected Backspace action");
+        }
+
+        // Backspace again should remove "中" (3 bytes)
+        let action = interceptor.feed_byte(0x7f);
+        if let InterceptAction::Backspace(buf) = action {
+            let result = String::from_utf8_lossy(&buf);
+            assert_eq!(result, "::ask ");
+        } else {
+            panic!("Expected Backspace action");
+        }
     }
 }
