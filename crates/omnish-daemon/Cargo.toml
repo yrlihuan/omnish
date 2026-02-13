@@ -2,6 +2,7 @@
 name = "omnish-daemon"
 version = "0.1.0"
 edition = "2021"
+default-run = "omnish-daemon"
 
 [dependencies]
 omnish-common = { path = "../omnish-common" }
