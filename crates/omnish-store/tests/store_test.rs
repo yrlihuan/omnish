@@ -1,3 +1,4 @@
+use omnish_store::command::CommandRecord;
 use omnish_store::session::SessionMeta;
 use omnish_store::stream::StreamWriter;
 use std::collections::HashMap;
@@ -40,4 +41,50 @@ fn test_stream_writer_and_reader() {
     assert_eq!(entries[0].direction, 0);
     assert_eq!(entries[0].data, b"ls -la\n");
     assert_eq!(entries[1].direction, 1);
+}
+
+#[test]
+fn test_command_record_save_and_load() {
+    let dir = tempdir().unwrap();
+    let records = vec![
+        CommandRecord {
+            command_id: "sess1:0".into(),
+            session_id: "sess1".into(),
+            command_line: Some("cargo build".into()),
+            cwd: Some("/home/user/project".into()),
+            started_at: 1000,
+            ended_at: Some(2000),
+            output_summary: "Compiling omnish v0.1.0\nFinished dev".into(),
+            stream_offset: 0,
+            stream_length: 512,
+        },
+        CommandRecord {
+            command_id: "sess1:1".into(),
+            session_id: "sess1".into(),
+            command_line: Some("cargo test".into()),
+            cwd: Some("/home/user/project".into()),
+            started_at: 2000,
+            ended_at: Some(3000),
+            output_summary: "running 5 tests\ntest result: ok".into(),
+            stream_offset: 512,
+            stream_length: 1024,
+        },
+    ];
+
+    CommandRecord::save_all(&records, dir.path()).unwrap();
+    let loaded = CommandRecord::load_all(dir.path()).unwrap();
+
+    assert_eq!(loaded.len(), 2);
+    assert_eq!(loaded[0].command_id, "sess1:0");
+    assert_eq!(loaded[0].command_line.as_deref(), Some("cargo build"));
+    assert_eq!(loaded[0].stream_offset, 0);
+    assert_eq!(loaded[1].command_id, "sess1:1");
+    assert_eq!(loaded[1].ended_at, Some(3000));
+}
+
+#[test]
+fn test_command_record_load_empty() {
+    let dir = tempdir().unwrap();
+    let loaded = CommandRecord::load_all(dir.path()).unwrap();
+    assert!(loaded.is_empty());
 }
