@@ -380,4 +380,67 @@ mod tests {
         assert!(all_text.contains("the file was not found."), "response second line should be visible");
         assert!(all_text.contains('─'), "separator should be visible");
     }
+
+    // --- Boundary tests ---
+
+    #[test]
+    fn test_render_input_echo_empty() {
+        let output = render_input_echo(b"");
+        let parser = parse_ansi(&output, 40, 24);
+        let row = get_row(parser.screen(), 0, 40);
+        assert!(row.contains('❯'), "should show ❯ prompt even with empty input");
+        // After "❯ " there should be no other visible content
+        let trimmed = row.trim_end();
+        assert_eq!(trimmed, "❯", "empty input should show only ❯");
+    }
+
+    #[test]
+    fn test_render_response_empty() {
+        // Should not panic on empty content
+        let output = render_response("");
+        let parser = parse_ansi(&output, 80, 24);
+        let screen = parser.screen();
+        // The output is just color codes wrapping an empty string — no crash
+        let _ = get_row(screen, 0, 80);
+    }
+
+    #[test]
+    fn test_render_response_single_line() {
+        let output = render_response("hello world");
+        let parser = parse_ansi(&output, 80, 24);
+        let screen = parser.screen();
+        let row0 = get_row(screen, 0, 80);
+        assert!(row0.contains("hello world"), "single line should render on row 0");
+        // Row 1 should be empty (no spurious content)
+        let row1 = get_row(screen, 1, 80);
+        assert_eq!(row1.trim(), "", "row 1 should be empty for single-line response");
+    }
+
+    #[test]
+    fn test_render_prompt_narrow_terminal() {
+        let cols: u16 = 5;
+        let output = render_prompt(cols);
+        let parser = parse_ansi(&output, cols, 24);
+        let screen = parser.screen();
+        // Separator should be exactly 5 ─ characters wide
+        let sep_row = get_row(screen, 1, cols);
+        assert_eq!(
+            sep_row.trim_end().chars().count(),
+            cols as usize,
+            "separator should be exactly {cols} chars wide"
+        );
+        // Prompt row should still contain ❯
+        let prompt_row = get_row(screen, 2, cols);
+        assert!(prompt_row.contains('❯'), "prompt should render even in narrow terminal");
+    }
+
+    #[test]
+    fn test_render_error_special_chars() {
+        let output = render_error("Error: <>&\"' chars");
+        let parser = parse_ansi(&output, 80, 24);
+        let screen = parser.screen();
+        let row = get_row(screen, 1, 80);
+        assert!(row.contains("<>&"), "special chars should be preserved verbatim");
+        assert!(row.contains("\"'"), "quote chars should be preserved verbatim");
+    }
 }

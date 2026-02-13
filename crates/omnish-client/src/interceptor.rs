@@ -833,4 +833,195 @@ mod tests {
         // Immediately type ':' → guard says no (just forwarded 'x')
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Forward(vec![b':']));
     }
+
+    // -----------------------------------------------------------------------
+    // Integration tests: simulate main-loop rendering decisions
+    // -----------------------------------------------------------------------
+
+    /// Simulate the main loop's rendering logic for a batch of input bytes.
+    /// Maps each InterceptAction to a descriptive string, mirroring the
+    /// match arms in main.rs.  Calls `finish_batch` at the end of the batch.
+    fn simulate_main_loop(interceptor: &mut InputInterceptor, batch: &[u8]) -> Vec<String> {
+        let mut actions = Vec::new();
+        for &byte in batch {
+            match interceptor.feed_byte(byte) {
+                InterceptAction::Buffering(ref buf) if buf == b":" => {
+                    actions.push("prompt".into())
+                }
+                InterceptAction::Buffering(ref buf) if buf.starts_with(b":") => {
+                    actions.push(format!(
+                        "echo:{}",
+                        String::from_utf8_lossy(&buf[1..])
+                    ))
+                }
+                InterceptAction::Buffering(_) => actions.push("buffering".into()),
+                InterceptAction::Forward(_) => actions.push("forward".into()),
+                InterceptAction::Cancel => actions.push("cancel".into()),
+                InterceptAction::Chat(msg) => actions.push(format!("chat:{msg}")),
+                InterceptAction::Backspace(ref buf) if buf.is_empty() => {
+                    actions.push("dismiss".into())
+                }
+                InterceptAction::Backspace(ref buf) => {
+                    actions.push(format!(
+                        "backspace:{}",
+                        String::from_utf8_lossy(buf)
+                    ))
+                }
+                InterceptAction::Pending => actions.push("pending".into()),
+            }
+        }
+        if let Some(action) = interceptor.finish_batch() {
+            match action {
+                InterceptAction::Cancel => actions.push("cancel".into()),
+                _ => {}
+            }
+        }
+        actions
+    }
+
+    #[test]
+    fn test_ui_type_and_submit() {
+        let mut ic = new_interceptor(":");
+        let actions = simulate_main_loop(&mut ic, b":hello\n");
+        assert_eq!(
+            actions,
+            vec!["prompt", "echo:h", "echo:he", "echo:hel", "echo:hell", "echo:hello", "chat:hello"]
+        );
+    }
+
+    #[test]
+    fn test_ui_type_and_esc_cancel() {
+        let mut ic = new_interceptor(":");
+        let mut input = b":hello".to_vec();
+        input.push(0x1b); // ESC at batch end
+        let actions = simulate_main_loop(&mut ic, &input);
+        // Last action must be cancel (from finish_batch detecting bare ESC)
+        assert_eq!(actions.last().unwrap(), "cancel");
+        // prompt appears exactly once
+        assert_eq!(actions.iter().filter(|a| *a == "prompt").count(), 1);
+    }
+
+    #[test]
+    fn test_ui_paste_no_spurious_redraws() {
+        let mut ic = new_interceptor(":");
+        let mut input = vec![b':'];
+        // Bracketed paste: \x1b[200~ps aux\x1b[201~
+        input.extend_from_slice(b"\x1b[200~ps aux\x1b[201~");
+        let actions = simulate_main_loop(&mut ic, &input);
+
+        // prompt appears exactly once (at the first ':')
+        assert_eq!(actions.iter().filter(|a| *a == "prompt").count(), 1);
+        // Last action is the echo after paste insert
+        assert_eq!(actions.last().unwrap(), "echo:ps aux");
+        // Everything between prompt and last echo must be "pending"
+        for a in &actions[1..actions.len() - 1] {
+            assert_eq!(a, "pending", "expected pending during paste, got {a}");
+        }
+    }
+
+    #[test]
+    fn test_ui_arrow_keys_no_redraws() {
+        let mut ic = new_interceptor(":");
+        // Type "::h", then Up arrow, then Down arrow, then 'i'
+        let mut input = b"::h".to_vec();
+        input.extend_from_slice(b"\x1b[A"); // Up
+        input.extend_from_slice(b"\x1b[B"); // Down
+        input.push(b'i');
+        let actions = simulate_main_loop(&mut ic, &input);
+
+        // First three: prompt, echo::, echo::h
+        assert_eq!(actions[0], "prompt");
+        assert_eq!(actions[1], "echo::");
+        assert_eq!(actions[2], "echo::h");
+        // Arrow bytes are all pending (6 bytes → 6 pending)
+        for a in &actions[3..9] {
+            assert_eq!(a, "pending", "arrow key bytes should be pending");
+        }
+        // Final 'i' produces normal echo
+        assert_eq!(actions[9], "echo::hi");
+    }
+
+    #[test]
+    fn test_ui_esc_non_bracket_cancel() {
+        let mut ic = new_interceptor(":");
+        // Type "::h", then ESC + 'x' in same batch (non-bracket → immediate cancel)
+        let actions = simulate_main_loop(&mut ic, b"::h\x1bx");
+        assert_eq!(
+            actions,
+            vec!["prompt", "echo::", "echo::h", "pending", "cancel"]
+        );
+    }
+
+    #[test]
+    fn test_ui_backspace_to_empty_dismisses() {
+        let mut ic = new_interceptor(":");
+        let mut input = b":he".to_vec();
+        input.extend_from_slice(&[0x7f, 0x7f, 0x7f]); // 3× backspace
+        let actions = simulate_main_loop(&mut ic, &input);
+        assert_eq!(
+            actions,
+            vec!["prompt", "echo:h", "echo:he", "backspace::h", "backspace::", "dismiss"]
+        );
+    }
+
+    #[test]
+    fn test_ui_multiple_esc_sequences() {
+        let mut ic = new_interceptor(":");
+        // Type "::", then Up arrow, Down arrow, then 'x'
+        let mut input = b"::".to_vec();
+        input.extend_from_slice(b"\x1b[A"); // Up
+        input.extend_from_slice(b"\x1b[B"); // Down
+        input.push(b'x');
+        let actions = simulate_main_loop(&mut ic, &input);
+
+        assert_eq!(actions[0], "prompt");
+        assert_eq!(actions[1], "echo::");
+        // 6 pending bytes from two arrow sequences
+        for a in &actions[2..8] {
+            assert_eq!(a, "pending");
+        }
+        assert_eq!(actions[8], "echo::x");
+    }
+
+    #[test]
+    fn test_ui_paste_then_enter() {
+        let mut ic = new_interceptor(":");
+        let mut input = vec![b':'];
+        input.extend_from_slice(b"\x1b[200~hello\x1b[201~");
+        input.push(b'\n');
+        let actions = simulate_main_loop(&mut ic, &input);
+
+        // Should end with echo of pasted text, then chat
+        let len = actions.len();
+        assert_eq!(actions[len - 2], "echo:hello");
+        assert_eq!(actions[len - 1], "chat:hello");
+    }
+
+    #[test]
+    fn test_ui_paste_with_embedded_ansi() {
+        let mut ic = new_interceptor(":");
+        let mut input = vec![b':'];
+        // Paste content contains ANSI color codes: \x1b[32mhi\x1b[0m
+        input.extend_from_slice(b"\x1b[200~\x1b[32mhi\x1b[0m\x1b[201~");
+        let actions = simulate_main_loop(&mut ic, &input);
+
+        // Last action should be an echo containing the full ANSI content
+        let last = actions.last().unwrap();
+        assert!(last.starts_with("echo:"), "last action should be echo, got {last}");
+        let content = &last["echo:".len()..];
+        assert!(content.contains("hi"), "pasted content should contain 'hi'");
+        assert!(content.contains("\x1b[32m"), "pasted content should preserve ANSI SGR");
+        assert!(content.contains("\x1b[0m"), "pasted content should preserve ANSI reset");
+    }
+
+    #[test]
+    fn test_ui_prefix_mismatch_then_retry() {
+        let mut ic = new_interceptor("::");
+        // First attempt ":x" mismatches prefix "::", then retry "::hi\n"
+        let actions = simulate_main_loop(&mut ic, b":x::hi\n");
+        assert_eq!(
+            actions,
+            vec!["prompt", "forward", "prompt", "echo::", "echo::h", "echo::hi", "chat:hi"]
+        );
+    }
 }

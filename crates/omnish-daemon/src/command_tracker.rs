@@ -1,4 +1,4 @@
-use crate::prompt_detector::PromptDetector;
+use crate::prompt_detector::{strip_ansi, PromptDetector};
 use omnish_store::command::CommandRecord;
 
 const SUMMARY_HEAD_LINES: usize = 5;
@@ -10,6 +10,9 @@ struct PendingCommand {
     stream_offset: u64,
     input_buf: Vec<u8>,
     output_lines: Vec<String>,
+    /// True once we've seen \r or \n in the input (user pressed Enter).
+    /// Output before this point is shell echo and should be excluded from the summary.
+    entered: bool,
 }
 
 pub struct CommandTracker {
@@ -40,6 +43,9 @@ impl CommandTracker {
     pub fn feed_input(&mut self, data: &[u8], _timestamp_ms: u64) {
         if let Some(ref mut pending) = self.pending {
             pending.input_buf.extend_from_slice(data);
+            if data.contains(&b'\r') || data.contains(&b'\n') {
+                pending.entered = true;
+            }
         }
     }
 
@@ -49,13 +55,18 @@ impl CommandTracker {
         timestamp_ms: u64,
         stream_pos: u64,
     ) -> Vec<CommandRecord> {
-        // Append output lines to pending command before prompt detection
+        // Append output lines to pending command before prompt detection.
+        // Only collect after Enter has been pressed (to exclude shell echo of typed chars).
+        // Strip ANSI escape sequences so the summary is human-readable.
         if let Some(ref mut pending) = self.pending {
-            let text = String::from_utf8_lossy(data);
-            for line in text.split('\n') {
-                let trimmed = line.trim_end_matches('\r');
-                if !trimmed.is_empty() {
-                    pending.output_lines.push(trimmed.to_string());
+            if pending.entered {
+                let stripped = strip_ansi(data);
+                let text = String::from_utf8_lossy(&stripped);
+                for line in text.split('\n') {
+                    let trimmed = line.trim_end_matches('\r');
+                    if !trimmed.is_empty() {
+                        pending.output_lines.push(trimmed.to_string());
+                    }
                 }
             }
         }
@@ -73,6 +84,7 @@ impl CommandTracker {
                     stream_offset: stream_pos,
                     input_buf: Vec::new(),
                     output_lines: Vec::new(),
+                    entered: false,
                 });
                 self.next_seq += 1;
             } else {
@@ -101,6 +113,7 @@ impl CommandTracker {
                     stream_offset: stream_pos,
                     input_buf: Vec::new(),
                     output_lines: Vec::new(),
+                    entered: false,
                 });
                 self.next_seq += 1;
             }
@@ -116,8 +129,10 @@ fn extract_command_line(input: &[u8]) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    // Take first line only
-    let first_line = trimmed.lines().next().unwrap_or("");
+    // Split on \r or \n — Rust's lines() only splits on \n and \r\n,
+    // but terminals send bare \r for Enter. Everything after the first \r
+    // is interactive keystrokes (e.g. inside top, vim, etc.).
+    let first_line = trimmed.split(['\r', '\n']).next().unwrap_or("");
     let first_line = first_line.trim();
     if first_line.is_empty() {
         None
@@ -235,5 +250,127 @@ mod tests {
         let cmds = tracker.feed_output(b"out\r\n$ ", 1002, 200);
         assert_eq!(cmds[0].stream_offset, 50);
         assert_eq!(cmds[0].stream_length, 200 - 50);
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug reproduction tests — based on real terminal data from omnish-commands
+    // -----------------------------------------------------------------------
+
+    /// Bug 1: extract_command_line includes interactive keystrokes after \r.
+    /// Real data: user types "top\r" then presses "m11q" inside top.
+    /// Rust's lines() does NOT split on bare \r, so command_line becomes
+    /// "top\rm11q" instead of just "top".
+    #[test]
+    fn test_bug_command_line_includes_interactive_keystrokes() {
+        let mut tracker = make_tracker();
+        tracker.feed_output(b"$ ", 1000, 0);
+
+        // User types "top" + Enter, then interactive keys inside top
+        tracker.feed_input(b"top\r", 1001);
+        tracker.feed_input(b"m11q", 1002); // top interactive: toggle memory, press 1 twice, quit
+
+        // top output + next prompt
+        let cmds = tracker.feed_output(b"top - 14:50:20\r\nTasks: 300\r\n$ ", 1003, 100);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(
+            cmds[0].command_line.as_deref(),
+            Some("top"),
+            "command_line should be 'top', not include interactive keystrokes after \\r"
+        );
+    }
+
+    /// Bug 2: output_summary contains shell echo of individual input characters.
+    /// Real terminal: when user types "ls", shell echoes "l" then "s" as separate
+    /// output chunks BEFORE the actual command output. These single-char echo lines
+    /// pollute the summary.
+    #[test]
+    fn test_bug_output_summary_includes_input_echo() {
+        let mut tracker = make_tracker();
+        tracker.feed_output(b"$ ", 1000, 0);
+
+        // Simulate character-by-character echo (real PTY behavior)
+        tracker.feed_input(b"l", 1001);
+        tracker.feed_output(b"l", 1001, 10);   // shell echoes 'l'
+        tracker.feed_input(b"s", 1002);
+        tracker.feed_output(b"s", 1002, 20);   // shell echoes 's'
+        tracker.feed_input(b"\r", 1003);
+        tracker.feed_output(b"\r\n", 1003, 30); // echo of Enter
+
+        // Actual command output + next prompt
+        let cmds = tracker.feed_output(
+            b"\x1b[?2004l\r\nCargo.lock  Cargo.toml  src/\r\n\x1b[?2004h$ ",
+            1004, 50,
+        );
+        assert_eq!(cmds.len(), 1);
+        let summary = &cmds[0].output_summary;
+        assert!(
+            !summary.starts_with("l\ns"),
+            "summary should NOT start with echoed input chars, got: {:?}",
+            &summary[..summary.len().min(20)]
+        );
+        assert!(
+            summary.contains("Cargo.lock"),
+            "summary should contain actual command output"
+        );
+    }
+
+    /// Bug 3: output_summary contains raw ANSI escape sequences.
+    /// Real data shows \x1b[?2004l, \x1b[01;34m, etc. in the summary.
+    /// The summary sent to LLM catalog should be human-readable.
+    #[test]
+    fn test_bug_output_summary_contains_ansi() {
+        let mut tracker = make_tracker();
+        tracker.feed_output(b"$ ", 1000, 0);
+        tracker.feed_input(b"ls\r\n", 1001);
+
+        // Output with ANSI color codes (typical ls --color output)
+        let cmds = tracker.feed_output(
+            b"\x1b[?2004l\r\n\x1b[0m\x1b[01;34mconfig\x1b[0m  \x1b[01;34mcrates\x1b[0m  README.md\r\n\x1b[?2004h$ ",
+            1002, 100,
+        );
+        assert_eq!(cmds.len(), 1);
+        let summary = &cmds[0].output_summary;
+        assert!(
+            !summary.contains("\x1b["),
+            "summary should NOT contain raw ANSI escapes, got: {:?}",
+            summary
+        );
+        assert!(
+            summary.contains("config"),
+            "summary should contain the actual text"
+        );
+        assert!(
+            summary.contains("README.md"),
+            "summary should contain the actual text"
+        );
+    }
+
+    /// Combined bug: realistic "ls" session with all three issues.
+    /// Mirrors the actual b7bf1aac:0 data from production.
+    #[test]
+    fn test_bug_realistic_ls_session() {
+        let mut tracker = make_tracker();
+        tracker.feed_output(b"\x1b[01;32mhuan@fortress\x1b[00m:\x1b[01;34m~/project\x1b[00m$ ", 1000, 0);
+
+        // Character-by-character input with echo
+        tracker.feed_input(b"l", 1001);
+        tracker.feed_output(b"l", 1001, 50);
+        tracker.feed_input(b"s", 1002);
+        tracker.feed_output(b"s", 1002, 60);
+        tracker.feed_input(b"\r", 1003);
+        let cmds = tracker.feed_output(
+            b"\r\n\x1b[?2004l\r\nCargo.lock  Cargo.toml  \x1b[0m\x1b[01;34mconfig\x1b[0m  \x1b[01;34mcrates\x1b[0m\r\n\x1b[?2004h\x1b[01;32mhuan@fortress\x1b[00m:\x1b[01;34m~/project\x1b[00m$ ",
+            1004, 70,
+        );
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].command_line.as_deref(), Some("ls"));
+
+        let summary = &cmds[0].output_summary;
+        // Should NOT start with echoed "l" and "s"
+        assert!(!summary.starts_with("l\n"), "summary should not start with echoed chars");
+        // Should NOT contain ANSI
+        assert!(!summary.contains("\x1b["), "summary should not contain ANSI escapes");
+        // Should contain actual file listing
+        assert!(summary.contains("Cargo.lock"), "summary should contain ls output");
     }
 }
