@@ -163,6 +163,9 @@ async fn main() -> Result<()> {
                             proxy.write_all(b"\r").ok();
                         }
                     }
+                    InterceptAction::Pending => {
+                        // ESC sequence in progress — no UI update needed
+                    }
                 }
             }
 

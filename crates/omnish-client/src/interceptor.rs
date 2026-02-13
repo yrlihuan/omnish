@@ -159,6 +159,8 @@ pub enum InterceptAction {
     Backspace(Vec<u8>),
     /// User pressed ESC to cancel chat mode
     Cancel,
+    /// ESC sequence in progress — no UI update needed
+    Pending,
 }
 
 /// Strategy for deciding whether to start intercepting at the current moment.
@@ -275,9 +277,8 @@ impl InputInterceptor {
                 InterceptAction::Cancel
             }
             EscSeqResult::Ignore => {
-                // Arrow keys, Del, etc. — silently drop, return current buffer
-                let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
-                InterceptAction::Buffering(current_buf)
+                // Arrow keys, Del, etc. — silently drop, no UI update
+                InterceptAction::Pending
             }
             EscSeqResult::Insert(data) => {
                 // Bracketed paste content — append to buffer
@@ -289,8 +290,7 @@ impl InputInterceptor {
             }
             EscSeqResult::Pending => {
                 // Shouldn't happen from finish_batch, but treat as no-op
-                let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
-                InterceptAction::Buffering(current_buf)
+                InterceptAction::Pending
             }
         }
     }
@@ -306,9 +306,7 @@ impl InputInterceptor {
         if self.esc_filter.is_some() {
             let result = self.esc_filter.as_mut().unwrap().feed(byte);
             match result {
-                EscSeqResult::Pending => return InterceptAction::Buffering(
-                    self.buffer.iter().copied().collect()
-                ),
+                EscSeqResult::Pending => return InterceptAction::Pending,
                 _ => {
                     self.esc_filter = None;
                     return self.apply_esc_result(result);
@@ -322,9 +320,7 @@ impl InputInterceptor {
                 let mut filter = EscSeqFilter::new();
                 filter.feed(byte); // transitions to EscGot
                 self.esc_filter = Some(filter);
-                return InterceptAction::Buffering(
-                    self.buffer.iter().copied().collect()
-                );
+                return InterceptAction::Pending;
             } else {
                 return self.forward(vec![byte]);
             }
@@ -647,11 +643,8 @@ mod tests {
         interceptor.feed_byte(b':');
         interceptor.feed_byte(b'h');
 
-        // ESC alone enters Pending (Buffering returned)
-        assert_eq!(
-            interceptor.feed_byte(0x1b),
-            InterceptAction::Buffering(vec![b':', b':', b'h'])
-        );
+        // ESC alone enters Pending
+        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
         // finish_batch sees bare ESC → Cancel
         assert_eq!(interceptor.finish_batch(), Some(InterceptAction::Cancel));
 
@@ -665,10 +658,7 @@ mod tests {
         interceptor.feed_byte(b':');
 
         // ESC while still matching prefix → Pending
-        assert_eq!(
-            interceptor.feed_byte(0x1b),
-            InterceptAction::Buffering(vec![b':'])
-        );
+        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
         // finish_batch → Cancel
         assert_eq!(interceptor.finish_batch(), Some(InterceptAction::Cancel));
         assert_eq!(interceptor.feed_byte(b'x'), InterceptAction::Forward(vec![b'x']));
@@ -705,13 +695,10 @@ mod tests {
         interceptor.feed_byte(b'h');
 
         // Up arrow: \x1b[A
-        interceptor.feed_byte(0x1b); // Pending
-        interceptor.feed_byte(b'['); // Pending
-        // Final byte 'A' completes the CSI → Ignore → returns Buffering with current buf
-        assert_eq!(
-            interceptor.feed_byte(b'A'),
-            InterceptAction::Buffering(vec![b':', b':', b'h'])
-        );
+        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
+        assert_eq!(interceptor.feed_byte(b'['), InterceptAction::Pending);
+        // Final byte 'A' completes the CSI → Ignore → Pending (no UI update)
+        assert_eq!(interceptor.feed_byte(b'A'), InterceptAction::Pending);
 
         // Buffer is unchanged, still in chat mode
         assert_eq!(
@@ -728,13 +715,10 @@ mod tests {
         interceptor.feed_byte(b'h');
 
         // Delete key: \x1b[3~
-        interceptor.feed_byte(0x1b);
-        interceptor.feed_byte(b'[');
-        interceptor.feed_byte(b'3');
-        assert_eq!(
-            interceptor.feed_byte(b'~'),
-            InterceptAction::Buffering(vec![b':', b':', b'h'])
-        );
+        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
+        assert_eq!(interceptor.feed_byte(b'['), InterceptAction::Pending);
+        assert_eq!(interceptor.feed_byte(b'3'), InterceptAction::Pending);
+        assert_eq!(interceptor.feed_byte(b'~'), InterceptAction::Pending);
     }
 
     #[test]
