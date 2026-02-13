@@ -165,6 +165,16 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+
+            // After processing all bytes from this read(), check for bare ESC
+            if let Some(action) = interceptor.finish_batch() {
+                if matches!(action, InterceptAction::Cancel) {
+                    let dismiss = display::render_dismiss();
+                    let restore = format!("\x1b[{}G", dismiss_col + 1);
+                    nix::unistd::write(std::io::stdout(), dismiss.as_bytes()).ok();
+                    nix::unistd::write(std::io::stdout(), restore.as_bytes()).ok();
+                }
+            }
         }
 
         // PTY master -> stdout

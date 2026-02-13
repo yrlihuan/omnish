@@ -1,6 +1,150 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+// ---------------------------------------------------------------------------
+// EscSeqFilter – state machine that distinguishes bare ESC from ESC sequences
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, PartialEq)]
+pub enum EscSeqResult {
+    /// Still accumulating bytes; caller should keep feeding.
+    Pending,
+    /// Bracketed-paste content collected; insert into chat buffer.
+    Insert(Vec<u8>),
+    /// Recognised sequence that should be silently dropped (arrow keys, Del, …).
+    Ignore,
+    /// Bare ESC (or ESC + non-`[`) → cancel chat/buffering mode.
+    Cancel,
+}
+
+#[derive(Debug)]
+enum EscState {
+    /// Just received `\x1b`, waiting for next byte.
+    EscGot,
+    /// Inside a CSI sequence (`\x1b[`), accumulating parameter bytes.
+    CsiParam(Vec<u8>),
+    /// Collecting pasted content (between `\x1b[200~` and `\x1b[201~`).
+    Paste(Vec<u8>),
+    /// Inside paste, just saw `\x1b`.
+    PasteEsc(Vec<u8>),
+    /// Inside paste, saw `\x1b[`, accumulating CSI param digits.
+    PasteCsi(Vec<u8>, Vec<u8>), // (paste_buf, param_buf)
+}
+
+pub struct EscSeqFilter {
+    state: Option<EscState>,
+}
+
+impl EscSeqFilter {
+    pub fn new() -> Self {
+        Self { state: None }
+    }
+
+    /// Feed one byte. Returns `Pending` while the sequence is incomplete.
+    pub fn feed(&mut self, byte: u8) -> EscSeqResult {
+        let state = match self.state.take() {
+            Some(s) => s,
+            None => {
+                if byte == 0x1b {
+                    self.state = Some(EscState::EscGot);
+                    return EscSeqResult::Pending;
+                }
+                // Not in any ESC state – shouldn't normally be called.
+                return EscSeqResult::Cancel;
+            }
+        };
+
+        match state {
+            EscState::EscGot => {
+                if byte == b'[' {
+                    self.state = Some(EscState::CsiParam(Vec::new()));
+                    EscSeqResult::Pending
+                } else {
+                    // ESC followed by non-'[' → treat as bare ESC
+                    EscSeqResult::Cancel
+                }
+            }
+            EscState::CsiParam(mut params) => {
+                if byte.is_ascii_digit() || byte == b';' {
+                    params.push(byte);
+                    self.state = Some(EscState::CsiParam(params));
+                    EscSeqResult::Pending
+                } else if byte == b'~' {
+                    // Check for bracketed-paste start (200) or other function keys
+                    if params == b"200" {
+                        self.state = Some(EscState::Paste(Vec::new()));
+                        EscSeqResult::Pending
+                    } else {
+                        // Function key (Delete = 3~, Home = 1~, etc.) → ignore
+                        EscSeqResult::Ignore
+                    }
+                } else if byte.is_ascii_alphabetic() {
+                    // Arrow keys (A/B/C/D), other CSI sequences → ignore
+                    EscSeqResult::Ignore
+                } else {
+                    // Unexpected byte → cancel
+                    EscSeqResult::Cancel
+                }
+            }
+            EscState::Paste(mut paste_buf) => {
+                if byte == 0x1b {
+                    self.state = Some(EscState::PasteEsc(paste_buf));
+                    EscSeqResult::Pending
+                } else {
+                    paste_buf.push(byte);
+                    self.state = Some(EscState::Paste(paste_buf));
+                    EscSeqResult::Pending
+                }
+            }
+            EscState::PasteEsc(paste_buf) => {
+                if byte == b'[' {
+                    self.state = Some(EscState::PasteCsi(paste_buf, Vec::new()));
+                    EscSeqResult::Pending
+                } else {
+                    // Not a CSI inside paste – put ESC and this byte into paste buf
+                    let mut pb = paste_buf;
+                    pb.push(0x1b);
+                    pb.push(byte);
+                    self.state = Some(EscState::Paste(pb));
+                    EscSeqResult::Pending
+                }
+            }
+            EscState::PasteCsi(paste_buf, mut params) => {
+                if byte.is_ascii_digit() || byte == b';' {
+                    params.push(byte);
+                    self.state = Some(EscState::PasteCsi(paste_buf, params));
+                    EscSeqResult::Pending
+                } else if byte == b'~' && params == b"201" {
+                    // End of bracketed paste
+                    EscSeqResult::Insert(paste_buf)
+                } else {
+                    // Not the end marker – fold the partial seq into paste buf
+                    let mut pb = paste_buf;
+                    pb.push(0x1b);
+                    pb.push(b'[');
+                    pb.extend_from_slice(&params);
+                    pb.push(byte);
+                    self.state = Some(EscState::Paste(pb));
+                    EscSeqResult::Pending
+                }
+            }
+        }
+    }
+
+    /// Call after processing all bytes from one `read()` batch.
+    /// If we're sitting in `EscGot` state (bare `\x1b` with nothing after),
+    /// that means the user pressed Esc alone → Cancel.
+    pub fn finish_batch(&mut self) -> Option<EscSeqResult> {
+        match self.state.take() {
+            Some(EscState::EscGot) => Some(EscSeqResult::Cancel),
+            other => {
+                self.state = other;
+                None
+            }
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum InterceptAction {
     /// Buffering input, don't send to PTY yet
@@ -73,6 +217,8 @@ pub struct InputInterceptor {
     /// When true, all input is forwarded directly (e.g. inside vim/less)
     suppressed: bool,
     guard: Box<dyn InterceptGuard>,
+    /// Active ESC sequence filter (only while in chat/buffering mode).
+    esc_filter: Option<EscSeqFilter>,
 }
 
 impl InputInterceptor {
@@ -83,6 +229,7 @@ impl InputInterceptor {
             in_chat: false,
             suppressed: false,
             guard,
+            esc_filter: None,
         }
     }
 
@@ -92,6 +239,7 @@ impl InputInterceptor {
             // Entering suppressed mode: discard any partial buffer
             self.buffer.clear();
             self.in_chat = false;
+            self.esc_filter = None;
         }
         self.suppressed = suppressed;
     }
@@ -106,6 +254,47 @@ impl InputInterceptor {
         }
     }
 
+    /// Call after processing all bytes from one `read()` batch.
+    /// If a bare ESC is pending (user pressed Esc alone), returns Cancel.
+    pub fn finish_batch(&mut self) -> Option<InterceptAction> {
+        if let Some(ref mut filter) = self.esc_filter {
+            if let Some(result) = filter.finish_batch() {
+                self.esc_filter = None;
+                return Some(self.apply_esc_result(result));
+            }
+        }
+        None
+    }
+
+    /// Convert an EscSeqResult into an InterceptAction.
+    fn apply_esc_result(&mut self, result: EscSeqResult) -> InterceptAction {
+        match result {
+            EscSeqResult::Cancel => {
+                self.buffer.clear();
+                self.in_chat = false;
+                InterceptAction::Cancel
+            }
+            EscSeqResult::Ignore => {
+                // Arrow keys, Del, etc. — silently drop, return current buffer
+                let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
+                InterceptAction::Buffering(current_buf)
+            }
+            EscSeqResult::Insert(data) => {
+                // Bracketed paste content — append to buffer
+                for &b in &data {
+                    self.buffer.push_back(b);
+                }
+                let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
+                InterceptAction::Buffering(current_buf)
+            }
+            EscSeqResult::Pending => {
+                // Shouldn't happen from finish_batch, but treat as no-op
+                let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
+                InterceptAction::Buffering(current_buf)
+            }
+        }
+    }
+
     /// Feed a single input byte, returns action
     pub fn feed_byte(&mut self, byte: u8) -> InterceptAction {
         // When suppressed (e.g. inside vim), forward everything directly
@@ -113,11 +302,32 @@ impl InputInterceptor {
             return self.forward(vec![byte]);
         }
 
-        // Handle ESC — cancel chat mode
-        if byte == 0x1b && (self.in_chat || !self.buffer.is_empty()) {
-            self.buffer.clear();
-            self.in_chat = false;
-            return InterceptAction::Cancel;
+        // If an ESC sequence filter is active, feed bytes into it
+        if self.esc_filter.is_some() {
+            let result = self.esc_filter.as_mut().unwrap().feed(byte);
+            match result {
+                EscSeqResult::Pending => return InterceptAction::Buffering(
+                    self.buffer.iter().copied().collect()
+                ),
+                _ => {
+                    self.esc_filter = None;
+                    return self.apply_esc_result(result);
+                }
+            }
+        }
+
+        // Handle ESC — start filter in chat/buffering mode, forward otherwise
+        if byte == 0x1b {
+            if self.in_chat || !self.buffer.is_empty() {
+                let mut filter = EscSeqFilter::new();
+                filter.feed(byte); // transitions to EscGot
+                self.esc_filter = Some(filter);
+                return InterceptAction::Buffering(
+                    self.buffer.iter().copied().collect()
+                );
+            } else {
+                return self.forward(vec![byte]);
+            }
         }
 
         // Handle backspace/delete
@@ -428,7 +638,7 @@ mod tests {
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
     }
 
-    // --- ESC cancel tests ---
+    // --- ESC / escape-sequence tests ---
 
     #[test]
     fn test_esc_cancels_chat_mode() {
@@ -437,7 +647,13 @@ mod tests {
         interceptor.feed_byte(b':');
         interceptor.feed_byte(b'h');
 
-        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Cancel);
+        // ESC alone enters Pending (Buffering returned)
+        assert_eq!(
+            interceptor.feed_byte(0x1b),
+            InterceptAction::Buffering(vec![b':', b':', b'h'])
+        );
+        // finish_batch sees bare ESC → Cancel
+        assert_eq!(interceptor.finish_batch(), Some(InterceptAction::Cancel));
 
         // After cancel, normal input resumes
         assert_eq!(interceptor.feed_byte(b'x'), InterceptAction::Forward(vec![b'x']));
@@ -448,8 +664,13 @@ mod tests {
         let mut interceptor = new_interceptor("::");
         interceptor.feed_byte(b':');
 
-        // ESC while still matching prefix
-        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Cancel);
+        // ESC while still matching prefix → Pending
+        assert_eq!(
+            interceptor.feed_byte(0x1b),
+            InterceptAction::Buffering(vec![b':'])
+        );
+        // finish_batch → Cancel
+        assert_eq!(interceptor.finish_batch(), Some(InterceptAction::Cancel));
         assert_eq!(interceptor.feed_byte(b'x'), InterceptAction::Forward(vec![b'x']));
     }
 
@@ -459,6 +680,113 @@ mod tests {
 
         // ESC with empty buffer — forward to PTY (could be start of arrow key etc.)
         assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Forward(vec![0x1b]));
+    }
+
+    #[test]
+    fn test_esc_then_non_bracket_cancels() {
+        let mut interceptor = new_interceptor("::");
+        interceptor.feed_byte(b':');
+        interceptor.feed_byte(b':');
+        interceptor.feed_byte(b'h');
+
+        // ESC then a non-'[' byte → Cancel immediately (not via finish_batch)
+        interceptor.feed_byte(0x1b);
+        assert_eq!(interceptor.feed_byte(b'x'), InterceptAction::Cancel);
+
+        // Normal input resumes
+        assert_eq!(interceptor.feed_byte(b'y'), InterceptAction::Forward(vec![b'y']));
+    }
+
+    #[test]
+    fn test_arrow_keys_ignored_in_chat() {
+        let mut interceptor = new_interceptor("::");
+        interceptor.feed_byte(b':');
+        interceptor.feed_byte(b':');
+        interceptor.feed_byte(b'h');
+
+        // Up arrow: \x1b[A
+        interceptor.feed_byte(0x1b); // Pending
+        interceptor.feed_byte(b'['); // Pending
+        // Final byte 'A' completes the CSI → Ignore → returns Buffering with current buf
+        assert_eq!(
+            interceptor.feed_byte(b'A'),
+            InterceptAction::Buffering(vec![b':', b':', b'h'])
+        );
+
+        // Buffer is unchanged, still in chat mode
+        assert_eq!(
+            interceptor.feed_byte(b'i'),
+            InterceptAction::Buffering(vec![b':', b':', b'h', b'i'])
+        );
+    }
+
+    #[test]
+    fn test_delete_key_ignored_in_chat() {
+        let mut interceptor = new_interceptor("::");
+        interceptor.feed_byte(b':');
+        interceptor.feed_byte(b':');
+        interceptor.feed_byte(b'h');
+
+        // Delete key: \x1b[3~
+        interceptor.feed_byte(0x1b);
+        interceptor.feed_byte(b'[');
+        interceptor.feed_byte(b'3');
+        assert_eq!(
+            interceptor.feed_byte(b'~'),
+            InterceptAction::Buffering(vec![b':', b':', b'h'])
+        );
+    }
+
+    #[test]
+    fn test_paste_in_chat_mode() {
+        let mut interceptor = new_interceptor("::");
+        interceptor.feed_byte(b':');
+        interceptor.feed_byte(b':');
+
+        // Bracketed paste: \x1b[200~hello world\x1b[201~
+        let paste_seq = b"\x1b[200~hello world\x1b[201~";
+        let mut last_action = InterceptAction::Buffering(vec![]);
+        for &byte in paste_seq.iter() {
+            last_action = interceptor.feed_byte(byte);
+        }
+        // After paste end, buffer should contain "::hello world"
+        assert_eq!(
+            last_action,
+            InterceptAction::Buffering(vec![
+                b':', b':', b'h', b'e', b'l', b'l', b'o', b' ',
+                b'w', b'o', b'r', b'l', b'd'
+            ])
+        );
+    }
+
+    #[test]
+    fn test_paste_with_newlines() {
+        let mut interceptor = new_interceptor("::");
+        interceptor.feed_byte(b':');
+        interceptor.feed_byte(b':');
+
+        // Paste content with newlines
+        let paste_seq = b"\x1b[200~line1\nline2\x1b[201~";
+        let mut last_action = InterceptAction::Buffering(vec![]);
+        for &byte in paste_seq.iter() {
+            last_action = interceptor.feed_byte(byte);
+        }
+        assert_eq!(
+            last_action,
+            InterceptAction::Buffering(vec![
+                b':', b':', b'l', b'i', b'n', b'e', b'1', b'\n',
+                b'l', b'i', b'n', b'e', b'2'
+            ])
+        );
+    }
+
+    #[test]
+    fn test_finish_batch_no_op_when_idle() {
+        let mut interceptor = new_interceptor("::");
+        interceptor.feed_byte(b':');
+        interceptor.feed_byte(b':');
+        // No ESC fed, finish_batch should return None
+        assert_eq!(interceptor.finish_batch(), None);
     }
 
     // --- Guard-specific tests ---
