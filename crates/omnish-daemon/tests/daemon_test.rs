@@ -90,3 +90,42 @@ async fn test_commands_persisted_on_session_end() {
     assert_eq!(commands.len(), 1);
     assert_eq!(commands[0].command_line.as_deref(), Some("echo hi"));
 }
+
+#[tokio::test]
+async fn test_multi_command_session_e2e() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = SessionManager::new(dir.path().to_path_buf());
+
+    mgr.register("e2e", HashMap::from([
+        ("shell".to_string(), "/bin/bash".to_string()),
+        ("cwd".to_string(), "/home/user/project".to_string()),
+    ])).await.unwrap();
+
+    // Command 1: initial prompt + ls
+    mgr.write_io("e2e", 1000, 1, b"user@host:~/project$ ").await.unwrap();
+    mgr.write_io("e2e", 1001, 0, b"ls\r\n").await.unwrap();
+    mgr.write_io("e2e", 1002, 1, b"Cargo.toml\r\nsrc/\r\nuser@host:~/project$ ").await.unwrap();
+
+    // Command 2: cargo build
+    mgr.write_io("e2e", 1003, 0, b"cargo build\r\n").await.unwrap();
+    mgr.write_io("e2e", 1004, 1, b"   Compiling omnish v0.1.0\r\n    Finished dev\r\nuser@host:~/project$ ").await.unwrap();
+
+    // Command 3: cargo test (still running — no closing prompt)
+    mgr.write_io("e2e", 1005, 0, b"cargo test\r\n").await.unwrap();
+    mgr.write_io("e2e", 1006, 1, b"running 5 tests\r\n").await.unwrap();
+
+    let commands = mgr.get_commands("e2e").await.unwrap();
+
+    // Only 2 completed commands (command 3 is still running)
+    assert_eq!(commands.len(), 2);
+
+    assert_eq!(commands[0].command_id, "e2e:0");
+    assert_eq!(commands[0].command_line.as_deref(), Some("ls"));
+
+    assert_eq!(commands[1].command_id, "e2e:1");
+    assert_eq!(commands[1].command_line.as_deref(), Some("cargo build"));
+    assert!(commands[1].output_summary.contains("Compiling"));
+
+    // End session — should persist including any pending
+    mgr.end_session("e2e").await.unwrap();
+}
