@@ -1,0 +1,121 @@
+use std::collections::HashMap;
+
+pub trait Probe: Send + Sync {
+    fn key(&self) -> &str;
+    fn collect(&self) -> Option<String>;
+}
+
+pub struct ProbeSet {
+    probes: Vec<Box<dyn Probe>>,
+}
+
+impl ProbeSet {
+    pub fn new() -> Self {
+        Self { probes: Vec::new() }
+    }
+
+    pub fn add(&mut self, probe: Box<dyn Probe>) {
+        self.probes.push(probe);
+    }
+
+    pub fn collect_all(&self) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        for probe in &self.probes {
+            if let Some(value) = probe.collect() {
+                map.insert(probe.key().to_string(), value);
+            }
+        }
+        map
+    }
+}
+
+pub struct ShellProbe;
+impl Probe for ShellProbe {
+    fn key(&self) -> &str { "shell" }
+    fn collect(&self) -> Option<String> { std::env::var("SHELL").ok() }
+}
+
+pub struct PidProbe(pub u32);
+impl Probe for PidProbe {
+    fn key(&self) -> &str { "pid" }
+    fn collect(&self) -> Option<String> { Some(self.0.to_string()) }
+}
+
+pub struct TtyProbe;
+impl Probe for TtyProbe {
+    fn key(&self) -> &str { "tty" }
+    fn collect(&self) -> Option<String> { std::env::var("TTY").ok() }
+}
+
+pub struct CwdProbe;
+impl Probe for CwdProbe {
+    fn key(&self) -> &str { "cwd" }
+    fn collect(&self) -> Option<String> {
+        std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+    }
+}
+
+pub struct HostnameProbe;
+impl Probe for HostnameProbe {
+    fn key(&self) -> &str { "hostname" }
+    fn collect(&self) -> Option<String> {
+        nix::unistd::gethostname()
+            .ok()
+            .and_then(|h| h.into_string().ok())
+    }
+}
+
+pub fn default_session_probes(child_pid: u32) -> ProbeSet {
+    let mut set = ProbeSet::new();
+    set.add(Box::new(ShellProbe));
+    set.add(Box::new(PidProbe(child_pid)));
+    set.add(Box::new(TtyProbe));
+    set.add(Box::new(CwdProbe));
+    set.add(Box::new(HostnameProbe));
+    set
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct AlwaysProbe;
+    impl Probe for AlwaysProbe {
+        fn key(&self) -> &str { "always" }
+        fn collect(&self) -> Option<String> { Some("yes".to_string()) }
+    }
+
+    struct NeverProbe;
+    impl Probe for NeverProbe {
+        fn key(&self) -> &str { "never" }
+        fn collect(&self) -> Option<String> { None }
+    }
+
+    #[test]
+    fn test_collect_all_skips_none() {
+        let mut set = ProbeSet::new();
+        set.add(Box::new(AlwaysProbe));
+        set.add(Box::new(NeverProbe));
+        let attrs = set.collect_all();
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(attrs.get("always").unwrap(), "yes");
+        assert!(!attrs.contains_key("never"));
+    }
+
+    #[test]
+    fn test_pid_probe() {
+        let probe = PidProbe(42);
+        assert_eq!(probe.key(), "pid");
+        assert_eq!(probe.collect(), Some("42".to_string()));
+    }
+
+    #[test]
+    fn test_cwd_probe() {
+        let probe = CwdProbe;
+        assert_eq!(probe.key(), "cwd");
+        // cwd should always succeed in test env
+        assert!(probe.collect().is_some());
+    }
+}

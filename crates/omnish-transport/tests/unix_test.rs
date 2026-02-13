@@ -1,6 +1,7 @@
 use omnish_protocol::message::*;
 use omnish_transport::unix::UnixTransport;
 use omnish_transport::traits::{Transport, Listener};
+use std::collections::HashMap;
 
 #[tokio::test]
 async fn test_unix_send_recv() {
@@ -17,11 +18,13 @@ async fn test_unix_send_recv() {
         let conn = UnixTransport.connect(&addr2).await.unwrap();
         let msg = Message::SessionStart(SessionStart {
             session_id: "test".to_string(),
-            shell: "/bin/bash".to_string(),
-            pid: 42,
-            tty: "/dev/pts/0".to_string(),
             timestamp_ms: 0,
-            cwd: "/tmp".to_string(),
+            attrs: HashMap::from([
+                ("shell".to_string(), "/bin/bash".to_string()),
+                ("pid".to_string(), "42".to_string()),
+                ("tty".to_string(), "/dev/pts/0".to_string()),
+                ("cwd".to_string(), "/tmp".to_string()),
+            ]),
         });
         conn.send(&msg).await.unwrap();
     });

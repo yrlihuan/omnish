@@ -29,10 +29,7 @@ impl SessionManager {
     pub async fn register(
         &self,
         session_id: &str,
-        shell: &str,
-        pid: u32,
-        tty: &str,
-        cwd: &str,
+        attrs: std::collections::HashMap<String, String>,
     ) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         let session_dir = self.base_dir.join(format!(
@@ -44,12 +41,9 @@ impl SessionManager {
 
         let meta = SessionMeta {
             session_id: session_id.to_string(),
-            shell: shell.to_string(),
-            pid,
-            tty: tty.to_string(),
             started_at: now,
             ended_at: None,
-            cwd: cwd.to_string(),
+            attrs,
         };
         meta.save(&session_dir)?;
 

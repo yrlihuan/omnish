@@ -2,6 +2,7 @@
 mod commands;
 mod display;
 mod interceptor;
+mod probe;
 
 use anyhow::Result;
 use commands::{parse_command, OmnishCommand};
@@ -44,7 +45,7 @@ async fn main() -> Result<()> {
     let proxy = PtyProxy::spawn(&shell, &[])?;
 
     // Connect to daemon (graceful degradation)
-    let daemon_conn = connect_daemon(&session_id, &shell, proxy.child_pid() as u32).await;
+    let daemon_conn = connect_daemon(&session_id, proxy.child_pid() as u32).await;
 
     // Enter raw mode
     let _raw_guard = RawModeGuard::enter(std::io::stdin().as_raw_fd())?;
@@ -225,24 +226,17 @@ async fn main() -> Result<()> {
 
 async fn connect_daemon(
     session_id: &str,
-    shell: &str,
-    pid: u32,
+    child_pid: u32,
 ) -> Option<Box<dyn Connection>> {
     let socket_path = get_socket_path();
     let transport = UnixTransport;
     match transport.connect(&socket_path).await {
         Ok(conn) => {
-            let tty = std::env::var("TTY").unwrap_or_default();
-            let cwd = std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
+            let attrs = probe::default_session_probes(child_pid).collect_all();
             let msg = Message::SessionStart(SessionStart {
                 session_id: session_id.to_string(),
-                shell: shell.to_string(),
-                pid,
-                tty,
                 timestamp_ms: timestamp_ms(),
-                cwd,
+                attrs,
             });
             if conn.send(&msg).await.is_ok() {
                 eprintln!("\x1b[32m[omnish]\x1b[0m Connected to daemon (session: {})", &session_id[..8]);

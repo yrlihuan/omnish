@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
@@ -16,11 +17,9 @@ pub enum Message {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStart {
     pub session_id: String,
-    pub shell: String,
-    pub pid: u32,
-    pub tty: String,
     pub timestamp_ms: u64,
-    pub cwd: String,
+    #[serde(default)]
+    pub attrs: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

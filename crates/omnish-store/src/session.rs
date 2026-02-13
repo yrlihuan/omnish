@@ -1,17 +1,15 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionMeta {
     pub session_id: String,
-    pub shell: String,
-    pub pid: u32,
-    pub tty: String,
     pub started_at: String,
     pub ended_at: Option<String>,
     #[serde(default)]
-    pub cwd: String,
+    pub attrs: HashMap<String, String>,
 }
 
 impl SessionMeta {

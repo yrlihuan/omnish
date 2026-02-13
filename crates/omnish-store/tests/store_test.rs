@@ -1,5 +1,6 @@
 use omnish_store::session::SessionMeta;
 use omnish_store::stream::StreamWriter;
+use std::collections::HashMap;
 use tempfile::tempdir;
 
 #[test]
@@ -7,17 +8,19 @@ fn test_write_and_read_session_meta() {
     let dir = tempdir().unwrap();
     let meta = SessionMeta {
         session_id: "abc123".to_string(),
-        shell: "/bin/bash".to_string(),
-        pid: 1234,
-        tty: "/dev/pts/0".to_string(),
         started_at: "2026-02-11T16:30:00Z".to_string(),
         ended_at: None,
-        cwd: "/home/user".to_string(),
+        attrs: HashMap::from([
+            ("shell".to_string(), "/bin/bash".to_string()),
+            ("pid".to_string(), "1234".to_string()),
+            ("tty".to_string(), "/dev/pts/0".to_string()),
+            ("cwd".to_string(), "/home/user".to_string()),
+        ]),
     };
     meta.save(dir.path()).unwrap();
     let loaded = SessionMeta::load(dir.path()).unwrap();
     assert_eq!(loaded.session_id, "abc123");
-    assert_eq!(loaded.pid, 1234);
+    assert_eq!(loaded.attrs.get("pid").unwrap(), "1234");
 }
 
 #[test]
