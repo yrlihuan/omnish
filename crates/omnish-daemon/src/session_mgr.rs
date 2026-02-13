@@ -1,14 +1,19 @@
 use anyhow::{anyhow, Result};
 use omnish_llm::context::ContextBuilder;
+use omnish_store::command::CommandRecord;
 use omnish_store::session::SessionMeta;
 use omnish_store::stream::{read_entries, StreamWriter};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::Mutex;
 
+use crate::command_tracker::CommandTracker;
+
 struct ActiveSession {
     meta: SessionMeta,
     stream_writer: StreamWriter,
+    command_tracker: CommandTracker,
+    commands: Vec<CommandRecord>,
     dir: PathBuf,
 }
 
@@ -49,12 +54,17 @@ impl SessionManager {
 
         let stream_writer = StreamWriter::create(&session_dir.join("stream.bin"))?;
 
+        let cwd = meta.attrs.get("cwd").cloned();
+        let command_tracker = CommandTracker::new(session_id.to_string(), cwd);
+
         let mut sessions = self.sessions.lock().await;
         sessions.insert(
             session_id.to_string(),
             ActiveSession {
                 meta,
                 stream_writer,
+                command_tracker,
+                commands: Vec::new(),
                 dir: session_dir,
             },
         );
@@ -70,7 +80,20 @@ impl SessionManager {
     ) -> Result<()> {
         let mut sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get_mut(session_id) {
+            let pos_before = session.stream_writer.position();
             session.stream_writer.write_entry(timestamp_ms, direction, data)?;
+
+            if direction == 1 {
+                // Output from shell — feed to command tracker
+                let completed = session.command_tracker.feed_output(data, timestamp_ms, pos_before);
+                if !completed.is_empty() {
+                    session.commands.extend(completed);
+                    CommandRecord::save_all(&session.commands, &session.dir)?;
+                }
+            } else {
+                // Input from user
+                session.command_tracker.feed_input(data, timestamp_ms);
+            }
         }
         Ok(())
     }
@@ -80,8 +103,18 @@ impl SessionManager {
         if let Some(mut session) = sessions.remove(session_id) {
             session.meta.ended_at = Some(chrono::Utc::now().to_rfc3339());
             session.meta.save(&session.dir)?;
+            CommandRecord::save_all(&session.commands, &session.dir)?;
         }
         Ok(())
+    }
+
+    pub async fn get_commands(&self, session_id: &str) -> Result<Vec<CommandRecord>> {
+        let sessions = self.sessions.lock().await;
+        if let Some(session) = sessions.get(session_id) {
+            Ok(session.commands.clone())
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     pub async fn list_active(&self) -> Vec<String> {
