@@ -1,6 +1,6 @@
 use omnish_store::command::CommandRecord;
 use omnish_store::session::SessionMeta;
-use omnish_store::stream::StreamWriter;
+use omnish_store::stream::{read_range, StreamWriter};
 use std::collections::HashMap;
 use tempfile::tempdir;
 
@@ -99,6 +99,29 @@ fn test_stream_writer_position_tracking() {
     writer.write_entry(1001, 1, b"file.txt\n").unwrap(); // 8+1+4+9 = 22 bytes
     let pos2 = writer.position();
     assert_eq!(pos2, 38); // 16 + 22
+}
+
+#[test]
+fn test_read_range_from_stream() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("stream.bin");
+
+    let mut writer = StreamWriter::create(&path).unwrap();
+    let pos0 = writer.position();
+    writer.write_entry(1000, 0, b"ls\n").unwrap();
+    let pos1 = writer.position();
+    writer.write_entry(1001, 1, b"file.txt\n").unwrap();
+    let pos2 = writer.position();
+
+    // Read only the second entry's range
+    let entries = read_range(&path, pos1, pos2 - pos1).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].data, b"file.txt\n");
+    assert_eq!(entries[0].direction, 1);
+
+    // Read both entries
+    let all = read_range(&path, pos0, pos2 - pos0).unwrap();
+    assert_eq!(all.len(), 2);
 }
 
 #[test]
