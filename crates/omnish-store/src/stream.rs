@@ -6,6 +6,7 @@ use std::path::Path;
 /// Binary format per entry: timestamp_ms(8) + direction(1) + data_len(4) + data(N)
 pub struct StreamWriter {
     writer: BufWriter<File>,
+    pos: u64,
 }
 
 pub struct StreamEntry {
@@ -19,7 +20,12 @@ impl StreamWriter {
         let file = File::create(path)?;
         Ok(Self {
             writer: BufWriter::new(file),
+            pos: 0,
         })
+    }
+
+    pub fn position(&self) -> u64 {
+        self.pos
     }
 
     pub fn write_entry(&mut self, timestamp_ms: u64, direction: u8, data: &[u8]) -> Result<()> {
@@ -28,6 +34,7 @@ impl StreamWriter {
         self.writer.write_all(&(data.len() as u32).to_be_bytes())?;
         self.writer.write_all(data)?;
         self.writer.flush()?;
+        self.pos += 8 + 1 + 4 + data.len() as u64;
         Ok(())
     }
 }

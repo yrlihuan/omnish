@@ -83,6 +83,25 @@ fn test_command_record_save_and_load() {
 }
 
 #[test]
+fn test_stream_writer_position_tracking() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("stream.bin");
+
+    let mut writer = StreamWriter::create(&path).unwrap();
+
+    let pos0 = writer.position();
+    assert_eq!(pos0, 0);
+
+    writer.write_entry(1000, 0, b"ls\n").unwrap(); // 8+1+4+3 = 16 bytes
+    let pos1 = writer.position();
+    assert_eq!(pos1, 16);
+
+    writer.write_entry(1001, 1, b"file.txt\n").unwrap(); // 8+1+4+9 = 22 bytes
+    let pos2 = writer.position();
+    assert_eq!(pos2, 38); // 16 + 22
+}
+
+#[test]
 fn test_command_record_load_empty() {
     let dir = tempdir().unwrap();
     let loaded = CommandRecord::load_all(dir.path()).unwrap();
