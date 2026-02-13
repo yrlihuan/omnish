@@ -1,6 +1,6 @@
 use omnish_protocol::message::*;
 use omnish_transport::unix::UnixTransport;
-use omnish_transport::traits::{Transport, Listener};
+use omnish_transport::traits::Transport;
 use std::collections::HashMap;
 
 #[tokio::test]

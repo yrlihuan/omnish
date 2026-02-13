@@ -1,11 +1,9 @@
 // crates/omnish-client/src/main.rs
-mod commands;
 mod display;
 mod interceptor;
 mod probe;
 
 use anyhow::Result;
-use commands::{parse_command, OmnishCommand};
 use interceptor::{InputInterceptor, InterceptAction, TimeGapGuard};
 use omnish_protocol::message::*;
 use omnish_pty::proxy::PtyProxy;
@@ -530,133 +528,6 @@ async fn handle_omnish_query(query: &str, session_id: &str, conn: &Box<dyn Conne
 
     // Send empty Enter to PTY so the shell prints a fresh prompt below our output
     proxy.write_all(b"\r").ok();
-}
-
-async fn handle_command(cmd_str: &str, session_id: &str, conn: &Box<dyn Connection>) {
-    let cmd = parse_command(&format!("::{}", cmd_str), "::");
-
-    match cmd {
-        Some(OmnishCommand::Ask { flags, query }) => {
-            // Show overlay at top with "thinking..." status
-            let status_msg = format!(
-                "\x1b[s\x1b[H\x1b[K\x1b[48;5;235m\x1b[36m ::{}\x1b[0m\x1b[48;5;235m \x1b[2m(thinking...)\x1b[0m\x1b[u",
-                cmd_str
-            );
-            nix::unistd::write(std::io::stdout(), status_msg.as_bytes()).ok();
-
-            let scope = if flags.all_sessions {
-                RequestScope::AllSessions
-            } else {
-                RequestScope::CurrentSession
-            };
-
-            let request_id = Uuid::new_v4().to_string()[..8].to_string();
-            let request = Message::Request(Request {
-                request_id: request_id.clone(),
-                session_id: session_id.to_string(),
-                query: if query.is_empty() {
-                    "Why did that fail?".to_string()
-                } else {
-                    query
-                },
-                scope,
-            });
-
-            // Send request
-            if conn.send(&request).await.is_err() {
-                // Clear top line and show error
-                let err = "\x1b[s\x1b[H\x1b[K\x1b[48;5;235m\x1b[31m [omnish] Failed to send request\x1b[0m\x1b[u";
-                nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                nix::unistd::write(std::io::stdout(), b"\x1b[s\x1b[H\x1b[K\x1b[u").ok();
-                return;
-            }
-
-            // Wait for response
-            match conn.recv().await {
-                Ok(Message::Response(resp)) if resp.request_id == request_id => {
-                    // Debug: save raw response
-                    std::fs::write("/tmp/omnish_last_response.txt", &resp.content).ok();
-
-                    // Convert line breaks for raw mode and trim lines
-                    let content: String = resp.content
-                        .lines()
-                        .map(|line| line.trim_end())
-                        .collect::<Vec<_>>()
-                        .join("\r\n");
-
-                    // Show response in scrollable overlay box at top
-                    show_response_overlay(cmd_str, &content);
-                }
-                Ok(_) => {
-                    let err = "\x1b[s\x1b[H\x1b[K\x1b[48;5;235m\x1b[31m [omnish] Unexpected response\x1b[0m\x1b[u";
-                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                    nix::unistd::write(std::io::stdout(), b"\x1b[s\x1b[H\x1b[K\x1b[u").ok();
-                }
-                Err(_) => {
-                    let err = "\x1b[s\x1b[H\x1b[K\x1b[48;5;235m\x1b[31m [omnish] Failed to receive response\x1b[0m\x1b[u";
-                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                    nix::unistd::write(std::io::stdout(), b"\x1b[s\x1b[H\x1b[K\x1b[u").ok();
-                }
-            }
-        }
-        Some(OmnishCommand::Unknown(s)) => {
-            let msg = format!("\x1b[s\x1b[H\x1b[K\x1b[48;5;235m\x1b[33m [omnish] Unknown command: {}\x1b[0m\x1b[u", s);
-            nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-            nix::unistd::write(std::io::stdout(), b"\x1b[s\x1b[H\x1b[K\x1b[u").ok();
-        }
-        _ => {
-            let msg = "\x1b[s\x1b[H\x1b[K\x1b[48;5;235m\x1b[33m [omnish] Command not yet implemented\x1b[0m\x1b[u";
-            nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-            nix::unistd::write(std::io::stdout(), b"\x1b[s\x1b[H\x1b[K\x1b[u").ok();
-        }
-    }
-}
-
-fn show_response_overlay(cmd_str: &str, content: &str) {
-    // Get terminal size
-    let (rows, _cols) = get_terminal_size().unwrap_or((24, 80));
-
-    // Use top 60% of screen for overlay (max 15 lines)
-    let max_lines = std::cmp::min((rows as f32 * 0.6) as usize, 15);
-    let lines: Vec<&str> = content.lines().take(max_lines).collect();
-
-    // Build the overlay box
-    let mut output = String::new();
-
-    // Save cursor, clear top area
-    output.push_str("\x1b[s");
-
-    // Draw header line
-    output.push_str("\x1b[H\x1b[K\x1b[48;5;235m\x1b[1;36m ┌─ omnish ─ ");
-    output.push_str(cmd_str);
-    output.push_str(" ─");
-    output.push_str("\x1b[0m\r\n");
-
-    // Draw content lines
-    for line in &lines {
-        output.push_str("\x1b[K\x1b[48;5;235m\x1b[32m │\x1b[0m\x1b[48;5;235m ");
-        output.push_str(line);
-        output.push_str("\x1b[0m\r\n");
-    }
-
-    // Draw footer
-    output.push_str("\x1b[K\x1b[48;5;235m\x1b[2;32m └─ Press any key to close ─\x1b[0m\r\n");
-
-    // Add one more blank line to separate from shell
-    output.push_str("\x1b[K\r\n");
-
-    // Restore cursor
-    output.push_str("\x1b[u");
-
-    nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
-
-    // Wait for any key press (we'll detect it in the main loop)
-    // The overlay will stay until user types something
 }
 
 #[cfg(test)]

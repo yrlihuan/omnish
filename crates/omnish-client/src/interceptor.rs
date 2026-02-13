@@ -26,9 +26,11 @@ pub trait InterceptGuard {
     fn should_intercept(&self) -> bool;
 }
 
-/// Always intercept — used in tests and when no guard logic is needed.
+/// Always intercept — used in tests.
+#[cfg(test)]
 pub struct AlwaysIntercept;
 
+#[cfg(test)]
 impl InterceptGuard for AlwaysIntercept {
     fn note_input(&mut self) {}
     fn should_intercept(&self) -> bool { true }
