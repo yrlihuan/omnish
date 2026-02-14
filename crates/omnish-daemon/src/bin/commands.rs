@@ -13,6 +13,7 @@ use std::path::PathBuf;
 struct DisplayCommand {
     record: CommandRecord,
     session_ended: Option<String>,
+    parent_session_id: Option<String>,
 }
 
 fn store_dir() -> PathBuf {
@@ -54,6 +55,7 @@ fn load_all_commands(base: &PathBuf, session_filter: Option<&str>) -> Result<Vec
             all.push(DisplayCommand {
                 record,
                 session_ended: meta.ended_at.clone(),
+                parent_session_id: meta.parent_session_id.clone(),
             });
         }
     }
@@ -103,6 +105,11 @@ fn print_commands(commands: &[DisplayCommand], limit: usize) {
             .command_line
             .as_deref()
             .unwrap_or("(unknown)");
+        let nested = if cmd.parent_session_id.is_some() {
+            " [N]"
+        } else {
+            ""
+        };
         let status = if cmd.session_ended.is_some() {
             ""
         } else {
@@ -111,7 +118,7 @@ fn print_commands(commands: &[DisplayCommand], limit: usize) {
 
         println!(
             "{:<12} {:<10} {:<30} {}",
-            format!("{}{}", session, status),
+            format!("{}{}{}", session, status, nested),
             time,
             truncate_line(command_line, 28),
             truncate_summary(&cmd.record.output_summary, 40),
@@ -120,7 +127,7 @@ fn print_commands(commands: &[DisplayCommand], limit: usize) {
 
     println!("{}", "─".repeat(90));
     println!(
-        "{} commands shown (of {} total). * = active session",
+        "{} commands shown (of {} total). * = active session, [N] = nested",
         slice.len(),
         commands.len()
     );
@@ -140,6 +147,7 @@ fn main() -> Result<()> {
 
     let mut limit: usize = 20;
     let mut session_filter: Option<String> = None;
+    let mut show_all = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -156,13 +164,17 @@ fn main() -> Result<()> {
                     session_filter = Some(args[i].clone());
                 }
             }
+            "--all" | "-a" => {
+                show_all = true;
+            }
             "-h" | "--help" => {
                 println!("omnish-commands: list recent commands from stored sessions");
                 println!();
                 println!("Usage:");
-                println!("  omnish-commands           # show last 20 commands");
-                println!("  omnish-commands -n 50     # show last 50");
-                println!("  omnish-commands -s abc123 # filter by session ID prefix");
+                println!("  omnish-commands              # show last 20 commands (leaf sessions only)");
+                println!("  omnish-commands -a           # show all sessions including nested");
+                println!("  omnish-commands -n 50        # show last 50");
+                println!("  omnish-commands -s abc123    # filter by session ID prefix");
                 return Ok(());
             }
             _ => {
@@ -174,6 +186,22 @@ fn main() -> Result<()> {
 
     let base = store_dir();
     let commands = load_all_commands(&base, session_filter.as_deref())?;
+
+    let commands = if show_all {
+        commands
+    } else {
+        // Collect session IDs that are parents of other sessions
+        let parent_ids: std::collections::HashSet<String> = commands
+            .iter()
+            .filter_map(|c| c.parent_session_id.clone())
+            .collect();
+        // Keep only commands from sessions that are NOT parents
+        commands
+            .into_iter()
+            .filter(|c| !parent_ids.contains(&c.record.session_id))
+            .collect()
+    };
+
     print_commands(&commands, limit);
 
     Ok(())
