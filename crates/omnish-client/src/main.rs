@@ -10,6 +10,7 @@ use omnish_pty::proxy::PtyProxy;
 use omnish_pty::raw_mode::RawModeGuard;
 use omnish_transport::traits::{Connection, Transport};
 use omnish_transport::unix::UnixTransport;
+use std::collections::HashMap;
 use std::os::fd::AsRawFd;
 use uuid::Uuid;
 
@@ -37,13 +38,16 @@ fn get_shell() -> String {
 #[tokio::main]
 async fn main() -> Result<()> {
     let session_id = Uuid::new_v4().to_string()[..8].to_string();
+    let parent_session_id = std::env::var("OMNISH_SESSION_ID").ok();
     let shell = get_shell();
 
-    // Spawn PTY with shell
-    let proxy = PtyProxy::spawn(&shell, &[])?;
+    // Spawn PTY with shell, passing our session_id so nested omnish can detect parent
+    let mut child_env = HashMap::new();
+    child_env.insert("OMNISH_SESSION_ID".to_string(), session_id.clone());
+    let proxy = PtyProxy::spawn_with_env(&shell, &[], child_env)?;
 
     // Connect to daemon (graceful degradation)
-    let daemon_conn = connect_daemon(&session_id, proxy.child_pid() as u32).await;
+    let daemon_conn = connect_daemon(&session_id, parent_session_id, proxy.child_pid() as u32).await;
 
     // Enter raw mode
     let _raw_guard = RawModeGuard::enter(std::io::stdin().as_raw_fd())?;
@@ -237,6 +241,7 @@ async fn main() -> Result<()> {
 
 async fn connect_daemon(
     session_id: &str,
+    parent_session_id: Option<String>,
     child_pid: u32,
 ) -> Option<Box<dyn Connection>> {
     let socket_path = get_socket_path();
@@ -246,7 +251,7 @@ async fn connect_daemon(
             let attrs = probe::default_session_probes(child_pid).collect_all();
             let msg = Message::SessionStart(SessionStart {
                 session_id: session_id.to_string(),
-                parent_session_id: None,
+                parent_session_id,
                 timestamp_ms: timestamp_ms(),
                 attrs,
             });
