@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use nix::pty::{openpty, OpenptyResult};
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::{dup2, execvp, fork, read, write, setsid, ForkResult, Pid};
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
@@ -12,6 +13,10 @@ pub struct PtyProxy {
 
 impl PtyProxy {
     pub fn spawn(cmd: &str, args: &[&str]) -> Result<Self> {
+        Self::spawn_with_env(cmd, args, HashMap::new())
+    }
+
+    pub fn spawn_with_env(cmd: &str, args: &[&str], env: HashMap<String, String>) -> Result<Self> {
         let OpenptyResult { master, slave } =
             openpty(None, None).context("openpty failed")?;
 
@@ -29,6 +34,11 @@ impl PtyProxy {
                 dup2(slave.as_raw_fd(), 2).ok();
                 if slave.as_raw_fd() > 2 {
                     drop(slave);
+                }
+
+                // Set environment variables in the child before exec
+                for (key, value) in &env {
+                    std::env::set_var(key, value);
                 }
 
                 let c_cmd = CString::new(cmd).unwrap();
