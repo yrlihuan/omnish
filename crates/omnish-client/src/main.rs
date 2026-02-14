@@ -1,4 +1,5 @@
 // crates/omnish-client/src/main.rs
+mod command;
 mod display;
 mod interceptor;
 mod probe;
@@ -157,14 +158,28 @@ async fn main() -> Result<()> {
                         nix::unistd::write(std::io::stdout(), restore.as_bytes()).ok();
                     }
                     InterceptAction::Chat(msg) => {
-                        // Chat mode message — send to LLM with terminal context
-                        if let Some(ref conn) = daemon_conn {
-                            handle_omnish_query(&msg, &session_id, conn, &proxy).await;
-                        } else {
-                            // No daemon connection, print error then reprompt shell
-                            let err = display::render_error("Daemon not connected");
-                            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                            proxy.write_all(b"\r").ok();
+                        match command::dispatch(&msg) {
+                            command::ChatAction::Command { result, redirect } => {
+                                handle_command_result(&result, redirect.as_deref(), &proxy);
+                            }
+                            command::ChatAction::DaemonDebug { query, redirect } => {
+                                if let Some(ref conn) = daemon_conn {
+                                    handle_debug_query(&query, &session_id, conn, &proxy, redirect.as_deref()).await;
+                                } else {
+                                    let err = display::render_error("Daemon not connected");
+                                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                                    proxy.write_all(b"\r").ok();
+                                }
+                            }
+                            command::ChatAction::LlmQuery(query) => {
+                                if let Some(ref conn) = daemon_conn {
+                                    handle_omnish_query(&query, &session_id, conn, &proxy).await;
+                                } else {
+                                    let err = display::render_error("Daemon not connected");
+                                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                                    proxy.write_all(b"\r").ok();
+                                }
+                            }
                         }
                     }
                     InterceptAction::Pending => {
@@ -496,6 +511,61 @@ impl AltScreenDetector {
         }
 
         if changed { Some(self.active) } else { None }
+    }
+}
+
+/// Display a command result or write to file if redirected.
+fn handle_command_result(content: &str, redirect: Option<&str>, proxy: &PtyProxy) {
+    if let Some(path) = redirect {
+        match std::fs::write(path, content) {
+            Ok(_) => {
+                let msg = display::render_response(&format!("Written to {}", path));
+                nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
+            }
+            Err(e) => {
+                let err = display::render_error(&format!("Write failed: {}", e));
+                nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+            }
+        }
+    } else {
+        let output = display::render_response(content);
+        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+    }
+    proxy.write_all(b"\r").ok();
+}
+
+/// Send a debug query to daemon and display/redirect the result.
+async fn handle_debug_query(
+    query: &str,
+    session_id: &str,
+    conn: &Box<dyn Connection>,
+    proxy: &PtyProxy,
+    redirect: Option<&str>,
+) {
+    let request_id = Uuid::new_v4().to_string()[..8].to_string();
+    let request = Message::Request(Request {
+        request_id: request_id.clone(),
+        session_id: session_id.to_string(),
+        query: query.to_string(),
+        scope: RequestScope::CurrentSession,
+    });
+
+    if conn.send(&request).await.is_err() {
+        let err = display::render_error("Failed to send request");
+        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+        proxy.write_all(b"\r").ok();
+        return;
+    }
+
+    match conn.recv().await {
+        Ok(Message::Response(resp)) if resp.request_id == request_id => {
+            handle_command_result(&resp.content, redirect, proxy);
+        }
+        _ => {
+            let err = display::render_error("Failed to receive debug response");
+            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+            proxy.write_all(b"\r").ok();
+        }
     }
 }
 

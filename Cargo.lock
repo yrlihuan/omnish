@@ -701,6 +701,7 @@ dependencies = [
  "libc",
  "nix",
  "omnish-common",
+ "omnish-llm",
  "omnish-protocol",
  "omnish-pty",
  "omnish-transport",
