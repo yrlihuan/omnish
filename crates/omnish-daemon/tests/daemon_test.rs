@@ -1,4 +1,5 @@
 use omnish_daemon::session_mgr::SessionManager;
+use omnish_store::session::SessionMeta;
 use std::collections::HashMap;
 
 #[tokio::test]
@@ -137,4 +138,42 @@ async fn test_session_register_with_parent() {
     mgr.register("child1", Some("parent1".to_string()), HashMap::new()).await.unwrap();
     let active = mgr.list_active().await;
     assert!(active.contains(&"child1".to_string()));
+}
+
+#[tokio::test]
+async fn test_nested_session_parent_child_relationship() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = SessionManager::new(dir.path().to_path_buf());
+
+    // Register parent session (no parent)
+    mgr.register("parent1", None, HashMap::new()).await.unwrap();
+
+    // Register child session with parent
+    mgr.register("child1", Some("parent1".to_string()), HashMap::new()).await.unwrap();
+
+    // Both should be active
+    let active = mgr.list_active().await;
+    assert!(active.contains(&"parent1".to_string()));
+    assert!(active.contains(&"child1".to_string()));
+
+    // End both sessions
+    mgr.end_session("child1").await.unwrap();
+    mgr.end_session("parent1").await.unwrap();
+
+    // Verify parent_session_id persisted in meta.json
+    let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().collect();
+    assert_eq!(entries.len(), 2, "should have 2 session dirs");
+
+    for entry in &entries {
+        let meta = SessionMeta::load(&entry.path()).unwrap();
+        if meta.session_id == "child1" {
+            assert_eq!(meta.parent_session_id, Some("parent1".to_string()),
+                "child session should have parent_session_id");
+        } else if meta.session_id == "parent1" {
+            assert_eq!(meta.parent_session_id, None,
+                "parent session should have no parent");
+        } else {
+            panic!("unexpected session: {}", meta.session_id);
+        }
+    }
 }
