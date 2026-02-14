@@ -17,6 +17,8 @@ pub enum Message {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStart {
     pub session_id: String,
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
     pub timestamp_ms: u64,
     #[serde(default)]
     pub attrs: HashMap<String, String>,
