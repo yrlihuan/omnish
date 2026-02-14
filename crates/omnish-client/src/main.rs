@@ -246,6 +246,7 @@ async fn connect_daemon(
             let attrs = probe::default_session_probes(child_pid).collect_all();
             let msg = Message::SessionStart(SessionStart {
                 session_id: session_id.to_string(),
+                parent_session_id: None,
                 timestamp_ms: timestamp_ms(),
                 attrs,
             });

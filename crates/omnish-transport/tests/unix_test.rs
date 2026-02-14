@@ -18,6 +18,7 @@ async fn test_unix_send_recv() {
         let conn = UnixTransport.connect(&addr2).await.unwrap();
         let msg = Message::SessionStart(SessionStart {
             session_id: "test".to_string(),
+            parent_session_id: None,
             timestamp_ms: 0,
             attrs: HashMap::from([
                 ("shell".to_string(), "/bin/bash".to_string()),

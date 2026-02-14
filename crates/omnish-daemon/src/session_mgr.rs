@@ -34,6 +34,7 @@ impl SessionManager {
     pub async fn register(
         &self,
         session_id: &str,
+        parent_session_id: Option<String>,
         attrs: std::collections::HashMap<String, String>,
     ) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
@@ -46,7 +47,7 @@ impl SessionManager {
 
         let meta = SessionMeta {
             session_id: session_id.to_string(),
-            parent_session_id: None,
+            parent_session_id,
             started_at: now,
             ended_at: None,
             attrs,

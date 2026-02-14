@@ -6,13 +6,13 @@ async fn test_session_register_and_list() {
     let dir = tempfile::tempdir().unwrap();
     let mgr = SessionManager::new(dir.path().to_path_buf());
 
-    mgr.register("sess1", HashMap::from([
+    mgr.register("sess1", None, HashMap::from([
         ("shell".to_string(), "/bin/bash".to_string()),
         ("pid".to_string(), "100".to_string()),
         ("tty".to_string(), "/dev/pts/0".to_string()),
         ("cwd".to_string(), "/home/user".to_string()),
     ])).await.unwrap();
-    mgr.register("sess2", HashMap::from([
+    mgr.register("sess2", None, HashMap::from([
         ("shell".to_string(), "/bin/zsh".to_string()),
         ("pid".to_string(), "101".to_string()),
         ("tty".to_string(), "/dev/pts/1".to_string()),
@@ -28,7 +28,7 @@ async fn test_session_end() {
     let dir = tempfile::tempdir().unwrap();
     let mgr = SessionManager::new(dir.path().to_path_buf());
 
-    mgr.register("sess1", HashMap::from([
+    mgr.register("sess1", None, HashMap::from([
         ("shell".to_string(), "/bin/bash".to_string()),
         ("pid".to_string(), "100".to_string()),
         ("tty".to_string(), "/dev/pts/0".to_string()),
@@ -45,7 +45,7 @@ async fn test_command_recording_through_session_manager() {
     let dir = tempfile::tempdir().unwrap();
     let mgr = SessionManager::new(dir.path().to_path_buf());
 
-    mgr.register("sess1", HashMap::from([
+    mgr.register("sess1", None, HashMap::from([
         ("shell".to_string(), "/bin/bash".to_string()),
         ("cwd".to_string(), "/home/user".to_string()),
     ])).await.unwrap();
@@ -67,7 +67,7 @@ async fn test_commands_persisted_on_session_end() {
     let dir = tempfile::tempdir().unwrap();
     let mgr = SessionManager::new(dir.path().to_path_buf());
 
-    mgr.register("sess1", HashMap::from([
+    mgr.register("sess1", None, HashMap::from([
         ("shell".to_string(), "/bin/bash".to_string()),
         ("cwd".to_string(), "/tmp".to_string()),
     ])).await.unwrap();
@@ -96,7 +96,7 @@ async fn test_multi_command_session_e2e() {
     let dir = tempfile::tempdir().unwrap();
     let mgr = SessionManager::new(dir.path().to_path_buf());
 
-    mgr.register("e2e", HashMap::from([
+    mgr.register("e2e", None, HashMap::from([
         ("shell".to_string(), "/bin/bash".to_string()),
         ("cwd".to_string(), "/home/user/project".to_string()),
     ])).await.unwrap();
@@ -128,4 +128,13 @@ async fn test_multi_command_session_e2e() {
 
     // End session — should persist including any pending
     mgr.end_session("e2e").await.unwrap();
+}
+
+#[tokio::test]
+async fn test_session_register_with_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = SessionManager::new(dir.path().to_path_buf());
+    mgr.register("child1", Some("parent1".to_string()), HashMap::new()).await.unwrap();
+    let active = mgr.list_active().await;
+    assert!(active.contains(&"child1".to_string()));
 }
