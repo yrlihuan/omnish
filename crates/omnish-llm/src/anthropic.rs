@@ -12,17 +12,10 @@ impl LlmBackend for AnthropicBackend {
     async fn complete(&self, req: &LlmRequest) -> Result<LlmResponse> {
         let client = reqwest::Client::new();
 
-        let user_content = if let Some(query) = &req.query {
-            format!(
-                "Here is the terminal session context:\n\n```\n{}\n```\n\nUser question: {}",
-                req.context, query
-            )
-        } else {
-            format!(
-                "Analyze this terminal session output and explain any errors or issues:\n\n```\n{}\n```",
-                req.context
-            )
-        };
+        let user_content = crate::template::build_user_content(
+            &req.context,
+            req.query.as_deref(),
+        );
 
         let body = serde_json::json!({
             "model": self.model,
