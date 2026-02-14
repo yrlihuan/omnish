@@ -46,6 +46,7 @@ impl SessionManager {
 
         let meta = SessionMeta {
             session_id: session_id.to_string(),
+            parent_session_id: None,
             started_at: now,
             ended_at: None,
             attrs,

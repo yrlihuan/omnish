@@ -6,6 +6,8 @@ use std::path::Path;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionMeta {
     pub session_id: String,
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
     pub started_at: String,
     pub ended_at: Option<String>,
     #[serde(default)]

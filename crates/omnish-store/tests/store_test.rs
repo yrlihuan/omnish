@@ -9,6 +9,7 @@ fn test_write_and_read_session_meta() {
     let dir = tempdir().unwrap();
     let meta = SessionMeta {
         session_id: "abc123".to_string(),
+        parent_session_id: None,
         started_at: "2026-02-11T16:30:00Z".to_string(),
         ended_at: None,
         attrs: HashMap::from([
@@ -129,4 +130,19 @@ fn test_command_record_load_empty() {
     let dir = tempdir().unwrap();
     let loaded = CommandRecord::load_all(dir.path()).unwrap();
     assert!(loaded.is_empty());
+}
+
+#[test]
+fn test_session_meta_with_parent() {
+    let dir = tempdir().unwrap();
+    let meta = SessionMeta {
+        session_id: "child1".into(),
+        parent_session_id: Some("parent1".into()),
+        started_at: "2026-02-14T10:00:00Z".into(),
+        ended_at: None,
+        attrs: HashMap::new(),
+    };
+    meta.save(dir.path()).unwrap();
+    let loaded = SessionMeta::load(dir.path()).unwrap();
+    assert_eq!(loaded.parent_session_id, Some("parent1".into()));
 }
