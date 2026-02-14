@@ -67,6 +67,19 @@ async fn handle_connection(
                 mgr.write_io(&io.session_id, io.timestamp_ms, dir, &io.data).await?;
             }
             Message::Request(req) => {
+                #[cfg(debug_assertions)]
+                if req.query.starts_with("__debug:") {
+                    let content = handle_debug_request(&req, &mgr).await;
+                    let resp = Message::Response(Response {
+                        request_id: req.request_id,
+                        content,
+                        is_streaming: false,
+                        is_final: true,
+                    });
+                    conn.send(&resp).await?;
+                    continue;
+                }
+
                 let content = if let Some(ref backend) = llm {
                     match handle_llm_request(&req, &mgr, backend).await {
                         Ok(response) => response.content,
@@ -91,6 +104,20 @@ async fn handle_connection(
         }
     }
     Ok(())
+}
+
+#[cfg(debug_assertions)]
+async fn handle_debug_request(req: &Request, mgr: &SessionManager) -> String {
+    let sub = req.query.strip_prefix("__debug:").unwrap_or("");
+    match sub {
+        "context" => {
+            match mgr.get_session_context(&req.session_id).await {
+                Ok(ctx) => ctx,
+                Err(e) => format!("Error: {}", e),
+            }
+        }
+        other => format!("Unknown debug subcommand: {}", other),
+    }
 }
 
 async fn handle_llm_request(

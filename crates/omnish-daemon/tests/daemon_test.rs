@@ -1,4 +1,5 @@
 use omnish_daemon::session_mgr::SessionManager;
+#[allow(unused_imports)]
 use omnish_store::session::SessionMeta;
 use std::collections::HashMap;
 
@@ -176,4 +177,27 @@ async fn test_nested_session_parent_child_relationship() {
             panic!("unexpected session: {}", meta.session_id);
         }
     }
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn test_debug_context_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = SessionManager::new(dir.path().to_path_buf());
+
+    // Register a session
+    mgr.register("dbg1", None, HashMap::from([
+        ("shell".to_string(), "/bin/bash".to_string()),
+        ("cwd".to_string(), "/tmp".to_string()),
+    ])).await.unwrap();
+
+    // Write some IO data (direction=1 for output)
+    mgr.write_io("dbg1", 1000, 1, b"$ ").await.unwrap();
+    mgr.write_io("dbg1", 1001, 0, b"echo hello\r\n").await.unwrap();
+    mgr.write_io("dbg1", 1002, 1, b"hello\r\n$ ").await.unwrap();
+
+    // Verify get_session_context returns the output data (ANSI-stripped)
+    let ctx = mgr.get_session_context("dbg1").await.unwrap();
+    assert!(!ctx.is_empty(), "context should not be empty");
+    assert!(ctx.contains("hello"), "context should contain output data");
 }
