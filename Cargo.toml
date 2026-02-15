@@ -6,6 +6,7 @@ members = [
     "crates/omnish-transport",
     "crates/omnish-pty",
     "crates/omnish-store",
+    "crates/omnish-context",
     "crates/omnish-llm",
     "crates/omnish-daemon",
     "crates/omnish-client",

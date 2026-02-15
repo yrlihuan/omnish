@@ -1,0 +1,12 @@
+[package]
+name = "omnish-context"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+omnish-store = { path = "../omnish-store" }
+anyhow = { workspace = true }
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true }
