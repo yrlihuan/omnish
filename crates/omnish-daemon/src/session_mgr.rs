@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
-use omnish_context::{ContextStrategy, StreamReader};
-use omnish_context::recent::RecentCommands;
+use omnish_context::StreamReader;
+use omnish_context::recent::{RecentCommands, DefaultFormatter};
 use omnish_store::command::CommandRecord;
 use omnish_store::session::SessionMeta;
 use omnish_store::stream::{read_range, StreamEntry, StreamWriter};
@@ -148,19 +148,21 @@ impl SessionManager {
             stream_path: session.dir.join("stream.bin"),
         };
         let strategy = RecentCommands::new();
-        strategy.build_context(&session.commands, &reader).await
+        let formatter = DefaultFormatter::new();
+        omnish_context::build_context(&strategy, &formatter, &session.commands, &reader).await
     }
 
     pub async fn get_all_sessions_context(&self) -> Result<String> {
         let sessions = self.sessions.lock().await;
         let strategy = RecentCommands::new();
+        let formatter = DefaultFormatter::new();
         let mut parts = Vec::new();
 
         for (sid, session) in sessions.iter() {
             let reader = FileStreamReader {
                 stream_path: session.dir.join("stream.bin"),
             };
-            match strategy.build_context(&session.commands, &reader).await {
+            match omnish_context::build_context(&strategy, &formatter, &session.commands, &reader).await {
                 Ok(ctx) if !ctx.is_empty() => {
                     parts.push(format!("=== Session {} ===\n{}", sid, ctx));
                 }
