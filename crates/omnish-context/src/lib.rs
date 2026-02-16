@@ -1,3 +1,4 @@
+pub mod format_utils;
 pub mod recent;
 
 use anyhow::Result;
@@ -7,6 +8,7 @@ use omnish_store::stream::StreamEntry;
 
 /// Pre-processed command data, ready for formatting.
 pub struct CommandContext {
+    pub session_id: String,
     pub command_line: Option<String>,
     pub cwd: Option<String>,
     pub started_at: u64,
@@ -53,6 +55,7 @@ pub async fn build_context(
         let output = strip_ansi(&raw_bytes);
 
         contexts.push(CommandContext {
+            session_id: cmd.session_id.clone(),
             command_line: cmd.command_line.clone(),
             cwd: cmd.cwd.clone(),
             started_at: cmd.started_at,

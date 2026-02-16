@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use omnish_store::command::CommandRecord;
 
+use crate::format_utils::{assign_term_labels, format_relative_time, truncate_lines};
 use crate::{CommandContext, ContextFormatter, ContextStrategy};
 
 const MAX_COMMANDS: usize = 10;
@@ -30,68 +31,127 @@ impl ContextStrategy for RecentCommands {
     }
 }
 
-/// Formats commands as `$ cmd\noutput`, with line truncation for long output.
-pub struct DefaultFormatter {
-    max_output_lines: usize,
-    head_lines: usize,
-    tail_lines: usize,
+/// Formats commands grouped by session, with the current session first.
+pub struct GroupedFormatter {
+    current_session_id: String,
+    now_ms: u64,
 }
 
-impl DefaultFormatter {
-    pub fn new() -> Self {
+impl GroupedFormatter {
+    pub fn new(current_session_id: &str, now_ms: u64) -> Self {
         Self {
-            max_output_lines: MAX_OUTPUT_LINES,
-            head_lines: HEAD_LINES,
-            tail_lines: TAIL_LINES,
+            current_session_id: current_session_id.to_string(),
+            now_ms,
         }
     }
 }
 
-impl ContextFormatter for DefaultFormatter {
+impl ContextFormatter for GroupedFormatter {
     fn format(&self, commands: &[CommandContext]) -> String {
-        let mut sections = Vec::new();
+        if commands.is_empty() {
+            return String::new();
+        }
 
+        let labels = assign_term_labels(commands, &self.current_session_id);
+
+        // Collect session IDs in first-appearance order
+        let mut session_order: Vec<String> = Vec::new();
         for cmd in commands {
-            let cmd_line = cmd
-                .command_line
-                .as_deref()
-                .unwrap_or("(unknown)");
-
-            let output = self.truncate_lines(&cmd.output);
-
-            if output.is_empty() {
-                sections.push(format!("$ {}", cmd_line));
-            } else {
-                sections.push(format!("$ {}\n{}", cmd_line, output));
+            if !session_order.contains(&cmd.session_id) {
+                session_order.push(cmd.session_id.clone());
             }
+        }
+
+        // Move current session to front
+        if let Some(pos) = session_order
+            .iter()
+            .position(|s| s == &self.current_session_id)
+        {
+            let current = session_order.remove(pos);
+            session_order.insert(0, current);
+        }
+
+        let mut sections = Vec::new();
+        for session_id in &session_order {
+            let label = labels.get(session_id).unwrap();
+            let is_current = session_id == &self.current_session_id;
+            let header = if is_current {
+                format!("--- {} (current) ---", label)
+            } else {
+                format!("--- {} ---", label)
+            };
+
+            let mut group_lines = vec![header];
+            for cmd in commands.iter().filter(|c| &c.session_id == session_id) {
+                let time_str = format_relative_time(cmd.started_at, self.now_ms);
+                let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
+                let output = truncate_lines(&cmd.output, MAX_OUTPUT_LINES, HEAD_LINES, TAIL_LINES);
+
+                if output.is_empty() {
+                    group_lines.push(format!("[{}] $ {}", time_str, cmd_line));
+                } else {
+                    group_lines.push(format!("[{}] $ {}\n{}", time_str, cmd_line, output));
+                }
+            }
+
+            sections.push(group_lines.join("\n\n"));
         }
 
         sections.join("\n\n")
     }
 }
 
-impl DefaultFormatter {
-    fn truncate_lines(&self, text: &str) -> String {
-        let lines: Vec<&str> = text
-            .lines()
-            .map(|l| l.trim_end_matches('\r'))
-            .filter(|l| !l.is_empty())
-            .collect();
+/// Formats commands interleaved by time, sorted by started_at.
+pub struct InterleavedFormatter {
+    current_session_id: String,
+    now_ms: u64,
+}
 
-        let total = lines.len();
-        if total <= self.max_output_lines {
-            lines.join("\n")
-        } else {
-            let head = &lines[..self.head_lines];
-            let tail = &lines[total - self.tail_lines..];
-            let omitted = total - self.head_lines - self.tail_lines;
-            format!(
-                "{}\n... ({} lines omitted) ...\n{}",
-                head.join("\n"),
-                omitted,
-                tail.join("\n")
-            )
+impl InterleavedFormatter {
+    pub fn new(current_session_id: &str, now_ms: u64) -> Self {
+        Self {
+            current_session_id: current_session_id.to_string(),
+            now_ms,
         }
+    }
+}
+
+impl ContextFormatter for InterleavedFormatter {
+    fn format(&self, commands: &[CommandContext]) -> String {
+        if commands.is_empty() {
+            return String::new();
+        }
+
+        let labels = assign_term_labels(commands, &self.current_session_id);
+
+        // Sort by started_at
+        let mut sorted: Vec<&CommandContext> = commands.iter().collect();
+        sorted.sort_by_key(|c| c.started_at);
+
+        let mut sections = Vec::new();
+        for cmd in sorted {
+            let time_str = format_relative_time(cmd.started_at, self.now_ms);
+            let label = labels.get(&cmd.session_id).unwrap();
+            let is_current = cmd.session_id == self.current_session_id;
+            let label_str = if is_current {
+                format!("{}*", label)
+            } else {
+                label.clone()
+            };
+            let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
+            let output = truncate_lines(&cmd.output, MAX_OUTPUT_LINES, HEAD_LINES, TAIL_LINES);
+
+            if output.is_empty() {
+                sections.push(format!("[{}] {} $ {}", time_str, label_str, cmd_line));
+            } else {
+                sections.push(format!(
+                    "[{}] {} $ {}\n{}",
+                    time_str, label_str, cmd_line, output
+                ));
+            }
+        }
+
+        sections.join("\n\n")
     }
 }
 
@@ -122,10 +182,10 @@ mod tests {
         }
     }
 
-    fn make_cmd(seq: u32, cmd_line: Option<&str>) -> CommandRecord {
+    fn make_cmd(seq: u32, session_id: &str, cmd_line: Option<&str>) -> CommandRecord {
         CommandRecord {
-            command_id: format!("sess:{}", seq),
-            session_id: "sess".into(),
+            command_id: format!("{}:{}", session_id, seq),
+            session_id: session_id.to_string(),
             command_line: cmd_line.map(|s| s.to_string()),
             cwd: None,
             started_at: 1000 + seq as u64 * 100,
@@ -133,6 +193,17 @@ mod tests {
             output_summary: String::new(),
             stream_offset: 0,
             stream_length: 100,
+        }
+    }
+
+    fn make_ctx(session_id: &str, cmd_line: &str, started_at: u64, output: &str) -> CommandContext {
+        CommandContext {
+            session_id: session_id.to_string(),
+            command_line: Some(cmd_line.to_string()),
+            cwd: None,
+            started_at,
+            ended_at: Some(started_at + 50),
+            output: output.to_string(),
         }
     }
 
@@ -165,7 +236,7 @@ mod tests {
     async fn test_select_max_recent() {
         let strategy = RecentCommands::new();
         let cmds: Vec<_> = (0..15)
-            .map(|i| make_cmd(i, Some(&format!("cmd{}", i))))
+            .map(|i| make_cmd(i, "sess", Some(&format!("cmd{}", i))))
             .collect();
         let selected = strategy.select_commands(&cmds).await;
         assert_eq!(selected.len(), 10);
@@ -173,80 +244,129 @@ mod tests {
         assert_eq!(selected[9].command_line.as_deref(), Some("cmd14"));
     }
 
-    // --- Formatter tests ---
+    // --- GroupedFormatter tests ---
 
     #[test]
-    fn test_format_single_command() {
-        let formatter = DefaultFormatter::new();
-        let contexts = vec![CommandContext {
-            command_line: Some("ls".into()),
-            cwd: None,
-            started_at: 1000,
-            ended_at: Some(1050),
-            output: "file1.txt\nfile2.txt".into(),
-        }];
-        let result = formatter.format(&contexts);
-        assert_eq!(result, "$ ls\nfile1.txt\nfile2.txt");
+    fn test_grouped_single_session() {
+        let commands = vec![make_ctx("sess-a", "ls", 30000, "file1.txt")];
+        let formatter = GroupedFormatter::new("sess-a", 60000);
+        let result = formatter.format(&commands);
+        assert!(result.contains("--- term A (current) ---"));
+        assert!(result.contains("[30s ago] $ ls"));
     }
 
     #[test]
-    fn test_format_truncates_long_output() {
-        let formatter = DefaultFormatter::new();
-        let mut output = String::new();
-        for i in 0..30 {
-            output.push_str(&format!("line {}\n", i));
-        }
-        let contexts = vec![CommandContext {
-            command_line: Some("long-cmd".into()),
-            cwd: None,
-            started_at: 1000,
-            ended_at: Some(1050),
-            output,
-        }];
-        let result = formatter.format(&contexts);
-        assert!(result.contains("line 0"));
-        assert!(result.contains("line 9"));
-        assert!(result.contains("... (10 lines omitted) ..."));
-        assert!(result.contains("line 20"));
-        assert!(result.contains("line 29"));
-        assert!(!result.contains("line 10\n"));
+    fn test_grouped_multi_session() {
+        let commands = vec![
+            make_ctx("sess-a", "ls", 28000, "file1.txt"),
+            make_ctx("sess-b", "npm start", 25000, "Server running"),
+        ];
+        let formatter = GroupedFormatter::new("sess-a", 30000);
+        let result = formatter.format(&commands);
+        // Current session should be first
+        let pos_a = result.find("--- term A (current) ---").unwrap();
+        let pos_b = result.find("--- term B ---").unwrap();
+        assert!(pos_a < pos_b);
+        assert!(result.contains("term A"));
+        assert!(result.contains("term B"));
     }
 
     #[test]
-    fn test_format_unknown_command() {
-        let formatter = DefaultFormatter::new();
-        let contexts = vec![CommandContext {
-            command_line: None,
-            cwd: None,
-            started_at: 1000,
-            ended_at: None,
-            output: "output".into(),
-        }];
-        let result = formatter.format(&contexts);
-        assert!(result.contains("$ (unknown)"));
+    fn test_grouped_empty() {
+        let formatter = GroupedFormatter::new("sess-a", 30000);
+        let result = formatter.format(&[]);
+        assert_eq!(result, "");
     }
 
-    // --- Integration tests: build_context orchestrator ---
+    // --- InterleavedFormatter tests ---
+
+    #[test]
+    fn test_interleaved_sorted_by_time() {
+        let commands = vec![
+            make_ctx("sess-a", "ls", 28000, "file1.txt"),
+            make_ctx("sess-b", "npm start", 25000, "Server running"),
+            make_ctx("sess-a", "pwd", 29970, "/home"),
+        ];
+        let formatter = InterleavedFormatter::new("sess-a", 30000);
+        let result = formatter.format(&commands);
+        // npm start (5s ago) should come before ls (2s ago) which should come before pwd (30s...wait)
+        // started_at: npm=25000, ls=28000, pwd=29970; now=30000
+        // npm: 5s ago, ls: 2s ago, pwd: 30s ago? No: 30000-29970=30ms = 0s ago
+        let pos_npm = result.find("npm start").unwrap();
+        let pos_ls = result.find("$ ls").unwrap();
+        let pos_pwd = result.find("$ pwd").unwrap();
+        assert!(pos_npm < pos_ls);
+        assert!(pos_ls < pos_pwd);
+    }
+
+    #[test]
+    fn test_interleaved_marks_current() {
+        let commands = vec![
+            make_ctx("sess-a", "ls", 28000, "file1.txt"),
+            make_ctx("sess-b", "npm start", 25000, "Server running"),
+        ];
+        let formatter = InterleavedFormatter::new("sess-a", 30000);
+        let result = formatter.format(&commands);
+        assert!(result.contains("term A*"));
+        assert!(result.contains("term B $"));
+    }
+
+    #[test]
+    fn test_interleaved_empty() {
+        let formatter = InterleavedFormatter::new("sess-a", 30000);
+        let result = formatter.format(&[]);
+        assert_eq!(result, "");
+    }
+
+    // --- Integration tests: build_context ---
+
+    #[tokio::test]
+    async fn test_build_context_grouped() {
+        let strategy = RecentCommands::new();
+        let formatter = GroupedFormatter::new("sess", 30000);
+        let reader = MockReader::new(vec![make_output_entry("file1.txt\n")]);
+        let cmds = vec![make_cmd(0, "sess", Some("ls"))];
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader)
+            .await
+            .unwrap();
+        assert!(result.contains("--- term A (current) ---"));
+        assert!(result.contains("$ ls"));
+    }
+
+    #[tokio::test]
+    async fn test_build_context_interleaved() {
+        let strategy = RecentCommands::new();
+        let formatter = InterleavedFormatter::new("sess", 30000);
+        let reader = MockReader::new(vec![make_output_entry("file1.txt\n")]);
+        let cmds = vec![make_cmd(0, "sess", Some("ls"))];
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader)
+            .await
+            .unwrap();
+        assert!(result.contains("term A*"));
+        assert!(result.contains("$ ls"));
+    }
 
     #[tokio::test]
     async fn test_build_context_filters_direction() {
         let strategy = RecentCommands::new();
-        let formatter = DefaultFormatter::new();
+        let formatter = GroupedFormatter::new("sess", 30000);
         let reader = MockReader::new(vec![
             make_input_entry("ls\r"),
             make_output_entry("file1.txt\n"),
         ]);
-        let cmds = vec![make_cmd(0, Some("ls"))];
+        let cmds = vec![make_cmd(0, "sess", Some("ls"))];
         let result = crate::build_context(&strategy, &formatter, &cmds, &reader)
             .await
             .unwrap();
-        assert_eq!(result, "$ ls\nfile1.txt");
+        // Should only contain output, not input
+        assert!(result.contains("file1.txt"));
+        assert!(!result.contains("ls\r"));
     }
 
     #[tokio::test]
     async fn test_build_context_empty() {
         let strategy = RecentCommands::new();
-        let formatter = DefaultFormatter::new();
+        let formatter = GroupedFormatter::new("sess", 30000);
         let reader = MockReader::empty();
         let result = crate::build_context(&strategy, &formatter, &[], &reader)
             .await

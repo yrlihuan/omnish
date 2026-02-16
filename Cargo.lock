@@ -739,6 +739,7 @@ dependencies = [
  "chrono",
  "dirs",
  "omnish-common",
+ "omnish-context",
  "omnish-llm",
  "omnish-protocol",
  "omnish-store",
