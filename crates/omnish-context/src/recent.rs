@@ -1,55 +1,63 @@
-use anyhow::Result;
 use async_trait::async_trait;
 use omnish_store::command::CommandRecord;
 
-use crate::{ContextStrategy, StreamReader};
+use crate::{CommandContext, ContextFormatter, ContextStrategy};
 
 const MAX_COMMANDS: usize = 10;
 const MAX_OUTPUT_LINES: usize = 20;
 const HEAD_LINES: usize = 10;
 const TAIL_LINES: usize = 10;
 
-pub struct RecentCommands;
+/// Selects the most recent N commands.
+pub struct RecentCommands {
+    max: usize,
+}
 
 impl RecentCommands {
     pub fn new() -> Self {
-        Self
+        Self { max: MAX_COMMANDS }
     }
 }
 
 #[async_trait]
 impl ContextStrategy for RecentCommands {
-    async fn build_context(
-        &self,
-        commands: &[CommandRecord],
-        reader: &dyn StreamReader,
-    ) -> Result<String> {
-        let recent = if commands.len() > MAX_COMMANDS {
-            &commands[commands.len() - MAX_COMMANDS..]
+    async fn select_commands<'a>(&self, commands: &'a [CommandRecord]) -> Vec<&'a CommandRecord> {
+        if commands.len() > self.max {
+            commands[commands.len() - self.max..].iter().collect()
         } else {
-            commands
-        };
+            commands.iter().collect()
+        }
+    }
+}
 
+/// Formats commands as `$ cmd\noutput`, with line truncation for long output.
+pub struct DefaultFormatter {
+    max_output_lines: usize,
+    head_lines: usize,
+    tail_lines: usize,
+}
+
+impl DefaultFormatter {
+    pub fn new() -> Self {
+        Self {
+            max_output_lines: MAX_OUTPUT_LINES,
+            head_lines: HEAD_LINES,
+            tail_lines: TAIL_LINES,
+        }
+    }
+}
+
+impl ContextFormatter for DefaultFormatter {
+    fn format(&self, commands: &[CommandContext]) -> String {
         let mut sections = Vec::new();
 
-        for cmd in recent {
+        for cmd in commands {
             let cmd_line = cmd
                 .command_line
                 .as_deref()
                 .unwrap_or("(unknown)");
 
-            let entries = reader.read_command_output(cmd.stream_offset, cmd.stream_length)?;
-
-            // Collect only direction=1 (PTY output) bytes
-            let mut raw_bytes = Vec::new();
-            for entry in &entries {
-                if entry.direction == 1 {
-                    raw_bytes.extend_from_slice(&entry.data);
-                }
-            }
-
-            let cleaned = strip_ansi(&raw_bytes);
-            let output = truncate_lines(&cleaned);
+            let output = self.truncate_lines(&cmd.output);
 
             if output.is_empty() {
                 sections.push(format!("$ {}", cmd_line));
@@ -58,64 +66,42 @@ impl ContextStrategy for RecentCommands {
             }
         }
 
-        Ok(sections.join("\n\n"))
+        sections.join("\n\n")
     }
 }
 
-/// Strip ANSI escape sequences from raw bytes.
-fn strip_ansi(raw: &[u8]) -> String {
-    let s = String::from_utf8_lossy(raw);
-    let mut result = String::new();
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                while let Some(&next) = chars.peek() {
-                    chars.next();
-                    if next.is_ascii_alphabetic() {
-                        break;
-                    }
-                }
-            }
+impl DefaultFormatter {
+    fn truncate_lines(&self, text: &str) -> String {
+        let lines: Vec<&str> = text
+            .lines()
+            .map(|l| l.trim_end_matches('\r'))
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        let total = lines.len();
+        if total <= self.max_output_lines {
+            lines.join("\n")
         } else {
-            result.push(c);
+            let head = &lines[..self.head_lines];
+            let tail = &lines[total - self.tail_lines..];
+            let omitted = total - self.head_lines - self.tail_lines;
+            format!(
+                "{}\n... ({} lines omitted) ...\n{}",
+                head.join("\n"),
+                omitted,
+                tail.join("\n")
+            )
         }
-    }
-    result
-}
-
-/// Split into lines, truncate if over MAX_OUTPUT_LINES.
-/// Keep first HEAD_LINES and last TAIL_LINES.
-fn truncate_lines(text: &str) -> String {
-    let lines: Vec<&str> = text
-        .lines()
-        .map(|l| l.trim_end_matches('\r'))
-        .filter(|l| !l.is_empty())
-        .collect();
-
-    let total = lines.len();
-    if total <= MAX_OUTPUT_LINES {
-        lines.join("\n")
-    } else {
-        let head = &lines[..HEAD_LINES];
-        let tail = &lines[total - TAIL_LINES..];
-        let omitted = total - HEAD_LINES - TAIL_LINES;
-        format!(
-            "{}\n... ({} lines omitted) ...\n{}",
-            head.join("\n"),
-            omitted,
-            tail.join("\n")
-        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StreamReader;
+    use anyhow::Result;
     use omnish_store::stream::StreamEntry;
 
-    /// Mock StreamReader for tests
     struct MockReader {
         entries: Vec<StreamEntry>,
     }
@@ -166,84 +152,105 @@ mod tests {
         }
     }
 
+    // --- Strategy tests ---
+
     #[tokio::test]
-    async fn test_empty_commands() {
+    async fn test_select_empty() {
         let strategy = RecentCommands::new();
-        let reader = MockReader::empty();
-        let result = strategy.build_context(&[], &reader).await.unwrap();
-        assert_eq!(result, "");
+        let result = strategy.select_commands(&[]).await;
+        assert!(result.is_empty());
     }
 
     #[tokio::test]
-    async fn test_single_command() {
+    async fn test_select_max_recent() {
         let strategy = RecentCommands::new();
-        let reader = MockReader::new(vec![
-            make_output_entry("file1.txt\nfile2.txt\n"),
-        ]);
-        let cmds = vec![make_cmd(0, Some("ls"))];
-        let result = strategy.build_context(&cmds, &reader).await.unwrap();
+        let cmds: Vec<_> = (0..15)
+            .map(|i| make_cmd(i, Some(&format!("cmd{}", i))))
+            .collect();
+        let selected = strategy.select_commands(&cmds).await;
+        assert_eq!(selected.len(), 10);
+        assert_eq!(selected[0].command_line.as_deref(), Some("cmd5"));
+        assert_eq!(selected[9].command_line.as_deref(), Some("cmd14"));
+    }
+
+    // --- Formatter tests ---
+
+    #[test]
+    fn test_format_single_command() {
+        let formatter = DefaultFormatter::new();
+        let contexts = vec![CommandContext {
+            command_line: Some("ls".into()),
+            cwd: None,
+            started_at: 1000,
+            ended_at: Some(1050),
+            output: "file1.txt\nfile2.txt".into(),
+        }];
+        let result = formatter.format(&contexts);
         assert_eq!(result, "$ ls\nfile1.txt\nfile2.txt");
     }
 
-    #[tokio::test]
-    async fn test_truncates_long_output() {
-        let strategy = RecentCommands::new();
-        let mut lines = String::new();
+    #[test]
+    fn test_format_truncates_long_output() {
+        let formatter = DefaultFormatter::new();
+        let mut output = String::new();
         for i in 0..30 {
-            lines.push_str(&format!("line {}\n", i));
+            output.push_str(&format!("line {}\n", i));
         }
-        let reader = MockReader::new(vec![make_output_entry(&lines)]);
-        let cmds = vec![make_cmd(0, Some("long-cmd"))];
-        let result = strategy.build_context(&cmds, &reader).await.unwrap();
-
-        assert!(result.contains("$ long-cmd"));
+        let contexts = vec![CommandContext {
+            command_line: Some("long-cmd".into()),
+            cwd: None,
+            started_at: 1000,
+            ended_at: Some(1050),
+            output,
+        }];
+        let result = formatter.format(&contexts);
         assert!(result.contains("line 0"));
         assert!(result.contains("line 9"));
         assert!(result.contains("... (10 lines omitted) ..."));
         assert!(result.contains("line 20"));
         assert!(result.contains("line 29"));
-        // Lines 10-19 should NOT appear
         assert!(!result.contains("line 10\n"));
     }
 
-    #[tokio::test]
-    async fn test_max_recent_commands() {
-        let strategy = RecentCommands::new();
-        let reader = MockReader::new(vec![make_output_entry("out\n")]);
-        let cmds: Vec<_> = (0..15)
-            .map(|i| make_cmd(i, Some(&format!("cmd{}", i))))
-            .collect();
-        let result = strategy.build_context(&cmds, &reader).await.unwrap();
-
-        // First 5 commands should NOT appear
-        assert!(!result.contains("$ cmd0"));
-        assert!(!result.contains("$ cmd4"));
-        // Last 10 should appear
-        assert!(result.contains("$ cmd5"));
-        assert!(result.contains("$ cmd14"));
+    #[test]
+    fn test_format_unknown_command() {
+        let formatter = DefaultFormatter::new();
+        let contexts = vec![CommandContext {
+            command_line: None,
+            cwd: None,
+            started_at: 1000,
+            ended_at: None,
+            output: "output".into(),
+        }];
+        let result = formatter.format(&contexts);
+        assert!(result.contains("$ (unknown)"));
     }
 
+    // --- Integration tests: build_context orchestrator ---
+
     #[tokio::test]
-    async fn test_filters_direction_1_only() {
+    async fn test_build_context_filters_direction() {
         let strategy = RecentCommands::new();
+        let formatter = DefaultFormatter::new();
         let reader = MockReader::new(vec![
-            make_input_entry("ls\r"),           // direction=0, should be ignored
-            make_output_entry("file1.txt\n"),   // direction=1, included
+            make_input_entry("ls\r"),
+            make_output_entry("file1.txt\n"),
         ]);
         let cmds = vec![make_cmd(0, Some("ls"))];
-        let result = strategy.build_context(&cmds, &reader).await.unwrap();
-
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader)
+            .await
+            .unwrap();
         assert_eq!(result, "$ ls\nfile1.txt");
-        // Should NOT contain the raw input
-        assert!(!result.contains("ls\r"));
     }
 
     #[tokio::test]
-    async fn test_command_without_command_line() {
+    async fn test_build_context_empty() {
         let strategy = RecentCommands::new();
-        let reader = MockReader::new(vec![make_output_entry("output\n")]);
-        let cmds = vec![make_cmd(0, None)];
-        let result = strategy.build_context(&cmds, &reader).await.unwrap();
-        assert!(result.contains("$ (unknown)"));
+        let formatter = DefaultFormatter::new();
+        let reader = MockReader::empty();
+        let result = crate::build_context(&strategy, &formatter, &[], &reader)
+            .await
+            .unwrap();
+        assert_eq!(result, "");
     }
 }
