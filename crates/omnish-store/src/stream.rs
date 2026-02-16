@@ -9,6 +9,7 @@ pub struct StreamWriter {
     pos: u64,
 }
 
+#[derive(Clone)]
 pub struct StreamEntry {
     pub timestamp_ms: u64,
     pub direction: u8,

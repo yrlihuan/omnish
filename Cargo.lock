@@ -722,6 +722,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "omnish-context"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "omnish-store",
+ "tokio",
+]
+
+[[package]]
 name = "omnish-daemon"
 version = "0.1.0"
 dependencies = [

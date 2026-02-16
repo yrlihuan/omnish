@@ -1,3 +1,5 @@
+pub mod recent;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use omnish_store::command::CommandRecord;
