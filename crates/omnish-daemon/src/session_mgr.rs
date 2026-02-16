@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use omnish_context::StreamReader;
-use omnish_context::recent::{RecentCommands, DefaultFormatter};
+use omnish_context::recent::{RecentCommands, GroupedFormatter};
 use omnish_store::command::CommandRecord;
 use omnish_store::session::SessionMeta;
 use omnish_store::stream::{read_range, StreamEntry, StreamWriter};
@@ -20,6 +20,21 @@ impl StreamReader for FileStreamReader {
             return Ok(Vec::new());
         }
         read_range(&self.stream_path, offset, length)
+    }
+}
+
+struct MultiSessionReader {
+    readers: HashMap<(u64, u64), PathBuf>,
+}
+
+impl StreamReader for MultiSessionReader {
+    fn read_command_output(&self, offset: u64, length: u64) -> Result<Vec<StreamEntry>> {
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+        let path = self.readers.get(&(offset, length))
+            .ok_or_else(|| anyhow!("no stream file for offset={}, length={}", offset, length))?;
+        read_range(path, offset, length)
     }
 }
 
@@ -148,28 +163,42 @@ impl SessionManager {
             stream_path: session.dir.join("stream.bin"),
         };
         let strategy = RecentCommands::new();
-        let formatter = DefaultFormatter::new();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let formatter = GroupedFormatter::new(session_id, now_ms);
         omnish_context::build_context(&strategy, &formatter, &session.commands, &reader).await
     }
 
-    pub async fn get_all_sessions_context(&self) -> Result<String> {
+    pub async fn get_all_sessions_context(&self, current_session_id: &str) -> Result<String> {
         let sessions = self.sessions.lock().await;
-        let strategy = RecentCommands::new();
-        let formatter = DefaultFormatter::new();
-        let mut parts = Vec::new();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
 
-        for (sid, session) in sessions.iter() {
-            let reader = FileStreamReader {
-                stream_path: session.dir.join("stream.bin"),
-            };
-            match omnish_context::build_context(&strategy, &formatter, &session.commands, &reader).await {
-                Ok(ctx) if !ctx.is_empty() => {
-                    parts.push(format!("=== Session {} ===\n{}", sid, ctx));
-                }
-                _ => {}
+        let mut all_commands = Vec::new();
+        let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
+
+        for (_sid, session) in sessions.iter() {
+            let stream_path = session.dir.join("stream.bin");
+            for cmd in &session.commands {
+                offset_to_path.insert(
+                    (cmd.stream_offset, cmd.stream_length),
+                    stream_path.clone(),
+                );
             }
+            all_commands.extend(session.commands.clone());
         }
 
-        Ok(parts.join("\n\n"))
+        if all_commands.is_empty() {
+            return Ok(String::new());
+        }
+
+        let reader = MultiSessionReader { readers: offset_to_path };
+        let strategy = RecentCommands::new();
+        let formatter = GroupedFormatter::new(current_session_id, now_ms);
+        omnish_context::build_context(&strategy, &formatter, &all_commands, &reader).await
     }
 }

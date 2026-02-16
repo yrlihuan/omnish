@@ -130,7 +130,7 @@ async fn handle_llm_request(
             mgr.get_session_context(&req.session_id).await?
         }
         RequestScope::AllSessions => {
-            mgr.get_all_sessions_context().await?
+            mgr.get_all_sessions_context(&req.session_id).await?
         }
         RequestScope::Sessions(ids) => {
             let mut combined = String::new();
