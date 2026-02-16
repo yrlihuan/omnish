@@ -10,6 +10,7 @@ omnish-protocol = { path = "../omnish-protocol" }
 omnish-transport = { path = "../omnish-transport" }
 omnish-store = { path = "../omnish-store" }
 omnish-llm = { path = "../omnish-llm" }
+omnish-context = { path = "../omnish-context" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

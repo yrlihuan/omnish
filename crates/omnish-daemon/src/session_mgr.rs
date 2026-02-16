@@ -1,13 +1,27 @@
 use anyhow::{anyhow, Result};
-use omnish_llm::context::ContextBuilder;
+use omnish_context::{ContextStrategy, StreamReader};
+use omnish_context::recent::RecentCommands;
 use omnish_store::command::CommandRecord;
 use omnish_store::session::SessionMeta;
-use omnish_store::stream::{read_entries, StreamWriter};
+use omnish_store::stream::{read_range, StreamEntry, StreamWriter};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::Mutex;
 
 use crate::command_tracker::CommandTracker;
+
+struct FileStreamReader {
+    stream_path: PathBuf,
+}
+
+impl StreamReader for FileStreamReader {
+    fn read_command_output(&self, offset: u64, length: u64) -> Result<Vec<StreamEntry>> {
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+        read_range(&self.stream_path, offset, length)
+    }
+}
 
 struct ActiveSession {
     meta: SessionMeta,
@@ -130,38 +144,30 @@ impl SessionManager {
             .get(session_id)
             .ok_or_else(|| anyhow!("session not found: {}", session_id))?;
 
-        let stream_path = session.dir.join("stream.bin");
-        let entries = read_entries(&stream_path)?;
-
-        let mut raw_bytes = Vec::new();
-        for entry in entries {
-            raw_bytes.extend_from_slice(&entry.data);
-        }
-
-        let builder = ContextBuilder::new().max_chars(8000);
-        let cleaned = builder.strip_escapes(&raw_bytes);
-        Ok(builder.truncate(&cleaned).to_string())
+        let reader = FileStreamReader {
+            stream_path: session.dir.join("stream.bin"),
+        };
+        let strategy = RecentCommands::new();
+        strategy.build_context(&session.commands, &reader).await
     }
 
     pub async fn get_all_sessions_context(&self) -> Result<String> {
         let sessions = self.sessions.lock().await;
-        let mut combined_bytes = Vec::new();
+        let strategy = RecentCommands::new();
+        let mut parts = Vec::new();
 
         for (sid, session) in sessions.iter() {
-            let header = format!("\n=== Session {} ===\n", sid);
-            combined_bytes.extend_from_slice(header.as_bytes());
-
-            let stream_path = session.dir.join("stream.bin");
-            if let Ok(entries) = read_entries(&stream_path) {
-                for entry in entries {
-                    combined_bytes.extend_from_slice(&entry.data);
+            let reader = FileStreamReader {
+                stream_path: session.dir.join("stream.bin"),
+            };
+            match strategy.build_context(&session.commands, &reader).await {
+                Ok(ctx) if !ctx.is_empty() => {
+                    parts.push(format!("=== Session {} ===\n{}", sid, ctx));
                 }
+                _ => {}
             }
-            combined_bytes.push(b'\n');
         }
 
-        let builder = ContextBuilder::new().max_chars(16000);
-        let cleaned = builder.strip_escapes(&combined_bytes);
-        Ok(builder.truncate(&cleaned).to_string())
+        Ok(parts.join("\n\n"))
     }
 }
