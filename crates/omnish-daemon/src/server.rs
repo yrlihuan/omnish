@@ -109,31 +109,13 @@ async fn handle_connection(
     Ok(())
 }
 
-#[cfg(debug_assertions)]
-async fn handle_debug_request(req: &Request, mgr: &SessionManager) -> String {
-    let sub = req.query.strip_prefix("__debug:").unwrap_or("");
-    match sub {
-        "context" => {
-            match mgr.get_session_context(&req.session_id).await {
-                Ok(ctx) => ctx,
-                Err(e) => format!("Error: {}", e),
-            }
-        }
-        other => format!("Unknown debug subcommand: {}", other),
-    }
-}
-
-async fn handle_llm_request(
-    req: &Request,
-    mgr: &SessionManager,
-    backend: &Arc<dyn LlmBackend>,
-) -> Result<omnish_llm::backend::LlmResponse> {
-    let context = match &req.scope {
+async fn resolve_context(req: &Request, mgr: &SessionManager) -> Result<String> {
+    match &req.scope {
         RequestScope::CurrentSession => {
-            mgr.get_session_context(&req.session_id).await?
+            mgr.get_session_context(&req.session_id).await
         }
         RequestScope::AllSessions => {
-            mgr.get_all_sessions_context(&req.session_id).await?
+            mgr.get_all_sessions_context(&req.session_id).await
         }
         RequestScope::Sessions(ids) => {
             let mut combined = String::new();
@@ -148,9 +130,31 @@ async fn handle_llm_request(
                     }
                 }
             }
-            combined
+            Ok(combined)
         }
-    };
+    }
+}
+
+#[cfg(debug_assertions)]
+async fn handle_debug_request(req: &Request, mgr: &SessionManager) -> String {
+    let sub = req.query.strip_prefix("__debug:").unwrap_or("");
+    match sub {
+        "context" => {
+            match resolve_context(req, mgr).await {
+                Ok(ctx) => ctx,
+                Err(e) => format!("Error: {}", e),
+            }
+        }
+        other => format!("Unknown debug subcommand: {}", other),
+    }
+}
+
+async fn handle_llm_request(
+    req: &Request,
+    mgr: &SessionManager,
+    backend: &Arc<dyn LlmBackend>,
+) -> Result<omnish_llm::backend::LlmResponse> {
+    let context = resolve_context(req, mgr).await?;
 
     let llm_req = LlmRequest {
         context,
