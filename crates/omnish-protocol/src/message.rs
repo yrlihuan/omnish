@@ -12,6 +12,7 @@ pub enum Message {
     Event(Event),
     Request(Request),
     Response(Response),
+    CommandComplete(CommandComplete),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +81,12 @@ pub struct Response {
     pub content: String,
     pub is_streaming: bool,
     pub is_final: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandComplete {
+    pub session_id: String,
+    pub record: omnish_store::command::CommandRecord,
 }
 
 impl Message {
