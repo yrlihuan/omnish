@@ -41,6 +41,9 @@ struct ActiveSession {
     stream_writer: StreamWriter,
     commands: Vec<CommandRecord>,
     dir: PathBuf,
+    /// Stream position at the end of the last completed command.
+    /// Used to fill in stream_offset/stream_length for incoming CommandComplete records.
+    last_command_stream_pos: u64,
 }
 
 pub struct SessionManager {
@@ -90,6 +93,7 @@ impl SessionManager {
                 stream_writer,
                 commands: Vec::new(),
                 dir: session_dir,
+                last_command_stream_pos: 0,
             },
         );
         Ok(())
@@ -109,9 +113,16 @@ impl SessionManager {
         Ok(())
     }
 
-    pub async fn receive_command(&self, session_id: &str, record: CommandRecord) -> Result<()> {
+    pub async fn receive_command(&self, session_id: &str, mut record: CommandRecord) -> Result<()> {
         let mut sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get_mut(session_id) {
+            // Fill in stream offsets from daemon's stream writer position.
+            // Client sends 0 for these since it doesn't write to stream.bin.
+            let current_pos = session.stream_writer.position();
+            record.stream_offset = session.last_command_stream_pos;
+            record.stream_length = current_pos - session.last_command_stream_pos;
+            session.last_command_stream_pos = current_pos;
+
             session.commands.push(record);
             CommandRecord::save_all(&session.commands, &session.dir)?;
         }

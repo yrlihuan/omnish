@@ -224,7 +224,18 @@ async fn main() -> Result<()> {
                     // Notify interceptor of output (resets chat state)
                     interceptor.note_output(&output_buf[..n]);
 
-                    // Feed output to command tracker
+                    // Send IoData to daemon first (so stream is written before CommandComplete)
+                    if let Some(ref conn) = daemon_conn {
+                        let msg = Message::IoData(IoData {
+                            session_id: session_id.clone(),
+                            direction: IoDirection::Output,
+                            timestamp_ms: timestamp_ms(),
+                            data: output_buf[..n].to_vec(),
+                        });
+                        let _ = conn.send(&msg).await;
+                    }
+
+                    // Feed output to command tracker (after IoData sent)
                     let completed = command_tracker.feed_output(&output_buf[..n], timestamp_ms(), 0);
                     for record in &completed {
                         if let Some(ref conn) = daemon_conn {
@@ -234,16 +245,6 @@ async fn main() -> Result<()> {
                             });
                             let _ = conn.send(&msg).await;
                         }
-                    }
-
-                    if let Some(ref conn) = daemon_conn {
-                        let msg = Message::IoData(IoData {
-                            session_id: session_id.clone(),
-                            direction: IoDirection::Output,
-                            timestamp_ms: timestamp_ms(),
-                            data: output_buf[..n].to_vec(),
-                        });
-                        let _ = conn.send(&msg).await;
                     }
                 }
                 Err(_) => break,

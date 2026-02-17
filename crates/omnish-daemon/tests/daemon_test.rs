@@ -76,6 +76,12 @@ async fn test_command_recording_via_receive_command() {
     assert_eq!(commands[0].command_line.as_deref(), Some("ls -la"));
     assert_eq!(commands[0].session_id, "sess1");
     assert_eq!(commands[0].cwd.as_deref(), Some("/home/user"));
+    // Daemon should have filled in stream offsets from its stream writer
+    assert!(commands[0].stream_length > 0, "daemon should fill in stream_length");
+
+    // Context should include the command output (not just input)
+    let ctx = mgr.get_session_context("sess1").await.unwrap();
+    assert!(ctx.contains("total 0"), "context should contain command output, got: {}", ctx);
 }
 
 #[tokio::test]
