@@ -190,7 +190,7 @@ impl SessionManager {
 
     pub async fn end_session(&self, session_id: &str) -> Result<()> {
         let mut sessions = self.sessions.lock().await;
-        if let Some(mut session) = sessions.remove(session_id) {
+        if let Some(session) = sessions.get_mut(session_id) {
             session.meta.ended_at = Some(chrono::Utc::now().to_rfc3339());
             session.meta.save(&session.dir)?;
             CommandRecord::save_all(&session.commands, &session.dir)?;
@@ -209,7 +209,10 @@ impl SessionManager {
 
     pub async fn list_active(&self) -> Vec<String> {
         let sessions = self.sessions.lock().await;
-        sessions.keys().cloned().collect()
+        sessions.values()
+            .filter(|s| s.meta.ended_at.is_none())
+            .map(|s| s.meta.session_id.clone())
+            .collect()
     }
 
     pub async fn get_session_context(&self, session_id: &str) -> Result<String> {
