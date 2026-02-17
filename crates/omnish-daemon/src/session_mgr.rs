@@ -254,6 +254,8 @@ impl SessionManager {
             all_commands.extend(session.commands.clone());
         }
 
+        all_commands.sort_by_key(|c| c.started_at);
+
         if all_commands.is_empty() {
             return Ok(String::new());
         }

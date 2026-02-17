@@ -269,6 +269,89 @@ async fn test_debug_context_request() {
     assert!(ctx.contains("hello"), "context should contain output data");
 }
 
+/// Two sessions (A and B) interleave `echo "{session_id} {seq}"` commands.
+/// Verifies that `get_all_sessions_context` returns the correct recent commands
+/// after 10 and 20 total commands (MAX_COMMANDS = 10, so older ones get dropped).
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn test_interleaved_two_session_context_at_10_and_20_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = SessionManager::new(dir.path().to_path_buf());
+
+    mgr.register("sessA", None, HashMap::new()).await.unwrap();
+    mgr.register("sessB", None, HashMap::new()).await.unwrap();
+
+    // Helper: simulate running `echo "{sid} {seq}"` on a session.
+    // Each call writes IO entries and a CommandComplete.
+    async fn run_echo(mgr: &SessionManager, sid: &str, seq: usize, ts_base: u64) {
+        let cmd = format!("echo \"{} {}\"", sid, seq);
+        let output = format!("{} {}", sid, seq);
+
+        let t0 = ts_base;
+        let t1 = ts_base + 1;
+        let t2 = ts_base + 2;
+
+        mgr.write_io(sid, t0, 1, format!("$ ").as_bytes()).await.unwrap();
+        mgr.write_io(sid, t1, 0, format!("{}\r\n", cmd).as_bytes()).await.unwrap();
+        mgr.write_io(sid, t2, 1, format!("{}\r\n$ ", output).as_bytes()).await.unwrap();
+
+        mgr.receive_command(sid, CommandRecord {
+            command_id: format!("{}:{}", sid, seq),
+            session_id: sid.to_string(),
+            command_line: Some(cmd),
+            cwd: Some("/tmp".into()),
+            started_at: t0,
+            ended_at: Some(t2),
+            output_summary: output,
+            stream_offset: 0,
+            stream_length: 0,
+        }).await.unwrap();
+    }
+
+    // Interleave: A0, B0, A1, B1, ... A4, B4  (10 commands total)
+    for i in 0..5 {
+        let ts = (i as u64) * 100;
+        run_echo(&mgr, "sessA", i, ts).await;
+        run_echo(&mgr, "sessB", i, ts + 50).await;
+    }
+
+    // After 10 commands: all 10 should be visible (MAX_COMMANDS = 10)
+    let ctx10 = mgr.get_all_sessions_context("sessA").await.unwrap();
+    for i in 0..5 {
+        assert!(ctx10.contains(&format!("sessA {}", i)),
+            "after 10 cmds: missing sessA {} in context:\n{}", i, ctx10);
+        assert!(ctx10.contains(&format!("sessB {}", i)),
+            "after 10 cmds: missing sessB {} in context:\n{}", i, ctx10);
+    }
+
+    // Continue interleaving: A5, B5, ... A9, B9  (20 commands total)
+    for i in 5..10 {
+        let ts = (i as u64) * 100;
+        run_echo(&mgr, "sessA", i, ts).await;
+        run_echo(&mgr, "sessB", i, ts + 50).await;
+    }
+
+    // After 20 commands: only the most recent 10 should be visible
+    // That's A5..A9 and B5..B9
+    let ctx20 = mgr.get_all_sessions_context("sessA").await.unwrap();
+
+    // Old commands (0..5) should NOT appear
+    for i in 0..5 {
+        assert!(!ctx20.contains(&format!("sessA {}", i)),
+            "after 20 cmds: sessA {} should have been evicted from context:\n{}", i, ctx20);
+        assert!(!ctx20.contains(&format!("sessB {}", i)),
+            "after 20 cmds: sessB {} should have been evicted from context:\n{}", i, ctx20);
+    }
+
+    // Recent commands (5..10) should appear
+    for i in 5..10 {
+        assert!(ctx20.contains(&format!("sessA {}", i)),
+            "after 20 cmds: missing sessA {} in context:\n{}", i, ctx20);
+        assert!(ctx20.contains(&format!("sessB {}", i)),
+            "after 20 cmds: missing sessB {} in context:\n{}", i, ctx20);
+    }
+}
+
 /// Regression: ended sessions must remain visible to context queries from new sessions.
 /// Reproduces the scenario: client 1 runs commands → disconnects → client 2 queries context.
 #[cfg(debug_assertions)]
