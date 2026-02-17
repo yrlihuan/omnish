@@ -60,6 +60,65 @@ impl SessionManager {
         }
     }
 
+    pub async fn load_existing(&self) -> Result<usize> {
+        let mut count = 0;
+        let entries = match std::fs::read_dir(&self.base_dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::warn!("failed to read session store directory: {}", e);
+                return Ok(0);
+            }
+        };
+
+        let mut sessions = self.sessions.lock().await;
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!("failed to read directory entry: {}", e);
+                    continue;
+                }
+            };
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+
+            let mut load = || -> Result<()> {
+                let meta = SessionMeta::load(&dir)?;
+                let commands = CommandRecord::load_all(&dir)?;
+                let stream_path = dir.join("stream.bin");
+                let stream_writer = if stream_path.exists() {
+                    StreamWriter::open_append(&stream_path)?
+                } else {
+                    StreamWriter::create(&stream_path)?
+                };
+
+                let last_command_stream_pos = commands.last()
+                    .map(|cmd| cmd.stream_offset + cmd.stream_length)
+                    .unwrap_or(0);
+
+                sessions.insert(
+                    meta.session_id.clone(),
+                    ActiveSession {
+                        meta,
+                        stream_writer,
+                        commands,
+                        dir: dir.clone(),
+                        last_command_stream_pos,
+                    },
+                );
+                count += 1;
+                Ok(())
+            };
+
+            if let Err(e) = load() {
+                tracing::warn!("failed to load session from {:?}: {}", dir, e);
+            }
+        }
+        Ok(count)
+    }
+
     pub async fn register(
         &self,
         session_id: &str,
@@ -200,5 +259,48 @@ impl SessionManager {
         let strategy = RecentCommands::new();
         let formatter = GroupedFormatter::new(current_session_id, now_ms);
         omnish_context::build_context(&strategy, &formatter, &all_commands, &reader).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_load_existing_restores_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+
+        // Register a session and add a command via normal flow
+        {
+            let mgr = SessionManager::new(base.clone());
+            mgr.register("sess1", None, Default::default()).await.unwrap();
+            mgr.write_io("sess1", 100, 0, b"$ ls\n").await.unwrap();
+            mgr.write_io("sess1", 200, 1, b"file.txt\n").await.unwrap();
+            mgr.receive_command("sess1", CommandRecord {
+                command_id: "cmd1".into(),
+                session_id: "sess1".into(),
+                command_line: Some("ls".into()),
+                cwd: Some("/tmp".into()),
+                started_at: 100,
+                ended_at: Some(200),
+                output_summary: "file.txt".into(),
+                stream_offset: 0,
+                stream_length: 0,
+            }).await.unwrap();
+            // Drop the manager (simulates daemon shutdown)
+        }
+
+        // Create a new manager on the same directory and load existing sessions
+        let mgr2 = SessionManager::new(base);
+        let count = mgr2.load_existing().await.unwrap();
+        assert_eq!(count, 1);
+
+        let commands = mgr2.get_commands("sess1").await.unwrap();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].command_line.as_deref(), Some("ls"));
+
+        let active = mgr2.list_active().await;
+        assert!(active.contains(&"sess1".to_string()));
     }
 }
