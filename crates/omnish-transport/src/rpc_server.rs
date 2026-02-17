@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener as TokioUnixListener;
+use tokio::sync::Mutex;
 
 pub struct RpcServer {
     listener: TokioUnixListener,
@@ -26,7 +27,8 @@ impl RpcServer {
             let (stream, _) = self.listener.accept().await?;
             let handler = handler.clone();
             tokio::spawn(async move {
-                let (mut reader, mut writer) = stream.into_split();
+                let (mut reader, writer) = stream.into_split();
+                let writer = Arc::new(Mutex::new(writer));
                 loop {
                     let len = match reader.read_u32().await {
                         Ok(len) => len as usize,
@@ -38,27 +40,36 @@ impl RpcServer {
                     }
                     let frame = match Frame::from_bytes(&buf) {
                         Ok(f) => f,
-                        Err(_) => continue,
+                        Err(e) => {
+                            tracing::warn!("failed to parse frame: {}", e);
+                            continue;
+                        }
                     };
 
-                    let response_payload = handler(frame.payload).await;
-                    let reply = Frame {
-                        request_id: frame.request_id,
-                        payload: response_payload,
-                    };
-                    let reply_bytes = match reply.to_bytes() {
-                        Ok(b) => b,
-                        Err(_) => continue,
-                    };
-                    if writer.write_u32(reply_bytes.len() as u32).await.is_err() {
-                        break;
-                    }
-                    if writer.write_all(&reply_bytes).await.is_err() {
-                        break;
-                    }
-                    if writer.flush().await.is_err() {
-                        break;
-                    }
+                    let handler = handler.clone();
+                    let writer = writer.clone();
+                    tokio::spawn(async move {
+                        let response_payload = handler(frame.payload).await;
+                        let reply = Frame {
+                            request_id: frame.request_id,
+                            payload: response_payload,
+                        };
+                        let reply_bytes = match reply.to_bytes() {
+                            Ok(b) => b,
+                            Err(e) => {
+                                tracing::error!("failed to serialize response frame: {}", e);
+                                return;
+                            }
+                        };
+                        let mut w = writer.lock().await;
+                        if w.write_u32(reply_bytes.len() as u32).await.is_err() {
+                            return;
+                        }
+                        if w.write_all(&reply_bytes).await.is_err() {
+                            return;
+                        }
+                        let _ = w.flush().await;
+                    });
                 }
             });
         }
