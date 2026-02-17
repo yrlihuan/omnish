@@ -171,7 +171,7 @@ async fn main() -> Result<()> {
                             }
                             command::ChatAction::DaemonDebug { query, redirect } => {
                                 if let Some(ref conn) = daemon_conn {
-                                    handle_debug_query(&query, &session_id, conn, &proxy, redirect.as_deref()).await;
+                                    send_daemon_query(&query, &session_id, conn, &proxy, redirect.as_deref(), false).await;
                                 } else {
                                     let err = display::render_error("Daemon not connected");
                                     nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
@@ -180,7 +180,7 @@ async fn main() -> Result<()> {
                             }
                             command::ChatAction::LlmQuery(query) => {
                                 if let Some(ref conn) = daemon_conn {
-                                    handle_omnish_query(&query, &session_id, conn, &proxy).await;
+                                    send_daemon_query(&query, &session_id, conn, &proxy, None, true).await;
                                 } else {
                                     let err = display::render_error("Daemon not connected");
                                     nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
@@ -554,14 +554,24 @@ fn handle_command_result(content: &str, redirect: Option<&str>, proxy: &PtyProxy
     proxy.write_all(b"\r").ok();
 }
 
-/// Send a debug query to daemon and display/redirect the result.
-async fn handle_debug_query(
+/// Send a query to the daemon and display the result.
+///
+/// If `redirect` is Some, the response is written to the given file path instead of stdout.
+/// If `show_thinking` is true, a thinking spinner is shown while waiting for the response
+/// and a separator is appended after.
+async fn send_daemon_query(
     query: &str,
     session_id: &str,
     conn: &Box<dyn Connection>,
     proxy: &PtyProxy,
     redirect: Option<&str>,
+    show_thinking: bool,
 ) {
+    if show_thinking {
+        let status = display::render_thinking();
+        nix::unistd::write(std::io::stdout(), status.as_bytes()).ok();
+    }
+
     let request_id = Uuid::new_v4().to_string()[..8].to_string();
     let request = Message::Request(Request {
         request_id: request_id.clone(),
@@ -579,64 +589,23 @@ async fn handle_debug_query(
 
     match conn.recv().await {
         Ok(Message::Response(resp)) if resp.request_id == request_id => {
+            if show_thinking {
+                std::fs::write("/tmp/omnish_last_response.txt", &resp.content).ok();
+            }
             handle_command_result(&resp.content, redirect, proxy);
+            if show_thinking {
+                let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+                let separator = display::render_separator(cols);
+                let sep_line = format!("{}\r\n", separator);
+                nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
+            }
         }
         _ => {
-            let err = display::render_error("Failed to receive debug response");
+            let err = display::render_error("Failed to receive response");
             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
             proxy.write_all(b"\r").ok();
         }
     }
-}
-
-async fn handle_omnish_query(query: &str, session_id: &str, conn: &Box<dyn Connection>, proxy: &PtyProxy) {
-    // Show thinking status
-    let status = display::render_thinking();
-    nix::unistd::write(std::io::stdout(), status.as_bytes()).ok();
-
-    let request_id = Uuid::new_v4().to_string()[..8].to_string();
-    let request = Message::Request(Request {
-        request_id: request_id.clone(),
-        session_id: session_id.to_string(),
-        query: query.to_string(),
-        scope: RequestScope::AllSessions,
-    });
-
-    // Send request
-    if conn.send(&request).await.is_err() {
-        let err = display::render_error("Failed to send request");
-        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-        return;
-    }
-
-    // Wait for response
-    match conn.recv().await {
-        Ok(Message::Response(resp)) if resp.request_id == request_id => {
-            // Debug: save raw response
-            std::fs::write("/tmp/omnish_last_response.txt", &resp.content).ok();
-
-            // Display response
-            let output = display::render_response(&resp.content);
-            nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
-
-            // Add separator after response
-            let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
-            let separator = display::render_separator(cols);
-            let sep_line = format!("{}\r\n", separator);
-            nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
-        }
-        Ok(_) => {
-            let err = display::render_error("Unexpected response");
-            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-        }
-        Err(_) => {
-            let err = display::render_error("Failed to receive response");
-            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-        }
-    }
-
-    // Send empty Enter to PTY so the shell prints a fresh prompt below our output
-    proxy.write_all(b"\r").ok();
 }
 
 #[cfg(test)]
