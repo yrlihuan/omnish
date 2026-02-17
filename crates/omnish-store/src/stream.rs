@@ -25,6 +25,17 @@ impl StreamWriter {
         })
     }
 
+    pub fn open_append(path: &Path) -> Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)?;
+        let pos = file.metadata()?.len();
+        Ok(Self {
+            writer: BufWriter::new(file),
+            pos,
+        })
+    }
+
     pub fn position(&self) -> u64 {
         self.pos
     }
@@ -64,6 +75,38 @@ pub fn read_range(path: &Path, offset: u64, length: u64) -> Result<Vec<StreamEnt
         pos += 13 + data_len;
     }
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_open_append_continues_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stream.bin");
+
+        // Create and write initial entries
+        {
+            let mut sw = StreamWriter::create(&path).unwrap();
+            sw.write_entry(1000, 0, b"hello").unwrap();
+            sw.write_entry(2000, 1, b"world").unwrap();
+        }
+
+        // Reopen with open_append and write more
+        {
+            let mut sw = StreamWriter::open_append(&path).unwrap();
+            assert!(sw.position() > 0);
+            sw.write_entry(3000, 0, b"appended").unwrap();
+        }
+
+        // Verify all entries are readable
+        let entries = read_entries(&path).unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].data, b"hello");
+        assert_eq!(entries[1].data, b"world");
+        assert_eq!(entries[2].data, b"appended");
+    }
 }
 
 pub fn read_entries(path: &Path) -> Result<Vec<StreamEntry>> {
