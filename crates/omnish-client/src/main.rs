@@ -70,6 +70,10 @@ async fn main() -> Result<()> {
     let mut alt_screen_detector = AltScreenDetector::new();
     let mut col_tracker = CursorColTracker::new();
     let mut dismiss_col: u16 = 0;
+    let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string());
+    let mut command_tracker = omnish_tracker::command_tracker::CommandTracker::new(
+        session_id.clone(), cwd,
+    );
 
     loop {
         let mut fds = [
@@ -138,6 +142,9 @@ async fn main() -> Result<()> {
                     InterceptAction::Forward(bytes) => {
                         // Forward these bytes to PTY
                         proxy.write_all(&bytes)?;
+
+                        // Feed input to command tracker
+                        command_tracker.feed_input(&bytes, timestamp_ms());
 
                         // Report to daemon async
                         if let Some(ref conn) = daemon_conn {
@@ -216,6 +223,18 @@ async fn main() -> Result<()> {
 
                     // Notify interceptor of output (resets chat state)
                     interceptor.note_output(&output_buf[..n]);
+
+                    // Feed output to command tracker
+                    let completed = command_tracker.feed_output(&output_buf[..n], timestamp_ms(), 0);
+                    for record in &completed {
+                        if let Some(ref conn) = daemon_conn {
+                            let msg = Message::CommandComplete(omnish_protocol::message::CommandComplete {
+                                session_id: session_id.clone(),
+                                record: record.clone(),
+                            });
+                            let _ = conn.send(&msg).await;
+                        }
+                    }
 
                     if let Some(ref conn) = daemon_conn {
                         let msg = Message::IoData(IoData {

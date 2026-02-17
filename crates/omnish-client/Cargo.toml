@@ -8,6 +8,8 @@ omnish-common = { path = "../omnish-common" }
 omnish-protocol = { path = "../omnish-protocol" }
 omnish-transport = { path = "../omnish-transport" }
 omnish-pty = { path = "../omnish-pty" }
+omnish-tracker = { path = "../omnish-tracker" }
+omnish-store = { path = "../omnish-store" }
 omnish-llm = { path = "../omnish-llm" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
