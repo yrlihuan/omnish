@@ -8,6 +8,7 @@ members = [
     "crates/omnish-store",
     "crates/omnish-context",
     "crates/omnish-llm",
+    "crates/omnish-tracker",
     "crates/omnish-daemon",
     "crates/omnish-client",
 ]

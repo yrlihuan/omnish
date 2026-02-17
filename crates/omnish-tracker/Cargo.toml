@@ -1,0 +1,10 @@
+[package]
+name = "omnish-tracker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+omnish-store = { path = "../omnish-store" }
+regex = "1"
+
+[dev-dependencies]
