@@ -704,6 +704,8 @@ dependencies = [
  "omnish-llm",
  "omnish-protocol",
  "omnish-pty",
+ "omnish-store",
+ "omnish-tracker",
  "omnish-transport",
  "tokio",
  "unicode-width 0.2.2",
@@ -744,7 +746,6 @@ dependencies = [
  "omnish-protocol",
  "omnish-store",
  "omnish-transport",
- "regex",
  "serde_json",
  "tempfile",
  "tokio",
@@ -770,6 +771,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
+ "omnish-store",
  "serde",
 ]
 
@@ -790,6 +792,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "omnish-tracker"
+version = "0.1.0"
+dependencies = [
+ "omnish-store",
+ "regex",
 ]
 
 [[package]]

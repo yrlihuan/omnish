@@ -66,6 +66,9 @@ async fn handle_connection(
                 };
                 mgr.write_io(&io.session_id, io.timestamp_ms, dir, &io.data).await?;
             }
+            Message::CommandComplete(cc) => {
+                mgr.receive_command(&cc.session_id, cc.record).await?;
+            }
             Message::Request(req) => {
                 #[cfg(debug_assertions)]
                 if req.query.starts_with("__debug:") {

@@ -8,8 +8,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::Mutex;
 
-use crate::command_tracker::CommandTracker;
-
 struct FileStreamReader {
     stream_path: PathBuf,
 }
@@ -41,7 +39,6 @@ impl StreamReader for MultiSessionReader {
 struct ActiveSession {
     meta: SessionMeta,
     stream_writer: StreamWriter,
-    command_tracker: CommandTracker,
     commands: Vec<CommandRecord>,
     dir: PathBuf,
 }
@@ -85,16 +82,12 @@ impl SessionManager {
 
         let stream_writer = StreamWriter::create(&session_dir.join("stream.bin"))?;
 
-        let cwd = meta.attrs.get("cwd").cloned();
-        let command_tracker = CommandTracker::new(session_id.to_string(), cwd);
-
         let mut sessions = self.sessions.lock().await;
         sessions.insert(
             session_id.to_string(),
             ActiveSession {
                 meta,
                 stream_writer,
-                command_tracker,
                 commands: Vec::new(),
                 dir: session_dir,
             },
@@ -111,20 +104,16 @@ impl SessionManager {
     ) -> Result<()> {
         let mut sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get_mut(session_id) {
-            let pos_before = session.stream_writer.position();
             session.stream_writer.write_entry(timestamp_ms, direction, data)?;
+        }
+        Ok(())
+    }
 
-            if direction == 1 {
-                // Output from shell — feed to command tracker
-                let completed = session.command_tracker.feed_output(data, timestamp_ms, pos_before);
-                if !completed.is_empty() {
-                    session.commands.extend(completed);
-                    CommandRecord::save_all(&session.commands, &session.dir)?;
-                }
-            } else {
-                // Input from user
-                session.command_tracker.feed_input(data, timestamp_ms);
-            }
+    pub async fn receive_command(&self, session_id: &str, record: CommandRecord) -> Result<()> {
+        let mut sessions = self.sessions.lock().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.commands.push(record);
+            CommandRecord::save_all(&session.commands, &session.dir)?;
         }
         Ok(())
     }
