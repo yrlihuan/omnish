@@ -71,14 +71,18 @@ impl RpcClient {
         pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Message>>>>,
     ) {
         while let Some(req) = rx.recv().await {
+            let bytes = match req.frame.to_bytes() {
+                Ok(b) => b,
+                Err(_) => {
+                    // Drop reply_tx so caller gets RecvError instead of hanging
+                    drop(req.reply_tx);
+                    continue;
+                }
+            };
             pending
                 .lock()
                 .await
                 .insert(req.frame.request_id, req.reply_tx);
-            let bytes = match req.frame.to_bytes() {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
             if writer.write_u32(bytes.len() as u32).await.is_err() {
                 break;
             }
