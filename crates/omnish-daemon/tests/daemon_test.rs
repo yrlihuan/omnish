@@ -268,3 +268,39 @@ async fn test_debug_context_request() {
     assert!(!ctx.is_empty(), "context should not be empty");
     assert!(ctx.contains("hello"), "context should contain output data");
 }
+
+/// Regression: ended sessions must remain visible to context queries from new sessions.
+/// Reproduces the scenario: client 1 runs commands → disconnects → client 2 queries context.
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn test_ended_session_commands_visible_to_new_session_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = SessionManager::new(dir.path().to_path_buf());
+
+    // Client 1: register, run a command, disconnect
+    mgr.register("client1", None, HashMap::new()).await.unwrap();
+    mgr.write_io("client1", 1000, 1, b"$ ").await.unwrap();
+    mgr.write_io("client1", 1001, 0, b"ls\r\n").await.unwrap();
+    mgr.write_io("client1", 1002, 1, b"foo.txt\r\n$ ").await.unwrap();
+    mgr.receive_command("client1", CommandRecord {
+        command_id: "client1:0".into(),
+        session_id: "client1".into(),
+        command_line: Some("ls".into()),
+        cwd: Some("/tmp".into()),
+        started_at: 1000,
+        ended_at: Some(1002),
+        output_summary: "foo.txt".into(),
+        stream_offset: 0,
+        stream_length: 0,
+    }).await.unwrap();
+    mgr.end_session("client1").await.unwrap();
+
+    // Client 1 should no longer appear in active list
+    assert!(!mgr.list_active().await.contains(&"client1".to_string()));
+
+    // Client 2: register a new session, query all-sessions context
+    mgr.register("client2", None, HashMap::new()).await.unwrap();
+    let ctx = mgr.get_all_sessions_context("client2").await.unwrap();
+    assert!(ctx.contains("ls"), "context should contain client1's command, got: {}", ctx);
+    assert!(ctx.contains("foo.txt"), "context should contain client1's output, got: {}", ctx);
+}
