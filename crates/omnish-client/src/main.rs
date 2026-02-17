@@ -567,7 +567,7 @@ async fn handle_debug_query(
         request_id: request_id.clone(),
         session_id: session_id.to_string(),
         query: query.to_string(),
-        scope: RequestScope::CurrentSession,
+        scope: RequestScope::AllSessions,
     });
 
     if conn.send(&request).await.is_err() {
@@ -599,7 +599,7 @@ async fn handle_omnish_query(query: &str, session_id: &str, conn: &Box<dyn Conne
         request_id: request_id.clone(),
         session_id: session_id.to_string(),
         query: query.to_string(),
-        scope: RequestScope::CurrentSession,
+        scope: RequestScope::AllSessions,
     });
 
     // Send request
