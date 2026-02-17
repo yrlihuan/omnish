@@ -38,6 +38,11 @@ async fn main() -> Result<()> {
     };
 
     let session_mgr = Arc::new(SessionManager::new(store_dir));
+    match session_mgr.load_existing().await {
+        Ok(count) if count > 0 => tracing::info!("loaded {} existing session(s)", count),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("failed to load existing sessions: {}", e),
+    }
     let server = DaemonServer::new(session_mgr, llm_backend);
     let transport = UnixTransport;
 
