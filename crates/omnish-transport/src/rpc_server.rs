@@ -1,0 +1,140 @@
+use anyhow::Result;
+use omnish_protocol::message::{Frame, Message};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixListener as TokioUnixListener;
+
+pub struct RpcServer {
+    listener: TokioUnixListener,
+}
+
+impl RpcServer {
+    pub async fn bind_unix(addr: &str) -> Result<Self> {
+        let _ = std::fs::remove_file(addr);
+        let listener = TokioUnixListener::bind(addr)?;
+        Ok(Self { listener })
+    }
+
+    pub async fn serve<F>(&mut self, handler: F) -> Result<()>
+    where
+        F: Fn(Message) -> Pin<Box<dyn Future<Output = Message> + Send>> + Send + Sync + 'static,
+    {
+        let handler = Arc::new(handler);
+        loop {
+            let (stream, _) = self.listener.accept().await?;
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                let (mut reader, mut writer) = stream.into_split();
+                loop {
+                    let len = match reader.read_u32().await {
+                        Ok(len) => len as usize,
+                        Err(_) => break,
+                    };
+                    let mut buf = vec![0u8; len];
+                    if reader.read_exact(&mut buf).await.is_err() {
+                        break;
+                    }
+                    let frame = match Frame::from_bytes(&buf) {
+                        Ok(f) => f,
+                        Err(_) => continue,
+                    };
+
+                    let response_payload = handler(frame.payload).await;
+                    let reply = Frame {
+                        request_id: frame.request_id,
+                        payload: response_payload,
+                    };
+                    let reply_bytes = match reply.to_bytes() {
+                        Ok(b) => b,
+                        Err(_) => continue,
+                    };
+                    if writer.write_u32(reply_bytes.len() as u32).await.is_err() {
+                        break;
+                    }
+                    if writer.write_all(&reply_bytes).await.is_err() {
+                        break;
+                    }
+                    if writer.flush().await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rpc_client::RpcClient;
+    use omnish_protocol::message::{Request, RequestScope, Response, SessionStart};
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn test_rpc_server_handles_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("rpc_server_test.sock");
+        let sock_path_str = sock_path.to_str().unwrap().to_string();
+
+        // Start RpcServer with a handler
+        let server_addr = sock_path_str.clone();
+        let server_handle = tokio::spawn(async move {
+            let mut server = RpcServer::bind_unix(&server_addr).await.unwrap();
+            server
+                .serve(|msg| {
+                    Box::pin(async move {
+                        match msg {
+                            Message::SessionStart(_) => Message::Ack,
+                            Message::Request(req) => Message::Response(Response {
+                                request_id: req.request_id.clone(),
+                                content: format!("answer to: {}", req.query),
+                                is_streaming: false,
+                                is_final: true,
+                            }),
+                            _ => Message::Ack,
+                        }
+                    })
+                })
+                .await
+                .ok();
+        });
+
+        // Give the server a moment to bind
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Connect RpcClient
+        let client = RpcClient::connect_unix(&sock_path_str).await.unwrap();
+
+        // Call SessionStart -> verify Ack
+        let session_msg = Message::SessionStart(SessionStart {
+            session_id: "s1".to_string(),
+            parent_session_id: None,
+            timestamp_ms: 1000,
+            attrs: HashMap::new(),
+        });
+        let resp = client.call(session_msg).await.unwrap();
+        assert!(matches!(resp, Message::Ack));
+
+        // Call Request -> verify Response with correct content
+        let req_msg = Message::Request(Request {
+            request_id: "r1".to_string(),
+            session_id: "s1".to_string(),
+            query: "what happened?".to_string(),
+            scope: RequestScope::CurrentSession,
+        });
+        let resp = client.call(req_msg).await.unwrap();
+        match resp {
+            Message::Response(r) => {
+                assert_eq!(r.request_id, "r1");
+                assert_eq!(r.content, "answer to: what happened?");
+                assert!(r.is_final);
+            }
+            other => panic!("expected Response, got {:?}", other),
+        }
+
+        // Clean up: abort the server (it loops forever)
+        server_handle.abort();
+    }
+}
