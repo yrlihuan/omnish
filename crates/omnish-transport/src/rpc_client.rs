@@ -1,7 +1,7 @@
 use anyhow::Result;
 use omnish_protocol::message::{Frame, Message};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -13,40 +13,55 @@ struct WriteRequest {
     reply_tx: oneshot::Sender<Message>,
 }
 
-pub struct RpcClient {
+struct Inner {
     tx: mpsc::Sender<WriteRequest>,
-    next_id: AtomicU64,
+    connected: Arc<AtomicBool>,
     _write_task: JoinHandle<()>,
     _read_task: JoinHandle<()>,
+}
+
+#[derive(Clone)]
+pub struct RpcClient {
+    inner: Arc<Mutex<Inner>>,
+    next_id: Arc<AtomicU64>,
 }
 
 impl RpcClient {
     pub async fn connect_unix(addr: &str) -> Result<Self> {
         let stream = UnixStream::connect(addr).await?;
         let (reader, writer) = stream.into_split();
-        Self::from_split(reader, writer)
+        let inner = Self::create_inner(reader, writer, None);
+        Ok(Self {
+            inner: Arc::new(Mutex::new(inner)),
+            next_id: Arc::new(AtomicU64::new(1)),
+        })
     }
 
-    fn from_split(
+    fn create_inner(
         reader: tokio::net::unix::OwnedReadHalf,
         writer: tokio::net::unix::OwnedWriteHalf,
-    ) -> Result<Self> {
+        disconnect_tx: Option<oneshot::Sender<()>>,
+    ) -> Inner {
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Message>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let (tx, rx) = mpsc::channel::<WriteRequest>(256);
 
+        let connected = Arc::new(AtomicBool::new(true));
+
+        let write_connected = connected.clone();
         let write_pending = pending.clone();
-        let _write_task = tokio::spawn(Self::write_loop(rx, writer, write_pending));
+        let _write_task = tokio::spawn(Self::write_loop(rx, writer, write_pending, write_connected));
 
+        let read_connected = connected.clone();
         let read_pending = pending.clone();
-        let _read_task = tokio::spawn(Self::read_loop(reader, read_pending));
+        let _read_task = tokio::spawn(Self::read_loop(reader, read_pending, read_connected, disconnect_tx));
 
-        Ok(Self {
+        Inner {
             tx,
-            next_id: AtomicU64::new(1),
+            connected,
             _write_task,
             _read_task,
-        })
+        }
     }
 
     pub async fn call(&self, msg: Message) -> Result<Message> {
@@ -56,10 +71,18 @@ impl RpcClient {
             payload: msg,
         };
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
+
+        let inner = self.inner.lock().await;
+        if !inner.connected.load(Ordering::SeqCst) {
+            return Err(anyhow::anyhow!("not connected"));
+        }
+        inner
+            .tx
             .send(WriteRequest { frame, reply_tx })
             .await
             .map_err(|_| anyhow::anyhow!("write task closed"))?;
+        drop(inner);
+
         reply_rx
             .await
             .map_err(|_| anyhow::anyhow!("read task closed before response"))
@@ -69,12 +92,12 @@ impl RpcClient {
         mut rx: mpsc::Receiver<WriteRequest>,
         mut writer: tokio::net::unix::OwnedWriteHalf,
         pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Message>>>>,
+        connected: Arc<AtomicBool>,
     ) {
         while let Some(req) = rx.recv().await {
             let bytes = match req.frame.to_bytes() {
                 Ok(b) => b,
                 Err(_) => {
-                    // Drop reply_tx so caller gets RecvError instead of hanging
                     drop(req.reply_tx);
                     continue;
                 }
@@ -84,12 +107,15 @@ impl RpcClient {
                 .await
                 .insert(req.frame.request_id, req.reply_tx);
             if writer.write_u32(bytes.len() as u32).await.is_err() {
+                connected.store(false, Ordering::SeqCst);
                 break;
             }
             if writer.write_all(&bytes).await.is_err() {
+                connected.store(false, Ordering::SeqCst);
                 break;
             }
             if writer.flush().await.is_err() {
+                connected.store(false, Ordering::SeqCst);
                 break;
             }
         }
@@ -98,6 +124,8 @@ impl RpcClient {
     async fn read_loop(
         mut reader: tokio::net::unix::OwnedReadHalf,
         pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Message>>>>,
+        connected: Arc<AtomicBool>,
+        disconnect_tx: Option<oneshot::Sender<()>>,
     ) {
         loop {
             let len = match reader.read_u32().await {
@@ -116,6 +144,10 @@ impl RpcClient {
             if let Some(tx) = map.remove(&frame.request_id) {
                 let _ = tx.send(frame.payload);
             }
+        }
+        connected.store(false, Ordering::SeqCst);
+        if let Some(tx) = disconnect_tx {
+            let _ = tx.send(());
         }
     }
 }
