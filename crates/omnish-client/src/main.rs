@@ -9,8 +9,7 @@ use interceptor::{InputInterceptor, InterceptAction, TimeGapGuard};
 use omnish_protocol::message::*;
 use omnish_pty::proxy::PtyProxy;
 use omnish_pty::raw_mode::RawModeGuard;
-use omnish_transport::traits::{Connection, Transport};
-use omnish_transport::unix::UnixTransport;
+use omnish_transport::rpc_client::RpcClient;
 use std::collections::HashMap;
 use std::os::fd::AsRawFd;
 use uuid::Uuid;
@@ -147,14 +146,14 @@ async fn main() -> Result<()> {
                         command_tracker.feed_input(&bytes, timestamp_ms());
 
                         // Report to daemon async
-                        if let Some(ref conn) = daemon_conn {
+                        if let Some(ref rpc) = daemon_conn {
                             let msg = Message::IoData(IoData {
                                 session_id: session_id.clone(),
                                 direction: IoDirection::Input,
                                 timestamp_ms: timestamp_ms(),
                                 data: bytes,
                             });
-                            let _ = conn.send(&msg).await;
+                            let _ = rpc.call(msg).await;
                         }
                     }
                     InterceptAction::Cancel => {
@@ -170,8 +169,8 @@ async fn main() -> Result<()> {
                                 handle_command_result(&result, redirect.as_deref(), &proxy);
                             }
                             command::ChatAction::DaemonDebug { query, redirect } => {
-                                if let Some(ref conn) = daemon_conn {
-                                    send_daemon_query(&query, &session_id, conn, &proxy, redirect.as_deref(), false).await;
+                                if let Some(ref rpc) = daemon_conn {
+                                    send_daemon_query(&query, &session_id, rpc, &proxy, redirect.as_deref(), false).await;
                                 } else {
                                     let err = display::render_error("Daemon not connected");
                                     nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
@@ -179,8 +178,8 @@ async fn main() -> Result<()> {
                                 }
                             }
                             command::ChatAction::LlmQuery(query) => {
-                                if let Some(ref conn) = daemon_conn {
-                                    send_daemon_query(&query, &session_id, conn, &proxy, None, true).await;
+                                if let Some(ref rpc) = daemon_conn {
+                                    send_daemon_query(&query, &session_id, rpc, &proxy, None, true).await;
                                 } else {
                                     let err = display::render_error("Daemon not connected");
                                     nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
@@ -225,25 +224,25 @@ async fn main() -> Result<()> {
                     interceptor.note_output(&output_buf[..n]);
 
                     // Send IoData to daemon first (so stream is written before CommandComplete)
-                    if let Some(ref conn) = daemon_conn {
+                    if let Some(ref rpc) = daemon_conn {
                         let msg = Message::IoData(IoData {
                             session_id: session_id.clone(),
                             direction: IoDirection::Output,
                             timestamp_ms: timestamp_ms(),
                             data: output_buf[..n].to_vec(),
                         });
-                        let _ = conn.send(&msg).await;
+                        let _ = rpc.call(msg).await;
                     }
 
                     // Feed output to command tracker (after IoData sent)
                     let completed = command_tracker.feed_output(&output_buf[..n], timestamp_ms(), 0);
                     for record in &completed {
-                        if let Some(ref conn) = daemon_conn {
+                        if let Some(ref rpc) = daemon_conn {
                             let msg = Message::CommandComplete(omnish_protocol::message::CommandComplete {
                                 session_id: session_id.clone(),
                                 record: record.clone(),
                             });
-                            let _ = conn.send(&msg).await;
+                            let _ = rpc.call(msg).await;
                         }
                     }
                 }
@@ -258,13 +257,13 @@ async fn main() -> Result<()> {
     }
 
     // Send session end
-    if let Some(ref conn) = daemon_conn {
+    if let Some(ref rpc) = daemon_conn {
         let msg = Message::SessionEnd(SessionEnd {
             session_id: session_id.clone(),
             timestamp_ms: timestamp_ms(),
             exit_code: None,
         });
-        let _ = conn.send(&msg).await;
+        let _ = rpc.call(msg).await;
     }
 
     // Drop raw mode guard BEFORE process::exit, since exit() skips destructors
@@ -278,11 +277,10 @@ async fn connect_daemon(
     session_id: &str,
     parent_session_id: Option<String>,
     child_pid: u32,
-) -> Option<Box<dyn Connection>> {
+) -> Option<RpcClient> {
     let socket_path = get_socket_path();
-    let transport = UnixTransport;
-    match transport.connect(&socket_path).await {
-        Ok(conn) => {
+    match RpcClient::connect_unix(&socket_path).await {
+        Ok(client) => {
             let attrs = probe::default_session_probes(child_pid).collect_all();
             let msg = Message::SessionStart(SessionStart {
                 session_id: session_id.to_string(),
@@ -290,12 +288,15 @@ async fn connect_daemon(
                 timestamp_ms: timestamp_ms(),
                 attrs,
             });
-            if conn.send(&msg).await.is_ok() {
-                eprintln!("\x1b[32m[omnish]\x1b[0m Connected to daemon (session: {})", &session_id[..8]);
-                Some(conn)
-            } else {
-                eprintln!("\x1b[33m[omnish]\x1b[0m Connected but failed to register session");
-                None
+            match client.call(msg).await {
+                Ok(_) => {
+                    eprintln!("\x1b[32m[omnish]\x1b[0m Connected to daemon (session: {})", &session_id[..8]);
+                    Some(client)
+                }
+                Err(_) => {
+                    eprintln!("\x1b[33m[omnish]\x1b[0m Connected but failed to register session");
+                    None
+                }
             }
         }
         Err(e) => {
@@ -562,7 +563,7 @@ fn handle_command_result(content: &str, redirect: Option<&str>, proxy: &PtyProxy
 async fn send_daemon_query(
     query: &str,
     session_id: &str,
-    conn: &Box<dyn Connection>,
+    rpc: &RpcClient,
     proxy: &PtyProxy,
     redirect: Option<&str>,
     show_thinking: bool,
@@ -580,14 +581,7 @@ async fn send_daemon_query(
         scope: RequestScope::AllSessions,
     });
 
-    if conn.send(&request).await.is_err() {
-        let err = display::render_error("Failed to send request");
-        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-        proxy.write_all(b"\r").ok();
-        return;
-    }
-
-    match conn.recv().await {
+    match rpc.call(request).await {
         Ok(Message::Response(resp)) if resp.request_id == request_id => {
             if show_thinking {
                 std::fs::write("/tmp/omnish_last_response.txt", &resp.content).ok();
