@@ -1,6 +1,8 @@
 use anyhow::Result;
 use omnish_protocol::message::{Frame, Message};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -61,6 +63,126 @@ impl RpcClient {
             connected,
             _write_task,
             _read_task,
+        }
+    }
+
+    pub async fn connect_unix_with_reconnect(
+        addr: &str,
+        on_reconnect: impl Fn(&RpcClient) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Result<Self> {
+        let stream = UnixStream::connect(addr).await?;
+        let (reader, writer) = stream.into_split();
+
+        let (disc_tx, disc_rx) = oneshot::channel::<()>();
+        let inner = Self::create_inner(reader, writer, Some(disc_tx));
+        let next_id = Arc::new(AtomicU64::new(1));
+        let client = Self {
+            inner: Arc::new(Mutex::new(inner)),
+            next_id: next_id.clone(),
+        };
+
+        // Call on_reconnect for initial registration
+        on_reconnect(&client).await?;
+
+        // Spawn reconnect loop
+        let inner_ref = client.inner.clone();
+        let next_id_ref = next_id.clone();
+        let addr_owned = addr.to_string();
+        let on_reconnect = Arc::new(on_reconnect);
+
+        tokio::spawn(Self::reconnect_loop(
+            inner_ref,
+            next_id_ref,
+            addr_owned,
+            on_reconnect,
+            disc_rx,
+        ));
+
+        Ok(client)
+    }
+
+    async fn reconnect_loop(
+        inner_ref: Arc<Mutex<Inner>>,
+        next_id: Arc<AtomicU64>,
+        addr: String,
+        on_reconnect: Arc<
+            dyn Fn(&RpcClient) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>
+                + Send
+                + Sync,
+        >,
+        mut disc_rx: oneshot::Receiver<()>,
+    ) {
+        loop {
+            // Wait for disconnect notification
+            let _ = (&mut disc_rx).await;
+
+            // Mark as disconnected
+            {
+                let guard = inner_ref.lock().await;
+                guard.connected.store(false, Ordering::SeqCst);
+            }
+
+            // Exponential backoff reconnection
+            let mut backoff_ms: u64 = 1000;
+            let max_backoff_ms: u64 = 30_000;
+
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+
+                // Try to connect
+                let stream = match UnixStream::connect(&addr).await {
+                    Ok(s) => s,
+                    Err(_) => {
+                        backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
+                        continue;
+                    }
+                };
+
+                let (reader, writer) = stream.into_split();
+                let (new_disc_tx, new_disc_rx) = oneshot::channel::<()>();
+                let new_inner = Self::create_inner(reader, writer, Some(new_disc_tx));
+
+                // Create a temporary client wrapping the new inner for the callback
+                let temp_client = RpcClient {
+                    inner: Arc::new(Mutex::new(new_inner)),
+                    next_id: next_id.clone(),
+                };
+
+                // Call on_reconnect with the temp client
+                if let Err(_) = on_reconnect(&temp_client).await {
+                    // Callback failed, retry
+                    backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
+                    continue;
+                }
+
+                // Success - swap the inner
+                // Extract Inner from temp_client's Arc<Mutex<Inner>>
+                let temp_inner_arc = temp_client.inner.clone();
+                drop(temp_client);
+                // Now temp_inner_arc is the only reference
+                let temp_inner_mutex = match Arc::try_unwrap(temp_inner_arc) {
+                    Ok(m) => m,
+                    Err(_) => {
+                        // Should not happen, but retry if it does
+                        backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
+                        continue;
+                    }
+                };
+                let new_inner = temp_inner_mutex.into_inner();
+
+                // Swap into the real client's inner
+                {
+                    let mut guard = inner_ref.lock().await;
+                    *guard = new_inner;
+                }
+
+                // Update disc_rx for next iteration
+                disc_rx = new_disc_rx;
+                break;
+            }
         }
     }
 
@@ -290,5 +412,142 @@ mod tests {
         }
 
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rpc_client_reconnects_after_server_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("reconnect.sock");
+        let sock_path_str = sock_path.to_str().unwrap().to_string();
+
+        // Start first server
+        let listener1 = UnixListener::bind(&sock_path).unwrap();
+        let server1 = tokio::spawn(async move {
+            let (mut stream, _) = listener1.accept().await.unwrap();
+            // Handle SessionStart from on_reconnect (initial connect)
+            let frame = read_frame(&mut stream).await.unwrap();
+            assert!(matches!(frame.payload, Message::SessionStart(_)));
+            write_frame(
+                &mut stream,
+                &Frame {
+                    request_id: frame.request_id,
+                    payload: Message::Ack,
+                },
+            )
+            .await
+            .unwrap();
+            // Handle one IoData call
+            let frame = read_frame(&mut stream).await.unwrap();
+            assert!(matches!(frame.payload, Message::IoData(_)));
+            write_frame(
+                &mut stream,
+                &Frame {
+                    request_id: frame.request_id,
+                    payload: Message::Ack,
+                },
+            )
+            .await
+            .unwrap();
+            // Drop stream to simulate disconnect
+        });
+
+        let reconnect_count = Arc::new(AtomicU64::new(0));
+        let reconnect_count_clone = reconnect_count.clone();
+
+        let client = RpcClient::connect_unix_with_reconnect(&sock_path_str, move |rpc| {
+            let count = reconnect_count_clone.clone();
+            let rpc = rpc.clone();
+            Box::pin(async move {
+                count.fetch_add(1, Ordering::Relaxed);
+                rpc.call(Message::SessionStart(SessionStart {
+                    session_id: "s1".to_string(),
+                    parent_session_id: None,
+                    timestamp_ms: 1000,
+                    attrs: HashMap::new(),
+                }))
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+
+        // First call should succeed
+        let resp = client
+            .call(Message::IoData(IoData {
+                session_id: "s1".to_string(),
+                direction: IoDirection::Input,
+                timestamp_ms: 2000,
+                data: b"ls".to_vec(),
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(resp, Message::Ack));
+
+        // Wait for server1 to drop connection
+        server1.await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Calls during disconnection should fail
+        let result = client
+            .call(Message::IoData(IoData {
+                session_id: "s1".to_string(),
+                direction: IoDirection::Input,
+                timestamp_ms: 3000,
+                data: b"pwd".to_vec(),
+            }))
+            .await;
+        assert!(result.is_err());
+
+        // Start second server on same socket
+        let _ = std::fs::remove_file(&sock_path);
+        let listener2 = UnixListener::bind(&sock_path).unwrap();
+        let server2 = tokio::spawn(async move {
+            let (mut stream, _) = listener2.accept().await.unwrap();
+            // Handle SessionStart from on_reconnect
+            let frame = read_frame(&mut stream).await.unwrap();
+            assert!(matches!(frame.payload, Message::SessionStart(_)));
+            write_frame(
+                &mut stream,
+                &Frame {
+                    request_id: frame.request_id,
+                    payload: Message::Ack,
+                },
+            )
+            .await
+            .unwrap();
+            // Handle one IoData
+            let frame = read_frame(&mut stream).await.unwrap();
+            assert!(matches!(frame.payload, Message::IoData(_)));
+            write_frame(
+                &mut stream,
+                &Frame {
+                    request_id: frame.request_id,
+                    payload: Message::Ack,
+                },
+            )
+            .await
+            .unwrap();
+        });
+
+        // Wait for reconnection (backoff starts at 1s)
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+        // After reconnection, calls should succeed
+        let resp = client
+            .call(Message::IoData(IoData {
+                session_id: "s1".to_string(),
+                direction: IoDirection::Input,
+                timestamp_ms: 4000,
+                data: b"whoami".to_vec(),
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(resp, Message::Ack));
+
+        // on_reconnect called twice (initial + reconnect)
+        assert_eq!(reconnect_count.load(Ordering::Relaxed), 2);
+
+        server2.await.unwrap();
     }
 }
