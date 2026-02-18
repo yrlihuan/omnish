@@ -6,7 +6,6 @@ use anyhow::Result;
 use omnish_common::config::load_config;
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_llm::factory::create_default_backend;
-use omnish_transport::unix::UnixTransport;
 use server::DaemonServer;
 use std::sync::Arc;
 
@@ -44,8 +43,7 @@ async fn main() -> Result<()> {
         Err(e) => tracing::warn!("failed to load existing sessions: {}", e),
     }
     let server = DaemonServer::new(session_mgr, llm_backend);
-    let transport = UnixTransport;
 
     tracing::info!("starting omnishd at {}", socket_path);
-    server.run(&transport, &socket_path).await
+    server.run(&socket_path).await
 }

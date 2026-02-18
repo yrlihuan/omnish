@@ -2,7 +2,7 @@ use omnish_daemon::session_mgr::SessionManager;
 use anyhow::Result;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType};
 use omnish_protocol::message::*;
-use omnish_transport::traits::{Connection, Transport};
+use omnish_transport::rpc_server::RpcServer;
 use std::sync::Arc;
 
 pub struct DaemonServer {
@@ -18,95 +18,90 @@ impl DaemonServer {
         }
     }
 
-    pub async fn run(&self, transport: &dyn Transport, addr: &str) -> Result<()> {
-        let mut listener = transport.listen(addr).await?;
+    pub async fn run(&self, addr: &str) -> Result<()> {
+        let mut server = RpcServer::bind_unix(addr).await?;
         tracing::info!("omnishd listening on {}", addr);
 
-        loop {
-            match listener.accept().await {
-                Ok(conn) => {
-                    let mgr = self.session_mgr.clone();
-                    let llm = self.llm_backend.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_connection(conn, mgr, llm).await {
-                            tracing::error!("connection error: {}", e);
-                        }
-                    });
-                }
-                Err(e) => {
-                    tracing::error!("accept error: {}", e);
-                }
-            }
-        }
+        let mgr = self.session_mgr.clone();
+        let llm = self.llm_backend.clone();
+
+        server
+            .serve(move |msg| {
+                let mgr = mgr.clone();
+                let llm = llm.clone();
+                Box::pin(async move { handle_message(msg, &mgr, &llm).await })
+            })
+            .await
     }
 }
 
-async fn handle_connection(
-    conn: Box<dyn Connection>,
-    mgr: Arc<SessionManager>,
-    llm: Option<Arc<dyn LlmBackend>>,
-) -> Result<()> {
-    loop {
-        let msg = match conn.recv().await {
-            Ok(msg) => msg,
-            Err(_) => break,
-        };
-
-        match msg {
-            Message::SessionStart(s) => {
-                mgr.register(&s.session_id, s.parent_session_id, s.attrs).await?;
+async fn handle_message(
+    msg: Message,
+    mgr: &SessionManager,
+    llm: &Option<Arc<dyn LlmBackend>>,
+) -> Message {
+    match msg {
+        Message::SessionStart(s) => {
+            if let Err(e) = mgr.register(&s.session_id, s.parent_session_id, s.attrs).await {
+                tracing::error!("register error: {}", e);
             }
-            Message::SessionEnd(s) => {
-                mgr.end_session(&s.session_id).await?;
+            Message::Ack
+        }
+        Message::SessionEnd(s) => {
+            if let Err(e) = mgr.end_session(&s.session_id).await {
+                tracing::error!("end_session error: {}", e);
             }
-            Message::IoData(io) => {
-                let dir = match io.direction {
-                    IoDirection::Input => 0,
-                    IoDirection::Output => 1,
-                };
-                mgr.write_io(&io.session_id, io.timestamp_ms, dir, &io.data).await?;
+            Message::Ack
+        }
+        Message::IoData(io) => {
+            let dir = match io.direction {
+                IoDirection::Input => 0,
+                IoDirection::Output => 1,
+            };
+            if let Err(e) = mgr.write_io(&io.session_id, io.timestamp_ms, dir, &io.data).await {
+                tracing::error!("write_io error: {}", e);
             }
-            Message::CommandComplete(cc) => {
-                mgr.receive_command(&cc.session_id, cc.record).await?;
+            Message::Ack
+        }
+        Message::CommandComplete(cc) => {
+            if let Err(e) = mgr.receive_command(&cc.session_id, cc.record).await {
+                tracing::error!("receive_command error: {}", e);
             }
-            Message::Request(req) => {
-                #[cfg(debug_assertions)]
-                if req.query.starts_with("__debug:") {
-                    let content = handle_debug_request(&req, &mgr).await;
-                    let resp = Message::Response(Response {
-                        request_id: req.request_id,
-                        content,
-                        is_streaming: false,
-                        is_final: true,
-                    });
-                    conn.send(&resp).await?;
-                    continue;
-                }
-
-                let content = if let Some(ref backend) = llm {
-                    match handle_llm_request(&req, &mgr, backend).await {
-                        Ok(response) => response.content,
-                        Err(e) => {
-                            tracing::error!("LLM request failed: {}", e);
-                            format!("Error: {}", e)
-                        }
-                    }
-                } else {
-                    "(LLM backend not configured)".to_string()
-                };
-
-                let resp = Message::Response(Response {
+            Message::Ack
+        }
+        Message::Request(req) => {
+            #[cfg(debug_assertions)]
+            if req.query.starts_with("__debug:") {
+                let content = handle_debug_request(&req, mgr).await;
+                return Message::Response(Response {
                     request_id: req.request_id,
                     content,
                     is_streaming: false,
                     is_final: true,
                 });
-                conn.send(&resp).await?;
             }
-            _ => {}
+
+            let content = if let Some(ref backend) = llm {
+                match handle_llm_request(&req, mgr, backend).await {
+                    Ok(response) => response.content,
+                    Err(e) => {
+                        tracing::error!("LLM request failed: {}", e);
+                        format!("Error: {}", e)
+                    }
+                }
+            } else {
+                "(LLM backend not configured)".to_string()
+            };
+
+            Message::Response(Response {
+                request_id: req.request_id,
+                content,
+                is_streaming: false,
+                is_final: true,
+            })
         }
+        _ => Message::Ack,
     }
-    Ok(())
 }
 
 async fn resolve_context(req: &Request, mgr: &SessionManager) -> Result<String> {
