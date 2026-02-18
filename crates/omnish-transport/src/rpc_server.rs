@@ -148,4 +148,68 @@ mod tests {
         // Clean up: abort the server (it loops forever)
         server_handle.abort();
     }
+
+    #[tokio::test]
+    async fn test_multiple_clients_concurrent() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("multi_client.sock");
+        let sock_str = sock.to_str().unwrap().to_string();
+
+        let mut server = RpcServer::bind_unix(&sock_str).await.unwrap();
+
+        tokio::spawn(async move {
+            server
+                .serve(|msg| {
+                    Box::pin(async move {
+                        match msg {
+                            Message::Request(req) => {
+                                // Simulate slow handler
+                                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                                Message::Response(Response {
+                                    request_id: req.request_id.clone(),
+                                    content: format!("echo: {}", req.query),
+                                    is_streaming: false,
+                                    is_final: true,
+                                })
+                            }
+                            _ => Message::Ack,
+                        }
+                    })
+                })
+                .await
+                .ok();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Two clients connecting simultaneously
+        let client_a = RpcClient::connect_unix(&sock_str).await.unwrap();
+        let client_b = RpcClient::connect_unix(&sock_str).await.unwrap();
+
+        // Both send requests at the same time
+        let (resp_a, resp_b) = tokio::join!(
+            client_a.call(Message::Request(Request {
+                request_id: "a1".to_string(),
+                session_id: "sa".to_string(),
+                query: "from A".to_string(),
+                scope: RequestScope::CurrentSession,
+            })),
+            client_b.call(Message::Request(Request {
+                request_id: "b1".to_string(),
+                session_id: "sb".to_string(),
+                query: "from B".to_string(),
+                scope: RequestScope::CurrentSession,
+            })),
+        );
+
+        // Each client gets its own response — no cross-talk
+        match resp_a.unwrap() {
+            Message::Response(r) => assert_eq!(r.content, "echo: from A"),
+            other => panic!("expected Response, got {:?}", other),
+        }
+        match resp_b.unwrap() {
+            Message::Response(r) => assert_eq!(r.content, "echo: from B"),
+            other => panic!("expected Response, got {:?}", other),
+        }
+    }
 }
