@@ -8,7 +8,6 @@ omnish-protocol = { path = "../omnish-protocol" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
-async-trait = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
