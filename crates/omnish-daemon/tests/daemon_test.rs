@@ -352,6 +352,50 @@ async fn test_interleaved_two_session_context_at_10_and_20_commands() {
     }
 }
 
+#[tokio::test]
+async fn test_register_idempotent_reuses_existing_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = SessionManager::new(dir.path().to_path_buf());
+
+    let attrs1 = HashMap::from([
+        ("shell".to_string(), "/bin/bash".to_string()),
+        ("pid".to_string(), "100".to_string()),
+        ("tty".to_string(), "/dev/pts/0".to_string()),
+        ("cwd".to_string(), "/home/user".to_string()),
+    ]);
+    mgr.register("sess1", None, attrs1).await.unwrap();
+
+    // Record a command in the first registration
+    mgr.receive_command("sess1", CommandRecord {
+        command_id: "sess1:0".to_string(),
+        session_id: "sess1".to_string(),
+        command_line: Some("echo hello".to_string()),
+        cwd: None,
+        started_at: 1000,
+        ended_at: Some(2000),
+        output_summary: "hello".to_string(),
+        stream_offset: 0,
+        stream_length: 0,
+    }).await.unwrap();
+
+    // Re-register with same session_id (simulating reconnect)
+    let attrs2 = HashMap::from([
+        ("shell".to_string(), "/bin/bash".to_string()),
+        ("pid".to_string(), "100".to_string()),
+        ("tty".to_string(), "/dev/pts/0".to_string()),
+        ("cwd".to_string(), "/tmp".to_string()),
+    ]);
+    mgr.register("sess1", None, attrs2).await.unwrap();
+
+    // Session should still be active
+    let active = mgr.list_active().await;
+    assert_eq!(active.len(), 1);
+
+    // Previous commands should still exist
+    let ctx = mgr.get_session_context("sess1").await.unwrap();
+    assert!(ctx.contains("echo hello"), "previous commands should survive re-register");
+}
+
 /// Regression: ended sessions must remain visible to context queries from new sessions.
 /// Reproduces the scenario: client 1 runs commands → disconnects → client 2 queries context.
 #[cfg(debug_assertions)]

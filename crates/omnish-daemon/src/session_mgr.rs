@@ -125,6 +125,16 @@ impl SessionManager {
         parent_session_id: Option<String>,
         attrs: std::collections::HashMap<String, String>,
     ) -> Result<()> {
+        let mut sessions = self.sessions.lock().await;
+
+        // Idempotent: if session already exists, update attrs and return
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.meta.attrs = attrs;
+            session.meta.save(&session.dir)?;
+            tracing::info!("session {} re-registered (reconnect)", session_id);
+            return Ok(());
+        }
+
         let now = chrono::Utc::now().to_rfc3339();
         let session_dir = self.base_dir.join(format!(
             "{}_{}",
@@ -144,7 +154,6 @@ impl SessionManager {
 
         let stream_writer = StreamWriter::create(&session_dir.join("stream.bin"))?;
 
-        let mut sessions = self.sessions.lock().await;
         sessions.insert(
             session_id.to_string(),
             ActiveSession {
