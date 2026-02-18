@@ -279,25 +279,30 @@ async fn connect_daemon(
     child_pid: u32,
 ) -> Option<RpcClient> {
     let socket_path = get_socket_path();
-    match RpcClient::connect_unix(&socket_path).await {
+    let sid = session_id.to_string();
+    let psid = parent_session_id.clone();
+
+    match RpcClient::connect_unix_with_reconnect(
+        &socket_path,
+        move |rpc| {
+            let sid = sid.clone();
+            let psid = psid.clone();
+            let rpc = rpc.clone();
+            Box::pin(async move {
+                let attrs = probe::default_session_probes(child_pid).collect_all();
+                rpc.call(Message::SessionStart(SessionStart {
+                    session_id: sid,
+                    parent_session_id: psid,
+                    timestamp_ms: timestamp_ms(),
+                    attrs,
+                })).await?;
+                Ok(())
+            })
+        },
+    ).await {
         Ok(client) => {
-            let attrs = probe::default_session_probes(child_pid).collect_all();
-            let msg = Message::SessionStart(SessionStart {
-                session_id: session_id.to_string(),
-                parent_session_id,
-                timestamp_ms: timestamp_ms(),
-                attrs,
-            });
-            match client.call(msg).await {
-                Ok(_) => {
-                    eprintln!("\x1b[32m[omnish]\x1b[0m Connected to daemon (session: {})", &session_id[..8]);
-                    Some(client)
-                }
-                Err(_) => {
-                    eprintln!("\x1b[33m[omnish]\x1b[0m Connected but failed to register session");
-                    None
-                }
-            }
+            eprintln!("\x1b[32m[omnish]\x1b[0m Connected to daemon (session: {})", &session_id[..8]);
+            Some(client)
         }
         Err(e) => {
             eprintln!("\x1b[33m[omnish]\x1b[0m Daemon not available ({}), running in passthrough mode", e);
