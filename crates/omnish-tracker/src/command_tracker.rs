@@ -1,3 +1,4 @@
+use crate::osc133_detector::{Osc133Event, Osc133EventKind};
 use crate::prompt_detector::{strip_ansi, PromptDetector};
 use omnish_store::command::CommandRecord;
 
@@ -22,6 +23,7 @@ pub struct CommandTracker {
     pending: Option<PendingCommand>,
     next_seq: u32,
     seen_first_prompt: bool,
+    osc133_mode: bool,
 }
 
 impl CommandTracker {
@@ -33,6 +35,7 @@ impl CommandTracker {
             pending: None,
             next_seq: 0,
             seen_first_prompt: false,
+            osc133_mode: false,
         }
     }
 
@@ -46,6 +49,30 @@ impl CommandTracker {
             if data.contains(&b'\r') || data.contains(&b'\n') {
                 pending.entered = true;
             }
+        }
+    }
+
+    fn finalize_command(
+        &self,
+        pending: PendingCommand,
+        timestamp_ms: u64,
+        stream_pos: u64,
+        exit_code: Option<i32>,
+    ) -> CommandRecord {
+        let command_line = extract_command_line(&pending.input_buf);
+        let output_summary = make_summary(&pending.output_lines);
+        let stream_length = stream_pos - pending.stream_offset;
+        CommandRecord {
+            command_id: format!("{}:{}", self.session_id, pending.seq),
+            session_id: self.session_id.clone(),
+            command_line,
+            cwd: self.cwd.clone(),
+            started_at: pending.started_at,
+            ended_at: Some(timestamp_ms),
+            output_summary,
+            stream_offset: pending.stream_offset,
+            stream_length,
+            exit_code,
         }
     }
 
@@ -71,6 +98,11 @@ impl CommandTracker {
             }
         }
 
+        // In osc133 mode, command boundaries come from OSC events, not regex.
+        if self.osc133_mode {
+            return Vec::new();
+        }
+
         let events = self.detector.feed(data);
         let mut completed = Vec::new();
 
@@ -90,22 +122,7 @@ impl CommandTracker {
             } else {
                 // Subsequent prompt: finalize pending command, start new one
                 if let Some(pending) = self.pending.take() {
-                    let command_line = extract_command_line(&pending.input_buf);
-                    let output_summary = make_summary(&pending.output_lines);
-                    let stream_length = stream_pos - pending.stream_offset;
-
-                    completed.push(CommandRecord {
-                        command_id: format!("{}:{}", self.session_id, pending.seq),
-                        session_id: self.session_id.clone(),
-                        command_line,
-                        cwd: self.cwd.clone(),
-                        started_at: pending.started_at,
-                        ended_at: Some(timestamp_ms),
-                        output_summary,
-                        stream_offset: pending.stream_offset,
-                        stream_length,
-                        exit_code: None,
-                    });
+                    completed.push(self.finalize_command(pending, timestamp_ms, stream_pos, None));
                 }
 
                 self.pending = Some(PendingCommand {
@@ -121,6 +138,69 @@ impl CommandTracker {
         }
 
         completed
+    }
+
+    pub fn feed_osc133(
+        &mut self,
+        event: Osc133Event,
+        timestamp_ms: u64,
+        stream_pos: u64,
+    ) -> Vec<CommandRecord> {
+        self.osc133_mode = true;
+        let mut completed = Vec::new();
+
+        match event.kind {
+            Osc133EventKind::PromptStart => {
+                // Finalize previous command if pending and entered
+                if let Some(pending) = self.pending.take() {
+                    if pending.entered {
+                        completed.push(self.finalize_command(pending, timestamp_ms, stream_pos, None));
+                    }
+                }
+                self.seen_first_prompt = true;
+                self.pending = Some(PendingCommand {
+                    seq: self.next_seq,
+                    started_at: timestamp_ms,
+                    stream_offset: stream_pos,
+                    input_buf: Vec::new(),
+                    output_lines: Vec::new(),
+                    entered: false,
+                });
+                self.next_seq += 1;
+            }
+            Osc133EventKind::CommandStart => {
+                if let Some(ref mut pending) = self.pending {
+                    pending.entered = true;
+                }
+            }
+            Osc133EventKind::OutputStart => {
+                // No special action — output collection happens via feed_output_raw
+            }
+            Osc133EventKind::CommandEnd { exit_code } => {
+                if let Some(pending) = self.pending.take() {
+                    completed.push(self.finalize_command(pending, timestamp_ms, stream_pos, Some(exit_code)));
+                }
+            }
+        }
+
+        completed
+    }
+
+    /// Feed raw output bytes for summary collection only (no prompt detection).
+    /// Use this in osc133 mode where command boundaries come from OSC events.
+    pub fn feed_output_raw(&mut self, data: &[u8], _timestamp_ms: u64, _stream_pos: u64) {
+        if let Some(ref mut pending) = self.pending {
+            if pending.entered {
+                let stripped = strip_ansi(data);
+                let text = String::from_utf8_lossy(&stripped);
+                for line in text.split('\n') {
+                    let trimmed = line.trim_end_matches('\r');
+                    if !trimmed.is_empty() {
+                        pending.output_lines.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -373,5 +453,82 @@ mod tests {
         assert!(!summary.contains("\x1b["), "summary should not contain ANSI escapes");
         // Should contain actual file listing
         assert!(summary.contains("Cargo.lock"), "summary should contain ls output");
+    }
+
+    // --- OSC 133 mode tests ---
+
+    #[test]
+    fn test_osc133_simple_command() {
+        use crate::osc133_detector::*;
+        let mut tracker = make_tracker();
+
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 }, 1000, 0);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart, start: 0, end: 8 }, 1001, 50);
+        tracker.feed_input(b"ls\r", 1001);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 }, 1002, 60);
+        tracker.feed_output_raw(b"file.txt\r\n", 1002, 70);
+
+        let cmds = tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 0 }, start: 0, end: 10 }, 1003, 100);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].command_line.as_deref(), Some("ls"));
+        assert_eq!(cmds[0].exit_code, Some(0));
+        assert_eq!(cmds[0].started_at, 1000);
+        assert_eq!(cmds[0].ended_at, Some(1003));
+    }
+
+    #[test]
+    fn test_osc133_nonzero_exit() {
+        use crate::osc133_detector::*;
+        let mut tracker = make_tracker();
+
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 }, 1000, 0);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart, start: 0, end: 8 }, 1001, 50);
+        tracker.feed_input(b"false\r", 1001);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 }, 1002, 60);
+        let cmds = tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 1 }, start: 0, end: 10 }, 1003, 100);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].exit_code, Some(1));
+    }
+
+    #[test]
+    fn test_osc133_suppresses_regex_detection() {
+        use crate::osc133_detector::*;
+        let mut tracker = make_tracker();
+
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 }, 1000, 0);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart, start: 0, end: 8 }, 1001, 50);
+        tracker.feed_input(b"echo $\r", 1001);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 }, 1002, 60);
+
+        // This output contains a prompt-like pattern
+        let regex_cmds = tracker.feed_output(b"user@host:~$ \r\n", 1002, 70);
+        assert!(regex_cmds.is_empty(), "regex should not fire in osc133 mode");
+
+        let cmds = tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 0 }, start: 0, end: 10 }, 1003, 100);
+        assert_eq!(cmds.len(), 1);
+    }
+
+    #[test]
+    fn test_osc133_multiple_commands() {
+        use crate::osc133_detector::*;
+        let mut tracker = make_tracker();
+
+        // First command
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 }, 1000, 0);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart, start: 0, end: 8 }, 1001, 50);
+        tracker.feed_input(b"ls\r", 1001);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 }, 1002, 60);
+        let cmds1 = tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 0 }, start: 0, end: 10 }, 1003, 100);
+        assert_eq!(cmds1.len(), 1);
+        assert_eq!(cmds1[0].command_id, "sess1:0");
+
+        // Second command
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 }, 1004, 100);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart, start: 0, end: 8 }, 1005, 150);
+        tracker.feed_input(b"pwd\r", 1005);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 }, 1006, 160);
+        let cmds2 = tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 0 }, start: 0, end: 10 }, 1007, 200);
+        assert_eq!(cmds2.len(), 1);
+        assert_eq!(cmds2[0].command_id, "sess1:1");
     }
 }
