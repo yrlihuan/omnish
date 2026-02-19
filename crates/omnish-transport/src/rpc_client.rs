@@ -186,6 +186,10 @@ impl RpcClient {
         }
     }
 
+    pub async fn is_connected(&self) -> bool {
+        self.inner.lock().await.connected.load(Ordering::SeqCst)
+    }
+
     pub async fn call(&self, msg: Message) -> Result<Message> {
         let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let frame = Frame {
@@ -549,5 +553,58 @@ mod tests {
         assert_eq!(reconnect_count.load(Ordering::Relaxed), 2);
 
         server2.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rpc_client_is_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("is_connected.sock");
+        let sock_path_str = sock_path.to_str().unwrap().to_string();
+
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        // Server: accept, handle one SessionStart, then drop
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let frame = read_frame(&mut stream).await.unwrap();
+            write_frame(
+                &mut stream,
+                &Frame {
+                    request_id: frame.request_id,
+                    payload: Message::Ack,
+                },
+            )
+            .await
+            .unwrap();
+            // Keep connection alive briefly
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            // Drop stream to disconnect
+        });
+
+        let client = RpcClient::connect_unix_with_reconnect(&sock_path_str, move |rpc| {
+            let rpc = rpc.clone();
+            Box::pin(async move {
+                rpc.call(Message::SessionStart(SessionStart {
+                    session_id: "s1".to_string(),
+                    parent_session_id: None,
+                    timestamp_ms: 1000,
+                    attrs: HashMap::new(),
+                }))
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+
+        // Should be connected after initial connect
+        assert!(client.is_connected().await);
+
+        // Wait for server to drop
+        server.await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Should be disconnected after server drops
+        assert!(!client.is_connected().await);
     }
 }
