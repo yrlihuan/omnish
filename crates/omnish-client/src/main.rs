@@ -3,6 +3,7 @@ mod command;
 mod display;
 mod interceptor;
 mod probe;
+mod throttle;
 
 use anyhow::Result;
 use interceptor::{InputInterceptor, InterceptAction, TimeGapGuard};
@@ -10,9 +11,31 @@ use omnish_protocol::message::*;
 use omnish_pty::proxy::PtyProxy;
 use omnish_pty::raw_mode::RawModeGuard;
 use omnish_transport::rpc_client::RpcClient;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use uuid::Uuid;
+
+type MessageBuffer = Arc<Mutex<VecDeque<Message>>>;
+
+const MAX_BUFFER_SIZE: usize = 10_000;
+
+fn should_buffer(msg: &Message) -> bool {
+    matches!(msg, Message::IoData(_) | Message::CommandComplete(_))
+}
+
+/// Send a message to the daemon, buffering it if the send fails and
+/// the message type is eligible for retry.
+async fn send_or_buffer(rpc: &RpcClient, msg: Message, buffer: &MessageBuffer) {
+    if rpc.call(msg.clone()).await.is_err() && should_buffer(&msg) {
+        let mut buf = buffer.lock().await;
+        if buf.len() >= MAX_BUFFER_SIZE {
+            buf.pop_front();
+        }
+        buf.push_back(msg);
+    }
+}
 
 fn timestamp_ms() -> u64 {
     std::time::SystemTime::now()
@@ -47,7 +70,8 @@ async fn main() -> Result<()> {
     let proxy = PtyProxy::spawn_with_env(&shell, &[], child_env)?;
 
     // Connect to daemon (graceful degradation)
-    let daemon_conn = connect_daemon(&session_id, parent_session_id, proxy.child_pid() as u32).await;
+    let pending_buffer: MessageBuffer = Arc::new(Mutex::new(VecDeque::new()));
+    let daemon_conn = connect_daemon(&session_id, parent_session_id, proxy.child_pid() as u32, pending_buffer.clone()).await;
 
     // Enter raw mode
     let _raw_guard = RawModeGuard::enter(std::io::stdin().as_raw_fd())?;
@@ -153,7 +177,7 @@ async fn main() -> Result<()> {
                                 timestamp_ms: timestamp_ms(),
                                 data: bytes,
                             });
-                            let _ = rpc.call(msg).await;
+                            send_or_buffer(rpc, msg, &pending_buffer).await;
                         }
                     }
                     InterceptAction::Cancel => {
@@ -231,7 +255,7 @@ async fn main() -> Result<()> {
                             timestamp_ms: timestamp_ms(),
                             data: output_buf[..n].to_vec(),
                         });
-                        let _ = rpc.call(msg).await;
+                        send_or_buffer(rpc, msg, &pending_buffer).await;
                     }
 
                     // Feed output to command tracker (after IoData sent)
@@ -242,7 +266,7 @@ async fn main() -> Result<()> {
                                 session_id: session_id.clone(),
                                 record: record.clone(),
                             });
-                            let _ = rpc.call(msg).await;
+                            send_or_buffer(rpc, msg, &pending_buffer).await;
                         }
                     }
                 }
@@ -277,6 +301,7 @@ async fn connect_daemon(
     session_id: &str,
     parent_session_id: Option<String>,
     child_pid: u32,
+    buffer: MessageBuffer,
 ) -> Option<RpcClient> {
     let socket_path = get_socket_path();
     let sid = session_id.to_string();
@@ -288,6 +313,7 @@ async fn connect_daemon(
             let sid = sid.clone();
             let psid = psid.clone();
             let rpc = rpc.clone();
+            let buffer = buffer.clone();
             Box::pin(async move {
                 let attrs = probe::default_session_probes(child_pid).collect_all();
                 rpc.call(Message::SessionStart(SessionStart {
@@ -296,6 +322,16 @@ async fn connect_daemon(
                     timestamp_ms: timestamp_ms(),
                     attrs,
                 })).await?;
+
+                // Replay buffered messages after successful SessionStart
+                let buffered: Vec<Message> = {
+                    buffer.lock().await.drain(..).collect()
+                };
+                for msg in buffered {
+                    if rpc.call(msg).await.is_err() {
+                        break; // Connection broke again during replay
+                    }
+                }
                 Ok(())
             })
         },
@@ -691,6 +727,92 @@ mod tests {
 
         // Back to normal: ":" should intercept again
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+    }
+
+    // --- Message buffer tests ---
+
+    #[test]
+    fn test_should_buffer_io_data() {
+        let msg = Message::IoData(IoData {
+            session_id: "s1".to_string(),
+            direction: IoDirection::Input,
+            timestamp_ms: 1000,
+            data: b"ls".to_vec(),
+        });
+        assert!(should_buffer(&msg));
+    }
+
+    #[test]
+    fn test_should_buffer_command_complete() {
+        let msg = Message::CommandComplete(omnish_protocol::message::CommandComplete {
+            session_id: "s1".to_string(),
+            record: omnish_store::command::CommandRecord {
+                command_id: "c1".to_string(),
+                session_id: "s1".to_string(),
+                command_line: Some("ls".to_string()),
+                cwd: None,
+                started_at: 1000,
+                ended_at: Some(2000),
+                output_summary: String::new(),
+                stream_offset: 0,
+                stream_length: 0,
+            },
+        });
+        assert!(should_buffer(&msg));
+    }
+
+    #[test]
+    fn test_should_not_buffer_session_start() {
+        let msg = Message::SessionStart(SessionStart {
+            session_id: "s1".to_string(),
+            parent_session_id: None,
+            timestamp_ms: 1000,
+            attrs: HashMap::new(),
+        });
+        assert!(!should_buffer(&msg));
+    }
+
+    #[test]
+    fn test_should_not_buffer_other_types() {
+        assert!(!should_buffer(&Message::Ack));
+        assert!(!should_buffer(&Message::SessionEnd(SessionEnd {
+            session_id: "s1".to_string(),
+            timestamp_ms: 1000,
+            exit_code: None,
+        })));
+        assert!(!should_buffer(&Message::Request(Request {
+            request_id: "r1".to_string(),
+            session_id: "s1".to_string(),
+            query: "test".to_string(),
+            scope: RequestScope::CurrentSession,
+        })));
+    }
+
+    #[tokio::test]
+    async fn test_buffer_cap_drops_oldest() {
+        let buffer: MessageBuffer = Arc::new(Mutex::new(VecDeque::new()));
+        {
+            let mut buf = buffer.lock().await;
+            for i in 0..MAX_BUFFER_SIZE + 1 {
+                let msg = Message::IoData(IoData {
+                    session_id: "s1".to_string(),
+                    direction: IoDirection::Output,
+                    timestamp_ms: i as u64,
+                    data: vec![i as u8],
+                });
+                if buf.len() >= MAX_BUFFER_SIZE {
+                    buf.pop_front();
+                }
+                buf.push_back(msg);
+            }
+            assert_eq!(buf.len(), MAX_BUFFER_SIZE);
+            // Oldest (timestamp 0) was dropped; front should be timestamp 1
+            if let Some(Message::IoData(io)) = buf.front() {
+                assert_eq!(io.timestamp_ms, 1);
+            } else {
+                panic!("expected IoData at front of buffer");
+            }
+        }
     }
 
     // --- CursorColTracker tests ---
