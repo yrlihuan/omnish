@@ -15,6 +15,7 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 uuid = { workspace = true }
 nix = { workspace = true }
+dirs = "5"
 libc = "0.2"
 unicode-width = "0.2"
 

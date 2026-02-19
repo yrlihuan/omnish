@@ -3,6 +3,7 @@ mod command;
 mod display;
 mod interceptor;
 mod probe;
+mod shell_hook;
 mod throttle;
 
 use anyhow::Result;
@@ -67,6 +68,12 @@ async fn main() -> Result<()> {
     // Spawn PTY with shell, passing our session_id so nested omnish can detect parent
     let mut child_env = HashMap::new();
     child_env.insert("OMNISH_SESSION_ID".to_string(), session_id.clone());
+
+    // Install shell hooks for OSC 133 support
+    if let Some(hook_path) = shell_hook::install_bash_hook(&shell) {
+        child_env.insert("BASH_ENV".to_string(), hook_path.to_string_lossy().to_string());
+    }
+
     let proxy = PtyProxy::spawn_with_env(&shell, &[], child_env)?;
 
     // Connect to daemon (graceful degradation)
