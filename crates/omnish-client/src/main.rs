@@ -97,6 +97,7 @@ async fn main() -> Result<()> {
     let mut command_tracker = omnish_tracker::command_tracker::CommandTracker::new(
         session_id.clone(), cwd,
     );
+    let mut throttle = throttle::OutputThrottle::new();
 
     loop {
         let mut fds = [
@@ -247,15 +248,18 @@ async fn main() -> Result<()> {
                     // Notify interceptor of output (resets chat state)
                     interceptor.note_output(&output_buf[..n]);
 
-                    // Send IoData to daemon first (so stream is written before CommandComplete)
+                    // Send IoData to daemon (throttled for long-running commands)
                     if let Some(ref rpc) = daemon_conn {
-                        let msg = Message::IoData(IoData {
-                            session_id: session_id.clone(),
-                            direction: IoDirection::Output,
-                            timestamp_ms: timestamp_ms(),
-                            data: output_buf[..n].to_vec(),
-                        });
-                        send_or_buffer(rpc, msg, &pending_buffer).await;
+                        if throttle.should_send(n) {
+                            let msg = Message::IoData(IoData {
+                                session_id: session_id.clone(),
+                                direction: IoDirection::Output,
+                                timestamp_ms: timestamp_ms(),
+                                data: output_buf[..n].to_vec(),
+                            });
+                            send_or_buffer(rpc, msg, &pending_buffer).await;
+                            throttle.record_sent(n);
+                        }
                     }
 
                     // Feed output to command tracker (after IoData sent)
@@ -268,6 +272,9 @@ async fn main() -> Result<()> {
                             });
                             send_or_buffer(rpc, msg, &pending_buffer).await;
                         }
+                    }
+                    if !completed.is_empty() {
+                        throttle.reset();
                     }
                 }
                 Err(_) => break,
