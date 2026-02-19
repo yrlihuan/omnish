@@ -193,6 +193,7 @@ mod tests {
             output_summary: String::new(),
             stream_offset: 0,
             stream_length: 100,
+            exit_code: None,
         }
     }
 

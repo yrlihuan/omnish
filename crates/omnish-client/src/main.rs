@@ -763,6 +763,7 @@ mod tests {
                 output_summary: String::new(),
                 stream_offset: 0,
                 stream_length: 0,
+                exit_code: None,
             },
         });
         assert!(should_buffer(&msg));

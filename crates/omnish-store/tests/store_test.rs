@@ -58,6 +58,7 @@ fn test_command_record_save_and_load() {
             output_summary: "Compiling omnish v0.1.0\nFinished dev".into(),
             stream_offset: 0,
             stream_length: 512,
+            exit_code: None,
         },
         CommandRecord {
             command_id: "sess1:1".into(),
@@ -69,6 +70,7 @@ fn test_command_record_save_and_load() {
             output_summary: "running 5 tests\ntest result: ok".into(),
             stream_offset: 512,
             stream_length: 1024,
+            exit_code: None,
         },
     ];
 

@@ -301,6 +301,7 @@ mod tests {
                 output_summary: "file.txt".into(),
                 stream_offset: 0,
                 stream_length: 0,
+                exit_code: None,
             }).await.unwrap();
             // Drop the manager (simulates daemon shutdown)
         }

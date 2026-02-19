@@ -104,6 +104,7 @@ impl CommandTracker {
                         output_summary,
                         stream_offset: pending.stream_offset,
                         stream_length,
+                        exit_code: None,
                     });
                 }
 

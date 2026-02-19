@@ -13,6 +13,8 @@ pub struct CommandRecord {
     pub output_summary: String,
     pub stream_offset: u64,
     pub stream_length: u64,
+    #[serde(default)]
+    pub exit_code: Option<i32>,
 }
 
 impl CommandRecord {

@@ -69,6 +69,7 @@ async fn test_command_recording_via_receive_command() {
         output_summary: "total 0\nfile.txt".to_string(),
         stream_offset: 0,
         stream_length: 0,
+        exit_code: None,
     }).await.unwrap();
 
     let commands = mgr.get_commands("sess1").await.unwrap();
@@ -109,6 +110,7 @@ async fn test_commands_persisted_on_session_end() {
         output_summary: "hi".to_string(),
         stream_offset: 0,
         stream_length: 0,
+        exit_code: None,
     }).await.unwrap();
 
     mgr.end_session("sess1").await.unwrap();
@@ -156,6 +158,7 @@ async fn test_multi_command_session_e2e() {
         output_summary: "Cargo.toml\nsrc/".to_string(),
         stream_offset: 0,
         stream_length: 0,
+        exit_code: None,
     }).await.unwrap();
 
     mgr.receive_command("e2e", CommandRecord {
@@ -168,6 +171,7 @@ async fn test_multi_command_session_e2e() {
         output_summary: "   Compiling omnish v0.1.0\n    Finished dev".to_string(),
         stream_offset: 0,
         stream_length: 0,
+        exit_code: None,
     }).await.unwrap();
 
     let commands = mgr.get_commands("e2e").await.unwrap();
@@ -261,6 +265,7 @@ async fn test_debug_context_request() {
         output_summary: "hello".to_string(),
         stream_offset: 0,
         stream_length: 0,
+        exit_code: None,
     }).await.unwrap();
 
     // Verify get_session_context returns the output data
@@ -305,6 +310,7 @@ async fn test_interleaved_two_session_context_at_10_and_20_commands() {
             output_summary: output,
             stream_offset: 0,
             stream_length: 0,
+            exit_code: None,
         }).await.unwrap();
     }
 
@@ -376,6 +382,7 @@ async fn test_register_idempotent_reuses_existing_session() {
         output_summary: "hello".to_string(),
         stream_offset: 0,
         stream_length: 0,
+        exit_code: None,
     }).await.unwrap();
 
     // Re-register with same session_id (simulating reconnect)
@@ -419,6 +426,7 @@ async fn test_ended_session_commands_visible_to_new_session_context() {
         output_summary: "foo.txt".into(),
         stream_offset: 0,
         stream_length: 0,
+        exit_code: None,
     }).await.unwrap();
     mgr.end_session("client1").await.unwrap();
 
