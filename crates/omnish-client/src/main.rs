@@ -105,6 +105,7 @@ async fn main() -> Result<()> {
         session_id.clone(), cwd,
     );
     let mut throttle = throttle::OutputThrottle::new();
+    let mut osc133_detector = omnish_tracker::osc133_detector::Osc133Detector::new();
 
     loop {
         let mut fds = [
@@ -242,20 +243,34 @@ async fn main() -> Result<()> {
             match proxy.read(&mut output_buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    nix::unistd::write(std::io::stdout(), &output_buf[..n])?;
+                    let raw = &output_buf[..n];
 
-                    // Track cursor column for dismiss restore
-                    col_tracker.feed(&output_buf[..n]);
+                    // Detect OSC 133 events from raw output
+                    let osc_events = osc133_detector.feed(raw);
 
-                    // Detect alternate screen transitions (vim, less, etc.)
-                    if let Some(active) = alt_screen_detector.feed(&output_buf[..n]) {
+                    // Strip OSC 133 sequences before displaying to user
+                    let stripped;
+                    let display_data: &[u8] = if osc_events.is_empty() {
+                        &output_buf[..n]
+                    } else {
+                        stripped = omnish_tracker::osc133_detector::strip_osc133(raw);
+                        &stripped
+                    };
+
+                    nix::unistd::write(std::io::stdout(), display_data)?;
+
+                    // Track cursor column on display (stripped) data
+                    col_tracker.feed(display_data);
+
+                    // Detect alternate screen transitions
+                    if let Some(active) = alt_screen_detector.feed(display_data) {
                         interceptor.set_suppressed(active);
                     }
 
                     // Notify interceptor of output (resets chat state)
-                    interceptor.note_output(&output_buf[..n]);
+                    interceptor.note_output(display_data);
 
-                    // Send IoData to daemon (throttled for long-running commands)
+                    // Send IoData to daemon (throttled) — send raw data including OSC 133
                     if let Some(ref rpc) = daemon_conn {
                         if throttle.should_send(n) {
                             let msg = Message::IoData(IoData {
@@ -269,8 +284,21 @@ async fn main() -> Result<()> {
                         }
                     }
 
-                    // Feed output to command tracker (after IoData sent)
-                    let completed = command_tracker.feed_output(&output_buf[..n], timestamp_ms(), 0);
+                    // Feed OSC 133 events to command tracker
+                    let mut completed = Vec::new();
+                    for event in osc_events {
+                        let cmds = command_tracker.feed_osc133(event, timestamp_ms(), 0);
+                        completed.extend(cmds);
+                    }
+
+                    // Feed output for regex fallback (returns empty when osc133_mode active)
+                    let regex_cmds = command_tracker.feed_output(raw, timestamp_ms(), 0);
+                    completed.extend(regex_cmds);
+
+                    // Feed raw output for summary collection in osc133 mode
+                    command_tracker.feed_output_raw(raw, timestamp_ms(), 0);
+
+                    // Send completed commands to daemon
                     for record in &completed {
                         if let Some(ref rpc) = daemon_conn {
                             let msg = Message::CommandComplete(omnish_protocol::message::CommandComplete {
