@@ -1,5 +1,6 @@
 // crates/omnish-client/src/main.rs
 mod command;
+mod ghost_complete;
 mod display;
 mod interceptor;
 mod probe;
@@ -70,11 +71,16 @@ async fn main() -> Result<()> {
     child_env.insert("OMNISH_SESSION_ID".to_string(), session_id.clone());
 
     // Install shell hooks for OSC 133 support
-    if let Some(hook_path) = shell_hook::install_bash_hook(&shell) {
-        child_env.insert("BASH_ENV".to_string(), hook_path.to_string_lossy().to_string());
-    }
+    let osc133_rcfile = shell_hook::install_bash_hook(&shell);
+    let osc133_hook_installed = osc133_rcfile.is_some();
 
-    let proxy = PtyProxy::spawn_with_env(&shell, &[], child_env)?;
+    let shell_args: Vec<String> = if let Some(ref rcfile) = osc133_rcfile {
+        vec!["--rcfile".to_string(), rcfile.to_string_lossy().to_string()]
+    } else {
+        vec![]
+    };
+    let shell_args_ref: Vec<&str> = shell_args.iter().map(|s| s.as_str()).collect();
+    let proxy = PtyProxy::spawn_with_env(&shell, &shell_args_ref, child_env)?;
 
     // Connect to daemon (graceful degradation)
     let pending_buffer: MessageBuffer = Arc::new(Mutex::new(VecDeque::new()));
@@ -106,6 +112,7 @@ async fn main() -> Result<()> {
     );
     let mut throttle = throttle::OutputThrottle::new();
     let mut osc133_detector = omnish_tracker::osc133_detector::Osc133Detector::new();
+    let mut osc133_warned = false;
 
     loop {
         let mut fds = [
@@ -270,14 +277,14 @@ async fn main() -> Result<()> {
                     // Notify interceptor of output (resets chat state)
                     interceptor.note_output(display_data);
 
-                    // Send IoData to daemon (throttled) — send raw data including OSC 133
+                    // Send IoData to daemon (throttled) — send stripped data (no OSC 133)
                     if let Some(ref rpc) = daemon_conn {
                         if throttle.should_send(n) {
                             let msg = Message::IoData(IoData {
                                 session_id: session_id.clone(),
                                 direction: IoDirection::Output,
                                 timestamp_ms: timestamp_ms(),
-                                data: output_buf[..n].to_vec(),
+                                data: display_data.to_vec(),
                             });
                             send_or_buffer(rpc, msg, &pending_buffer).await;
                             throttle.record_sent(n);
@@ -293,6 +300,10 @@ async fn main() -> Result<()> {
 
                     // Feed output for regex fallback (returns empty when osc133_mode active)
                     let regex_cmds = command_tracker.feed_output(raw, timestamp_ms(), 0);
+                    if !regex_cmds.is_empty() && osc133_hook_installed && !osc133_warned {
+                        osc133_warned = true;
+                        eprintln!("\x1b[31m[omnish]\x1b[0m OSC 133 shell hook not active, falling back to regex prompt detection");
+                    }
                     completed.extend(regex_cmds);
 
                     // Feed raw output for summary collection in osc133 mode
