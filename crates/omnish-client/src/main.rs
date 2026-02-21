@@ -113,6 +113,9 @@ async fn main() -> Result<()> {
     let mut throttle = throttle::OutputThrottle::new();
     let mut osc133_detector = omnish_tracker::osc133_detector::Osc133Detector::new();
     let mut osc133_warned = false;
+    let mut completer = ghost_complete::GhostCompleter::new(vec![
+        Box::new(ghost_complete::BuiltinProvider::new()),
+    ]);
 
     loop {
         let mut fds = [
@@ -156,6 +159,14 @@ async fn main() -> Result<()> {
                             let user_input = &buf[1..]; // Skip ":"
                             let echo = display::render_input_echo(user_input);
                             nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
+
+                            // Query completer for ghost text
+                            if let Ok(input_str) = std::str::from_utf8(user_input) {
+                                if let Some(ghost) = completer.update(input_str) {
+                                    let ghost_render = display::render_ghost_text(ghost);
+                                    nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                                }
+                            }
                         }
                     }
                     InterceptAction::Backspace(buf) => {
@@ -198,12 +209,14 @@ async fn main() -> Result<()> {
                     }
                     InterceptAction::Cancel => {
                         // ESC pressed — clear omnish UI, restore cursor column
+                        completer.clear();
                         let dismiss = display::render_dismiss();
                         let restore = format!("\x1b[{}G", dismiss_col + 1); // CHA is 1-indexed
                         nix::unistd::write(std::io::stdout(), dismiss.as_bytes()).ok();
                         nix::unistd::write(std::io::stdout(), restore.as_bytes()).ok();
                     }
                     InterceptAction::Chat(msg) => {
+                        completer.clear();
                         match command::dispatch(&msg) {
                             command::ChatAction::Command { result, redirect } => {
                                 handle_command_result(&result, redirect.as_deref(), &proxy);
@@ -224,6 +237,30 @@ async fn main() -> Result<()> {
                                     let err = display::render_error("Daemon not connected");
                                     nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                                     proxy.write_all(b"\r").ok();
+                                }
+                            }
+                        }
+                    }
+                    InterceptAction::Tab(_buf) => {
+                        // Check if completer has a suggestion to accept
+                        if let Some(suffix) = completer.accept() {
+                            // Append suffix bytes to interceptor buffer
+                            for &b in suffix.as_bytes() {
+                                interceptor.inject_byte(b);
+                            }
+                            // Re-render with updated buffer
+                            let new_buf = interceptor.current_buffer();
+                            if new_buf.len() > 1 && new_buf.starts_with(b":") {
+                                let user_input = &new_buf[1..];
+                                let echo = display::render_input_echo(user_input);
+                                nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
+
+                                // Query for next ghost after accepting
+                                if let Ok(input_str) = std::str::from_utf8(user_input) {
+                                    if let Some(ghost) = completer.update(input_str) {
+                                        let ghost_render = display::render_ghost_text(ghost);
+                                        nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                                    }
                                 }
                             }
                         }

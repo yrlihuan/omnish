@@ -161,6 +161,9 @@ pub enum InterceptAction {
     Cancel,
     /// ESC sequence in progress — no UI update needed
     Pending,
+    /// Tab pressed while in chat mode. Contains current buffer.
+    /// Caller should check GhostCompleter for completion to accept.
+    Tab(Vec<u8>),
 }
 
 /// Strategy for deciding whether to start intercepting at the current moment.
@@ -326,6 +329,22 @@ impl InputInterceptor {
             }
         }
 
+        // Handle Tab
+        if byte == b'\t' {
+            if self.in_chat {
+                let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
+                return InterceptAction::Tab(current_buf);
+            } else if !self.buffer.is_empty() {
+                // During prefix matching, flush buffer + tab to PTY
+                let mut flushed: Vec<u8> = self.buffer.iter().copied().collect();
+                flushed.push(byte);
+                self.buffer.clear();
+                return self.forward(flushed);
+            } else {
+                return self.forward(vec![byte]);
+            }
+        }
+
         // Handle backspace/delete
         if byte == 0x7f || byte == 0x08 {
             // If we're buffering or in chat mode, handle backspace
@@ -426,6 +445,16 @@ impl InputInterceptor {
 
         // Empty message or decode error, forward to PTY
         self.forward(buffered)
+    }
+
+    /// Inject bytes directly into the buffer (for accepting completions).
+    pub fn inject_byte(&mut self, byte: u8) {
+        self.buffer.push_back(byte);
+    }
+
+    /// Get a copy of the current buffer contents.
+    pub fn current_buffer(&self) -> Vec<u8> {
+        self.buffer.iter().copied().collect()
     }
 }
 
@@ -867,6 +896,7 @@ mod tests {
                         String::from_utf8_lossy(buf)
                     ))
                 }
+                InterceptAction::Tab(_) => actions.push("tab".into()),
                 InterceptAction::Pending => actions.push("pending".into()),
             }
         }
@@ -1023,5 +1053,41 @@ mod tests {
             actions,
             vec!["prompt", "forward", "prompt", "echo::", "echo::h", "echo::hi", "chat:hi"]
         );
+    }
+
+    // --- Tab tests ---
+
+    #[test]
+    fn test_tab_in_chat_mode_returns_tab_action() {
+        let mut ic = new_interceptor(":");
+        ic.feed_byte(b':');
+        ic.feed_byte(b'h');
+        assert_eq!(ic.feed_byte(b'\t'), InterceptAction::Tab(vec![b':', b'h']));
+    }
+
+    #[test]
+    fn test_tab_not_in_chat_forwards() {
+        let mut ic = new_interceptor(":");
+        assert_eq!(ic.feed_byte(b'\t'), InterceptAction::Forward(vec![b'\t']));
+    }
+
+    #[test]
+    fn test_tab_during_prefix_buffering() {
+        let mut ic = new_interceptor("::");
+        ic.feed_byte(b':');
+        assert_eq!(ic.feed_byte(b'\t'), InterceptAction::Forward(vec![b':', b'\t']));
+    }
+
+    // --- inject_byte / current_buffer tests ---
+
+    #[test]
+    fn test_inject_byte_and_current_buffer() {
+        let mut ic = new_interceptor(":");
+        ic.feed_byte(b':');
+        ic.feed_byte(b'h');
+        ic.inject_byte(b'e');
+        ic.inject_byte(b'l');
+        ic.inject_byte(b'p');
+        assert_eq!(ic.current_buffer(), b":help");
     }
 }
