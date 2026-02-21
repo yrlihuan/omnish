@@ -63,6 +63,16 @@ pub fn render_error(msg: &str) -> String {
     format!("\r\n\x1b[31m[omnish] {}\x1b[0m\r\n", msg)
 }
 
+/// Render ghost text (completion suggestion) in dim gray after the cursor.
+/// Uses save/restore cursor so the cursor stays at the real input position.
+/// Returns empty string if ghost is empty.
+pub fn render_ghost_text(ghost: &str) -> String {
+    if ghost.is_empty() {
+        return String::new();
+    }
+    format!("\x1b7\x1b[90m{}\x1b[0m\x1b8", ghost)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +452,40 @@ mod tests {
         let row = get_row(screen, 1, 80);
         assert!(row.contains("<>&"), "special chars should be preserved verbatim");
         assert!(row.contains("\"'"), "quote chars should be preserved verbatim");
+    }
+
+    #[test]
+    fn test_render_ghost_text() {
+        let output = render_ghost_text("ug context");
+        let parser = parse_ansi(&output, 40, 24);
+        let screen = parser.screen();
+        let row = get_row(screen, 0, 40);
+        assert!(row.contains("ug context"), "ghost text should be visible");
+        // Cursor should be at column 0 (restored to start by \x1b8)
+        let cursor = screen.cursor_position();
+        assert_eq!(cursor.1, 0, "cursor should be restored to saved position");
+    }
+
+    #[test]
+    fn test_render_ghost_text_empty() {
+        let output = render_ghost_text("");
+        assert!(output.is_empty(), "empty ghost should produce no output");
+    }
+
+    #[test]
+    fn test_input_echo_with_ghost() {
+        let cols: u16 = 40;
+        let mut output = String::new();
+        output.push_str(&render_input_echo(b"/deb"));
+        output.push_str(&render_ghost_text("ug"));
+
+        let parser = parse_ansi(&output, cols, 24);
+        let screen = parser.screen();
+        let row = get_row(screen, 0, cols);
+        assert!(row.contains("/deb"), "input text should be visible");
+        assert!(row.contains("ug"), "ghost text should be visible");
+        // Cursor should be right after "/deb" (col = 2 for "❯ " + 4 for "/deb" = 6)
+        let cursor = screen.cursor_position();
+        assert_eq!(cursor.1, 6, "cursor should be after real input, not ghost");
     }
 }
