@@ -75,16 +75,34 @@ pub fn strip_ansi(data: &[u8]) -> Vec<u8> {
     let mut result = Vec::with_capacity(data.len());
     let mut i = 0;
     while i < data.len() {
-        if data[i] == 0x1b && i + 1 < data.len() && data[i + 1] == b'[' {
-            // Skip ESC [ ... <final byte>
-            i += 2;
-            while i < data.len() {
-                let b = data[i];
-                i += 1;
-                // Final byte of CSI sequence is in range 0x40-0x7E
-                if (0x40..=0x7E).contains(&b) {
-                    break;
+        if data[i] == 0x1b && i + 1 < data.len() {
+            if data[i + 1] == b'[' {
+                // Skip CSI: ESC [ ... <final byte 0x40-0x7E>
+                i += 2;
+                while i < data.len() {
+                    let b = data[i];
+                    i += 1;
+                    if (0x40..=0x7E).contains(&b) {
+                        break;
+                    }
                 }
+            } else if data[i + 1] == b']' {
+                // Skip OSC: ESC ] ... BEL(0x07) or ESC backslash
+                i += 2;
+                while i < data.len() {
+                    if data[i] == 0x07 {
+                        i += 1;
+                        break;
+                    }
+                    if data[i] == 0x1b && i + 1 < data.len() && data[i + 1] == b'\\' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            } else {
+                // Other ESC sequence (e.g. ESC c) — skip ESC + one byte
+                i += 2;
             }
         } else {
             result.push(data[i]);
@@ -157,5 +175,18 @@ mod tests {
         let mut detector = PromptDetector::with_patterns(vec![r"❯\s*$".to_string()]);
         let events = detector.feed(b"output\r\n\xe2\x9d\xaf ");
         assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn test_strip_ansi_removes_osc_sequences() {
+        // OSC 133 sequences should be stripped
+        let data = b"hello\x1b]133;A\x07world";
+        let stripped = strip_ansi(data);
+        assert_eq!(stripped, b"helloworld");
+
+        // OSC with ST terminator (ESC \)
+        let data2 = b"foo\x1b]0;title\x1b\\bar";
+        let stripped2 = strip_ansi(data2);
+        assert_eq!(stripped2, b"foobar");
     }
 }

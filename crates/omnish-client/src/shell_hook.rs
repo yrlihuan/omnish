@@ -2,24 +2,29 @@ use std::path::PathBuf;
 
 const BASH_HOOK: &str = r#"
 # omnish shell integration — OSC 133 semantic prompts
+__omnish_preexec_fired=0
+
 __omnish_prompt_cmd() {
   local ec=$?
+  __omnish_preexec_fired=0
   printf '\033]133;D;%d\007' "$ec"
   printf '\033]133;A\007'
 }
 PROMPT_COMMAND="__omnish_prompt_cmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 
 __omnish_preexec() {
-  if [[ "$BASH_COMMAND" != "$PROMPT_COMMAND" ]] && [[ "$BASH_COMMAND" != __omnish_* ]]; then
-    printf '\033]133;B\007'
-    printf '\033]133;C\007'
-  fi
+  [[ "$__omnish_preexec_fired" == "1" ]] && return
+  [[ "$BASH_COMMAND" == "$PROMPT_COMMAND" ]] && return
+  [[ "$BASH_COMMAND" == __omnish_* ]] && return
+  __omnish_preexec_fired=1
+  printf '\033]133;B\007'
+  printf '\033]133;C\007'
 }
 trap '__omnish_preexec' DEBUG
 "#;
 
-/// Write the bash hook script and return the path.
-/// Returns None if the shell is not bash.
+/// Generate an rcfile that sources the user's original bashrc then loads the OSC 133 hook.
+/// Returns the rcfile path, or None if the shell is not bash.
 pub fn install_bash_hook(shell: &str) -> Option<PathBuf> {
     if !shell.ends_with("bash") {
         return None;
@@ -30,9 +35,29 @@ pub fn install_bash_hook(shell: &str) -> Option<PathBuf> {
         .join("omnish");
     std::fs::create_dir_all(&dir).ok()?;
 
-    let path = dir.join("bash_hook.sh");
-    std::fs::write(&path, BASH_HOOK).ok()?;
-    Some(path)
+    // Write the hook script
+    let hook_path = dir.join("bash_hook.sh");
+    std::fs::write(&hook_path, BASH_HOOK).ok()?;
+
+    // Write an rcfile that sources the user's bashrc first, then the hook
+    let rcfile_path = dir.join("bashrc");
+    let bashrc = dirs::home_dir()
+        .map(|h| h.join(".bashrc"))
+        .filter(|p| p.exists());
+    let mut content = String::new();
+    if let Some(ref bashrc) = bashrc {
+        content.push_str(&format!(
+            "source \"{}\"\n",
+            bashrc.to_string_lossy()
+        ));
+    }
+    content.push_str(&format!(
+        "source \"{}\"\n",
+        hook_path.to_string_lossy()
+    ));
+    std::fs::write(&rcfile_path, &content).ok()?;
+
+    Some(rcfile_path)
 }
 
 #[cfg(test)]
@@ -54,12 +79,14 @@ mod tests {
     }
 
     #[test]
-    fn test_bash_returns_path() {
+    fn test_bash_returns_rcfile_path() {
         let result = install_bash_hook("/bin/bash");
         assert!(result.is_some());
-        let path = result.unwrap();
-        assert!(path.exists());
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("__omnish_prompt_cmd"));
+        let rcfile = result.unwrap();
+        assert!(rcfile.exists());
+        assert!(rcfile.to_string_lossy().ends_with("bashrc"));
+        let content = std::fs::read_to_string(&rcfile).unwrap();
+        // rcfile sources the hook script
+        assert!(content.contains("bash_hook.sh"), "rcfile should source hook: {content}");
     }
 }
