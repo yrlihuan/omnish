@@ -23,10 +23,14 @@ impl RecentCommands {
 #[async_trait]
 impl ContextStrategy for RecentCommands {
     async fn select_commands<'a>(&self, commands: &'a [CommandRecord]) -> Vec<&'a CommandRecord> {
-        if commands.len() > self.max {
-            commands[commands.len() - self.max..].iter().collect()
+        // Filter out empty commands (Enter with no input) so they don't consume slots
+        let meaningful: Vec<_> = commands.iter()
+            .filter(|c| c.command_line.is_some())
+            .collect();
+        if meaningful.len() > self.max {
+            meaningful[meaningful.len() - self.max..].to_vec()
         } else {
-            commands.iter().collect()
+            meaningful
         }
     }
 }
@@ -82,7 +86,7 @@ impl ContextFormatter for GroupedFormatter {
             };
 
             let mut group_lines = vec![header];
-            for cmd in commands.iter().filter(|c| &c.session_id == session_id && c.command_line.is_some()) {
+            for cmd in commands.iter().filter(|c| &c.session_id == session_id) {
                 let time_str = format_relative_time(cmd.started_at, self.now_ms);
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
                 let output = truncate_lines(&cmd.output, MAX_OUTPUT_LINES, HEAD_LINES, TAIL_LINES);
@@ -133,7 +137,6 @@ impl ContextFormatter for InterleavedFormatter {
         sorted.sort_by_key(|c| c.started_at);
 
         let mut sections = Vec::new();
-        let sorted: Vec<_> = sorted.into_iter().filter(|c| c.command_line.is_some()).collect();
         for cmd in sorted {
             let time_str = format_relative_time(cmd.started_at, self.now_ms);
             let label = labels.get(&cmd.session_id).unwrap();
