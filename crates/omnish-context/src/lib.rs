@@ -14,6 +14,7 @@ pub struct CommandContext {
     pub started_at: u64,
     pub ended_at: Option<u64>,
     pub output: String,
+    pub exit_code: Option<i32>,
 }
 
 /// Reads stream entries for a given command's byte range.
@@ -61,26 +62,52 @@ pub async fn build_context(
             started_at: cmd.started_at,
             ended_at: cmd.ended_at,
             output,
+            exit_code: cmd.exit_code,
         });
     }
 
     Ok(formatter.format(&contexts))
 }
 
-/// Strip ANSI escape sequences from raw bytes.
+/// Strip ANSI escape sequences (CSI and OSC) from raw bytes.
 pub fn strip_ansi(raw: &[u8]) -> String {
     let s = String::from_utf8_lossy(raw);
     let mut result = String::new();
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '\x1b' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                while let Some(&next) = chars.peek() {
+            match chars.peek() {
+                Some(&'[') => {
+                    // CSI: ESC [ ... <alpha>
                     chars.next();
-                    if next.is_ascii_alphabetic() {
-                        break;
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if next.is_ascii_alphabetic() {
+                            break;
+                        }
                     }
+                }
+                Some(&']') => {
+                    // OSC: ESC ] ... BEL or ESC backslash
+                    chars.next();
+                    while let Some(&next) = chars.peek() {
+                        if next == '\x07' {
+                            chars.next();
+                            break;
+                        }
+                        if next == '\x1b' {
+                            chars.next();
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                            }
+                            break;
+                        }
+                        chars.next();
+                    }
+                }
+                _ => {
+                    // Other ESC sequence — skip one char
+                    chars.next();
                 }
             }
         } else {

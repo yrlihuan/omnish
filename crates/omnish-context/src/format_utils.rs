@@ -114,6 +114,7 @@ mod tests {
                 started_at: 1000,
                 ended_at: Some(1050),
                 output: String::new(),
+                exit_code: None,
             },
             CommandContext {
                 session_id: "other-sess".into(),
@@ -122,6 +123,7 @@ mod tests {
                 started_at: 2000,
                 ended_at: Some(2050),
                 output: String::new(),
+                exit_code: None,
             },
         ];
         let labels = assign_term_labels(&commands, "my-sess");
@@ -138,6 +140,7 @@ mod tests {
             started_at: 1000,
             ended_at: Some(1050),
             output: String::new(),
+            exit_code: None,
         }];
         let labels = assign_term_labels(&commands, "only");
         assert_eq!(labels.len(), 1);

@@ -82,15 +82,19 @@ impl ContextFormatter for GroupedFormatter {
             };
 
             let mut group_lines = vec![header];
-            for cmd in commands.iter().filter(|c| &c.session_id == session_id) {
+            for cmd in commands.iter().filter(|c| &c.session_id == session_id && c.command_line.is_some()) {
                 let time_str = format_relative_time(cmd.started_at, self.now_ms);
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
                 let output = truncate_lines(&cmd.output, MAX_OUTPUT_LINES, HEAD_LINES, TAIL_LINES);
 
+                let failed_tag = match cmd.exit_code {
+                    Some(code) if code != 0 => format!("  [FAILED: {}]", code),
+                    _ => String::new(),
+                };
                 if output.is_empty() {
-                    group_lines.push(format!("[{}] $ {}", time_str, cmd_line));
+                    group_lines.push(format!("[{}] $ {}{}", time_str, cmd_line, failed_tag));
                 } else {
-                    group_lines.push(format!("[{}] $ {}\n{}", time_str, cmd_line, output));
+                    group_lines.push(format!("[{}] $ {}{}\n{}", time_str, cmd_line, failed_tag, output));
                 }
             }
 
@@ -129,6 +133,7 @@ impl ContextFormatter for InterleavedFormatter {
         sorted.sort_by_key(|c| c.started_at);
 
         let mut sections = Vec::new();
+        let sorted: Vec<_> = sorted.into_iter().filter(|c| c.command_line.is_some()).collect();
         for cmd in sorted {
             let time_str = format_relative_time(cmd.started_at, self.now_ms);
             let label = labels.get(&cmd.session_id).unwrap();
@@ -141,13 +146,14 @@ impl ContextFormatter for InterleavedFormatter {
             let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
             let output = truncate_lines(&cmd.output, MAX_OUTPUT_LINES, HEAD_LINES, TAIL_LINES);
 
+            let failed_tag = match cmd.exit_code {
+                Some(code) if code != 0 => format!("  [FAILED: {}]", code),
+                _ => String::new(),
+            };
             if output.is_empty() {
-                sections.push(format!("[{}] {} $ {}", time_str, label_str, cmd_line));
+                sections.push(format!("[{}] {} $ {}{}", time_str, label_str, cmd_line, failed_tag));
             } else {
-                sections.push(format!(
-                    "[{}] {} $ {}\n{}",
-                    time_str, label_str, cmd_line, output
-                ));
+                sections.push(format!("[{}] {} $ {}{}\n{}", time_str, label_str, cmd_line, failed_tag, output));
             }
         }
 
@@ -205,6 +211,7 @@ mod tests {
             started_at,
             ended_at: Some(started_at + 50),
             output: output.to_string(),
+            exit_code: None,
         }
     }
 
