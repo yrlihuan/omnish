@@ -55,7 +55,7 @@ pub fn render_response(content: &str) -> String {
         .map(|line| line.trim_end())
         .collect::<Vec<_>>()
         .join("\r\n");
-    format!("\x1b[32m{}\x1b[0m\r\n", formatted)
+    format!("\r\n\x1b[32m{}\x1b[0m\r\n", formatted)
 }
 
 /// Format an error message in red.
@@ -70,7 +70,7 @@ pub fn render_ghost_text(ghost: &str) -> String {
     if ghost.is_empty() {
         return String::new();
     }
-    format!("\x1b7\x1b[90m{}\x1b[0m\x1b8", ghost)
+    format!("\x1b7\x1b[2;90m{}\x1b[0m\x1b8", ghost)
 }
 
 #[cfg(test)]
@@ -158,10 +158,10 @@ mod tests {
         // Verify rendering via vt100
         let parser = parse_ansi(&output, 80, 24);
         let screen = parser.screen();
-        let row0 = get_row(screen, 0, 80);
-        assert!(row0.contains("line one"), "first line should render");
         let row1 = get_row(screen, 1, 80);
-        assert!(row1.contains("line two"), "second line should render on next row");
+        assert!(row1.contains("line one"), "first line should render");
+        let row2 = get_row(screen, 2, 80);
+        assert!(row2.contains("line two"), "second line should render on next row");
     }
 
     #[test]
@@ -419,11 +419,11 @@ mod tests {
         let output = render_response("hello world");
         let parser = parse_ansi(&output, 80, 24);
         let screen = parser.screen();
-        let row0 = get_row(screen, 0, 80);
-        assert!(row0.contains("hello world"), "single line should render on row 0");
-        // Row 1 should be empty (no spurious content)
         let row1 = get_row(screen, 1, 80);
-        assert_eq!(row1.trim(), "", "row 1 should be empty for single-line response");
+        assert!(row1.contains("hello world"), "single line should render on row 1");
+        // Row 2 should be empty (no spurious content)
+        let row2 = get_row(screen, 2, 80);
+        assert_eq!(row2.trim(), "", "row 2 should be empty for single-line response");
     }
 
     #[test]
