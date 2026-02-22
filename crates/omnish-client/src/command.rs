@@ -1,6 +1,7 @@
 /// Result of parsing a chat message for `/` commands.
 pub enum ChatAction {
     /// A `/` command was recognized. Contains the result text and optional redirect path.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     Command {
         result: String,
         redirect: Option<String>,
@@ -8,6 +9,7 @@ pub enum ChatAction {
     /// Not a command — forward as normal LLM query.
     LlmQuery(String),
     /// A `/` command that needs daemon data. Contains the debug query to send and optional redirect.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     DaemonDebug {
         query: String,
         redirect: Option<String>,
@@ -15,6 +17,7 @@ pub enum ChatAction {
 }
 
 /// Parse redirect suffix: "some text > /path/to/file" -> ("some text", Some("/path/to/file"))
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 fn parse_redirect(input: &str) -> (&str, Option<&str>) {
     if let Some(pos) = input.rfind(" > ") {
         let path = input[pos + 3..].trim();
