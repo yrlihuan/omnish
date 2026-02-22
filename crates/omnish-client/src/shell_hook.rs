@@ -30,9 +30,7 @@ pub fn install_bash_hook(shell: &str) -> Option<PathBuf> {
         return None;
     }
 
-    let dir = dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("omnish");
+    let dir = omnish_common::config::omnish_dir().join("hooks");
     std::fs::create_dir_all(&dir).ok()?;
 
     // Write the hook script

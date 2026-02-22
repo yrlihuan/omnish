@@ -1,12 +1,8 @@
-# config/default.toml
-# Default omnish configuration — copy to ~/.config/omnish/config.toml
+# config/daemon.toml
+# Daemon configuration — copy to ~/.omnish/daemon.toml
 
-[shell]
-# command = "/bin/bash"    # defaults to $SHELL
-command_prefix = "::"
-
-[daemon]
-# socket_path = "$XDG_RUNTIME_DIR/omnish.sock"
+# listen_addr = "~/.omnish/omnish.sock"   # default
+# sessions_dir = "~/.omnish/sessions"     # default
 
 [llm]
 default = "claude"

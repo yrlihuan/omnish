@@ -8,6 +8,7 @@ mod shell_hook;
 mod throttle;
 
 use anyhow::Result;
+use omnish_common::config::load_client_config;
 use interceptor::{InputInterceptor, InterceptAction, TimeGapGuard};
 use omnish_protocol::message::*;
 use omnish_pty::proxy::PtyProxy;
@@ -46,25 +47,15 @@ fn timestamp_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn get_daemon_addr() -> String {
-    std::env::var("OMNISH_SOCKET").unwrap_or_else(|_| {
-        if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-            format!("{}/omnish.sock", dir)
-        } else {
-            "/tmp/omnish.sock".to_string()
-        }
-    })
-}
-
-fn get_shell() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
+    let config = load_client_config().unwrap_or_default();
+
     let session_id = Uuid::new_v4().to_string()[..8].to_string();
     let parent_session_id = std::env::var("OMNISH_SESSION_ID").ok();
-    let shell = get_shell();
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| config.shell.command.clone());
+    let daemon_addr = std::env::var("OMNISH_SOCKET")
+        .unwrap_or_else(|_| config.daemon_addr.clone());
 
     // Spawn PTY with shell, passing our session_id so nested omnish can detect parent
     let mut child_env = HashMap::new();
@@ -84,7 +75,7 @@ async fn main() -> Result<()> {
 
     // Connect to daemon (graceful degradation)
     let pending_buffer: MessageBuffer = Arc::new(Mutex::new(VecDeque::new()));
-    let daemon_conn = connect_daemon(&session_id, parent_session_id, proxy.child_pid() as u32, pending_buffer.clone()).await;
+    let daemon_conn = connect_daemon(&daemon_addr, &session_id, parent_session_id, proxy.child_pid() as u32, pending_buffer.clone()).await;
 
     // Enter raw mode
     let _raw_guard = RawModeGuard::enter(std::io::stdin().as_raw_fd())?;
@@ -388,12 +379,13 @@ async fn main() -> Result<()> {
 }
 
 async fn connect_daemon(
+    daemon_addr: &str,
     session_id: &str,
     parent_session_id: Option<String>,
     child_pid: u32,
     buffer: MessageBuffer,
 ) -> Option<RpcClient> {
-    let socket_path = get_daemon_addr();
+    let socket_path = daemon_addr.to_string();
     let sid = session_id.to_string();
     let psid = parent_session_id.clone();
 

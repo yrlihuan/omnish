@@ -3,7 +3,7 @@ mod event_detector;
 mod server;
 
 use anyhow::Result;
-use omnish_common::config::load_config;
+use omnish_common::config::load_daemon_config;
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_llm::factory::create_default_backend;
 use server::DaemonServer;
@@ -14,15 +14,13 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     // Load configuration
-    let config = load_config()?;
+    let config = load_daemon_config()?;
 
     // Environment variable takes precedence over config file
     let socket_path = std::env::var("OMNISH_SOCKET")
-        .unwrap_or_else(|_| config.daemon.socket_path.clone());
+        .unwrap_or_else(|_| config.listen_addr.clone());
 
-    let store_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join("omnish/sessions");
+    let store_dir = std::path::PathBuf::from(&config.sessions_dir);
 
     // Create LLM backend if configured
     let llm_backend = match create_default_backend(&config.llm) {
