@@ -46,7 +46,7 @@ fn timestamp_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn get_socket_path() -> String {
+fn get_daemon_addr() -> String {
     std::env::var("OMNISH_SOCKET").unwrap_or_else(|_| {
         if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
             format!("{}/omnish.sock", dir)
@@ -393,11 +393,11 @@ async fn connect_daemon(
     child_pid: u32,
     buffer: MessageBuffer,
 ) -> Option<RpcClient> {
-    let socket_path = get_socket_path();
+    let socket_path = get_daemon_addr();
     let sid = session_id.to_string();
     let psid = parent_session_id.clone();
 
-    match RpcClient::connect_unix_with_reconnect(
+    match RpcClient::connect_with_reconnect(
         &socket_path,
         move |rpc| {
             let sid = sid.clone();

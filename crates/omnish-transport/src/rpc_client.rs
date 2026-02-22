@@ -1,3 +1,4 @@
+use crate::{parse_addr, TransportAddr};
 use anyhow::Result;
 use omnish_protocol::message::{Frame, Message};
 use std::collections::HashMap;
@@ -5,8 +6,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::{TcpStream, UnixStream};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 
@@ -20,6 +21,49 @@ struct Inner {
     connected: Arc<AtomicBool>,
     _write_task: JoinHandle<()>,
     _read_task: JoinHandle<()>,
+}
+
+type ConnectorFn = Arc<
+    dyn Fn()
+            -> Pin<
+                Box<
+                    dyn Future<
+                            Output = Result<(
+                                Box<dyn AsyncRead + Unpin + Send>,
+                                Box<dyn AsyncWrite + Unpin + Send>,
+                            )>,
+                        > + Send,
+                >,
+            > + Send
+        + Sync,
+>;
+
+fn make_connector(addr: &str) -> ConnectorFn {
+    let addr = addr.to_string();
+    Arc::new(move || {
+        let addr = addr.clone();
+        Box::pin(async move {
+            match parse_addr(&addr) {
+                TransportAddr::Unix(path) => {
+                    let stream = UnixStream::connect(&path).await?;
+                    let (r, w) = stream.into_split();
+                    Ok((
+                        Box::new(r) as Box<dyn AsyncRead + Unpin + Send>,
+                        Box::new(w) as Box<dyn AsyncWrite + Unpin + Send>,
+                    ))
+                }
+                TransportAddr::Tcp(hp) => {
+                    let stream = TcpStream::connect(&hp).await?;
+                    stream.set_nodelay(true)?;
+                    let (r, w) = stream.into_split();
+                    Ok((
+                        Box::new(r) as Box<dyn AsyncRead + Unpin + Send>,
+                        Box::new(w) as Box<dyn AsyncWrite + Unpin + Send>,
+                    ))
+                }
+            }
+        })
+    })
 }
 
 #[derive(Clone)]
@@ -39,11 +83,33 @@ impl RpcClient {
         })
     }
 
-    fn create_inner(
-        reader: tokio::net::unix::OwnedReadHalf,
-        writer: tokio::net::unix::OwnedWriteHalf,
+    pub async fn connect_tcp(addr: &str) -> Result<Self> {
+        let stream = TcpStream::connect(addr).await?;
+        stream.set_nodelay(true)?;
+        let (reader, writer) = stream.into_split();
+        let inner = Self::create_inner(reader, writer, None);
+        Ok(Self {
+            inner: Arc::new(Mutex::new(inner)),
+            next_id: Arc::new(AtomicU64::new(1)),
+        })
+    }
+
+    pub async fn connect(addr: &str) -> Result<Self> {
+        match parse_addr(addr) {
+            TransportAddr::Unix(p) => Self::connect_unix(&p).await,
+            TransportAddr::Tcp(hp) => Self::connect_tcp(&hp).await,
+        }
+    }
+
+    fn create_inner<R, W>(
+        reader: R,
+        writer: W,
         disconnect_tx: Option<oneshot::Sender<()>>,
-    ) -> Inner {
+    ) -> Inner
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Message>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let (tx, rx) = mpsc::channel::<WriteRequest>(256);
@@ -52,11 +118,17 @@ impl RpcClient {
 
         let write_connected = connected.clone();
         let write_pending = pending.clone();
-        let _write_task = tokio::spawn(Self::write_loop(rx, writer, write_pending, write_connected));
+        let _write_task =
+            tokio::spawn(Self::write_loop(rx, writer, write_pending, write_connected));
 
         let read_connected = connected.clone();
         let read_pending = pending.clone();
-        let _read_task = tokio::spawn(Self::read_loop(reader, read_pending, read_connected, disconnect_tx));
+        let _read_task = tokio::spawn(Self::read_loop(
+            reader,
+            read_pending,
+            read_connected,
+            disconnect_tx,
+        ));
 
         Inner {
             tx,
@@ -73,8 +145,18 @@ impl RpcClient {
             + Sync
             + 'static,
     ) -> Result<Self> {
-        let stream = UnixStream::connect(addr).await?;
-        let (reader, writer) = stream.into_split();
+        Self::connect_with_reconnect(addr, on_reconnect).await
+    }
+
+    pub async fn connect_with_reconnect(
+        addr: &str,
+        on_reconnect: impl Fn(&RpcClient) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Result<Self> {
+        let connector = make_connector(addr);
+        let (reader, writer) = connector().await?;
 
         let (disc_tx, disc_rx) = oneshot::channel::<()>();
         let inner = Self::create_inner(reader, writer, Some(disc_tx));
@@ -90,13 +172,12 @@ impl RpcClient {
         // Spawn reconnect loop
         let inner_ref = client.inner.clone();
         let next_id_ref = next_id.clone();
-        let addr_owned = addr.to_string();
         let on_reconnect = Arc::new(on_reconnect);
 
         tokio::spawn(Self::reconnect_loop(
             inner_ref,
             next_id_ref,
-            addr_owned,
+            connector,
             on_reconnect,
             disc_rx,
         ));
@@ -107,7 +188,7 @@ impl RpcClient {
     async fn reconnect_loop(
         inner_ref: Arc<Mutex<Inner>>,
         next_id: Arc<AtomicU64>,
-        addr: String,
+        connector: ConnectorFn,
         on_reconnect: Arc<
             dyn Fn(&RpcClient) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>
                 + Send
@@ -133,15 +214,14 @@ impl RpcClient {
                 tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
 
                 // Try to connect
-                let stream = match UnixStream::connect(&addr).await {
-                    Ok(s) => s,
+                let (reader, writer) = match connector().await {
+                    Ok(rw) => rw,
                     Err(_) => {
                         backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
                         continue;
                     }
                 };
 
-                let (reader, writer) = stream.into_split();
                 let (new_disc_tx, new_disc_rx) = oneshot::channel::<()>();
                 let new_inner = Self::create_inner(reader, writer, Some(new_disc_tx));
 
@@ -152,21 +232,18 @@ impl RpcClient {
                 };
 
                 // Call on_reconnect with the temp client
-                if let Err(_) = on_reconnect(&temp_client).await {
+                if on_reconnect(&temp_client).await.is_err() {
                     // Callback failed, retry
                     backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
                     continue;
                 }
 
                 // Success - swap the inner
-                // Extract Inner from temp_client's Arc<Mutex<Inner>>
                 let temp_inner_arc = temp_client.inner.clone();
                 drop(temp_client);
-                // Now temp_inner_arc is the only reference
                 let temp_inner_mutex = match Arc::try_unwrap(temp_inner_arc) {
                     Ok(m) => m,
                     Err(_) => {
-                        // Should not happen, but retry if it does
                         backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
                         continue;
                     }
@@ -214,9 +291,9 @@ impl RpcClient {
             .map_err(|_| anyhow::anyhow!("read task closed before response"))
     }
 
-    async fn write_loop(
+    async fn write_loop<W: AsyncWrite + Unpin>(
         mut rx: mpsc::Receiver<WriteRequest>,
-        mut writer: tokio::net::unix::OwnedWriteHalf,
+        mut writer: W,
         pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Message>>>>,
         connected: Arc<AtomicBool>,
     ) {
@@ -247,8 +324,8 @@ impl RpcClient {
         }
     }
 
-    async fn read_loop(
-        mut reader: tokio::net::unix::OwnedReadHalf,
+    async fn read_loop<R: AsyncRead + Unpin>(
+        mut reader: R,
         pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Message>>>>,
         connected: Arc<AtomicBool>,
         disconnect_tx: Option<oneshot::Sender<()>>,
@@ -285,12 +362,10 @@ mod tests {
         IoData, IoDirection, Request, RequestScope, Response, SessionStart,
     };
     use std::collections::HashMap;
-    use tokio::net::UnixListener;
+    use tokio::net::{TcpListener, UnixListener};
 
     /// Helper: read one frame from a reader using the wire protocol [len:u32][frame_bytes]
-    async fn read_frame(
-        reader: &mut (impl AsyncReadExt + Unpin),
-    ) -> Result<Frame> {
+    async fn read_frame(reader: &mut (impl AsyncReadExt + Unpin)) -> Result<Frame> {
         let len = reader.read_u32().await? as usize;
         let mut buf = vec![0u8; len];
         reader.read_exact(&mut buf).await?;
@@ -353,16 +428,12 @@ mod tests {
         // Server: delays 50ms for Request messages, instant Ack for others
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            // We expect exactly 2 frames (order may vary since they're sent concurrently,
-            // but the write channel serializes them)
             let mut frames = Vec::new();
             for _ in 0..2 {
                 let frame = read_frame(&mut stream).await.unwrap();
                 frames.push(frame);
             }
 
-            // Process frames: for Request, delay 50ms then send Response; for others, send Ack immediately
-            // We process in order received but delay Request responses
             for frame in frames {
                 match &frame.payload {
                     Message::Request(req) => {
@@ -428,7 +499,6 @@ mod tests {
         let listener1 = UnixListener::bind(&sock_path).unwrap();
         let server1 = tokio::spawn(async move {
             let (mut stream, _) = listener1.accept().await.unwrap();
-            // Handle SessionStart from on_reconnect (initial connect)
             let frame = read_frame(&mut stream).await.unwrap();
             assert!(matches!(frame.payload, Message::SessionStart(_)));
             write_frame(
@@ -440,7 +510,6 @@ mod tests {
             )
             .await
             .unwrap();
-            // Handle one IoData call
             let frame = read_frame(&mut stream).await.unwrap();
             assert!(matches!(frame.payload, Message::IoData(_)));
             write_frame(
@@ -508,7 +577,6 @@ mod tests {
         let listener2 = UnixListener::bind(&sock_path).unwrap();
         let server2 = tokio::spawn(async move {
             let (mut stream, _) = listener2.accept().await.unwrap();
-            // Handle SessionStart from on_reconnect
             let frame = read_frame(&mut stream).await.unwrap();
             assert!(matches!(frame.payload, Message::SessionStart(_)));
             write_frame(
@@ -520,7 +588,6 @@ mod tests {
             )
             .await
             .unwrap();
-            // Handle one IoData
             let frame = read_frame(&mut stream).await.unwrap();
             assert!(matches!(frame.payload, Message::IoData(_)));
             write_frame(
@@ -606,5 +673,131 @@ mod tests {
 
         // Should be disconnected after server drops
         assert!(!client.is_connected().await);
+    }
+
+    #[tokio::test]
+    async fn test_rpc_client_tcp_call_returns_ack() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let frame = read_frame(&mut stream).await.unwrap();
+            assert!(matches!(frame.payload, Message::SessionStart(_)));
+            let reply = Frame {
+                request_id: frame.request_id,
+                payload: Message::Ack,
+            };
+            write_frame(&mut stream, &reply).await.unwrap();
+        });
+
+        let client = RpcClient::connect_tcp(&addr).await.unwrap();
+        let msg = Message::SessionStart(SessionStart {
+            session_id: "s1".to_string(),
+            parent_session_id: None,
+            timestamp_ms: 1000,
+            attrs: HashMap::new(),
+        });
+        let resp = client.call(msg).await.unwrap();
+        assert!(matches!(resp, Message::Ack));
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rpc_client_tcp_concurrent_calls() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut frames = Vec::new();
+            for _ in 0..2 {
+                let frame = read_frame(&mut stream).await.unwrap();
+                frames.push(frame);
+            }
+            for frame in frames {
+                match &frame.payload {
+                    Message::Request(req) => {
+                        let reply = Frame {
+                            request_id: frame.request_id,
+                            payload: Message::Response(Response {
+                                request_id: req.request_id.clone(),
+                                content: "tcp answer".to_string(),
+                                is_streaming: false,
+                                is_final: true,
+                            }),
+                        };
+                        write_frame(&mut stream, &reply).await.unwrap();
+                    }
+                    _ => {
+                        let reply = Frame {
+                            request_id: frame.request_id,
+                            payload: Message::Ack,
+                        };
+                        write_frame(&mut stream, &reply).await.unwrap();
+                    }
+                }
+            }
+        });
+
+        let client = RpcClient::connect_tcp(&addr).await.unwrap();
+
+        let io_msg = Message::IoData(IoData {
+            session_id: "s1".to_string(),
+            direction: IoDirection::Output,
+            timestamp_ms: 2000,
+            data: b"hello".to_vec(),
+        });
+        let req_msg = Message::Request(Request {
+            request_id: "r1".to_string(),
+            session_id: "s1".to_string(),
+            query: "tcp test".to_string(),
+            scope: RequestScope::CurrentSession,
+        });
+
+        let (io_resp, req_resp) = tokio::join!(client.call(io_msg), client.call(req_msg));
+        assert!(matches!(io_resp.unwrap(), Message::Ack));
+        if let Message::Response(r) = req_resp.unwrap() {
+            assert_eq!(r.content, "tcp answer");
+        } else {
+            panic!("expected Response");
+        }
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rpc_client_connect_auto_dispatch() {
+        // TCP address (contains ':')
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let frame = read_frame(&mut stream).await.unwrap();
+            write_frame(
+                &mut stream,
+                &Frame {
+                    request_id: frame.request_id,
+                    payload: Message::Ack,
+                },
+            )
+            .await
+            .unwrap();
+        });
+
+        // Use the auto-dispatch connect() method
+        let client = RpcClient::connect(&addr).await.unwrap();
+        let msg = Message::SessionStart(SessionStart {
+            session_id: "s1".to_string(),
+            parent_session_id: None,
+            timestamp_ms: 1000,
+            attrs: HashMap::new(),
+        });
+        let resp = client.call(msg).await.unwrap();
+        assert!(matches!(resp, Message::Ack));
+
+        server.await.unwrap();
     }
 }

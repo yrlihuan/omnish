@@ -19,7 +19,7 @@ impl DaemonServer {
     }
 
     pub async fn run(&self, addr: &str) -> Result<()> {
-        let mut server = RpcServer::bind_unix(addr).await?;
+        let mut server = RpcServer::bind(addr).await?;
         tracing::info!("omnishd listening on {}", addr);
 
         let mgr = self.session_mgr.clone();
