@@ -1,7 +1,9 @@
 # config/daemon.toml
 # Daemon configuration — copy to ~/.omnish/daemon.toml
 
-# listen_addr = "~/.omnish/omnish.sock"   # default
+# Listen address:
+#   Unix socket:  listen_addr = "~/.omnish/omnish.sock"   (default)
+#   TCP:          listen_addr = "tcp://0.0.0.0:9500"
 # sessions_dir = "~/.omnish/sessions"     # default
 
 [llm]

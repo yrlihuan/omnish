@@ -1,8 +1,9 @@
 # config/client.toml
 # Client configuration — copy to ~/.omnish/client.toml
 
-# Address of the daemon (Unix socket path or tcp://host:port)
-# daemon_addr = "~/.omnish/omnish.sock"   # default
+# Address of the daemon:
+#   Unix socket:  daemon_addr = "~/.omnish/omnish.sock"   (default)
+#   TCP:          daemon_addr = "tcp://127.0.0.1:9500"
 
 [shell]
 # command = "/bin/bash"    # defaults to $SHELL
