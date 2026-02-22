@@ -8,7 +8,9 @@ pub enum TransportAddr {
 }
 
 pub fn parse_addr(addr: &str) -> TransportAddr {
-    if !addr.starts_with('/') && !addr.starts_with('.') && addr.contains(':') {
+    if let Some(hp) = addr.strip_prefix("tcp://") {
+        TransportAddr::Tcp(hp.to_string())
+    } else if !addr.starts_with('/') && !addr.starts_with('.') && addr.contains(':') {
         TransportAddr::Tcp(addr.to_string())
     } else {
         TransportAddr::Unix(addr.to_string())
@@ -57,5 +59,13 @@ mod tests {
     #[test]
     fn test_parse_tcp_zero_zero_port() {
         assert!(matches!(parse_addr("0.0.0.0:8080"), TransportAddr::Tcp(_)));
+    }
+
+    #[test]
+    fn test_parse_tcp_prefix() {
+        match parse_addr("tcp://127.0.0.1:9500") {
+            TransportAddr::Tcp(hp) => assert_eq!(hp, "127.0.0.1:9500"),
+            _ => panic!("expected Tcp"),
+        }
     }
 }
