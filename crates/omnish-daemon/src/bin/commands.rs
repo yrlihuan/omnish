@@ -17,9 +17,7 @@ struct DisplayCommand {
 }
 
 fn store_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("omnish/sessions")
+    omnish_common::config::omnish_dir().join("sessions")
 }
 
 fn load_all_commands(base: &PathBuf, session_filter: Option<&str>) -> Result<Vec<DisplayCommand>> {
@@ -51,7 +49,9 @@ fn load_all_commands(base: &PathBuf, session_filter: Option<&str>) -> Result<Vec
         }
 
         let commands = CommandRecord::load_all(&dir).unwrap_or_default();
-        for record in commands {
+        for record in commands.into_iter().filter(|r| {
+            r.command_line.as_ref().map_or(false, |c| !c.trim().is_empty())
+        }) {
             all.push(DisplayCommand {
                 record,
                 session_ended: meta.ended_at.clone(),
