@@ -92,8 +92,9 @@ async fn main() -> Result<()> {
     // Main I/O loop using poll
     let mut input_buf = [0u8; 4096];
     let mut output_buf = [0u8; 4096];
-    let guard = TimeGapGuard::new(std::time::Duration::from_secs(1));
-    let mut interceptor = InputInterceptor::new(":", Box::new(guard));
+    let guard = TimeGapGuard::new(std::time::Duration::from_millis(config.shell.intercept_gap_ms));
+    let mut interceptor = InputInterceptor::new(&config.shell.command_prefix, Box::new(guard));
+    let prefix_bytes = config.shell.command_prefix.as_bytes();
     let mut alt_screen_detector = AltScreenDetector::new();
     let mut col_tracker = CursorColTracker::new();
     let mut dismiss_col: u16 = 0;
@@ -139,15 +140,15 @@ async fn main() -> Result<()> {
                 let byte = input_buf[i];
                 match interceptor.feed_byte(byte) {
                     InterceptAction::Buffering(buf) => {
-                        if buf == b":" {
+                        if buf == prefix_bytes {
                             // Save cursor column before drawing omnish UI
                             dismiss_col = col_tracker.col;
                             let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
                             let prompt = display::render_prompt(cols);
                             nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
-                        } else if buf.len() > 1 && buf.starts_with(b":") {
+                        } else if buf.len() > prefix_bytes.len() && buf.starts_with(prefix_bytes) {
                             // Echo the user's input after the prompt
-                            let user_input = &buf[1..]; // Skip ":"
+                            let user_input = &buf[prefix_bytes.len()..];
                             let echo = display::render_input_echo(user_input);
                             nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
 
@@ -167,14 +168,14 @@ async fn main() -> Result<()> {
                             let restore = format!("\x1b[{}G", dismiss_col + 1);
                             nix::unistd::write(std::io::stdout(), dismiss.as_bytes()).ok();
                             nix::unistd::write(std::io::stdout(), restore.as_bytes()).ok();
-                        } else if buf.starts_with(b":") {
-                            if buf.len() == 1 {
-                                // Only prefix char left — redraw ❯ with no input text
+                        } else if buf.starts_with(prefix_bytes) {
+                            if buf.len() == prefix_bytes.len() {
+                                // Only prefix left — redraw ❯ with no input text
                                 let echo = display::render_input_echo(b"");
                                 nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
                             } else {
                                 // Show the user's input after the prompt
-                                let user_input = &buf[1..]; // Skip ":"
+                                let user_input = &buf[prefix_bytes.len()..];
                                 let echo = display::render_input_echo(user_input);
                                 nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
                             }
@@ -241,8 +242,8 @@ async fn main() -> Result<()> {
                             }
                             // Re-render with updated buffer
                             let new_buf = interceptor.current_buffer();
-                            if new_buf.len() > 1 && new_buf.starts_with(b":") {
-                                let user_input = &new_buf[1..];
+                            if new_buf.len() > prefix_bytes.len() && new_buf.starts_with(prefix_bytes) {
+                                let user_input = &new_buf[prefix_bytes.len()..];
                                 let echo = display::render_input_echo(user_input);
                                 nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
 

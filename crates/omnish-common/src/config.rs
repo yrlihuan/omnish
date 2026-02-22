@@ -103,6 +103,8 @@ pub struct ShellConfig {
     pub command: String,
     #[serde(default = "default_command_prefix")]
     pub command_prefix: String,
+    #[serde(default = "default_intercept_gap_ms")]
+    pub intercept_gap_ms: u64,
 }
 
 impl Default for ShellConfig {
@@ -110,6 +112,7 @@ impl Default for ShellConfig {
         Self {
             command: default_shell_command(),
             command_prefix: default_command_prefix(),
+            intercept_gap_ms: default_intercept_gap_ms(),
         }
     }
 }
@@ -119,7 +122,11 @@ fn default_shell_command() -> String {
 }
 
 fn default_command_prefix() -> String {
-    "::".to_string()
+    ":".to_string()
+}
+
+fn default_intercept_gap_ms() -> u64 {
+    1000
 }
 
 #[derive(Debug, Deserialize)]

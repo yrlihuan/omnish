@@ -6,4 +6,5 @@
 
 [shell]
 # command = "/bin/bash"    # defaults to $SHELL
-command_prefix = "::"
+command_prefix = ":"
+# intercept_gap_ms = 1000  # min idle time (ms) before prefix triggers intercept

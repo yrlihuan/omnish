@@ -7,11 +7,11 @@ daemon_addr = "/tmp/omnish.sock"
 
 [shell]
 command = "/bin/bash"
-command_prefix = "::"
+command_prefix = ":"
 "#;
     let config: ClientConfig = toml::from_str(toml_str).unwrap();
     assert_eq!(config.shell.command, "/bin/bash");
-    assert_eq!(config.shell.command_prefix, "::");
+    assert_eq!(config.shell.command_prefix, ":");
     assert_eq!(config.daemon_addr, "/tmp/omnish.sock");
 }
 
@@ -46,7 +46,7 @@ cooldown_seconds = 5
 fn test_client_config_defaults() {
     let toml_str = "";
     let config: ClientConfig = toml::from_str(toml_str).unwrap();
-    assert_eq!(config.shell.command_prefix, "::");
+    assert_eq!(config.shell.command_prefix, ":");
     assert!(config.daemon_addr.ends_with("omnish.sock"));
 }
 
@@ -64,7 +64,7 @@ fn test_daemon_config_defaults() {
 fn test_load_client_config_missing_file_returns_default() {
     std::env::set_var("OMNISH_CLIENT_CONFIG", "/tmp/nonexistent-omnish-test-client.toml");
     let config = omnish_common::config::load_client_config().unwrap();
-    assert_eq!(config.shell.command_prefix, "::");
+    assert_eq!(config.shell.command_prefix, ":");
     std::env::remove_var("OMNISH_CLIENT_CONFIG");
 }
 
