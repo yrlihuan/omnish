@@ -110,6 +110,11 @@ async fn main() -> Result<()> {
     let mut completer = ghost_complete::GhostCompleter::new(vec![
         Box::new(ghost_complete::BuiltinProvider::new()),
     ]);
+    let mut shell_input = shell_input::ShellInputTracker::new();
+    let mut shell_completer = completion::ShellCompleter::new();
+    let (completion_tx, mut completion_rx) = tokio::sync::mpsc::channel::<
+        omnish_protocol::message::CompletionResponse
+    >(4);
 
     loop {
         let mut fds = [
@@ -145,6 +150,7 @@ async fn main() -> Result<()> {
                         if buf == prefix_bytes {
                             // Save cursor column before drawing omnish UI
                             dismiss_col = col_tracker.col;
+                            shell_completer.clear();
                             let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
                             let prompt = display::render_prompt(cols);
                             nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
@@ -184,21 +190,35 @@ async fn main() -> Result<()> {
                         }
                     }
                     InterceptAction::Forward(bytes) => {
-                        // Forward these bytes to PTY
-                        proxy.write_all(&bytes)?;
+                        // Check if Tab should be intercepted for shell completion
+                        if bytes == [b'\t'] && shell_completer.ghost().is_some() {
+                            if let Some(suffix) = shell_completer.accept() {
+                                proxy.write_all(suffix.as_bytes())?;
+                                shell_input.inject(&suffix);
+                            }
+                        } else {
+                            // Forward these bytes to PTY
+                            proxy.write_all(&bytes)?;
 
-                        // Feed input to command tracker
-                        command_tracker.feed_input(&bytes, timestamp_ms());
+                            // Track shell input for LLM completion
+                            shell_input.feed_forwarded(&bytes);
+                            if let Some((input, seq)) = shell_input.take_change() {
+                                shell_completer.on_input_changed(input, seq);
+                            }
 
-                        // Report to daemon async
-                        if let Some(ref rpc) = daemon_conn {
-                            let msg = Message::IoData(IoData {
-                                session_id: session_id.clone(),
-                                direction: IoDirection::Input,
-                                timestamp_ms: timestamp_ms(),
-                                data: bytes,
-                            });
-                            send_or_buffer(rpc, msg, &pending_buffer).await;
+                            // Feed input to command tracker
+                            command_tracker.feed_input(&bytes, timestamp_ms());
+
+                            // Report to daemon async
+                            if let Some(ref rpc) = daemon_conn {
+                                let msg = Message::IoData(IoData {
+                                    session_id: session_id.clone(),
+                                    direction: IoDirection::Input,
+                                    timestamp_ms: timestamp_ms(),
+                                    data: bytes,
+                                });
+                                send_or_buffer(rpc, msg, &pending_buffer).await;
+                            }
                         }
                     }
                     InterceptAction::Cancel => {
@@ -324,7 +344,19 @@ async fn main() -> Result<()> {
 
                     // Feed OSC 133 events to command tracker
                     let mut completed = Vec::new();
+                    use omnish_tracker::osc133_detector::Osc133EventKind;
                     for event in osc_events {
+                        match &event.kind {
+                            Osc133EventKind::PromptStart | Osc133EventKind::CommandEnd { .. } => {
+                                shell_input.on_prompt();
+                                shell_completer.clear();
+                            }
+                            Osc133EventKind::CommandStart => {
+                                shell_input.on_command_start();
+                                shell_completer.clear();
+                            }
+                            _ => {}
+                        }
                         let cmds = command_tracker.feed_osc133(event, timestamp_ms(), 0);
                         completed.extend(cmds);
                     }
@@ -355,6 +387,36 @@ async fn main() -> Result<()> {
                     }
                 }
                 Err(_) => break,
+            }
+        }
+
+        // Check if we should send a completion request (debounce)
+        if shell_input.at_prompt() && !interceptor.is_in_chat() {
+            let current = shell_input.input();
+            if shell_completer.should_request(current) {
+                let seq = shell_input.sequence_id();
+                if let Some(ref rpc) = daemon_conn {
+                    let msg = completion::ShellCompleter::build_request(
+                        &session_id, current, seq,
+                    );
+                    shell_completer.mark_sent(seq);
+                    let rpc_clone = rpc.clone();
+                    let tx = completion_tx.clone();
+                    tokio::spawn(async move {
+                        if let Ok(Message::CompletionResponse(resp)) = rpc_clone.call(msg).await {
+                            let _ = tx.send(resp).await;
+                        }
+                    });
+                }
+            }
+        }
+
+        // Check for completion responses (non-blocking)
+        while let Ok(resp) = completion_rx.try_recv() {
+            let current = shell_input.input();
+            if let Some(ghost) = shell_completer.on_response(&resp, current) {
+                let ghost_render = display::render_ghost_text(ghost);
+                nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
             }
         }
 

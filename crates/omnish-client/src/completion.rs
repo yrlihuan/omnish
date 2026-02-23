@@ -1,6 +1,6 @@
 use std::time::Instant;
 use omnish_protocol::message::{
-    CompletionRequest, CompletionResponse, CompletionSuggestion, Message,
+    CompletionRequest, CompletionResponse, Message,
 };
 
 const DEBOUNCE_MS: u64 = 500;
@@ -137,6 +137,7 @@ impl ShellCompleter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omnish_protocol::message::CompletionSuggestion;
 
     #[test]
     fn test_debounce_not_ready_immediately() {

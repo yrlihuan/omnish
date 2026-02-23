@@ -456,6 +456,11 @@ impl InputInterceptor {
     pub fn current_buffer(&self) -> Vec<u8> {
         self.buffer.iter().copied().collect()
     }
+
+    /// Returns true if the interceptor is in chat mode or buffering prefix.
+    pub fn is_in_chat(&self) -> bool {
+        self.in_chat || !self.buffer.is_empty()
+    }
 }
 
 #[cfg(test)]
