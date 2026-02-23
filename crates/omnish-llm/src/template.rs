@@ -13,6 +13,22 @@ pub fn build_user_content(context: &str, query: Option<&str>) -> String {
     }
 }
 
+/// Build the user-content prompt for shell command completion.
+pub fn build_completion_content(context: &str, input: &str, cursor_pos: usize) -> String {
+    format!(
+        "Here is the terminal session context:\n\n\
+         ```\n{}\n```\n\n\
+         The user is typing a shell command. Current input: `{}`\n\
+         Cursor position: {}\n\n\
+         Suggest completions for this command. Reply with a JSON array:\n\
+         [{{\"text\": \"<text after cursor>\", \"confidence\": <0.0-1.0>}}]\n\
+         Return at most 3 suggestions sorted by confidence descending.\n\
+         Return [] if no good completion exists.\n\
+         Do not include any other text outside the JSON array.",
+        context, input, cursor_pos
+    )
+}
+
 /// Return the prompt template with `{context}` and `{query}` placeholders.
 pub fn prompt_template(has_query: bool) -> &'static str {
     if has_query {
@@ -39,6 +55,15 @@ mod tests {
         assert!(result.contains("$ exit 1"));
         assert!(result.contains("Analyze this terminal session"));
         assert!(!result.contains("User question"));
+    }
+
+    #[test]
+    fn test_build_completion_content() {
+        let result = build_completion_content("$ ls\nfoo bar", "git sta", 7);
+        assert!(result.contains("$ ls\nfoo bar"));
+        assert!(result.contains("Current input: `git sta`"));
+        assert!(result.contains("Cursor position: 7"));
+        assert!(result.contains("JSON array"));
     }
 
     #[test]
