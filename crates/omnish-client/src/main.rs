@@ -1,5 +1,6 @@
 // crates/omnish-client/src/main.rs
 mod command;
+mod completion;
 mod ghost_complete;
 mod display;
 mod interceptor;
