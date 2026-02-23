@@ -13,6 +13,8 @@ pub enum Message {
     Request(Request),
     Response(Response),
     CommandComplete(CommandComplete),
+    CompletionRequest(CompletionRequest),
+    CompletionResponse(CompletionResponse),
     Ack,
 }
 
@@ -88,6 +90,26 @@ pub struct Response {
 pub struct CommandComplete {
     pub session_id: String,
     pub record: omnish_store::command::CommandRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompletionSuggestion {
+    pub text: String,
+    pub confidence: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompletionRequest {
+    pub session_id: String,
+    pub input: String,
+    pub cursor_pos: usize,
+    pub sequence_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompletionResponse {
+    pub sequence_id: u64,
+    pub suggestions: Vec<CompletionSuggestion>,
 }
 
 impl Message {
@@ -176,5 +198,53 @@ mod tests {
         let decoded = Frame::from_bytes(&bytes).unwrap();
         assert_eq!(decoded.request_id, 1);
         assert!(matches!(decoded.payload, Message::SessionStart(_)));
+    }
+
+    #[test]
+    fn test_frame_with_completion_request() {
+        let frame = Frame {
+            request_id: 10,
+            payload: Message::CompletionRequest(CompletionRequest {
+                session_id: "abc".to_string(),
+                input: "git sta".to_string(),
+                cursor_pos: 7,
+                sequence_id: 42,
+            }),
+        };
+        let bytes = frame.to_bytes().unwrap();
+        let decoded = Frame::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.request_id, 10);
+        if let Message::CompletionRequest(req) = decoded.payload {
+            assert_eq!(req.input, "git sta");
+            assert_eq!(req.sequence_id, 42);
+        } else {
+            panic!("expected CompletionRequest");
+        }
+    }
+
+    #[test]
+    fn test_frame_with_completion_response() {
+        let frame = Frame {
+            request_id: 11,
+            payload: Message::CompletionResponse(CompletionResponse {
+                sequence_id: 42,
+                suggestions: vec![
+                    CompletionSuggestion {
+                        text: "tus".to_string(),
+                        confidence: 0.95,
+                    },
+                ],
+            }),
+        };
+        let bytes = frame.to_bytes().unwrap();
+        let decoded = Frame::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.request_id, 11);
+        if let Message::CompletionResponse(resp) = decoded.payload {
+            assert_eq!(resp.sequence_id, 42);
+            assert_eq!(resp.suggestions.len(), 1);
+            assert_eq!(resp.suggestions[0].text, "tus");
+        } else {
+            panic!("expected CompletionResponse");
+        }
     }
 }
