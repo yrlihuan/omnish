@@ -100,6 +100,34 @@ async fn handle_message(
                 is_final: true,
             })
         }
+        Message::CompletionRequest(req) => {
+            if let Some(ref backend) = llm {
+                match handle_completion_request(&req, mgr, backend).await {
+                    Ok(suggestions) => Message::CompletionResponse(
+                        omnish_protocol::message::CompletionResponse {
+                            sequence_id: req.sequence_id,
+                            suggestions,
+                        },
+                    ),
+                    Err(e) => {
+                        tracing::error!("Completion request failed: {}", e);
+                        Message::CompletionResponse(
+                            omnish_protocol::message::CompletionResponse {
+                                sequence_id: req.sequence_id,
+                                suggestions: vec![],
+                            },
+                        )
+                    }
+                }
+            } else {
+                Message::CompletionResponse(
+                    omnish_protocol::message::CompletionResponse {
+                        sequence_id: req.sequence_id,
+                        suggestions: vec![],
+                    },
+                )
+            }
+        }
         _ => Message::Ack,
     }
 }
@@ -159,4 +187,97 @@ async fn handle_llm_request(
     };
 
     backend.complete(&llm_req).await
+}
+
+async fn handle_completion_request(
+    req: &omnish_protocol::message::CompletionRequest,
+    mgr: &SessionManager,
+    backend: &Arc<dyn LlmBackend>,
+) -> Result<Vec<omnish_protocol::message::CompletionSuggestion>> {
+    let context_req = Request {
+        request_id: String::new(),
+        session_id: req.session_id.clone(),
+        query: String::new(),
+        scope: RequestScope::AllSessions,
+    };
+    let context = resolve_context(&context_req, mgr).await?;
+
+    let prompt = omnish_llm::template::build_completion_content(
+        &context, &req.input, req.cursor_pos,
+    );
+
+    let llm_req = LlmRequest {
+        context: String::new(),
+        query: Some(prompt),
+        trigger: TriggerType::Manual,
+        session_ids: vec![req.session_id.clone()],
+    };
+
+    let response = backend.complete(&llm_req).await?;
+    parse_completion_suggestions(&response.content)
+}
+
+fn parse_completion_suggestions(
+    content: &str,
+) -> Result<Vec<omnish_protocol::message::CompletionSuggestion>> {
+    let trimmed = content.trim();
+    let start = trimmed.find('[').unwrap_or(0);
+    let end = trimmed.rfind(']').map(|i| i + 1).unwrap_or(trimmed.len());
+    let json_str = &trimmed[start..end];
+
+    #[derive(serde::Deserialize)]
+    struct RawSuggestion {
+        text: String,
+        confidence: f32,
+    }
+
+    let raw: Vec<RawSuggestion> = serde_json::from_str(json_str).unwrap_or_default();
+    Ok(raw
+        .into_iter()
+        .map(|r| omnish_protocol::message::CompletionSuggestion {
+            text: r.text,
+            confidence: r.confidence.clamp(0.0, 1.0),
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_completion_suggestions_valid() {
+        let input = r#"[{"text": "tus", "confidence": 0.95}, {"text": "sh", "confidence": 0.7}]"#;
+        let result = parse_completion_suggestions(input).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].text, "tus");
+        assert!((result[0].confidence - 0.95).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_completion_suggestions_with_surrounding_text() {
+        let input = "Here are my suggestions:\n[{\"text\": \"tus\", \"confidence\": 0.9}]\nHope this helps!";
+        let result = parse_completion_suggestions(input).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].text, "tus");
+    }
+
+    #[test]
+    fn test_parse_completion_suggestions_empty() {
+        let result = parse_completion_suggestions("[]").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_completion_suggestions_invalid_json() {
+        let result = parse_completion_suggestions("not json at all").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_completion_suggestions_clamps_confidence() {
+        let input = r#"[{"text": "x", "confidence": 1.5}]"#;
+        let result = parse_completion_suggestions(input).unwrap();
+        assert!((result[0].confidence - 1.0).abs() < 0.01);
+    }
 }
