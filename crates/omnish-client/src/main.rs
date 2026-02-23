@@ -5,6 +5,7 @@ mod display;
 mod interceptor;
 mod probe;
 mod shell_hook;
+mod shell_input;
 mod throttle;
 
 use anyhow::Result;
