@@ -103,12 +103,12 @@ omnish-daemon
 omnish-client
 
 # Ask about last command
-::ask why did that fail
+:why did that fail
 
 # Ask with all sessions context
-::ask -a what have I been doing
+:what have I been doing
 ```
 
 ### Testing without LLM
 If no LLM backend is configured, the daemon will still run in passthrough mode,
-recording sessions but responding with "(LLM backend not configured)" to ::ask commands.
+recording sessions but responding with "(LLM backend not configured)" to chat mode queries.

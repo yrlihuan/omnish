@@ -7,7 +7,7 @@
 omnish-client 是终端用户直接交互的客户端程序，作为PTY代理运行shell，拦截用户输入以提供LLM集成功能。主要功能包括：
 
 1. **PTY管理**: 创建伪终端并运行用户指定的shell
-2. **输入拦截**: 检测命令前缀（如`::`）进入聊天模式
+2. **输入拦截**: 检测命令前缀（如`:`）进入聊天模式
 3. **交互式界面**: 提供美观的终端界面显示聊天提示、输入回显和LLM响应
 4. **守护进程通信**: 与omnish-daemon建立连接，发送查询和接收响应
 5. **智能完成**: 提供LLM驱动的shell命令完成建议
@@ -19,7 +19,7 @@ omnish-client 是终端用户直接交互的客户端程序，作为PTY代理运
 输入拦截器，负责检测命令前缀和管理聊天模式状态。
 
 **字段:**
-- `prefix: Vec<u8>` - 命令前缀字节序列（如`b"::"`）
+- `prefix: Vec<u8>` - 命令前缀字节序列（如`b":"`）
 - `buffer: VecDeque<u8>` - 当前输入缓冲区
 - `in_chat: bool` - 是否处于聊天模式
 - `suppressed: bool` - 是否抑制拦截（如在vim等全屏程序中）
@@ -231,7 +231,7 @@ cargo build --release
 
 ### 交互使用
 1. **正常shell使用**: 输入命令如`ls -la`直接执行
-2. **进入聊天模式**: 输入配置的前缀（默认`::`）
+2. **进入聊天模式**: 输入配置的前缀（默认`:`）
    - 显示分隔线和`❯`提示符
    - 输入LLM查询，如`why did my command fail?`
    - 按Enter发送查询
@@ -245,7 +245,7 @@ cargo build --release
 # ~/.omnish/client.toml
 [shell]
 command = "/bin/bash"
-command_prefix = "::"
+command_prefix = ":"
 intercept_gap_ms = 1000
 
 daemon_addr = "~/.omnish/omnish.sock"

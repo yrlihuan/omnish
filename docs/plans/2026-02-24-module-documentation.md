@@ -128,7 +128,7 @@ omnish-common 包含客户端和守护进程共享的配置结构和工具函数
 ### `ClientConfig`
 客户端配置结构，包含：
 - `shell_command`: 要执行的shell命令
-- `command_prefix`: 触发LLM查询的命令前缀（默认"::"）
+- `command_prefix`: 触发LLM查询的命令前缀（默认":"）
 - `daemon_addr`: 守护进程地址
 
 ### `DaemonConfig`

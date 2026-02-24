@@ -107,14 +107,17 @@ omnishd &
 omnish
 ```
 
-Inside any omnish session, type `:` to interact:
+Inside any omnish session, type `:` to enter chat mode, then you can directly interact with the LLM:
 
 ```bash
-:ask why did make fail just now        # analyze recent output
-:ask -a what are all my terminals doing # cross-session query
-:sessions                               # list active sessions
-:status                                 # daemon and LLM status
-:pause / :resume                       # toggle I/O reporting
+:why did make fail just now        # analyze recent output
+:what are all my terminals doing   # cross-session query
+```
+
+Debug commands available in chat mode:
+```bash
+/debug context    # show current session context
+/debug template   # show LLM prompt template
 ```
 
 Results from auto-triggers appear above the shell prompt without disrupting your workflow.

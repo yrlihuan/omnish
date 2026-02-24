@@ -93,7 +93,7 @@ println!("Sessions directory: {}", daemon_config.sessions_dir);
 ```toml
 [shell]
 command = "/bin/bash"
-command_prefix = "::"
+command_prefix = ":"
 intercept_gap_ms = 500
 
 daemon_addr = "/tmp/omnish.sock"
