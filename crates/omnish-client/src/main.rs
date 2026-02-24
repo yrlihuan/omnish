@@ -144,6 +144,11 @@ async fn main() -> Result<()> {
         Box::new(ghost_complete::BuiltinProvider::new()),
     ]);
     let mut shell_input = shell_input::ShellInputTracker::new();
+    let in_tmux = std::env::var("TMUX").is_ok();
+    if in_tmux {
+        let title = format!("\x1bkomnish\x1b\\");
+        nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
+    }
     let mut shell_completer = completion::ShellCompleter::new();
     let (completion_tx, mut completion_rx) = tokio::sync::mpsc::channel::<
         omnish_protocol::message::CompletionResponse
@@ -393,14 +398,27 @@ async fn main() -> Result<()> {
                             | Osc133EventKind::CommandEnd { .. } => {
                                 shell_input.on_prompt();
                                 shell_completer.clear();
+                                if in_tmux {
+                                    let title = format!("\x1bkomnish\x1b\\");
+                                    nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
+                                }
                             }
                             // 133;B / 133;C: In our bash hook these fire together
                             // from the DEBUG trap, which also triggers during PS1
                             // command substitution (e.g. git branch). So we can NOT
                             // use them to detect "user pressed Enter". Instead,
                             // at_prompt=false is set by feed_forwarded on Enter key.
-                            Osc133EventKind::CommandStart { .. }
-                            | Osc133EventKind::OutputStart => {
+                            Osc133EventKind::CommandStart { command, .. } => {
+                                shell_completer.clear();
+                                if in_tmux {
+                                    if let Some(cmd) = command {
+                                        let cmd_name = cmd.split_whitespace().next().unwrap_or(cmd);
+                                        let title = format!("\x1bk{}\x1b\\", cmd_name);
+                                        nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
+                                    }
+                                }
+                            }
+                            Osc133EventKind::OutputStart => {
                                 shell_completer.clear();
                             }
                         }
