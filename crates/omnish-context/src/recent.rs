@@ -35,7 +35,7 @@ impl ContextStrategy for RecentCommands {
     }
 }
 
-/// Formats commands grouped by session, with the current session first.
+/// Formats commands grouped by session, with the current session last.
 pub struct GroupedFormatter {
     current_session_id: String,
     now_ms: u64,
@@ -66,13 +66,13 @@ impl ContextFormatter for GroupedFormatter {
             }
         }
 
-        // Move current session to front
+        // Move current session to end so it appears last (closest to the LLM prompt)
         if let Some(pos) = session_order
             .iter()
             .position(|s| s == &self.current_session_id)
         {
             let current = session_order.remove(pos);
-            session_order.insert(0, current);
+            session_order.push(current);
         }
 
         let mut sections = Vec::new();
@@ -274,10 +274,10 @@ mod tests {
         ];
         let formatter = GroupedFormatter::new("sess-a", 30000);
         let result = formatter.format(&commands);
-        // Current session should be first
+        // Current session should be last (closest to LLM prompt)
         let pos_a = result.find("--- term A (current) ---").unwrap();
         let pos_b = result.find("--- term B ---").unwrap();
-        assert!(pos_a < pos_b);
+        assert!(pos_b < pos_a);
         assert!(result.contains("term A"));
         assert!(result.contains("term B"));
     }
