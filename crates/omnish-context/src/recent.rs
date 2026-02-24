@@ -80,7 +80,7 @@ impl ContextFormatter for GroupedFormatter {
             let label = labels.get(session_id).unwrap();
             let is_current = session_id == &self.current_session_id;
             let header = if is_current {
-                format!("--- {} (current) ---", label)
+                format!("--- {} [current] ---", label)
             } else {
                 format!("--- {} ---", label)
             };
@@ -207,8 +207,13 @@ mod tests {
     }
 
     fn make_ctx(session_id: &str, cmd_line: &str, started_at: u64, output: &str) -> CommandContext {
+        make_ctx_with_host(session_id, cmd_line, started_at, output, None)
+    }
+
+    fn make_ctx_with_host(session_id: &str, cmd_line: &str, started_at: u64, output: &str, hostname: Option<&str>) -> CommandContext {
         CommandContext {
             session_id: session_id.to_string(),
+            hostname: hostname.map(|s| s.to_string()),
             command_line: Some(cmd_line.to_string()),
             cwd: None,
             started_at,
@@ -262,7 +267,7 @@ mod tests {
         let commands = vec![make_ctx("sess-a", "ls", 30000, "file1.txt")];
         let formatter = GroupedFormatter::new("sess-a", 60000);
         let result = formatter.format(&commands);
-        assert!(result.contains("--- term A (current) ---"));
+        assert!(result.contains("--- term A [current] ---"));
         assert!(result.contains("[30s ago] $ ls"));
     }
 
@@ -275,11 +280,23 @@ mod tests {
         let formatter = GroupedFormatter::new("sess-a", 30000);
         let result = formatter.format(&commands);
         // Current session should be last (closest to LLM prompt)
-        let pos_a = result.find("--- term A (current) ---").unwrap();
+        let pos_a = result.find("--- term A [current] ---").unwrap();
         let pos_b = result.find("--- term B ---").unwrap();
         assert!(pos_b < pos_a);
         assert!(result.contains("term A"));
         assert!(result.contains("term B"));
+    }
+
+    #[test]
+    fn test_grouped_with_hostname() {
+        let commands = vec![
+            make_ctx_with_host("sess-a", "ls", 28000, "file1.txt", Some("workstation")),
+            make_ctx_with_host("sess-b", "npm start", 25000, "Server running", Some("server01")),
+        ];
+        let formatter = GroupedFormatter::new("sess-a", 30000);
+        let result = formatter.format(&commands);
+        assert!(result.contains("--- workstation (term A) [current] ---"));
+        assert!(result.contains("--- server01 (term B) ---"));
     }
 
     #[test]
@@ -337,10 +354,10 @@ mod tests {
         let formatter = GroupedFormatter::new("sess", 30000);
         let reader = MockReader::new(vec![make_output_entry("file1.txt\n")]);
         let cmds = vec![make_cmd(0, "sess", Some("ls"))];
-        let result = crate::build_context(&strategy, &formatter, &cmds, &reader)
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new())
             .await
             .unwrap();
-        assert!(result.contains("--- term A (current) ---"));
+        assert!(result.contains("--- term A [current] ---"));
         assert!(result.contains("$ ls"));
     }
 
@@ -350,7 +367,7 @@ mod tests {
         let formatter = InterleavedFormatter::new("sess", 30000);
         let reader = MockReader::new(vec![make_output_entry("file1.txt\n")]);
         let cmds = vec![make_cmd(0, "sess", Some("ls"))];
-        let result = crate::build_context(&strategy, &formatter, &cmds, &reader)
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new())
             .await
             .unwrap();
         assert!(result.contains("term A*"));
@@ -366,7 +383,7 @@ mod tests {
             make_output_entry("file1.txt\n"),
         ]);
         let cmds = vec![make_cmd(0, "sess", Some("ls"))];
-        let result = crate::build_context(&strategy, &formatter, &cmds, &reader)
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new())
             .await
             .unwrap();
         // Should only contain output, not input
@@ -379,7 +396,7 @@ mod tests {
         let strategy = RecentCommands::new();
         let formatter = GroupedFormatter::new("sess", 30000);
         let reader = MockReader::empty();
-        let result = crate::build_context(&strategy, &formatter, &[], &reader)
+        let result = crate::build_context(&strategy, &formatter, &[], &reader, &std::collections::HashMap::new())
             .await
             .unwrap();
         assert_eq!(result, "");

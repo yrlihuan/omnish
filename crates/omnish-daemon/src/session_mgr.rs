@@ -239,7 +239,11 @@ impl SessionManager {
             .unwrap_or_default()
             .as_millis() as u64;
         let formatter = GroupedFormatter::new(session_id, now_ms);
-        omnish_context::build_context(&strategy, &formatter, &session.commands, &reader).await
+        let mut hostnames = HashMap::new();
+        if let Some(h) = session.meta.attrs.get("hostname") {
+            hostnames.insert(session_id.to_string(), h.clone());
+        }
+        omnish_context::build_context(&strategy, &formatter, &session.commands, &reader, &hostnames).await
     }
 
     pub async fn get_all_sessions_context(&self, current_session_id: &str) -> Result<String> {
@@ -251,9 +255,13 @@ impl SessionManager {
 
         let mut all_commands = Vec::new();
         let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
+        let mut hostnames: HashMap<String, String> = HashMap::new();
 
-        for (_sid, session) in sessions.iter() {
+        for (sid, session) in sessions.iter() {
             let stream_path = session.dir.join("stream.bin");
+            if let Some(h) = session.meta.attrs.get("hostname") {
+                hostnames.insert(sid.clone(), h.clone());
+            }
             for cmd in &session.commands {
                 offset_to_path.insert(
                     (cmd.stream_offset, cmd.stream_length),
@@ -272,7 +280,7 @@ impl SessionManager {
         let reader = MultiSessionReader { readers: offset_to_path };
         let strategy = RecentCommands::new();
         let formatter = GroupedFormatter::new(current_session_id, now_ms);
-        omnish_context::build_context(&strategy, &formatter, &all_commands, &reader).await
+        omnish_context::build_context(&strategy, &formatter, &all_commands, &reader, &hostnames).await
     }
 }
 

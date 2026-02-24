@@ -1,6 +1,8 @@
 pub mod format_utils;
 pub mod recent;
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use omnish_store::command::CommandRecord;
@@ -9,6 +11,7 @@ use omnish_store::stream::StreamEntry;
 /// Pre-processed command data, ready for formatting.
 pub struct CommandContext {
     pub session_id: String,
+    pub hostname: Option<String>,
     pub command_line: Option<String>,
     pub cwd: Option<String>,
     pub started_at: u64,
@@ -34,11 +37,13 @@ pub trait ContextFormatter: Send + Sync {
 }
 
 /// Orchestrates: strategy selects commands, reads stream data, formatter produces text.
+/// `session_hostnames` maps session_id -> hostname for display in context headers.
 pub async fn build_context(
     strategy: &dyn ContextStrategy,
     formatter: &dyn ContextFormatter,
     commands: &[CommandRecord],
     reader: &dyn StreamReader,
+    session_hostnames: &HashMap<String, String>,
 ) -> Result<String> {
     let selected = strategy.select_commands(commands).await;
 
@@ -57,6 +62,7 @@ pub async fn build_context(
 
         contexts.push(CommandContext {
             session_id: cmd.session_id.clone(),
+            hostname: session_hostnames.get(&cmd.session_id).cloned(),
             command_line: cmd.command_line.clone(),
             cwd: cmd.cwd.clone(),
             started_at: cmd.started_at,

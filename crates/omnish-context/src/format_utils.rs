@@ -24,25 +24,46 @@ pub fn format_relative_time(timestamp_ms: u64, now_ms: u64) -> String {
     }
 }
 
-/// Assign session labels: current_session_id -> "term A", others -> "term B", "term C", etc.
-/// in order of first appearance in commands.
+/// Assign session labels using hostname as primary identifier.
+/// Format: "hostname (term A)", or "term A" if no hostname available.
+/// current_session_id always gets "term A", others get "term B", "term C", etc.
 pub fn assign_term_labels(
     commands: &[super::CommandContext],
     current_session_id: &str,
 ) -> HashMap<String, String> {
-    let mut labels = HashMap::new();
-    // Always assign current session as "term A"
-    labels.insert(current_session_id.to_string(), "term A".to_string());
+    // First, build term letter assignments
+    let mut term_letters: HashMap<String, String> = HashMap::new();
+    term_letters.insert(current_session_id.to_string(), "term A".to_string());
 
     let mut next_letter = b'B';
     for cmd in commands {
-        if !labels.contains_key(&cmd.session_id) {
-            labels.insert(
+        if !term_letters.contains_key(&cmd.session_id) {
+            term_letters.insert(
                 cmd.session_id.clone(),
                 format!("term {}", next_letter as char),
             );
             next_letter += 1;
         }
+    }
+
+    // Build hostname lookup from commands
+    let mut hostnames: HashMap<String, String> = HashMap::new();
+    for cmd in commands {
+        if !hostnames.contains_key(&cmd.session_id) {
+            if let Some(ref h) = cmd.hostname {
+                hostnames.insert(cmd.session_id.clone(), h.clone());
+            }
+        }
+    }
+
+    // Combine: "hostname (term X)" or just "term X"
+    let mut labels = HashMap::new();
+    for (sid, term) in &term_letters {
+        let label = match hostnames.get(sid) {
+            Some(hostname) => format!("{} ({})", hostname, term),
+            None => term.clone(),
+        };
+        labels.insert(sid.clone(), label);
     }
     labels
 }
@@ -109,6 +130,7 @@ mod tests {
         let commands = vec![
             CommandContext {
                 session_id: "my-sess".into(),
+                hostname: Some("host-a".into()),
                 command_line: Some("ls".into()),
                 cwd: None,
                 started_at: 1000,
@@ -118,6 +140,7 @@ mod tests {
             },
             CommandContext {
                 session_id: "other-sess".into(),
+                hostname: Some("host-b".into()),
                 command_line: Some("pwd".into()),
                 cwd: None,
                 started_at: 2000,
@@ -127,14 +150,15 @@ mod tests {
             },
         ];
         let labels = assign_term_labels(&commands, "my-sess");
-        assert_eq!(labels.get("my-sess").unwrap(), "term A");
-        assert_eq!(labels.get("other-sess").unwrap(), "term B");
+        assert_eq!(labels.get("my-sess").unwrap(), "host-a (term A)");
+        assert_eq!(labels.get("other-sess").unwrap(), "host-b (term B)");
     }
 
     #[test]
     fn test_assign_labels_single_session() {
         let commands = vec![CommandContext {
             session_id: "only".into(),
+            hostname: Some("myhost".into()),
             command_line: Some("ls".into()),
             cwd: None,
             started_at: 1000,
@@ -144,6 +168,22 @@ mod tests {
         }];
         let labels = assign_term_labels(&commands, "only");
         assert_eq!(labels.len(), 1);
+        assert_eq!(labels.get("only").unwrap(), "myhost (term A)");
+    }
+
+    #[test]
+    fn test_assign_labels_no_hostname_fallback() {
+        let commands = vec![CommandContext {
+            session_id: "only".into(),
+            hostname: None,
+            command_line: Some("ls".into()),
+            cwd: None,
+            started_at: 1000,
+            ended_at: Some(1050),
+            output: String::new(),
+            exit_code: None,
+        }];
+        let labels = assign_term_labels(&commands, "only");
         assert_eq!(labels.get("only").unwrap(), "term A");
     }
 
