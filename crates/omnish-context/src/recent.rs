@@ -100,6 +100,7 @@ impl ContextFormatter for GroupedFormatter {
                 for cmd in detailed.iter().filter(|c| &c.session_id == session_id) {
                     let time_str = format_relative_time(cmd.started_at, self.now_ms);
                     let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
+                    let cwd_prefix = cmd.cwd.as_deref().map(|p| format!("{} ", p)).unwrap_or_default();
                     let max_lines = self.head_lines + self.tail_lines;
                     let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
 
@@ -108,9 +109,9 @@ impl ContextFormatter for GroupedFormatter {
                         _ => String::new(),
                     };
                     if output.is_empty() {
-                        group_lines.push(format!("[{}] $ {}{}", time_str, cmd_line, failed_tag));
+                        group_lines.push(format!("[{}] {}$ {}{}", time_str, cwd_prefix, cmd_line, failed_tag));
                     } else {
-                        group_lines.push(format!("[{}] $ {}{}\n{}", time_str, cmd_line, failed_tag, output));
+                        group_lines.push(format!("[{}] {}$ {}{}\n{}", time_str, cwd_prefix, cmd_line, failed_tag, output));
                     }
                 }
 
@@ -176,6 +177,7 @@ impl ContextFormatter for InterleavedFormatter {
                     label.clone()
                 };
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
+                let cwd_prefix = cmd.cwd.as_deref().map(|p| format!("{} ", p)).unwrap_or_default();
                 let max_lines = self.head_lines + self.tail_lines;
                 let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
 
@@ -184,9 +186,9 @@ impl ContextFormatter for InterleavedFormatter {
                     _ => String::new(),
                 };
                 if output.is_empty() {
-                    sections.push(format!("[{}] {} $ {}{}", time_str, label_str, cmd_line, failed_tag));
+                    sections.push(format!("[{}] {} {}$ {}{}", time_str, label_str, cwd_prefix, cmd_line, failed_tag));
                 } else {
-                    sections.push(format!("[{}] {} $ {}{}\n{}", time_str, label_str, cmd_line, failed_tag, output));
+                    sections.push(format!("[{}] {} {}$ {}{}\n{}", time_str, label_str, cwd_prefix, cmd_line, failed_tag, output));
                 }
             }
         }
