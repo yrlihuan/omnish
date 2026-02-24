@@ -7,7 +7,7 @@ use omnish_store::session::SessionMeta;
 use omnish_store::stream::{read_range, StreamEntry, StreamWriter};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
 struct FileStreamReader {
@@ -54,6 +54,37 @@ pub struct SessionManager {
     base_dir: PathBuf,
     sessions: Mutex<HashMap<String, ActiveSession>>,
     context_config: ContextConfig,
+}
+
+/// Infer `last_active` from persisted data so that idle time survives daemon restarts.
+/// Falls back to `Instant::now()` when no timestamp is available.
+fn infer_last_active(commands: &[CommandRecord], meta: &SessionMeta) -> Instant {
+    // Best source: last command's ended_at or started_at (epoch ms).
+    let last_cmd_ms = commands.last()
+        .and_then(|cmd| cmd.ended_at.or(Some(cmd.started_at)));
+
+    // Fallback: session's ended_at or started_at (RFC 3339 string → epoch ms).
+    let parse_rfc3339_ms = |s: &str| -> Option<u64> {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|dt| dt.timestamp_millis() as u64)
+    };
+
+    let ts_ms = last_cmd_ms
+        .or_else(|| meta.ended_at.as_deref().and_then(parse_rfc3339_ms))
+        .or_else(|| parse_rfc3339_ms(&meta.started_at));
+
+    match ts_ms {
+        Some(ms) => {
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let age = Duration::from_millis(now_ms.saturating_sub(ms));
+            Instant::now() - age
+        }
+        None => Instant::now(),
+    }
 }
 
 impl SessionManager {
@@ -104,6 +135,8 @@ impl SessionManager {
                     .map(|cmd| cmd.stream_offset + cmd.stream_length)
                     .unwrap_or(0);
 
+                let last_active = infer_last_active(&commands, &meta);
+
                 sessions.insert(
                     meta.session_id.clone(),
                     ActiveSession {
@@ -112,7 +145,7 @@ impl SessionManager {
                         commands,
                         dir: dir.clone(),
                         last_command_stream_pos,
-                        last_active: Instant::now(),
+                        last_active,
                     },
                 );
                 count += 1;
