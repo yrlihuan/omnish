@@ -46,6 +46,9 @@ impl ShellCompleter {
                 if extra_typed < ghost.len()
                     && ghost[..extra_typed] == input[self.ghost_input.len()..]
                 {
+                    // Trim consumed portion so accept() returns only the remaining suffix
+                    self.current_ghost = Some(ghost[extra_typed..].to_string());
+                    self.ghost_input = input.to_string();
                     return false;
                 }
             }
@@ -93,7 +96,17 @@ impl ShellCompleter {
             .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap_or(std::cmp::Ordering::Equal))
         {
             if !best.text.is_empty() {
-                self.current_ghost = Some(best.text.clone());
+                // Strip the already-typed input prefix so ghost is only the suffix
+                let suffix = if best.text.starts_with(current_input) {
+                    &best.text[current_input.len()..]
+                } else {
+                    &best.text
+                };
+                if suffix.is_empty() {
+                    self.current_ghost = None;
+                    return None;
+                }
+                self.current_ghost = Some(suffix.to_string());
                 self.ghost_input = current_input.to_string();
                 return self.current_ghost.as_deref();
             }
@@ -288,8 +301,13 @@ mod tests {
         c.on_response(&resp, "git");
         assert_eq!(c.ghost(), Some(" status"));
 
+        // User types "git " — ghost trimmed to "status" (consumed " ")
         assert!(!c.on_input_changed("git ", 4));
-        assert_eq!(c.ghost(), Some(" status"));
+        assert_eq!(c.ghost(), Some("status"));
+
+        // User types "git s" — ghost trimmed to "tatus"
+        assert!(!c.on_input_changed("git s", 5));
+        assert_eq!(c.ghost(), Some("tatus"));
     }
 
     #[test]
@@ -320,6 +338,73 @@ mod tests {
         assert!(!c.on_input_changed("ls", 1));
     }
 
+    /// Regression: LLM returns full command "cargo run" but user already typed
+    /// "cargo" — ghost should be " run", not "cargo run".
+    #[test]
+    fn test_response_strips_input_prefix() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("cargo", 1);
+        c.mark_sent(1);
+
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: "cargo run".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        let ghost = c.on_response(&resp, "cargo");
+        assert_eq!(ghost, Some(" run"));
+        assert_eq!(c.ghost(), Some(" run"));
+    }
+
+    /// When LLM returns exactly what user typed, ghost should be None.
+    #[test]
+    fn test_response_exact_match_no_ghost() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("ls", 1);
+        c.mark_sent(1);
+
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: "ls".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        assert!(c.on_response(&resp, "ls").is_none());
+        assert!(c.ghost().is_none());
+    }
+
+    /// Regression: after typing matching prefix, Tab should inject only the
+    /// remaining suffix, not the full original ghost.
+    #[test]
+    fn test_accept_after_typing_returns_suffix_only() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("", 1);
+        c.mark_sent(1);
+
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: "cargo run".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        c.on_response(&resp, "");
+        assert_eq!(c.ghost(), Some("cargo run"));
+
+        // User types "cargo" — ghost trimmed to " run"
+        for (i, ch) in "cargo".chars().enumerate() {
+            let typed: String = "cargo"[..=i].to_string();
+            assert!(!c.on_input_changed(&typed, 2 + i as u64));
+        }
+        assert_eq!(c.ghost(), Some(" run"));
+
+        // Tab accept should return only " run"
+        assert_eq!(c.accept(), Some(" run".to_string()));
+    }
+
     /// Regression: ghost " run" must be cleared when user types "cargo t"
     /// (diverges at the first extra character after the original input).
     #[test]
@@ -338,11 +423,11 @@ mod tests {
         c.on_response(&resp, "cargo");
         assert_eq!(c.ghost(), Some(" run"));
 
-        // User types "cargo " — matches ghost[0..1] = " ", keep ghost
+        // User types "cargo " — matches ghost[0..1] = " ", trimmed to "run"
         assert!(!c.on_input_changed("cargo ", 2));
-        assert_eq!(c.ghost(), Some(" run"));
+        assert_eq!(c.ghost(), Some("run"));
 
-        // User types "cargo t" — "t" != ghost[1..2] = "r", must clear
+        // User types "cargo t" — "t" != ghost[0..1] = "r", must clear
         assert!(c.on_input_changed("cargo t", 3));
         assert!(c.ghost().is_none());
     }
