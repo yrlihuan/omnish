@@ -215,6 +215,7 @@ async fn handle_completion_request(
     };
 
     let response = backend.complete(&llm_req).await?;
+    tracing::debug!("Completion LLM raw response: {:?}", response.content);
     parse_completion_suggestions(&response.content)
 }
 
