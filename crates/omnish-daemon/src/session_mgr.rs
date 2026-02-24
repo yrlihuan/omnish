@@ -87,6 +87,16 @@ fn infer_last_active(commands: &[CommandRecord], meta: &SessionMeta) -> Instant 
     }
 }
 
+fn format_idle(secs: u64) -> String {
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{}h", secs / 3600)
+    }
+}
+
 impl SessionManager {
     pub fn new(base_dir: PathBuf, context_config: ContextConfig) -> Self {
         std::fs::create_dir_all(&base_dir).ok();
@@ -271,35 +281,48 @@ impl SessionManager {
     }
 
     /// Format a human-readable list of all in-memory sessions.
+    ///
+    /// Sessions with zero commands are omitted. Output is grouped by host,
+    /// with hosts ordered by their most-recently-active session (newest first),
+    /// and sessions within each host also ordered newest-first.
     pub async fn format_sessions_list(&self) -> String {
         let sessions = self.sessions.lock().await;
-        if sessions.is_empty() {
+
+        // Collect sessions that have at least one command.
+        let mut entries: Vec<&ActiveSession> = sessions.values()
+            .filter(|s| !s.commands.is_empty())
+            .collect();
+
+        if entries.is_empty() {
             return "(no sessions)".to_string();
         }
 
-        let mut entries: Vec<_> = sessions.values().collect();
-        entries.sort_by_key(|s| &s.meta.started_at);
+        // Sort all entries by last_active descending (newest first).
+        entries.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+
+        // Group by host, preserving the order of first appearance (= most recent).
+        let mut host_order: Vec<&str> = Vec::new();
+        let mut by_host: HashMap<&str, Vec<&ActiveSession>> = HashMap::new();
+        for s in &entries {
+            let host = s.meta.attrs.get("hostname").map(|h| h.as_str()).unwrap_or("?");
+            if !by_host.contains_key(host) {
+                host_order.push(host);
+            }
+            by_host.entry(host).or_default().push(s);
+        }
 
         let mut lines = Vec::new();
-        for s in entries {
-            let status = if s.meta.ended_at.is_some() { "ended" } else { "active" };
-            let hostname = s.meta.attrs.get("hostname").map(|h| h.as_str()).unwrap_or("?");
-            let shell = s.meta.attrs.get("shell").map(|h| h.as_str()).unwrap_or("?");
-            let cwd = s.meta.attrs.get("cwd").map(|h| h.as_str()).unwrap_or("?");
-            let idle_secs = s.last_active.elapsed().as_secs();
-            let idle = if idle_secs < 60 {
-                format!("{}s", idle_secs)
-            } else if idle_secs < 3600 {
-                format!("{}m", idle_secs / 60)
-            } else {
-                format!("{}h", idle_secs / 3600)
-            };
-            let cmds = s.commands.len();
-
-            lines.push(format!(
-                "{} [{}] host={} shell={} cwd={} cmds={} idle={}",
-                s.meta.session_id, status, hostname, shell, cwd, cmds, idle,
-            ));
+        for host in host_order {
+            lines.push(format!("[{}]", host));
+            for s in &by_host[host] {
+                let status = if s.meta.ended_at.is_some() { "ended" } else { "active" };
+                let idle = format_idle(s.last_active.elapsed().as_secs());
+                let cmds = s.commands.len();
+                lines.push(format!(
+                    "  {} [{}] cmds={} idle={}",
+                    s.meta.session_id, status, cmds, idle,
+                ));
+            }
         }
         lines.join("\n")
     }
