@@ -55,8 +55,10 @@ async fn test_command_recording_via_receive_command() {
     ])).await.unwrap();
 
     // Simulate IO written to stream (daemon still stores raw stream)
+    // dir=1: prompt, then echoed command + output (first line is prompt+echo, stripped by context)
     mgr.write_io("sess1", 1000, 1, b"user@host:~$ ").await.unwrap();
     mgr.write_io("sess1", 1001, 0, b"ls -la\r\n").await.unwrap();
+    mgr.write_io("sess1", 1001, 1, b"ls -la\r\n").await.unwrap();
     mgr.write_io("sess1", 1002, 1, b"total 0\r\nfile.txt\r\nuser@host:~$ ").await.unwrap();
 
     // Client sends completed command record (new architecture)
@@ -420,6 +422,7 @@ async fn test_ended_session_commands_visible_to_new_session_context() {
     mgr.register("client1", None, HashMap::new()).await.unwrap();
     mgr.write_io("client1", 1000, 1, b"$ ").await.unwrap();
     mgr.write_io("client1", 1001, 0, b"ls\r\n").await.unwrap();
+    mgr.write_io("client1", 1001, 1, b"ls\r\n").await.unwrap();
     mgr.write_io("client1", 1002, 1, b"foo.txt\r\n$ ").await.unwrap();
     mgr.receive_command("client1", CommandRecord {
         command_id: "client1:0".into(),

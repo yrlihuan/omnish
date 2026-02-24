@@ -84,6 +84,12 @@ pub async fn build_context(
         }
 
         let output = strip_ansi(&raw_bytes);
+        // The PTY output stream starts with the prompt + echoed command line;
+        // strip that first line since the command is already shown in the header.
+        let output = match output.find('\n') {
+            Some(pos) => output[pos + 1..].to_string(),
+            None => String::new(),
+        };
 
         detailed.push(CommandContext {
             session_id: cmd.session_id.clone(),

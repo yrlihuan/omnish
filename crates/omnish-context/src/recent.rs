@@ -401,26 +401,29 @@ mod tests {
     async fn test_build_context_grouped() {
         let strategy = RecentCommands::new(10);
         let formatter = GroupedFormatter::new("sess", 30000, 10, 10);
-        let reader = MockReader::new(vec![make_output_entry("file1.txt\n")]);
+        // Mock: first line is command echo (stripped), second line is actual output
+        let reader = MockReader::new(vec![make_output_entry("$ ls\nfile1.txt\n")]);
         let cmds = vec![make_cmd(0, "sess", Some("ls"))];
         let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 10)
             .await
             .unwrap();
         assert!(result.contains("--- term A [current] ---"));
         assert!(result.contains("$ ls"));
+        assert!(result.contains("file1.txt"));
     }
 
     #[tokio::test]
     async fn test_build_context_interleaved() {
         let strategy = RecentCommands::new(10);
         let formatter = InterleavedFormatter::new("sess", 30000, 10, 10);
-        let reader = MockReader::new(vec![make_output_entry("file1.txt\n")]);
+        let reader = MockReader::new(vec![make_output_entry("$ ls\nfile1.txt\n")]);
         let cmds = vec![make_cmd(0, "sess", Some("ls"))];
         let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 10)
             .await
             .unwrap();
         assert!(result.contains("term A*"));
         assert!(result.contains("$ ls"));
+        assert!(result.contains("file1.txt"));
     }
 
     #[tokio::test]
@@ -429,7 +432,7 @@ mod tests {
         let formatter = GroupedFormatter::new("sess", 30000, 10, 10);
         let reader = MockReader::new(vec![
             make_input_entry("ls\r"),
-            make_output_entry("file1.txt\n"),
+            make_output_entry("$ ls\nfile1.txt\n"),
         ]);
         let cmds = vec![make_cmd(0, "sess", Some("ls"))];
         let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 10)
@@ -437,6 +440,21 @@ mod tests {
             .unwrap();
         assert!(result.contains("file1.txt"));
         assert!(!result.contains("ls\r"));
+    }
+
+    #[tokio::test]
+    async fn test_build_context_strips_command_echo() {
+        let strategy = RecentCommands::new(10);
+        let formatter = GroupedFormatter::new("sess", 30000, 10, 10);
+        // Simulates PTY output: prompt+command echo on first line, then actual output
+        let reader = MockReader::new(vec![make_output_entry("user@host:~ $ echo hello\nhello\n")]);
+        let cmds = vec![make_cmd(0, "sess", Some("echo hello"))];
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 10)
+            .await
+            .unwrap();
+        assert!(result.contains("hello"));
+        // The echoed command line should be stripped from output
+        assert!(!result.contains("user@host"));
     }
 
     #[tokio::test]
@@ -454,7 +472,7 @@ mod tests {
     async fn test_build_context_splits_history_and_detailed() {
         let strategy = RecentCommands::new(20);  // select up to 20
         let formatter = GroupedFormatter::new("sess", 30000, 10, 10);
-        let reader = MockReader::new(vec![make_output_entry("output\n")]);
+        let reader = MockReader::new(vec![make_output_entry("$ cmd\noutput\n")]);
         // 5 commands, detailed_count=2 -> 3 history + 2 detailed
         let cmds: Vec<_> = (0..5)
             .map(|i| make_cmd(i, "sess", Some(&format!("cmd{}", i))))
