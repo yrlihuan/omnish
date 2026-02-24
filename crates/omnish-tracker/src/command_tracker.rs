@@ -175,7 +175,7 @@ impl CommandTracker {
                 });
                 self.next_seq += 1;
             }
-            Osc133EventKind::CommandStart { command } => {
+            Osc133EventKind::CommandStart { command, cwd: _ } => {
                 if let Some(ref mut pending) = self.pending {
                     pending.entered = true;
                     pending.osc_command_line = command;
@@ -562,7 +562,7 @@ mod tests {
         // B payload carries the command from $BASH_COMMAND
         tracker.feed_osc133(
             Osc133Event {
-                kind: Osc133EventKind::CommandStart { command: Some("echo hello".into()) },
+                kind: Osc133EventKind::CommandStart { command: Some("echo hello".into()), cwd: None },
                 start: 0, end: 20,
             },
             1001, 50,
@@ -604,7 +604,7 @@ mod tests {
         let mut tracker = make_tracker();
 
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 }, 1000, 0);
-        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart { command: None }, start: 0, end: 8 }, 1001, 50);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart { command: None, cwd: None }, start: 0, end: 8 }, 1001, 50);
         tracker.feed_input(b"ls\r", 1001);
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 }, 1002, 60);
         tracker.feed_output_raw(b"file.txt\r\n", 1002, 70);
@@ -623,7 +623,7 @@ mod tests {
         let mut tracker = make_tracker();
 
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 }, 1000, 0);
-        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart { command: None }, start: 0, end: 8 }, 1001, 50);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart { command: None, cwd: None }, start: 0, end: 8 }, 1001, 50);
         tracker.feed_input(b"false\r", 1001);
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 }, 1002, 60);
         let cmds = tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 1 }, start: 0, end: 10 }, 1003, 100);
@@ -637,7 +637,7 @@ mod tests {
         let mut tracker = make_tracker();
 
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 }, 1000, 0);
-        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart { command: None }, start: 0, end: 8 }, 1001, 50);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart { command: None, cwd: None }, start: 0, end: 8 }, 1001, 50);
         tracker.feed_input(b"echo $\r", 1001);
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 }, 1002, 60);
 
@@ -656,7 +656,7 @@ mod tests {
 
         // First command
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 }, 1000, 0);
-        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart { command: None }, start: 0, end: 8 }, 1001, 50);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart { command: None, cwd: None }, start: 0, end: 8 }, 1001, 50);
         tracker.feed_input(b"ls\r", 1001);
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 }, 1002, 60);
         let cmds1 = tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 0 }, start: 0, end: 10 }, 1003, 100);
@@ -665,7 +665,7 @@ mod tests {
 
         // Second command
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 }, 1004, 100);
-        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart { command: None }, start: 0, end: 8 }, 1005, 150);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart { command: None, cwd: None }, start: 0, end: 8 }, 1005, 150);
         tracker.feed_input(b"pwd\r", 1005);
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 }, 1006, 160);
         let cmds2 = tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 0 }, start: 0, end: 10 }, 1007, 200);

@@ -1,7 +1,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Osc133EventKind {
     PromptStart,
-    CommandStart { command: Option<String> },
+    CommandStart { command: Option<String>, cwd: Option<String> },
     OutputStart,
     CommandEnd { exit_code: i32 },
 }
@@ -114,16 +114,32 @@ impl Osc133Detector {
 
         match payload {
             b"A" => Some(Osc133EventKind::PromptStart),
-            b"B" => Some(Osc133EventKind::CommandStart { command: None }),
+            b"B" => Some(Osc133EventKind::CommandStart { command: None, cwd: None }),
             b"C" => Some(Osc133EventKind::OutputStart),
             _ => {
                 if payload.len() >= 2 && payload[0] == b'B' && payload[1] == b';' {
-                    // B;command_text
-                    let cmd_bytes = &payload[2..];
-                    let cmd = std::str::from_utf8(cmd_bytes).ok()?;
-                    let trimmed = cmd.trim();
-                    let command = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
-                    Some(Osc133EventKind::CommandStart { command })
+                    // B;command_text;cwd:/path
+                    let rest = &payload[2..];
+                    let parts: Vec<&[u8]> = rest.split(|&b| b == b';').collect();
+
+                    let command = if !parts.is_empty() && !parts[0].is_empty() {
+                        std::str::from_utf8(parts[0]).ok().map(|s| s.trim().to_string())
+                    } else {
+                        None
+                    };
+
+                    let mut cwd = None;
+                    for part in parts.iter().skip(1) {
+                        if part.starts_with(b"cwd:") {
+                            cwd = std::str::from_utf8(&part[4..])
+                                .ok()
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty());
+                            break;
+                        }
+                    }
+
+                    Some(Osc133EventKind::CommandStart { command, cwd })
                 } else if payload.len() >= 2 && payload[0] == b'D' && payload[1] == b';' {
                     // D;exit_code
                     let code_bytes = &payload[2..];
@@ -182,7 +198,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0].kind,
-            Osc133EventKind::CommandStart { command: None }
+            Osc133EventKind::CommandStart { command: None, cwd: None }
         );
     }
 
@@ -243,7 +259,7 @@ mod tests {
         let events = detector.feed(b"\x1b]133;A\x07\x1b]133;B\x07");
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].kind, Osc133EventKind::PromptStart);
-        assert_eq!(events[1].kind, Osc133EventKind::CommandStart { command: None });
+        assert_eq!(events[1].kind, Osc133EventKind::CommandStart { command: None, cwd: None });
         assert_eq!(events[0].start, 0);
         assert_eq!(events[0].end, 8);
         assert_eq!(events[1].start, 8);
@@ -265,7 +281,8 @@ mod tests {
         assert_eq!(
             events[0].kind,
             Osc133EventKind::CommandStart {
-                command: Some("echo hello".into())
+                command: Some("echo hello".into()),
+                cwd: None
             }
         );
     }
@@ -277,7 +294,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0].kind,
-            Osc133EventKind::CommandStart { command: None }
+            Osc133EventKind::CommandStart { command: None, cwd: None }
         );
     }
 
@@ -286,5 +303,20 @@ mod tests {
         let input = b"hello\x1b]133;A\x07world\x1b]133;B\x07end";
         let result = strip_osc133(input);
         assert_eq!(result, b"helloworldend");
+    }
+
+    #[test]
+    fn test_osc133_command_start_with_cwd() {
+        use crate::osc133_detector::*;
+        let mut detector = Osc133Detector::new();
+        let events = detector.feed(b"\x1b]133;B;echo hello;cwd:/home/user/project\x07");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].kind,
+            Osc133EventKind::CommandStart {
+                command: Some("echo hello".into()),
+                cwd: Some("/home/user/project".into())
+            }
+        );
     }
 }
