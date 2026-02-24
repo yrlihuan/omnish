@@ -491,4 +491,22 @@ mod tests {
         assert!(result.contains("$ cmd3"));
         assert!(result.contains("$ cmd4"));
     }
+
+    #[test]
+    fn test_format_includes_cwd() {
+        let context = CommandContext {
+            session_id: "sess1".into(),
+            hostname: None,
+            command_line: Some("ls -la".into()),
+            cwd: Some("/home/user/project".into()),
+            started_at: 1000,
+            ended_at: Some(1002),
+            output: "total 0\nfile.txt".into(),
+            exit_code: Some(0),
+        };
+        let commands = vec![context];
+        let formatted = RecentCommands::grouped(&commands, "sess1", 10000);
+        assert!(formatted.contains("/home/user/project $ ls -la"),
+                "Formatted output should include cwd: {}", formatted);
+    }
 }
