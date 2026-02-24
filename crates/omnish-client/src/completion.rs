@@ -18,6 +18,8 @@ pub struct ShellCompleter {
     in_flight: bool,
     /// The input that produced the current ghost.
     ghost_input: String,
+    /// When the current ghost text was set.
+    ghost_set_at: Option<Instant>,
 }
 
 impl ShellCompleter {
@@ -29,6 +31,7 @@ impl ShellCompleter {
             current_ghost: None,
             in_flight: false,
             ghost_input: String::new(),
+            ghost_set_at: None,
         }
     }
 
@@ -108,6 +111,7 @@ impl ShellCompleter {
                 }
                 self.current_ghost = Some(suffix.to_string());
                 self.ghost_input = current_input.to_string();
+                self.ghost_set_at = Some(Instant::now());
                 return self.current_ghost.as_deref();
             }
         }
@@ -120,6 +124,7 @@ impl ShellCompleter {
     pub fn accept(&mut self) -> Option<String> {
         let ghost = self.current_ghost.take()?;
         self.ghost_input.clear();
+        self.ghost_set_at = None;
         Some(ghost)
     }
 
@@ -127,6 +132,15 @@ impl ShellCompleter {
     pub fn clear(&mut self) {
         self.current_ghost = None;
         self.ghost_input.clear();
+        self.ghost_set_at = None;
+    }
+
+    /// Check if the current ghost text has expired.
+    pub fn is_ghost_expired(&self, timeout_ms: u64) -> bool {
+        match (self.current_ghost.as_ref(), self.ghost_set_at) {
+            (Some(_), Some(t)) => t.elapsed().as_millis() >= timeout_ms as u128,
+            _ => false,
+        }
     }
 
     /// Current ghost text suffix to display.
@@ -403,6 +417,39 @@ mod tests {
 
         // Tab accept should return only " run"
         assert_eq!(c.accept(), Some(" run".to_string()));
+    }
+
+    #[test]
+    fn test_ghost_expired_after_timeout() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("git sta", 5);
+        c.mark_sent(5);
+
+        let resp = CompletionResponse {
+            sequence_id: 5,
+            suggestions: vec![CompletionSuggestion {
+                text: "tus".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        c.on_response(&resp, "git sta");
+
+        // Not expired immediately
+        assert!(!c.is_ghost_expired(10_000));
+
+        // Simulate expiry by backdating ghost_set_at
+        c.ghost_set_at = Some(Instant::now() - std::time::Duration::from_secs(11));
+        assert!(c.is_ghost_expired(10_000));
+
+        // Clear resets expiry
+        c.clear();
+        assert!(!c.is_ghost_expired(10_000));
+    }
+
+    #[test]
+    fn test_ghost_not_expired_without_ghost() {
+        let c = ShellCompleter::new();
+        assert!(!c.is_ghost_expired(10_000));
     }
 
     /// Regression: ghost " run" must be cleared when user types "cargo t"

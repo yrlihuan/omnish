@@ -455,6 +455,30 @@ mod tests {
         assert!(summary.contains("Cargo.lock"), "summary should contain ls output");
     }
 
+    /// Regression: when user accepts a ghost-text completion (e.g. types "git s"
+    /// then Tab injects "tatus"), the injected suffix must be fed to the tracker
+    /// so command_line records "git status", not "git s".
+    #[test]
+    fn test_completion_suffix_included_in_command_line() {
+        let mut tracker = make_tracker();
+        tracker.feed_output(b"$ ", 1000, 0);
+
+        // User types "git s"
+        tracker.feed_input(b"git s", 1001);
+        // Tab completion injects "tatus" (written to PTY by client)
+        tracker.feed_input(b"tatus", 1002);
+        // User presses Enter
+        tracker.feed_input(b"\r", 1003);
+
+        let cmds = tracker.feed_output(b"On branch master\r\n$ ", 1004, 100);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(
+            cmds[0].command_line.as_deref(),
+            Some("git status"),
+            "command_line should include the completion suffix"
+        );
+    }
+
     // --- OSC 133 mode tests ---
 
     #[test]

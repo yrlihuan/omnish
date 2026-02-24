@@ -195,6 +195,7 @@ async fn main() -> Result<()> {
                             if let Some(suffix) = shell_completer.accept() {
                                 proxy.write_all(suffix.as_bytes())?;
                                 shell_input.inject(&suffix);
+                                command_tracker.feed_input(suffix.as_bytes(), timestamp_ms());
                             }
                         } else {
                             // Forward these bytes to PTY
@@ -431,6 +432,12 @@ async fn main() -> Result<()> {
                 let ghost_render = display::render_ghost_text(ghost);
                 nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
             }
+        }
+
+        // Auto-dismiss expired ghost text
+        if shell_completer.is_ghost_expired(config.shell.ghost_timeout_ms) {
+            shell_completer.clear();
+            nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
         }
 
         // Check if PTY hung up

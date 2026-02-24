@@ -105,6 +105,8 @@ pub struct ShellConfig {
     pub command_prefix: String,
     #[serde(default = "default_intercept_gap_ms")]
     pub intercept_gap_ms: u64,
+    #[serde(default = "default_ghost_timeout_ms")]
+    pub ghost_timeout_ms: u64,
 }
 
 impl Default for ShellConfig {
@@ -113,6 +115,7 @@ impl Default for ShellConfig {
             command: default_shell_command(),
             command_prefix: default_command_prefix(),
             intercept_gap_ms: default_intercept_gap_ms(),
+            ghost_timeout_ms: default_ghost_timeout_ms(),
         }
     }
 }
@@ -127,6 +130,10 @@ fn default_command_prefix() -> String {
 
 fn default_intercept_gap_ms() -> u64 {
     1000
+}
+
+fn default_ghost_timeout_ms() -> u64 {
+    10_000
 }
 
 #[derive(Debug, Deserialize)]
