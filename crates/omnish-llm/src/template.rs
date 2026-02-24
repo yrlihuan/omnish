@@ -17,10 +17,12 @@ pub fn build_user_content(context: &str, query: Option<&str>) -> String {
 pub fn build_completion_content(context: &str, input: &str, cursor_pos: usize) -> String {
     if input.is_empty() {
         format!(
-            "Here is the terminal session context:\n\n\
+            "Here is the terminal session context (most recent commands last):\n\n\
              ```\n{}\n```\n\n\
              The user just returned to the shell prompt. \
-             Predict the next command they are most likely to type.\n\n\
+             Predict the next command they are most likely to type.\n\
+             Pay close attention to the most recent commands and their output — \
+             infer what the user is trying to accomplish and what logical next step follows.\n\n\
              Reply with a JSON array:\n\
              [{{\"text\": \"<full command>\", \"confidence\": <0.0-1.0>}}]\n\
              Return at most 3 suggestions sorted by confidence descending.\n\
@@ -30,11 +32,13 @@ pub fn build_completion_content(context: &str, input: &str, cursor_pos: usize) -
         )
     } else {
         format!(
-            "Here is the terminal session context:\n\n\
+            "Here is the terminal session context (most recent commands last):\n\n\
              ```\n{}\n```\n\n\
              The user is typing a shell command. Current input: `{}`\n\
-             Cursor position: {}\n\n\
-             Suggest completions for this command. Reply with a JSON array:\n\
+             Cursor position: {}\n\
+             Use the recent commands and their output to understand what the user is doing, \
+             then suggest the most likely completion.\n\n\
+             Reply with a JSON array:\n\
              [{{\"text\": \"<text after cursor>\", \"confidence\": <0.0-1.0>}}]\n\
              Return at most 3 suggestions sorted by confidence descending.\n\
              Return [] if no good completion exists.\n\

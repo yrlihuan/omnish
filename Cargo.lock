@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -716,7 +716,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-common"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -726,7 +726,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-context"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -736,7 +736,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-daemon"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -757,7 +757,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-llm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -769,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bincode",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-pty"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -788,7 +788,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "serde",
@@ -798,7 +798,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-tracker"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "omnish-store",
  "regex",
@@ -806,7 +806,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-transport"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "omnish-protocol",
