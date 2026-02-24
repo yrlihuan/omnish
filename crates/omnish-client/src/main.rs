@@ -5,6 +5,7 @@ mod ghost_complete;
 mod display;
 mod interceptor;
 mod probe;
+mod proctitle;
 mod shell_hook;
 mod shell_input;
 mod throttle;
@@ -80,8 +81,11 @@ fn resolve_shell(config_shell: &str) -> String {
     }
 }
 
-#[tokio::main]
+#[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
+    // Snapshot argv memory area before anything else (for proctitle).
+    proctitle::init();
+
     let config = load_client_config().unwrap_or_default();
 
     let session_id = Uuid::new_v4().to_string()[..8].to_string();
@@ -144,6 +148,13 @@ async fn main() -> Result<()> {
         Box::new(ghost_complete::BuiltinProvider::new()),
     ]);
     let mut shell_input = shell_input::ShellInputTracker::new();
+    let shell_basename = std::path::Path::new(&shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("bash")
+        .to_string();
+    // Set initial process title so tmux shows "osh-<shell>" instead of "omnish-client".
+    proctitle::set(&format!("osh-{}", shell_basename));
     let mut shell_completer = completion::ShellCompleter::new();
     let (completion_tx, mut completion_rx) = tokio::sync::mpsc::channel::<
         omnish_protocol::message::CompletionResponse
@@ -393,14 +404,21 @@ async fn main() -> Result<()> {
                             | Osc133EventKind::CommandEnd { .. } => {
                                 shell_input.on_prompt();
                                 shell_completer.clear();
+                                proctitle::set(&format!("osh-{}", shell_basename));
                             }
                             // 133;B / 133;C: In our bash hook these fire together
                             // from the DEBUG trap, which also triggers during PS1
                             // command substitution (e.g. git branch). So we can NOT
                             // use them to detect "user pressed Enter". Instead,
                             // at_prompt=false is set by feed_forwarded on Enter key.
-                            Osc133EventKind::CommandStart { .. }
-                            | Osc133EventKind::OutputStart => {
+                            Osc133EventKind::CommandStart { command, .. } => {
+                                shell_completer.clear();
+                                if let Some(cmd) = command {
+                                    let cmd_name = cmd.split_whitespace().next().unwrap_or(cmd);
+                                    proctitle::set(&format!("osh-{}", cmd_name));
+                                }
+                            }
+                            Osc133EventKind::OutputStart => {
                                 shell_completer.clear();
                             }
                         }
