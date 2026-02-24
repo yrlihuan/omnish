@@ -5,12 +5,13 @@ use async_trait::async_trait;
 pub struct AnthropicBackend {
     pub model: String,
     pub api_key: String,
+    pub client: reqwest::Client,
 }
 
 #[async_trait]
 impl LlmBackend for AnthropicBackend {
     async fn complete(&self, req: &LlmRequest) -> Result<LlmResponse> {
-        let client = reqwest::Client::new();
+        let client = &self.client;
 
         let user_content = crate::template::build_user_content(
             &req.context,

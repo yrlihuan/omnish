@@ -46,6 +46,7 @@ pub fn create_backend(
         "anthropic" => Ok(Arc::new(AnthropicBackend {
             api_key,
             model: config.model.clone(),
+            client: reqwest::Client::new(),
         })),
         "openai-compat" => {
             let base_url = config
@@ -56,6 +57,7 @@ pub fn create_backend(
                 api_key,
                 model: config.model.clone(),
                 base_url,
+                client: reqwest::Client::new(),
             }))
         }
         other => Err(anyhow!("unknown backend type: {}", other)),

@@ -6,12 +6,13 @@ pub struct OpenAiCompatBackend {
     pub model: String,
     pub api_key: String,
     pub base_url: String,
+    pub client: reqwest::Client,
 }
 
 #[async_trait]
 impl LlmBackend for OpenAiCompatBackend {
     async fn complete(&self, req: &LlmRequest) -> Result<LlmResponse> {
-        let client = reqwest::Client::new();
+        let client = &self.client;
 
         let user_content = crate::template::build_user_content(
             &req.context,
