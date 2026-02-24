@@ -27,7 +27,10 @@ __omnish_preexec() {
   [[ "$__omnish_preexec_fired" == "1" ]] && return
   [[ "$BASH_COMMAND" == __omnish_* ]] && return
   __omnish_preexec_fired=1
-  printf '\033]133;B;%s\007' "$BASH_COMMAND"
+  # Escape semicolons in command and PWD for OSC 133 payload
+  local cmd_esc="${BASH_COMMAND//;/\\;}"
+  local pwd_esc="${PWD//;/\\;}"
+  printf '\033]133;B;%s;cwd:%s\007' "$cmd_esc" "$pwd_esc"
   printf '\033]133;C\007'
 }
 trap '__omnish_preexec' DEBUG
@@ -96,5 +99,11 @@ mod tests {
         let content = std::fs::read_to_string(&rcfile).unwrap();
         // rcfile sources the hook script
         assert!(content.contains("bash_hook.sh"), "rcfile should source hook: {content}");
+    }
+
+    #[test]
+    fn test_hook_content_includes_cwd() {
+        assert!(BASH_HOOK.contains("PWD"));
+        assert!(BASH_HOOK.contains("cwd:"));
     }
 }
