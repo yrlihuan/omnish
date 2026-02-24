@@ -33,7 +33,8 @@ impl ShellCompleter {
     }
 
     /// Notify that input changed. Resets debounce timer and clears stale ghost.
-    pub fn on_input_changed(&mut self, input: &str, sequence_id: u64) {
+    /// Returns `true` if ghost text was cleared (caller should erase it from screen).
+    pub fn on_input_changed(&mut self, input: &str, sequence_id: u64) -> bool {
         self.pending_seq = sequence_id;
         self.last_change = Some(Instant::now());
 
@@ -41,13 +42,18 @@ impl ShellCompleter {
         if let Some(ref ghost) = self.current_ghost {
             if input.starts_with(&self.ghost_input) {
                 let extra_typed = input.len() - self.ghost_input.len();
-                if extra_typed < ghost.len() {
-                    return;
+                // Verify the extra characters actually match the ghost text
+                if extra_typed < ghost.len()
+                    && ghost[..extra_typed] == input[self.ghost_input.len()..]
+                {
+                    return false;
                 }
             }
         }
         // Otherwise clear ghost
+        let had_ghost = self.current_ghost.is_some();
         self.current_ghost = None;
+        had_ghost
     }
 
     /// Check if debounce timer has expired and we should send a request.
@@ -282,7 +288,62 @@ mod tests {
         c.on_response(&resp, "git");
         assert_eq!(c.ghost(), Some(" status"));
 
-        c.on_input_changed("git ", 4);
+        assert!(!c.on_input_changed("git ", 4));
         assert_eq!(c.ghost(), Some(" status"));
+    }
+
+    #[test]
+    fn test_on_input_changed_returns_true_when_ghost_cleared() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("cargo", 1);
+        c.mark_sent(1);
+
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: " run".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        c.on_response(&resp, "cargo");
+        assert_eq!(c.ghost(), Some(" run"));
+
+        // Typing something that diverges from the ghost should clear it
+        assert!(c.on_input_changed("cargo test", 2));
+        assert!(c.ghost().is_none());
+    }
+
+    #[test]
+    fn test_on_input_changed_returns_false_when_no_ghost() {
+        let mut c = ShellCompleter::new();
+        // No ghost set — clearing nothing should return false
+        assert!(!c.on_input_changed("ls", 1));
+    }
+
+    /// Regression: ghost " run" must be cleared when user types "cargo t"
+    /// (diverges at the first extra character after the original input).
+    #[test]
+    fn test_ghost_cleared_on_divergent_extra_chars() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("cargo", 1);
+        c.mark_sent(1);
+
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: " run".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        c.on_response(&resp, "cargo");
+        assert_eq!(c.ghost(), Some(" run"));
+
+        // User types "cargo " — matches ghost[0..1] = " ", keep ghost
+        assert!(!c.on_input_changed("cargo ", 2));
+        assert_eq!(c.ghost(), Some(" run"));
+
+        // User types "cargo t" — "t" != ghost[1..2] = "r", must clear
+        assert!(c.on_input_changed("cargo t", 3));
+        assert!(c.ghost().is_none());
     }
 }

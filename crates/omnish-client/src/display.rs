@@ -488,4 +488,39 @@ mod tests {
         let cursor = screen.cursor_position();
         assert_eq!(cursor.1, 6, "cursor should be after real input, not ghost");
     }
+
+    /// Regression test: ghost text must be erased when user types divergent input.
+    ///
+    /// Simulates the shell completion flow:
+    /// 1. Shell prompt with "cargo" typed, ghost " run" shown
+    /// 2. User types " test" (diverges from ghost)
+    /// 3. \x1b[K (erase to EOL) clears the stale ghost
+    /// 4. Shell echoes " test" at cursor position
+    ///
+    /// Without \x1b[K, the ghost text " run" would remain visible after "cargo test".
+    #[test]
+    fn test_ghost_cleared_on_divergent_input() {
+        let cols: u16 = 40;
+        let mut output = String::new();
+
+        // Step 1: shell echoes "cargo" at column 0, cursor at col 5
+        output.push_str("cargo");
+        // Ghost " run" rendered after cursor (save + dim + restore)
+        output.push_str(&render_ghost_text(" run"));
+
+        // Step 2: user types divergent input — the fix sends \x1b[K to erase ghost
+        output.push_str("\x1b[K");
+
+        // Step 3: shell echoes " test" at cursor position (col 5)
+        output.push_str(" test");
+
+        let parser = parse_ansi(&output, cols, 24);
+        let screen = parser.screen();
+        let row = get_row(screen, 0, cols);
+
+        // "cargo test" should be visible
+        assert!(row.contains("cargo test"), "divergent input should be visible");
+        // Ghost text " run" must NOT be visible
+        assert!(!row.contains("run"), "ghost text should be erased after divergent input");
+    }
 }

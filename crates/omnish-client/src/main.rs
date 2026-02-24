@@ -203,7 +203,10 @@ async fn main() -> Result<()> {
                             // Track shell input for LLM completion
                             shell_input.feed_forwarded(&bytes);
                             if let Some((input, seq)) = shell_input.take_change() {
-                                shell_completer.on_input_changed(input, seq);
+                                if shell_completer.on_input_changed(input, seq) {
+                                    // Ghost was cleared — erase stale ghost text from screen
+                                    nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
+                                }
                             }
 
                             // Feed input to command tracker
