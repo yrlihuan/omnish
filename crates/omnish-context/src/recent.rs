@@ -50,59 +50,72 @@ impl GroupedFormatter {
 }
 
 impl ContextFormatter for GroupedFormatter {
-    fn format(&self, commands: &[CommandContext]) -> String {
-        if commands.is_empty() {
+    fn format(&self, history: &[CommandContext], detailed: &[CommandContext]) -> String {
+        if history.is_empty() && detailed.is_empty() {
             return String::new();
         }
 
-        let labels = assign_term_labels(commands, &self.current_session_id);
-
-        // Collect session IDs in first-appearance order
-        let mut session_order: Vec<String> = Vec::new();
-        for cmd in commands {
-            if !session_order.contains(&cmd.session_id) {
-                session_order.push(cmd.session_id.clone());
-            }
-        }
-
-        // Move current session to end so it appears last (closest to the LLM prompt)
-        if let Some(pos) = session_order
-            .iter()
-            .position(|s| s == &self.current_session_id)
-        {
-            let current = session_order.remove(pos);
-            session_order.push(current);
-        }
-
         let mut sections = Vec::new();
-        for session_id in &session_order {
-            let label = labels.get(session_id).unwrap();
-            let is_current = session_id == &self.current_session_id;
-            let header = if is_current {
-                format!("--- {} [current] ---", label)
-            } else {
-                format!("--- {} ---", label)
-            };
 
-            let mut group_lines = vec![header];
-            for cmd in commands.iter().filter(|c| &c.session_id == session_id) {
-                let time_str = format_relative_time(cmd.started_at, self.now_ms);
+        // History section: command-line only
+        if !history.is_empty() {
+            let mut history_lines = vec!["--- History ---".to_string()];
+            for cmd in history {
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
-                let max_lines = self.head_lines + self.tail_lines;
-                let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
+                history_lines.push(format!("$ {}", cmd_line));
+            }
+            sections.push(history_lines.join("\n"));
+        }
 
-                let failed_tag = match cmd.exit_code {
-                    Some(code) if code != 0 => format!("  [FAILED: {}]", code),
-                    _ => String::new(),
-                };
-                if output.is_empty() {
-                    group_lines.push(format!("[{}] $ {}{}", time_str, cmd_line, failed_tag));
-                } else {
-                    group_lines.push(format!("[{}] $ {}{}\n{}", time_str, cmd_line, failed_tag, output));
+        // Detailed section: grouped by session with full output
+        if !detailed.is_empty() {
+            let labels = assign_term_labels(detailed, &self.current_session_id);
+
+            let mut session_order: Vec<String> = Vec::new();
+            for cmd in detailed {
+                if !session_order.contains(&cmd.session_id) {
+                    session_order.push(cmd.session_id.clone());
                 }
             }
 
-            sections.push(group_lines.join("\n\n"));
+            // Move current session to end so it appears last (closest to the LLM prompt)
+            if let Some(pos) = session_order
+                .iter()
+                .position(|s| s == &self.current_session_id)
+            {
+                let current = session_order.remove(pos);
+                session_order.push(current);
+            }
+
+            for session_id in &session_order {
+                let label = labels.get(session_id).unwrap();
+                let is_current = session_id == &self.current_session_id;
+                let header = if is_current {
+                    format!("--- {} [current] ---", label)
+                } else {
+                    format!("--- {} ---", label)
+                };
+
+                let mut group_lines = vec![header];
+                for cmd in detailed.iter().filter(|c| &c.session_id == session_id) {
+                    let time_str = format_relative_time(cmd.started_at, self.now_ms);
+                    let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
+                    let max_lines = self.head_lines + self.tail_lines;
+                    let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
+
+                    let failed_tag = match cmd.exit_code {
+                        Some(code) if code != 0 => format!("  [FAILED: {}]", code),
+                        _ => String::new(),
+                    };
+                    if output.is_empty() {
+                        group_lines.push(format!("[{}] $ {}{}", time_str, cmd_line, failed_tag));
+                    } else {
+                        group_lines.push(format!("[{}] $ {}{}\n{}", time_str, cmd_line, failed_tag, output));
+                    }
+                }
+
+                sections.push(group_lines.join("\n\n"));
+            }
         }
 
         sections.join("\n\n")
@@ -129,39 +142,52 @@ impl InterleavedFormatter {
 }
 
 impl ContextFormatter for InterleavedFormatter {
-    fn format(&self, commands: &[CommandContext]) -> String {
-        if commands.is_empty() {
+    fn format(&self, history: &[CommandContext], detailed: &[CommandContext]) -> String {
+        if history.is_empty() && detailed.is_empty() {
             return String::new();
         }
 
-        let labels = assign_term_labels(commands, &self.current_session_id);
-
-        // Sort by started_at
-        let mut sorted: Vec<&CommandContext> = commands.iter().collect();
-        sorted.sort_by_key(|c| c.started_at);
-
         let mut sections = Vec::new();
-        for cmd in sorted {
-            let time_str = format_relative_time(cmd.started_at, self.now_ms);
-            let label = labels.get(&cmd.session_id).unwrap();
-            let is_current = cmd.session_id == self.current_session_id;
-            let label_str = if is_current {
-                format!("{}*", label)
-            } else {
-                label.clone()
-            };
-            let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
-            let max_lines = self.head_lines + self.tail_lines;
-            let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
 
-            let failed_tag = match cmd.exit_code {
-                Some(code) if code != 0 => format!("  [FAILED: {}]", code),
-                _ => String::new(),
-            };
-            if output.is_empty() {
-                sections.push(format!("[{}] {} $ {}{}", time_str, label_str, cmd_line, failed_tag));
-            } else {
-                sections.push(format!("[{}] {} $ {}{}\n{}", time_str, label_str, cmd_line, failed_tag, output));
+        // History section: command-line only
+        if !history.is_empty() {
+            let mut history_lines = vec!["--- History ---".to_string()];
+            for cmd in history {
+                let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
+                history_lines.push(format!("$ {}", cmd_line));
+            }
+            sections.push(history_lines.join("\n"));
+        }
+
+        // Detailed section: interleaved by time
+        if !detailed.is_empty() {
+            let labels = assign_term_labels(detailed, &self.current_session_id);
+
+            let mut sorted: Vec<&CommandContext> = detailed.iter().collect();
+            sorted.sort_by_key(|c| c.started_at);
+
+            for cmd in sorted {
+                let time_str = format_relative_time(cmd.started_at, self.now_ms);
+                let label = labels.get(&cmd.session_id).unwrap();
+                let is_current = cmd.session_id == self.current_session_id;
+                let label_str = if is_current {
+                    format!("{}*", label)
+                } else {
+                    label.clone()
+                };
+                let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
+                let max_lines = self.head_lines + self.tail_lines;
+                let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
+
+                let failed_tag = match cmd.exit_code {
+                    Some(code) if code != 0 => format!("  [FAILED: {}]", code),
+                    _ => String::new(),
+                };
+                if output.is_empty() {
+                    sections.push(format!("[{}] {} $ {}{}", time_str, label_str, cmd_line, failed_tag));
+                } else {
+                    sections.push(format!("[{}] {} $ {}{}\n{}", time_str, label_str, cmd_line, failed_tag, output));
+                }
             }
         }
 
@@ -269,21 +295,21 @@ mod tests {
 
     #[test]
     fn test_grouped_single_session() {
-        let commands = vec![make_ctx("sess-a", "ls", 30000, "file1.txt")];
+        let detailed = vec![make_ctx("sess-a", "ls", 30000, "file1.txt")];
         let formatter = GroupedFormatter::new("sess-a", 60000, 10, 10);
-        let result = formatter.format(&commands);
+        let result = formatter.format(&[], &detailed);
         assert!(result.contains("--- term A [current] ---"));
         assert!(result.contains("[30s ago] $ ls"));
     }
 
     #[test]
     fn test_grouped_multi_session() {
-        let commands = vec![
+        let detailed = vec![
             make_ctx("sess-a", "ls", 28000, "file1.txt"),
             make_ctx("sess-b", "npm start", 25000, "Server running"),
         ];
         let formatter = GroupedFormatter::new("sess-a", 30000, 10, 10);
-        let result = formatter.format(&commands);
+        let result = formatter.format(&[], &detailed);
         // Current session should be last (closest to LLM prompt)
         let pos_a = result.find("--- term A [current] ---").unwrap();
         let pos_b = result.find("--- term B ---").unwrap();
@@ -294,20 +320,41 @@ mod tests {
 
     #[test]
     fn test_grouped_with_hostname() {
-        let commands = vec![
+        let detailed = vec![
             make_ctx_with_host("sess-a", "ls", 28000, "file1.txt", Some("workstation")),
             make_ctx_with_host("sess-b", "npm start", 25000, "Server running", Some("server01")),
         ];
         let formatter = GroupedFormatter::new("sess-a", 30000, 10, 10);
-        let result = formatter.format(&commands);
+        let result = formatter.format(&[], &detailed);
         assert!(result.contains("--- workstation (term A) [current] ---"));
         assert!(result.contains("--- server01 (term B) ---"));
     }
 
     #[test]
+    fn test_grouped_with_history() {
+        let history = vec![
+            make_ctx("sess-a", "cd /tmp", 10000, ""),
+            make_ctx("sess-a", "mkdir foo", 11000, ""),
+        ];
+        let detailed = vec![make_ctx("sess-a", "ls", 30000, "file1.txt")];
+        let formatter = GroupedFormatter::new("sess-a", 60000, 10, 10);
+        let result = formatter.format(&history, &detailed);
+        assert!(result.contains("--- History ---"));
+        assert!(result.contains("$ cd /tmp"));
+        assert!(result.contains("$ mkdir foo"));
+        // History should appear before detailed
+        let pos_history = result.find("--- History ---").unwrap();
+        let pos_detailed = result.find("--- term A [current] ---").unwrap();
+        assert!(pos_history < pos_detailed);
+        // History section should not contain timestamps — extract just the history block
+        let history_block = &result[..result.find("--- term A").unwrap()];
+        assert!(!history_block.contains("ago]"));
+    }
+
+    #[test]
     fn test_grouped_empty() {
         let formatter = GroupedFormatter::new("sess-a", 30000, 10, 10);
-        let result = formatter.format(&[]);
+        let result = formatter.format(&[], &[]);
         assert_eq!(result, "");
     }
 
@@ -315,16 +362,13 @@ mod tests {
 
     #[test]
     fn test_interleaved_sorted_by_time() {
-        let commands = vec![
+        let detailed = vec![
             make_ctx("sess-a", "ls", 28000, "file1.txt"),
             make_ctx("sess-b", "npm start", 25000, "Server running"),
             make_ctx("sess-a", "pwd", 29970, "/home"),
         ];
         let formatter = InterleavedFormatter::new("sess-a", 30000, 10, 10);
-        let result = formatter.format(&commands);
-        // npm start (5s ago) should come before ls (2s ago) which should come before pwd (30s...wait)
-        // started_at: npm=25000, ls=28000, pwd=29970; now=30000
-        // npm: 5s ago, ls: 2s ago, pwd: 30s ago? No: 30000-29970=30ms = 0s ago
+        let result = formatter.format(&[], &detailed);
         let pos_npm = result.find("npm start").unwrap();
         let pos_ls = result.find("$ ls").unwrap();
         let pos_pwd = result.find("$ pwd").unwrap();
@@ -334,12 +378,12 @@ mod tests {
 
     #[test]
     fn test_interleaved_marks_current() {
-        let commands = vec![
+        let detailed = vec![
             make_ctx("sess-a", "ls", 28000, "file1.txt"),
             make_ctx("sess-b", "npm start", 25000, "Server running"),
         ];
         let formatter = InterleavedFormatter::new("sess-a", 30000, 10, 10);
-        let result = formatter.format(&commands);
+        let result = formatter.format(&[], &detailed);
         assert!(result.contains("term A*"));
         assert!(result.contains("term B $"));
     }
@@ -347,7 +391,7 @@ mod tests {
     #[test]
     fn test_interleaved_empty() {
         let formatter = InterleavedFormatter::new("sess-a", 30000, 10, 10);
-        let result = formatter.format(&[]);
+        let result = formatter.format(&[], &[]);
         assert_eq!(result, "");
     }
 
@@ -359,7 +403,7 @@ mod tests {
         let formatter = GroupedFormatter::new("sess", 30000, 10, 10);
         let reader = MockReader::new(vec![make_output_entry("file1.txt\n")]);
         let cmds = vec![make_cmd(0, "sess", Some("ls"))];
-        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new())
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 10)
             .await
             .unwrap();
         assert!(result.contains("--- term A [current] ---"));
@@ -372,7 +416,7 @@ mod tests {
         let formatter = InterleavedFormatter::new("sess", 30000, 10, 10);
         let reader = MockReader::new(vec![make_output_entry("file1.txt\n")]);
         let cmds = vec![make_cmd(0, "sess", Some("ls"))];
-        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new())
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 10)
             .await
             .unwrap();
         assert!(result.contains("term A*"));
@@ -388,10 +432,9 @@ mod tests {
             make_output_entry("file1.txt\n"),
         ]);
         let cmds = vec![make_cmd(0, "sess", Some("ls"))];
-        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new())
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 10)
             .await
             .unwrap();
-        // Should only contain output, not input
         assert!(result.contains("file1.txt"));
         assert!(!result.contains("ls\r"));
     }
@@ -401,9 +444,31 @@ mod tests {
         let strategy = RecentCommands::new(10);
         let formatter = GroupedFormatter::new("sess", 30000, 10, 10);
         let reader = MockReader::empty();
-        let result = crate::build_context(&strategy, &formatter, &[], &reader, &std::collections::HashMap::new())
+        let result = crate::build_context(&strategy, &formatter, &[], &reader, &std::collections::HashMap::new(), 10)
             .await
             .unwrap();
         assert_eq!(result, "");
+    }
+
+    #[tokio::test]
+    async fn test_build_context_splits_history_and_detailed() {
+        let strategy = RecentCommands::new(20);  // select up to 20
+        let formatter = GroupedFormatter::new("sess", 30000, 10, 10);
+        let reader = MockReader::new(vec![make_output_entry("output\n")]);
+        // 5 commands, detailed_count=2 -> 3 history + 2 detailed
+        let cmds: Vec<_> = (0..5)
+            .map(|i| make_cmd(i, "sess", Some(&format!("cmd{}", i))))
+            .collect();
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 2)
+            .await
+            .unwrap();
+        // History section should list first 3 commands
+        assert!(result.contains("--- History ---"));
+        assert!(result.contains("$ cmd0"));
+        assert!(result.contains("$ cmd1"));
+        assert!(result.contains("$ cmd2"));
+        // Detailed section should have last 2
+        assert!(result.contains("$ cmd3"));
+        assert!(result.contains("$ cmd4"));
     }
 }

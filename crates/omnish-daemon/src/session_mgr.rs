@@ -351,7 +351,8 @@ impl SessionManager {
             stream_path: session.dir.join("stream.bin"),
         };
         let cc = &self.context_config;
-        let strategy = RecentCommands::new(cc.max_commands);
+        let total = cc.detailed_commands + cc.history_commands;
+        let strategy = RecentCommands::new(total);
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -361,7 +362,7 @@ impl SessionManager {
         if let Some(h) = session.meta.attrs.get("hostname") {
             hostnames.insert(session_id.to_string(), h.clone());
         }
-        omnish_context::build_context(&strategy, &formatter, &session.commands, &reader, &hostnames).await
+        omnish_context::build_context(&strategy, &formatter, &session.commands, &reader, &hostnames, cc.detailed_commands).await
     }
 
     pub async fn get_all_sessions_context(&self, current_session_id: &str) -> Result<String> {
@@ -397,9 +398,10 @@ impl SessionManager {
         }
 
         let reader = MultiSessionReader { readers: offset_to_path };
-        let strategy = RecentCommands::new(cc.max_commands);
+        let total = cc.detailed_commands + cc.history_commands;
+        let strategy = RecentCommands::new(total);
         let formatter = GroupedFormatter::new(current_session_id, now_ms, cc.head_lines, cc.tail_lines);
-        omnish_context::build_context(&strategy, &formatter, &all_commands, &reader, &hostnames).await
+        omnish_context::build_context(&strategy, &formatter, &all_commands, &reader, &hostnames, cc.detailed_commands).await
     }
 }
 

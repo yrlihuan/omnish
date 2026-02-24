@@ -1,3 +1,4 @@
+use omnish_common::config::ContextConfig;
 use omnish_daemon::session_mgr::SessionManager;
 #[allow(unused_imports)]
 use omnish_store::session::SessionMeta;
@@ -281,7 +282,8 @@ async fn test_debug_context_request() {
 #[tokio::test]
 async fn test_interleaved_two_session_context_at_10_and_20_commands() {
     let dir = tempfile::tempdir().unwrap();
-    let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+    let cc = ContextConfig { detailed_commands: 10, ..Default::default() };
+    let mgr = SessionManager::new(dir.path().to_path_buf(), cc);
 
     mgr.register("sessA", None, HashMap::new()).await.unwrap();
     mgr.register("sessB", None, HashMap::new()).await.unwrap();
@@ -337,19 +339,22 @@ async fn test_interleaved_two_session_context_at_10_and_20_commands() {
         run_echo(&mgr, "sessB", i, ts + 50).await;
     }
 
-    // After 20 commands: only the most recent 10 should be visible
-    // That's A5..A9 and B5..B9
+    // After 20 commands (detailed=10, history=500):
+    // Old commands (0..5) should appear in history section (command-line only)
+    // Recent commands (5..10) should appear in detailed sections (with output)
     let ctx20 = mgr.get_all_sessions_context("sessA").await.unwrap();
 
-    // Old commands (0..5) should NOT appear
+    // History section should contain old commands
+    assert!(ctx20.contains("--- History ---"),
+        "after 20 cmds: expected History section:\n{}", ctx20);
     for i in 0..5 {
-        assert!(!ctx20.contains(&format!("sessA {}", i)),
-            "after 20 cmds: sessA {} should have been evicted from context:\n{}", i, ctx20);
-        assert!(!ctx20.contains(&format!("sessB {}", i)),
-            "after 20 cmds: sessB {} should have been evicted from context:\n{}", i, ctx20);
+        assert!(ctx20.contains(&format!("echo \"sessA {}\"", i)),
+            "after 20 cmds: missing sessA {} in history:\n{}", i, ctx20);
+        assert!(ctx20.contains(&format!("echo \"sessB {}\"", i)),
+            "after 20 cmds: missing sessB {} in history:\n{}", i, ctx20);
     }
 
-    // Recent commands (5..10) should appear
+    // Recent commands (5..10) should appear in detailed sections
     for i in 5..10 {
         assert!(ctx20.contains(&format!("sessA {}", i)),
             "after 20 cmds: missing sessA {} in context:\n{}", i, ctx20);

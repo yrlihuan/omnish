@@ -193,8 +193,12 @@ fn default_cooldown() -> u64 {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ContextConfig {
-    #[serde(default = "default_max_commands")]
-    pub max_commands: usize,
+    /// Number of recent commands shown with full detail (output, timing, exit code).
+    #[serde(default = "default_detailed_commands")]
+    pub detailed_commands: usize,
+    /// Number of older commands listed as command-line only (no output).
+    #[serde(default = "default_history_commands")]
+    pub history_commands: usize,
     #[serde(default = "default_head_lines")]
     pub head_lines: usize,
     #[serde(default = "default_tail_lines")]
@@ -207,7 +211,8 @@ pub struct ContextConfig {
 impl Default for ContextConfig {
     fn default() -> Self {
         Self {
-            max_commands: default_max_commands(),
+            detailed_commands: default_detailed_commands(),
+            history_commands: default_history_commands(),
             head_lines: default_head_lines(),
             tail_lines: default_tail_lines(),
             session_evict_hours: default_session_evict_hours(),
@@ -215,16 +220,20 @@ impl Default for ContextConfig {
     }
 }
 
-fn default_max_commands() -> usize {
-    10
+fn default_detailed_commands() -> usize {
+    30
+}
+
+fn default_history_commands() -> usize {
+    500
 }
 
 fn default_head_lines() -> usize {
-    10
+    20
 }
 
 fn default_tail_lines() -> usize {
-    10
+    20
 }
 
 fn default_session_evict_hours() -> u64 {

@@ -32,23 +32,48 @@ pub trait ContextStrategy: Send + Sync {
 }
 
 /// Formats selected commands into the final context string.
+/// `history` contains older commands (command-line only, no output).
+/// `detailed` contains recent commands with full output.
 pub trait ContextFormatter: Send + Sync {
-    fn format(&self, commands: &[CommandContext]) -> String;
+    fn format(&self, history: &[CommandContext], detailed: &[CommandContext]) -> String;
 }
 
 /// Orchestrates: strategy selects commands, reads stream data, formatter produces text.
 /// `session_hostnames` maps session_id -> hostname for display in context headers.
+/// `detailed_count` controls how many of the most recent selected commands get full output;
+/// the rest are treated as history (command-line only).
 pub async fn build_context(
     strategy: &dyn ContextStrategy,
     formatter: &dyn ContextFormatter,
     commands: &[CommandRecord],
     reader: &dyn StreamReader,
     session_hostnames: &HashMap<String, String>,
+    detailed_count: usize,
 ) -> Result<String> {
     let selected = strategy.select_commands(commands).await;
+    let split = selected.len().saturating_sub(detailed_count);
 
-    let mut contexts = Vec::new();
-    for cmd in selected {
+    let history_cmds = &selected[..split];
+    let detailed_cmds = &selected[split..];
+
+    // History: command-line only, no stream reading
+    let history: Vec<CommandContext> = history_cmds
+        .iter()
+        .map(|cmd| CommandContext {
+            session_id: cmd.session_id.clone(),
+            hostname: session_hostnames.get(&cmd.session_id).cloned(),
+            command_line: cmd.command_line.clone(),
+            cwd: cmd.cwd.clone(),
+            started_at: cmd.started_at,
+            ended_at: cmd.ended_at,
+            output: String::new(),
+            exit_code: cmd.exit_code,
+        })
+        .collect();
+
+    // Detailed: full stream reading
+    let mut detailed = Vec::new();
+    for cmd in detailed_cmds {
         let entries = reader.read_command_output(cmd.stream_offset, cmd.stream_length)?;
 
         let mut raw_bytes = Vec::new();
@@ -60,7 +85,7 @@ pub async fn build_context(
 
         let output = strip_ansi(&raw_bytes);
 
-        contexts.push(CommandContext {
+        detailed.push(CommandContext {
             session_id: cmd.session_id.clone(),
             hostname: session_hostnames.get(&cmd.session_id).cloned(),
             command_line: cmd.command_line.clone(),
@@ -72,7 +97,7 @@ pub async fn build_context(
         });
     }
 
-    Ok(formatter.format(&contexts))
+    Ok(formatter.format(&history, &detailed))
 }
 
 /// Strip ANSI escape sequences (CSI and OSC) from raw bytes.
