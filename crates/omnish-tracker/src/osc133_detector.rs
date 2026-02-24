@@ -1,7 +1,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Osc133EventKind {
     PromptStart,
-    CommandStart,
+    CommandStart { command: Option<String> },
     OutputStart,
     CommandEnd { exit_code: i32 },
 }
@@ -114,11 +114,18 @@ impl Osc133Detector {
 
         match payload {
             b"A" => Some(Osc133EventKind::PromptStart),
-            b"B" => Some(Osc133EventKind::CommandStart),
+            b"B" => Some(Osc133EventKind::CommandStart { command: None }),
             b"C" => Some(Osc133EventKind::OutputStart),
             _ => {
-                // Check for D;{exit_code}
-                if payload.len() >= 2 && payload[0] == b'D' && payload[1] == b';' {
+                if payload.len() >= 2 && payload[0] == b'B' && payload[1] == b';' {
+                    // B;command_text
+                    let cmd_bytes = &payload[2..];
+                    let cmd = std::str::from_utf8(cmd_bytes).ok()?;
+                    let trimmed = cmd.trim();
+                    let command = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
+                    Some(Osc133EventKind::CommandStart { command })
+                } else if payload.len() >= 2 && payload[0] == b'D' && payload[1] == b';' {
+                    // D;exit_code
                     let code_bytes = &payload[2..];
                     let code_str = std::str::from_utf8(code_bytes).ok()?;
                     let exit_code = code_str.parse::<i32>().ok()?;
@@ -173,7 +180,10 @@ mod tests {
         let mut detector = Osc133Detector::new();
         let events = detector.feed(b"\x1b]133;B\x07");
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].kind, Osc133EventKind::CommandStart);
+        assert_eq!(
+            events[0].kind,
+            Osc133EventKind::CommandStart { command: None }
+        );
     }
 
     #[test]
@@ -233,7 +243,7 @@ mod tests {
         let events = detector.feed(b"\x1b]133;A\x07\x1b]133;B\x07");
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].kind, Osc133EventKind::PromptStart);
-        assert_eq!(events[1].kind, Osc133EventKind::CommandStart);
+        assert_eq!(events[1].kind, Osc133EventKind::CommandStart { command: None });
         assert_eq!(events[0].start, 0);
         assert_eq!(events[0].end, 8);
         assert_eq!(events[1].start, 8);
@@ -245,6 +255,30 @@ mod tests {
         let mut detector = Osc133Detector::new();
         let events = detector.feed(b"\x1b]0;title\x07");
         assert_eq!(events.len(), 0);
+    }
+
+    #[test]
+    fn test_osc133_command_start_with_command() {
+        let mut detector = Osc133Detector::new();
+        let events = detector.feed(b"\x1b]133;B;echo hello\x07");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].kind,
+            Osc133EventKind::CommandStart {
+                command: Some("echo hello".into())
+            }
+        );
+    }
+
+    #[test]
+    fn test_osc133_command_start_plain() {
+        let mut detector = Osc133Detector::new();
+        let events = detector.feed(b"\x1b]133;B\x07");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].kind,
+            Osc133EventKind::CommandStart { command: None }
+        );
     }
 
     #[test]

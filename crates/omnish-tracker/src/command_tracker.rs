@@ -14,6 +14,8 @@ struct PendingCommand {
     /// True once we've seen \r or \n in the input (user pressed Enter).
     /// Output before this point is shell echo and should be excluded from the summary.
     entered: bool,
+    /// Command line text from OSC 133;B payload (shell's $BASH_COMMAND).
+    osc_command_line: Option<String>,
 }
 
 pub struct CommandTracker {
@@ -59,7 +61,9 @@ impl CommandTracker {
         stream_pos: u64,
         exit_code: Option<i32>,
     ) -> CommandRecord {
-        let command_line = extract_command_line(&pending.input_buf);
+        let command_line = pending
+            .osc_command_line
+            .or_else(|| extract_command_line(&pending.input_buf));
         let output_summary = make_summary(&pending.output_lines);
         let stream_length = stream_pos - pending.stream_offset;
         CommandRecord {
@@ -117,6 +121,7 @@ impl CommandTracker {
                     input_buf: Vec::new(),
                     output_lines: Vec::new(),
                     entered: false,
+                    osc_command_line: None,
                 });
                 self.next_seq += 1;
             } else {
@@ -132,6 +137,7 @@ impl CommandTracker {
                     input_buf: Vec::new(),
                     output_lines: Vec::new(),
                     entered: false,
+                    osc_command_line: None,
                 });
                 self.next_seq += 1;
             }
@@ -165,12 +171,14 @@ impl CommandTracker {
                     input_buf: Vec::new(),
                     output_lines: Vec::new(),
                     entered: false,
+                    osc_command_line: None,
                 });
                 self.next_seq += 1;
             }
-            Osc133EventKind::CommandStart => {
+            Osc133EventKind::CommandStart { command } => {
                 if let Some(ref mut pending) = self.pending {
                     pending.entered = true;
+                    pending.osc_command_line = command;
                 }
             }
             Osc133EventKind::OutputStart => {
@@ -207,22 +215,44 @@ impl CommandTracker {
 fn extract_command_line(input: &[u8]) -> Option<String> {
     // Replay editing: process backspace (0x7f, 0x08) and Ctrl-U (0x15) on raw
     // bytes before the first \r/\n to reconstruct the actual command line.
+    // ESC sequences (e.g. arrow keys: ESC [ A) are skipped entirely.
     let mut line_bytes: Vec<u8> = Vec::new();
+    let mut esc_state: u8 = 0; // 0=normal, 1=saw ESC, 2=in CSI params
     for &b in input {
         if b == b'\r' || b == b'\n' {
             break;
         }
+        match esc_state {
+            1 => {
+                // After ESC: if '[' start CSI, otherwise single-char escape — skip both
+                if b == b'[' {
+                    esc_state = 2;
+                } else {
+                    esc_state = 0; // ESC + one char (e.g. ESC O A) — done
+                }
+                continue;
+            }
+            2 => {
+                // Inside CSI: consume parameter bytes (0x20..=0x3f) and
+                // terminate on a letter (0x40..=0x7e)
+                if (0x40..=0x7e).contains(&b) {
+                    esc_state = 0; // final byte — sequence complete
+                }
+                continue;
+            }
+            _ => {}
+        }
+        if b == 0x1b {
+            esc_state = 1;
+            continue;
+        }
         if b == 0x7f || b == 0x08 {
-            // Backspace: remove last byte
             line_bytes.pop();
         } else if b == 0x15 {
-            // Ctrl-U: clear line
             line_bytes.clear();
         } else if b >= 0x20 {
-            // Printable ASCII and UTF-8 continuation bytes
             line_bytes.push(b);
         }
-        // Ignore other control chars (e.g. escape sequences from arrow keys)
     }
     let text = String::from_utf8_lossy(&line_bytes);
     let trimmed = text.trim();
@@ -521,12 +551,60 @@ mod tests {
     // --- OSC 133 mode tests ---
 
     #[test]
+    fn test_osc133_command_line_from_preexec() {
+        use crate::osc133_detector::*;
+        let mut tracker = make_tracker();
+
+        tracker.feed_osc133(
+            Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 },
+            1000, 0,
+        );
+        // B payload carries the command from $BASH_COMMAND
+        tracker.feed_osc133(
+            Osc133Event {
+                kind: Osc133EventKind::CommandStart { command: Some("echo hello".into()) },
+                start: 0, end: 20,
+            },
+            1001, 50,
+        );
+        // User input has arrow-key garbage (simulating history navigation)
+        tracker.feed_input(b"\x1b[A\r", 1001);
+        tracker.feed_osc133(
+            Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 },
+            1002, 60,
+        );
+        tracker.feed_output_raw(b"hello\r\n", 1002, 70);
+
+        let cmds = tracker.feed_osc133(
+            Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 0 }, start: 0, end: 10 },
+            1003, 100,
+        );
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(
+            cmds[0].command_line.as_deref(),
+            Some("echo hello"),
+            "osc_command_line from B payload should be preferred over extract_command_line"
+        );
+    }
+
+    #[test]
+    fn test_esc_skipped_in_extract() {
+        // Arrow up sends ESC [ A — extract_command_line should skip the whole sequence
+        let result = extract_command_line(b"\x1b[A\r");
+        assert_eq!(result, None, "ESC sequences should not produce command text");
+
+        // ESC [ A followed by real input
+        let result2 = extract_command_line(b"\x1b[Als\r");
+        assert_eq!(result2, Some("ls".into()), "real input after ESC sequence should be kept");
+    }
+
+    #[test]
     fn test_osc133_simple_command() {
         use crate::osc133_detector::*;
         let mut tracker = make_tracker();
 
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 }, 1000, 0);
-        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart, start: 0, end: 8 }, 1001, 50);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart { command: None }, start: 0, end: 8 }, 1001, 50);
         tracker.feed_input(b"ls\r", 1001);
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 }, 1002, 60);
         tracker.feed_output_raw(b"file.txt\r\n", 1002, 70);
@@ -545,7 +623,7 @@ mod tests {
         let mut tracker = make_tracker();
 
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 }, 1000, 0);
-        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart, start: 0, end: 8 }, 1001, 50);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart { command: None }, start: 0, end: 8 }, 1001, 50);
         tracker.feed_input(b"false\r", 1001);
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 }, 1002, 60);
         let cmds = tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 1 }, start: 0, end: 10 }, 1003, 100);
@@ -559,7 +637,7 @@ mod tests {
         let mut tracker = make_tracker();
 
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 }, 1000, 0);
-        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart, start: 0, end: 8 }, 1001, 50);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart { command: None }, start: 0, end: 8 }, 1001, 50);
         tracker.feed_input(b"echo $\r", 1001);
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 }, 1002, 60);
 
@@ -578,7 +656,7 @@ mod tests {
 
         // First command
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 }, 1000, 0);
-        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart, start: 0, end: 8 }, 1001, 50);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart { command: None }, start: 0, end: 8 }, 1001, 50);
         tracker.feed_input(b"ls\r", 1001);
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 }, 1002, 60);
         let cmds1 = tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 0 }, start: 0, end: 10 }, 1003, 100);
@@ -587,7 +665,7 @@ mod tests {
 
         // Second command
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 }, 1004, 100);
-        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart, start: 0, end: 8 }, 1005, 150);
+        tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandStart { command: None }, start: 0, end: 8 }, 1005, 150);
         tracker.feed_input(b"pwd\r", 1005);
         tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::OutputStart, start: 0, end: 8 }, 1006, 160);
         let cmds2 = tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 0 }, start: 0, end: 10 }, 1007, 200);

@@ -17,6 +17,8 @@ pub struct ShellInputTracker {
     sequence_id: u64,
     /// Whether input changed since last `take_change()`.
     changed: bool,
+    /// ESC sequence state: 0=normal, 1=saw ESC, 2=in CSI params
+    esc_state: u8,
 }
 
 impl ShellInputTracker {
@@ -26,6 +28,7 @@ impl ShellInputTracker {
             at_prompt: true,  // assume we start at a prompt
             sequence_id: 0,
             changed: false,
+            esc_state: 0,
         }
     }
 
@@ -33,6 +36,7 @@ impl ShellInputTracker {
     pub fn on_prompt(&mut self) {
         self.at_prompt = true;
         self.input.clear();
+        self.esc_state = 0;
         self.bump(); // always bump so completion can fire on empty prompt
     }
 
@@ -43,6 +47,28 @@ impl ShellInputTracker {
             return;
         }
         for &b in bytes {
+            // ESC sequence state machine: skip CSI and single-char escapes
+            match self.esc_state {
+                1 => {
+                    if b == b'[' {
+                        self.esc_state = 2;
+                    } else {
+                        self.esc_state = 0;
+                    }
+                    continue;
+                }
+                2 => {
+                    if (0x40..=0x7e).contains(&b) {
+                        self.esc_state = 0;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            if b == 0x1b {
+                self.esc_state = 1;
+                continue;
+            }
             match b {
                 // Enter -> command submitted, no longer at prompt
                 0x0d | 0x0a => {
@@ -217,6 +243,22 @@ mod tests {
         let mut t = ShellInputTracker::new();
         t.feed_forwarded(b"git\t");
         assert_eq!(t.input(), "git");
+    }
+
+    #[test]
+    fn test_esc_sequence_skipped() {
+        let mut t = ShellInputTracker::new();
+        // Arrow up sends ESC [ A — should not appear in input
+        t.feed_forwarded(b"\x1b[A");
+        assert_eq!(t.input(), "", "ESC sequence should be skipped");
+    }
+
+    #[test]
+    fn test_esc_sequence_then_typing() {
+        let mut t = ShellInputTracker::new();
+        // Arrow up (ESC [ A), then type "ls"
+        t.feed_forwarded(b"\x1b[Als");
+        assert_eq!(t.input(), "ls", "real input after ESC sequence should be kept");
     }
 
     #[test]

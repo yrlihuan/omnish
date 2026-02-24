@@ -399,7 +399,7 @@ async fn main() -> Result<()> {
                             // command substitution (e.g. git branch). So we can NOT
                             // use them to detect "user pressed Enter". Instead,
                             // at_prompt=false is set by feed_forwarded on Enter key.
-                            Osc133EventKind::CommandStart
+                            Osc133EventKind::CommandStart { .. }
                             | Osc133EventKind::OutputStart => {
                                 shell_completer.clear();
                             }

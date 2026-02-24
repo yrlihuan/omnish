@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 const BASH_HOOK: &str = r#"
 # omnish shell integration — OSC 133 semantic prompts
-__omnish_preexec_fired=0
+# Start with fired=1 so that other PROMPT_COMMAND entries (e.g. history -a)
+# are skipped before __omnish_prompt_cmd resets it to 0.
+__omnish_preexec_fired=1
 
 __omnish_prompt_cmd() {
   local ec=$?
@@ -10,14 +12,18 @@ __omnish_prompt_cmd() {
   printf '\033]133;D;%d\007' "$ec"
   printf '\033]133;A\007'
 }
-PROMPT_COMMAND="__omnish_prompt_cmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+# Append (not prepend) so other PROMPT_COMMAND entries run while fired=1.
+# Strip trailing semicolons/whitespace to avoid ";;" syntax errors.
+__omnish_pc="$PROMPT_COMMAND"
+while [[ "$__omnish_pc" =~ [[:space:]\;]$ ]]; do __omnish_pc="${__omnish_pc%?}"; done
+PROMPT_COMMAND="${__omnish_pc:+$__omnish_pc;}__omnish_prompt_cmd"
+unset __omnish_pc
 
 __omnish_preexec() {
   [[ "$__omnish_preexec_fired" == "1" ]] && return
-  [[ "$BASH_COMMAND" == "$PROMPT_COMMAND" ]] && return
   [[ "$BASH_COMMAND" == __omnish_* ]] && return
   __omnish_preexec_fired=1
-  printf '\033]133;B\007'
+  printf '\033]133;B;%s\007' "$BASH_COMMAND"
   printf '\033]133;C\007'
 }
 trap '__omnish_preexec' DEBUG
