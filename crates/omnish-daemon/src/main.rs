@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let session_mgr = Arc::new(SessionManager::new(store_dir));
+    let session_mgr = Arc::new(SessionManager::new(store_dir, config.context));
     match session_mgr.load_existing().await {
         Ok(count) if count > 0 => tracing::info!("loaded {} existing session(s)", count),
         Ok(_) => {}

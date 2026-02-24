@@ -69,6 +69,8 @@ pub struct DaemonConfig {
     pub llm: LlmConfig,
     #[serde(default = "default_sessions_dir")]
     pub sessions_dir: String,
+    #[serde(default)]
+    pub context: ContextConfig,
 }
 
 impl Default for DaemonConfig {
@@ -77,6 +79,7 @@ impl Default for DaemonConfig {
             listen_addr: default_socket_path(),
             llm: LlmConfig::default(),
             sessions_dir: default_sessions_dir(),
+            context: ContextConfig::default(),
         }
     }
 }
@@ -182,4 +185,40 @@ pub struct AutoTriggerConfig {
 
 fn default_cooldown() -> u64 {
     5
+}
+
+// ---------------------------------------------------------------------------
+// Context config
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ContextConfig {
+    #[serde(default = "default_max_commands")]
+    pub max_commands: usize,
+    #[serde(default = "default_head_lines")]
+    pub head_lines: usize,
+    #[serde(default = "default_tail_lines")]
+    pub tail_lines: usize,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            max_commands: default_max_commands(),
+            head_lines: default_head_lines(),
+            tail_lines: default_tail_lines(),
+        }
+    }
+}
+
+fn default_max_commands() -> usize {
+    10
+}
+
+fn default_head_lines() -> usize {
+    10
+}
+
+fn default_tail_lines() -> usize {
+    10
 }

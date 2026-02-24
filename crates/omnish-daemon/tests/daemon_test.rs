@@ -7,7 +7,7 @@ use std::collections::HashMap;
 #[tokio::test]
 async fn test_session_register_and_list() {
     let dir = tempfile::tempdir().unwrap();
-    let mgr = SessionManager::new(dir.path().to_path_buf());
+    let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
 
     mgr.register("sess1", None, HashMap::from([
         ("shell".to_string(), "/bin/bash".to_string()),
@@ -29,7 +29,7 @@ async fn test_session_register_and_list() {
 #[tokio::test]
 async fn test_session_end() {
     let dir = tempfile::tempdir().unwrap();
-    let mgr = SessionManager::new(dir.path().to_path_buf());
+    let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
 
     mgr.register("sess1", None, HashMap::from([
         ("shell".to_string(), "/bin/bash".to_string()),
@@ -46,7 +46,7 @@ async fn test_session_end() {
 #[tokio::test]
 async fn test_command_recording_via_receive_command() {
     let dir = tempfile::tempdir().unwrap();
-    let mgr = SessionManager::new(dir.path().to_path_buf());
+    let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
 
     mgr.register("sess1", None, HashMap::from([
         ("shell".to_string(), "/bin/bash".to_string()),
@@ -88,7 +88,7 @@ async fn test_command_recording_via_receive_command() {
 #[tokio::test]
 async fn test_commands_persisted_on_session_end() {
     let dir = tempfile::tempdir().unwrap();
-    let mgr = SessionManager::new(dir.path().to_path_buf());
+    let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
 
     mgr.register("sess1", None, HashMap::from([
         ("shell".to_string(), "/bin/bash".to_string()),
@@ -131,7 +131,7 @@ async fn test_commands_persisted_on_session_end() {
 #[tokio::test]
 async fn test_multi_command_session_e2e() {
     let dir = tempfile::tempdir().unwrap();
-    let mgr = SessionManager::new(dir.path().to_path_buf());
+    let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
 
     mgr.register("e2e", None, HashMap::from([
         ("shell".to_string(), "/bin/bash".to_string()),
@@ -193,7 +193,7 @@ async fn test_multi_command_session_e2e() {
 #[tokio::test]
 async fn test_session_register_with_parent() {
     let dir = tempfile::tempdir().unwrap();
-    let mgr = SessionManager::new(dir.path().to_path_buf());
+    let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
     mgr.register("child1", Some("parent1".to_string()), HashMap::new()).await.unwrap();
     let active = mgr.list_active().await;
     assert!(active.contains(&"child1".to_string()));
@@ -202,7 +202,7 @@ async fn test_session_register_with_parent() {
 #[tokio::test]
 async fn test_nested_session_parent_child_relationship() {
     let dir = tempfile::tempdir().unwrap();
-    let mgr = SessionManager::new(dir.path().to_path_buf());
+    let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
 
     // Register parent session (no parent)
     mgr.register("parent1", None, HashMap::new()).await.unwrap();
@@ -241,7 +241,7 @@ async fn test_nested_session_parent_child_relationship() {
 #[tokio::test]
 async fn test_debug_context_request() {
     let dir = tempfile::tempdir().unwrap();
-    let mgr = SessionManager::new(dir.path().to_path_buf());
+    let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
 
     // Register a session
     mgr.register("dbg1", None, HashMap::from([
@@ -281,7 +281,7 @@ async fn test_debug_context_request() {
 #[tokio::test]
 async fn test_interleaved_two_session_context_at_10_and_20_commands() {
     let dir = tempfile::tempdir().unwrap();
-    let mgr = SessionManager::new(dir.path().to_path_buf());
+    let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
 
     mgr.register("sessA", None, HashMap::new()).await.unwrap();
     mgr.register("sessB", None, HashMap::new()).await.unwrap();
@@ -361,7 +361,7 @@ async fn test_interleaved_two_session_context_at_10_and_20_commands() {
 #[tokio::test]
 async fn test_register_idempotent_reuses_existing_session() {
     let dir = tempfile::tempdir().unwrap();
-    let mgr = SessionManager::new(dir.path().to_path_buf());
+    let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
 
     let attrs1 = HashMap::from([
         ("shell".to_string(), "/bin/bash".to_string()),
@@ -409,7 +409,7 @@ async fn test_register_idempotent_reuses_existing_session() {
 #[tokio::test]
 async fn test_ended_session_commands_visible_to_new_session_context() {
     let dir = tempfile::tempdir().unwrap();
-    let mgr = SessionManager::new(dir.path().to_path_buf());
+    let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
 
     // Client 1: register, run a command, disconnect
     mgr.register("client1", None, HashMap::new()).await.unwrap();

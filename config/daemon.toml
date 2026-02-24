@@ -24,3 +24,8 @@ api_key_cmd = "pass show anthropic/api-key"
 on_nonzero_exit = true
 on_stderr_patterns = ["error", "panic", "traceback", "fatal"]
 cooldown_seconds = 5
+
+[context]
+# max_commands = 10       # number of recent commands included in LLM context
+# head_lines = 10         # output lines kept from start of each command
+# tail_lines = 10         # output lines kept from end of each command

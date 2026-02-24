@@ -4,19 +4,14 @@ use omnish_store::command::CommandRecord;
 use crate::format_utils::{assign_term_labels, format_relative_time, truncate_lines};
 use crate::{CommandContext, ContextFormatter, ContextStrategy};
 
-const MAX_COMMANDS: usize = 10;
-const MAX_OUTPUT_LINES: usize = 20;
-const HEAD_LINES: usize = 10;
-const TAIL_LINES: usize = 10;
-
 /// Selects the most recent N commands.
 pub struct RecentCommands {
     max: usize,
 }
 
 impl RecentCommands {
-    pub fn new() -> Self {
-        Self { max: MAX_COMMANDS }
+    pub fn new(max: usize) -> Self {
+        Self { max }
     }
 }
 
@@ -39,13 +34,17 @@ impl ContextStrategy for RecentCommands {
 pub struct GroupedFormatter {
     current_session_id: String,
     now_ms: u64,
+    head_lines: usize,
+    tail_lines: usize,
 }
 
 impl GroupedFormatter {
-    pub fn new(current_session_id: &str, now_ms: u64) -> Self {
+    pub fn new(current_session_id: &str, now_ms: u64, head_lines: usize, tail_lines: usize) -> Self {
         Self {
             current_session_id: current_session_id.to_string(),
             now_ms,
+            head_lines,
+            tail_lines,
         }
     }
 }
@@ -89,7 +88,8 @@ impl ContextFormatter for GroupedFormatter {
             for cmd in commands.iter().filter(|c| &c.session_id == session_id) {
                 let time_str = format_relative_time(cmd.started_at, self.now_ms);
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
-                let output = truncate_lines(&cmd.output, MAX_OUTPUT_LINES, HEAD_LINES, TAIL_LINES);
+                let max_lines = self.head_lines + self.tail_lines;
+                let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
 
                 let failed_tag = match cmd.exit_code {
                     Some(code) if code != 0 => format!("  [FAILED: {}]", code),
@@ -113,13 +113,17 @@ impl ContextFormatter for GroupedFormatter {
 pub struct InterleavedFormatter {
     current_session_id: String,
     now_ms: u64,
+    head_lines: usize,
+    tail_lines: usize,
 }
 
 impl InterleavedFormatter {
-    pub fn new(current_session_id: &str, now_ms: u64) -> Self {
+    pub fn new(current_session_id: &str, now_ms: u64, head_lines: usize, tail_lines: usize) -> Self {
         Self {
             current_session_id: current_session_id.to_string(),
             now_ms,
+            head_lines,
+            tail_lines,
         }
     }
 }
@@ -147,7 +151,8 @@ impl ContextFormatter for InterleavedFormatter {
                 label.clone()
             };
             let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
-            let output = truncate_lines(&cmd.output, MAX_OUTPUT_LINES, HEAD_LINES, TAIL_LINES);
+            let max_lines = self.head_lines + self.tail_lines;
+            let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
 
             let failed_tag = match cmd.exit_code {
                 Some(code) if code != 0 => format!("  [FAILED: {}]", code),
@@ -243,14 +248,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_select_empty() {
-        let strategy = RecentCommands::new();
+        let strategy = RecentCommands::new(10);
         let result = strategy.select_commands(&[]).await;
         assert!(result.is_empty());
     }
 
     #[tokio::test]
     async fn test_select_max_recent() {
-        let strategy = RecentCommands::new();
+        let strategy = RecentCommands::new(10);
         let cmds: Vec<_> = (0..15)
             .map(|i| make_cmd(i, "sess", Some(&format!("cmd{}", i))))
             .collect();
@@ -265,7 +270,7 @@ mod tests {
     #[test]
     fn test_grouped_single_session() {
         let commands = vec![make_ctx("sess-a", "ls", 30000, "file1.txt")];
-        let formatter = GroupedFormatter::new("sess-a", 60000);
+        let formatter = GroupedFormatter::new("sess-a", 60000, 10, 10);
         let result = formatter.format(&commands);
         assert!(result.contains("--- term A [current] ---"));
         assert!(result.contains("[30s ago] $ ls"));
@@ -277,7 +282,7 @@ mod tests {
             make_ctx("sess-a", "ls", 28000, "file1.txt"),
             make_ctx("sess-b", "npm start", 25000, "Server running"),
         ];
-        let formatter = GroupedFormatter::new("sess-a", 30000);
+        let formatter = GroupedFormatter::new("sess-a", 30000, 10, 10);
         let result = formatter.format(&commands);
         // Current session should be last (closest to LLM prompt)
         let pos_a = result.find("--- term A [current] ---").unwrap();
@@ -293,7 +298,7 @@ mod tests {
             make_ctx_with_host("sess-a", "ls", 28000, "file1.txt", Some("workstation")),
             make_ctx_with_host("sess-b", "npm start", 25000, "Server running", Some("server01")),
         ];
-        let formatter = GroupedFormatter::new("sess-a", 30000);
+        let formatter = GroupedFormatter::new("sess-a", 30000, 10, 10);
         let result = formatter.format(&commands);
         assert!(result.contains("--- workstation (term A) [current] ---"));
         assert!(result.contains("--- server01 (term B) ---"));
@@ -301,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_grouped_empty() {
-        let formatter = GroupedFormatter::new("sess-a", 30000);
+        let formatter = GroupedFormatter::new("sess-a", 30000, 10, 10);
         let result = formatter.format(&[]);
         assert_eq!(result, "");
     }
@@ -315,7 +320,7 @@ mod tests {
             make_ctx("sess-b", "npm start", 25000, "Server running"),
             make_ctx("sess-a", "pwd", 29970, "/home"),
         ];
-        let formatter = InterleavedFormatter::new("sess-a", 30000);
+        let formatter = InterleavedFormatter::new("sess-a", 30000, 10, 10);
         let result = formatter.format(&commands);
         // npm start (5s ago) should come before ls (2s ago) which should come before pwd (30s...wait)
         // started_at: npm=25000, ls=28000, pwd=29970; now=30000
@@ -333,7 +338,7 @@ mod tests {
             make_ctx("sess-a", "ls", 28000, "file1.txt"),
             make_ctx("sess-b", "npm start", 25000, "Server running"),
         ];
-        let formatter = InterleavedFormatter::new("sess-a", 30000);
+        let formatter = InterleavedFormatter::new("sess-a", 30000, 10, 10);
         let result = formatter.format(&commands);
         assert!(result.contains("term A*"));
         assert!(result.contains("term B $"));
@@ -341,7 +346,7 @@ mod tests {
 
     #[test]
     fn test_interleaved_empty() {
-        let formatter = InterleavedFormatter::new("sess-a", 30000);
+        let formatter = InterleavedFormatter::new("sess-a", 30000, 10, 10);
         let result = formatter.format(&[]);
         assert_eq!(result, "");
     }
@@ -350,8 +355,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_context_grouped() {
-        let strategy = RecentCommands::new();
-        let formatter = GroupedFormatter::new("sess", 30000);
+        let strategy = RecentCommands::new(10);
+        let formatter = GroupedFormatter::new("sess", 30000, 10, 10);
         let reader = MockReader::new(vec![make_output_entry("file1.txt\n")]);
         let cmds = vec![make_cmd(0, "sess", Some("ls"))];
         let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new())
@@ -363,8 +368,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_context_interleaved() {
-        let strategy = RecentCommands::new();
-        let formatter = InterleavedFormatter::new("sess", 30000);
+        let strategy = RecentCommands::new(10);
+        let formatter = InterleavedFormatter::new("sess", 30000, 10, 10);
         let reader = MockReader::new(vec![make_output_entry("file1.txt\n")]);
         let cmds = vec![make_cmd(0, "sess", Some("ls"))];
         let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new())
@@ -376,8 +381,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_context_filters_direction() {
-        let strategy = RecentCommands::new();
-        let formatter = GroupedFormatter::new("sess", 30000);
+        let strategy = RecentCommands::new(10);
+        let formatter = GroupedFormatter::new("sess", 30000, 10, 10);
         let reader = MockReader::new(vec![
             make_input_entry("ls\r"),
             make_output_entry("file1.txt\n"),
@@ -393,8 +398,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_context_empty() {
-        let strategy = RecentCommands::new();
-        let formatter = GroupedFormatter::new("sess", 30000);
+        let strategy = RecentCommands::new(10);
+        let formatter = GroupedFormatter::new("sess", 30000, 10, 10);
         let reader = MockReader::empty();
         let result = crate::build_context(&strategy, &formatter, &[], &reader, &std::collections::HashMap::new())
             .await

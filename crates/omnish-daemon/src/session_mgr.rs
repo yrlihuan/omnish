@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use omnish_common::config::ContextConfig;
 use omnish_context::StreamReader;
 use omnish_context::recent::{RecentCommands, GroupedFormatter};
 use omnish_store::command::CommandRecord;
@@ -49,14 +50,16 @@ struct ActiveSession {
 pub struct SessionManager {
     base_dir: PathBuf,
     sessions: Mutex<HashMap<String, ActiveSession>>,
+    context_config: ContextConfig,
 }
 
 impl SessionManager {
-    pub fn new(base_dir: PathBuf) -> Self {
+    pub fn new(base_dir: PathBuf, context_config: ContextConfig) -> Self {
         std::fs::create_dir_all(&base_dir).ok();
         Self {
             base_dir,
             sessions: Mutex::new(HashMap::new()),
+            context_config,
         }
     }
 
@@ -236,12 +239,13 @@ impl SessionManager {
         let reader = FileStreamReader {
             stream_path: session.dir.join("stream.bin"),
         };
-        let strategy = RecentCommands::new();
+        let cc = &self.context_config;
+        let strategy = RecentCommands::new(cc.max_commands);
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let formatter = GroupedFormatter::new(session_id, now_ms);
+        let formatter = GroupedFormatter::new(session_id, now_ms, cc.head_lines, cc.tail_lines);
         let mut hostnames = HashMap::new();
         if let Some(h) = session.meta.attrs.get("hostname") {
             hostnames.insert(session_id.to_string(), h.clone());
@@ -251,6 +255,7 @@ impl SessionManager {
 
     pub async fn get_all_sessions_context(&self, current_session_id: &str) -> Result<String> {
         let sessions = self.sessions.lock().await;
+        let cc = &self.context_config;
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -281,8 +286,8 @@ impl SessionManager {
         }
 
         let reader = MultiSessionReader { readers: offset_to_path };
-        let strategy = RecentCommands::new();
-        let formatter = GroupedFormatter::new(current_session_id, now_ms);
+        let strategy = RecentCommands::new(cc.max_commands);
+        let formatter = GroupedFormatter::new(current_session_id, now_ms, cc.head_lines, cc.tail_lines);
         omnish_context::build_context(&strategy, &formatter, &all_commands, &reader, &hostnames).await
     }
 }
@@ -298,7 +303,7 @@ mod tests {
 
         // Register a session and add a command via normal flow
         {
-            let mgr = SessionManager::new(base.clone());
+            let mgr = SessionManager::new(base.clone(), Default::default());
             mgr.register("sess1", None, Default::default()).await.unwrap();
             mgr.write_io("sess1", 100, 0, b"$ ls\n").await.unwrap();
             mgr.write_io("sess1", 200, 1, b"file.txt\n").await.unwrap();
@@ -318,7 +323,7 @@ mod tests {
         }
 
         // Create a new manager on the same directory and load existing sessions
-        let mgr2 = SessionManager::new(base);
+        let mgr2 = SessionManager::new(base, Default::default());
         let count = mgr2.load_existing().await.unwrap();
         assert_eq!(count, 1);
 
