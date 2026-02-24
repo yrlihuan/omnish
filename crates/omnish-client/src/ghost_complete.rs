@@ -14,12 +14,7 @@ pub struct BuiltinProvider {
 impl BuiltinProvider {
     pub fn new() -> Self {
         Self {
-            commands: vec![
-                "/debug".to_string(),
-                "/debug context".to_string(),
-                "/debug template".to_string(),
-                "/sessions".to_string(),
-            ],
+            commands: crate::command::completable_commands(),
         }
     }
 }
