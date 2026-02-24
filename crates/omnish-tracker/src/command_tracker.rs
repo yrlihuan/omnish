@@ -16,6 +16,8 @@ struct PendingCommand {
     entered: bool,
     /// Command line text from OSC 133;B payload (shell's $BASH_COMMAND).
     osc_command_line: Option<String>,
+    /// Current working directory from OSC 133;B payload.
+    osc_cwd: Option<String>,
 }
 
 pub struct CommandTracker {
@@ -64,13 +66,15 @@ impl CommandTracker {
         let command_line = pending
             .osc_command_line
             .or_else(|| extract_command_line(&pending.input_buf));
+        // Use runtime cwd if available, otherwise fall back to session cwd
+        let cwd = pending.osc_cwd.or_else(|| self.cwd.clone());
         let output_summary = make_summary(&pending.output_lines);
         let stream_length = stream_pos - pending.stream_offset;
         CommandRecord {
             command_id: format!("{}:{}", self.session_id, pending.seq),
             session_id: self.session_id.clone(),
             command_line,
-            cwd: self.cwd.clone(),
+            cwd,
             started_at: pending.started_at,
             ended_at: Some(timestamp_ms),
             output_summary,
@@ -122,6 +126,7 @@ impl CommandTracker {
                     output_lines: Vec::new(),
                     entered: false,
                     osc_command_line: None,
+                    osc_cwd: None,
                 });
                 self.next_seq += 1;
             } else {
@@ -138,6 +143,7 @@ impl CommandTracker {
                     output_lines: Vec::new(),
                     entered: false,
                     osc_command_line: None,
+                    osc_cwd: None,
                 });
                 self.next_seq += 1;
             }
@@ -172,13 +178,15 @@ impl CommandTracker {
                     output_lines: Vec::new(),
                     entered: false,
                     osc_command_line: None,
+                    osc_cwd: None,
                 });
                 self.next_seq += 1;
             }
-            Osc133EventKind::CommandStart { command, cwd: _ } => {
+            Osc133EventKind::CommandStart { command, cwd } => {
                 if let Some(ref mut pending) = self.pending {
                     pending.entered = true;
                     pending.osc_command_line = command;
+                    pending.osc_cwd = cwd;
                 }
             }
             Osc133EventKind::OutputStart => {
@@ -671,5 +679,40 @@ mod tests {
         let cmds2 = tracker.feed_osc133(Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 0 }, start: 0, end: 10 }, 1007, 200);
         assert_eq!(cmds2.len(), 1);
         assert_eq!(cmds2[0].command_id, "sess1:1");
+    }
+
+    #[test]
+    fn test_cwd_from_osc133_overrides_session_cwd() {
+        use crate::osc133_detector::*;
+        let mut tracker = CommandTracker::new(
+            "sess1".into(),
+            Some("/initial/cwd".into()), // Session cwd
+        );
+
+        tracker.feed_osc133(
+            Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 },
+            1000, 0,
+        );
+
+        tracker.feed_osc133(
+            Osc133Event {
+                kind: Osc133EventKind::CommandStart {
+                    command: Some("ls".into()),
+                    cwd: Some("/runtime/cwd".into())
+                },
+                start: 0, end: 20,
+            },
+            1001, 50,
+        );
+
+        tracker.feed_input(b"\r", 1001);
+
+        let cmds = tracker.feed_osc133(
+            Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 0 }, start: 0, end: 10 },
+            1003, 100,
+        );
+
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cwd.as_deref(), Some("/runtime/cwd")); // Should use runtime cwd
     }
 }
