@@ -2,24 +2,28 @@ use std::path::PathBuf;
 
 const BASH_HOOK: &str = r#"
 # omnish shell integration — OSC 133 semantic prompts
-# Start with fired=1 so that other PROMPT_COMMAND entries (e.g. history -a)
-# are skipped before __omnish_prompt_cmd resets it to 0.
-__omnish_preexec_fired=1
+__omnish_preexec_fired=0
+__omnish_in_precmd=0
 
 __omnish_prompt_cmd() {
   local ec=$?
+  __omnish_in_precmd=0
   __omnish_preexec_fired=0
   printf '\033]133;D;%d\007' "$ec"
   printf '\033]133;A\007'
 }
-# Append (not prepend) so other PROMPT_COMMAND entries run while fired=1.
+# Bracket PROMPT_COMMAND: prepend in_precmd=1 guard, append prompt_cmd.
+# The guard assignment triggers DEBUG but matches __omnish_* so it's skipped,
+# then the assignment executes, protecting all subsequent PROMPT_COMMAND entries
+# (e.g. history -a) from being recorded as user commands.
 # Strip trailing semicolons/whitespace to avoid ";;" syntax errors.
 __omnish_pc="$PROMPT_COMMAND"
 while [[ "$__omnish_pc" =~ [[:space:]\;]$ ]]; do __omnish_pc="${__omnish_pc%?}"; done
-PROMPT_COMMAND="${__omnish_pc:+$__omnish_pc;}__omnish_prompt_cmd"
+PROMPT_COMMAND="__omnish_in_precmd=1;${__omnish_pc:+$__omnish_pc;}__omnish_prompt_cmd"
 unset __omnish_pc
 
 __omnish_preexec() {
+  [[ "$__omnish_in_precmd" == "1" ]] && return
   [[ "$__omnish_preexec_fired" == "1" ]] && return
   [[ "$BASH_COMMAND" == __omnish_* ]] && return
   __omnish_preexec_fired=1
