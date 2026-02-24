@@ -4,7 +4,6 @@ use omnish_protocol::message::{
 };
 
 const DEBOUNCE_MS: u64 = 500;
-const MIN_INPUT_LEN: usize = 2;
 
 pub struct ShellCompleter {
     /// Last time input changed.
@@ -52,10 +51,7 @@ impl ShellCompleter {
     }
 
     /// Check if debounce timer has expired and we should send a request.
-    pub fn should_request(&self, current_input: &str) -> bool {
-        if current_input.len() < MIN_INPUT_LEN {
-            return false;
-        }
+    pub fn should_request(&self, _current_input: &str) -> bool {
         if self.in_flight {
             return false;
         }
@@ -147,11 +143,19 @@ mod tests {
     }
 
     #[test]
-    fn test_debounce_not_ready_short_input() {
+    fn test_debounce_ready_short_input() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("g", 1);
         c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1));
-        assert!(!c.should_request("g"));
+        assert!(c.should_request("g"));
+    }
+
+    #[test]
+    fn test_debounce_ready_empty_input() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("", 1);
+        c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1));
+        assert!(c.should_request(""));
     }
 
     #[test]

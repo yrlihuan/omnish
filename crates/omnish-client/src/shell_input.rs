@@ -32,10 +32,8 @@ impl ShellInputTracker {
     /// Call when OSC 133;A (PromptStart) or 133;D (CommandEnd) is detected.
     pub fn on_prompt(&mut self) {
         self.at_prompt = true;
-        if !self.input.is_empty() {
-            self.input.clear();
-            self.bump();
-        }
+        self.input.clear();
+        self.bump(); // always bump so completion can fire on empty prompt
     }
 
     /// Feed bytes that were forwarded to the PTY (user's raw input).
@@ -179,6 +177,15 @@ mod tests {
         t.on_prompt();
         assert!(t.at_prompt());
         assert_eq!(t.input(), "");
+    }
+
+    #[test]
+    fn test_on_prompt_bumps_even_when_empty() {
+        let mut t = ShellInputTracker::new();
+        let seq_before = t.sequence_id();
+        t.on_prompt();
+        assert!(t.sequence_id() > seq_before);
+        assert!(t.take_change().is_some());
     }
 
     #[test]
