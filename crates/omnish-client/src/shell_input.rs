@@ -1,9 +1,11 @@
 /// Tracks the current shell command-line input by observing forwarded bytes
 /// and OSC 133 state transitions.
 ///
-/// Lifecycle:
-/// 1. OSC 133;A (PromptStart) or 133;D (CommandEnd) -> at_prompt = true, clear input
-/// 2. OSC 133;B (CommandStart) -> at_prompt = false (user pressed Enter, command executing)
+/// Lifecycle (caller in main.rs maps OSC 133 events to these methods):
+/// 1. OSC 133;A/D (PromptStart/CommandEnd) -> on_prompt(): at_prompt = true
+/// 2. Enter key (0x0d) in feed_forwarded -> at_prompt = false
+///    (OSC 133;B/C are NOT used for at_prompt because the bash DEBUG trap
+///     fires during PS1 command substitution, not just on user Enter)
 /// 3. While at_prompt, forwarded printable bytes are appended to `input`
 /// 4. Backspace (0x7f / 0x08) removes the last character
 /// 5. Ctrl+C (0x03) / Ctrl+U (0x15) clears input
@@ -36,13 +38,6 @@ impl ShellInputTracker {
         }
     }
 
-    /// Call when OSC 133;B (CommandStart) is detected.
-    pub fn on_command_start(&mut self) {
-        self.at_prompt = false;
-        self.input.clear();
-        self.bump();
-    }
-
     /// Feed bytes that were forwarded to the PTY (user's raw input).
     /// Only processes input while at the prompt.
     pub fn feed_forwarded(&mut self, bytes: &[u8]) {
@@ -51,8 +46,9 @@ impl ShellInputTracker {
         }
         for &b in bytes {
             match b {
-                // Enter -> command submitted
+                // Enter -> command submitted, no longer at prompt
                 0x0d | 0x0a => {
+                    self.at_prompt = false;
                     self.input.clear();
                     self.bump();
                 }
@@ -171,22 +167,25 @@ mod tests {
     }
 
     #[test]
-    fn test_osc133_prompt_cycle() {
+    fn test_prompt_cycle_with_enter() {
         let mut t = ShellInputTracker::new();
         t.feed_forwarded(b"ls");
         assert_eq!(t.input(), "ls");
-        t.on_command_start();
+        // Enter sets at_prompt=false and clears input
+        t.feed_forwarded(&[0x0d]);
         assert_eq!(t.input(), "");
         assert!(!t.at_prompt());
+        // OSC 133;A/D restores at_prompt
         t.on_prompt();
         assert!(t.at_prompt());
         assert_eq!(t.input(), "");
     }
 
     #[test]
-    fn test_ignores_input_during_command_execution() {
+    fn test_ignores_input_after_enter() {
         let mut t = ShellInputTracker::new();
-        t.on_command_start();
+        // Enter sets at_prompt=false
+        t.feed_forwarded(&[0x0d]);
         t.feed_forwarded(b"output bytes");
         assert_eq!(t.input(), "");
     }

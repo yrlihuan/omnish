@@ -347,15 +347,22 @@ async fn main() -> Result<()> {
                     use omnish_tracker::osc133_detector::Osc133EventKind;
                     for event in osc_events {
                         match &event.kind {
-                            Osc133EventKind::PromptStart | Osc133EventKind::CommandEnd { .. } => {
+                            // 133;A (PromptStart) / 133;D (CommandEnd):
+                            // prompt is being displayed → user can type
+                            Osc133EventKind::PromptStart
+                            | Osc133EventKind::CommandEnd { .. } => {
                                 shell_input.on_prompt();
                                 shell_completer.clear();
                             }
-                            Osc133EventKind::CommandStart => {
-                                shell_input.on_command_start();
+                            // 133;B / 133;C: In our bash hook these fire together
+                            // from the DEBUG trap, which also triggers during PS1
+                            // command substitution (e.g. git branch). So we can NOT
+                            // use them to detect "user pressed Enter". Instead,
+                            // at_prompt=false is set by feed_forwarded on Enter key.
+                            Osc133EventKind::CommandStart
+                            | Osc133EventKind::OutputStart => {
                                 shell_completer.clear();
                             }
-                            _ => {}
                         }
                         let cmds = command_tracker.feed_osc133(event, timestamp_ms(), 0);
                         completed.extend(cmds);
@@ -391,9 +398,12 @@ async fn main() -> Result<()> {
         }
 
         // Check if we should send a completion request (debounce)
-        if shell_input.at_prompt() && !interceptor.is_in_chat() {
+        {
+            let at_prompt = shell_input.at_prompt();
+            let in_chat = interceptor.is_in_chat();
             let current = shell_input.input();
-            if shell_completer.should_request(current) {
+
+            if at_prompt && !in_chat && shell_completer.should_request(current) {
                 let seq = shell_input.sequence_id();
                 if let Some(ref rpc) = daemon_conn {
                     let msg = completion::ShellCompleter::build_request(

@@ -747,6 +747,7 @@ dependencies = [
  "omnish-protocol",
  "omnish-store",
  "omnish-transport",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

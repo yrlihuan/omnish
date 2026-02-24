@@ -101,6 +101,7 @@ async fn handle_message(
             })
         }
         Message::CompletionRequest(req) => {
+            tracing::debug!("CompletionRequest: input={:?} seq={}", req.input, req.sequence_id);
             if let Some(ref backend) = llm {
                 match handle_completion_request(&req, mgr, backend).await {
                     Ok(suggestions) => Message::CompletionResponse(
