@@ -462,7 +462,12 @@ async fn main() -> Result<()> {
         }
 
         // Check for completion responses (non-blocking)
+        // Discard responses if user has entered chat mode since the request was sent.
         while let Ok(resp) = completion_rx.try_recv() {
+            if interceptor.is_in_chat() {
+                shell_completer.clear();
+                continue;
+            }
             let current = shell_input.input();
             if let Some(ghost) = shell_completer.on_response(&resp, current) {
                 let ghost_render = display::render_ghost_text(ghost);
