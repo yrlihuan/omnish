@@ -34,12 +34,27 @@ async fn main() -> Result<()> {
         }
     };
 
+    let evict_hours = config.context.session_evict_hours;
     let session_mgr = Arc::new(SessionManager::new(store_dir, config.context));
     match session_mgr.load_existing().await {
         Ok(count) if count > 0 => tracing::info!("loaded {} existing session(s)", count),
         Ok(_) => {}
         Err(e) => tracing::warn!("failed to load existing sessions: {}", e),
     }
+
+    // Spawn periodic eviction of inactive sessions
+    {
+        let mgr = Arc::clone(&session_mgr);
+        let max_inactive = std::time::Duration::from_secs(evict_hours * 3600);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                mgr.evict_inactive(max_inactive).await;
+            }
+        });
+    }
+
     let server = DaemonServer::new(session_mgr, llm_backend);
 
     tracing::info!("starting omnishd at {}", socket_path);

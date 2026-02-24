@@ -7,6 +7,7 @@ use omnish_store::session::SessionMeta;
 use omnish_store::stream::{read_range, StreamEntry, StreamWriter};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Instant;
 use tokio::sync::Mutex;
 
 struct FileStreamReader {
@@ -45,6 +46,8 @@ struct ActiveSession {
     /// Stream position at the end of the last completed command.
     /// Used to fill in stream_offset/stream_length for incoming CommandComplete records.
     last_command_stream_pos: u64,
+    /// Last time this session received any activity (IO, command, etc.)
+    last_active: Instant,
 }
 
 pub struct SessionManager {
@@ -109,6 +112,7 @@ impl SessionManager {
                         commands,
                         dir: dir.clone(),
                         last_command_stream_pos,
+                        last_active: Instant::now(),
                     },
                 );
                 count += 1;
@@ -168,6 +172,7 @@ impl SessionManager {
                 commands: Vec::new(),
                 dir: session_dir,
                 last_command_stream_pos: 0,
+                last_active: Instant::now(),
             },
         );
         Ok(())
@@ -183,6 +188,7 @@ impl SessionManager {
         let mut sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get_mut(session_id) {
             session.stream_writer.write_entry(timestamp_ms, direction, data)?;
+            session.last_active = Instant::now();
         }
         Ok(())
     }
@@ -198,6 +204,7 @@ impl SessionManager {
             session.last_command_stream_pos = current_pos;
 
             session.commands.push(record);
+            session.last_active = Instant::now();
             CommandRecord::save_all(&session.commands, &session.dir)?;
         }
         Ok(())
@@ -228,6 +235,20 @@ impl SessionManager {
             .filter(|s| s.meta.ended_at.is_none())
             .map(|s| s.meta.session_id.clone())
             .collect()
+    }
+
+    /// Remove sessions that have been inactive longer than `max_inactive`.
+    /// Data is already persisted on disk; evicted sessions will be reloaded
+    /// on demand if they reconnect via `register()`.
+    pub async fn evict_inactive(&self, max_inactive: std::time::Duration) -> usize {
+        let mut sessions = self.sessions.lock().await;
+        let before = sessions.len();
+        sessions.retain(|_sid, session| session.last_active.elapsed() < max_inactive);
+        let evicted = before - sessions.len();
+        if evicted > 0 {
+            tracing::info!("evicted {} inactive session(s) from memory", evicted);
+        }
+        evicted
     }
 
     pub async fn get_session_context(&self, session_id: &str) -> Result<String> {
