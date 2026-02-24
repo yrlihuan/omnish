@@ -205,20 +205,31 @@ impl CommandTracker {
 }
 
 fn extract_command_line(input: &[u8]) -> Option<String> {
-    let text = String::from_utf8_lossy(input);
+    // Replay editing: process backspace (0x7f, 0x08) and Ctrl-U (0x15) on raw
+    // bytes before the first \r/\n to reconstruct the actual command line.
+    let mut line_bytes: Vec<u8> = Vec::new();
+    for &b in input {
+        if b == b'\r' || b == b'\n' {
+            break;
+        }
+        if b == 0x7f || b == 0x08 {
+            // Backspace: remove last byte
+            line_bytes.pop();
+        } else if b == 0x15 {
+            // Ctrl-U: clear line
+            line_bytes.clear();
+        } else if b >= 0x20 {
+            // Printable ASCII and UTF-8 continuation bytes
+            line_bytes.push(b);
+        }
+        // Ignore other control chars (e.g. escape sequences from arrow keys)
+    }
+    let text = String::from_utf8_lossy(&line_bytes);
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return None;
-    }
-    // Split on \r or \n — Rust's lines() only splits on \n and \r\n,
-    // but terminals send bare \r for Enter. Everything after the first \r
-    // is interactive keystrokes (e.g. inside top, vim, etc.).
-    let first_line = trimmed.split(['\r', '\n']).next().unwrap_or("");
-    let first_line = first_line.trim();
-    if first_line.is_empty() {
         None
     } else {
-        Some(first_line.to_string())
+        Some(trimmed.to_string())
     }
 }
 
@@ -477,6 +488,34 @@ mod tests {
             Some("git status"),
             "command_line should include the completion suffix"
         );
+    }
+
+    /// Regression: typing "vim", backspacing all 3 chars, then typing "ls"
+    /// was recorded as "vim ls" because backspace (0x7f) wasn't handled.
+    #[test]
+    fn test_backspace_edits_command_line() {
+        let mut tracker = make_tracker();
+        tracker.feed_output(b"$ ", 1000, 0);
+
+        // User types "vim", backspaces 3 times, types "ls", Enter
+        tracker.feed_input(b"vim\x7f\x7f\x7fls\r", 1001);
+
+        let cmds = tracker.feed_output(b"file.txt\r\n$ ", 1002, 100);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].command_line.as_deref(), Some("ls"));
+    }
+
+    #[test]
+    fn test_ctrl_u_clears_line() {
+        let mut tracker = make_tracker();
+        tracker.feed_output(b"$ ", 1000, 0);
+
+        // User types "wrong-cmd", Ctrl-U, "ls", Enter
+        tracker.feed_input(b"wrong-cmd\x15ls\r", 1001);
+
+        let cmds = tracker.feed_output(b"file.txt\r\n$ ", 1002, 100);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].command_line.as_deref(), Some("ls"));
     }
 
     // --- OSC 133 mode tests ---
