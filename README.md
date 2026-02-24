@@ -29,6 +29,8 @@ omnish sits between you and your shell as a PTY proxy. It records everything, se
 - **omnish** (client) — PTY proxy per terminal. Spawns your shell via `forkpty()`, forwards all I/O transparently, and sends a copy to the daemon.
 - **omnishd** (daemon) — Aggregates sessions, stores streams, detects shell prompts to segment commands, dispatches LLM queries.
 
+For detailed module documentation and implementation details, see the [module documentation](docs/implementation/).
+
 ## Features
 
 - **Zero interference** — All programs (vim, ssh, htop, etc.) behave identically. The proxy is fully transparent.
@@ -59,7 +61,7 @@ Create `~/.config/omnish/config.toml` (or set `$OMNISH_CONFIG`):
 
 ```toml
 [shell]
-command_prefix = "::"    # prefix for omnish commands (default: "::")
+command_prefix = ":"    # prefix for omnish commands (default: ":")
 
 [daemon]
 # socket_path = "/run/user/1000/omnish.sock"  # default: $XDG_RUNTIME_DIR/omnish.sock
@@ -105,14 +107,14 @@ omnishd &
 omnish
 ```
 
-Inside any omnish session, type `::` to interact:
+Inside any omnish session, type `:` to interact:
 
 ```bash
-::ask why did make fail just now        # analyze recent output
-::ask -a what are all my terminals doing # cross-session query
-::sessions                               # list active sessions
-::status                                 # daemon and LLM status
-::pause / ::resume                       # toggle I/O reporting
+:ask why did make fail just now        # analyze recent output
+:ask -a what are all my terminals doing # cross-session query
+:sessions                               # list active sessions
+:status                                 # daemon and LLM status
+:pause / :resume                       # toggle I/O reporting
 ```
 
 Results from auto-triggers appear above the shell prompt without disrupting your workflow.
@@ -142,6 +144,8 @@ Session data is stored under `~/.local/share/omnish/sessions/`:
 
 ## Workspace
 
+omnish 项目由以下 11 个 crate 组成：
+
 | Crate | Purpose |
 |-------|---------|
 | `omnish-client` | PTY proxy binary, input interception, display |
@@ -152,6 +156,11 @@ Session data is stored under `~/.local/share/omnish/sessions/`:
 | `omnish-store` | Session metadata (JSON), stream storage (binary), command records |
 | `omnish-llm` | LLM backend trait + Anthropic/OpenAI-compatible implementations |
 | `omnish-common` | Shared config types |
+| `omnish-tracker` | Command tracker for shell command monitoring and analysis |
+| `omnish-context` | Context builder for LLM prompt construction |
+| `shell-prompt-state-tracking` | Technical explanation of shell prompt state tracking |
+
+**详细模块文档**：每个模块的详细说明文档可在 [`docs/implementation/`](docs/implementation/) 目录中找到，包含模块概述、重要数据结构、关键函数说明、使用示例和依赖关系。
 
 ## Tests
 
