@@ -49,19 +49,52 @@ fn timestamp_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// Resolve the real shell to spawn, avoiding infinite recursion when omnish
+/// itself is set as $SHELL (e.g. in tmux `default-shell`).
+fn resolve_shell(config_shell: &str) -> String {
+    let candidate = std::env::var("SHELL").unwrap_or_else(|_| config_shell.to_string());
+    let exe_name = std::path::Path::new(&candidate)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if exe_name.starts_with("omnish") {
+        // $SHELL points to omnish — fall back to config, then common defaults
+        if !config_shell.is_empty()
+            && !std::path::Path::new(config_shell)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .starts_with("omnish")
+        {
+            return config_shell.to_string();
+        }
+        // Try common shells
+        for fallback in &["/bin/bash", "/bin/zsh", "/bin/sh"] {
+            if std::path::Path::new(fallback).exists() {
+                return fallback.to_string();
+            }
+        }
+        "/bin/sh".to_string()
+    } else {
+        candidate
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = load_client_config().unwrap_or_default();
 
     let session_id = Uuid::new_v4().to_string()[..8].to_string();
     let parent_session_id = std::env::var("OMNISH_SESSION_ID").ok();
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| config.shell.command.clone());
+    let shell = resolve_shell(&config.shell.command);
     let daemon_addr = std::env::var("OMNISH_SOCKET")
         .unwrap_or_else(|_| config.daemon_addr.clone());
 
-    // Spawn PTY with shell, passing our session_id so nested omnish can detect parent
+    // Spawn PTY with shell, passing our session_id so nested omnish can detect parent.
+    // Override $SHELL in child so programs that read it (e.g. tmux) don't re-launch omnish.
     let mut child_env = HashMap::new();
     child_env.insert("OMNISH_SESSION_ID".to_string(), session_id.clone());
+    child_env.insert("SHELL".to_string(), shell.clone());
 
     // Install shell hooks for OSC 133 support
     let osc133_rcfile = shell_hook::install_bash_hook(&shell);
