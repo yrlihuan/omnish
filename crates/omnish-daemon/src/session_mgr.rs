@@ -113,7 +113,10 @@ impl SessionManager {
             };
 
             if let Err(e) = load() {
-                tracing::warn!("failed to load session from {:?}: {}", dir, e);
+                tracing::warn!("removing corrupt session dir {:?}: {}", dir, e);
+                if let Err(rm_err) = std::fs::remove_dir_all(&dir) {
+                    tracing::error!("failed to remove corrupt session dir {:?}: {}", dir, rm_err);
+                }
             }
         }
         Ok(count)
