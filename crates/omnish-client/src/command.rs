@@ -7,8 +7,8 @@ pub enum ChatAction {
     },
     /// Not a command — forward as normal LLM query.
     LlmQuery(String),
-    /// A `/` command that needs daemon data. Contains the debug query to send and optional redirect.
-    DaemonDebug {
+    /// A `/` command that needs daemon data. Contains the query to send and optional redirect.
+    DaemonQuery {
         query: String,
         redirect: Option<String>,
     },
@@ -37,14 +37,18 @@ pub fn dispatch(msg: &str) -> ChatAction {
 
     match parts.first().map(|s| *s) {
         Some("/debug") => handle_debug(&parts[1..], redirect),
+        Some("/sessions") => ChatAction::DaemonQuery {
+            query: "__cmd:sessions".to_string(),
+            redirect,
+        },
         _ => ChatAction::LlmQuery(msg.to_string()), // unknown /cmd -> LLM
     }
 }
 
 fn handle_debug(args: &[&str], redirect: Option<String>) -> ChatAction {
     match args.first().map(|s| *s) {
-        Some("context") => ChatAction::DaemonDebug {
-            query: "__debug:context".to_string(),
+        Some("context") => ChatAction::DaemonQuery {
+            query: "__cmd:context".to_string(),
             redirect,
         },
         Some("template") => {
@@ -86,8 +90,8 @@ mod tests {
     #[test]
     fn test_debug_context_dispatches_to_daemon() {
         match dispatch("/debug context") {
-            ChatAction::DaemonDebug { query, redirect } => {
-                assert_eq!(query, "__debug:context");
+            ChatAction::DaemonQuery { query, redirect } => {
+                assert_eq!(query, "__cmd:context");
                 assert!(redirect.is_none());
             }
             _ => panic!("expected DaemonDebug"),
@@ -97,8 +101,8 @@ mod tests {
     #[test]
     fn test_debug_context_with_redirect() {
         match dispatch("/debug context > /tmp/ctx.txt") {
-            ChatAction::DaemonDebug { query, redirect } => {
-                assert_eq!(query, "__debug:context");
+            ChatAction::DaemonQuery { query, redirect } => {
+                assert_eq!(query, "__cmd:context");
                 assert_eq!(redirect.as_deref(), Some("/tmp/ctx.txt"));
             }
             _ => panic!("expected DaemonDebug"),
@@ -123,6 +127,17 @@ mod tests {
                 assert!(result.contains("Usage"));
             }
             _ => panic!("expected Command"),
+        }
+    }
+
+    #[test]
+    fn test_sessions_dispatches_to_daemon() {
+        match dispatch("/sessions") {
+            ChatAction::DaemonQuery { query, redirect } => {
+                assert_eq!(query, "__cmd:sessions");
+                assert!(redirect.is_none());
+            }
+            _ => panic!("expected DaemonQuery"),
         }
     }
 

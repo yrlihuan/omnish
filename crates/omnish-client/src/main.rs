@@ -274,7 +274,7 @@ async fn main() -> Result<()> {
                             command::ChatAction::Command { result, redirect } => {
                                 handle_command_result(&result, redirect.as_deref(), &proxy);
                             }
-                            command::ChatAction::DaemonDebug { query, redirect } => {
+                            command::ChatAction::DaemonQuery { query, redirect } => {
                                 if let Some(ref rpc) = daemon_conn {
                                     send_daemon_query(&query, &session_id, rpc, &proxy, redirect.as_deref(), false).await;
                                 } else {

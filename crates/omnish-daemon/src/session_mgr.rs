@@ -237,6 +237,40 @@ impl SessionManager {
             .collect()
     }
 
+    /// Format a human-readable list of all in-memory sessions.
+    pub async fn format_sessions_list(&self) -> String {
+        let sessions = self.sessions.lock().await;
+        if sessions.is_empty() {
+            return "(no sessions)".to_string();
+        }
+
+        let mut entries: Vec<_> = sessions.values().collect();
+        entries.sort_by_key(|s| &s.meta.started_at);
+
+        let mut lines = Vec::new();
+        for s in entries {
+            let status = if s.meta.ended_at.is_some() { "ended" } else { "active" };
+            let hostname = s.meta.attrs.get("hostname").map(|h| h.as_str()).unwrap_or("?");
+            let shell = s.meta.attrs.get("shell").map(|h| h.as_str()).unwrap_or("?");
+            let cwd = s.meta.attrs.get("cwd").map(|h| h.as_str()).unwrap_or("?");
+            let idle_secs = s.last_active.elapsed().as_secs();
+            let idle = if idle_secs < 60 {
+                format!("{}s", idle_secs)
+            } else if idle_secs < 3600 {
+                format!("{}m", idle_secs / 60)
+            } else {
+                format!("{}h", idle_secs / 3600)
+            };
+            let cmds = s.commands.len();
+
+            lines.push(format!(
+                "{} [{}] host={} shell={} cwd={} cmds={} idle={}",
+                s.meta.session_id, status, hostname, shell, cwd, cmds, idle,
+            ));
+        }
+        lines.join("\n")
+    }
+
     /// Remove sessions that have been inactive longer than `max_inactive`.
     /// Data is already persisted on disk; evicted sessions will be reloaded
     /// on demand if they reconnect via `register()`.

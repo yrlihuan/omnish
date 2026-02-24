@@ -70,9 +70,8 @@ async fn handle_message(
             Message::Ack
         }
         Message::Request(req) => {
-            #[cfg(debug_assertions)]
-            if req.query.starts_with("__debug:") {
-                let content = handle_debug_request(&req, mgr).await;
+            if req.query.starts_with("__cmd:") {
+                let content = handle_builtin_command(&req, &mgr).await;
                 return Message::Response(Response {
                     request_id: req.request_id,
                     content,
@@ -159,9 +158,8 @@ async fn resolve_context(req: &Request, mgr: &SessionManager) -> Result<String> 
     }
 }
 
-#[cfg(debug_assertions)]
-async fn handle_debug_request(req: &Request, mgr: &SessionManager) -> String {
-    let sub = req.query.strip_prefix("__debug:").unwrap_or("");
+async fn handle_builtin_command(req: &Request, mgr: &SessionManager) -> String {
+    let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
     match sub {
         "context" => {
             match resolve_context(req, mgr).await {
@@ -169,7 +167,8 @@ async fn handle_debug_request(req: &Request, mgr: &SessionManager) -> String {
                 Err(e) => format!("Error: {}", e),
             }
         }
-        other => format!("Unknown debug subcommand: {}", other),
+        "sessions" => mgr.format_sessions_list().await,
+        other => format!("Unknown command: {}", other),
     }
 }
 
