@@ -505,7 +505,8 @@ mod tests {
             exit_code: Some(0),
         };
         let commands = vec![context];
-        let formatted = RecentCommands::grouped(&commands, "sess1", 10000);
+        let formatter = GroupedFormatter::new("sess1", 10000, 5, 5);
+        let formatted = formatter.format(&[], &commands);
         assert!(formatted.contains("/home/user/project $ ls -la"),
                 "Formatted output should include cwd: {}", formatted);
     }
