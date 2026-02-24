@@ -246,15 +246,17 @@ async fn main() -> Result<()> {
                             // Feed input to command tracker
                             command_tracker.feed_input(&bytes, timestamp_ms());
 
-                            // Report to daemon async
+                            // Report to daemon async (skip during alt screen)
                             if let Some(ref rpc) = daemon_conn {
-                                let msg = Message::IoData(IoData {
-                                    session_id: session_id.clone(),
-                                    direction: IoDirection::Input,
-                                    timestamp_ms: timestamp_ms(),
-                                    data: bytes,
-                                });
-                                send_or_buffer(rpc, msg, &pending_buffer).await;
+                                if !alt_screen_detector.is_active() {
+                                    let msg = Message::IoData(IoData {
+                                        session_id: session_id.clone(),
+                                        direction: IoDirection::Input,
+                                        timestamp_ms: timestamp_ms(),
+                                        data: bytes,
+                                    });
+                                    send_or_buffer(rpc, msg, &pending_buffer).await;
+                                }
                             }
                         }
                     }
@@ -365,9 +367,10 @@ async fn main() -> Result<()> {
                     // Notify interceptor of output (resets chat state)
                     interceptor.note_output(display_data);
 
-                    // Send IoData to daemon (throttled) — send stripped data (no OSC 133)
+                    // Send IoData to daemon (throttled) — skip while alternate screen
+                    // is active (vim, less, htop, etc.) to avoid storing TUI noise.
                     if let Some(ref rpc) = daemon_conn {
-                        if throttle.should_send(n) {
+                        if !alt_screen_detector.is_active() && throttle.should_send(n) {
                             let msg = Message::IoData(IoData {
                                 session_id: session_id.clone(),
                                 direction: IoDirection::Output,
@@ -716,6 +719,10 @@ impl AltScreenDetector {
             active: false,
             seq_buf: Vec::with_capacity(16),
         }
+    }
+
+    fn is_active(&self) -> bool {
+        self.active
     }
 
     /// Feed output bytes and return Some(true/false) if alternate screen state changed.
