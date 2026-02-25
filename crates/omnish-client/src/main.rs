@@ -330,11 +330,31 @@ async fn main() -> Result<()> {
 
             // After processing all bytes from this read(), check for bare ESC
             if let Some(action) = interceptor.finish_batch() {
-                if matches!(action, InterceptAction::Cancel) {
-                    let dismiss = display::render_dismiss();
-                    let restore = format!("\x1b[{}G", dismiss_col + 1);
-                    nix::unistd::write(std::io::stdout(), dismiss.as_bytes()).ok();
-                    nix::unistd::write(std::io::stdout(), restore.as_bytes()).ok();
+                match action {
+                    InterceptAction::Cancel => {
+                        let dismiss = display::render_dismiss();
+                        let restore = format!("\x1b[{}G", dismiss_col + 1);
+                        nix::unistd::write(std::io::stdout(), dismiss.as_bytes()).ok();
+                        nix::unistd::write(std::io::stdout(), restore.as_bytes()).ok();
+                    }
+                    InterceptAction::Forward(bytes) => {
+                        // Bare ESC forwarded when not in chat mode
+                        proxy.write_all(&bytes)?;
+                        shell_input.feed_forwarded(&bytes);
+                        command_tracker.feed_input(&bytes, timestamp_ms());
+                        if let Some(ref rpc) = daemon_conn {
+                            if !alt_screen_detector.is_active() {
+                                let msg = Message::IoData(IoData {
+                                    session_id: session_id.clone(),
+                                    direction: IoDirection::Input,
+                                    timestamp_ms: timestamp_ms(),
+                                    data: bytes,
+                                });
+                                send_or_buffer(rpc, msg, &pending_buffer).await;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

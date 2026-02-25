@@ -14,7 +14,8 @@ pub enum EscSeqResult {
     /// Recognised sequence that should be silently dropped (arrow keys, Del, …).
     Ignore(Vec<u8>),
     /// Bare ESC (or ESC + non-`[`) → cancel chat/buffering mode.
-    Cancel,
+    /// Carries the raw consumed bytes so they can be forwarded when not in chat.
+    Cancel(Vec<u8>),
 }
 
 #[derive(Debug)]
@@ -50,7 +51,7 @@ impl EscSeqFilter {
                     return EscSeqResult::Pending;
                 }
                 // Not in any ESC state – shouldn't normally be called.
-                return EscSeqResult::Cancel;
+                return EscSeqResult::Cancel(vec![byte]);
             }
         };
 
@@ -61,7 +62,7 @@ impl EscSeqFilter {
                     EscSeqResult::Pending
                 } else {
                     // ESC followed by non-'[' → treat as bare ESC
-                    EscSeqResult::Cancel
+                    EscSeqResult::Cancel(vec![0x1b, byte])
                 }
             }
             EscState::CsiParam(mut seq_bytes, mut params) => {
@@ -86,7 +87,7 @@ impl EscSeqFilter {
                     EscSeqResult::Ignore(seq_bytes)
                 } else {
                     // Unexpected byte → cancel
-                    EscSeqResult::Cancel
+                    EscSeqResult::Cancel(seq_bytes)
                 }
             }
             EscState::Paste(mut paste_buf) => {
@@ -139,7 +140,7 @@ impl EscSeqFilter {
     /// that means the user pressed Esc alone → Cancel.
     pub fn finish_batch(&mut self) -> Option<EscSeqResult> {
         match self.state.take() {
-            Some(EscState::EscGot) => Some(EscSeqResult::Cancel),
+            Some(EscState::EscGot) => Some(EscSeqResult::Cancel(vec![0x1b])),
             other => {
                 self.state = other;
                 None
@@ -277,13 +278,19 @@ impl InputInterceptor {
     /// Convert an EscSeqResult into an InterceptAction.
     fn apply_esc_result(&mut self, result: EscSeqResult) -> InterceptAction {
         match result {
-            EscSeqResult::Cancel => {
-                self.buffer.clear();
-                self.in_chat = false;
-                InterceptAction::Cancel
+            EscSeqResult::Cancel(raw_bytes) => {
+                if self.in_chat || !self.buffer.is_empty() {
+                    // In chat or buffering prefix → cancel UI
+                    self.buffer.clear();
+                    self.in_chat = false;
+                    InterceptAction::Cancel
+                } else {
+                    // Not in chat mode → forward the consumed bytes to PTY
+                    self.forward(raw_bytes)
+                }
             }
             EscSeqResult::Ignore(bytes) => {
-                // Arrow keys, Del, etc. — silently drop, no UI update
+                // Arrow keys, Del, etc.
                 if self.in_chat {
                     // In chat mode, ignore the sequence (don't forward)
                     InterceptAction::Pending
@@ -293,12 +300,20 @@ impl InputInterceptor {
                 }
             }
             EscSeqResult::Insert(data) => {
-                // Bracketed paste content — append to buffer
-                for &b in &data {
-                    self.buffer.push_back(b);
+                if self.in_chat || !self.buffer.is_empty() {
+                    // Bracketed paste content — append to buffer
+                    for &b in &data {
+                        self.buffer.push_back(b);
+                    }
+                    let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
+                    InterceptAction::Buffering(current_buf)
+                } else {
+                    // Not in chat mode — forward paste with bracketed markers
+                    let mut bytes = b"\x1b[200~".to_vec();
+                    bytes.extend_from_slice(&data);
+                    bytes.extend_from_slice(b"\x1b[201~");
+                    self.forward(bytes)
                 }
-                let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
-                InterceptAction::Buffering(current_buf)
             }
             EscSeqResult::Pending => {
                 // Shouldn't happen from finish_batch, but treat as no-op
@@ -327,18 +342,14 @@ impl InputInterceptor {
             }
         }
 
-        // Handle ESC — start filter for escape sequences
+        // Handle ESC — always start filter to buffer complete escape sequences.
+        // This ensures arrow keys etc. are forwarded as a single write to PTY,
+        // preventing child processes from seeing fragmented escape sequences.
         if byte == 0x1b {
-            // Only start ESC filter if we're in chat mode or buffering prefix
-            // Otherwise forward ESC byte directly (could be start of arrow key etc.)
-            if self.in_chat || !self.buffer.is_empty() {
-                let mut filter = EscSeqFilter::new();
-                filter.feed(byte); // transitions to EscGot
-                self.esc_filter = Some(filter);
-                return InterceptAction::Pending;
-            } else {
-                return self.forward(vec![byte]);
-            }
+            let mut filter = EscSeqFilter::new();
+            filter.feed(byte); // transitions to EscGot
+            self.esc_filter = Some(filter);
+            return InterceptAction::Pending;
         }
 
         // Handle Tab
@@ -711,24 +722,28 @@ mod tests {
     }
 
     #[test]
-    fn test_esc_ignored_when_not_buffering() {
+    fn test_bare_esc_forwarded_when_not_buffering() {
         let mut interceptor = new_interceptor("::");
 
-        // ESC with empty buffer — forward to PTY (could be start of arrow key etc.)
-        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Forward(vec![0x1b]));
+        // ESC with empty buffer — enters filter, finish_batch forwards it
+        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
+        assert_eq!(
+            interceptor.finish_batch(),
+            Some(InterceptAction::Forward(vec![0x1b]))
+        );
     }
 
     #[test]
-    fn test_arrow_keys_forwarded_when_not_in_chat() {
+    fn test_arrow_keys_forwarded_as_single_write() {
         let mut interceptor = new_interceptor("::");
 
-        // Down arrow: \x1b[B
-        // First ESC should be forwarded
-        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Forward(vec![0x1b]));
-        // '[' should be forwarded
-        assert_eq!(interceptor.feed_byte(b'['), InterceptAction::Forward(vec![b'[']));
-        // 'B' should be forwarded
-        assert_eq!(interceptor.feed_byte(b'B'), InterceptAction::Forward(vec![b'B']));
+        // Down arrow: \x1b[B — all bytes buffered, then forwarded as one unit
+        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
+        assert_eq!(interceptor.feed_byte(b'['), InterceptAction::Pending);
+        assert_eq!(
+            interceptor.feed_byte(b'B'),
+            InterceptAction::Forward(vec![0x1b, b'[', b'B'])
+        );
     }
 
     #[test]
@@ -933,6 +948,7 @@ mod tests {
         if let Some(action) = interceptor.finish_batch() {
             match action {
                 InterceptAction::Cancel => actions.push("cancel".into()),
+                InterceptAction::Forward(_) => actions.push("forward".into()),
                 _ => {}
             }
         }
