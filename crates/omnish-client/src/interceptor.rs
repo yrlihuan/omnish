@@ -12,7 +12,7 @@ pub enum EscSeqResult {
     /// Bracketed-paste content collected; insert into chat buffer.
     Insert(Vec<u8>),
     /// Recognised sequence that should be silently dropped (arrow keys, Del, …).
-    Ignore,
+    Ignore(Vec<u8>),
     /// Bare ESC (or ESC + non-`[`) → cancel chat/buffering mode.
     Cancel,
 }
@@ -22,7 +22,7 @@ enum EscState {
     /// Just received `\x1b`, waiting for next byte.
     EscGot,
     /// Inside a CSI sequence (`\x1b[`), accumulating parameter bytes.
-    CsiParam(Vec<u8>),
+    CsiParam(Vec<u8>, Vec<u8>), // (sequence_bytes, parameter_bytes)
     /// Collecting pasted content (between `\x1b[200~` and `\x1b[201~`).
     Paste(Vec<u8>),
     /// Inside paste, just saw `\x1b`.
@@ -57,17 +57,20 @@ impl EscSeqFilter {
         match state {
             EscState::EscGot => {
                 if byte == b'[' {
-                    self.state = Some(EscState::CsiParam(Vec::new()));
+                    self.state = Some(EscState::CsiParam(vec![0x1b, b'['], Vec::new()));
                     EscSeqResult::Pending
                 } else {
                     // ESC followed by non-'[' → treat as bare ESC
                     EscSeqResult::Cancel
                 }
             }
-            EscState::CsiParam(mut params) => {
+            EscState::CsiParam(mut seq_bytes, mut params) => {
+                // Add byte to sequence buffer
+                seq_bytes.push(byte);
+
                 if byte.is_ascii_digit() || byte == b';' {
                     params.push(byte);
-                    self.state = Some(EscState::CsiParam(params));
+                    self.state = Some(EscState::CsiParam(seq_bytes, params));
                     EscSeqResult::Pending
                 } else if byte == b'~' {
                     // Check for bracketed-paste start (200) or other function keys
@@ -76,11 +79,11 @@ impl EscSeqFilter {
                         EscSeqResult::Pending
                     } else {
                         // Function key (Delete = 3~, Home = 1~, etc.) → ignore
-                        EscSeqResult::Ignore
+                        EscSeqResult::Ignore(seq_bytes)
                     }
                 } else if byte.is_ascii_alphabetic() {
                     // Arrow keys (A/B/C/D), other CSI sequences → ignore
-                    EscSeqResult::Ignore
+                    EscSeqResult::Ignore(seq_bytes)
                 } else {
                     // Unexpected byte → cancel
                     EscSeqResult::Cancel
@@ -279,9 +282,15 @@ impl InputInterceptor {
                 self.in_chat = false;
                 InterceptAction::Cancel
             }
-            EscSeqResult::Ignore => {
+            EscSeqResult::Ignore(bytes) => {
                 // Arrow keys, Del, etc. — silently drop, no UI update
-                InterceptAction::Pending
+                if self.in_chat {
+                    // In chat mode, ignore the sequence (don't forward)
+                    InterceptAction::Pending
+                } else {
+                    // Not in chat mode, forward the sequence to PTY
+                    self.forward(bytes)
+                }
             }
             EscSeqResult::Insert(data) => {
                 // Bracketed paste content — append to buffer
@@ -300,6 +309,7 @@ impl InputInterceptor {
 
     /// Feed a single input byte, returns action
     pub fn feed_byte(&mut self, byte: u8) -> InterceptAction {
+
         // When suppressed (e.g. inside vim), forward everything directly
         if self.suppressed {
             return self.forward(vec![byte]);
@@ -317,8 +327,10 @@ impl InputInterceptor {
             }
         }
 
-        // Handle ESC — start filter in chat/buffering mode, forward otherwise
+        // Handle ESC — start filter for escape sequences
         if byte == 0x1b {
+            // Only start ESC filter if we're in chat mode or buffering prefix
+            // Otherwise forward ESC byte directly (could be start of arrow key etc.)
             if self.in_chat || !self.buffer.is_empty() {
                 let mut filter = EscSeqFilter::new();
                 filter.feed(byte); // transitions to EscGot
@@ -704,6 +716,19 @@ mod tests {
 
         // ESC with empty buffer — forward to PTY (could be start of arrow key etc.)
         assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Forward(vec![0x1b]));
+    }
+
+    #[test]
+    fn test_arrow_keys_forwarded_when_not_in_chat() {
+        let mut interceptor = new_interceptor("::");
+
+        // Down arrow: \x1b[B
+        // First ESC should be forwarded
+        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Forward(vec![0x1b]));
+        // '[' should be forwarded
+        assert_eq!(interceptor.feed_byte(b'['), InterceptAction::Forward(vec![b'[']));
+        // 'B' should be forwarded
+        assert_eq!(interceptor.feed_byte(b'B'), InterceptAction::Forward(vec![b'B']));
     }
 
     #[test]
