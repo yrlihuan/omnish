@@ -451,6 +451,25 @@ impl SessionManager {
         omnish_context::build_context(&strategy, &formatter, &commands, &reader, &hostnames, cc.detailed_commands).await
     }
 
+    /// Collect commands from all sessions where `started_at >= since_ms`.
+    /// Returns `(hostname, CommandRecord)` pairs sorted by `started_at`.
+    pub async fn collect_recent_commands(&self, since_ms: u64) -> Vec<(String, CommandRecord)> {
+        let sessions = self.sessions.read().await;
+        let mut result = Vec::new();
+        for session in sessions.values() {
+            let meta = session.meta.read().await;
+            let hostname = meta.attrs.get("hostname").cloned().unwrap_or_default();
+            let commands = session.commands.read().await;
+            for cmd in commands.iter() {
+                if cmd.started_at >= since_ms {
+                    result.push((hostname.clone(), cmd.clone()));
+                }
+            }
+        }
+        result.sort_by_key(|(_, cmd)| cmd.started_at);
+        result
+    }
+
     pub async fn get_all_sessions_context(&self, current_session_id: &str) -> Result<String> {
         let cc = &self.context_config;
         let now_ms = SystemTime::now()

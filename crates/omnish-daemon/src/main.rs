@@ -3,7 +3,8 @@ mod event_detector;
 mod server;
 
 use anyhow::Result;
-use omnish_common::config::load_daemon_config;
+use omnish_common::config::{load_daemon_config, omnish_dir};
+use omnish_daemon::daily_notes::spawn_daily_notes_task;
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_llm::factory::create_default_backend;
 use server::DaemonServer;
@@ -33,18 +34,20 @@ async fn async_main() -> Result<()> {
     let store_dir = std::path::PathBuf::from(&config.sessions_dir);
 
     // Create LLM backend if configured
-    let llm_backend = match create_default_backend(&config.llm) {
-        Ok(backend) => {
-            tracing::info!("LLM backend initialized: {}", backend.name());
-            Some(backend)
-        }
-        Err(e) => {
-            tracing::warn!("LLM backend not available: {}", e);
-            None
-        }
-    };
+    let llm_backend: Option<Arc<dyn omnish_llm::backend::LlmBackend>> =
+        match create_default_backend(&config.llm) {
+            Ok(backend) => {
+                tracing::info!("LLM backend initialized: {}", backend.name());
+                Some(backend)
+            }
+            Err(e) => {
+                tracing::warn!("LLM backend not available: {}", e);
+                None
+            }
+        };
 
     let evict_hours = config.context.session_evict_hours;
+    let daily_notes_config = config.daily_notes.clone();
     let session_mgr = Arc::new(SessionManager::new(store_dir, config.context));
     match session_mgr.load_existing().await {
         Ok(count) if count > 0 => tracing::info!("loaded {} existing session(s)", count),
@@ -63,6 +66,18 @@ async fn async_main() -> Result<()> {
                 mgr.evict_inactive(max_inactive).await;
             }
         });
+    }
+
+    // Spawn daily notes task if enabled
+    if daily_notes_config.enabled {
+        let notes_dir = omnish_dir().join("notes");
+        spawn_daily_notes_task(
+            Arc::clone(&session_mgr),
+            llm_backend.clone(),
+            notes_dir,
+            daily_notes_config.schedule_hour,
+        );
+        tracing::info!("daily notes enabled (schedule_hour={})", daily_notes_config.schedule_hour);
     }
 
     let server = DaemonServer::new(session_mgr, llm_backend);

@@ -31,3 +31,7 @@ cooldown_seconds = 5
 # head_lines = 20          # output lines kept from start of each command
 # tail_lines = 20          # output lines kept from end of each command
 # session_evict_hours = 48 # evict inactive sessions from memory after N hours
+
+[daily_notes]
+enabled = true
+# schedule_hour = 23       # 每天几点生成日报 (0-23)，默认 23

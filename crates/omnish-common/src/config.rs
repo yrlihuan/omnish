@@ -58,6 +58,31 @@ pub fn load_client_config() -> Result<ClientConfig> {
 }
 
 // ---------------------------------------------------------------------------
+// Daily notes config
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DailyNotesConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_schedule_hour")]
+    pub schedule_hour: u8,
+}
+
+impl Default for DailyNotesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            schedule_hour: default_schedule_hour(),
+        }
+    }
+}
+
+fn default_schedule_hour() -> u8 {
+    23
+}
+
+// ---------------------------------------------------------------------------
 // Daemon config
 // ---------------------------------------------------------------------------
 
@@ -71,6 +96,8 @@ pub struct DaemonConfig {
     pub sessions_dir: String,
     #[serde(default)]
     pub context: ContextConfig,
+    #[serde(default)]
+    pub daily_notes: DailyNotesConfig,
 }
 
 impl Default for DaemonConfig {
@@ -80,6 +107,7 @@ impl Default for DaemonConfig {
             llm: LlmConfig::default(),
             sessions_dir: default_sessions_dir(),
             context: ContextConfig::default(),
+            daily_notes: DailyNotesConfig::default(),
         }
     }
 }
