@@ -563,10 +563,18 @@ async fn connect_daemon(
         },
     ).await {
         Ok(client) => {
-            eprintln!("\x1b[32m[omnish]\x1b[0m Connected to daemon (session: {})", &session_id[..8]);
+            if client.is_connected().await {
+                eprintln!("\x1b[32m[omnish]\x1b[0m Connected to daemon (session: {})", &session_id[..8]);
+            } else {
+                eprintln!("\x1b[33m[omnish]\x1b[0m Daemon not available, waiting for daemon to start...");
+                eprintln!("\x1b[33m[omnish]\x1b[0m Socket: {}", socket_path);
+                eprintln!("\x1b[33m[omnish]\x1b[0m To start daemon: omnish-daemon or cargo run -p omnish-daemon");
+            }
             Some(client)
         }
         Err(e) => {
+            // This should not happen with our updated connect_with_reconnect,
+            // but keep for backward compatibility
             eprintln!("\x1b[33m[omnish]\x1b[0m Daemon not available ({}), running in passthrough mode", e);
             eprintln!("\x1b[33m[omnish]\x1b[0m Socket: {}", socket_path);
             eprintln!("\x1b[33m[omnish]\x1b[0m To start daemon: omnish-daemon or cargo run -p omnish-daemon");

@@ -156,33 +156,81 @@ impl RpcClient {
             + 'static,
     ) -> Result<Self> {
         let connector = make_connector(addr);
-        let (reader, writer) = connector().await?;
 
-        let (disc_tx, disc_rx) = oneshot::channel::<()>();
-        let inner = Self::create_inner(reader, writer, Some(disc_tx));
-        let next_id = Arc::new(AtomicU64::new(1));
-        let client = Self {
-            inner: Arc::new(Mutex::new(inner)),
-            next_id: next_id.clone(),
-        };
+        // Try initial connection
+        let initial_connection_result = connector().await;
 
-        // Call on_reconnect for initial registration
-        on_reconnect(&client).await?;
+        match initial_connection_result {
+            Ok((reader, writer)) => {
+                // Initial connection succeeded - normal flow
+                let (disc_tx, disc_rx) = oneshot::channel::<()>();
+                let inner = Self::create_inner(reader, writer, Some(disc_tx));
+                let next_id = Arc::new(AtomicU64::new(1));
+                let client = Self {
+                    inner: Arc::new(Mutex::new(inner)),
+                    next_id: next_id.clone(),
+                };
 
-        // Spawn reconnect loop
-        let inner_ref = client.inner.clone();
-        let next_id_ref = next_id.clone();
-        let on_reconnect = Arc::new(on_reconnect);
+                // Call on_reconnect for initial registration
+                on_reconnect(&client).await?;
 
-        tokio::spawn(Self::reconnect_loop(
-            inner_ref,
-            next_id_ref,
-            connector,
-            on_reconnect,
-            disc_rx,
-        ));
+                // Spawn reconnect loop
+                let inner_ref = client.inner.clone();
+                let next_id_ref = next_id.clone();
+                let on_reconnect = Arc::new(on_reconnect);
 
-        Ok(client)
+                tokio::spawn(Self::reconnect_loop(
+                    inner_ref,
+                    next_id_ref,
+                    connector,
+                    on_reconnect,
+                    disc_rx,
+                ));
+
+                Ok(client)
+            }
+            Err(_) => {
+                // Initial connection failed - create a disconnected client
+                // that will attempt to reconnect immediately
+                tracing::debug!("Initial connection to {} failed, creating disconnected client", addr);
+
+                // Create a disconnected inner state
+                let (tx, _rx) = mpsc::channel::<WriteRequest>(256);
+                let connected = Arc::new(AtomicBool::new(false));
+
+                let inner = Inner {
+                    tx,
+                    connected,
+                    _write_task: tokio::spawn(async {}), // dummy task
+                    _read_task: tokio::spawn(async {}),  // dummy task
+                };
+
+                let next_id = Arc::new(AtomicU64::new(1));
+                let client = Self {
+                    inner: Arc::new(Mutex::new(inner)),
+                    next_id: next_id.clone(),
+                };
+
+                // Create a oneshot channel that's already closed to trigger immediate reconnection
+                let (disc_tx, disc_rx) = oneshot::channel::<()>();
+                let _ = disc_tx.send(()); // Immediately trigger disconnect
+
+                // Spawn reconnect loop
+                let inner_ref = client.inner.clone();
+                let next_id_ref = next_id.clone();
+                let on_reconnect = Arc::new(on_reconnect);
+
+                tokio::spawn(Self::reconnect_loop(
+                    inner_ref,
+                    next_id_ref,
+                    connector,
+                    on_reconnect,
+                    disc_rx,
+                ));
+
+                Ok(client)
+            }
+        }
     }
 
     async fn reconnect_loop(
