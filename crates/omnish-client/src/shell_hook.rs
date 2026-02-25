@@ -19,7 +19,7 @@ __omnish_prompt_cmd() {
 # Strip trailing semicolons/whitespace to avoid ";;" syntax errors.
 __omnish_pc="$PROMPT_COMMAND"
 while [[ "$__omnish_pc" =~ [[:space:]\;]$ ]]; do __omnish_pc="${__omnish_pc%?}"; done
-PROMPT_COMMAND="__omnish_last_ec=\$? __omnish_in_precmd=1;${__omnish_pc:+$__omnish_pc;}__omnish_prompt_cmd"
+PROMPT_COMMAND="__omnish_last_ec=\$? __omnish_in_precmd=1;${__omnish_pc:+$__omnish_pc;}type __omnish_prompt_cmd &>/dev/null && __omnish_prompt_cmd"
 unset __omnish_pc
 
 __omnish_preexec() {
