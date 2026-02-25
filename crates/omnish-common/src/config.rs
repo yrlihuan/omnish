@@ -231,6 +231,9 @@ pub struct ContextConfig {
     pub head_lines: usize,
     #[serde(default = "default_tail_lines")]
     pub tail_lines: usize,
+    /// Maximum width (in characters) per output line; longer lines are truncated.
+    #[serde(default = "default_max_line_width")]
+    pub max_line_width: usize,
     /// Evict sessions from memory after this many hours of inactivity.
     #[serde(default = "default_session_evict_hours")]
     pub session_evict_hours: u64,
@@ -243,6 +246,7 @@ impl Default for ContextConfig {
             history_commands: default_history_commands(),
             head_lines: default_head_lines(),
             tail_lines: default_tail_lines(),
+            max_line_width: default_max_line_width(),
             session_evict_hours: default_session_evict_hours(),
         }
     }
@@ -262,6 +266,10 @@ fn default_head_lines() -> usize {
 
 fn default_tail_lines() -> usize {
     20
+}
+
+fn default_max_line_width() -> usize {
+    512
 }
 
 fn default_session_evict_hours() -> u64 {

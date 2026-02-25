@@ -49,6 +49,7 @@ pub async fn build_context(
     reader: &dyn StreamReader,
     session_hostnames: &HashMap<String, String>,
     detailed_count: usize,
+    max_line_width: usize,
 ) -> Result<String> {
     let selected = strategy.select_commands(commands).await;
     let split = selected.len().saturating_sub(detailed_count);
@@ -90,6 +91,9 @@ pub async fn build_context(
             Some(pos) => output[pos + 1..].to_string(),
             None => String::new(),
         };
+
+        // Truncate overly long lines (e.g. snap progress bars).
+        let output = format_utils::truncate_line_width(&output, max_line_width);
 
         detailed.push(CommandContext {
             session_id: cmd.session_id.clone(),

@@ -68,6 +68,27 @@ pub fn assign_term_labels(
     labels
 }
 
+/// Truncate each line to at most `max_width` characters.
+/// Lines that exceed the limit are cut and appended with "..." (the total may be max_width + 3).
+pub fn truncate_line_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return text.to_string();
+    }
+    let mut result = String::new();
+    for (i, line) in text.lines().enumerate() {
+        if i > 0 {
+            result.push('\n');
+        }
+        if line.chars().count() > max_width {
+            result.extend(line.chars().take(max_width));
+            result.push_str("...");
+        } else {
+            result.push_str(line);
+        }
+    }
+    result
+}
+
 /// Truncate output lines. If over max_lines, keep head + "... (N lines omitted) ..." + tail.
 pub fn truncate_lines(text: &str, max_lines: usize, head: usize, tail: usize) -> String {
     let lines: Vec<&str> = text
@@ -207,5 +228,29 @@ mod tests {
         assert!(result.contains("line 20"));
         assert!(result.contains("line 29"));
         assert!(!result.contains("\nline 10\n"));
+    }
+
+    #[test]
+    fn test_truncate_line_width_short_lines_unchanged() {
+        let text = "short\nlines\nhere";
+        assert_eq!(truncate_line_width(text, 512), text);
+    }
+
+    #[test]
+    fn test_truncate_line_width_long_line_truncated() {
+        let long = "x".repeat(600);
+        let text = format!("ok\n{}\nend", long);
+        let result = truncate_line_width(&text, 512);
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines[0], "ok");
+        assert_eq!(lines[1].len(), 515); // 512 chars + "..."
+        assert!(lines[1].ends_with("..."));
+        assert_eq!(lines[2], "end");
+    }
+
+    #[test]
+    fn test_truncate_line_width_zero_is_noop() {
+        let text = "x".repeat(1000);
+        assert_eq!(truncate_line_width(&text, 0), text);
     }
 }

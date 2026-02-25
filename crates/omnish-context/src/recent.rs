@@ -406,7 +406,7 @@ mod tests {
         // Mock: first line is command echo (stripped), second line is actual output
         let reader = MockReader::new(vec![make_output_entry("$ ls\nfile1.txt\n")]);
         let cmds = vec![make_cmd(0, "sess", Some("ls"))];
-        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 10)
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 10, 512)
             .await
             .unwrap();
         assert!(result.contains("--- term A [current] ---"));
@@ -420,7 +420,7 @@ mod tests {
         let formatter = InterleavedFormatter::new("sess", 30000, 10, 10);
         let reader = MockReader::new(vec![make_output_entry("$ ls\nfile1.txt\n")]);
         let cmds = vec![make_cmd(0, "sess", Some("ls"))];
-        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 10)
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 10, 512)
             .await
             .unwrap();
         assert!(result.contains("term A*"));
@@ -437,7 +437,7 @@ mod tests {
             make_output_entry("$ ls\nfile1.txt\n"),
         ]);
         let cmds = vec![make_cmd(0, "sess", Some("ls"))];
-        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 10)
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 10, 512)
             .await
             .unwrap();
         assert!(result.contains("file1.txt"));
@@ -451,7 +451,7 @@ mod tests {
         // Simulates PTY output: prompt+command echo on first line, then actual output
         let reader = MockReader::new(vec![make_output_entry("user@host:~ $ echo hello\nhello\n")]);
         let cmds = vec![make_cmd(0, "sess", Some("echo hello"))];
-        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 10)
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 10, 512)
             .await
             .unwrap();
         assert!(result.contains("hello"));
@@ -464,7 +464,7 @@ mod tests {
         let strategy = RecentCommands::new(10);
         let formatter = GroupedFormatter::new("sess", 30000, 10, 10);
         let reader = MockReader::empty();
-        let result = crate::build_context(&strategy, &formatter, &[], &reader, &std::collections::HashMap::new(), 10)
+        let result = crate::build_context(&strategy, &formatter, &[], &reader, &std::collections::HashMap::new(), 10, 512)
             .await
             .unwrap();
         assert_eq!(result, "");
@@ -479,7 +479,7 @@ mod tests {
         let cmds: Vec<_> = (0..5)
             .map(|i| make_cmd(i, "sess", Some(&format!("cmd{}", i))))
             .collect();
-        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 2)
+        let result = crate::build_context(&strategy, &formatter, &cmds, &reader, &std::collections::HashMap::new(), 2, 512)
             .await
             .unwrap();
         // History section should list first 3 commands

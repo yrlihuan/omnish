@@ -448,7 +448,7 @@ impl SessionManager {
             .unwrap_or_default()
             .as_millis() as u64;
         let formatter = GroupedFormatter::new(session_id, now_ms, cc.head_lines, cc.tail_lines);
-        omnish_context::build_context(&strategy, &formatter, &commands, &reader, &hostnames, cc.detailed_commands).await
+        omnish_context::build_context(&strategy, &formatter, &commands, &reader, &hostnames, cc.detailed_commands, cc.max_line_width).await
     }
 
     /// Collect commands from all sessions where `started_at >= since_ms`.
@@ -514,7 +514,7 @@ impl SessionManager {
         let total = cc.detailed_commands + cc.history_commands;
         let strategy = RecentCommands::new(total);
         let formatter = GroupedFormatter::new(current_session_id, now_ms, cc.head_lines, cc.tail_lines);
-        omnish_context::build_context(&strategy, &formatter, &all_commands, &reader, &hostnames, cc.detailed_commands).await
+        omnish_context::build_context(&strategy, &formatter, &all_commands, &reader, &hostnames, cc.detailed_commands, cc.max_line_width).await
     }
 }
 
