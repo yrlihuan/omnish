@@ -12,6 +12,7 @@ omnish-client 是终端用户直接交互的客户端程序，作为PTY代理运
 4. **守护进程通信**: 与omnish-daemon建立连接，发送查询和接收响应
 5. **智能完成**: 提供LLM驱动的shell命令完成建议
 6. **会话管理**: 跟踪shell会话状态和命令历史
+7. **命令跟踪**: 通过OSC 133协议实时跟踪命令执行、CWD（当前工作目录）和退出码
 
 ## 重要数据结构
 
@@ -96,6 +97,35 @@ Shell完成建议处理器，管理LLM驱动的命令完成。
 - `ghost() -> Option<&str>` - 获取当前建议
 - `build_request(session_id: &str, input: &str, sequence_id: u64) -> Message` - 构建完成请求
 
+### `ShellInputTracker`
+Shell命令行输入跟踪器，通过观察转发的字节和OSC 133状态转换跟踪当前shell命令行输入。
+
+**生命周期:**
+1. OSC 133;A/D (PromptStart/CommandEnd) → `on_prompt()`: `at_prompt = true`
+2. 回车键 (0x0d) 在 `feed_forwarded` 中 → `at_prompt = false`
+   (OSC 133;B/C 不用于 `at_prompt`，因为bash DEBUG陷阱在PS1命令替换期间触发，而不仅是在用户按回车时)
+3. 在 `at_prompt` 为true时，转发的可打印字节追加到 `input`
+4. 退格键 (0x7f / 0x08) 移除最后一个字符
+5. Ctrl+C (0x03) / Ctrl+U (0x15) 清除输入
+6. 回车键 (0x0d) 清除输入（命令提交）
+
+**字段:**
+- `input: String` - 当前输入文本
+- `at_prompt: bool` - 是否在提示符处
+- `sequence_id: u64` - 单调递增序列ID，每次输入变化时递增
+- `changed: bool` - 自上次 `take_change()` 以来输入是否变化
+- `esc_state: u8` - ESC序列状态：0=正常，1=看到ESC，2=在CSI参数中
+
+**方法:**
+- `new() -> Self` - 创建新跟踪器
+- `on_prompt()` - OSC 133;A或133;D检测到时调用
+- `feed_forwarded(bytes: &[u8])` - 馈送转发到PTY的字节
+- `inject(text: &str)` - 追加文本到输入（例如Tab接受后写入PTY）
+- `input() -> &str` - 当前输入文本
+- `sequence_id() -> u64` - 当前序列ID
+- `at_prompt() -> bool` - 用户是否在提示符处
+- `take_change() -> Option<(&str, u64)>` - 检查输入是否变化并返回当前状态
+
 ### `CursorColTracker`
 光标列跟踪器，跟踪终端输出中的光标位置。
 
@@ -125,7 +155,7 @@ Shell完成建议处理器，管理LLM驱动的命令完成。
 **变体:**
 - `Command { result: String, redirect: Option<String> }` - 本地命令执行
 - `LlmQuery(String)` - LLM查询
-- `DaemonDebug { query: String, redirect: Option<String> }` - 守护进程调试查询
+- `DaemonQuery { query: String, redirect: Option<String> }` - 需要守护进程数据的查询
 
 ## 关键函数说明
 
@@ -140,7 +170,8 @@ Shell完成建议处理器，管理LLM驱动的命令完成。
    - 处理用户输入字节，通过`InputInterceptor`检测命令前缀
    - 处理shell输出，跟踪光标位置，检测全屏程序
    - 发送I/O数据到守护进程（节流）
-   - 处理OSC 133事件进行命令跟踪
+   - 处理OSC 133事件进行命令跟踪和CWD（当前工作目录）跟踪
+   - 使用`ShellInputTracker`跟踪shell命令行输入
    - 检查并发送完成请求
    - 处理完成响应
 
@@ -205,17 +236,25 @@ Shell完成建议处理器，管理LLM驱动的命令完成。
 - `render_ghost_text(ghost: &str) -> String` - 渲染幽灵文本建议
 
 ### 命令分发 (`command.rs`)
-解析聊天消息中的命令。
+解析聊天消息中的命令，使用统一的命令注册表管理所有聊天命令和完成建议。
+
+**命令注册表:**
+- `COMMANDS`: 静态命令数组，包含所有支持的聊天命令
+- `CommandEntry`: 命令条目，包含命令路径、类型（本地或守护进程）和帮助文本
+- `CommandKind::Local`: 客户端本地处理的命令
+- `CommandKind::Daemon`: 转发到守护进程的命令（格式：`__cmd:{key}`）
 
 **函数:**
-- `dispatch(msg: &str) -> ChatAction` - 分发聊天消息
+- `dispatch(msg: &str) -> ChatAction` - 分发聊天消息，查找最长匹配命令路径
 - `parse_redirect(input: &str) -> (&str, Option<&str>)` - 解析重定向后缀
-- `handle_debug(args: &[&str], redirect: Option<String>) -> ChatAction` - 处理调试命令
+- `completable_commands() -> Vec<String>` - 返回所有可完成命令路径，用于幽灵文本建议
 
 **支持命令:**
-- `/debug context` - 获取守护进程上下文
-- `/debug template` - 显示LLM提示模板
-- `> file.txt` - 重定向输出到文件
+- `/debug` - 显示调试子命令用法
+- `/debug context` - 获取守护进程上下文（转发到守护进程）
+- `/debug template` - 显示LLM提示模板（客户端本地处理）
+- `/sessions` - 列出所有会话（转发到守护进程）
+- `> file.txt` - 重定向输出到文件（后缀支持）
 
 ## 使用示例
 
@@ -235,10 +274,20 @@ cargo build --release
    - 显示分隔线和`❯`提示符
    - 输入LLM查询，如`why did my command fail?`
    - 按Enter发送查询
-3. **接受完成建议**: 在shell提示符下，LLM会提供命令完成建议
+3. **使用聊天命令**: 在聊天模式下，支持以下命令：
+   - `/debug context` - 查看当前上下文（显示最近的命令历史，包括CWD和退出码）
+   - `/debug template` - 显示LLM提示模板
+   - `/sessions` - 列出所有活动会话
+   - `> file.txt` - 重定向输出到文件（如`/debug context > context.txt`）
+
+   **上下文输出特点**:
+   - 显示命令执行的完整路径（CWD）
+   - 失败命令显示`[FAILED: exit_code]`标签
+   - 命令按会话分组，当前会话显示在最后
+4. **接受完成建议**: 在shell提示符下，LLM会提供命令完成建议
    - 显示为灰色幽灵文本
    - 按Tab接受建议
-4. **取消操作**: 按ESC取消聊天模式
+5. **取消操作**: 按ESC取消聊天模式
 
 ### 配置文件示例
 ```toml
@@ -287,6 +336,25 @@ daemon_addr = "~/.omnish/omnish.sock"
 - 仅在超过`intercept_gap_ms`间隔后才尝试拦截
 - 防止在命令中间误触发聊天模式
 
+### OSC 133协议和CWD跟踪
+通过shell hook和OSC 133终端控制序列实现命令跟踪和CWD（当前工作目录）跟踪：
+
+**Shell Hook机制:**
+- 安装Bash shell hook，通过`PROMPT_COMMAND`和`DEBUG` trap集成
+- 发送OSC 133序列：`B;command_text;cwd:/path`（命令开始）、`D;exit_code`（命令结束）、`A`（提示开始）、`C`（输出开始）
+- 使用复合赋值`__omnish_last_ec=$? __omnish_in_precmd=1`立即捕获退出码，避免被`PROMPT_COMMAND`中的其他命令覆盖
+- 对命令和PWD中的分号进行转义，确保OSC 133解析正确
+
+**CWD跟踪:**
+- 实时跟踪命令执行时的当前工作目录
+- 优先使用OSC 133序列中的cwd信息，回退到会话创建时的cwd
+- 在context输出中显示命令执行的完整路径
+
+**可靠命令记录:**
+- 使用`$BASH_COMMAND`通过OSC 133;B payload发送命令文本
+- 避免箭头键和历史导航产生的垃圾命令文本（如`"[A"`）
+- `ShellInputTracker`作为防御措施，过滤ESC序列
+
 ### 消息缓冲
 - 可重试消息（`IoData`, `CommandComplete`）在连接失败时缓冲
 - 缓冲区大小限制防止内存泄漏
@@ -311,6 +379,8 @@ daemon_addr = "~/.omnish/omnish.sock"
 - `completion.rs`: 完成建议处理测试
 - `display.rs`: 终端渲染测试（使用vt100解析器验证）
 - `command.rs`: 命令解析测试
+- `shell_input.rs`: Shell输入跟踪测试
+- `shell_hook.rs`: Shell hook功能测试
 
 ### 集成测试
 - 主事件循环模拟测试
