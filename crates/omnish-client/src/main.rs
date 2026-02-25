@@ -145,8 +145,7 @@ async fn main() -> Result<()> {
     ]);
     let mut shell_input = shell_input::ShellInputTracker::new();
     let in_tmux = std::env::var("TMUX").is_ok();
-    if in_tmux {
-        let title = format!("\x1bkomnish\x1b\\");
+    if let Some(title) = tmux_title("omnish", in_tmux) {
         nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
     }
     let mut shell_completer = completion::ShellCompleter::new();
@@ -398,8 +397,7 @@ async fn main() -> Result<()> {
                             | Osc133EventKind::CommandEnd { .. } => {
                                 shell_input.on_prompt();
                                 shell_completer.clear();
-                                if in_tmux {
-                                    let title = format!("\x1bkomnish\x1b\\");
+                                if let Some(title) = tmux_title("omnish", in_tmux) {
                                     nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
                                 }
                             }
@@ -410,10 +408,8 @@ async fn main() -> Result<()> {
                             // at_prompt=false is set by feed_forwarded on Enter key.
                             Osc133EventKind::CommandStart { command, .. } => {
                                 shell_completer.clear();
-                                if in_tmux {
-                                    if let Some(cmd) = command {
-                                        let cmd_name = cmd.split_whitespace().next().unwrap_or(cmd);
-                                        let title = format!("\x1bk{}\x1b\\", cmd_name);
+                                if let Some(cmd) = command {
+                                    if let Some(title) = tmux_title(command_basename(cmd), in_tmux) {
                                         nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
                                     }
                                 }
@@ -718,6 +714,20 @@ impl CursorColTracker {
             _ => {}
         }
     }
+}
+
+/// Build a tmux window-name escape sequence: `\x1bk<name>\x1b\\`.
+/// Returns `None` when not inside tmux.
+fn tmux_title(name: &str, in_tmux: bool) -> Option<String> {
+    if !in_tmux {
+        return None;
+    }
+    Some(format!("\x1bk{}\x1b\\", name))
+}
+
+/// Extract the command basename (first whitespace-delimited token) for tmux title.
+fn command_basename(cmd: &str) -> &str {
+    cmd.split_whitespace().next().unwrap_or(cmd)
 }
 
 extern "C" fn sigwinch_handler(_sig: libc::c_int) {
@@ -1134,5 +1144,44 @@ mod tests {
         t = CursorColTracker::new();
         t.feed("🚀x".as_bytes());
         assert_eq!(t.col, 3); // 🚀 (2) + x (1)
+    }
+
+    // --- tmux title tests ---
+
+    #[test]
+    fn test_tmux_title_in_tmux() {
+        let result = tmux_title("omnish", true);
+        assert_eq!(result, Some("\x1bkomnish\x1b\\".to_string()));
+    }
+
+    #[test]
+    fn test_tmux_title_not_in_tmux() {
+        assert_eq!(tmux_title("omnish", false), None);
+    }
+
+    #[test]
+    fn test_tmux_title_command_name() {
+        let result = tmux_title("vim", true);
+        assert_eq!(result, Some("\x1bkvim\x1b\\".to_string()));
+    }
+
+    #[test]
+    fn test_command_basename_simple() {
+        assert_eq!(command_basename("vim"), "vim");
+    }
+
+    #[test]
+    fn test_command_basename_with_args() {
+        assert_eq!(command_basename("git status"), "git");
+    }
+
+    #[test]
+    fn test_command_basename_with_path() {
+        assert_eq!(command_basename("/usr/bin/vim file.txt"), "/usr/bin/vim");
+    }
+
+    #[test]
+    fn test_command_basename_empty() {
+        assert_eq!(command_basename(""), "");
     }
 }
