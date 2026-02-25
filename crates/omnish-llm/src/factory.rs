@@ -43,21 +43,29 @@ pub fn create_backend(
     let api_key = resolve_api_key(&config.api_key_cmd)?;
 
     match config.backend_type.as_str() {
-        "anthropic" => Ok(Arc::new(AnthropicBackend {
-            api_key,
-            model: config.model.clone(),
-            client: reqwest::Client::new(),
-        })),
+        "anthropic" => {
+            let client = reqwest::Client::builder()
+                .pool_max_idle_per_host(10)
+                .build()?;
+            Ok(Arc::new(AnthropicBackend {
+                api_key,
+                model: config.model.clone(),
+                client,
+            }))
+        }
         "openai-compat" => {
             let base_url = config
                 .base_url
                 .clone()
                 .ok_or_else(|| anyhow!("openai-compat requires base_url"))?;
+            let client = reqwest::Client::builder()
+                .pool_max_idle_per_host(10)
+                .build()?;
             Ok(Arc::new(OpenAiCompatBackend {
                 api_key,
                 model: config.model.clone(),
                 base_url,
-                client: reqwest::Client::new(),
+                client,
             }))
         }
         other => Err(anyhow!("unknown backend type: {}", other)),

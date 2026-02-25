@@ -245,6 +245,40 @@ fn parse_completion_suggestions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use omnish_llm::backend::{LlmBackend, LlmRequest, LlmResponse};
+    use omnish_protocol::message::CompletionRequest as ProtoCompletionRequest;
+    use std::sync::Arc;
+    use std::time::Instant;
+    use tokio::time::{sleep, Duration};
+
+    // Mock LLM backend that simulates network delay
+    struct MockDelayedBackend {
+        delay_ms: u64,
+    }
+
+    impl MockDelayedBackend {
+        fn new(delay_ms: u64) -> Self {
+            Self { delay_ms }
+        }
+    }
+
+    #[async_trait]
+    impl LlmBackend for MockDelayedBackend {
+        async fn complete(&self, _req: &LlmRequest) -> Result<LlmResponse> {
+            // Simulate network/processing delay
+            sleep(Duration::from_millis(self.delay_ms)).await;
+            Ok(LlmResponse {
+                content: r#"[{"text": " status", "confidence": 0.9}]"#.to_string(),
+                model: "mock".to_string(),
+            })
+        }
+
+        fn name(&self) -> &str {
+            "mock_delayed"
+        }
+    }
 
     #[test]
     fn test_parse_completion_suggestions_valid() {
@@ -280,5 +314,143 @@ mod tests {
         let input = r#"[{"text": "x", "confidence": 1.5}]"#;
         let result = parse_completion_suggestions(input).unwrap();
         assert!((result[0].confidence - 1.0).abs() < 0.01);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_completion_requests() {
+        // Create a real SessionManager with temp directory
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = Arc::new(SessionManager::new(dir.path().to_path_buf(), Default::default()));
+
+        // Register a session to have some context
+        mgr.register("test_session", None, std::collections::HashMap::new())
+            .await
+            .unwrap();
+
+        // Create mock backend with 100ms delay
+        let backend: Arc<dyn LlmBackend> = Arc::new(MockDelayedBackend::new(100));
+
+        // Prepare two completion requests (different sequence IDs)
+        let req1 = ProtoCompletionRequest {
+            session_id: "test_session".to_string(),
+            input: "git".to_string(),
+            cursor_pos: 3,
+            sequence_id: 1,
+        };
+
+        let req2 = ProtoCompletionRequest {
+            session_id: "test_session".to_string(),
+            input: "ls".to_string(),
+            cursor_pos: 2,
+            sequence_id: 2,
+        };
+
+        // Spawn both requests concurrently
+        let start = Instant::now();
+
+        let mgr1 = mgr.clone();
+        let backend1 = backend.clone();
+        let handle1 = tokio::spawn(async move {
+            handle_completion_request(&req1, &mgr1, &backend1).await
+        });
+
+        let mgr2 = mgr.clone();
+        let backend2 = backend.clone();
+        let handle2 = tokio::spawn(async move {
+            handle_completion_request(&req2, &mgr2, &backend2).await
+        });
+
+        // Wait for both requests to complete
+        let result1 = handle1.await.expect("Task 1 panicked");
+        let result2 = handle2.await.expect("Task 2 panicked");
+
+        let total_duration = start.elapsed();
+
+        // Verify both requests succeeded
+        assert!(result1.is_ok(), "Request 1 failed: {:?}", result1.err());
+        assert!(result2.is_ok(), "Request 2 failed: {:?}", result2.err());
+
+        // Verify we got suggestions
+        let suggestions1 = result1.unwrap();
+        let suggestions2 = result2.unwrap();
+        assert!(!suggestions1.is_empty());
+        assert!(!suggestions2.is_empty());
+
+        // Check if requests executed concurrently
+        // Sequential execution would take ~200ms (100ms each)
+        // Concurrent execution should take ~100ms (overlapping delays)
+        // Add some tolerance: should be less than 150ms
+        println!("Total duration for two 100ms requests: {:?}", total_duration);
+        assert!(
+            total_duration < Duration::from_millis(150),
+            "Requests appear to be sequential: took {:?}, expected <150ms for concurrent execution",
+            total_duration
+        );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_completion_requests_different_sessions() {
+        // Test with different sessions to ensure per-session locking doesn't block
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = Arc::new(SessionManager::new(dir.path().to_path_buf(), Default::default()));
+
+        // Register two different sessions
+        mgr.register("session_a", None, std::collections::HashMap::new())
+            .await
+            .unwrap();
+        mgr.register("session_b", None, std::collections::HashMap::new())
+            .await
+            .unwrap();
+
+        // Create mock backend with 100ms delay
+        let backend: Arc<dyn LlmBackend> = Arc::new(MockDelayedBackend::new(100));
+
+        // Prepare requests for different sessions
+        let req1 = ProtoCompletionRequest {
+            session_id: "session_a".to_string(),
+            input: "git".to_string(),
+            cursor_pos: 3,
+            sequence_id: 1,
+        };
+
+        let req2 = ProtoCompletionRequest {
+            session_id: "session_b".to_string(),
+            input: "ls".to_string(),
+            cursor_pos: 2,
+            sequence_id: 2,
+        };
+
+        // Spawn both requests concurrently
+        let start = Instant::now();
+
+        let mgr1 = mgr.clone();
+        let backend1 = backend.clone();
+        let handle1 = tokio::spawn(async move {
+            handle_completion_request(&req1, &mgr1, &backend1).await
+        });
+
+        let mgr2 = mgr.clone();
+        let backend2 = backend.clone();
+        let handle2 = tokio::spawn(async move {
+            handle_completion_request(&req2, &mgr2, &backend2).await
+        });
+
+        // Wait for both requests to complete
+        let result1 = handle1.await.expect("Task 1 panicked");
+        let result2 = handle2.await.expect("Task 2 panicked");
+
+        let total_duration = start.elapsed();
+
+        // Verify both requests succeeded
+        assert!(result1.is_ok(), "Request 1 failed: {:?}", result1.err());
+        assert!(result2.is_ok(), "Request 2 failed: {:?}", result2.err());
+
+        // Check concurrency for different sessions
+        println!("Total duration for two sessions: {:?}", total_duration);
+        assert!(
+            total_duration < Duration::from_millis(150),
+            "Requests for different sessions appear to be sequential: took {:?}, expected <150ms",
+            total_duration
+        );
     }
 }
