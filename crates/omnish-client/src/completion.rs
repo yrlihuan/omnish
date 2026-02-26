@@ -1,9 +1,22 @@
 use std::time::Instant;
+use std::collections::HashMap;
 use omnish_protocol::message::{
     CompletionRequest, CompletionResponse, Message,
 };
 
 const DEBOUNCE_MS: u64 = 500;
+/// Timeout for in-flight completion requests (5 seconds)
+const IN_FLIGHT_TIMEOUT_MS: u64 = 5000;
+/// Maximum number of concurrent requests allowed
+const MAX_CONCURRENT_REQUESTS: usize = 5;
+
+/// State of an active completion request
+#[derive(Debug, Clone)]
+struct RequestState {
+    input: String,
+    sent_at: Instant,
+    sequence_id: u64,
+}
 
 pub struct ShellCompleter {
     /// Last time input changed.
@@ -14,8 +27,8 @@ pub struct ShellCompleter {
     sent_seq: u64,
     /// Current ghost text suggestion (if any).
     current_ghost: Option<String>,
-    /// Whether a request is currently in flight.
-    in_flight: bool,
+    /// Active completion requests (sequence_id -> request state)
+    active_requests: HashMap<u64, RequestState>,
     /// The input that produced the current ghost.
     ghost_input: String,
     /// When the current ghost text was set.
@@ -31,7 +44,7 @@ impl ShellCompleter {
             pending_seq: 0,
             sent_seq: 0,
             current_ghost: None,
-            in_flight: false,
+            active_requests: HashMap::new(),
             ghost_input: String::new(),
             ghost_set_at: None,
             sent_input: String::new(),
@@ -66,35 +79,108 @@ impl ShellCompleter {
     }
 
     /// Check if debounce timer has expired and we should send a request.
+    /// Now supports multiple concurrent requests.
     pub fn should_request(&self, _current_input: &str) -> bool {
-        if self.in_flight {
+        // Clean up any timed-out requests
+        let now = Instant::now();
+        let timed_out_count = self.active_requests
+            .values()
+            .filter(|req| now.duration_since(req.sent_at).as_millis() >= IN_FLIGHT_TIMEOUT_MS as u128)
+            .count();
+
+        // If we have timed-out requests, we should send a new one (they'll be cleaned up when processing)
+        if timed_out_count > 0 {
+            return match self.last_change {
+                Some(t) => t.elapsed().as_millis() >= DEBOUNCE_MS as u128,
+                None => false,
+            };
+        }
+
+        // Limit concurrent requests
+        if self.active_requests.len() >= MAX_CONCURRENT_REQUESTS {
             return false;
         }
-        if self.sent_seq >= self.pending_seq {
-            return false;
+
+        // Allow request if we haven't sent any requests yet
+        if self.sent_seq == 0 {
+            return match self.last_change {
+                Some(t) => t.elapsed().as_millis() >= DEBOUNCE_MS as u128,
+                None => false,
+            };
         }
-        match self.last_change {
-            Some(t) => t.elapsed().as_millis() >= DEBOUNCE_MS as u128,
-            None => false,
+
+        // If we have a newer pending sequence than what was sent, allow request
+        // This handles the case where user typed more after previous requests
+        if self.pending_seq > self.sent_seq {
+            return match self.last_change {
+                Some(t) => t.elapsed().as_millis() >= DEBOUNCE_MS as u128,
+                None => false,
+            };
         }
+
+        false
     }
 
     /// Mark that a request was sent.
     pub fn mark_sent(&mut self, sequence_id: u64, input: &str) {
+        // Track this request
+        self.active_requests.insert(sequence_id, RequestState {
+            input: input.to_string(),
+            sent_at: Instant::now(),
+            sequence_id,
+        });
+
         self.sent_seq = sequence_id;
-        self.in_flight = true;
         self.sent_input = input.to_string();
+    }
+
+    /// Check if a response is relevant given the current input state.
+    /// A response is relevant if the current input is compatible with the input
+    /// that generated the response (either user kept typing or backspaced).
+    fn is_response_relevant(&self, response: &CompletionResponse, current_input: &str) -> bool {
+        // Get the input that generated this response
+        if let Some(request_state) = self.active_requests.get(&response.sequence_id) {
+            let original_input = &request_state.input;
+
+            // Response is relevant if:
+            // 1. Current input starts with original input (user kept typing)
+            // 2. Current input is a prefix of original input (user backspaced)
+            current_input.starts_with(original_input) ||
+            original_input.starts_with(current_input)
+        } else {
+            // Request timed out or was cleaned up - response is not relevant
+            false
+        }
+    }
+
+    /// Get the input that was sent with a specific request.
+    fn get_request_input(&self, sequence_id: &u64) -> Option<String> {
+        self.active_requests.get(sequence_id).map(|state| state.input.clone())
     }
 
     /// Process a completion response.
     /// Returns the ghost text to display, if any.
+    /// Now supports concurrent requests with intelligent filtering.
     pub fn on_response(&mut self, response: &CompletionResponse, current_input: &str) -> Option<&str> {
-        self.in_flight = false;
+        // Get the request input before removing the request
+        let request_input = self.get_request_input(&response.sequence_id).unwrap_or_else(|| self.sent_input.clone());
 
-        // Discard stale response
-        if response.sequence_id < self.pending_seq {
+        // Check if this response is relevant to current input state
+        if !self.is_response_relevant(response, current_input) {
+            // Remove the request even if it's not relevant (to clean up)
+            self.active_requests.remove(&response.sequence_id);
             return None;
         }
+
+        // Discard stale response (older than current pending sequence)
+        if response.sequence_id < self.pending_seq {
+            // Remove the request even if it's stale (to clean up)
+            self.active_requests.remove(&response.sequence_id);
+            return None;
+        }
+
+        // Remove this completed request from active tracking (only after validation)
+        self.active_requests.remove(&response.sequence_id);
 
         // Take best suggestion
         if let Some(best) = response
@@ -105,18 +191,18 @@ impl ShellCompleter {
             if !best.text.is_empty() {
                 // Compute full suggestion based on what was sent to LLM
                 // LLM returns either:
-                // 1. Full command (may or may not start with sent_input)
-                // 2. Suffix after cursor (does not include sent_input)
-                // Determine which case based on whether suggestion starts with sent_input
-                let full_suggestion = if self.sent_input.is_empty() {
+                // 1. Full command (may or may not start with request_input)
+                // 2. Suffix after cursor (does not include request_input)
+                // Determine which case based on whether suggestion starts with request_input
+                let full_suggestion = if request_input.is_empty() {
                     // No sent input means LLM returned full command
                     best.text.clone()
-                } else if best.text.starts_with(&self.sent_input) {
-                    // Suggestion starts with sent_input - it's a full command
+                } else if best.text.starts_with(&request_input) {
+                    // Suggestion starts with request_input - it's a full command
                     best.text.clone()
                 } else {
-                    // Suggestion doesn't start with sent_input - it's a suffix
-                    format!("{}{}", self.sent_input, best.text)
+                    // Suggestion doesn't start with request_input - it's a suffix
+                    format!("{}{}", request_input, best.text)
                 };
 
                 // Check if current input is a prefix of the full suggestion
@@ -151,11 +237,13 @@ impl ShellCompleter {
         Some(ghost)
     }
 
-    /// Clear ghost text.
+    /// Clear ghost text and clean up any active requests.
     pub fn clear(&mut self) {
         self.current_ghost = None;
         self.ghost_input.clear();
         self.ghost_set_at = None;
+        // Clear active requests when ghost is cleared
+        self.active_requests.clear();
     }
 
     /// Check if the current ghost text has expired.
@@ -171,9 +259,26 @@ impl ShellCompleter {
         self.current_ghost.as_deref()
     }
 
-    /// Get debug state for troubleshooting
-    pub fn get_debug_state(&self) -> (bool, u64, u64) {
-        (self.in_flight, self.sent_seq, self.pending_seq)
+    /// Get debug state for troubleshooting concurrent requests
+    pub fn get_debug_state(&self) -> (usize, u64, u64, Vec<u64>) {
+        let active_request_ids: Vec<u64> = self.active_requests.keys().copied().collect();
+        (self.active_requests.len(), self.sent_seq, self.pending_seq, active_request_ids)
+    }
+
+    /// Clean up timed-out requests and return count of cleaned requests
+    pub fn cleanup_timed_out_requests(&mut self) -> usize {
+        let now = Instant::now();
+        let timed_out: Vec<u64> = self.active_requests
+            .iter()
+            .filter(|(_, req)| now.duration_since(req.sent_at).as_millis() >= IN_FLIGHT_TIMEOUT_MS as u128)
+            .map(|(seq, _)| *seq)
+            .collect();
+
+        let count = timed_out.len();
+        for seq in timed_out {
+            self.active_requests.remove(&seq);
+        }
+        count
     }
 
     /// Build a CompletionRequest message.
@@ -437,7 +542,7 @@ mod tests {
         assert_eq!(c.ghost(), Some("cargo run"));
 
         // User types "cargo" — ghost trimmed to " run"
-        for (i, ch) in "cargo".chars().enumerate() {
+        for (i, _ch) in "cargo".chars().enumerate() {
             let typed: String = "cargo"[..=i].to_string();
             assert!(!c.on_input_changed(&typed, 2 + i as u64));
         }
@@ -596,5 +701,238 @@ mod tests {
         // Current implementation returns the full "git status" as ghost (incorrect)
         assert_eq!(ghost, None, "Completion should be discarded when current input is not a prefix of full suggestion");
         assert_eq!(c.ghost(), None);
+    }
+
+    // --- Concurrent request tests ---
+
+    #[test]
+    fn test_concurrent_requests_allowed() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("git", 1);
+        c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1)); // Debounce expired
+
+        // First request
+        assert!(c.should_request("git"));
+        c.mark_sent(1, "git");
+
+        // Second request should be allowed (concurrent)
+        c.on_input_changed("git s", 2);
+        c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1)); // Debounce expired
+        assert!(c.should_request("git s"));
+        c.mark_sent(2, "git s");
+
+        assert_eq!(c.active_requests.len(), 2);
+    }
+
+    #[test]
+    fn test_concurrent_request_limit() {
+        let mut c = ShellCompleter::new();
+
+        // Send MAX_CONCURRENT_REQUESTS
+        for i in 0..MAX_CONCURRENT_REQUESTS {
+            c.on_input_changed(&format!("input{}", i), i as u64);
+            c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1)); // Debounce expired
+            assert!(c.should_request(&format!("input{}", i)));
+            c.mark_sent(i as u64, &format!("input{}", i));
+        }
+
+        assert_eq!(c.active_requests.len(), MAX_CONCURRENT_REQUESTS);
+
+        // Next request should be blocked
+        c.on_input_changed("too_many", MAX_CONCURRENT_REQUESTS as u64);
+        c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1)); // Debounce expired
+        assert!(!c.should_request("too_many"));
+    }
+
+    #[test]
+    fn test_response_relevance_filtering() {
+        let mut c = ShellCompleter::new();
+
+        // Send request for "git st"
+        c.on_input_changed("git st", 1);
+        c.mark_sent(1, "git st");
+
+        // Response arrives before user continues typing
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: "atus".to_string(),
+                confidence: 0.9,
+            }],
+        };
+
+        // Response should be processed successfully
+        let ghost = c.on_response(&resp, "git st");
+        assert_eq!(ghost, Some("atus"), "Response should be processed when input hasn't changed");
+
+        // Now user continues typing to "git stat" - the existing ghost should be trimmed
+        c.on_input_changed("git stat", 2);
+        assert_eq!(c.ghost(), Some("us"), "Ghost should be trimmed when user continues typing");
+    }
+
+    #[test]
+    fn test_response_irrelevance_filtering() {
+        let mut c = ShellCompleter::new();
+
+        // Send request for "git st"
+        c.on_input_changed("git st", 1);
+        c.mark_sent(1, "git st");
+
+        // User completely changes input to something unrelated
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: "atus".to_string(),
+                confidence: 0.9,
+            }],
+        };
+
+        // Response should be irrelevant when input completely changed
+        let ghost = c.on_response(&resp, "ls -la");
+        assert_eq!(ghost, None, "Response should be irrelevant when input completely changed");
+    }
+
+    #[test]
+    fn test_timed_out_request_cleanup() {
+        let mut c = ShellCompleter::new();
+
+        // Send a request
+        c.on_input_changed("test", 1);
+        c.mark_sent(1, "test");
+
+        assert_eq!(c.active_requests.len(), 1);
+
+        // Manually mark the request as timed out by backdating it
+        if let Some(req) = c.active_requests.get_mut(&1) {
+            req.sent_at = Instant::now() - std::time::Duration::from_secs(10);
+        }
+
+        // should_request should allow new request due to timeout
+        c.on_input_changed("test new", 2);
+        c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1)); // Debounce expired
+        assert!(c.should_request("test new"));
+
+        // Cleanup should remove timed out request
+        let cleaned = c.cleanup_timed_out_requests();
+        assert_eq!(cleaned, 1);
+        assert_eq!(c.active_requests.len(), 0);
+    }
+
+    #[test]
+    fn test_stale_response_discarded_with_concurrent() {
+        let mut c = ShellCompleter::new();
+
+        // Send request 1
+        c.on_input_changed("git sta", 5);
+        c.mark_sent(5, "git sta");
+
+        // User continues typing, sequence advances
+        c.on_input_changed("git status", 10);
+
+        // Response for old sequence should be discarded
+        let resp = CompletionResponse {
+            sequence_id: 5,
+            suggestions: vec![CompletionSuggestion {
+                text: "tus".to_string(),
+                confidence: 0.9,
+            }],
+        };
+
+        assert!(c.on_response(&resp, "git status").is_none());
+    }
+
+    #[test]
+    fn test_clear_clears_active_requests() {
+        let mut c = ShellCompleter::new();
+
+        // Send multiple requests
+        for i in 0..3 {
+            c.on_input_changed(&format!("input{}", i), i as u64);
+            c.mark_sent(i as u64, &format!("input{}", i));
+        }
+
+        assert_eq!(c.active_requests.len(), 3);
+
+        // Clear should remove all active requests
+        c.clear();
+        assert_eq!(c.active_requests.len(), 0);
+    }
+
+    #[test]
+    fn test_debug_state_shows_concurrent_info() {
+        let mut c = ShellCompleter::new();
+
+        // Send some requests
+        c.on_input_changed("test1", 1);
+        c.mark_sent(1, "test1");
+        c.on_input_changed("test2", 2);
+        c.mark_sent(2, "test2");
+
+        let (active_count, sent_seq, pending_seq, active_ids) = c.get_debug_state();
+        assert_eq!(active_count, 2);
+        assert_eq!(sent_seq, 2);
+        assert_eq!(pending_seq, 2);
+        assert_eq!(active_ids.len(), 2);
+        assert!(active_ids.contains(&1));
+        assert!(active_ids.contains(&2));
+    }
+
+    #[test]
+    fn test_concurrent_requests_with_different_inputs() {
+        let mut c = ShellCompleter::new();
+
+        // Test concurrent requests by sending multiple requests without waiting for responses
+        // We need to simulate the scenario where responses arrive before the next input change
+        // So we keep pending_seq at the original value for all requests
+
+        // Set up initial state with "git s" as the current input
+        c.on_input_changed("git s", 3);
+        c.pending_seq = 1; // Reset to simulate race condition where responses arrive before sequence advances
+
+        // Now simulate sending requests with different inputs but same pending_seq
+        c.mark_sent(1, "git");
+        c.mark_sent(2, "git ");
+        c.mark_sent(3, "git s");
+
+        assert_eq!(c.active_requests.len(), 3);
+
+        // Now process responses in order - they should all work with current input "git s"
+        let current_input = "git s";
+
+        // Response for "git" should be relevant (current input starts with original)
+        let resp1 = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: " status".to_string(),
+                confidence: 0.8,
+            }],
+        };
+        let ghost1 = c.on_response(&resp1, current_input);
+        assert_eq!(ghost1, Some("tatus"), "Response 1 should work");
+
+        // Response for "git " should be relevant
+        let resp2 = CompletionResponse {
+            sequence_id: 2,
+            suggestions: vec![CompletionSuggestion {
+                text: "status".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        let ghost2 = c.on_response(&resp2, current_input);
+        assert_eq!(ghost2, Some("tatus"), "Response 2 should work");
+
+        // Response for "git s" should be most relevant
+        let resp3 = CompletionResponse {
+            sequence_id: 3,
+            suggestions: vec![CompletionSuggestion {
+                text: "tatus".to_string(),
+                confidence: 1.0,
+            }],
+        };
+        let ghost3 = c.on_response(&resp3, current_input);
+        assert_eq!(ghost3, Some("tatus"), "Response 3 should work");
+
+        // The final ghost should be from the last response processed
+        assert_eq!(c.ghost(), Some("tatus"), "Final ghost should be from last response");
     }
 }

@@ -816,10 +816,11 @@ fn debug_client_state(
 
     // Shell Completer state
     output.push_str("Shell Completer:\n");
-    let (in_flight, sent_seq, pending_seq) = shell_completer.get_debug_state();
-    output.push_str(&format!("  in_flight: {}\n", in_flight));
+    let (active_count, sent_seq, pending_seq, active_ids) = shell_completer.get_debug_state();
+    output.push_str(&format!("  active_requests: {}\n", active_count));
     output.push_str(&format!("  sent_seq: {}\n", sent_seq));
     output.push_str(&format!("  pending_seq: {}\n", pending_seq));
+    output.push_str(&format!("  active_request_ids: {:?}\n", active_ids));
     output.push_str(&format!("  should_request: {}\n",
         shell_completer.should_request(shell_input.input())));
     output.push_str(&format!("  ghost: {:?}\n", shell_completer.ghost()));
