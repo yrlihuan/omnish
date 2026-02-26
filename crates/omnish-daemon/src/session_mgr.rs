@@ -344,7 +344,7 @@ impl SessionManager {
             ended: bool,
             last_active: Instant,
             cmd_count: usize,
-            context_cmd_count: usize, // number of commands from this session that would be included in context
+            context_cmd_count: usize, // number of detailed commands from this session that would be included in context
         }
 
         // Collect snapshots and all commands under brief lock
@@ -376,7 +376,7 @@ impl SessionManager {
             return "(no sessions)".to_string();
         }
 
-        // Calculate how many commands from each session would be included in context
+        // Calculate how many detailed commands from each session would be included in context
         if !all_commands.is_empty() {
             // Sort commands by started_at (chronological order)
             all_commands.sort_by_key(|c| c.started_at);
@@ -388,15 +388,20 @@ impl SessionManager {
             // Select commands that would be included in context
             let selected = strategy.select_commands(&all_commands).await;
 
-            // Count selected commands per session
-            let mut context_counts: HashMap<String, usize> = HashMap::new();
-            for cmd in selected {
-                *context_counts.entry(cmd.session_id.clone()).or_insert(0) += 1;
+            // Split into detailed commands (full output) and history commands (command-line only)
+            let detailed_commands = self.context_config.detailed_commands;
+            let split = selected.len().saturating_sub(detailed_commands);
+            let detailed_cmds = &selected[split..];
+
+            // Count detailed commands per session
+            let mut detailed_counts: HashMap<String, usize> = HashMap::new();
+            for cmd in detailed_cmds {
+                *detailed_counts.entry(cmd.session_id.clone()).or_insert(0) += 1;
             }
 
-            // Update context_cmd_count in snapshots
+            // Update context_cmd_count in snapshots (now represents detailed commands only)
             for snapshot in &mut snapshots {
-                if let Some(count) = context_counts.get(&snapshot.session_id) {
+                if let Some(count) = detailed_counts.get(&snapshot.session_id) {
                     snapshot.context_cmd_count = *count;
                 }
                 // else remains 0
