@@ -81,21 +81,6 @@ impl ShellCompleter {
     /// Check if debounce timer has expired and we should send a request.
     /// Now supports multiple concurrent requests.
     pub fn should_request(&self, _current_input: &str) -> bool {
-        // Clean up any timed-out requests
-        let now = Instant::now();
-        let timed_out_count = self.active_requests
-            .values()
-            .filter(|req| now.duration_since(req.sent_at).as_millis() >= IN_FLIGHT_TIMEOUT_MS as u128)
-            .count();
-
-        // If we have timed-out requests, we should send a new one (they'll be cleaned up when processing)
-        if timed_out_count > 0 {
-            return match self.last_change {
-                Some(t) => t.elapsed().as_millis() >= DEBOUNCE_MS as u128,
-                None => false,
-            };
-        }
-
         // Limit concurrent requests
         if self.active_requests.len() >= MAX_CONCURRENT_REQUESTS {
             return false;
@@ -934,5 +919,49 @@ mod tests {
 
         // The final ghost should be from the last response processed
         assert_eq!(c.ghost(), Some("tatus"), "Final ghost should be from last response");
+    }
+
+    #[test]
+    fn test_no_duplicate_requests_after_daemon_restart() {
+        let mut c = ShellCompleter::new();
+
+        // Simulate daemon restart scenario:
+        // 1. Request was sent but daemon restarted
+        // 2. Request times out but stays in active_requests
+        // 3. No new user input (pending_seq == sent_seq)
+        // 4. should_request should return false to prevent duplicate requests
+
+        // Initial state: user typed something, request sent
+        c.on_input_changed("git", 24);
+        c.mark_sent(24, "git");
+        assert_eq!(c.active_requests.len(), 1);
+
+        // Simulate time passing (daemon restart)
+        // Manually make the request timed out
+        if let Some(req) = c.active_requests.get_mut(&24) {
+            req.sent_at = Instant::now() - std::time::Duration::from_secs(10);
+        }
+
+        // No new input, same sequence
+        assert_eq!(c.pending_seq, 24);
+        assert_eq!(c.sent_seq, 24);
+
+        // should_request should return false - no new input means no new requests
+        assert!(!c.should_request("git"), "Should not allow new requests when there's no new input, even with timed-out requests");
+
+        // Cleanup should remove the timed-out request
+        let cleaned = c.cleanup_timed_out_requests();
+        assert_eq!(cleaned, 1);
+        assert_eq!(c.active_requests.len(), 0);
+
+        // After cleanup, still should not allow requests without new input
+        assert!(!c.should_request("git"), "Should still not allow requests without new input");
+
+        // Now simulate new user input
+        c.on_input_changed("git s", 25);
+        c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1)); // Debounce expired
+
+        // Now should_request should return true
+        assert!(c.should_request("git s"), "Should allow new request when there's new input");
     }
 }

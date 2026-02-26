@@ -516,6 +516,9 @@ async fn main() -> Result<()> {
             let in_chat = interceptor.is_in_chat();
             let current = shell_input.input();
 
+            // Clean up timed-out requests first
+            let _cleaned = shell_completer.cleanup_timed_out_requests();
+
             if at_prompt && !in_chat && shell_completer.should_request(current) {
                 let seq = shell_input.sequence_id();
                 if let Some(ref rpc) = daemon_conn {
