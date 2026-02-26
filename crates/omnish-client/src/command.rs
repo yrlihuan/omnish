@@ -94,7 +94,11 @@ const COMMANDS: &[CommandEntry] = &[
 
 /// Return all command paths for ghost-text completion.
 pub fn completable_commands() -> Vec<String> {
-    COMMANDS.iter().map(|e| e.path.to_string()).collect()
+    let mut cmds: Vec<String> = COMMANDS.iter().map(|e| e.path.to_string()).collect();
+    for name in omnish_llm::template::TEMPLATE_NAMES {
+        cmds.push(format!("/template {}", name));
+    }
+    cmds
 }
 
 // ---------------------------------------------------------------------------
@@ -311,7 +315,14 @@ mod tests {
         assert!(cmds.contains(&"/debug".to_string()));
         assert!(cmds.contains(&"/debug client".to_string()));
         assert!(cmds.contains(&"/sessions".to_string()));
-        assert_eq!(cmds.len(), COMMANDS.len());
+        // Template subcommands are also completable.
+        assert!(cmds.contains(&"/template chat".to_string()));
+        assert!(cmds.contains(&"/template auto-complete".to_string()));
+        assert!(cmds.contains(&"/template daily-notes".to_string()));
+        assert_eq!(
+            cmds.len(),
+            COMMANDS.len() + omnish_llm::template::TEMPLATE_NAMES.len()
+        );
     }
 
     #[test]
