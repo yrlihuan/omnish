@@ -177,8 +177,20 @@ impl ShellCompleter {
             return None;
         }
 
+        // Get request state before removing it (for timing check)
+        let request_state = self.active_requests.get(&response.sequence_id).cloned();
+
         // Remove this completed request from active tracking (only after validation)
         self.active_requests.remove(&response.sequence_id);
+
+        // Issue #21: Don't show ghost text if user has typed after the request was sent
+        if let (Some(last_change), Some(request_state)) = (self.last_change, request_state) {
+            if last_change > request_state.sent_at {
+                // User typed after request was sent - discard completion
+                self.current_ghost = None;
+                return None;
+            }
+        }
 
         // Take best suggestion
         if let Some(best) = response
