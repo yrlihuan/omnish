@@ -134,6 +134,28 @@ impl ShellInputTracker {
         self.at_prompt
     }
 
+    /// Whether a readline report is pending (e.g., after Tab/Up/Down/Ctrl+R).
+    pub fn pending_rl_report(&self) -> bool {
+        self.pending_rl_report
+    }
+
+    /// ESC sequence processing state for debugging.
+    /// Returns: 0=normal, 1=saw ESC, 2=in CSI params
+    pub fn esc_state(&self) -> u8 {
+        self.esc_state
+    }
+
+    /// Get detailed debug information about current input state.
+    pub fn get_debug_info(&self) -> (String, u64, bool, bool, u8) {
+        (
+            self.input.clone(),
+            self.sequence_id,
+            self.at_prompt,
+            self.pending_rl_report,
+            self.esc_state,
+        )
+    }
+
     /// Replace the tracked input with the real readline content reported by bash.
     /// Only effective while at the prompt.
     pub fn set_readline(&mut self, content: &str) {

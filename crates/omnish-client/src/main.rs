@@ -149,6 +149,7 @@ async fn main() -> Result<()> {
         Box::new(ghost_complete::BuiltinProvider::new()),
     ]);
     let mut shell_input = shell_input::ShellInputTracker::new();
+    let mut last_readline_content: Option<String> = None;
     let in_tmux = std::env::var("TMUX").is_ok();
     if let Some(title) = tmux_title("omnish", in_tmux) {
         nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
@@ -308,7 +309,7 @@ async fn main() -> Result<()> {
                             command::ChatAction::DaemonQuery { query, redirect } => {
                                 // Handle special client_debug command locally
                                 if query == "__cmd:client_debug" {
-                                    let debug_output = debug_client_state(&shell_input, &interceptor, &shell_completer, &daemon_conn, &osc133_detector);
+                                    let debug_output = debug_client_state(&shell_input, &interceptor, &shell_completer, &daemon_conn, &osc133_detector, &last_readline_content);
                                     handle_command_result(&debug_output, redirect.as_deref(), &proxy);
                                 } else if let Some(ref rpc) = daemon_conn {
                                     send_daemon_query(&query, &session_id, rpc, &proxy, redirect.as_deref(), false).await;
@@ -470,6 +471,7 @@ async fn main() -> Result<()> {
                             }
                             Osc133EventKind::ReadlineLine { content } => {
                                 shell_input.set_readline(content);
+                                last_readline_content = Some(content.to_string());
                                 if let Some((input, seq)) = shell_input.take_change() {
                                     if shell_completer.on_input_changed(input, seq) {
                                         nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
@@ -799,16 +801,46 @@ fn debug_client_state(
     shell_completer: &completion::ShellCompleter,
     daemon_conn: &Option<RpcClient>,
     _osc133_detector: &omnish_tracker::osc133_detector::Osc133Detector,
+    last_readline: &Option<String>,
 ) -> String {
     let mut output = String::new();
     output.push_str("=== Client Debug State ===\n\n");
 
     // Shell Input Tracker state
     output.push_str("Shell Input Tracker:\n");
-    output.push_str(&format!("  at_prompt: {}\n", shell_input.at_prompt()));
-    output.push_str(&format!("  input: \"{}\"\n", shell_input.input()));
-    output.push_str(&format!("  sequence_id: {}\n", shell_input.sequence_id()));
-    // We can't access pending_rl_report directly, skip it
+    let (input, seq, at_prompt, pending_rl, esc_state) = shell_input.get_debug_info();
+    output.push_str(&format!("  at_prompt: {}\n", at_prompt));
+    output.push_str(&format!("  input: \"{}\"\n", input));
+    output.push_str(&format!("  sequence_id: {}\n", seq));
+    output.push_str(&format!("  pending_rl_report: {}\n", pending_rl));
+    output.push_str(&format!("  esc_state: {}\n", esc_state));
+
+    // Add ESC state description
+    let esc_desc = match esc_state {
+        0 => "normal",
+        1 => "saw ESC",
+        2 => "in CSI params",
+        _ => "unknown",
+    };
+    output.push_str(&format!("  esc_state_desc: {}\n", esc_desc));
+
+    // Add special mode detection based on pending_rl_report
+    if pending_rl {
+        output.push_str("  special_mode: readline report pending (Tab/Up/Down/Ctrl+R)\n");
+    }
+
+    // Show last readline content from bash if available
+    if let Some(ref readline) = last_readline {
+        output.push_str(&format!("  readline_report: \"{}\"\n", readline));
+
+        // Compare tracked input vs readline content
+        if input != *readline {
+            output.push_str("  input_mismatch: true (tracked != readline)\n");
+            output.push_str(&format!("  tracked_input: \"{}\"\n", input));
+            output.push_str(&format!("  bash_readline: \"{}\"\n", readline));
+        }
+    }
+
     output.push('\n');
 
     // Interceptor state
