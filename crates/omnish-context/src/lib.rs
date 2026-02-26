@@ -42,6 +42,11 @@ pub trait ContextFormatter: Send + Sync {
 /// `session_hostnames` maps session_id -> hostname for display in context headers.
 /// `detailed_count` controls how many of the most recent selected commands get full output;
 /// the rest are treated as history (command-line only).
+///
+/// When `current_session_id` is provided with `min_current_session_detailed > 0`,
+/// the split is adjusted so that at least that many commands from the current session
+/// appear in the detailed portion (with full output), even if they are older than
+/// other sessions' commands.
 pub async fn build_context(
     strategy: &dyn ContextStrategy,
     formatter: &dyn ContextFormatter,
@@ -51,11 +56,33 @@ pub async fn build_context(
     detailed_count: usize,
     max_line_width: usize,
 ) -> Result<String> {
-    let selected = strategy.select_commands(commands).await;
-    let split = selected.len().saturating_sub(detailed_count);
+    build_context_with_session(
+        strategy, formatter, commands, reader, session_hostnames,
+        detailed_count, max_line_width, None, 0,
+    ).await
+}
 
-    let history_cmds = &selected[..split];
-    let detailed_cmds = &selected[split..];
+/// Like `build_context` but ensures at least `min_current_session_detailed` commands
+/// from the current session appear in the detailed (full output) portion.
+pub async fn build_context_with_session(
+    strategy: &dyn ContextStrategy,
+    formatter: &dyn ContextFormatter,
+    commands: &[CommandRecord],
+    reader: &dyn StreamReader,
+    session_hostnames: &HashMap<String, String>,
+    detailed_count: usize,
+    max_line_width: usize,
+    current_session_id: Option<&str>,
+    min_current_session_detailed: usize,
+) -> Result<String> {
+    let selected = strategy.select_commands(commands).await;
+
+    // Determine which commands are detailed vs history.
+    // Start with the standard split: last `detailed_count` are detailed.
+    let initial_split = selected.len().saturating_sub(detailed_count);
+    let (history_cmds, detailed_cmds) = split_with_current_session_minimum(
+        &selected, initial_split, current_session_id, min_current_session_detailed,
+    );
 
     // History: command-line only, no stream reading
     let history: Vec<CommandContext> = history_cmds
@@ -108,6 +135,71 @@ pub async fn build_context(
     }
 
     Ok(formatter.format(&history, &detailed))
+}
+
+/// Given selected commands and an initial split point, adjust the split so that
+/// at least `min_current` commands from `current_session_id` are in the detailed
+/// (right) portion. Commands promoted from history to detailed are the most recent
+/// ones from the current session that aren't already in detailed.
+///
+/// Returns (history, detailed) slices as owned Vecs to allow reordering.
+pub fn split_with_current_session_minimum<'a>(
+    selected: &[&'a CommandRecord],
+    initial_split: usize,
+    current_session_id: Option<&str>,
+    min_current: usize,
+) -> (Vec<&'a CommandRecord>, Vec<&'a CommandRecord>) {
+    let history_part = &selected[..initial_split];
+    let detailed_part = &selected[initial_split..];
+
+    let session_id = match current_session_id {
+        Some(id) if min_current > 0 => id,
+        _ => return (history_part.to_vec(), detailed_part.to_vec()),
+    };
+
+    // Count current session commands already in detailed
+    let current_in_detailed = detailed_part.iter()
+        .filter(|c| c.session_id == session_id)
+        .count();
+
+    if current_in_detailed >= min_current {
+        return (history_part.to_vec(), detailed_part.to_vec());
+    }
+
+    let needed = min_current - current_in_detailed;
+
+    // Find current session commands in history (most recent first = reverse order)
+    let mut promote_indices: Vec<usize> = Vec::new();
+    for (i, cmd) in history_part.iter().enumerate().rev() {
+        if cmd.session_id == session_id {
+            promote_indices.push(i);
+            if promote_indices.len() >= needed {
+                break;
+            }
+        }
+    }
+
+    if promote_indices.is_empty() {
+        return (history_part.to_vec(), detailed_part.to_vec());
+    }
+
+    // Build new history (excluding promoted) and new detailed (promoted + original)
+    let promote_set: std::collections::HashSet<usize> = promote_indices.iter().copied().collect();
+    let mut new_history: Vec<&'a CommandRecord> = history_part.iter()
+        .enumerate()
+        .filter(|(i, _)| !promote_set.contains(i))
+        .map(|(_, c)| *c)
+        .collect();
+    let mut promoted: Vec<&'a CommandRecord> = promote_indices.iter().rev()
+        .map(|&i| history_part[i])
+        .collect();
+    promoted.extend_from_slice(detailed_part);
+
+    // Sort both by started_at to maintain chronological order
+    new_history.sort_by_key(|c| c.started_at);
+    promoted.sort_by_key(|c| c.started_at);
+
+    (new_history, promoted)
 }
 
 /// Strip ANSI escape sequences (CSI and OSC) from raw bytes.

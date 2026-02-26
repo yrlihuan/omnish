@@ -391,10 +391,17 @@ impl SessionManager {
             // Select commands that would be included in context
             let selected = strategy.select_commands(&all_commands).await;
 
-            // Split into detailed commands (full output) and history commands (command-line only)
+            // Split into detailed commands (full output) and history commands (command-line only),
+            // ensuring current session has at least min_current_session_commands in detailed.
             let detailed_commands = self.context_config.detailed_commands;
-            let split = selected.len().saturating_sub(detailed_commands);
-            let detailed_cmds = &selected[split..];
+            let initial_split = selected.len().saturating_sub(detailed_commands);
+            let (_history_cmds, detailed_cmds) = omnish_context::split_with_current_session_minimum(
+                &selected,
+                initial_split,
+                Some(current_session_id),
+                self.context_config.min_current_session_commands,
+            );
+            let detailed_cmds = &detailed_cmds[..];
 
             // Count detailed commands per session
             let mut detailed_counts: HashMap<String, usize> = HashMap::new();
@@ -532,7 +539,7 @@ impl SessionManager {
             .unwrap_or_default()
             .as_millis() as u64;
         let formatter = GroupedFormatter::new(session_id, now_ms, cc.head_lines, cc.tail_lines);
-        omnish_context::build_context(
+        omnish_context::build_context_with_session(
             &strategy,
             &formatter,
             &commands,
@@ -540,6 +547,8 @@ impl SessionManager {
             &hostnames,
             cc.detailed_commands,
             cc.max_line_width,
+            Some(session_id),
+            cc.min_current_session_commands,
         )
         .await
     }
@@ -609,7 +618,7 @@ impl SessionManager {
             .with_current_session(current_session_id, cc.min_current_session_commands);
         let formatter =
             GroupedFormatter::new(current_session_id, now_ms, cc.head_lines, cc.tail_lines);
-        omnish_context::build_context(
+        omnish_context::build_context_with_session(
             &strategy,
             &formatter,
             &all_commands,
@@ -617,6 +626,8 @@ impl SessionManager {
             &hostnames,
             cc.detailed_commands,
             cc.max_line_width,
+            Some(current_session_id),
+            cc.min_current_session_commands,
         )
         .await
     }

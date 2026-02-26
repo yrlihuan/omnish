@@ -729,6 +729,62 @@ mod tests {
         assert!(result.contains("$ cmd4"));
     }
 
+    #[tokio::test]
+    async fn test_build_context_ensures_min_current_session_detailed() {
+        // Bug: current session has 5 commands but they end up in history (no output)
+        // because other sessions have more recent commands that fill the detailed slots.
+        //
+        // Setup: sess-a (current) has 5 old commands, sess-b has 6 newer commands.
+        // detailed_count = 5, so without the fix only sess-b commands are detailed.
+        // With min_current_session_commands = 5, all 5 sess-a commands should be detailed.
+        let mut cmds = Vec::new();
+        // sess-a: 5 commands at times 1100..1500
+        for i in 0..5u32 {
+            cmds.push(make_cmd(i, "sess-a", Some(&format!("acmd{}", i))));
+        }
+        // sess-b: 6 commands at times 1600..2100
+        for i in 0..6u32 {
+            let mut cmd = make_cmd(10 + i, "sess-b", Some(&format!("bcmd{}", i)));
+            cmd.started_at = 1600 + i as u64 * 100;
+            cmds.push(cmd);
+        }
+
+        let strategy = RecentCommands::new(20)
+            .with_current_session("sess-a", 5);
+        let formatter = GroupedFormatter::new("sess-a", 30000, 10, 10);
+        let reader = MockReader::new(vec![make_output_entry("$ cmd\noutput-line\n")]);
+
+        let result = crate::build_context_with_session(
+            &strategy, &formatter, &cmds, &reader,
+            &std::collections::HashMap::new(), 5, 512,
+            Some("sess-a"), 5,
+        ).await.unwrap();
+
+        // All 5 sess-a commands should be in detailed section (with output), not history
+        // The detailed section for current session shows output; history section only shows "$ cmd"
+        // Count how many sess-a commands appear with output (i.e., in detailed section)
+        for i in 0..5 {
+            let cmd_name = format!("acmd{}", i);
+            assert!(result.contains(&format!("$ {}", cmd_name)),
+                "Should contain command {}", cmd_name);
+        }
+
+        // The key assertion: sess-a commands should have output (be in detailed section),
+        // not just appear as bare "$ acmd0" lines in history.
+        // In the grouped format, detailed commands under "--- term A [current] ---"
+        // will have their output. Let's check the current session section has output.
+        let current_section_start = result.find("[current]").expect("should have current section");
+        let current_section = &result[current_section_start..];
+        // All 5 commands should be in the current session's detailed section
+        for i in 0..5 {
+            assert!(current_section.contains(&format!("$ acmd{}", i)),
+                "Current session detailed section should contain acmd{}: {}", i, current_section);
+        }
+        // They should have output (detailed, not history)
+        assert!(current_section.contains("output-line"),
+            "Current session commands should have output (be detailed, not history): {}", current_section);
+    }
+
     #[test]
     fn test_format_includes_cwd() {
         let context = CommandContext {
