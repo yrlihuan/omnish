@@ -20,6 +20,8 @@ pub struct ShellCompleter {
     ghost_input: String,
     /// When the current ghost text was set.
     ghost_set_at: Option<Instant>,
+    /// The input that was sent with the last request.
+    sent_input: String,
 }
 
 impl ShellCompleter {
@@ -32,6 +34,7 @@ impl ShellCompleter {
             in_flight: false,
             ghost_input: String::new(),
             ghost_set_at: None,
+            sent_input: String::new(),
         }
     }
 
@@ -77,9 +80,10 @@ impl ShellCompleter {
     }
 
     /// Mark that a request was sent.
-    pub fn mark_sent(&mut self, sequence_id: u64) {
+    pub fn mark_sent(&mut self, sequence_id: u64, input: &str) {
         self.sent_seq = sequence_id;
         self.in_flight = true;
+        self.sent_input = input.to_string();
     }
 
     /// Process a completion response.
@@ -99,35 +103,39 @@ impl ShellCompleter {
             .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap_or(std::cmp::Ordering::Equal))
         {
             if !best.text.is_empty() {
-                // Strip the already-typed input prefix so ghost is only the suffix
-                // If the suggestion doesn't start with current input, we need to determine
-                // whether it's a suffix (e.g., "tus", " stash") or a full command that doesn't match.
-                let suffix = if best.text.starts_with(current_input) {
-                    &best.text[current_input.len()..]
+                // Compute full suggestion based on what was sent to LLM
+                // LLM returns either:
+                // 1. Full command (may or may not start with sent_input)
+                // 2. Suffix after cursor (does not include sent_input)
+                // Determine which case based on whether suggestion starts with sent_input
+                let full_suggestion = if self.sent_input.is_empty() {
+                    // No sent input means LLM returned full command
+                    best.text.clone()
+                } else if best.text.starts_with(&self.sent_input) {
+                    // Suggestion starts with sent_input - it's a full command
+                    best.text.clone()
                 } else {
-                    // Suggestion doesn't start with current input
-                    // It could be:
-                    // 1. A suffix (e.g., "tus" for "git sta", " stash" for "git")
-                    // 2. A full command that doesn't match (e.g., "git status" for "ls")
-                    //
-                    // Heuristic: if suggestion is shorter or equal length, or starts with space,
-                    // treat it as a suffix. Otherwise discard.
-                    if best.text.len() <= current_input.len() || best.text.starts_with(' ') {
-                        &best.text
-                    } else {
-                        // Likely a full command that doesn't match current input - discard
+                    // Suggestion doesn't start with sent_input - it's a suffix
+                    format!("{}{}", self.sent_input, best.text)
+                };
+
+                // Check if current input is a prefix of the full suggestion
+                if full_suggestion.starts_with(current_input) {
+                    let suffix = &full_suggestion[current_input.len()..];
+                    if suffix.is_empty() {
                         self.current_ghost = None;
                         return None;
                     }
-                };
-                if suffix.is_empty() {
+                    self.current_ghost = Some(suffix.to_string());
+                    self.ghost_input = current_input.to_string();
+                    self.ghost_set_at = Some(Instant::now());
+                    return self.current_ghost.as_deref();
+                } else {
+                    // Current input is not a prefix of full suggestion
+                    // Discard completion according to issue #6
                     self.current_ghost = None;
                     return None;
                 }
-                self.current_ghost = Some(suffix.to_string());
-                self.ghost_input = current_input.to_string();
-                self.ghost_set_at = Some(Instant::now());
-                return self.current_ghost.as_deref();
             }
         }
 
@@ -219,7 +227,7 @@ mod tests {
         let mut c = ShellCompleter::new();
         c.on_input_changed("git sta", 5);
         c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1));
-        c.mark_sent(5);
+        c.mark_sent(5, "git sta");
         assert!(!c.should_request("git sta"));
     }
 
@@ -227,7 +235,7 @@ mod tests {
     fn test_stale_response_discarded() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("git sta", 5);
-        c.mark_sent(5);
+        c.mark_sent(5, "git sta");
         c.on_input_changed("git status", 10);
 
         let resp = CompletionResponse {
@@ -244,7 +252,7 @@ mod tests {
     fn test_valid_response_sets_ghost() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("git sta", 5);
-        c.mark_sent(5);
+        c.mark_sent(5, "git sta");
 
         let resp = CompletionResponse {
             sequence_id: 5,
@@ -262,7 +270,7 @@ mod tests {
     fn test_accept_returns_and_clears() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("git sta", 5);
-        c.mark_sent(5);
+        c.mark_sent(5, "git sta");
 
         let resp = CompletionResponse {
             sequence_id: 5,
@@ -282,7 +290,7 @@ mod tests {
     fn test_clear_removes_ghost() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("git sta", 5);
-        c.mark_sent(5);
+        c.mark_sent(5, "git sta");
 
         let resp = CompletionResponse {
             sequence_id: 5,
@@ -300,7 +308,7 @@ mod tests {
     fn test_best_suggestion_selected() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("git", 3);
-        c.mark_sent(3);
+        c.mark_sent(3, "git");
 
         let resp = CompletionResponse {
             sequence_id: 3,
@@ -318,7 +326,7 @@ mod tests {
     fn test_ghost_survives_prefix_typing() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("git", 3);
-        c.mark_sent(3);
+        c.mark_sent(3, "git");
 
         let resp = CompletionResponse {
             sequence_id: 3,
@@ -343,7 +351,7 @@ mod tests {
     fn test_on_input_changed_returns_true_when_ghost_cleared() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("cargo", 1);
-        c.mark_sent(1);
+        c.mark_sent(1, "cargo");
 
         let resp = CompletionResponse {
             sequence_id: 1,
@@ -373,7 +381,7 @@ mod tests {
     fn test_response_strips_input_prefix() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("cargo", 1);
-        c.mark_sent(1);
+        c.mark_sent(1, "cargo");
 
         let resp = CompletionResponse {
             sequence_id: 1,
@@ -392,7 +400,7 @@ mod tests {
     fn test_response_exact_match_no_ghost() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("ls", 1);
-        c.mark_sent(1);
+        c.mark_sent(1, "ls");
 
         let resp = CompletionResponse {
             sequence_id: 1,
@@ -411,7 +419,7 @@ mod tests {
     fn test_accept_after_typing_returns_suffix_only() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("", 1);
-        c.mark_sent(1);
+        c.mark_sent(1, "");
 
         let resp = CompletionResponse {
             sequence_id: 1,
@@ -438,7 +446,7 @@ mod tests {
     fn test_ghost_expired_after_timeout() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("git sta", 5);
-        c.mark_sent(5);
+        c.mark_sent(5, "git sta");
 
         let resp = CompletionResponse {
             sequence_id: 5,
@@ -473,7 +481,7 @@ mod tests {
     fn test_ghost_cleared_on_divergent_extra_chars() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("cargo", 1);
-        c.mark_sent(1);
+        c.mark_sent(1, "cargo");
 
         let resp = CompletionResponse {
             sequence_id: 1,
@@ -494,13 +502,80 @@ mod tests {
         assert!(c.ghost().is_none());
     }
 
+    /// Test scenario: completion request sent with prefix "git st", user continues
+    /// typing "at", when completion returns "git status", ghost text should be "us".
+    #[test]
+    fn test_ghost_calculation_when_input_changes_during_request() {
+        let mut c = ShellCompleter::new();
+
+        // Simulate request sent with input "git st", sequence_id 1
+        c.on_input_changed("git st", 1);
+        c.mark_sent(1, "git st");
+
+        // User continues typing "at" - input is now "git stat"
+        // In real scenario, on_input_changed would be called with new sequence_id,
+        // but for this test we want to simulate that the response arrives with
+        // sequence_id 1 but current input has changed, and the response hasn't
+        // been marked stale (e.g., due to race condition).
+        // We keep pending_seq = 1 so sequence_id check passes.
+        // pending_seq is already 1 from on_input_changed above.
+
+        // LLM returns full command "git status" (based on original input "git st")
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: "git status".to_string(),
+                confidence: 0.9,
+            }],
+        };
+
+        // Current input is "git stat", which is a prefix of "git status"
+        let ghost = c.on_response(&resp, "git stat");
+        // Should extract suffix "us" ("git status".len() - "git stat".len() = 2)
+        assert_eq!(ghost, Some("us"));
+        assert_eq!(c.ghost(), Some("us"));
+    }
+
+    /// Test scenario: completion request sent with prefix "git st", user continues
+    /// typing "at", when completion returns suffix "atus", ghost text should be "us".
+    #[test]
+    fn test_ghost_calculation_when_suffix_returned_and_input_changes() {
+        let mut c = ShellCompleter::new();
+
+        // Simulate request sent with input "git st", sequence_id 1
+        c.on_input_changed("git st", 1);
+        c.mark_sent(1, "git st");
+
+        // User continues typing "at" - input is now "git stat"
+        // Response arrives before on_input_changed is called (race condition)
+        // pending_seq remains 1, so response is not stale
+
+        // LLM returns suffix "atus" (relative to original input "git st")
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: "atus".to_string(),
+                confidence: 0.9,
+            }],
+        };
+
+        // Current input is "git stat"
+        let ghost = c.on_response(&resp, "git stat");
+        // With sent_input tracking, we can reconstruct full suggestion:
+        // sent_input = "git st", suffix = "atus" -> full = "git status"
+        // Current input "git stat" is a prefix of "git status"
+        // Ghost should be "us" (remaining suffix after current input)
+        assert_eq!(ghost, Some("us"), "Should compute correct ghost text when input changes during request");
+        assert_eq!(c.ghost(), Some("us"));
+    }
+
     /// Test for issue 6: when current input is not a prefix of the full suggestion,
     /// the completion should be discarded.
     #[test]
     fn test_completion_discarded_when_input_not_prefix() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("git ", 1);
-        c.mark_sent(1);
+        c.mark_sent(1, "git ");
 
         // LLM returns full command "git status", but user has changed input to "ls"
         let resp = CompletionResponse {

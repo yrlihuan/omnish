@@ -483,7 +483,7 @@ async fn main() -> Result<()> {
                     let msg = completion::ShellCompleter::build_request(
                         &session_id, current, seq,
                     );
-                    shell_completer.mark_sent(seq);
+                    shell_completer.mark_sent(seq, current);
                     let rpc_clone = rpc.clone();
                     let tx = completion_tx.clone();
                     tokio::spawn(async move {
