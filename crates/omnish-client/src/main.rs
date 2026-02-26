@@ -20,7 +20,6 @@ use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio::time::{sleep, Duration};
 use uuid::Uuid;
 
 type MessageBuffer = Arc<Mutex<VecDeque<Message>>>;
@@ -302,7 +301,11 @@ async fn main() -> Result<()> {
                                 handle_command_result(&result, redirect.as_deref(), &proxy);
                             }
                             command::ChatAction::DaemonQuery { query, redirect } => {
-                                if let Some(ref rpc) = daemon_conn {
+                                // Handle special client_debug command locally
+                                if query == "__cmd:client_debug" {
+                                    let debug_output = debug_client_state(&shell_input, &interceptor, &shell_completer, &daemon_conn, &osc133_detector);
+                                    handle_command_result(&debug_output, redirect.as_deref(), &proxy);
+                                } else if let Some(ref rpc) = daemon_conn {
                                     send_daemon_query(&query, &session_id, rpc, &proxy, redirect.as_deref(), false).await;
                                 } else {
                                     let err = display::render_error("Daemon not connected");
@@ -779,6 +782,63 @@ fn tmux_title(name: &str, in_tmux: bool) -> Option<String> {
 /// Extract the command basename (first whitespace-delimited token) for tmux title.
 fn command_basename(cmd: &str) -> &str {
     cmd.split_whitespace().next().unwrap_or(cmd)
+}
+
+/// Collect client debug state for /debug client command
+fn debug_client_state(
+    shell_input: &shell_input::ShellInputTracker,
+    interceptor: &interceptor::InputInterceptor,
+    shell_completer: &completion::ShellCompleter,
+    daemon_conn: &Option<RpcClient>,
+    _osc133_detector: &omnish_tracker::osc133_detector::Osc133Detector,
+) -> String {
+    let mut output = String::new();
+    output.push_str("=== Client Debug State ===\n\n");
+
+    // Shell Input Tracker state
+    output.push_str("Shell Input Tracker:\n");
+    output.push_str(&format!("  at_prompt: {}\n", shell_input.at_prompt()));
+    output.push_str(&format!("  input: \"{}\"\n", shell_input.input()));
+    output.push_str(&format!("  sequence_id: {}\n", shell_input.sequence_id()));
+    // We can't access pending_rl_report directly, skip it
+    output.push('\n');
+
+    // Interceptor state
+    output.push_str("Input Interceptor:\n");
+    output.push_str(&format!("  in_chat: {}\n", interceptor.is_in_chat()));
+    output.push_str(&format!("  suppressed: {}\n", interceptor.is_suppressed()));
+    output.push('\n');
+
+    // Shell Completer state
+    output.push_str("Shell Completer:\n");
+    let (in_flight, sent_seq, pending_seq) = shell_completer.get_debug_state();
+    output.push_str(&format!("  in_flight: {}\n", in_flight));
+    output.push_str(&format!("  sent_seq: {}\n", sent_seq));
+    output.push_str(&format!("  pending_seq: {}\n", pending_seq));
+    output.push_str(&format!("  should_request: {}\n",
+        shell_completer.should_request(shell_input.input())));
+    output.push_str(&format!("  ghost: {:?}\n", shell_completer.ghost()));
+    output.push('\n');
+
+    // Daemon connection state
+    output.push_str("Daemon Connection:\n");
+    match daemon_conn {
+        Some(_rpc) => {
+            output.push_str("  status: connected\n");
+            // Note: is_connected() is async, so we can't call it here in a sync context
+        }
+        None => {
+            output.push_str("  status: disconnected\n");
+        }
+    }
+    output.push('\n');
+
+    // OSC 133 detector state - we don't have a mode_active method, so skip it
+    output.push_str("OSC 133 Detector:\n");
+    output.push_str("  status: active (detecting OSC 133 sequences)\n");
+    output.push_str("=== End Debug State ===\n");
+
+    output
 }
 
 /// Check if forwarded bytes contain keys that modify readline state,

@@ -171,6 +171,11 @@ impl ShellCompleter {
         self.current_ghost.as_deref()
     }
 
+    /// Get debug state for troubleshooting
+    pub fn get_debug_state(&self) -> (bool, u64, u64) {
+        (self.in_flight, self.sent_seq, self.pending_seq)
+    }
+
     /// Build a CompletionRequest message.
     pub fn build_request(
         session_id: &str,

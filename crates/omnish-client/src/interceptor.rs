@@ -484,6 +484,11 @@ impl InputInterceptor {
     pub fn is_in_chat(&self) -> bool {
         self.in_chat || !self.buffer.is_empty()
     }
+
+    /// Get suppression state for debugging
+    pub fn is_suppressed(&self) -> bool {
+        self.suppressed
+    }
 }
 
 #[cfg(test)]
