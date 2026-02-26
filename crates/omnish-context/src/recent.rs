@@ -476,6 +476,37 @@ mod tests {
         assert_eq!(current_count, 3, "Should have all 3 current session commands, got {}", current_count);
     }
 
+    #[tokio::test]
+    async fn test_select_and_split_ensures_min_current_detailed() {
+        // sess-a (current): 5 old commands, sess-b: 6 newer commands
+        // detailed_count=5 → without min guarantee, all 5 detailed slots go to sess-b
+        // With min_current=5, all 5 sess-a commands should be in detailed
+        let mut cmds = Vec::new();
+        for i in 0..5u32 {
+            cmds.push(make_cmd(i, "sess-a", Some(&format!("acmd{}", i))));
+        }
+        for i in 0..6u32 {
+            let mut cmd = make_cmd(10 + i, "sess-b", Some(&format!("bcmd{}", i)));
+            cmd.started_at = 1600 + i as u64 * 100;
+            cmds.push(cmd);
+        }
+
+        let strategy = RecentCommands::new(20)
+            .with_current_session("sess-a", 5);
+        let (history, detailed) = crate::select_and_split(
+            &strategy, &cmds, 5, Some("sess-a"), 5,
+        ).await;
+
+        let current_detailed = detailed.iter().filter(|c| c.session_id == "sess-a").count();
+        assert_eq!(current_detailed, 5,
+            "All 5 sess-a commands should be in detailed, got {}", current_detailed);
+        // Total detailed should be 5 (sess-a) + 5 (sess-b from original detailed) = 10?
+        // No: original 5 detailed were all sess-b. After promoting 5 sess-a, detailed = 10.
+        assert_eq!(detailed.len(), 10);
+        // History should have the remaining 1 sess-b command
+        assert_eq!(history.len(), 1);
+    }
+
     // --- GroupedFormatter tests ---
 
     #[test]

@@ -62,6 +62,30 @@ pub async fn build_context(
     ).await
 }
 
+/// Selects commands using the strategy and splits them into (history, detailed).
+///
+/// This is the single source of truth for command selection and splitting.
+/// Both `build_context_with_session` and `/sessions` display use this function
+/// to ensure consistent behavior.
+///
+/// - `detailed_count`: how many of the most recent commands get full output.
+/// - When `current_session_id` is provided with `min_current_session_detailed > 0`,
+///   the split is adjusted so that at least that many current-session commands
+///   appear in the detailed portion.
+pub async fn select_and_split<'a>(
+    strategy: &dyn ContextStrategy,
+    commands: &'a [CommandRecord],
+    detailed_count: usize,
+    current_session_id: Option<&str>,
+    min_current_session_detailed: usize,
+) -> (Vec<&'a CommandRecord>, Vec<&'a CommandRecord>) {
+    let selected = strategy.select_commands(commands).await;
+    let initial_split = selected.len().saturating_sub(detailed_count);
+    split_with_current_session_minimum(
+        &selected, initial_split, current_session_id, min_current_session_detailed,
+    )
+}
+
 /// Like `build_context` but ensures at least `min_current_session_detailed` commands
 /// from the current session appear in the detailed (full output) portion.
 pub async fn build_context_with_session(
@@ -75,14 +99,9 @@ pub async fn build_context_with_session(
     current_session_id: Option<&str>,
     min_current_session_detailed: usize,
 ) -> Result<String> {
-    let selected = strategy.select_commands(commands).await;
-
-    // Determine which commands are detailed vs history.
-    // Start with the standard split: last `detailed_count` are detailed.
-    let initial_split = selected.len().saturating_sub(detailed_count);
-    let (history_cmds, detailed_cmds) = split_with_current_session_minimum(
-        &selected, initial_split, current_session_id, min_current_session_detailed,
-    );
+    let (history_cmds, detailed_cmds) = select_and_split(
+        strategy, commands, detailed_count, current_session_id, min_current_session_detailed,
+    ).await;
 
     // History: command-line only, no stream reading
     let history: Vec<CommandContext> = history_cmds
@@ -143,7 +162,7 @@ pub async fn build_context_with_session(
 /// ones from the current session that aren't already in detailed.
 ///
 /// Returns (history, detailed) slices as owned Vecs to allow reordering.
-pub fn split_with_current_session_minimum<'a>(
+fn split_with_current_session_minimum<'a>(
     selected: &[&'a CommandRecord],
     initial_split: usize,
     current_session_id: Option<&str>,

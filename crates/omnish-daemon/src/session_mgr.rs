@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use omnish_common::config::ContextConfig;
 use omnish_context::recent::{GroupedFormatter, RecentCommands};
-use omnish_context::{ContextStrategy, StreamReader};
+use omnish_context::StreamReader;
 use omnish_store::command::CommandRecord;
 use omnish_store::session::SessionMeta;
 use omnish_store::stream::{read_range, StreamEntry, StreamWriter};
@@ -388,20 +388,14 @@ impl SessionManager {
             let strategy = RecentCommands::new(total)
                 .with_current_session(current_session_id, self.context_config.min_current_session_commands);
 
-            // Select commands that would be included in context
-            let selected = strategy.select_commands(&all_commands).await;
-
-            // Split into detailed commands (full output) and history commands (command-line only),
-            // ensuring current session has at least min_current_session_commands in detailed.
-            let detailed_commands = self.context_config.detailed_commands;
-            let initial_split = selected.len().saturating_sub(detailed_commands);
-            let (_history_cmds, detailed_cmds) = omnish_context::split_with_current_session_minimum(
-                &selected,
-                initial_split,
+            // Use the same select+split logic as build_context_with_session
+            let (_history_cmds, detailed_cmds) = omnish_context::select_and_split(
+                &strategy,
+                &all_commands,
+                self.context_config.detailed_commands,
                 Some(current_session_id),
                 self.context_config.min_current_session_commands,
-            );
-            let detailed_cmds = &detailed_cmds[..];
+            ).await;
 
             // Count detailed commands per session
             let mut detailed_counts: HashMap<String, usize> = HashMap::new();
