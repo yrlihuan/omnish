@@ -95,19 +95,19 @@ mod tests {
     #[test]
     fn test_builtin_provider_exact_match_no_ghost() {
         let p = BuiltinProvider::new();
-        assert_eq!(p.suggest("/debug context"), None);
+        assert_eq!(p.suggest("/context"), None);
     }
 
     #[test]
     fn test_builtin_provider_prefix_match() {
         let p = BuiltinProvider::new();
-        assert_eq!(p.suggest("/deb"), Some("/debug".to_string()));
+        assert_eq!(p.suggest("/con"), Some("/context".to_string()));
     }
 
     #[test]
     fn test_builtin_provider_subcommand_match() {
         let p = BuiltinProvider::new();
-        assert_eq!(p.suggest("/debug con"), Some("/debug context".to_string()));
+        assert_eq!(p.suggest("/deb"), Some("/debug".to_string()));
     }
 
     #[test]

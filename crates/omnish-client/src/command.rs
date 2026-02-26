@@ -51,19 +51,19 @@ fn debug_template() -> String {
 
 const COMMANDS: &[CommandEntry] = &[
     CommandEntry {
-        path: "/debug",
-        kind: CommandKind::Local(debug_usage),
-        help: "Show debug subcommands",
-    },
-    CommandEntry {
-        path: "/debug context",
+        path: "/context",
         kind: CommandKind::Daemon("context"),
         help: "Show LLM context",
     },
     CommandEntry {
-        path: "/debug template",
+        path: "/template",
         kind: CommandKind::Local(debug_template),
         help: "Show prompt template",
+    },
+    CommandEntry {
+        path: "/debug",
+        kind: CommandKind::Local(debug_usage),
+        help: "Show debug subcommands",
     },
     CommandEntry {
         path: "/debug client",
@@ -151,10 +151,10 @@ mod tests {
 
     #[test]
     fn test_parse_redirect() {
-        assert_eq!(parse_redirect("/debug context"), ("/debug context", None));
+        assert_eq!(parse_redirect("/context"), ("/context", None));
         assert_eq!(
-            parse_redirect("/debug context > /tmp/out.txt"),
-            ("/debug context", Some("/tmp/out.txt"))
+            parse_redirect("/context > /tmp/out.txt"),
+            ("/context", Some("/tmp/out.txt"))
         );
     }
 
@@ -167,30 +167,30 @@ mod tests {
     }
 
     #[test]
-    fn test_debug_context_dispatches_to_daemon() {
-        match dispatch("/debug context") {
+    fn test_context_dispatches_to_daemon() {
+        match dispatch("/context") {
             ChatAction::DaemonQuery { query, redirect } => {
                 assert_eq!(query, "__cmd:context");
                 assert!(redirect.is_none());
             }
-            _ => panic!("expected DaemonDebug"),
+            _ => panic!("expected DaemonQuery"),
         }
     }
 
     #[test]
-    fn test_debug_context_with_redirect() {
-        match dispatch("/debug context > /tmp/ctx.txt") {
+    fn test_context_with_redirect() {
+        match dispatch("/context > /tmp/ctx.txt") {
             ChatAction::DaemonQuery { query, redirect } => {
                 assert_eq!(query, "__cmd:context");
                 assert_eq!(redirect.as_deref(), Some("/tmp/ctx.txt"));
             }
-            _ => panic!("expected DaemonDebug"),
+            _ => panic!("expected DaemonQuery"),
         }
     }
 
     #[test]
-    fn test_debug_template_is_local() {
-        match dispatch("/debug template") {
+    fn test_template_is_local() {
+        match dispatch("/template") {
             ChatAction::Command { result, redirect } => {
                 assert!(result.contains("{context}"));
                 assert!(redirect.is_none());
@@ -243,9 +243,9 @@ mod tests {
     #[test]
     fn test_completable_commands_returns_all_entries() {
         let cmds = completable_commands();
+        assert!(cmds.contains(&"/context".to_string()));
+        assert!(cmds.contains(&"/template".to_string()));
         assert!(cmds.contains(&"/debug".to_string()));
-        assert!(cmds.contains(&"/debug context".to_string()));
-        assert!(cmds.contains(&"/debug template".to_string()));
         assert!(cmds.contains(&"/debug client".to_string()));
         assert!(cmds.contains(&"/sessions".to_string()));
         assert_eq!(cmds.len(), COMMANDS.len());
