@@ -4,6 +4,7 @@ pub enum Osc133EventKind {
     CommandStart { command: Option<String>, cwd: Option<String> },
     OutputStart,
     CommandEnd { exit_code: i32 },
+    ReadlineLine { content: String },
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +118,11 @@ impl Osc133Detector {
             b"B" => Some(Osc133EventKind::CommandStart { command: None, cwd: None }),
             b"C" => Some(Osc133EventKind::OutputStart),
             _ => {
+                // RL;... — readline line report
+                if payload.len() >= 3 && payload[0] == b'R' && payload[1] == b'L' && payload[2] == b';' {
+                    let content = std::str::from_utf8(&payload[3..]).ok()?.to_string();
+                    return Some(Osc133EventKind::ReadlineLine { content });
+                }
                 if payload.len() >= 2 && payload[0] == b'B' && payload[1] == b';' {
                     // B;command_text;cwd:/path
                     let rest = &payload[2..];
@@ -318,5 +324,34 @@ mod tests {
                 cwd: Some("/home/user/project".into())
             }
         );
+    }
+
+    #[test]
+    fn test_readline_line_event() {
+        let mut detector = Osc133Detector::new();
+        let events = detector.feed(b"\x1b]133;RL;git status\x07");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].kind,
+            Osc133EventKind::ReadlineLine { content: "git status".into() }
+        );
+    }
+
+    #[test]
+    fn test_readline_line_empty() {
+        let mut detector = Osc133Detector::new();
+        let events = detector.feed(b"\x1b]133;RL;\x07");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].kind,
+            Osc133EventKind::ReadlineLine { content: String::new() }
+        );
+    }
+
+    #[test]
+    fn test_readline_line_stripped() {
+        let input = b"hello\x1b]133;RL;git status\x07world";
+        let result = strip_osc133(input);
+        assert_eq!(result, b"helloworld");
     }
 }

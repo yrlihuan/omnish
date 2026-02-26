@@ -34,6 +34,11 @@ __omnish_preexec() {
   printf '\033]133;C\007'
 }
 trap '__omnish_preexec' DEBUG
+
+__omnish_rl_report() {
+    printf '\033]133;RL;%s\007' "$READLINE_LINE"
+}
+bind -x '"\e[13337~": __omnish_rl_report'
 "#;
 
 /// Generate an rcfile that sources the user's original bashrc then loads the OSC 133 hook.

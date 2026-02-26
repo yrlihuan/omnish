@@ -19,6 +19,9 @@ pub struct ShellInputTracker {
     changed: bool,
     /// ESC sequence state: 0=normal, 1=saw ESC, 2=in CSI params
     esc_state: u8,
+    /// When true, a readline report is expected; `take_change()` returns None
+    /// to suppress stale completions until the real readline content arrives.
+    pending_rl_report: bool,
 }
 
 impl ShellInputTracker {
@@ -29,6 +32,7 @@ impl ShellInputTracker {
             sequence_id: 0,
             changed: false,
             esc_state: 0,
+            pending_rl_report: false,
         }
     }
 
@@ -130,8 +134,31 @@ impl ShellInputTracker {
         self.at_prompt
     }
 
+    /// Replace the tracked input with the real readline content reported by bash.
+    /// Only effective while at the prompt.
+    pub fn set_readline(&mut self, content: &str) {
+        if !self.at_prompt {
+            return;
+        }
+        self.input = content.to_string();
+        self.pending_rl_report = false;
+        self.bump();
+    }
+
+    /// Mark that a readline report is expected (e.g. after sending a trigger
+    /// sequence for Tab/Up/Down). While pending, `take_change()` returns None
+    /// to avoid triggering completions based on stale input.
+    pub fn mark_pending_report(&mut self) {
+        self.pending_rl_report = true;
+    }
+
     /// Check if input changed since last call, and return current state.
+    /// Returns None if a readline report is pending (to suppress stale completions).
     pub fn take_change(&mut self) -> Option<(&str, u64)> {
+        if self.pending_rl_report {
+            self.changed = false;
+            return None;
+        }
         if self.changed {
             self.changed = false;
             Some((&self.input, self.sequence_id))
@@ -267,5 +294,50 @@ mod tests {
         t.feed_forwarded(b"git");
         t.inject(" status");
         assert_eq!(t.input(), "git status");
+    }
+
+    #[test]
+    fn test_set_readline_updates_input() {
+        let mut t = ShellInputTracker::new();
+        t.feed_forwarded(b"gi");
+        let _ = t.take_change(); // consume
+        t.set_readline("git");
+        assert_eq!(t.input(), "git");
+        let (input, _seq) = t.take_change().unwrap();
+        assert_eq!(input, "git");
+    }
+
+    #[test]
+    fn test_pending_report_suppresses_change() {
+        let mut t = ShellInputTracker::new();
+        t.feed_forwarded(b"gi");
+        let _ = t.take_change(); // consume
+        t.mark_pending_report();
+        t.feed_forwarded(b"t");
+        // take_change returns None while pending
+        assert!(t.take_change().is_none());
+    }
+
+    #[test]
+    fn test_set_readline_clears_pending() {
+        let mut t = ShellInputTracker::new();
+        t.feed_forwarded(b"gi");
+        let _ = t.take_change();
+        t.mark_pending_report();
+        assert!(t.take_change().is_none());
+        t.set_readline("git");
+        // After set_readline, take_change works again
+        let (input, _seq) = t.take_change().unwrap();
+        assert_eq!(input, "git");
+    }
+
+    #[test]
+    fn test_set_readline_ignored_when_not_at_prompt() {
+        let mut t = ShellInputTracker::new();
+        t.feed_forwarded(b"ls");
+        t.feed_forwarded(&[0x0d]); // Enter — not at prompt
+        assert!(!t.at_prompt());
+        t.set_readline("should be ignored");
+        assert_eq!(t.input(), "");
     }
 }
