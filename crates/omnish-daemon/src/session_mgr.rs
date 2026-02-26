@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use omnish_common::config::ContextConfig;
 use omnish_context::recent::{GroupedFormatter, RecentCommands};
-use omnish_context::StreamReader;
+use omnish_context::{ContextStrategy, StreamReader};
 use omnish_store::command::CommandRecord;
 use omnish_store::session::SessionMeta;
 use omnish_store::stream::{read_range, StreamEntry, StreamWriter};
@@ -344,11 +344,14 @@ impl SessionManager {
             ended: bool,
             last_active: Instant,
             cmd_count: usize,
+            context_cmd_count: usize, // number of commands from this session that would be included in context
         }
 
-        let snapshots = {
+        // Collect snapshots and all commands under brief lock
+        let (mut snapshots, mut all_commands) = {
             let sessions = self.sessions.read().await;
             let mut snaps = Vec::new();
+            let mut all_cmds = Vec::new();
             for session in sessions.values() {
                 let commands = session.commands.read().await;
                 if commands.is_empty() {
@@ -362,13 +365,42 @@ impl SessionManager {
                     ended: meta.ended_at.is_some(),
                     last_active: sw.last_active,
                     cmd_count: commands.len(),
+                    context_cmd_count: 0, // will be calculated later
                 });
+                all_cmds.extend(commands.clone());
             }
-            snaps
+            (snaps, all_cmds)
         };
 
         if snapshots.is_empty() {
             return "(no sessions)".to_string();
+        }
+
+        // Calculate how many commands from each session would be included in context
+        if !all_commands.is_empty() {
+            // Sort commands by started_at (chronological order)
+            all_commands.sort_by_key(|c| c.started_at);
+
+            let total = self.context_config.detailed_commands + self.context_config.history_commands;
+            let strategy = RecentCommands::new(total)
+                .with_current_session(current_session_id, self.context_config.min_current_session_commands);
+
+            // Select commands that would be included in context
+            let selected = strategy.select_commands(&all_commands).await;
+
+            // Count selected commands per session
+            let mut context_counts: HashMap<String, usize> = HashMap::new();
+            for cmd in selected {
+                *context_counts.entry(cmd.session_id.clone()).or_insert(0) += 1;
+            }
+
+            // Update context_cmd_count in snapshots
+            for snapshot in &mut snapshots {
+                if let Some(count) = context_counts.get(&snapshot.session_id) {
+                    snapshot.context_cmd_count = *count;
+                }
+                // else remains 0
+            }
         }
 
         let mut entries = snapshots;
@@ -416,8 +448,8 @@ impl SessionManager {
                 let is_current = s.session_id == current_session_id;
                 let marker = if is_current { "*" } else { " " };
                 lines.push(format!(
-                    "  {} {} [active] cmds={} idle={}",
-                    marker, s.session_id, s.cmd_count, idle,
+                    "  {} {} [active] cmds={}/{} idle={}",
+                    marker, s.session_id, s.context_cmd_count, s.cmd_count, idle,
                 ));
             }
 
@@ -767,7 +799,7 @@ mod tests {
         // Should show correct dead session statistics
         assert!(output.contains("2 dead session(s), 5 command(s)"),
                 "Should aggregate dead session stats: {}", output);
-        assert!(output.contains("* active1 [active] cmds=1"),
+        assert!(output.contains("* active1 [active] cmds=1/1"),
                 "Should show active session with command count: {}", output);
     }
 
