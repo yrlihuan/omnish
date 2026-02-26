@@ -20,6 +20,7 @@ use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration};
 use uuid::Uuid;
 
 type MessageBuffer = Arc<Mutex<VecDeque<Message>>>;
@@ -785,7 +786,10 @@ fn command_basename(cmd: &str) -> &str {
 fn needs_readline_report(bytes: &[u8]) -> bool {
     for (i, &b) in bytes.iter().enumerate() {
         match b {
-            0x09 => return true, // Tab
+            // Tab is excluded: sending trigger interferes with bash's completion
+            // list display. We'll rely on other mechanisms to detect command line
+            // changes after tab completion.
+            0x09 => return false, // Tab - no trigger
             // Ctrl+R (0x12) is intentionally excluded: it enters isearch mode
             // which uses a different keymap where our bind -x doesn't exist,
             // causing "cannot find keymap for command". The pending_rl_report
