@@ -80,27 +80,40 @@ impl ShellCompleter {
 
     /// Check if debounce timer has expired and we should send a request.
     /// Now supports multiple concurrent requests.
-    pub fn should_request(&self, _current_input: &str) -> bool {
+    ///
+    /// 参数 current_sequence_id: 当前输入的序列ID（来自shell_input.sequence_id()）
+    /// 参数 current_input: 当前输入内容
+    pub fn should_request(&self, current_sequence_id: u64, _current_input: &str) -> bool {
         // Limit concurrent requests
         if self.active_requests.len() >= MAX_CONCURRENT_REQUESTS {
             return false;
         }
 
-        // Allow request if we haven't sent any requests yet
-        if self.sent_seq == 0 {
-            return match self.last_change {
-                Some(t) => t.elapsed().as_millis() >= DEBOUNCE_MS as u128,
-                None => false,
-            };
+        // Check debounce timer - we need some time after last change
+        let debounce_expired = match self.last_change {
+            Some(t) => t.elapsed().as_millis() >= DEBOUNCE_MS as u128,
+            None => false,
+        };
+
+        if !debounce_expired {
+            return false;
         }
 
-        // If we have a newer pending sequence than what was sent, allow request
-        // This handles the case where user typed more after previous requests
-        if self.pending_seq > self.sent_seq {
-            return match self.last_change {
-                Some(t) => t.elapsed().as_millis() >= DEBOUNCE_MS as u128,
-                None => false,
-            };
+        // Allow request if:
+        // 1. No requests have been sent yet (initial state)
+        // 2. Current input is different from what was sent (sequence changed)
+        if self.sent_seq == 0 || current_sequence_id > self.sent_seq {
+            return true;
+        }
+
+        // If current_sequence_id == sent_seq, we need to check if previous request timed out
+        // This allows retrying the same input after timeout, but prevents immediate duplicates
+        if current_sequence_id == self.sent_seq {
+            // Check if there's a timed-out request for this sequence
+            if let Some(request_state) = self.active_requests.get(&current_sequence_id) {
+                let request_age = request_state.sent_at.elapsed().as_millis();
+                return request_age >= IN_FLIGHT_TIMEOUT_MS as u128;
+            }
         }
 
         false
@@ -290,7 +303,7 @@ mod tests {
     fn test_debounce_not_ready_immediately() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("git", 1);
-        assert!(!c.should_request("git"));
+        assert!(!c.should_request(1, "git"));
     }
 
     #[test]
@@ -298,7 +311,7 @@ mod tests {
         let mut c = ShellCompleter::new();
         c.on_input_changed("g", 1);
         c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1));
-        assert!(c.should_request("g"));
+        assert!(c.should_request(1, "g"));
     }
 
     #[test]
@@ -306,7 +319,7 @@ mod tests {
         let mut c = ShellCompleter::new();
         c.on_input_changed("", 1);
         c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1));
-        assert!(c.should_request(""));
+        assert!(c.should_request(1, ""));
     }
 
     #[test]
@@ -314,7 +327,7 @@ mod tests {
         let mut c = ShellCompleter::new();
         c.on_input_changed("git sta", 5);
         c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1));
-        assert!(c.should_request("git sta"));
+        assert!(c.should_request(5, "git sta"));
     }
 
     #[test]
@@ -323,7 +336,7 @@ mod tests {
         c.on_input_changed("git sta", 5);
         c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1));
         c.mark_sent(5, "git sta");
-        assert!(!c.should_request("git sta"));
+        assert!(!c.should_request(5, "git sta"));
     }
 
     #[test]
@@ -697,13 +710,13 @@ mod tests {
         c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1)); // Debounce expired
 
         // First request
-        assert!(c.should_request("git"));
+        assert!(c.should_request(1, "git"));
         c.mark_sent(1, "git");
 
         // Second request should be allowed (concurrent)
         c.on_input_changed("git s", 2);
         c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1)); // Debounce expired
-        assert!(c.should_request("git s"));
+        assert!(c.should_request(2, "git s"));
         c.mark_sent(2, "git s");
 
         assert_eq!(c.active_requests.len(), 2);
@@ -717,7 +730,7 @@ mod tests {
         for i in 0..MAX_CONCURRENT_REQUESTS {
             c.on_input_changed(&format!("input{}", i), i as u64);
             c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1)); // Debounce expired
-            assert!(c.should_request(&format!("input{}", i)));
+            assert!(c.should_request(i as u64, &format!("input{}", i)));
             c.mark_sent(i as u64, &format!("input{}", i));
         }
 
@@ -726,7 +739,7 @@ mod tests {
         // Next request should be blocked
         c.on_input_changed("too_many", MAX_CONCURRENT_REQUESTS as u64);
         c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1)); // Debounce expired
-        assert!(!c.should_request("too_many"));
+        assert!(!c.should_request(MAX_CONCURRENT_REQUESTS as u64, "too_many"));
     }
 
     #[test]
@@ -795,7 +808,7 @@ mod tests {
         // should_request should allow new request due to timeout
         c.on_input_changed("test new", 2);
         c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1)); // Debounce expired
-        assert!(c.should_request("test new"));
+        assert!(c.should_request(2, "test new"));
 
         // Cleanup should remove timed out request
         let cleaned = c.cleanup_timed_out_requests();
@@ -947,7 +960,7 @@ mod tests {
         assert_eq!(c.sent_seq, 24);
 
         // should_request should return false - no new input means no new requests
-        assert!(!c.should_request("git"), "Should not allow new requests when there's no new input, even with timed-out requests");
+        assert!(!c.should_request(24, "git"), "Should not allow new requests when there's no new input, even with timed-out requests");
 
         // Cleanup should remove the timed-out request
         let cleaned = c.cleanup_timed_out_requests();
@@ -955,13 +968,13 @@ mod tests {
         assert_eq!(c.active_requests.len(), 0);
 
         // After cleanup, still should not allow requests without new input
-        assert!(!c.should_request("git"), "Should still not allow requests without new input");
+        assert!(!c.should_request(24, "git"), "Should still not allow requests without new input");
 
         // Now simulate new user input
         c.on_input_changed("git s", 25);
         c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1)); // Debounce expired
 
         // Now should_request should return true
-        assert!(c.should_request("git s"), "Should allow new request when there's new input");
+        assert!(c.should_request(25, "git s"), "Should allow new request when there's new input");
     }
 }

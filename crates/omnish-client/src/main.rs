@@ -519,7 +519,7 @@ async fn main() -> Result<()> {
             // Clean up timed-out requests first
             let _cleaned = shell_completer.cleanup_timed_out_requests();
 
-            if at_prompt && !in_chat && shell_completer.should_request(current) {
+            if at_prompt && !in_chat && shell_completer.should_request(shell_input.sequence_id(), current) {
                 let seq = shell_input.sequence_id();
                 if let Some(ref rpc) = daemon_conn {
                     let msg = completion::ShellCompleter::build_request(
@@ -825,7 +825,7 @@ fn debug_client_state(
     output.push_str(&format!("  pending_seq: {}\n", pending_seq));
     output.push_str(&format!("  active_request_ids: {:?}\n", active_ids));
     output.push_str(&format!("  should_request: {}\n",
-        shell_completer.should_request(shell_input.input())));
+        shell_completer.should_request(shell_input.sequence_id(), shell_input.input())));
     output.push_str(&format!("  ghost: {:?}\n", shell_completer.ghost()));
     output.push('\n');
 
