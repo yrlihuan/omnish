@@ -186,7 +186,26 @@ async fn handle_llm_request(
         session_ids: vec![req.session_id.clone()],
     };
 
-    backend.complete(&llm_req).await
+    let start = std::time::Instant::now();
+    let result = backend.complete(&llm_req).await;
+    let duration = start.elapsed();
+
+    match &result {
+        Ok(response) => {
+            tracing::info!(
+                "LLM request completed in {:?} (session={}, model={}, type=manual)",
+                duration, req.session_id, response.model
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                "LLM request failed after {:?} (session={}, error={})",
+                duration, req.session_id, e
+            );
+        }
+    }
+
+    result
 }
 
 async fn handle_completion_request(
@@ -213,8 +232,27 @@ async fn handle_completion_request(
         session_ids: vec![req.session_id.clone()],
     };
 
-    let response = backend.complete(&llm_req).await?;
-    tracing::debug!("Completion LLM raw response: {:?}", response.content);
+    let start = std::time::Instant::now();
+    let result = backend.complete(&llm_req).await;
+    let duration = start.elapsed();
+
+    match &result {
+        Ok(response) => {
+            tracing::info!(
+                "Completion LLM request completed in {:?} (session={}, model={}, sequence_id={}, input_len={})",
+                duration, req.session_id, response.model, req.sequence_id, req.input.len()
+            );
+            tracing::debug!("Completion LLM raw response: {:?}", response.content);
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Completion LLM request failed after {:?} (session={}, sequence_id={}, input_len={}, error={})",
+                duration, req.session_id, req.sequence_id, req.input.len(), e
+            );
+        }
+    }
+
+    let response = result?;
     parse_completion_suggestions(&response.content)
 }
 
