@@ -82,6 +82,11 @@ fn resolve_shell(config_shell: &str) -> String {
 
 #[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("omnish {}", omnish_common::VERSION);
+        return Ok(());
+    }
+
     let config = load_client_config().unwrap_or_default();
 
     let session_id = Uuid::new_v4().to_string()[..8].to_string();

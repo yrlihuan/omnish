@@ -11,6 +11,11 @@ use server::DaemonServer;
 use std::sync::Arc;
 
 fn main() -> Result<()> {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("omnish-daemon {}", omnish_common::VERSION);
+        return Ok(());
+    }
+
     let worker_threads = std::thread::available_parallelism()
         .map(|n| n.get().min(16))
         .unwrap_or(4);
