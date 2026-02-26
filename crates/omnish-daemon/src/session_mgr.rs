@@ -359,15 +359,18 @@ impl SessionManager {
                 }
                 let meta = session.meta.read().await;
                 let sw = session.stream_writer.lock().await;
+                // Count only meaningful commands (command_line.is_some())
+                let cmd_count = commands.iter().filter(|c| c.command_line.is_some()).count();
                 snaps.push(SessionSnapshot {
                     session_id: meta.session_id.clone(),
                     hostname: meta.attrs.get("hostname").cloned(),
                     ended: meta.ended_at.is_some(),
                     last_active: sw.last_active,
-                    cmd_count: commands.len(),
+                    cmd_count,
                     context_cmd_count: 0, // will be calculated later
                 });
-                all_cmds.extend(commands.clone());
+                // Only include meaningful commands in all_commands
+                all_cmds.extend(commands.iter().filter(|c| c.command_line.is_some()).cloned());
             }
             (snaps, all_cmds)
         };
