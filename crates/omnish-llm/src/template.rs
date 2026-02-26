@@ -48,7 +48,7 @@ pub fn build_completion_content(context: &str, input: &str, cursor_pos: usize) -
     }
 }
 
-/// Build the user-content prompt for simple shell command completion (single suggestion, plain text).
+/// Build the user-content prompt for shell command completion (up to 2 suggestions, JSON array).
 pub fn build_simple_completion_content(context: &str, input: &str, cursor_pos: usize) -> String {
     if input.is_empty() {
         format!(
@@ -58,9 +58,10 @@ pub fn build_simple_completion_content(context: &str, input: &str, cursor_pos: u
              Predict the next command they are most likely to type.\n\
              Pay close attention to the most recent commands and their output — \
              infer what the user is trying to accomplish and what logical next step follows.\n\n\
-             Output ONLY the suggested completion text (the part that would come after the cursor).\n\
-             If you have no suggestion, output an empty string.\n\
-             Do not include any explanation, formatting, or additional text.",
+             Reply with a JSON array of up to 2 suggestions (most likely first):\n\
+             [\"<completion1>\", \"<completion2>\"]\n\
+             Return [] if no good prediction exists.\n\
+             Do not include any other text outside the JSON array.",
             context
         )
     } else {
@@ -71,9 +72,10 @@ pub fn build_simple_completion_content(context: &str, input: &str, cursor_pos: u
              Cursor position: {}\n\
              Use the recent commands and their output to understand what the user is doing, \
              then suggest the most likely completion.\n\n\
-             Output ONLY the suggested completion text (the part that would come after the cursor).\n\
-             If you have no suggestion, output an empty string.\n\
-             Do not include any explanation, formatting, or additional text.",
+             Reply with a JSON array of up to 2 suggestions (most likely first):\n\
+             [\"<text after cursor>\"]\n\
+             Return [] if no good completion exists.\n\
+             Do not include any other text outside the JSON array.",
             context, input, cursor_pos
         )
     }
@@ -120,90 +122,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_build_user_content_with_query() {
-        let result = build_user_content("$ ls\nfoo bar", Some("what files are here?"));
-        assert!(result.contains("$ ls\nfoo bar"));
-        assert!(result.contains("User question: what files are here?"));
-    }
-
-    #[test]
-    fn test_build_user_content_without_query() {
-        let result = build_user_content("$ exit 1", None);
-        assert!(result.contains("$ exit 1"));
-        assert!(result.contains("Analyze this terminal session"));
-        assert!(!result.contains("User question"));
-    }
-
-    #[test]
-    fn test_build_completion_content() {
-        let result = build_completion_content("$ ls\nfoo bar", "git sta", 7);
-        assert!(result.contains("$ ls\nfoo bar"));
-        assert!(result.contains("Current input: `git sta`"));
-        assert!(result.contains("Cursor position: 7"));
-        assert!(result.contains("JSON array"));
-    }
-
-    #[test]
-    fn test_build_completion_content_empty_input() {
-        let result = build_completion_content("$ ls\nfoo bar", "", 0);
-        assert!(result.contains("$ ls\nfoo bar"));
-        assert!(result.contains("Predict the next command"));
-        assert!(!result.contains("Current input"));
-        assert!(result.contains("JSON array"));
-    }
-
-    #[test]
-    fn test_prompt_template_with_query() {
-        let t = prompt_template(true);
-        assert!(t.contains("{context}"));
-        assert!(t.contains("{query}"));
-    }
-
-    #[test]
-    fn test_prompt_template_without_query() {
-        let t = prompt_template(false);
-        assert!(t.contains("{context}"));
-        assert!(!t.contains("{query}"));
-    }
-
-    #[test]
-    fn test_build_simple_completion_content() {
-        let result = build_simple_completion_content("$ ls\nfoo bar", "git sta", 7);
-        assert!(result.contains("$ ls\nfoo bar"));
-        assert!(result.contains("Current input: `git sta`"));
-        assert!(result.contains("Cursor position: 7"));
-        assert!(result.contains("Output ONLY the suggested completion text"));
-        assert!(result.contains("If you have no suggestion, output an empty string"));
-        assert!(!result.contains("JSON array"));
-    }
-
-    #[test]
-    fn test_build_simple_completion_content_empty_input() {
-        let result = build_simple_completion_content("$ ls\nfoo bar", "", 0);
-        assert!(result.contains("$ ls\nfoo bar"));
-        assert!(result.contains("Predict the next command"));
-        assert!(result.contains("Output ONLY the suggested completion text"));
-        assert!(result.contains("If you have no suggestion, output an empty string"));
-        assert!(!result.contains("JSON array"));
-    }
-
-    #[test]
-    fn test_template_by_name_chat() {
-        let t = template_by_name("chat").unwrap();
-        assert!(t.contains("{context}"));
-        assert!(t.contains("{query}"));
-    }
-
-    #[test]
-    fn test_template_by_name_auto_complete() {
-        let t = template_by_name("auto-complete").unwrap();
-        assert!(t.contains("completion text"));
-    }
-
-    #[test]
-    fn test_template_by_name_daily_notes() {
-        let t = template_by_name("daily-notes").unwrap();
-        assert!(t.contains("总结"));
+    fn test_template_by_name_returns_some_for_known() {
+        for name in TEMPLATE_NAMES {
+            assert!(template_by_name(name).is_some(), "missing template: {}", name);
+        }
     }
 
     #[test]

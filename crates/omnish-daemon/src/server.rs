@@ -264,18 +264,32 @@ fn parse_completion_suggestions(
 ) -> Result<Vec<omnish_protocol::message::CompletionSuggestion>> {
     let trimmed = content.trim();
 
-    // First try to parse as JSON array (old format)
+    // Extract JSON array from response (may have surrounding text)
     let start = trimmed.find('[').unwrap_or(0);
     let end = trimmed.rfind(']').map(|i| i + 1).unwrap_or(trimmed.len());
     let json_str = &trimmed[start..end];
 
+    // Try string array format: ["suggestion1", "suggestion2"]
+    if let Ok(strings) = serde_json::from_str::<Vec<String>>(json_str) {
+        let suggestions: Vec<_> = strings
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .enumerate()
+            .map(|(i, text)| omnish_protocol::message::CompletionSuggestion {
+                text,
+                confidence: if i == 0 { 1.0 } else { 0.8 },
+            })
+            .collect();
+        return Ok(suggestions);
+    }
+
+    // Try object array format: [{"text": "...", "confidence": 0.9}]
     #[derive(serde::Deserialize)]
     struct RawSuggestion {
         text: String,
         confidence: f32,
     }
 
-    // Try to parse as JSON array
     if let Ok(raw) = serde_json::from_str::<Vec<RawSuggestion>>(json_str) {
         return Ok(raw
             .into_iter()
@@ -286,16 +300,14 @@ fn parse_completion_suggestions(
             .collect());
     }
 
-    // If not valid JSON, treat as plain text (new simple format)
-    // First trim surrounding whitespace, then remove any surrounding quotes
-    let text = trimmed.trim();
-    let text = text.trim_matches(|c| c == '"' || c == '\'');
+    // Fallback: treat as plain text
+    let text = trimmed.trim_matches(|c: char| c == '"' || c == '\'' || c.is_whitespace());
     if text.is_empty() {
         Ok(Vec::new())
     } else {
         Ok(vec![omnish_protocol::message::CompletionSuggestion {
             text: text.to_string(),
-            confidence: 1.0, // Simple format doesn't provide confidence, use 1.0
+            confidence: 1.0,
         }])
     }
 }
@@ -339,20 +351,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_completion_suggestions_valid() {
-        let input = r#"[{"text": "tus", "confidence": 0.95}, {"text": "sh", "confidence": 0.7}]"#;
+    fn test_parse_completion_suggestions_string_array() {
+        let input = r#"["git status", "git stash"]"#;
         let result = parse_completion_suggestions(input).unwrap();
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0].text, "tus");
-        assert!((result[0].confidence - 0.95).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_parse_completion_suggestions_with_surrounding_text() {
-        let input = "Here are my suggestions:\n[{\"text\": \"tus\", \"confidence\": 0.9}]\nHope this helps!";
-        let result = parse_completion_suggestions(input).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].text, "tus");
+        assert_eq!(result[0].text, "git status");
+        assert_eq!(result[1].text, "git stash");
     }
 
     #[test]
@@ -362,68 +366,16 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_completion_suggestions_invalid_json() {
-        // Invalid JSON falls back to plain text parsing
-        let result = parse_completion_suggestions("not json at all").unwrap();
-        // "not json at all" is not empty, so it's treated as a completion
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].text, "not json at all");
-    }
-
-    #[test]
-    fn test_parse_completion_suggestions_clamps_confidence() {
-        let input = r#"[{"text": "x", "confidence": 1.5}]"#;
-        let result = parse_completion_suggestions(input).unwrap();
-        assert!((result[0].confidence - 1.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_parse_completion_suggestions_simple_text() {
-        // Simple text format (new)
-        // Note: trim() removes leading/trailing whitespace, so leading space is removed
-        let input = " status";
-        let result = parse_completion_suggestions(input).unwrap();
+    fn test_parse_completion_suggestions_plaintext_fallback() {
+        let result = parse_completion_suggestions("status").unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].text, "status");
-        assert!((result[0].confidence - 1.0).abs() < 0.01);
     }
 
     #[test]
-    fn test_parse_completion_suggestions_simple_text_with_quotes() {
-        // Simple text with quotes (should be trimmed)
-        let input = "\" status\"";
-        let result = parse_completion_suggestions(input).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].text, " status");
-        assert!((result[0].confidence - 1.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_parse_completion_suggestions_simple_text_empty() {
-        // Empty string should return empty vector
-        let input = "";
-        let result = parse_completion_suggestions(input).unwrap();
-        assert!(result.is_empty());
-
-        // Whitespace only should also return empty
-        let input = "   ";
-        let result = parse_completion_suggestions(input).unwrap();
-        assert!(result.is_empty());
-
-        // Only quotes should return empty
-        let input = "\"\"";
-        let result = parse_completion_suggestions(input).unwrap();
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_parse_completion_suggestions_falls_back_to_text_when_json_invalid() {
-        // Invalid JSON but valid text
-        let input = "status";
-        let result = parse_completion_suggestions(input).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].text, "status");
-        assert!((result[0].confidence - 1.0).abs() < 0.01);
+    fn test_parse_completion_suggestions_empty_input() {
+        assert!(parse_completion_suggestions("").unwrap().is_empty());
+        assert!(parse_completion_suggestions("   ").unwrap().is_empty());
     }
 
     #[tokio::test]

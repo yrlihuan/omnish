@@ -239,7 +239,6 @@ mod tests {
         match dispatch("/template auto-complete") {
             ChatAction::Command { result, redirect } => {
                 assert!(result.contains("auto-complete"));
-                assert!(result.contains("completion text"));
                 assert!(redirect.is_none());
             }
             _ => panic!("expected Command"),
