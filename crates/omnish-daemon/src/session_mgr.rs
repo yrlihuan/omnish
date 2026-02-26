@@ -452,9 +452,14 @@ impl SessionManager {
                 let idle = format_idle(s.last_active.elapsed().as_secs());
                 let is_current = s.session_id == current_session_id;
                 let marker = if is_current { "*" } else { " " };
+                let (color_start, color_end) = if is_current {
+                    ("", "")
+                } else {
+                    ("\x1b[2m", "\x1b[0m")
+                };
                 lines.push(format!(
-                    "  {} {} [active] cmds={}/{} idle={}",
-                    marker, s.session_id, s.context_cmd_count, s.cmd_count, idle,
+                    "  {}{} {} [active] cmds={}/{} idle={}{}",
+                    color_start, marker, s.session_id, s.context_cmd_count, s.cmd_count, idle, color_end,
                 ));
             }
 
