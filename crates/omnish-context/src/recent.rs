@@ -4,6 +4,15 @@ use omnish_store::command::CommandRecord;
 use crate::format_utils::{assign_term_labels, format_relative_time, truncate_lines};
 use crate::{CommandContext, ContextFormatter, ContextStrategy};
 
+fn format_command_prefix(hostname: &Option<String>, cwd: &Option<String>) -> String {
+    match (hostname, cwd) {
+        (Some(host), Some(cwd)) => format!("{}:{} ", host, cwd),
+        (Some(host), None) => format!("{} ", host),
+        (None, Some(cwd)) => format!("{} ", cwd),
+        (None, None) => String::new(),
+    }
+}
+
 /// Selects the most recent N commands.
 pub struct RecentCommands {
     max: usize,
@@ -62,7 +71,8 @@ impl ContextFormatter for GroupedFormatter {
             let mut history_lines = vec!["--- History ---".to_string()];
             for cmd in history {
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
-                history_lines.push(format!("$ {}", cmd_line));
+                let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
+                history_lines.push(format!("{}$ {}", prefix, cmd_line));
             }
             sections.push(history_lines.join("\n"));
         }
@@ -98,9 +108,8 @@ impl ContextFormatter for GroupedFormatter {
 
                 let mut group_lines = vec![header];
                 for cmd in detailed.iter().filter(|c| &c.session_id == session_id) {
-                    let time_str = format_relative_time(cmd.started_at, self.now_ms);
                     let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
-                    let cwd_prefix = cmd.cwd.as_deref().map(|p| format!("{} ", p)).unwrap_or_default();
+                    let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
                     let max_lines = self.head_lines + self.tail_lines;
                     let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
 
@@ -109,9 +118,9 @@ impl ContextFormatter for GroupedFormatter {
                         _ => String::new(),
                     };
                     if output.is_empty() {
-                        group_lines.push(format!("[{}] {}$ {}{}", time_str, cwd_prefix, cmd_line, failed_tag));
+                        group_lines.push(format!("{}$ {}{}", prefix, cmd_line, failed_tag));
                     } else {
-                        group_lines.push(format!("[{}] {}$ {}{}\n{}", time_str, cwd_prefix, cmd_line, failed_tag, output));
+                        group_lines.push(format!("{}$ {}{}\n{}", prefix, cmd_line, failed_tag, output));
                     }
                 }
 
@@ -155,7 +164,8 @@ impl ContextFormatter for InterleavedFormatter {
             let mut history_lines = vec!["--- History ---".to_string()];
             for cmd in history {
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
-                history_lines.push(format!("$ {}", cmd_line));
+                let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
+                history_lines.push(format!("{}$ {}", prefix, cmd_line));
             }
             sections.push(history_lines.join("\n"));
         }
@@ -168,7 +178,6 @@ impl ContextFormatter for InterleavedFormatter {
             sorted.sort_by_key(|c| c.started_at);
 
             for cmd in sorted {
-                let time_str = format_relative_time(cmd.started_at, self.now_ms);
                 let label = labels.get(&cmd.session_id).unwrap();
                 let is_current = cmd.session_id == self.current_session_id;
                 let label_str = if is_current {
@@ -177,7 +186,7 @@ impl ContextFormatter for InterleavedFormatter {
                     label.clone()
                 };
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
-                let cwd_prefix = cmd.cwd.as_deref().map(|p| format!("{} ", p)).unwrap_or_default();
+                let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
                 let max_lines = self.head_lines + self.tail_lines;
                 let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
 
@@ -185,10 +194,11 @@ impl ContextFormatter for InterleavedFormatter {
                     Some(code) if code != 0 => format!("  [FAILED: {}]", code),
                     _ => String::new(),
                 };
+                let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
                 if output.is_empty() {
-                    sections.push(format!("[{}] {} {}$ {}{}", time_str, label_str, cwd_prefix, cmd_line, failed_tag));
+                    sections.push(format!("{} {}$ {}{}", label_str, prefix, cmd_line, failed_tag));
                 } else {
-                    sections.push(format!("[{}] {} {}$ {}{}\n{}", time_str, label_str, cwd_prefix, cmd_line, failed_tag, output));
+                    sections.push(format!("{} {}$ {}{}\n{}", label_str, prefix, cmd_line, failed_tag, output));
                 }
             }
         }
@@ -301,7 +311,7 @@ mod tests {
         let formatter = GroupedFormatter::new("sess-a", 60000, 10, 10);
         let result = formatter.format(&[], &detailed);
         assert!(result.contains("--- term A [current] ---"));
-        assert!(result.contains("[30s ago] $ ls"));
+        assert!(result.contains("$ ls"));
     }
 
     #[test]
@@ -509,5 +519,53 @@ mod tests {
         let formatted = formatter.format(&[], &commands);
         assert!(formatted.contains("/home/user/project $ ls -la"),
                 "Formatted output should include cwd: {}", formatted);
+    }
+
+    #[test]
+    fn test_command_format_with_hostname_and_cwd() {
+        // Test that command includes hostname:cwd prefix when both are present
+        let context = CommandContext {
+            session_id: "sess1".into(),
+            hostname: Some("myhost".into()),
+            command_line: Some("ls -la".into()),
+            cwd: Some("/home/user/project".into()),
+            started_at: 1000,
+            ended_at: Some(1002),
+            output: "".into(),
+            exit_code: Some(0),
+        };
+        let commands = vec![context];
+        let formatter = GroupedFormatter::new("sess1", 10000, 5, 5);
+        let formatted = formatter.format(&[], &commands);
+        // Should show "myhost:/home/user/project $ ls -la" (without time)
+        assert!(formatted.contains("myhost:/home/user/project $ ls -la"),
+                "Formatted output should include hostname:cwd prefix: {}", formatted);
+        // Should NOT contain time prefix "[...]"
+        assert!(!formatted.contains("ago]"),
+                "Formatted output should not contain time: {}", formatted);
+    }
+
+    #[test]
+    fn test_history_format_with_hostname_and_cwd() {
+        // Test that history section includes hostname:cwd prefix
+        let history = vec![
+            CommandContext {
+                session_id: "sess1".into(),
+                hostname: Some("myhost".into()),
+                command_line: Some("cd /tmp".into()),
+                cwd: Some("/home/user".into()),
+                started_at: 1000,
+                ended_at: Some(1002),
+                output: "".into(),
+                exit_code: Some(0),
+            },
+        ];
+        let formatter = GroupedFormatter::new("sess1", 10000, 5, 5);
+        let formatted = formatter.format(&history, &[]);
+        // History should show "myhost:/home/user $ cd /tmp"
+        assert!(formatted.contains("myhost:/home/user $ cd /tmp"),
+                "History should include hostname:cwd prefix: {}", formatted);
+        assert!(formatted.contains("--- History ---"),
+                "Should have history section: {}", formatted);
     }
 }
