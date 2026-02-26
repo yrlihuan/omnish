@@ -238,17 +238,25 @@ async fn main() -> Result<()> {
                             // Forward these bytes to PTY
                             proxy.write_all(&bytes)?;
 
-                            // Check if forwarded bytes contain keys that modify
-                            // readline state (Tab, Up, Down, Ctrl+R). If so,
-                            // send a trigger sequence so bash reports the real
-                            // READLINE_LINE, and suppress stale completions.
-                            if needs_readline_report(&bytes) && shell_input.at_prompt() {
-                                proxy.write_all(b"\x1b[13337~")?;
-                                shell_input.mark_pending_report();
-                                // Clear current ghost text since input will change
-                                if shell_completer.ghost().is_some() {
-                                    shell_completer.clear();
-                                    nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
+                            if shell_input.at_prompt() {
+                                if needs_readline_report(&bytes) {
+                                    // Tab, Up, Down modify readline state — send
+                                    // trigger so bash reports the real READLINE_LINE.
+                                    proxy.write_all(b"\x1b[13337~")?;
+                                    shell_input.mark_pending_report();
+                                    if shell_completer.ghost().is_some() {
+                                        shell_completer.clear();
+                                        nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
+                                    }
+                                } else if bytes.contains(&0x12) {
+                                    // Ctrl+R enters isearch mode (different keymap)
+                                    // so we can't send the trigger, but still suppress
+                                    // stale completions until the next prompt event.
+                                    shell_input.mark_pending_report();
+                                    if shell_completer.ghost().is_some() {
+                                        shell_completer.clear();
+                                        nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
+                                    }
                                 }
                             }
 
@@ -778,7 +786,10 @@ fn needs_readline_report(bytes: &[u8]) -> bool {
     for (i, &b) in bytes.iter().enumerate() {
         match b {
             0x09 => return true, // Tab
-            0x12 => return true, // Ctrl+R (reverse search)
+            // Ctrl+R (0x12) is intentionally excluded: it enters isearch mode
+            // which uses a different keymap where our bind -x doesn't exist,
+            // causing "cannot find keymap for command". The pending_rl_report
+            // mechanism serves as a fallback for Ctrl+R.
             0x1b if bytes.get(i + 1) == Some(&b'[') => {
                 match bytes.get(i + 2) {
                     Some(b'A') | Some(b'B') => return true, // Up / Down
