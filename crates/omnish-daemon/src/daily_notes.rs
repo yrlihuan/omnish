@@ -83,7 +83,10 @@ async fn generate_daily_note(
         let command_line = cmd.command_line.as_deref().unwrap_or("?");
         // Escape pipes in markdown table cells
         let command_line = command_line.replace('|', "\\|");
-        md.push_str(&format!("| {} | {}:{} | {} |\n", time, host, cwd, command_line));
+        md.push_str(&format!(
+            "| {} | {}:{} | {} |\n",
+            time, host, cwd, command_line
+        ));
     }
 
     // Try LLM summary

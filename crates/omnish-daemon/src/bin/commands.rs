@@ -50,7 +50,9 @@ fn load_all_commands(base: &PathBuf, session_filter: Option<&str>) -> Result<Vec
 
         let commands = CommandRecord::load_all(&dir).unwrap_or_default();
         for record in commands.into_iter().filter(|r| {
-            r.command_line.as_ref().map_or(false, |c| !c.trim().is_empty())
+            r.command_line
+                .as_ref()
+                .map_or(false, |c| !c.trim().is_empty())
         }) {
             all.push(DisplayCommand {
                 record,
@@ -100,11 +102,7 @@ fn print_commands(commands: &[DisplayCommand], limit: usize) {
     for cmd in slice {
         let session = &cmd.record.session_id;
         let time = format_timestamp(cmd.record.started_at);
-        let command_line = cmd
-            .record
-            .command_line
-            .as_deref()
-            .unwrap_or("(unknown)");
+        let command_line = cmd.record.command_line.as_deref().unwrap_or("(unknown)");
         let nested = if cmd.parent_session_id.is_some() {
             " [N]"
         } else {
@@ -135,10 +133,7 @@ fn print_commands(commands: &[DisplayCommand], limit: usize) {
 
 fn truncate_summary(summary: &str, max_len: usize) -> String {
     // Take first non-empty line, truncate
-    let first_line = summary
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("");
+    let first_line = summary.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     truncate_line(first_line.trim(), max_len)
 }
 
@@ -171,7 +166,9 @@ fn main() -> Result<()> {
                 println!("omnish-commands: list recent commands from stored sessions");
                 println!();
                 println!("Usage:");
-                println!("  omnish-commands              # show last 20 commands (leaf sessions only)");
+                println!(
+                    "  omnish-commands              # show last 20 commands (leaf sessions only)"
+                );
                 println!("  omnish-commands -a           # show all sessions including nested");
                 println!("  omnish-commands -n 50        # show last 50");
                 println!("  omnish-commands -s abc123    # filter by session ID prefix");

@@ -28,8 +28,7 @@ async fn async_main() -> Result<()> {
     let config = load_daemon_config()?;
 
     // Environment variable takes precedence over config file
-    let socket_path = std::env::var("OMNISH_SOCKET")
-        .unwrap_or_else(|_| config.listen_addr.clone());
+    let socket_path = std::env::var("OMNISH_SOCKET").unwrap_or_else(|_| config.listen_addr.clone());
 
     let store_dir = std::path::PathBuf::from(&config.sessions_dir);
 
@@ -77,7 +76,10 @@ async fn async_main() -> Result<()> {
             notes_dir,
             daily_notes_config.schedule_hour,
         );
-        tracing::info!("daily notes enabled (schedule_hour={})", daily_notes_config.schedule_hour);
+        tracing::info!(
+            "daily notes enabled (schedule_hour={})",
+            daily_notes_config.schedule_hour
+        );
     }
 
     let server = DaemonServer::new(session_mgr, llm_backend);
