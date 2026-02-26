@@ -237,6 +237,9 @@ pub struct ContextConfig {
     /// Evict sessions from memory after this many hours of inactivity.
     #[serde(default = "default_session_evict_hours")]
     pub session_evict_hours: u64,
+    /// Minimum number of commands to keep from the current session.
+    #[serde(default = "default_min_current_session_commands")]
+    pub min_current_session_commands: usize,
 }
 
 impl Default for ContextConfig {
@@ -248,6 +251,7 @@ impl Default for ContextConfig {
             tail_lines: default_tail_lines(),
             max_line_width: default_max_line_width(),
             session_evict_hours: default_session_evict_hours(),
+            min_current_session_commands: default_min_current_session_commands(),
         }
     }
 }
@@ -274,4 +278,8 @@ fn default_max_line_width() -> usize {
 
 fn default_session_evict_hours() -> u64 {
     48
+}
+
+fn default_min_current_session_commands() -> usize {
+    5
 }

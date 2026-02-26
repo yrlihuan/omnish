@@ -442,7 +442,8 @@ impl SessionManager {
         let reader = FileStreamReader { stream_path };
         let cc = &self.context_config;
         let total = cc.detailed_commands + cc.history_commands;
-        let strategy = RecentCommands::new(total);
+        let strategy = RecentCommands::new(total)
+            .with_current_session(session_id, cc.min_current_session_commands);
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -512,7 +513,8 @@ impl SessionManager {
         // Build context outside all locks
         let reader = MultiSessionReader { readers: offset_to_path };
         let total = cc.detailed_commands + cc.history_commands;
-        let strategy = RecentCommands::new(total);
+        let strategy = RecentCommands::new(total)
+            .with_current_session(current_session_id, cc.min_current_session_commands);
         let formatter = GroupedFormatter::new(current_session_id, now_ms, cc.head_lines, cc.tail_lines);
         omnish_context::build_context(&strategy, &formatter, &all_commands, &reader, &hostnames, cc.detailed_commands, cc.max_line_width).await
     }

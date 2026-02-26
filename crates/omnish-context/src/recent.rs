@@ -16,11 +16,23 @@ fn format_command_prefix(hostname: &Option<String>, cwd: &Option<String>) -> Str
 /// Selects the most recent N commands.
 pub struct RecentCommands {
     max: usize,
+    current_session_id: Option<String>,
+    min_current_session_commands: usize,
 }
 
 impl RecentCommands {
     pub fn new(max: usize) -> Self {
-        Self { max }
+        Self {
+            max,
+            current_session_id: None,
+            min_current_session_commands: 0,
+        }
+    }
+
+    pub fn with_current_session(mut self, session_id: &str, min_commands: usize) -> Self {
+        self.current_session_id = Some(session_id.to_string());
+        self.min_current_session_commands = min_commands;
+        self
     }
 }
 
@@ -31,11 +43,106 @@ impl ContextStrategy for RecentCommands {
         let meaningful: Vec<_> = commands.iter()
             .filter(|c| c.command_line.is_some())
             .collect();
-        if meaningful.len() > self.max {
+
+        if meaningful.is_empty() {
+            return Vec::new();
+        }
+
+        // If no current session or minimum is 0, use simple recent selection
+        if self.current_session_id.is_none() || self.min_current_session_commands == 0 {
+            if meaningful.len() > self.max {
+                return meaningful[meaningful.len() - self.max..].to_vec();
+            } else {
+                return meaningful;
+            }
+        }
+
+        let current_session_id = self.current_session_id.as_ref().unwrap();
+
+        // Separate commands by session
+        let mut current_session_commands: Vec<&CommandRecord> = Vec::new();
+        let mut other_commands: Vec<&CommandRecord> = Vec::new();
+
+        for cmd in &meaningful {
+            if &cmd.session_id == current_session_id {
+                current_session_commands.push(cmd);
+            } else {
+                other_commands.push(cmd);
+            }
+        }
+
+        // Sort by started_at (already sorted in meaningful, but we separated)
+        // Both vectors are already in order because meaningful is in order
+
+        // Start with most recent commands overall
+        let mut selected: Vec<&CommandRecord> = Vec::new();
+        let recent_overall = if meaningful.len() > self.max {
             meaningful[meaningful.len() - self.max..].to_vec()
         } else {
-            meaningful
+            meaningful.clone()
+        };
+
+        // Count current session commands in recent overall
+        let current_in_recent = recent_overall.iter()
+            .filter(|cmd| &cmd.session_id == current_session_id)
+            .count();
+
+        if current_in_recent >= self.min_current_session_commands {
+            // Already satisfied, return recent overall
+            return recent_overall;
         }
+
+        // Need more current session commands
+        let needed = self.min_current_session_commands - current_in_recent;
+
+        // Get additional current session commands (most recent ones not already in recent_overall)
+        let mut additional_current: Vec<&CommandRecord> = Vec::new();
+        for cmd in current_session_commands.iter().rev() {
+            // Check if cmd is already in recent_overall using pointer equality
+            let mut found = false;
+            for recent_cmd in &recent_overall {
+                if std::ptr::eq(*cmd, *recent_cmd) {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                additional_current.push(cmd);
+                if additional_current.len() >= needed {
+                    break;
+                }
+            }
+        }
+
+        // Combine: start with recent_overall, add additional_current
+        selected.extend_from_slice(&recent_overall);
+        selected.extend_from_slice(&additional_current);
+
+        // If we exceeded max, remove oldest non-current commands
+        if selected.len() > self.max {
+            let to_remove = selected.len() - self.max;
+            let mut removed = 0;
+            selected.retain(|cmd| {
+                if removed >= to_remove {
+                    return true;
+                }
+                if &cmd.session_id != current_session_id {
+                    removed += 1;
+                    false
+                } else {
+                    true
+                }
+            });
+
+            // If still too long (all are current session), truncate oldest
+            if selected.len() > self.max {
+                selected.drain(0..selected.len() - self.max);
+            }
+        }
+
+        // Sort by started_at to maintain chronological order
+        selected.sort_by_key(|cmd| cmd.started_at);
+        selected
     }
 }
 
@@ -108,7 +215,11 @@ impl ContextFormatter for GroupedFormatter {
                 };
 
                 let mut group_lines = vec![header];
-                for cmd in detailed.iter().filter(|c| &c.session_id == session_id) {
+                let current_session_commands: Vec<&CommandContext> = detailed.iter()
+                    .filter(|c| &c.session_id == session_id)
+                    .collect();
+
+                for cmd in &current_session_commands {
                     let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
                     let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
                     let max_lines = self.head_lines + self.tail_lines;
@@ -124,6 +235,19 @@ impl ContextFormatter for GroupedFormatter {
                     } else {
                         let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
                         group_lines.push(format!("{}$ {}{}\n{}", prefix_display, cmd_line, failed_tag, output));
+                    }
+                }
+
+                // For current session, display current path at the end
+                if is_current {
+                    // Find the most recent command's cwd (last in list since commands are sorted by started_at)
+                    let current_path = current_session_commands.last()
+                        .and_then(|cmd| cmd.cwd.as_ref())
+                        .map(|cwd| cwd.as_str())
+                        .unwrap_or("");
+
+                    if !current_path.is_empty() {
+                        group_lines.push(format!("Current path: {}", current_path));
                     }
                 }
 
@@ -307,6 +431,48 @@ mod tests {
         assert_eq!(selected[9].command_line.as_deref(), Some("cmd14"));
     }
 
+    #[tokio::test]
+    async fn test_select_min_current_session_commands() {
+        // Create commands from two sessions: sess-a (current) and sess-b
+        let mut cmds = Vec::new();
+        // sess-a commands: 0, 2, 4, 6, 8, 10, 12, 14
+        // sess-b commands: 1, 3, 5, 7, 9, 11, 13
+        for i in 0..15 {
+            let session = if i % 2 == 0 { "sess-a" } else { "sess-b" };
+            cmds.push(make_cmd(i, session, Some(&format!("cmd{}", i))));
+        }
+
+        // Test 1: max=5, min_current=2, should include at least 2 from sess-a
+        let strategy = RecentCommands::new(5)
+            .with_current_session("sess-a", 2);
+        let selected = strategy.select_commands(&cmds).await;
+        assert_eq!(selected.len(), 5);
+        let current_count = selected.iter().filter(|c| c.session_id == "sess-a").count();
+        assert!(current_count >= 2, "Should have at least 2 current session commands, got {}", current_count);
+
+        // Test 2: max=4, min_current=3, but only 2 sess-a commands in recent 4
+        // Recent 4 overall: cmd11(sess-b), cmd12(sess-a), cmd13(sess-b), cmd14(sess-a)
+        // Has 2 sess-a, need 3 -> should include older sess-a command
+        let strategy = RecentCommands::new(4)
+            .with_current_session("sess-a", 3);
+        let selected = strategy.select_commands(&cmds).await;
+        assert_eq!(selected.len(), 4);
+        let current_count = selected.iter().filter(|c| c.session_id == "sess-a").count();
+        assert_eq!(current_count, 3, "Should have exactly 3 current session commands, got {}", current_count);
+
+        // Test 3: max=3, min_current=5, but only 4 sess-a commands total
+        // Should include all 4 sess-a commands and truncate to max=3? Actually min_current=5 > total sess-a commands=4
+        // Should include all 4 sess-a and fill with others up to max? max=3 < 4, so just 3 sess-a commands
+        let strategy = RecentCommands::new(3)
+            .with_current_session("sess-a", 5);
+        let selected = strategy.select_commands(&cmds).await;
+        // Can't satisfy min_current=5, will include as many sess-a as possible
+        assert_eq!(selected.len(), 3);
+        let current_count = selected.iter().filter(|c| c.session_id == "sess-a").count();
+        // Should be all 3 from sess-a (most recent)
+        assert_eq!(current_count, 3, "Should have all 3 current session commands, got {}", current_count);
+    }
+
     // --- GroupedFormatter tests ---
 
     #[test]
@@ -372,6 +538,60 @@ mod tests {
         let formatter = GroupedFormatter::new("sess-a", 30000, 10, 10);
         let result = formatter.format(&[], &[]);
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_grouped_displays_current_path_at_end() {
+        // Create detailed commands with cwd
+        let detailed = vec![
+            CommandContext {
+                session_id: "sess-a".into(),
+                hostname: None,
+                command_line: Some("ls".into()),
+                cwd: Some("/home/user".into()),
+                started_at: 1000,
+                ended_at: Some(1050),
+                output: "file.txt".into(),
+                exit_code: Some(0),
+            },
+            CommandContext {
+                session_id: "sess-a".into(),
+                hostname: None,
+                command_line: Some("cd /tmp".into()),
+                cwd: Some("/home/user".into()),  // Command cwd before cd
+                started_at: 2000,
+                ended_at: Some(2050),
+                output: "".into(),
+                exit_code: Some(0),
+            },
+            // Most recent command with new cwd
+            CommandContext {
+                session_id: "sess-a".into(),
+                hostname: None,
+                command_line: Some("pwd".into()),
+                cwd: Some("/tmp".into()),  // Current cwd after cd
+                started_at: 3000,
+                ended_at: Some(3050),
+                output: "/tmp".into(),
+                exit_code: Some(0),
+            },
+        ];
+
+        let formatter = GroupedFormatter::new("sess-a", 4000, 10, 10);
+        let result = formatter.format(&[], &detailed);
+
+        // Should contain "Current path: /tmp" at the end of the session section
+        let session_end_marker = "--- term A [current] ---";
+        let session_start_pos = result.find(session_end_marker).unwrap();
+        let session_section = &result[session_start_pos..];
+
+        // Check that current path is displayed
+        assert!(session_section.contains("Current path: /tmp"),
+                "Session section should display current path: {}", session_section);
+
+        // Should not contain path from older commands
+        assert!(!session_section.contains("Current path: /home/user"),
+                "Should only show most recent cwd");
     }
 
     // --- InterleavedFormatter tests ---
