@@ -329,12 +329,13 @@ impl SessionManager {
         result
     }
 
-    /// Format a human-readable list of all in-memory sessions.
+    /// Format a human-readable list of active in-memory sessions.
     ///
-    /// Sessions with zero commands are omitted. Output is grouped by host,
+    /// Only shows active sessions (ended=false). Output is grouped by host,
     /// with hosts ordered by their most-recently-active session (newest first),
     /// and sessions within each host also ordered newest-first.
     /// The current session is marked with a `*` prefix.
+    /// Each host section includes a summary line for dead sessions on that host.
     pub async fn format_sessions_list(&self, current_session_id: &str) -> String {
         // Snapshot data under brief locks
         struct SessionSnapshot {
@@ -373,27 +374,59 @@ impl SessionManager {
         let mut entries = snapshots;
         entries.sort_by(|a, b| b.last_active.cmp(&a.last_active));
 
-        let mut host_order: Vec<String> = Vec::new();
-        let mut by_host: HashMap<String, Vec<&SessionSnapshot>> = HashMap::new();
+        // Group by host and separate active/dead sessions
+        let mut host_sessions: HashMap<String, Vec<&SessionSnapshot>> = HashMap::new();
+        let mut dead_stats_by_host: HashMap<String, (usize, usize)> = HashMap::new(); // (session_count, total_commands)
+
         for s in &entries {
             let host = s.hostname.as_deref().unwrap_or("?").to_string();
-            if !by_host.contains_key(&host) {
-                host_order.push(host.clone());
+
+            if s.ended {
+                // Count dead sessions for statistics
+                let stats = dead_stats_by_host.entry(host.clone()).or_insert((0, 0));
+                stats.0 += 1; // session count
+                stats.1 += s.cmd_count; // total commands
+            } else {
+                // Add active sessions to display
+                host_sessions.entry(host).or_default().push(s);
             }
-            by_host.entry(host).or_default().push(s);
         }
 
+        // Determine host order based on most recent active session
+        let mut host_info: Vec<(String, Vec<&SessionSnapshot>, (usize, usize))> = Vec::new();
+        for (host, active_sessions) in host_sessions {
+            let dead_stats = dead_stats_by_host.get(&host).copied().unwrap_or((0, 0));
+            host_info.push((host, active_sessions, dead_stats));
+        }
+
+        // Sort by most recent active session within each host
+        host_info.sort_by(|a, b| {
+            let latest_a = a.1.first().map(|s| s.last_active).unwrap_or(Instant::now() - Duration::from_secs(3600));
+            let latest_b = b.1.first().map(|s| s.last_active).unwrap_or(Instant::now() - Duration::from_secs(3600));
+            latest_b.cmp(&latest_a) // newest first
+        });
+
         let mut lines = Vec::new();
-        for host in host_order {
+        for (host, active_sessions, dead_stats) in host_info {
             lines.push(format!("[{}]", host));
-            for s in &by_host[&host] {
-                let status = if s.ended { "ended" } else { "active" };
+
+            // Display active sessions (sorted newest first within host)
+            for s in active_sessions {
                 let idle = format_idle(s.last_active.elapsed().as_secs());
                 let is_current = s.session_id == current_session_id;
                 let marker = if is_current { "*" } else { " " };
                 lines.push(format!(
-                    "  {} {} [{}] cmds={} idle={}",
-                    marker, s.session_id, status, s.cmd_count, idle,
+                    "  {} {} [active] cmds={} idle={}",
+                    marker, s.session_id, s.cmd_count, idle,
+                ));
+            }
+
+            // Add dead sessions summary for this host
+            let (dead_sessions, dead_commands) = dead_stats;
+            if dead_sessions > 0 {
+                lines.push(format!(
+                    "  {} dead session(s), {} command(s)",
+                    dead_sessions, dead_commands
                 ));
             }
         }
@@ -595,25 +628,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_format_sessions_list_highlights_current_session() {
+    async fn test_format_sessions_list_shows_only_active_with_dead_stats() {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().to_path_buf();
         let mgr = SessionManager::new(base, Default::default());
 
-        // Register two sessions with commands
-        mgr.register("session1", None, Default::default())
+        // Register three sessions with commands, all on the same host (default "?")
+        mgr.register("active1", None, Default::default())
             .await
             .unwrap();
-        mgr.register("session2", None, Default::default())
+        mgr.register("active2", None, Default::default())
+            .await
+            .unwrap();
+        mgr.register("dead1", None, Default::default())
             .await
             .unwrap();
 
-        // Add a command to each session (sessions with zero commands are omitted)
+        // Add commands to all sessions
         mgr.receive_command(
-            "session1",
+            "active1",
             CommandRecord {
                 command_id: "cmd1".into(),
-                session_id: "session1".into(),
+                session_id: "active1".into(),
                 command_line: Some("ls".into()),
                 cwd: Some("/tmp".into()),
                 started_at: 100,
@@ -628,10 +664,10 @@ mod tests {
         .unwrap();
 
         mgr.receive_command(
-            "session2",
+            "active2",
             CommandRecord {
                 command_id: "cmd2".into(),
-                session_id: "session2".into(),
+                session_id: "active2".into(),
                 command_line: Some("pwd".into()),
                 cwd: Some("/home".into()),
                 started_at: 300,
@@ -645,42 +681,183 @@ mod tests {
         .await
         .unwrap();
 
-        // Test with session1 as current
-        let output1 = mgr.format_sessions_list("session1").await;
-        // Should contain "* session1"
-        assert!(
-            output1.contains("* session1"),
-            "Output should highlight session1 with '*', got: {}",
-            output1
-        );
-        // Should contain " session2" (with space, not *)
-        assert!(
-            output1.contains(" session2"),
-            "Output should show session2 without '*', got: {}",
-            output1
-        );
-        assert!(
-            !output1.contains("* session2"),
-            "Output should not highlight session2, got: {}",
-            output1
-        );
+        mgr.receive_command(
+            "dead1",
+            CommandRecord {
+                command_id: "cmd3".into(),
+                session_id: "dead1".into(),
+                command_line: Some("echo dead".into()),
+                cwd: Some("/var".into()),
+                started_at: 500,
+                ended_at: Some(600),
+                output_summary: "".into(),
+                stream_offset: 0,
+                stream_length: 0,
+                exit_code: None,
+            },
+        )
+        .await
+        .unwrap();
 
-        // Test with session2 as current
-        let output2 = mgr.format_sessions_list("session2").await;
-        assert!(
-            output2.contains("* session2"),
-            "Output should highlight session2 with '*', got: {}",
-            output2
-        );
-        assert!(
-            output2.contains(" session1"),
-            "Output should show session1 without '*', got: {}",
-            output2
-        );
-        assert!(
-            !output2.contains("* session1"),
-            "Output should not highlight session1, got: {}",
-            output2
-        );
+        // End the dead session
+        mgr.end_session("dead1").await.unwrap();
+
+        // Test with active1 as current
+        let output = mgr.format_sessions_list("active1").await;
+
+        // Should only show active sessions
+        assert!(output.contains("* active1"), "Should highlight current active session: {}", output);
+        assert!(output.contains("  active2 [active]"), "Should show other active session: {}", output);
+        assert!(!output.contains("dead1"), "Should not show dead sessions in list: {}", output);
+
+        // Should show dead session statistics for the host
+        assert!(output.contains("1 dead session(s), 1 command(s)"), "Should show dead session stats: {}", output);
+
+        // All sessions should have [active] status, not [ended]
+        assert!(!output.contains("[ended]"), "Should not show ended status: {}", output);
+        assert!(output.contains("[active]"), "Should show active status: {}", output);
+    }
+
+    #[tokio::test]
+    async fn test_format_sessions_list_with_multiple_dead_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+        let mgr = SessionManager::new(base, Default::default());
+
+        // Create 1 active and 2 dead sessions, all on the same host
+        mgr.register("active1", None, Default::default())
+            .await
+            .unwrap();
+        mgr.register("dead1", None, Default::default())
+            .await
+            .unwrap();
+        mgr.register("dead2", None, Default::default())
+            .await
+            .unwrap();
+
+        // Add commands
+        for (session, cmd_count) in &[("active1", 1), ("dead1", 3), ("dead2", 2)] {
+            for i in 0..*cmd_count {
+                mgr.receive_command(
+                    session,
+                    CommandRecord {
+                        command_id: format!("cmd{}_{}", session, i),
+                        session_id: session.to_string(),
+                        command_line: Some(format!("command{}", i)),
+                        cwd: Some("/tmp".into()),
+                        started_at: 100 + i as u64,
+                        ended_at: Some(200 + i as u64),
+                        output_summary: "".into(),
+                        stream_offset: 0,
+                        stream_length: 0,
+                        exit_code: None,
+                    },
+                )
+                .await
+                .unwrap();
+            }
+        }
+
+        // End dead sessions
+        mgr.end_session("dead1").await.unwrap();
+        mgr.end_session("dead2").await.unwrap();
+
+        let output = mgr.format_sessions_list("active1").await;
+
+        // Should show correct dead session statistics
+        assert!(output.contains("2 dead session(s), 5 command(s)"),
+                "Should aggregate dead session stats: {}", output);
+        assert!(output.contains("* active1 [active] cmds=1"),
+                "Should show active session with command count: {}", output);
+    }
+
+    #[tokio::test]
+    async fn test_format_sessions_list_demo_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+        let mgr = SessionManager::new(base, Default::default());
+
+        // Create sessions on different hosts
+        let mut attrs = std::collections::HashMap::new();
+        attrs.insert("hostname".to_string(), "workstation".to_string());
+        mgr.register("workstation_active", None, attrs.clone()).await.unwrap();
+
+        attrs.insert("hostname".to_string(), "server".to_string());
+        mgr.register("server_active1", None, attrs.clone()).await.unwrap();
+        mgr.register("server_active2", None, attrs.clone()).await.unwrap();
+        mgr.register("server_dead", None, attrs.clone()).await.unwrap();
+
+        // Add commands
+        mgr.receive_command("workstation_active", CommandRecord {
+            command_id: "cmd1".into(),
+            session_id: "workstation_active".into(),
+            command_line: Some("ls -la".into()),
+            cwd: Some("/home/user".into()),
+            started_at: 1000,
+            ended_at: Some(1100),
+            output_summary: "".into(),
+            stream_offset: 0,
+            stream_length: 0,
+            exit_code: Some(0),
+        }).await.unwrap();
+
+        mgr.receive_command("server_active1", CommandRecord {
+            command_id: "cmd2".into(),
+            session_id: "server_active1".into(),
+            command_line: Some("ps aux".into()),
+            cwd: Some("/var/log".into()),
+            started_at: 2000,
+            ended_at: Some(2100),
+            output_summary: "".into(),
+            stream_offset: 0,
+            stream_length: 0,
+            exit_code: Some(0),
+        }).await.unwrap();
+
+        mgr.receive_command("server_active2", CommandRecord {
+            command_id: "cmd3".into(),
+            session_id: "server_active2".into(),
+            command_line: Some("docker ps".into()),
+            cwd: Some("/opt/app".into()),
+            started_at: 3000,
+            ended_at: Some(3100),
+            output_summary: "".into(),
+            stream_offset: 0,
+            stream_length: 0,
+            exit_code: Some(0),
+        }).await.unwrap();
+
+        mgr.receive_command("server_dead", CommandRecord {
+            command_id: "cmd4".into(),
+            session_id: "server_dead".into(),
+            command_line: Some("old command".into()),
+            cwd: Some("/tmp".into()),
+            started_at: 500,
+            ended_at: Some(600),
+            output_summary: "".into(),
+            stream_offset: 0,
+            stream_length: 0,
+            exit_code: Some(0),
+        }).await.unwrap();
+
+        // End the dead session
+        mgr.end_session("server_dead").await.unwrap();
+
+        // Show sessions list
+        let output = mgr.format_sessions_list("workstation_active").await;
+
+        // Print the output for demonstration
+        println!("=== Demo Sessions Output ===");
+        println!("{}", output);
+        println!("===========================");
+
+        // Verify basic structure
+        assert!(output.contains("[workstation]"));
+        assert!(output.contains("[server]"));
+        assert!(output.contains("* workstation_active [active]"));
+        assert!(output.contains("  server_active1 [active]"));
+        assert!(output.contains("  server_active2 [active]"));
+        assert!(!output.contains("server_dead")); // Should not show dead sessions
+        assert!(output.contains("1 dead session(s), 1 command(s)")); // Should show dead stats
     }
 }
