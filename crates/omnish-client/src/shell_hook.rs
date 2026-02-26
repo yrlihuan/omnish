@@ -51,9 +51,16 @@ pub fn install_bash_hook(shell: &str) -> Option<PathBuf> {
     let dir = omnish_common::config::omnish_dir().join("hooks");
     std::fs::create_dir_all(&dir).ok()?;
 
-    // Write the hook script
+    // Write the hook script, but only if content differs or file doesn't exist
     let hook_path = dir.join("bash_hook.sh");
-    std::fs::write(&hook_path, BASH_HOOK).ok()?;
+    let should_write = match std::fs::read(&hook_path) {
+        Ok(existing) => existing != BASH_HOOK.as_bytes(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false, // other error (e.g., permission) — skip writing
+    };
+    if should_write {
+        std::fs::write(&hook_path, BASH_HOOK).ok()?;
+    }
 
     // Write an rcfile that sources the user's bashrc first, then the hook
     let rcfile_path = dir.join("bashrc");
@@ -71,7 +78,14 @@ pub fn install_bash_hook(shell: &str) -> Option<PathBuf> {
         "source \"{}\"\n",
         hook_path.to_string_lossy()
     ));
-    std::fs::write(&rcfile_path, &content).ok()?;
+    let should_write_rc = match std::fs::read(&rcfile_path) {
+        Ok(existing) => existing != content.as_bytes(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false, // other error — skip writing
+    };
+    if should_write_rc {
+        std::fs::write(&rcfile_path, &content).ok()?;
+    }
 
     Some(rcfile_path)
 }
