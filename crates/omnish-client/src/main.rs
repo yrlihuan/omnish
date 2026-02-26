@@ -248,6 +248,10 @@ async fn main() -> Result<()> {
                                 if needs_readline_report(&bytes) {
                                     // Tab, Up, Down modify readline state — send
                                     // trigger so bash reports the real READLINE_LINE.
+                                    // Add small delay for Tab to avoid interfering with bash completion list display
+                                    if bytes.contains(&0x09) {
+                                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                                    }
                                     proxy.write_all(b"\x1b[13337~")?;
                                     shell_input.mark_pending_report();
                                     if shell_completer.ghost().is_some() {
@@ -887,10 +891,9 @@ fn debug_client_state(
 fn needs_readline_report(bytes: &[u8]) -> bool {
     for (i, &b) in bytes.iter().enumerate() {
         match b {
-            // Tab is excluded: sending trigger interferes with bash's completion
-            // list display. We'll rely on other mechanisms to detect command line
-            // changes after tab completion.
-            0x09 => return false, // Tab - no trigger
+            // Tab triggers readline report with 50ms delay to allow bash completion list display
+            // Fix for issue #23: client gets correct input after bash tab completion
+            0x09 => return true, // Tab - trigger with delay
             // Ctrl+R (0x12) is intentionally excluded: it enters isearch mode
             // which uses a different keymap where our bind -x doesn't exist,
             // causing "cannot find keymap for command". The pending_rl_report
