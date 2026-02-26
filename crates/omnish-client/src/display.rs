@@ -48,14 +48,14 @@ pub fn render_thinking() -> String {
 /// Format an LLM response for raw-mode display.
 /// - Trims trailing whitespace from each line
 /// - Converts \n to \r\n for raw mode
-/// - Wraps in green color
+/// - Wraps in dim gray color
 pub fn render_response(content: &str) -> String {
     let formatted: String = content
         .lines()
         .map(|line| line.trim_end())
         .collect::<Vec<_>>()
         .join("\r\n");
-    format!("\r\n\x1b[32m{}\x1b[0m\r\n", formatted)
+    format!("\r\n\x1b[2m{}\x1b[0m\r\n", formatted)
 }
 
 /// Format an error message in red.
