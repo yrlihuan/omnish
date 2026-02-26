@@ -1,14 +1,14 @@
 use async_trait::async_trait;
 use omnish_store::command::CommandRecord;
 
-use crate::format_utils::{assign_term_labels, format_relative_time, truncate_lines};
+use crate::format_utils::{assign_term_labels, truncate_lines};
 use crate::{CommandContext, ContextFormatter, ContextStrategy};
 
 fn format_command_prefix(hostname: &Option<String>, cwd: &Option<String>) -> String {
     match (hostname, cwd) {
-        (Some(host), Some(cwd)) => format!("{}:{} ", host, cwd),
-        (Some(host), None) => format!("{} ", host),
-        (None, Some(cwd)) => format!("{} ", cwd),
+        (Some(host), Some(cwd)) => format!("{}:{}", host, cwd),
+        (Some(host), None) => host.clone(),
+        (None, Some(cwd)) => cwd.clone(),
         (None, None) => String::new(),
     }
 }
@@ -42,7 +42,7 @@ impl ContextStrategy for RecentCommands {
 /// Formats commands grouped by session, with the current session last.
 pub struct GroupedFormatter {
     current_session_id: String,
-    now_ms: u64,
+    _now_ms: u64,
     head_lines: usize,
     tail_lines: usize,
 }
@@ -51,7 +51,7 @@ impl GroupedFormatter {
     pub fn new(current_session_id: &str, now_ms: u64, head_lines: usize, tail_lines: usize) -> Self {
         Self {
             current_session_id: current_session_id.to_string(),
-            now_ms,
+            _now_ms: now_ms,
             head_lines,
             tail_lines,
         }
@@ -72,7 +72,8 @@ impl ContextFormatter for GroupedFormatter {
             for cmd in history {
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
                 let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
-                history_lines.push(format!("{}$ {}", prefix, cmd_line));
+                let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
+                history_lines.push(format!("{}$ {}", prefix_display, cmd_line));
             }
             sections.push(history_lines.join("\n"));
         }
@@ -118,9 +119,11 @@ impl ContextFormatter for GroupedFormatter {
                         _ => String::new(),
                     };
                     if output.is_empty() {
-                        group_lines.push(format!("{}$ {}{}", prefix, cmd_line, failed_tag));
+                        let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
+                        group_lines.push(format!("{}$ {}{}", prefix_display, cmd_line, failed_tag));
                     } else {
-                        group_lines.push(format!("{}$ {}{}\n{}", prefix, cmd_line, failed_tag, output));
+                        let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
+                        group_lines.push(format!("{}$ {}{}\n{}", prefix_display, cmd_line, failed_tag, output));
                     }
                 }
 
@@ -135,7 +138,7 @@ impl ContextFormatter for GroupedFormatter {
 /// Formats commands interleaved by time, sorted by started_at.
 pub struct InterleavedFormatter {
     current_session_id: String,
-    now_ms: u64,
+    _now_ms: u64,
     head_lines: usize,
     tail_lines: usize,
 }
@@ -144,7 +147,7 @@ impl InterleavedFormatter {
     pub fn new(current_session_id: &str, now_ms: u64, head_lines: usize, tail_lines: usize) -> Self {
         Self {
             current_session_id: current_session_id.to_string(),
-            now_ms,
+            _now_ms: now_ms,
             head_lines,
             tail_lines,
         }
@@ -165,7 +168,8 @@ impl ContextFormatter for InterleavedFormatter {
             for cmd in history {
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
                 let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
-                history_lines.push(format!("{}$ {}", prefix, cmd_line));
+                let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
+                history_lines.push(format!("{}$ {}", prefix_display, cmd_line));
             }
             sections.push(history_lines.join("\n"));
         }
@@ -186,7 +190,6 @@ impl ContextFormatter for InterleavedFormatter {
                     label.clone()
                 };
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
-                let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
                 let max_lines = self.head_lines + self.tail_lines;
                 let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
 
@@ -195,10 +198,11 @@ impl ContextFormatter for InterleavedFormatter {
                     _ => String::new(),
                 };
                 let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
+                let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
                 if output.is_empty() {
-                    sections.push(format!("{} {}$ {}{}", label_str, prefix, cmd_line, failed_tag));
+                    sections.push(format!("{} {}$ {}{}", label_str, prefix_display, cmd_line, failed_tag));
                 } else {
-                    sections.push(format!("{} {}$ {}{}\n{}", label_str, prefix, cmd_line, failed_tag, output));
+                    sections.push(format!("{} {}$ {}{}\n{}", label_str, prefix_display, cmd_line, failed_tag, output));
                 }
             }
         }
