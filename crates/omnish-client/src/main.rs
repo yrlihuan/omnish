@@ -150,6 +150,12 @@ async fn main() -> Result<()> {
     ]);
     let mut shell_input = shell_input::ShellInputTracker::new();
     let mut last_readline_content: Option<String> = None;
+    // Pending completion responses waiting for readline report
+    let mut pending_completion_responses: Vec<omnish_protocol::message::CompletionResponse> = Vec::new();
+    // Whether we've triggered a readline report for pending completions
+    let mut readline_triggered_for_completions = false;
+    // When we triggered readline report (for timeout)
+    let mut readline_trigger_time: Option<std::time::Instant> = None;
     let in_tmux = std::env::var("TMUX").is_ok();
     if let Some(title) = tmux_title("omnish", in_tmux) {
         nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
@@ -248,10 +254,8 @@ async fn main() -> Result<()> {
                                 if needs_readline_report(&bytes) {
                                     // Tab, Up, Down modify readline state — send
                                     // trigger so bash reports the real READLINE_LINE.
-                                    // Add small delay for Tab to avoid interfering with bash completion list display
-                                    if bytes.contains(&0x09) {
-                                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                                    }
+                                    // Note: Tab trigger removed here - now triggered on completion response
+                                    // to avoid interfering with bash completion list display (issue #23)
                                     proxy.write_all(b"\x1b[13337~")?;
                                     shell_input.mark_pending_report();
                                     if shell_completer.ghost().is_some() {
@@ -476,6 +480,20 @@ async fn main() -> Result<()> {
                             Osc133EventKind::ReadlineLine { content } => {
                                 shell_input.set_readline(content);
                                 last_readline_content = Some(content.to_string());
+
+                                // Process any pending completion responses now that we have latest input
+                                if !pending_completion_responses.is_empty() {
+                                    let current = shell_input.input();
+                                    for resp in pending_completion_responses.drain(..) {
+                                        if let Some(ghost) = shell_completer.on_response(&resp, current) {
+                                            let ghost_render = display::render_ghost_text(ghost);
+                                            nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                                        }
+                                    }
+                                    readline_triggered_for_completions = false;
+                                    readline_trigger_time = None;
+                                }
+
                                 if let Some((input, seq)) = shell_input.take_change() {
                                     if shell_completer.on_input_changed(input, seq) {
                                         nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
@@ -550,10 +568,34 @@ async fn main() -> Result<()> {
                 shell_completer.clear();
                 continue;
             }
-            let current = shell_input.input();
-            if let Some(ghost) = shell_completer.on_response(&resp, current) {
-                let ghost_render = display::render_ghost_text(ghost);
-                nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+
+            // Store response in pending queue for processing after readline report
+            pending_completion_responses.push(resp);
+
+            // Trigger readline report if not already triggered
+            if !readline_triggered_for_completions {
+                readline_triggered_for_completions = true;
+                readline_trigger_time = Some(std::time::Instant::now());
+                shell_input.mark_pending_report();
+                proxy.write_all(b"\x1b[13337~")?;
+            }
+        }
+
+        // Timeout check for pending completion responses waiting for readline report
+        if readline_triggered_for_completions && !pending_completion_responses.is_empty() {
+            if let Some(trigger_time) = readline_trigger_time {
+                if trigger_time.elapsed() > std::time::Duration::from_millis(500) {
+                    // Timeout - process pending responses with current input
+                    let current = shell_input.input();
+                    for resp in pending_completion_responses.drain(..) {
+                        if let Some(ghost) = shell_completer.on_response(&resp, current) {
+                            let ghost_render = display::render_ghost_text(ghost);
+                            nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                        }
+                    }
+                    readline_triggered_for_completions = false;
+                    readline_trigger_time = None;
+                }
             }
         }
 
@@ -891,9 +933,10 @@ fn debug_client_state(
 fn needs_readline_report(bytes: &[u8]) -> bool {
     for (i, &b) in bytes.iter().enumerate() {
         match b {
-            // Tab triggers readline report with 50ms delay to allow bash completion list display
-            // Fix for issue #23: client gets correct input after bash tab completion
-            0x09 => return true, // Tab - trigger with delay
+            // Tab no longer triggers readline report here (issue #23)
+            // Now triggered when completion response arrives, to avoid
+            // interfering with bash completion list display
+            // 0x09 => return true, // Tab - removed
             // Ctrl+R (0x12) is intentionally excluded: it enters isearch mode
             // which uses a different keymap where our bind -x doesn't exist,
             // causing "cannot find keymap for command". The pending_rl_report

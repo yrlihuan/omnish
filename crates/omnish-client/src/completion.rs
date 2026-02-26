@@ -83,7 +83,7 @@ impl ShellCompleter {
     ///
     /// 参数 current_sequence_id: 当前输入的序列ID（来自shell_input.sequence_id()）
     /// 参数 current_input: 当前输入内容
-    pub fn should_request(&self, current_sequence_id: u64, _current_input: &str) -> bool {
+    pub fn should_request(&self, current_sequence_id: u64, current_input: &str) -> bool {
         // Limit concurrent requests
         if self.active_requests.len() >= MAX_CONCURRENT_REQUESTS {
             return false;
@@ -97,6 +97,16 @@ impl ShellCompleter {
 
         if !debounce_expired {
             return false;
+        }
+
+        // Check if there's already an active request for the same input
+        for request_state in self.active_requests.values() {
+            if request_state.input == current_input {
+                // Same input already has an active request
+                let request_age = request_state.sent_at.elapsed().as_millis();
+                // Only allow if it timed out (IN_FLIGHT_TIMEOUT_MS = 5000ms)
+                return request_age >= IN_FLIGHT_TIMEOUT_MS as u128;
+            }
         }
 
         // Allow request if:
