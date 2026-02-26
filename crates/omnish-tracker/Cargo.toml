@@ -1,6 +1,6 @@
 [package]
 name = "omnish-tracker"
-version = "0.1.1"
+version.workspace = true
 edition = "2021"
 
 [dependencies]
