@@ -40,9 +40,12 @@ impl RecentCommands {
 impl ContextStrategy for RecentCommands {
     async fn select_commands<'a>(&self, commands: &'a [CommandRecord]) -> Vec<&'a CommandRecord> {
         // Filter out empty commands (Enter with no input) so they don't consume slots
-        let meaningful: Vec<_> = commands.iter()
+        let mut meaningful: Vec<_> = commands.iter()
             .filter(|c| c.command_line.is_some())
             .collect();
+
+        // Sort by started_at to ensure chronological order
+        meaningful.sort_by_key(|cmd| cmd.started_at);
 
         if meaningful.is_empty() {
             return Vec::new();
@@ -98,10 +101,10 @@ impl ContextStrategy for RecentCommands {
         // Get additional current session commands (most recent ones not already in recent_overall)
         let mut additional_current: Vec<&CommandRecord> = Vec::new();
         for cmd in current_session_commands.iter().rev() {
-            // Check if cmd is already in recent_overall using pointer equality
+            // Check if cmd is already in recent_overall using command_id
             let mut found = false;
             for recent_cmd in &recent_overall {
-                if std::ptr::eq(*cmd, *recent_cmd) {
+                if cmd.command_id == recent_cmd.command_id {
                     found = true;
                     break;
                 }

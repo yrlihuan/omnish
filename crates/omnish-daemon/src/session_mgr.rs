@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use omnish_common::config::ContextConfig;
+use omnish_context::recent::{GroupedFormatter, RecentCommands};
 use omnish_context::StreamReader;
-use omnish_context::recent::{RecentCommands, GroupedFormatter};
 use omnish_store::command::CommandRecord;
 use omnish_store::session::SessionMeta;
 use omnish_store::stream::{read_range, StreamEntry, StreamWriter};
@@ -33,7 +33,9 @@ impl StreamReader for MultiSessionReader {
         if length == 0 {
             return Ok(Vec::new());
         }
-        let path = self.readers.get(&(offset, length))
+        let path = self
+            .readers
+            .get(&(offset, length))
             .ok_or_else(|| anyhow!("no stream file for offset={}, length={}", offset, length))?;
         read_range(path, offset, length)
     }
@@ -46,7 +48,7 @@ struct StreamWriterState {
 }
 
 struct Session {
-    dir: PathBuf,                              // immutable after creation
+    dir: PathBuf, // immutable after creation
     meta: RwLock<SessionMeta>,
     commands: RwLock<Vec<CommandRecord>>,
     stream_writer: Mutex<StreamWriterState>,
@@ -62,7 +64,8 @@ pub struct SessionManager {
 /// Falls back to `Instant::now()` when no timestamp is available.
 fn infer_last_active(commands: &[CommandRecord], meta: &SessionMeta) -> Instant {
     // Best source: last command's ended_at or started_at (epoch ms).
-    let last_cmd_ms = commands.last()
+    let last_cmd_ms = commands
+        .last()
         .and_then(|cmd| cmd.ended_at.or(Some(cmd.started_at)));
 
     // Fallback: session's ended_at or started_at (RFC 3339 string → epoch ms).
@@ -143,7 +146,8 @@ impl SessionManager {
                     StreamWriter::create(&stream_path)?
                 };
 
-                let last_command_stream_pos = commands.last()
+                let last_command_stream_pos = commands
+                    .last()
                     .map(|cmd| cmd.stream_offset + cmd.stream_length)
                     .unwrap_or(0);
 
@@ -208,11 +212,9 @@ impl SessionManager {
         }
 
         let now = chrono::Utc::now().to_rfc3339();
-        let session_dir = self.base_dir.join(format!(
-            "{}_{}",
-            now.replace(':', "-"),
-            session_id
-        ));
+        let session_dir = self
+            .base_dir
+            .join(format!("{}_{}", now.replace(':', "-"), session_id));
         std::fs::create_dir_all(&session_dir)?;
 
         let meta = SessionMeta {
@@ -332,7 +334,8 @@ impl SessionManager {
     /// Sessions with zero commands are omitted. Output is grouped by host,
     /// with hosts ordered by their most-recently-active session (newest first),
     /// and sessions within each host also ordered newest-first.
-    pub async fn format_sessions_list(&self) -> String {
+    /// The current session is marked with a `*` prefix.
+    pub async fn format_sessions_list(&self, current_session_id: &str) -> String {
         // Snapshot data under brief locks
         struct SessionSnapshot {
             session_id: String,
@@ -386,9 +389,11 @@ impl SessionManager {
             for s in &by_host[&host] {
                 let status = if s.ended { "ended" } else { "active" };
                 let idle = format_idle(s.last_active.elapsed().as_secs());
+                let is_current = s.session_id == current_session_id;
+                let marker = if is_current { "*" } else { " " };
                 lines.push(format!(
-                    "  {} [{}] cmds={} idle={}",
-                    s.session_id, status, s.cmd_count, idle,
+                    "  {} {} [{}] cmds={} idle={}",
+                    marker, s.session_id, status, s.cmd_count, idle,
                 ));
             }
         }
@@ -449,7 +454,16 @@ impl SessionManager {
             .unwrap_or_default()
             .as_millis() as u64;
         let formatter = GroupedFormatter::new(session_id, now_ms, cc.head_lines, cc.tail_lines);
-        omnish_context::build_context(&strategy, &formatter, &commands, &reader, &hostnames, cc.detailed_commands, cc.max_line_width).await
+        omnish_context::build_context(
+            &strategy,
+            &formatter,
+            &commands,
+            &reader,
+            &hostnames,
+            cc.detailed_commands,
+            cc.max_line_width,
+        )
+        .await
     }
 
     /// Collect commands from all sessions where `started_at >= since_ms`.
@@ -493,10 +507,8 @@ impl SessionManager {
                 }
                 let commands = session.commands.read().await;
                 for cmd in commands.iter() {
-                    offset_to_path.insert(
-                        (cmd.stream_offset, cmd.stream_length),
-                        stream_path.clone(),
-                    );
+                    offset_to_path
+                        .insert((cmd.stream_offset, cmd.stream_length), stream_path.clone());
                 }
                 all_commands.extend(commands.clone());
             }
@@ -511,12 +523,24 @@ impl SessionManager {
         }
 
         // Build context outside all locks
-        let reader = MultiSessionReader { readers: offset_to_path };
+        let reader = MultiSessionReader {
+            readers: offset_to_path,
+        };
         let total = cc.detailed_commands + cc.history_commands;
         let strategy = RecentCommands::new(total)
             .with_current_session(current_session_id, cc.min_current_session_commands);
-        let formatter = GroupedFormatter::new(current_session_id, now_ms, cc.head_lines, cc.tail_lines);
-        omnish_context::build_context(&strategy, &formatter, &all_commands, &reader, &hostnames, cc.detailed_commands, cc.max_line_width).await
+        let formatter =
+            GroupedFormatter::new(current_session_id, now_ms, cc.head_lines, cc.tail_lines);
+        omnish_context::build_context(
+            &strategy,
+            &formatter,
+            &all_commands,
+            &reader,
+            &hostnames,
+            cc.detailed_commands,
+            cc.max_line_width,
+        )
+        .await
     }
 }
 
@@ -532,21 +556,28 @@ mod tests {
         // Register a session and add a command via normal flow
         {
             let mgr = SessionManager::new(base.clone(), Default::default());
-            mgr.register("sess1", None, Default::default()).await.unwrap();
+            mgr.register("sess1", None, Default::default())
+                .await
+                .unwrap();
             mgr.write_io("sess1", 100, 0, b"$ ls\n").await.unwrap();
             mgr.write_io("sess1", 200, 1, b"file.txt\n").await.unwrap();
-            mgr.receive_command("sess1", CommandRecord {
-                command_id: "cmd1".into(),
-                session_id: "sess1".into(),
-                command_line: Some("ls".into()),
-                cwd: Some("/tmp".into()),
-                started_at: 100,
-                ended_at: Some(200),
-                output_summary: "file.txt".into(),
-                stream_offset: 0,
-                stream_length: 0,
-                exit_code: None,
-            }).await.unwrap();
+            mgr.receive_command(
+                "sess1",
+                CommandRecord {
+                    command_id: "cmd1".into(),
+                    session_id: "sess1".into(),
+                    command_line: Some("ls".into()),
+                    cwd: Some("/tmp".into()),
+                    started_at: 100,
+                    ended_at: Some(200),
+                    output_summary: "file.txt".into(),
+                    stream_offset: 0,
+                    stream_length: 0,
+                    exit_code: None,
+                },
+            )
+            .await
+            .unwrap();
             // Drop the manager (simulates daemon shutdown)
         }
 
@@ -561,5 +592,95 @@ mod tests {
 
         let active = mgr2.list_active().await;
         assert!(active.contains(&"sess1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_format_sessions_list_highlights_current_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+        let mgr = SessionManager::new(base, Default::default());
+
+        // Register two sessions with commands
+        mgr.register("session1", None, Default::default())
+            .await
+            .unwrap();
+        mgr.register("session2", None, Default::default())
+            .await
+            .unwrap();
+
+        // Add a command to each session (sessions with zero commands are omitted)
+        mgr.receive_command(
+            "session1",
+            CommandRecord {
+                command_id: "cmd1".into(),
+                session_id: "session1".into(),
+                command_line: Some("ls".into()),
+                cwd: Some("/tmp".into()),
+                started_at: 100,
+                ended_at: Some(200),
+                output_summary: "".into(),
+                stream_offset: 0,
+                stream_length: 0,
+                exit_code: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        mgr.receive_command(
+            "session2",
+            CommandRecord {
+                command_id: "cmd2".into(),
+                session_id: "session2".into(),
+                command_line: Some("pwd".into()),
+                cwd: Some("/home".into()),
+                started_at: 300,
+                ended_at: Some(400),
+                output_summary: "".into(),
+                stream_offset: 0,
+                stream_length: 0,
+                exit_code: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Test with session1 as current
+        let output1 = mgr.format_sessions_list("session1").await;
+        // Should contain "* session1"
+        assert!(
+            output1.contains("* session1"),
+            "Output should highlight session1 with '*', got: {}",
+            output1
+        );
+        // Should contain " session2" (with space, not *)
+        assert!(
+            output1.contains(" session2"),
+            "Output should show session2 without '*', got: {}",
+            output1
+        );
+        assert!(
+            !output1.contains("* session2"),
+            "Output should not highlight session2, got: {}",
+            output1
+        );
+
+        // Test with session2 as current
+        let output2 = mgr.format_sessions_list("session2").await;
+        assert!(
+            output2.contains("* session2"),
+            "Output should highlight session2 with '*', got: {}",
+            output2
+        );
+        assert!(
+            output2.contains(" session1"),
+            "Output should show session1 without '*', got: {}",
+            output2
+        );
+        assert!(
+            !output2.contains("* session1"),
+            "Output should not highlight session1, got: {}",
+            output2
+        );
     }
 }

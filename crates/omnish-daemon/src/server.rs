@@ -1,5 +1,5 @@
-use omnish_daemon::session_mgr::SessionManager;
 use anyhow::Result;
+use omnish_daemon::session_mgr::SessionManager;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType};
 use omnish_protocol::message::*;
 use omnish_transport::rpc_server::RpcServer;
@@ -42,7 +42,10 @@ async fn handle_message(
 ) -> Message {
     match msg {
         Message::SessionStart(s) => {
-            if let Err(e) = mgr.register(&s.session_id, s.parent_session_id, s.attrs).await {
+            if let Err(e) = mgr
+                .register(&s.session_id, s.parent_session_id, s.attrs)
+                .await
+            {
                 tracing::error!("register error: {}", e);
             }
             Message::Ack
@@ -58,7 +61,10 @@ async fn handle_message(
                 IoDirection::Input => 0,
                 IoDirection::Output => 1,
             };
-            if let Err(e) = mgr.write_io(&io.session_id, io.timestamp_ms, dir, &io.data).await {
+            if let Err(e) = mgr
+                .write_io(&io.session_id, io.timestamp_ms, dir, &io.data)
+                .await
+            {
                 tracing::error!("write_io error: {}", e);
             }
             Message::Ack
@@ -100,32 +106,32 @@ async fn handle_message(
             })
         }
         Message::CompletionRequest(req) => {
-            tracing::debug!("CompletionRequest: input={:?} seq={}", req.input, req.sequence_id);
+            tracing::debug!(
+                "CompletionRequest: input={:?} seq={}",
+                req.input,
+                req.sequence_id
+            );
             if let Some(ref backend) = llm {
                 match handle_completion_request(&req, mgr, backend).await {
-                    Ok(suggestions) => Message::CompletionResponse(
-                        omnish_protocol::message::CompletionResponse {
+                    Ok(suggestions) => {
+                        Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
                             sequence_id: req.sequence_id,
                             suggestions,
-                        },
-                    ),
+                        })
+                    }
                     Err(e) => {
                         tracing::error!("Completion request failed: {}", e);
-                        Message::CompletionResponse(
-                            omnish_protocol::message::CompletionResponse {
-                                sequence_id: req.sequence_id,
-                                suggestions: vec![],
-                            },
-                        )
+                        Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
+                            sequence_id: req.sequence_id,
+                            suggestions: vec![],
+                        })
                     }
                 }
             } else {
-                Message::CompletionResponse(
-                    omnish_protocol::message::CompletionResponse {
-                        sequence_id: req.sequence_id,
-                        suggestions: vec![],
-                    },
-                )
+                Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
+                    sequence_id: req.sequence_id,
+                    suggestions: vec![],
+                })
             }
         }
         _ => Message::Ack,
@@ -134,12 +140,8 @@ async fn handle_message(
 
 async fn resolve_context(req: &Request, mgr: &SessionManager) -> Result<String> {
     match &req.scope {
-        RequestScope::CurrentSession => {
-            mgr.get_session_context(&req.session_id).await
-        }
-        RequestScope::AllSessions => {
-            mgr.get_all_sessions_context(&req.session_id).await
-        }
+        RequestScope::CurrentSession => mgr.get_session_context(&req.session_id).await,
+        RequestScope::AllSessions => mgr.get_all_sessions_context(&req.session_id).await,
         RequestScope::Sessions(ids) => {
             let mut combined = String::new();
             for sid in ids {
@@ -161,13 +163,11 @@ async fn resolve_context(req: &Request, mgr: &SessionManager) -> Result<String> 
 async fn handle_builtin_command(req: &Request, mgr: &SessionManager) -> String {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
     match sub {
-        "context" => {
-            match resolve_context(req, mgr).await {
-                Ok(ctx) => ctx,
-                Err(e) => format!("Error: {}", e),
-            }
-        }
-        "sessions" => mgr.format_sessions_list().await,
+        "context" => match resolve_context(req, mgr).await {
+            Ok(ctx) => ctx,
+            Err(e) => format!("Error: {}", e),
+        },
+        "sessions" => mgr.format_sessions_list(&req.session_id).await,
         other => format!("Unknown command: {}", other),
     }
 }
@@ -194,13 +194,17 @@ async fn handle_llm_request(
         Ok(response) => {
             tracing::info!(
                 "LLM request completed in {:?} (session={}, model={}, type=manual)",
-                duration, req.session_id, response.model
+                duration,
+                req.session_id,
+                response.model
             );
         }
         Err(e) => {
             tracing::warn!(
                 "LLM request failed after {:?} (session={}, error={})",
-                duration, req.session_id, e
+                duration,
+                req.session_id,
+                e
             );
         }
     }
@@ -221,9 +225,8 @@ async fn handle_completion_request(
     };
     let context = resolve_context(&context_req, mgr).await?;
 
-    let prompt = omnish_llm::template::build_completion_content(
-        &context, &req.input, req.cursor_pos,
-    );
+    let prompt =
+        omnish_llm::template::build_completion_content(&context, &req.input, req.cursor_pos);
 
     let llm_req = LlmRequest {
         context: String::new(),
@@ -358,7 +361,10 @@ mod tests {
     async fn test_concurrent_completion_requests() {
         // Create a real SessionManager with temp directory
         let dir = tempfile::tempdir().unwrap();
-        let mgr = Arc::new(SessionManager::new(dir.path().to_path_buf(), Default::default()));
+        let mgr = Arc::new(SessionManager::new(
+            dir.path().to_path_buf(),
+            Default::default(),
+        ));
 
         // Register a session to have some context
         mgr.register("test_session", None, std::collections::HashMap::new())
@@ -388,15 +394,13 @@ mod tests {
 
         let mgr1 = mgr.clone();
         let backend1 = backend.clone();
-        let handle1 = tokio::spawn(async move {
-            handle_completion_request(&req1, &mgr1, &backend1).await
-        });
+        let handle1 =
+            tokio::spawn(async move { handle_completion_request(&req1, &mgr1, &backend1).await });
 
         let mgr2 = mgr.clone();
         let backend2 = backend.clone();
-        let handle2 = tokio::spawn(async move {
-            handle_completion_request(&req2, &mgr2, &backend2).await
-        });
+        let handle2 =
+            tokio::spawn(async move { handle_completion_request(&req2, &mgr2, &backend2).await });
 
         // Wait for both requests to complete
         let result1 = handle1.await.expect("Task 1 panicked");
@@ -418,7 +422,10 @@ mod tests {
         // Sequential execution would take ~200ms (100ms each)
         // Concurrent execution should take ~100ms (overlapping delays)
         // Add some tolerance: should be less than 150ms
-        println!("Total duration for two 100ms requests: {:?}", total_duration);
+        println!(
+            "Total duration for two 100ms requests: {:?}",
+            total_duration
+        );
         assert!(
             total_duration < Duration::from_millis(150),
             "Requests appear to be sequential: took {:?}, expected <150ms for concurrent execution",
@@ -430,7 +437,10 @@ mod tests {
     async fn test_concurrent_completion_requests_different_sessions() {
         // Test with different sessions to ensure per-session locking doesn't block
         let dir = tempfile::tempdir().unwrap();
-        let mgr = Arc::new(SessionManager::new(dir.path().to_path_buf(), Default::default()));
+        let mgr = Arc::new(SessionManager::new(
+            dir.path().to_path_buf(),
+            Default::default(),
+        ));
 
         // Register two different sessions
         mgr.register("session_a", None, std::collections::HashMap::new())
@@ -463,15 +473,13 @@ mod tests {
 
         let mgr1 = mgr.clone();
         let backend1 = backend.clone();
-        let handle1 = tokio::spawn(async move {
-            handle_completion_request(&req1, &mgr1, &backend1).await
-        });
+        let handle1 =
+            tokio::spawn(async move { handle_completion_request(&req1, &mgr1, &backend1).await });
 
         let mgr2 = mgr.clone();
         let backend2 = backend.clone();
-        let handle2 = tokio::spawn(async move {
-            handle_completion_request(&req2, &mgr2, &backend2).await
-        });
+        let handle2 =
+            tokio::spawn(async move { handle_completion_request(&req2, &mgr2, &backend2).await });
 
         // Wait for both requests to complete
         let result1 = handle1.await.expect("Task 1 panicked");
