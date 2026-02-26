@@ -19,8 +19,8 @@ pub enum ChatAction {
 // ---------------------------------------------------------------------------
 
 enum CommandKind {
-    /// Client-side command — handler returns result text.
-    Local(fn() -> String),
+    /// Client-side command — handler receives the remainder after the command path.
+    Local(fn(&str) -> String),
     /// Forwarded to daemon as `__cmd:{key}`.
     Daemon(&'static str),
 }
@@ -33,7 +33,7 @@ struct CommandEntry {
     help: &'static str,
 }
 
-fn debug_usage() -> String {
+fn debug_usage(_args: &str) -> String {
     let subs: Vec<&str> = COMMANDS
         .iter()
         .filter(|e| e.path.starts_with("/debug "))
@@ -45,8 +45,23 @@ fn debug_usage() -> String {
     format!("Usage: /debug <{}> [> file.txt]", subs.join("|"))
 }
 
-fn debug_template() -> String {
-    omnish_llm::template::prompt_template(true).to_string()
+fn template_command(args: &str) -> String {
+    use omnish_llm::template::{template_by_name, TEMPLATE_NAMES};
+
+    if args.is_empty() {
+        return format!(
+            "Usage: /template <{}> [> file.txt]",
+            TEMPLATE_NAMES.join("|")
+        );
+    }
+    match template_by_name(args) {
+        Some(t) => t,
+        None => format!(
+            "Unknown template: {}\nAvailable: {}",
+            args,
+            TEMPLATE_NAMES.join(", ")
+        ),
+    }
 }
 
 const COMMANDS: &[CommandEntry] = &[
@@ -57,7 +72,7 @@ const COMMANDS: &[CommandEntry] = &[
     },
     CommandEntry {
         path: "/template",
-        kind: CommandKind::Local(debug_template),
+        kind: CommandKind::Local(template_command),
         help: "Show prompt template",
     },
     CommandEntry {
@@ -119,25 +134,26 @@ pub fn dispatch(msg: &str) -> ChatAction {
     }
 
     if let Some(entry) = best {
-        // Check for unknown subcommands: if the user typed more tokens than
-        // the matched path, and no longer path matched, it's an error.
         let remainder = cmd_str[entry.path.len()..].trim();
-        if !remainder.is_empty() {
-            return ChatAction::Command {
-                result: format!("Unknown subcommand: {} {}", entry.path, remainder),
-                redirect: None,
-            };
-        }
 
         match &entry.kind {
             CommandKind::Local(f) => ChatAction::Command {
-                result: f(),
+                result: f(remainder),
                 redirect,
             },
-            CommandKind::Daemon(key) => ChatAction::DaemonQuery {
-                query: format!("__cmd:{}", key),
-                redirect,
-            },
+            CommandKind::Daemon(key) => {
+                // Daemon commands don't accept extra arguments.
+                if !remainder.is_empty() {
+                    return ChatAction::Command {
+                        result: format!("Unknown subcommand: {} {}", entry.path, remainder),
+                        redirect: None,
+                    };
+                }
+                ChatAction::DaemonQuery {
+                    query: format!("__cmd:{}", key),
+                    redirect,
+                }
+            }
         }
     } else {
         // Unknown /command — treat as LLM query.
@@ -189,11 +205,59 @@ mod tests {
     }
 
     #[test]
-    fn test_template_is_local() {
+    fn test_template_no_args_shows_usage() {
         match dispatch("/template") {
             ChatAction::Command { result, redirect } => {
-                assert!(result.contains("{context}"));
+                assert!(result.contains("Usage"));
+                assert!(result.contains("chat"));
+                assert!(result.contains("auto-complete"));
+                assert!(result.contains("daily-notes"));
                 assert!(redirect.is_none());
+            }
+            _ => panic!("expected Command"),
+        }
+    }
+
+    #[test]
+    fn test_template_chat() {
+        match dispatch("/template chat") {
+            ChatAction::Command { result, redirect } => {
+                assert!(result.contains("{context}"));
+                assert!(result.contains("{query}"));
+                assert!(redirect.is_none());
+            }
+            _ => panic!("expected Command"),
+        }
+    }
+
+    #[test]
+    fn test_template_auto_complete() {
+        match dispatch("/template auto-complete") {
+            ChatAction::Command { result, redirect } => {
+                assert!(result.contains("auto-complete"));
+                assert!(result.contains("completion text"));
+                assert!(redirect.is_none());
+            }
+            _ => panic!("expected Command"),
+        }
+    }
+
+    #[test]
+    fn test_template_daily_notes() {
+        match dispatch("/template daily-notes") {
+            ChatAction::Command { result, redirect } => {
+                assert!(result.contains("总结"));
+                assert!(redirect.is_none());
+            }
+            _ => panic!("expected Command"),
+        }
+    }
+
+    #[test]
+    fn test_template_unknown_name() {
+        match dispatch("/template bogus") {
+            ChatAction::Command { result, .. } => {
+                assert!(result.contains("Unknown template: bogus"));
             }
             _ => panic!("expected Command"),
         }
@@ -229,14 +293,13 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_debug_subcommand_is_error() {
+    fn test_unknown_debug_subcommand_shows_usage() {
+        // /debug is a Local command that ignores extra args and shows usage.
         match dispatch("/debug bogus") {
-            ChatAction::Command { result, redirect } => {
-                assert!(result.contains("Unknown subcommand"));
-                assert!(result.contains("bogus"));
-                assert!(redirect.is_none());
+            ChatAction::Command { result, .. } => {
+                assert!(result.contains("Usage"));
             }
-            _ => panic!("expected Command with error"),
+            _ => panic!("expected Command"),
         }
     }
 

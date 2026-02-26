@@ -94,9 +94,7 @@ async fn generate_daily_note(
         let table_text = &md;
         let req = LlmRequest {
             context: table_text.clone(),
-            query: Some(
-                "请用中文简要总结今天的工作内容，包括主要活动和成果，2-3段即可。".to_string(),
-            ),
+            query: Some(omnish_llm::template::DAILY_NOTES_PROMPT.to_string()),
             trigger: TriggerType::AutoPattern,
             session_ids: vec![],
         };
