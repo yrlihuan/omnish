@@ -100,10 +100,25 @@ impl ShellCompleter {
         {
             if !best.text.is_empty() {
                 // Strip the already-typed input prefix so ghost is only the suffix
+                // If the suggestion doesn't start with current input, we need to determine
+                // whether it's a suffix (e.g., "tus", " stash") or a full command that doesn't match.
                 let suffix = if best.text.starts_with(current_input) {
                     &best.text[current_input.len()..]
                 } else {
-                    &best.text
+                    // Suggestion doesn't start with current input
+                    // It could be:
+                    // 1. A suffix (e.g., "tus" for "git sta", " stash" for "git")
+                    // 2. A full command that doesn't match (e.g., "git status" for "ls")
+                    //
+                    // Heuristic: if suggestion is shorter or equal length, or starts with space,
+                    // treat it as a suffix. Otherwise discard.
+                    if best.text.len() <= current_input.len() || best.text.starts_with(' ') {
+                        &best.text
+                    } else {
+                        // Likely a full command that doesn't match current input - discard
+                        self.current_ghost = None;
+                        return None;
+                    }
                 };
                 if suffix.is_empty() {
                     self.current_ghost = None;
@@ -477,5 +492,29 @@ mod tests {
         // User types "cargo t" — "t" != ghost[0..1] = "r", must clear
         assert!(c.on_input_changed("cargo t", 3));
         assert!(c.ghost().is_none());
+    }
+
+    /// Test for issue 6: when current input is not a prefix of the full suggestion,
+    /// the completion should be discarded.
+    #[test]
+    fn test_completion_discarded_when_input_not_prefix() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("git ", 1);
+        c.mark_sent(1);
+
+        // LLM returns full command "git status", but user has changed input to "ls"
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: "git status".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        // Current input is "ls", which is not a prefix of "git status"
+        let ghost = c.on_response(&resp, "ls");
+        // According to issue 6, should discard completion (return None)
+        // Current implementation returns the full "git status" as ghost (incorrect)
+        assert_eq!(ghost, None, "Completion should be discarded when current input is not a prefix of full suggestion");
+        assert_eq!(c.ghost(), None);
     }
 }
