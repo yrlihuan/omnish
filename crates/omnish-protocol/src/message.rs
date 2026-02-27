@@ -8,6 +8,7 @@ const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 pub enum Message {
     SessionStart(SessionStart),
     SessionEnd(SessionEnd),
+    SessionUpdate(SessionUpdate),
     IoData(IoData),
     Event(Event),
     Request(Request),
@@ -33,6 +34,13 @@ pub struct SessionEnd {
     pub session_id: String,
     pub timestamp_ms: u64,
     pub exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionUpdate {
+    pub session_id: String,
+    pub timestamp_ms: u64,
+    pub attrs: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,6 +253,29 @@ mod tests {
             assert_eq!(resp.suggestions[0].text, "tus");
         } else {
             panic!("expected CompletionResponse");
+        }
+    }
+
+    #[test]
+    fn test_frame_with_session_update() {
+        let mut attrs = HashMap::new();
+        attrs.insert("shell_cwd".to_string(), "/home/user/project".to_string());
+        let frame = Frame {
+            request_id: 20,
+            payload: Message::SessionUpdate(SessionUpdate {
+                session_id: "abc".to_string(),
+                timestamp_ms: 2000,
+                attrs,
+            }),
+        };
+        let bytes = frame.to_bytes().unwrap();
+        let decoded = Frame::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.request_id, 20);
+        if let Message::SessionUpdate(su) = decoded.payload {
+            assert_eq!(su.session_id, "abc");
+            assert_eq!(su.attrs.get("shell_cwd").unwrap(), "/home/user/project");
+        } else {
+            panic!("expected SessionUpdate");
         }
     }
 }
