@@ -27,6 +27,8 @@ pub struct LlmRequest {
     pub session_ids: Vec<String>,
     /// Use case for this request - determines which model to use
     pub use_case: UseCase,
+    /// Maximum content characters for context (model-specific limit)
+    pub max_content_chars: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,4 +50,13 @@ pub struct LlmResponse {
 pub trait LlmBackend: Send + Sync {
     async fn complete(&self, req: &LlmRequest) -> Result<LlmResponse>;
     fn name(&self) -> &str;
+    /// Returns the maximum content characters limit for this backend's model
+    fn max_content_chars(&self) -> Option<usize> {
+        None
+    }
+    /// Returns the maximum content characters limit for the given use case
+    /// Default implementation returns max_content_chars() for backwards compatibility
+    fn max_content_chars_for_use_case(&self, _use_case: UseCase) -> Option<usize> {
+        self.max_content_chars()
+    }
 }

@@ -92,6 +92,8 @@ pub struct MultiBackend {
     use_case_backends: RwLock<HashMap<String, Arc<dyn LlmBackend>>>,
     /// Default backend for unknown use cases
     default_backend: Arc<dyn LlmBackend>,
+    /// Map from use case name to max_content_chars
+    use_case_max_chars: HashMap<String, Option<usize>>,
 }
 
 impl MultiBackend {
@@ -100,6 +102,7 @@ impl MultiBackend {
         let default_backend = create_default_backend(llm_config)?;
 
         let use_case_backends = RwLock::new(HashMap::new());
+        let mut use_case_max_chars = HashMap::new();
 
         // Create backends for each use case
         for (use_case_name, backend_name) in &llm_config.use_cases {
@@ -109,6 +112,8 @@ impl MultiBackend {
                     .write()
                     .map_err(|_| anyhow!("failed to acquire write lock"))?
                     .insert(use_case_name.clone(), backend);
+                // Store max_content_chars for this use case
+                use_case_max_chars.insert(use_case_name.clone(), backend_config.max_content_chars);
             } else {
                 tracing::warn!(
                     "backend '{}' not found for use case '{}', will use default",
@@ -121,6 +126,7 @@ impl MultiBackend {
         Ok(Self {
             use_case_backends,
             default_backend,
+            use_case_max_chars,
         })
     }
 
@@ -138,6 +144,20 @@ impl MultiBackend {
             .and_then(|backends| backends.get(use_case_name).cloned())
             .unwrap_or_else(|| self.default_backend.clone())
     }
+
+    /// Get max_content_chars for the given use case
+    pub fn get_max_content_chars(&self, use_case: UseCase) -> Option<usize> {
+        let use_case_name = match use_case {
+            UseCase::Completion => "completion",
+            UseCase::Analysis => "analysis",
+            UseCase::Chat => "chat",
+        };
+
+        self.use_case_max_chars
+            .get(use_case_name)
+            .copied()
+            .flatten()
+    }
 }
 
 #[async_trait]
@@ -149,6 +169,10 @@ impl LlmBackend for MultiBackend {
 
     fn name(&self) -> &str {
         "multi"
+    }
+
+    fn max_content_chars_for_use_case(&self, use_case: crate::backend::UseCase) -> Option<usize> {
+        self.get_max_content_chars(use_case)
     }
 }
 
@@ -177,6 +201,7 @@ mod tests {
             model: "claude-3-5-sonnet-20241022".to_string(),
             api_key_cmd: Some("echo sk-test-key".to_string()),
             base_url: None,
+            max_content_chars: None,
         };
 
         let backend = create_backend("test", &config).unwrap();
@@ -190,6 +215,7 @@ mod tests {
             model: "gpt-4".to_string(),
             api_key_cmd: Some("echo sk-test-key".to_string()),
             base_url: Some("https://api.openai.com/v1".to_string()),
+            max_content_chars: None,
         };
 
         let backend = create_backend("test", &config).unwrap();
@@ -203,6 +229,7 @@ mod tests {
             model: "gpt-4".to_string(),
             api_key_cmd: Some("echo sk-test-key".to_string()),
             base_url: None,
+            max_content_chars: None,
         };
 
         let result = create_backend("test", &config);
@@ -218,6 +245,7 @@ mod tests {
             model: "model".to_string(),
             api_key_cmd: Some("echo key".to_string()),
             base_url: None,
+            max_content_chars: None,
         };
 
         let result = create_backend("test", &config);

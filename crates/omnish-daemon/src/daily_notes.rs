@@ -73,12 +73,15 @@ async fn generate_daily_note(
     // Try LLM summary
     if let Some(backend) = llm_backend {
         let table_text = &md;
+        let use_case = UseCase::Analysis;
+        let max_content_chars = backend.max_content_chars_for_use_case(use_case);
         let req = LlmRequest {
             context: table_text.clone(),
             query: Some(omnish_llm::template::DAILY_NOTES_PROMPT.to_string()),
             trigger: TriggerType::AutoPattern,
             session_ids: vec![],
-            use_case: UseCase::Analysis,
+            use_case,
+            max_content_chars,
         };
         match backend.complete(&req).await {
             Ok(resp) => {

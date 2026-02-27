@@ -605,6 +605,11 @@ impl SessionManager {
     }
 
     pub async fn get_session_context(&self, session_id: &str) -> Result<String> {
+        self.get_session_context_with_limit(session_id, self.context_config.max_context_chars).await
+    }
+
+    /// Get session context with explicit max_context_chars limit (overrides config)
+    pub async fn get_session_context_with_limit(&self, session_id: &str, max_context_chars: Option<usize>) -> Result<String> {
         // Clone data under brief locks
         let (commands, stream_path, hostnames) = {
             let sessions = self.sessions.read().await;
@@ -636,7 +641,7 @@ impl SessionManager {
             cc.history_commands,
             cc.min_current_session_commands,
             cc.max_line_width,
-            cc.max_context_chars,
+            max_context_chars,
         )
         .await
     }
@@ -773,6 +778,11 @@ impl SessionManager {
     }
 
     pub async fn get_all_sessions_context(&self, current_session_id: &str) -> Result<String> {
+        self.get_all_sessions_context_with_limit(current_session_id, self.context_config.max_context_chars).await
+    }
+
+    /// Get all sessions context with explicit max_context_chars limit (overrides config)
+    pub async fn get_all_sessions_context_with_limit(&self, current_session_id: &str, max_context_chars: Option<usize>) -> Result<String> {
         let cc = &self.context_config;
 
         // Clone data under brief locks

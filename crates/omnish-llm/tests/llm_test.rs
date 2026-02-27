@@ -8,6 +8,7 @@ fn test_llm_request_build() {
         trigger: TriggerType::Manual,
         session_ids: vec!["abc".to_string()],
         use_case: UseCase::Analysis,
+        max_content_chars: None,
     };
     assert_eq!(req.session_ids.len(), 1);
     assert!(req.query.is_some());

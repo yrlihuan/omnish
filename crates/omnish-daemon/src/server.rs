@@ -165,14 +165,14 @@ async fn handle_message(
     }
 }
 
-async fn resolve_context(req: &Request, mgr: &SessionManager) -> Result<String> {
+async fn resolve_context(req: &Request, mgr: &SessionManager, max_context_chars: Option<usize>) -> Result<String> {
     match &req.scope {
-        RequestScope::CurrentSession => mgr.get_session_context(&req.session_id).await,
-        RequestScope::AllSessions => mgr.get_all_sessions_context(&req.session_id).await,
+        RequestScope::CurrentSession => mgr.get_session_context_with_limit(&req.session_id, max_context_chars).await,
+        RequestScope::AllSessions => mgr.get_all_sessions_context_with_limit(&req.session_id, max_context_chars).await,
         RequestScope::Sessions(ids) => {
             let mut combined = String::new();
             for sid in ids {
-                match mgr.get_session_context(sid).await {
+                match mgr.get_session_context_with_limit(sid, max_context_chars).await {
                     Ok(ctx) => {
                         combined.push_str(&format!("\n=== Session {} ===\n", sid));
                         combined.push_str(&ctx);
@@ -190,7 +190,7 @@ async fn resolve_context(req: &Request, mgr: &SessionManager) -> Result<String> 
 async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>) -> String {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
     match sub {
-        "context" => match resolve_context(req, mgr).await {
+        "context" => match resolve_context(req, mgr, None).await {
             Ok(ctx) => ctx,
             Err(e) => format!("Error: {}", e),
         },
@@ -291,14 +291,17 @@ async fn handle_llm_request(
     mgr: &SessionManager,
     backend: &Arc<dyn LlmBackend>,
 ) -> Result<omnish_llm::backend::LlmResponse> {
-    let context = resolve_context(req, mgr).await?;
+    let use_case = UseCase::Analysis; // Manual requests are for analysis/chat
+    let max_context_chars = backend.max_content_chars_for_use_case(use_case);
+    let context = resolve_context(req, mgr, max_context_chars).await?;
 
     let llm_req = LlmRequest {
         context,
         query: Some(req.query.clone()),
         trigger: TriggerType::Manual,
         session_ids: vec![req.session_id.clone()],
-        use_case: UseCase::Analysis, // Manual requests are for analysis/chat
+        use_case,
+        max_content_chars: max_context_chars,
     };
 
     let start = std::time::Instant::now();
@@ -337,13 +340,16 @@ async fn handle_completion_request(
     mgr: &SessionManager,
     backend: &Arc<dyn LlmBackend>,
 ) -> Result<Vec<omnish_protocol::message::CompletionSuggestion>> {
+    let use_case = UseCase::Completion;
+    let max_context_chars = backend.max_content_chars_for_use_case(use_case);
+
     let context_req = Request {
         request_id: String::new(),
         session_id: req.session_id.clone(),
         query: String::new(),
         scope: RequestScope::AllSessions,
     };
-    let context = resolve_context(&context_req, mgr).await?;
+    let context = resolve_context(&context_req, mgr, max_context_chars).await?;
 
     let prompt =
         omnish_llm::template::build_simple_completion_content(&context, &req.input, req.cursor_pos);
@@ -353,7 +359,8 @@ async fn handle_completion_request(
         query: Some(prompt),
         trigger: TriggerType::Manual,
         session_ids: vec![req.session_id.clone()],
-        use_case: UseCase::Completion,
+        use_case,
+        max_content_chars: max_context_chars,
     };
 
     let start = std::time::Instant::now();

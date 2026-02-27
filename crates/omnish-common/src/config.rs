@@ -198,6 +198,9 @@ pub struct LlmBackendConfig {
     pub api_key_cmd: Option<String>,
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Maximum content characters for context (model-specific limit)
+    #[serde(default)]
+    pub max_content_chars: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize)]
