@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType};
 use omnish_protocol::message::*;
@@ -174,8 +174,59 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager) -> String {
             Err(e) => format!("Error: {}", e),
         },
         "sessions" => mgr.format_sessions_list(&req.session_id).await,
+        "session" => match get_session_debug_info(&req.session_id, mgr).await {
+            Ok(info) => info,
+            Err(e) => format!("Error: {}", e),
+        },
         other => format!("Unknown command: {}", other),
     }
+}
+
+async fn get_session_debug_info(session_id: &str, mgr: &SessionManager) -> Result<String> {
+    let (meta, cmd_count, last_active_duration) = mgr.get_session_debug_info(session_id).await?;
+    let commands = mgr.get_commands(session_id).await?;
+
+    let mut info = String::new();
+    info.push_str(&format!("Session ID: {}\n", session_id));
+    info.push_str(&format!("Started at: {}\n", meta.started_at));
+    if let Some(ended_at) = &meta.ended_at {
+        info.push_str(&format!("Ended at: {}\n", ended_at));
+    } else {
+        info.push_str(&format!("Status: Active\n"));
+        info.push_str(&format!("Last active: {}s ago\n", last_active_duration.as_secs()));
+    }
+
+    info.push_str(&format!("Commands recorded: {}\n", cmd_count));
+
+    // Session attributes (probes)
+    info.push_str("\nSession attributes:\n");
+    let mut attrs: Vec<_> = meta.attrs.iter().collect();
+    attrs.sort_by_key(|(k, _)| *k);
+    for (key, value) in attrs {
+        info.push_str(&format!("  {}: {}\n", key, value));
+    }
+
+    // Command statistics
+    if !commands.is_empty() {
+        let meaningful_commands: Vec<_> = commands.iter()
+            .filter(|c| c.command_line.is_some())
+            .collect();
+
+        info.push_str(&format!("\nCommand statistics:\n"));
+        info.push_str(&format!("  Total commands: {}\n", commands.len()));
+        info.push_str(&format!("  Meaningful commands: {}\n", meaningful_commands.len()));
+
+        if let (Some(first), Some(last)) = (meaningful_commands.first(), meaningful_commands.last()) {
+            info.push_str(&format!("  First command: {} (at {})\n",
+                first.command_line.as_deref().unwrap_or("unknown"),
+                first.started_at));
+            info.push_str(&format!("  Last command: {} (at {})\n",
+                last.command_line.as_deref().unwrap_or("unknown"),
+                last.started_at));
+        }
+    }
+
+    Ok(info)
 }
 
 async fn handle_llm_request(

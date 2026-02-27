@@ -86,6 +86,11 @@ const COMMANDS: &[CommandEntry] = &[
         help: "Show client debug state",
     },
     CommandEntry {
+        path: "/debug session",
+        kind: CommandKind::Daemon("session"),
+        help: "Show current session debug information",
+    },
+    CommandEntry {
         path: "/sessions",
         kind: CommandKind::Daemon("sessions"),
         help: "List sessions",
@@ -313,6 +318,7 @@ mod tests {
         assert!(cmds.contains(&"/template".to_string()));
         assert!(cmds.contains(&"/debug".to_string()));
         assert!(cmds.contains(&"/debug client".to_string()));
+        assert!(cmds.contains(&"/debug session".to_string()));
         assert!(cmds.contains(&"/sessions".to_string()));
         // Template subcommands are also completable.
         assert!(cmds.contains(&"/template chat".to_string()));
@@ -329,6 +335,17 @@ mod tests {
         match dispatch("/debug client") {
             ChatAction::DaemonQuery { query, redirect } => {
                 assert_eq!(query, "__cmd:client_debug");
+                assert!(redirect.is_none());
+            }
+            _ => panic!("expected DaemonQuery"),
+        }
+    }
+
+    #[test]
+    fn test_debug_session_dispatches_to_daemon() {
+        match dispatch("/debug session") {
+            ChatAction::DaemonQuery { query, redirect } => {
+                assert_eq!(query, "__cmd:session");
                 assert!(redirect.is_none());
             }
             _ => panic!("expected DaemonQuery"),

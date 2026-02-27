@@ -334,6 +334,28 @@ impl SessionManager {
         }
     }
 
+    /// Get session debug information including metadata, commands count, and last active time
+    pub async fn get_session_debug_info(&self, session_id: &str) -> Result<(SessionMeta, usize, Duration)> {
+        let session = {
+            let sessions = self.sessions.read().await;
+            sessions
+                .get(session_id)
+                .cloned()
+                .ok_or_else(|| anyhow!("session {} not found", session_id))?
+        };
+
+        let meta = session.meta.read().await.clone();
+        let commands = session.commands.read().await;
+        let cmd_count = commands.len();
+        drop(commands); // Release the lock early
+
+        let sw = session.stream_writer.lock().await;
+        let last_active_duration = sw.last_active.elapsed();
+        drop(sw);
+
+        Ok((meta, cmd_count, last_active_duration))
+    }
+
     pub async fn list_active(&self) -> Vec<String> {
         let sessions = self.sessions.read().await;
         let mut result = Vec::new();
