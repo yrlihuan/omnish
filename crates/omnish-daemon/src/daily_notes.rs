@@ -1,6 +1,6 @@
 use crate::session_mgr::SessionManager;
 use chrono::{Local, NaiveTime};
-use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType};
+use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -97,6 +97,7 @@ async fn generate_daily_note(
             query: Some(omnish_llm::template::DAILY_NOTES_PROMPT.to_string()),
             trigger: TriggerType::AutoPattern,
             session_ids: vec![],
+            use_case: UseCase::Analysis,
         };
         match backend.complete(&req).await {
             Ok(resp) => {

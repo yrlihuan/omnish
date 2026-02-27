@@ -6,7 +6,7 @@ use anyhow::Result;
 use omnish_common::config::{load_daemon_config, omnish_dir};
 use omnish_daemon::daily_notes::spawn_daily_notes_task;
 use omnish_daemon::session_mgr::SessionManager;
-use omnish_llm::factory::create_default_backend;
+use omnish_llm::factory::MultiBackend;
 use server::DaemonServer;
 use std::sync::Arc;
 
@@ -39,8 +39,9 @@ async fn async_main() -> Result<()> {
 
     // Create LLM backend if configured
     let llm_backend: Option<Arc<dyn omnish_llm::backend::LlmBackend>> =
-        match create_default_backend(&config.llm) {
+        match MultiBackend::new(&config.llm) {
             Ok(backend) => {
+                let backend: Arc<dyn omnish_llm::backend::LlmBackend> = Arc::new(backend);
                 tracing::info!("LLM backend initialized: {}", backend.name());
                 Some(backend)
             }

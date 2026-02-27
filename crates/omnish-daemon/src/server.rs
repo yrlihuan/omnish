@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use omnish_daemon::session_mgr::SessionManager;
-use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType};
+use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
 use omnish_protocol::message::*;
 use omnish_transport::rpc_server::RpcServer;
 use std::sync::Arc;
@@ -253,6 +253,7 @@ async fn handle_llm_request(
         query: Some(req.query.clone()),
         trigger: TriggerType::Manual,
         session_ids: vec![req.session_id.clone()],
+        use_case: UseCase::Analysis, // Manual requests are for analysis/chat
     };
 
     let start = std::time::Instant::now();
@@ -302,6 +303,7 @@ async fn handle_completion_request(
         query: Some(prompt),
         trigger: TriggerType::Manual,
         session_ids: vec![req.session_id.clone()],
+        use_case: UseCase::Completion,
     };
 
     let start = std::time::Instant::now();

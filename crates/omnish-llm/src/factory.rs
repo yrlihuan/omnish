@@ -1,10 +1,13 @@
 use crate::anthropic::AnthropicBackend;
-use crate::backend::LlmBackend;
+use crate::backend::{LlmBackend, UseCase};
 use crate::openai_compat::OpenAiCompatBackend;
 use anyhow::{anyhow, Result};
+use async_trait::async_trait;
 use omnish_common::config::{LlmBackendConfig, LlmConfig};
+use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 /// Resolve API key from command or direct value
 fn resolve_api_key(api_key_cmd: &Option<String>) -> Result<String> {
@@ -81,6 +84,72 @@ pub fn create_default_backend(llm_config: &LlmConfig) -> Result<Arc<dyn LlmBacke
         .ok_or_else(|| anyhow!("default backend '{}' not found in config", backend_name))?;
 
     create_backend(backend_name, backend_config)
+}
+
+/// MultiBackend routes LLM requests to different backends based on use case
+pub struct MultiBackend {
+    /// Map from use case name to backend
+    use_case_backends: RwLock<HashMap<String, Arc<dyn LlmBackend>>>,
+    /// Default backend for unknown use cases
+    default_backend: Arc<dyn LlmBackend>,
+}
+
+impl MultiBackend {
+    /// Create a MultiBackend from LLM config
+    pub fn new(llm_config: &LlmConfig) -> Result<Self> {
+        let default_backend = create_default_backend(llm_config)?;
+
+        let use_case_backends = RwLock::new(HashMap::new());
+
+        // Create backends for each use case
+        for (use_case_name, backend_name) in &llm_config.use_cases {
+            if let Some(backend_config) = llm_config.backends.get(backend_name) {
+                let backend = create_backend(backend_name, backend_config)?;
+                use_case_backends
+                    .write()
+                    .map_err(|_| anyhow!("failed to acquire write lock"))?
+                    .insert(use_case_name.clone(), backend);
+            } else {
+                tracing::warn!(
+                    "backend '{}' not found for use case '{}', will use default",
+                    backend_name,
+                    use_case_name
+                );
+            }
+        }
+
+        Ok(Self {
+            use_case_backends,
+            default_backend,
+        })
+    }
+
+    /// Get backend for the given use case
+    pub fn get_backend(&self, use_case: UseCase) -> Arc<dyn LlmBackend> {
+        let use_case_name = match use_case {
+            UseCase::Completion => "completion",
+            UseCase::Analysis => "analysis",
+            UseCase::Chat => "chat",
+        };
+
+        self.use_case_backends
+            .read()
+            .ok()
+            .and_then(|backends| backends.get(use_case_name).cloned())
+            .unwrap_or_else(|| self.default_backend.clone())
+    }
+}
+
+#[async_trait]
+impl LlmBackend for MultiBackend {
+    async fn complete(&self, req: &crate::backend::LlmRequest) -> Result<crate::backend::LlmResponse> {
+        let backend = self.get_backend(req.use_case);
+        backend.complete(req).await
+    }
+
+    fn name(&self) -> &str {
+        "multi"
+    }
 }
 
 #[cfg(test)]

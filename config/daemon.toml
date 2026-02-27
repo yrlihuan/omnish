@@ -14,11 +14,23 @@ backend_type = "anthropic"
 model = "claude-sonnet-4-5-20250929"
 api_key_cmd = "pass show anthropic/api-key"
 
+# [llm.backends.claude-haiku]
+# backend_type = "anthropic"
+# model = "claude-3-5-haiku-20240307"
+# api_key_cmd = "pass show anthropic/api-key"
+
 # [llm.backends.openai]
 # backend_type = "openai_compat"
 # model = "gpt-4o"
 # api_key_cmd = "pass show openai/api-key"
 # base_url = "https://api.openai.com/v1"
+
+# Map use cases to backend models
+# Uncomment and modify to use different models for different tasks:
+# [llm.use_cases]
+# completion = "claude-haiku"  # Use faster/cheaper model for auto-completion
+# analysis = "claude"          # Use smarter model for analysis/chat
+# chat = "claude"             # Use smarter model for chat
 
 [llm.auto_trigger]
 on_nonzero_exit = true

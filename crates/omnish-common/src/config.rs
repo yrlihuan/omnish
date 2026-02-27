@@ -175,6 +175,14 @@ pub struct LlmConfig {
     pub backends: HashMap<String, LlmBackendConfig>,
     #[serde(default)]
     pub auto_trigger: AutoTriggerConfig,
+    /// Map use cases to backend names
+    /// Example:
+    ///   [llm.use_cases]
+    ///   completion = "claude-fast"
+    ///   analysis = "claude"
+    ///   chat = "claude"
+    #[serde(default)]
+    pub use_cases: HashMap<String, String>,
 }
 
 impl Default for LlmConfig {
@@ -183,6 +191,7 @@ impl Default for LlmConfig {
             default: default_llm_name(),
             backends: HashMap::new(),
             auto_trigger: AutoTriggerConfig::default(),
+            use_cases: HashMap::new(),
         }
     }
 }
