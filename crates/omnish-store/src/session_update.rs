@@ -12,8 +12,12 @@ pub struct SessionUpdateRecord {
     pub session_id: String,
     /// Timestamp when this record was created (epoch ms)
     pub timestamp_ms: u64,
-    /// Attributes from probes
-    pub attrs: HashMap<String, String>,
+    /// Hostname from probe
+    pub host: Option<String>,
+    /// Shell current working directory from probe
+    pub shell_cwd: Option<String>,
+    /// Child process info from probe
+    pub child_process: Option<String>,
     /// Extra fields (attrs other than host, shell_cwd, child_process for future extension)
     #[serde(default)]
     pub extra: HashMap<String, Value>,
@@ -30,8 +34,13 @@ impl SessionUpdateRecord {
         }
     }
 
-    /// Create a new SessionUpdateRecord, extracting extra fields from attrs
+    /// Create a new SessionUpdateRecord, extracting known fields from attrs
     pub fn new(session_id: String, timestamp_ms: u64, attrs: HashMap<String, String>) -> Self {
+        // Extract known fields
+        let host = attrs.get("host").cloned();
+        let shell_cwd = attrs.get("shell_cwd").cloned();
+        let child_process = attrs.get("child_process").cloned();
+
         // Extract fields other than host, shell_cwd, child_process into extra
         let mut extra = HashMap::new();
         let known_fields = ["host", "shell_cwd", "child_process"];
@@ -44,7 +53,9 @@ impl SessionUpdateRecord {
         Self {
             session_id,
             timestamp_ms,
-            attrs,
+            host,
+            shell_cwd,
+            child_process,
             extra,
         }
     }
@@ -61,20 +72,24 @@ impl SessionUpdateRecord {
                 s.to_string()
             }
         };
-        // Serialize attrs as JSON string
-        let attrs_json = serde_json::to_string(&self.attrs).unwrap_or_default();
+        // Optional fields as empty string if None
+        let host = self.host.as_deref().unwrap_or("");
+        let shell_cwd = self.shell_cwd.as_deref().unwrap_or("");
+        let child_process = self.child_process.as_deref().unwrap_or("");
         format!(
-            "{},{},{},{}\n",
+            "{},{},{},{},{},{}\n",
             Self::format_timestamp(self.timestamp_ms),
             escape(&self.session_id),
-            escape(&attrs_json),
+            escape(host),
+            escape(shell_cwd),
+            escape(child_process),
             escape(&extra_json)
         )
     }
 
     /// CSV header
     pub fn csv_header() -> &'static str {
-        "timestamp,session_id,attrs,extra\n"
+        "timestamp,session_id,host,shell_cwd,child_process,extra\n"
     }
 }
 
@@ -185,7 +200,9 @@ mod tests {
         let header = SessionUpdateRecord::csv_header();
         assert!(header.starts_with("timestamp"));
         assert!(header.contains("session_id"));
-        assert!(header.contains("attrs"));
+        assert!(header.contains("host"));
+        assert!(header.contains("shell_cwd"));
+        assert!(header.contains("child_process"));
         assert!(header.contains("extra"));
     }
 
@@ -202,9 +219,9 @@ mod tests {
             attrs,
         );
 
-        // host and shell_cwd should remain in attrs
-        assert!(record.attrs.contains_key("host"));
-        assert!(record.attrs.contains_key("shell_cwd"));
+        // host and shell_cwd should be extracted to explicit fields
+        assert_eq!(record.host.as_deref(), Some("workstation"));
+        assert_eq!(record.shell_cwd.as_deref(), Some("/home/user"));
         // custom_key should be extracted to extra
         assert!(record.extra.contains_key("custom_key"));
         assert_eq!(record.extra.get("custom_key").unwrap(), &Value::String("custom_value".to_string()));
