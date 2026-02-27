@@ -158,13 +158,17 @@ impl ShellInputTracker {
 
     /// Replace the tracked input with the real readline content reported by bash.
     /// Only effective while at the prompt.
+    /// Only bumps sequence_id if content actually changed, to avoid spurious
+    /// completion requests from readline triggers sent for response processing.
     pub fn set_readline(&mut self, content: &str) {
         if !self.at_prompt {
             return;
         }
-        self.input = content.to_string();
         self.pending_rl_report = false;
-        self.bump();
+        if self.input != content {
+            self.input = content.to_string();
+            self.bump();
+        }
     }
 
     /// Mark that a readline report is expected (e.g. after sending a trigger
@@ -351,6 +355,31 @@ mod tests {
         // After set_readline, take_change works again
         let (input, _seq) = t.take_change().unwrap();
         assert_eq!(input, "git");
+    }
+
+    /// Regression: set_readline with unchanged content should NOT bump sequence_id.
+    /// This prevents the completion loop where readline triggers (sent to get
+    /// current input for processing a completion response) cause spurious
+    /// sequence bumps that make should_request think there's new user input.
+    #[test]
+    fn test_set_readline_same_content_no_bump() {
+        let mut t = ShellInputTracker::new();
+        t.feed_forwarded(b"git");
+        let seq_after_typing = t.sequence_id();
+        let _ = t.take_change(); // consume
+
+        // Simulate readline trigger for completion: content unchanged
+        t.mark_pending_report();
+        t.set_readline("git"); // same content
+
+        // Should clear pending_rl_report
+        assert!(!t.pending_rl_report());
+        // But should NOT bump sequence_id
+        assert_eq!(t.sequence_id(), seq_after_typing,
+            "set_readline with unchanged content should not bump sequence_id");
+        // take_change should return None (no actual change)
+        assert!(t.take_change().is_none(),
+            "No change should be reported when readline content is the same");
     }
 
     #[test]
