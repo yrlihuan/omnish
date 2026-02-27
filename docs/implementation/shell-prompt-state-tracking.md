@@ -68,6 +68,44 @@ This is detected from user keyboard input, not from OSC events.
 
 These events still trigger `shell_completer.clear()` to dismiss any visible ghost text.
 
+## CSI Trigger Guard (commit 28820fc)
+
+The client sends a CSI sequence `\x1b[13337~` to trigger bash's READLINE_PROMPT_STARTED hook, which allows reading the actual input line. However, this escape sequence could appear as raw characters `^[[13337~` when the bash hook is not installed or when not at the prompt.
+
+To prevent this, the CSI trigger is now guarded by two conditions:
+
+1. **For Up/Down arrow navigation**: Only send CSI trigger when `osc133_hook_installed` is true
+2. **For completion responses**: Only send CSI trigger when both `osc133_hook_installed` is true AND `shell_input.at_prompt()` returns true
+
+This fix resolves issue #27 where raw escape sequences appeared in the terminal.
+
+## CWD Tracking via ShellCwdProbe
+
+Traditional shell tracking relies on `$PWD` environment variable, but this can become stale or incorrect when:
+- The shell changes directory without updating PWD (e.g., `cd` in a subshell)
+- Symbolic links are involved
+- The client process has a different working directory than the shell
+
+Omnish now uses `ShellCwdProbe` to periodically poll the shell process's actual working directory by reading `/proc/{shell_pid}/cwd`:
+
+```rust
+pub struct ShellCwdProbe(pub u32);
+impl Probe for ShellCwdProbe {
+    fn key(&self) -> &str { "shell_cwd" }
+    fn collect(&self) -> Option<String> {
+        std::fs::read_link(format!("/proc/{}/cwd", self.0))
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+    }
+}
+```
+
+This probe is included in `default_polling_probes()` and runs alongside `ChildProcessProbe` to track:
+- `shell_cwd` — The shell's actual working directory
+- `child_process` — The currently running foreground process (name:pid)
+
+This provides more accurate context for the LLM about where commands are executing.
+
 ## State Diagram
 
 ```

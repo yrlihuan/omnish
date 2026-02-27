@@ -157,6 +157,52 @@ Shell命令行输入跟踪器，通过观察转发的字节和OSC 133状态转�
 - `LlmQuery(String)` - LLM查询
 - `DaemonQuery { query: String, redirect: Option<String> }` - 需要守护进程数据的查询
 
+## Probe 系统
+
+omnish-client 实现了 Probe  trait 机制，用于收集会话相关的系统信息。Probe 是一种可插拔的数据收集器，可以定期获取客户端和 shell 进程的状态信息。
+
+### `Probe` trait
+所有 Probe 实现的基础 trait。
+
+**方法:**
+- `key(&self) -> &str` - 返回 Probe 的唯一标识键
+- `collect(&self) -> Option<String>` - 收集并返回探测数据，返回 None 表示探测失败
+
+### `ProbeSet`
+Probe 集合容器，管理多个 Probe 实例。
+
+**方法:**
+- `new() -> Self` - 创建新的 Probe 集合
+- `add(&mut self, probe: Box<dyn Probe>)` - 添加一个 Probe
+- `collect_all(&self) -> HashMap<String, String>` - 执行所有 Probe 并返回结果映射
+
+### 内置 Probe 实现
+
+**静态 Probe (会话开始时收集):**
+- `ShellProbe` - 获取当前 shell 路径（环境变量 `SHELL`）
+- `PidProbe` - 获取子进程 PID
+- `TtyProbe` - 获取终端设备路径（环境变量 `TTY`）
+- `CwdProbe` - 获取客户端启动时的工作目录
+- `HostnameProbe` - 获取主机名
+
+**动态 Probe (定期轮询收集):**
+- `ShellCwdProbe(pid: u32)` - 通过 `/proc/{pid}/cwd` 获取 shell 进程当前工作目录
+  - 读取 shell 进程的符号链接 `/proc/<pid>/cwd` 获取当前工作目录
+  - 用于实时跟踪 shell 的实际工作目录
+- `ChildProcessProbe(pid: u32)` - 通过 `/proc/{pid}/task/{pid}/children` 获取子进程信息
+  - 读取 `/proc/<pid>/task/<pid>/children` 获取子进程 PID 列表
+  - 取最后一个子进程，读取其 `/proc/<pid>/comm` 获取进程名
+  - 返回格式为 `"name:pid"` 的字符串（如 `"vim:12345"`）
+  - 如果没有子进程则返回空字符串
+
+### 默认 Probe 集合
+
+**会话探测 (`default_session_probes`)**: 静态 Probe 集合，在会话开始时收集一次
+- 包含: ShellProbe, PidProbe, TtyProbe, CwdProbe, HostnameProbe
+
+**轮询探测 (`default_polling_probes`)**: 动态 Probe 集合，用于定期轮询
+- 包含: ShellCwdProbe, ChildProcessProbe
+
 ## 关键函数说明
 
 ### 主事件循环 (`main.rs`)
@@ -186,6 +232,24 @@ Shell命令行输入跟踪器，通过观察转发的字节和OSC 133状态转�
 **逻辑:**
 - 如果发送失败且消息类型可缓冲（`IoData`或`CommandComplete`），则加入缓冲区
 - 缓冲区有大小限制（`MAX_BUFFER_SIZE = 10_000`），满时丢弃最旧消息
+
+### Polling 机制
+
+客户端启动后会在后台运行一个定期探测任务，用于持续收集 shell 进程的状态信息。
+
+**工作机制:**
+1. **启动时机**: 与守护进程建立连接后自动启动
+2. **探测间隔**: 每 5 秒执行一次探测
+3. **数据来源**: 使用 `default_polling_probes` 收集 ShellCwdProbe 和 ChildProcessProbe
+4. **差异更新**: 维护上一次探测结果的副本，仅当数值发生变化时才更新
+5. **消息发送**: 通过 `SessionUpdate` 消息将变化的数据发送到守护进程
+
+**tmux 窗口标题更新:**
+- 当 `child_process` 探测值发生变化时，自动更新 tmux 窗口标题
+- 提取进程名（不含 PID）作为窗口标题
+- 使用 tmux OSC 序列 `\x1b_k{name}\x1b\\` 设置窗口名称
+
+**代码位置**: `main.rs` 中的异步任务块 (约第 120-157 行)
 
 ### `connect_daemon()`
 连接守护进程，支持优雅降级（守护进程不可用时进入直通模式）。
@@ -365,6 +429,24 @@ daemon_addr = "~/.omnish/omnish.sock"
 - 使用ANSI转义序列进行精确光标控制
 - 支持UTF-8多字节字符和全角字符
 - 正确处理终端滚动和光标恢复
+
+### tmux 窗口标题管理
+客户端支持根据当前执行的命令自动更新 tmux 窗口标题，提供直观的会话状态指示。
+
+**更新时机:**
+1. **命令开始时**: 当检测到 OSC 133 CommandStart 事件时，将窗口标题设置为正在执行的命令名（提取命令的第一个单词）
+2. **命令结束时**: 当检测到 OSC 133 PromptStart 或 CommandEnd 事件时，窗口标题恢复为 "omnish"
+3. **子进程变化时**: 通过 polling 机制检测到子进程变化时，更新窗口标题为新的子进程名
+
+**实现原理:**
+- 检测环境变量 `TMUX` 判断是否在 tmux 环境中运行
+- 使用 tmux OSC 序列设置窗口名称: `\x1b_k{name}\x1b\\`
+- 通过 `command_basename()` 函数从完整命令中提取可执行文件名
+- 当命令中包含路径时（如 `/usr/bin/vim`），会显示完整路径
+
+**代码位置**:
+- `tmux_title()` 函数: 构建 tmux 窗口标题序列
+- `command_basename()` 函数: 从命令中提取可执行文件名
 
 ### 错误处理
 - 守护进程连接失败时进入直通模式
