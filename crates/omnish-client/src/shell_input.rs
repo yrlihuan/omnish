@@ -41,6 +41,7 @@ impl ShellInputTracker {
         self.at_prompt = true;
         self.input.clear();
         self.esc_state = 0;
+        self.pending_rl_report = false; // Clear pending report on new prompt
         self.bump(); // always bump so completion can fire on empty prompt
     }
 
@@ -401,5 +402,42 @@ mod tests {
         assert!(!t.at_prompt());
         t.set_readline("should be ignored");
         assert_eq!(t.input(), "");
+    }
+
+    /// Regression: Ctrl+R then Enter should not leave client in stuck state.
+    /// The pending_rl_report should be cleared when on_prompt is called
+    /// after the command completes (issue #34).
+    #[test]
+    fn test_ctrl_r_then_enter_clears_pending_on_prompt() {
+        let mut t = ShellInputTracker::new();
+
+        // Simulate typing some command
+        t.feed_forwarded(b"some cmd");
+
+        // User presses Ctrl+R - main.rs calls mark_pending_report()
+        t.mark_pending_report();
+
+        // Pending report should be set
+        assert!(t.pending_rl_report());
+
+        // Take change should return None while pending
+        assert!(t.take_change().is_none());
+
+        // Simulate pressing Enter to execute
+        t.feed_forwarded(&[0x0d]);
+
+        // After Enter, still pending (at_prompt is false now)
+        assert!(!t.at_prompt());
+        assert!(t.pending_rl_report());
+
+        // Simulate command completing and prompt returning (OSC 133;A/D)
+        t.on_prompt();
+
+        // After on_prompt, pending should be cleared
+        assert!(!t.pending_rl_report());
+        assert!(t.at_prompt());
+
+        // Now take_change should work
+        assert!(t.take_change().is_some());
     }
 }
