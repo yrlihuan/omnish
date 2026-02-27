@@ -1187,9 +1187,19 @@ impl AltScreenDetector {
 /// Display a command result or write to file if redirected.
 fn handle_command_result(content: &str, redirect: Option<&str>, proxy: &PtyProxy) {
     if let Some(path) = redirect {
-        match std::fs::write(path, content) {
+        // Resolve relative paths against shell's current working directory
+        let resolved_path = if std::path::Path::new(path).is_relative() {
+            match get_shell_cwd(proxy.child_pid() as u32) {
+                Some(shell_cwd) => std::path::Path::new(&shell_cwd).join(path),
+                None => std::path::Path::new(path).to_path_buf(), // Fallback to relative to session cwd
+            }
+        } else {
+            std::path::Path::new(path).to_path_buf()
+        };
+
+        match std::fs::write(&resolved_path, content) {
             Ok(_) => {
-                let msg = display::render_response(&format!("Written to {}", path));
+                let msg = display::render_response(&format!("Written to {}", resolved_path.display()));
                 nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
             }
             Err(e) => {
