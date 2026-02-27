@@ -95,6 +95,11 @@ const COMMANDS: &[CommandEntry] = &[
         kind: CommandKind::Daemon("sessions"),
         help: "List sessions",
     },
+    CommandEntry {
+        path: "/tasks",
+        kind: CommandKind::Daemon("tasks"),
+        help: "List or manage scheduled tasks",
+    },
 ];
 
 /// Return all command paths for ghost-text completion.
@@ -151,17 +156,12 @@ pub fn dispatch(msg: &str) -> ChatAction {
                 redirect,
             },
             CommandKind::Daemon(key) => {
-                // Daemon commands don't accept extra arguments.
-                if !remainder.is_empty() {
-                    return ChatAction::Command {
-                        result: format!("Unknown subcommand: {} {}", entry.path, remainder),
-                        redirect: None,
-                    };
-                }
-                ChatAction::DaemonQuery {
-                    query: format!("__cmd:{}", key),
-                    redirect,
-                }
+                let query = if remainder.is_empty() {
+                    format!("__cmd:{}", key)
+                } else {
+                    format!("__cmd:{} {}", key, remainder)
+                };
+                ChatAction::DaemonQuery { query, redirect }
             }
         }
     } else {
@@ -328,6 +328,28 @@ mod tests {
             cmds.len(),
             COMMANDS.len() + omnish_llm::template::TEMPLATE_NAMES.len()
         );
+    }
+
+    #[test]
+    fn test_tasks_dispatches_to_daemon() {
+        match dispatch("/tasks") {
+            ChatAction::DaemonQuery { query, redirect } => {
+                assert_eq!(query, "__cmd:tasks");
+                assert!(redirect.is_none());
+            }
+            _ => panic!("expected DaemonQuery"),
+        }
+    }
+
+    #[test]
+    fn test_tasks_disable_forwards_args() {
+        match dispatch("/tasks disable eviction") {
+            ChatAction::DaemonQuery { query, redirect } => {
+                assert_eq!(query, "__cmd:tasks disable eviction");
+                assert!(redirect.is_none());
+            }
+            _ => panic!("expected DaemonQuery"),
+        }
     }
 
     #[test]
