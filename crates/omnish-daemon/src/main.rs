@@ -5,7 +5,6 @@ mod server;
 use anyhow::Result;
 use omnish_common::config::{load_daemon_config, omnish_dir};
 use omnish_daemon::daily_notes::create_daily_notes_job;
-use tokio_cron_scheduler::JobScheduler;
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_llm::factory::MultiBackend;
 use server::DaemonServer;
@@ -61,36 +60,38 @@ async fn async_main() -> Result<()> {
         Err(e) => tracing::warn!("failed to load existing sessions: {}", e),
     }
 
-    // Spawn periodic eviction of inactive sessions
+    // Set up scheduled task manager
+    let mut task_mgr = omnish_daemon::task_mgr::TaskManager::new().await?;
+
+    // Register session eviction job (hourly)
     {
-        let mgr = Arc::clone(&session_mgr);
         let max_inactive = std::time::Duration::from_secs(evict_hours * 3600);
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
-            loop {
-                interval.tick().await;
-                mgr.evict_inactive(max_inactive).await;
-            }
-        });
+        let job = omnish_daemon::eviction::create_eviction_job(
+            Arc::clone(&session_mgr),
+            max_inactive,
+        )?;
+        task_mgr.register("eviction", "0 0 * * * *", job).await?;
     }
 
-    // Spawn daily notes task if enabled
+    // Register daily notes job if enabled
     if daily_notes_config.enabled {
         let notes_dir = omnish_dir().join("notes");
+        let cron = format!("0 0 {} * * *", daily_notes_config.schedule_hour);
         let job = create_daily_notes_job(
             Arc::clone(&session_mgr),
             llm_backend.clone(),
             notes_dir,
             daily_notes_config.schedule_hour,
         )?;
-        let sched = JobScheduler::new().await?;
-        sched.add(job).await?;
-        sched.start().await?;
+        task_mgr.register("daily_notes", &cron, job).await?;
         tracing::info!(
             "daily notes enabled (schedule_hour={})",
             daily_notes_config.schedule_hour
         );
     }
+
+    task_mgr.start().await?;
+    let task_mgr = Arc::new(tokio::sync::Mutex::new(task_mgr));
 
     let server = DaemonServer::new(session_mgr, llm_backend);
 
