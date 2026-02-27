@@ -244,6 +244,23 @@ impl SessionManager {
         Ok(())
     }
 
+    pub async fn update_attrs(
+        &self,
+        session_id: &str,
+        attrs: HashMap<String, String>,
+    ) -> Result<()> {
+        let sessions = self.sessions.read().await;
+        let session = sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow!("session {} not found", session_id))?;
+        let mut meta = session.meta.write().await;
+        for (k, v) in attrs {
+            meta.attrs.insert(k, v);
+        }
+        meta.save(&session.dir)?;
+        Ok(())
+    }
+
     pub async fn write_io(
         &self,
         session_id: &str,
