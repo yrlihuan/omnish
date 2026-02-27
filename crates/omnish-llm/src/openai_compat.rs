@@ -16,7 +16,7 @@ fn extract_thinking(content: &str) -> (Option<String>, String) {
 
     if let Some(start) = content.find(thinking_start) {
         if let Some(end) = content.find(thinking_end) {
-            let thinking = content[start + thinking_start.len()..end].to_string();
+            let thinking = content[start + thinking_start.len()..end].trim().to_string();
             let cleaned = content[..start].to_string() + &content[end + thinking_end.len()..];
             return (Some(thinking), cleaned.trim().to_string());
         }
@@ -82,5 +82,69 @@ impl LlmBackend for OpenAiCompatBackend {
 
     fn name(&self) -> &str {
         "openai_compat"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_thinking_with_thinking_tags() {
+        let input = "\n<think>\nThe user wants to run a command.\n</think>\nYou can run it with: cargo build";
+        let (thinking, content) = extract_thinking(input);
+
+        assert!(thinking.is_some());
+        assert_eq!(thinking.unwrap(), "The user wants to run a command.");
+        assert_eq!(content, "You can run it with: cargo build");
+    }
+
+    #[test]
+    fn test_extract_thinking_without_thinking_tags() {
+        let input = "Just a plain response without thinking.";
+        let (thinking, content) = extract_thinking(input);
+
+        assert!(thinking.is_none());
+        assert_eq!(content, "Just a plain response without thinking.");
+    }
+
+    #[test]
+    fn test_extract_thinking_only_thinking_no_content() {
+        let input = "\n<think>\nOnly thinking here.\n</think>";
+        let (thinking, content) = extract_thinking(input);
+
+        assert!(thinking.is_some());
+        assert_eq!(thinking.unwrap(), "Only thinking here.");
+        assert!(content.is_empty());
+    }
+
+    #[test]
+    fn test_extract_thinking_multiple_thinking_blocks() {
+        // Only the first thinking block is extracted
+        let input = "\n<think>\nFirst thinking.\n</think>\nContent\n</think>\nSecond thinking.";
+        let (thinking, content) = extract_thinking(input);
+
+        assert!(thinking.is_some());
+        assert_eq!(thinking.unwrap(), "First thinking.");
+        assert_eq!(content, "Content\n</think>\nSecond thinking.");
+    }
+
+    #[test]
+    fn test_extract_thinking_empty_input() {
+        let input = "";
+        let (thinking, content) = extract_thinking(input);
+
+        assert!(thinking.is_none());
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn test_extract_thinking_thinking_at_end() {
+        let input = "Some content\n<think>\nThinking at end\n</think>";
+        let (thinking, content) = extract_thinking(input);
+
+        assert!(thinking.is_some());
+        assert_eq!(thinking.unwrap(), "Thinking at end");
+        assert_eq!(content, "Some content");
     }
 }
