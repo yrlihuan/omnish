@@ -1,4 +1,4 @@
-use omnish_common::config::ContextConfig;
+use omnish_common::config::{CompletionContextConfig, ContextConfig};
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_store::command::CommandRecord;
 #[allow(unused_imports)]
@@ -398,7 +398,10 @@ async fn test_debug_context_request() {
 async fn test_interleaved_two_session_context_at_10_and_20_commands() {
     let dir = tempfile::tempdir().unwrap();
     let cc = ContextConfig {
-        detailed_commands: 10,
+        completion: CompletionContextConfig {
+            detailed_commands: 10,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mgr = SessionManager::new(dir.path().to_path_buf(), cc);

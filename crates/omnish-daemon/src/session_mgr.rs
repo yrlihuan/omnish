@@ -484,17 +484,17 @@ impl SessionManager {
             // Sort commands by started_at (chronological order)
             all_commands.sort_by_key(|c| c.started_at);
 
-            let total = self.context_config.detailed_commands + self.context_config.history_commands;
+            let total = self.context_config.completion.detailed_commands + self.context_config.completion.history_commands;
             let strategy = RecentCommands::new(total)
-                .with_current_session(current_session_id, self.context_config.min_current_session_commands);
+                .with_current_session(current_session_id, self.context_config.completion.min_current_session_commands);
 
             // Use the same select+split logic as build_context_with_session
             let (_history_cmds, detailed_cmds) = omnish_context::select_and_split(
                 &strategy,
                 &all_commands,
-                self.context_config.detailed_commands,
+                self.context_config.completion.detailed_commands,
                 Some(current_session_id),
-                self.context_config.min_current_session_commands,
+                self.context_config.completion.min_current_session_commands,
             ).await;
 
             // Count detailed commands per session
@@ -605,7 +605,7 @@ impl SessionManager {
     }
 
     pub async fn get_session_context(&self, session_id: &str) -> Result<String> {
-        self.get_session_context_with_limit(session_id, self.context_config.max_context_chars).await
+        self.get_session_context_with_limit(session_id, self.context_config.completion.max_context_chars).await
     }
 
     /// Get session context with explicit max_context_chars limit (overrides config)
@@ -637,10 +637,10 @@ impl SessionManager {
             &reader,
             &hostnames,
             session_id,
-            cc.detailed_commands,
-            cc.history_commands,
-            cc.min_current_session_commands,
-            cc.max_line_width,
+            cc.completion.detailed_commands,
+            cc.completion.history_commands,
+            cc.completion.min_current_session_commands,
+            cc.completion.max_line_width,
             max_context_chars,
         )
         .await
@@ -663,7 +663,7 @@ impl SessionManager {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let formatter = GroupedFormatter::new(current_session_id, now_ms, self.context_config.head_lines, self.context_config.tail_lines);
+        let formatter = GroupedFormatter::new(current_session_id, now_ms, self.context_config.completion.head_lines, self.context_config.completion.tail_lines);
 
         // Start with the original values
         let mut current_detailed = detailed_commands;
@@ -778,7 +778,7 @@ impl SessionManager {
     }
 
     pub async fn get_all_sessions_context(&self, current_session_id: &str) -> Result<String> {
-        self.get_all_sessions_context_with_limit(current_session_id, self.context_config.max_context_chars).await
+        self.get_all_sessions_context_with_limit(current_session_id, self.context_config.completion.max_context_chars).await
     }
 
     /// Get all sessions context with explicit max_context_chars limit (overrides config)
@@ -826,11 +826,11 @@ impl SessionManager {
             &reader,
             &hostnames,
             current_session_id,
-            cc.detailed_commands,
-            cc.history_commands,
-            cc.min_current_session_commands,
-            cc.max_line_width,
-            cc.max_context_chars,
+            cc.completion.detailed_commands,
+            cc.completion.history_commands,
+            cc.completion.min_current_session_commands,
+            cc.completion.max_line_width,
+            cc.completion.max_context_chars,
         )
         .await
     }
@@ -1123,16 +1123,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_max_context_chars_reduces_commands() {
-        use omnish_common::config::ContextConfig;
+        use omnish_common::config::{CompletionContextConfig, ContextConfig};
 
         let dir = tempfile::tempdir().unwrap();
 
         // First, test WITHOUT limit to see how big the context would be
         let cc_no_limit = ContextConfig {
-            detailed_commands: 30,
-            history_commands: 100,
-            max_context_chars: None,
-            ..Default::default()
+            completion: CompletionContextConfig {
+                detailed_commands: 30,
+                history_commands: 100,
+                head_lines: 20,
+                tail_lines: 20,
+                max_line_width: 512,
+                min_current_session_commands: 5,
+                max_context_chars: None,
+            },
+            session_evict_hours: 48,
         };
         let mgr_no_limit = SessionManager::new(dir.path().to_path_buf(), cc_no_limit);
         mgr_no_limit.register("sess1", None, Default::default())
@@ -1164,10 +1170,16 @@ mod tests {
 
         // Now test WITH limit
         let cc_limited = ContextConfig {
-            detailed_commands: 30,
-            history_commands: 100,
-            max_context_chars: Some(200), // Small limit
-            ..Default::default()
+            completion: CompletionContextConfig {
+                detailed_commands: 30,
+                history_commands: 100,
+                head_lines: 20,
+                tail_lines: 20,
+                max_line_width: 512,
+                min_current_session_commands: 5,
+                max_context_chars: Some(200), // Small limit
+            },
+            session_evict_hours: 48,
         };
         let mgr_limited = SessionManager::new(dir.path().to_path_buf(), cc_limited);
         mgr_limited.register("sess1", None, Default::default())

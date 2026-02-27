@@ -39,13 +39,16 @@ on_nonzero_exit = true
 on_stderr_patterns = ["error", "panic", "traceback", "fatal"]
 cooldown_seconds = 5
 
-[context]
+[context.completion]
 # detailed_commands = 30   # recent commands shown with full output
 # history_commands = 500   # older commands listed as command-line only
 # head_lines = 20          # output lines kept from start of each command
 # tail_lines = 20          # output lines kept from end of each command
-# session_evict_hours = 48 # evict inactive sessions from memory after N hours
+# session_evict_hours = 48 # evict inactive sessions from memory after N hours (this stays at context level)
 # max_context_chars = 8000 # fallback limit if backend doesn't specify max_content_chars
+
+[context]
+# session_evict_hours = 48 # evict inactive sessions from memory after N hours
 
 [daily_notes]
 enabled = true

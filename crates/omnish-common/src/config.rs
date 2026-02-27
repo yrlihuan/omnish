@@ -221,8 +221,9 @@ fn default_cooldown() -> u64 {
 // Context config
 // ---------------------------------------------------------------------------
 
+/// Completion-specific context configuration
 #[derive(Debug, Deserialize, Clone)]
-pub struct ContextConfig {
+pub struct CompletionContextConfig {
     /// Number of recent commands shown with full detail (output, timing, exit code).
     #[serde(default = "default_detailed_commands")]
     pub detailed_commands: usize,
@@ -236,9 +237,6 @@ pub struct ContextConfig {
     /// Maximum width (in characters) per output line; longer lines are truncated.
     #[serde(default = "default_max_line_width")]
     pub max_line_width: usize,
-    /// Evict sessions from memory after this many hours of inactivity.
-    #[serde(default = "default_session_evict_hours")]
-    pub session_evict_hours: u64,
     /// Minimum number of commands to keep from the current session.
     #[serde(default = "default_min_current_session_commands")]
     pub min_current_session_commands: usize,
@@ -248,7 +246,7 @@ pub struct ContextConfig {
     pub max_context_chars: Option<usize>,
 }
 
-impl Default for ContextConfig {
+impl Default for CompletionContextConfig {
     fn default() -> Self {
         Self {
             detailed_commands: default_detailed_commands(),
@@ -256,9 +254,26 @@ impl Default for ContextConfig {
             head_lines: default_head_lines(),
             tail_lines: default_tail_lines(),
             max_line_width: default_max_line_width(),
-            session_evict_hours: default_session_evict_hours(),
             min_current_session_commands: default_min_current_session_commands(),
             max_context_chars: default_max_context_chars(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ContextConfig {
+    #[serde(default)]
+    pub completion: CompletionContextConfig,
+    /// Evict sessions from memory after this many hours of inactivity.
+    #[serde(default = "default_session_evict_hours")]
+    pub session_evict_hours: u64,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            completion: CompletionContextConfig::default(),
+            session_evict_hours: default_session_evict_hours(),
         }
     }
 }
