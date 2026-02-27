@@ -35,11 +35,10 @@ async fn async_main() -> Result<()> {
     // Environment variable takes precedence over config file
     let socket_path = std::env::var("OMNISH_SOCKET").unwrap_or_else(|_| config.listen_addr.clone());
 
-    let store_dir = std::path::PathBuf::from(&config.sessions_dir);
-    let completions_dir = store_dir
-        .parent()
-        .map(|p| p.join("logs").join("completions"))
-        .unwrap_or_else(|| std::path::PathBuf::from("logs/completions"));
+    // SessionManager manages both sessions and completions internally:
+    //   - sessions stored in $omnish_dir/sessions
+    //   - completion logs stored in $omnish_dir/logs/completions
+    let omnish_dir = omnish_dir();
 
     // Create LLM backend if configured
     let llm_backend: Option<Arc<dyn omnish_llm::backend::LlmBackend>> =
@@ -57,7 +56,7 @@ async fn async_main() -> Result<()> {
 
     let evict_hours = config.context.session_evict_hours;
     let daily_notes_config = config.daily_notes.clone();
-    let session_mgr = Arc::new(SessionManager::new(store_dir, config.context, completions_dir));
+    let session_mgr = Arc::new(SessionManager::new(omnish_dir.clone(), config.context));
     match session_mgr.load_existing().await {
         Ok(count) if count > 0 => tracing::info!("loaded {} existing session(s)", count),
         Ok(_) => {}
@@ -79,7 +78,7 @@ async fn async_main() -> Result<()> {
 
     // Register daily notes job if enabled
     if daily_notes_config.enabled {
-        let notes_dir = omnish_dir().join("notes");
+        let notes_dir = omnish_dir.join("notes");
         let cron = format!("0 0 {} * * *", daily_notes_config.schedule_hour);
         let job = create_daily_notes_job(
             Arc::clone(&session_mgr),

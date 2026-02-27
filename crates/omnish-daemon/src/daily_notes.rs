@@ -108,7 +108,7 @@ mod tests {
     #[tokio::test]
     async fn test_generate_daily_note_empty_commands() {
         let dir = tempfile::tempdir().unwrap();
-        let mgr = SessionManager::new(dir.path().join("sessions"), Default::default());
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
         let notes_dir = dir.path().join("notes");
 
         // No commands → should skip without error
@@ -121,7 +121,7 @@ mod tests {
         use omnish_store::command::CommandRecord;
 
         let dir = tempfile::tempdir().unwrap();
-        let mgr = SessionManager::new(dir.path().join("sessions"), Default::default());
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
 
         let mut attrs = std::collections::HashMap::new();
         attrs.insert("hostname".to_string(), "dev-server".to_string());
@@ -186,7 +186,7 @@ mod tests {
         }
 
         let dir = tempfile::tempdir().unwrap();
-        let mgr = SessionManager::new(dir.path().join("sessions"), Default::default());
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
 
         let mut attrs = std::collections::HashMap::new();
         attrs.insert("hostname".to_string(), "myhost".to_string());

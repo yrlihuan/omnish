@@ -107,11 +107,17 @@ fn format_idle(secs: u64) -> String {
 }
 
 impl SessionManager {
-    pub fn new(base_dir: PathBuf, context_config: ContextConfig, completions_dir: PathBuf) -> Self {
-        std::fs::create_dir_all(&base_dir).ok();
+    /// Create a new SessionManager.
+    /// - `omnish_dir`: base directory (e.g., ~/.omnish)
+    ///   - sessions are stored in `$omnish_dir/sessions`
+    ///   - completion logs are stored in `$omnish_dir/logs/completions`
+    pub fn new(omnish_dir: PathBuf, context_config: ContextConfig) -> Self {
+        let sessions_dir = omnish_dir.join("sessions");
+        let completions_dir = omnish_dir.join("logs").join("completions");
+        std::fs::create_dir_all(&sessions_dir).ok();
         let writer = omnish_store::completion::spawn_writer_thread(completions_dir);
         Self {
-            base_dir,
+            base_dir: sessions_dir,
             sessions: RwLock::new(HashMap::new()),
             context_config,
             completion_writer: writer,
@@ -602,26 +608,132 @@ impl SessionManager {
         // Build context outside all locks — expensive I/O happens here
         let reader = FileStreamReader { stream_path };
         let cc = &self.context_config;
-        let total = cc.detailed_commands + cc.history_commands;
-        let strategy = RecentCommands::new(total)
-            .with_current_session(session_id, cc.min_current_session_commands);
+
+        // Build context with character limit handling
+        self.build_context_with_limit(
+            &commands,
+            &reader,
+            &hostnames,
+            session_id,
+            cc.detailed_commands,
+            cc.history_commands,
+            cc.min_current_session_commands,
+            cc.max_line_width,
+            cc.max_context_chars,
+        )
+        .await
+    }
+
+    /// Build context with automatic reduction of command count if character limit is exceeded
+    async fn build_context_with_limit(
+        &self,
+        commands: &[CommandRecord],
+        reader: &dyn StreamReader,
+        hostnames: &HashMap<String, String>,
+        current_session_id: &str,
+        detailed_commands: usize,
+        history_commands: usize,
+        min_current_session_commands: usize,
+        max_line_width: usize,
+        max_context_chars: Option<usize>,
+    ) -> Result<String> {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let formatter = GroupedFormatter::new(session_id, now_ms, cc.head_lines, cc.tail_lines);
-        omnish_context::build_context_with_session(
-            &strategy,
-            &formatter,
-            &commands,
-            &reader,
-            &hostnames,
-            cc.detailed_commands,
-            cc.max_line_width,
-            Some(session_id),
-            cc.min_current_session_commands,
-        )
-        .await
+        let formatter = GroupedFormatter::new(current_session_id, now_ms, self.context_config.head_lines, self.context_config.tail_lines);
+
+        // Start with the original values
+        let mut current_detailed = detailed_commands;
+        let mut current_history = history_commands;
+
+        // If no character limit, build directly
+        if max_context_chars.is_none() {
+            let total = current_detailed + current_history;
+            let strategy = RecentCommands::new(total)
+                .with_current_session(current_session_id, min_current_session_commands);
+            return omnish_context::build_context_with_session(
+                &strategy,
+                &formatter,
+                commands,
+                reader,
+                hostnames,
+                current_detailed,
+                max_line_width,
+                Some(current_session_id),
+                min_current_session_commands,
+            )
+            .await;
+        }
+
+        let max_chars = max_context_chars.unwrap();
+        let mut context = String::new();
+        let mut reduced = false;
+
+        // Try building context, reducing by 1/4 each iteration if limit exceeded
+        loop {
+            let total = current_detailed + current_history;
+            // Ensure we have at least some commands
+            if total == 0 {
+                break;
+            }
+
+            let strategy = RecentCommands::new(total)
+                .with_current_session(current_session_id, min_current_session_commands);
+
+            context = omnish_context::build_context_with_session(
+                &strategy,
+                &formatter,
+                commands,
+                reader,
+                hostnames,
+                current_detailed,
+                max_line_width,
+                Some(current_session_id),
+                min_current_session_commands,
+            )
+            .await?;
+
+            if context.chars().count() <= max_chars {
+                break;
+            }
+
+            // Reduce by 1/4, but ensure we don't go below minimums
+            let reduction = (total / 4).max(1);
+            if reduction >= total {
+                break; // Can't reduce further
+            }
+
+            // Reduce proportionally - keep the ratio between detailed and history
+            let ratio = if current_detailed + current_history > 0 {
+                current_detailed as f64 / (current_detailed + current_history) as f64
+            } else {
+                0.0
+            };
+
+            let new_total = total - reduction;
+            current_detailed = (new_total as f64 * ratio) as usize;
+            current_history = new_total - current_detailed;
+
+            // Ensure minimums
+            if current_detailed > 0 && current_detailed < min_current_session_commands {
+                current_detailed = min_current_session_commands.min(new_total);
+                current_history = new_total.saturating_sub(current_detailed);
+            }
+
+            reduced = true;
+        }
+
+        if reduced {
+            tracing::debug!(
+                "context reduced: detailed={}, history={} (limit={})",
+                current_detailed,
+                current_history,
+                max_chars
+            );
+        }
+
+        Ok(context)
     }
 
     /// Collect commands from all sessions where `started_at >= since_ms`.
@@ -645,10 +757,6 @@ impl SessionManager {
 
     pub async fn get_all_sessions_context(&self, current_session_id: &str) -> Result<String> {
         let cc = &self.context_config;
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
 
         // Clone data under brief locks
         let (all_commands, offset_to_path, hostnames) = {
@@ -684,21 +792,18 @@ impl SessionManager {
         let reader = MultiSessionReader {
             readers: offset_to_path,
         };
-        let total = cc.detailed_commands + cc.history_commands;
-        let strategy = RecentCommands::new(total)
-            .with_current_session(current_session_id, cc.min_current_session_commands);
-        let formatter =
-            GroupedFormatter::new(current_session_id, now_ms, cc.head_lines, cc.tail_lines);
-        omnish_context::build_context_with_session(
-            &strategy,
-            &formatter,
+
+        // Build context with character limit handling
+        self.build_context_with_limit(
             &all_commands,
             &reader,
             &hostnames,
+            current_session_id,
             cc.detailed_commands,
-            cc.max_line_width,
-            Some(current_session_id),
+            cc.history_commands,
             cc.min_current_session_commands,
+            cc.max_line_width,
+            cc.max_context_chars,
         )
         .await
     }
@@ -712,6 +817,7 @@ mod tests {
     async fn test_load_existing_restores_sessions() {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().to_path_buf();
+        // Note: completions_dir is no longer needed - SessionManager handles it internally
 
         // Register a session and add a command via normal flow
         {

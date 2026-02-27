@@ -4,7 +4,6 @@
 # Listen address:
 #   Unix socket:  listen_addr = "~/.omnish/omnish.sock"   (default)
 #   TCP:          listen_addr = "tcp://0.0.0.0:9500"
-# sessions_dir = "~/.omnish/sessions"     # default
 
 [llm]
 default = "claude"
@@ -43,6 +42,7 @@ cooldown_seconds = 5
 # head_lines = 20          # output lines kept from start of each command
 # tail_lines = 20          # output lines kept from end of each command
 # session_evict_hours = 48 # evict inactive sessions from memory after N hours
+# max_context_chars = 8000 # character limit for completion context (default: unlimited)
 
 [daily_notes]
 enabled = true

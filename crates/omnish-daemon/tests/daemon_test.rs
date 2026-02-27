@@ -172,7 +172,7 @@ async fn test_commands_persisted_on_session_end() {
     mgr.end_session("sess1").await.unwrap();
 
     // After session ends, commands.json should exist on disk
-    let mut session_dirs: Vec<_> = std::fs::read_dir(dir.path())
+    let mut session_dirs: Vec<_> = std::fs::read_dir(dir.path().join("sessions"))
         .unwrap()
         .filter_map(|e| e.ok())
         .collect();
@@ -318,7 +318,7 @@ async fn test_nested_session_parent_child_relationship() {
     mgr.end_session("parent1").await.unwrap();
 
     // Verify parent_session_id persisted in meta.json
-    let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().collect();
+    let entries: Vec<_> = std::fs::read_dir(dir.path().join("sessions")).unwrap().flatten().collect();
     assert_eq!(entries.len(), 2, "should have 2 session dirs");
 
     for entry in &entries {

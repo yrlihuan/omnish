@@ -17,13 +17,6 @@ fn default_socket_path() -> String {
         .to_string()
 }
 
-fn default_sessions_dir() -> String {
-    omnish_dir()
-        .join("sessions")
-        .to_string_lossy()
-        .to_string()
-}
-
 // ---------------------------------------------------------------------------
 // Client config
 // ---------------------------------------------------------------------------
@@ -92,8 +85,6 @@ pub struct DaemonConfig {
     pub listen_addr: String,
     #[serde(default)]
     pub llm: LlmConfig,
-    #[serde(default = "default_sessions_dir")]
-    pub sessions_dir: String,
     #[serde(default)]
     pub context: ContextConfig,
     #[serde(default)]
@@ -105,7 +96,6 @@ impl Default for DaemonConfig {
         Self {
             listen_addr: default_socket_path(),
             llm: LlmConfig::default(),
-            sessions_dir: default_sessions_dir(),
             context: ContextConfig::default(),
             daily_notes: DailyNotesConfig::default(),
         }
@@ -249,6 +239,10 @@ pub struct ContextConfig {
     /// Minimum number of commands to keep from the current session.
     #[serde(default = "default_min_current_session_commands")]
     pub min_current_session_commands: usize,
+    /// Maximum character limit for completion context.
+    /// If exceeded, the system will try reducing history_commands + detailed_commands by 1/4.
+    #[serde(default = "default_max_context_chars")]
+    pub max_context_chars: Option<usize>,
 }
 
 impl Default for ContextConfig {
@@ -261,6 +255,7 @@ impl Default for ContextConfig {
             max_line_width: default_max_line_width(),
             session_evict_hours: default_session_evict_hours(),
             min_current_session_commands: default_min_current_session_commands(),
+            max_context_chars: default_max_context_chars(),
         }
     }
 }
@@ -291,4 +286,8 @@ fn default_session_evict_hours() -> u64 {
 
 fn default_min_current_session_commands() -> usize {
     5
+}
+
+fn default_max_context_chars() -> Option<usize> {
+    None
 }
