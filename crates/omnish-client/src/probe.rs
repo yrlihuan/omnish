@@ -67,6 +67,40 @@ impl Probe for HostnameProbe {
     }
 }
 
+pub struct ShellCwdProbe(pub u32);
+impl Probe for ShellCwdProbe {
+    fn key(&self) -> &str { "shell_cwd" }
+    fn collect(&self) -> Option<String> {
+        std::fs::read_link(format!("/proc/{}/cwd", self.0))
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+    }
+}
+
+pub struct ChildProcessProbe(pub u32);
+impl Probe for ChildProcessProbe {
+    fn key(&self) -> &str { "child_process" }
+    fn collect(&self) -> Option<String> {
+        let children_path = format!("/proc/{}/task/{}/children", self.0, self.0);
+        let children_str = std::fs::read_to_string(&children_path).unwrap_or_default();
+        let child_pid: Option<i32> = children_str
+            .split_whitespace()
+            .filter_map(|s| s.parse().ok())
+            .last();
+        match child_pid {
+            Some(pid) => {
+                let name = procfs::process::Process::new(pid)
+                    .ok()
+                    .and_then(|p| p.stat().ok())
+                    .map(|s| s.comm)
+                    .unwrap_or_default();
+                Some(format!("{}:{}", name, pid))
+            }
+            None => Some(String::new()),
+        }
+    }
+}
+
 pub fn default_session_probes(child_pid: u32) -> ProbeSet {
     let mut set = ProbeSet::new();
     set.add(Box::new(ShellProbe));
@@ -74,6 +108,13 @@ pub fn default_session_probes(child_pid: u32) -> ProbeSet {
     set.add(Box::new(TtyProbe));
     set.add(Box::new(CwdProbe));
     set.add(Box::new(HostnameProbe));
+    set
+}
+
+pub fn default_polling_probes(child_pid: u32) -> ProbeSet {
+    let mut set = ProbeSet::new();
+    set.add(Box::new(ShellCwdProbe(child_pid)));
+    set.add(Box::new(ChildProcessProbe(child_pid)));
     set
 }
 
@@ -117,5 +158,35 @@ mod tests {
         assert_eq!(probe.key(), "cwd");
         // cwd should always succeed in test env
         assert!(probe.collect().is_some());
+    }
+
+    #[test]
+    fn test_shell_cwd_probe_returns_path_for_self() {
+        let pid = std::process::id();
+        let probe = ShellCwdProbe(pid);
+        assert_eq!(probe.key(), "shell_cwd");
+        let cwd = probe.collect();
+        assert!(cwd.is_some(), "should read own cwd from /proc");
+        let expected = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        assert_eq!(cwd.unwrap(), expected);
+    }
+
+    #[test]
+    fn test_shell_cwd_probe_returns_none_for_bad_pid() {
+        let probe = ShellCwdProbe(999999999);
+        assert_eq!(probe.collect(), None);
+    }
+
+    #[test]
+    fn test_child_process_probe_key() {
+        let probe = ChildProcessProbe(std::process::id());
+        assert_eq!(probe.key(), "child_process");
+    }
+
+    #[test]
+    fn test_child_process_probe_returns_string_or_empty() {
+        let probe = ChildProcessProbe(std::process::id());
+        let result = probe.collect();
+        assert!(result.is_some());
     }
 }
