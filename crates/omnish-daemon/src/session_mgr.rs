@@ -196,6 +196,18 @@ impl SessionManager {
                 }
             }
         }
+
+        // Drop the write lock before calling cleanup_expired_dirs
+        // to avoid deadlock (cleanup_expired_dirs acquires a read lock)
+        drop(sessions);
+
+        // Clean up expired directories on startup (48 hours)
+        let max_age = std::time::Duration::from_secs(48 * 3600);
+        let cleaned = self.cleanup_expired_dirs(max_age).await;
+        if cleaned > 0 {
+            tracing::info!("cleaned up {} expired session directories on startup", cleaned);
+        }
+
         Ok(count)
     }
 
@@ -1640,5 +1652,84 @@ mod tests {
         assert!(!old_meta_dir.exists(), "Old meta-only directory should be cleaned up");
         assert!(active_session_dir.exists(), "Active session directory should NOT be cleaned up");
         assert!(recent_dir.exists(), "Recent session directory should NOT be cleaned up");
+    }
+
+    #[tokio::test]
+    async fn test_load_existing_cleans_up_expired_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+
+        // Create a manager to get proper session directory structure
+        let mgr1 = SessionManager::new(base.clone(), Default::default());
+
+        // Register a fresh session first
+        mgr1.register("fresh_session", None, Default::default())
+            .await
+            .unwrap();
+
+        let loaded_sessions = mgr1.sessions.read().await;
+        let fresh_session = loaded_sessions.get("fresh_session").unwrap();
+        let fresh_dir = fresh_session.dir.clone();
+        drop(loaded_sessions);
+
+        let fresh_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64 - 12 * 3600 * 1000; // 12 hours ago
+
+        let fresh_commands = vec![CommandRecord {
+            command_id: "cmd2".into(),
+            session_id: "fresh_session".into(),
+            command_line: Some("pwd".into()),
+            cwd: Some("/tmp".into()),
+            started_at: fresh_timestamp,
+            ended_at: Some(fresh_timestamp + 1000),
+            output_summary: "".into(),
+            stream_offset: 0,
+            stream_length: 0,
+            exit_code: None,
+        }];
+
+        CommandRecord::save_all(&fresh_commands, &fresh_dir).unwrap();
+
+        // Drop the first manager to release locks
+        drop(mgr1);
+
+        // Now manually create an expired session directory that load_existing cannot load
+        // We'll create it with invalid/corrupt data so load_existing will fail to load it
+        // but cleanup_expired_dirs will still be able to detect it's expired and delete it
+        let expired_dir = base.join("sessions").join("2020-01-01T00-00-00Z_expired_session");
+        std::fs::create_dir_all(&expired_dir).unwrap();
+
+        // Create commands.json with old timestamp (3 days ago) but valid format
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let old_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64 - 3 * 24 * 3600 * 1000;
+
+        let commands = vec![CommandRecord {
+            command_id: "cmd1".into(),
+            session_id: "expired_session".into(),
+            command_line: Some("ls".into()),
+            cwd: Some("/tmp".into()),
+            started_at: old_timestamp,
+            ended_at: Some(old_timestamp + 1000),
+            output_summary: "".into(),
+            stream_offset: 0,
+            stream_length: 0,
+            exit_code: None,
+        }];
+
+        CommandRecord::save_all(&commands, &expired_dir).unwrap();
+
+        // Create new manager and load existing - should clean up expired but keep fresh
+        let mgr2 = SessionManager::new(base.clone(), Default::default());
+        let count = mgr2.load_existing().await.unwrap();
+
+        // Fresh session should be loaded, expired should be deleted
+        assert_eq!(count, 1); // Only fresh session loaded
+        assert!(!expired_dir.exists());
+        assert!(fresh_dir.exists());
     }
 }
