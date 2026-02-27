@@ -342,6 +342,7 @@ impl SessionManager {
             dwell_time_ms: summary.dwell_time_ms,
             cwd: summary.cwd,
             recorded_at: now_ms,
+            extra: summary.extra,
         };
         // Send to writer thread (non-blocking)
         let _ = self.completion_writer.send(record);

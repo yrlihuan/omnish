@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
@@ -142,6 +143,9 @@ pub struct CompletionSummary {
     pub dwell_time_ms: Option<u64>,
     /// Current working directory at the time of request
     pub cwd: Option<String>,
+    /// Extra metadata as key-value pairs (stored as JSON in CSV)
+    #[serde(default)]
+    pub extra: HashMap<String, Value>,
 }
 
 impl Message {

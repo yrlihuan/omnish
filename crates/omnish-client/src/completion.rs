@@ -320,6 +320,7 @@ impl ShellCompleter {
             latency_ms: completion.latency_ms,
             dwell_time_ms,
             cwd,
+            extra: HashMap::new(),
         })
     }
 

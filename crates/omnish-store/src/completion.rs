@@ -1,4 +1,6 @@
 use serde::Deserialize;
+use serde_json::Value;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -24,6 +26,9 @@ pub struct CompletionRecord {
     pub cwd: Option<String>,
     /// Timestamp when this record was created (epoch ms)
     pub recorded_at: u64,
+    /// Extra metadata (stored as JSON string in CSV)
+    #[serde(default)]
+    pub extra: HashMap<String, Value>,
 }
 
 impl CompletionRecord {
@@ -41,6 +46,8 @@ impl CompletionRecord {
     pub fn to_csv_row(&self) -> String {
         let dwell = self.dwell_time_ms.map(|d| d.to_string()).unwrap_or_default();
         let cwd = self.cwd.as_deref().unwrap_or("");
+        // Serialize extra as JSON string
+        let extra_json = serde_json::to_string(&self.extra).unwrap_or_default();
         // Escape fields that might contain commas or newlines
         let escape = |s: &str| {
             if s.contains(',') || s.contains('\n') || s.contains('"') {
@@ -50,7 +57,7 @@ impl CompletionRecord {
             }
         };
         format!(
-            "{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{}\n",
             Self::format_timestamp(self.recorded_at),
             self.session_id,
             self.sequence_id,
@@ -59,13 +66,14 @@ impl CompletionRecord {
             self.accepted,
             self.latency_ms,
             dwell,
-            escape(cwd)
+            escape(cwd),
+            escape(&extra_json)
         )
     }
 
     /// CSV header
     pub fn csv_header() -> &'static str {
-        "recorded_at,session_id,sequence_id,prompt,completion,accepted,latency_ms,dwell_time_ms,cwd\n"
+        "recorded_at,session_id,sequence_id,prompt,completion,accepted,latency_ms,dwell_time_ms,cwd,extra\n"
     }
 }
 
@@ -159,6 +167,7 @@ mod tests {
             dwell_time_ms: Some(50),
             cwd: Some("/home/user/project".to_string()),
             recorded_at: 1709000000000,
+            extra: HashMap::new(),
         };
 
         let row = record.to_csv_row();
@@ -187,6 +196,7 @@ mod tests {
             dwell_time_ms: None,
             cwd: None,
             recorded_at: 1709000000000,
+            extra: HashMap::new(),
         };
 
         let row = record.to_csv_row();
@@ -218,6 +228,7 @@ mod tests {
                 dwell_time_ms: Some(50),
                 cwd: Some("/tmp".to_string()),
                 recorded_at: 1709000000000 + i,
+                extra: HashMap::new(),
             };
             tx.send(record).unwrap();
         }
