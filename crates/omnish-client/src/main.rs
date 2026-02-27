@@ -122,6 +122,7 @@ async fn main() -> Result<()> {
         let rpc_poll = rpc.clone();
         let sid_poll = session_id.clone();
         let child_pid_poll = proxy.child_pid() as u32;
+        let poll_buffer = pending_buffer.clone();
         tokio::spawn(async move {
             let probes = probe::default_polling_probes(child_pid_poll);
             let mut last_attrs: HashMap<String, String> = HashMap::new();
@@ -139,7 +140,7 @@ async fn main() -> Result<()> {
                         timestamp_ms: timestamp_ms(),
                         attrs: changed,
                     });
-                    let _ = rpc_poll.call(msg).await;
+                    send_or_buffer(&rpc_poll, msg, &poll_buffer).await;
                 }
                 last_attrs = current;
             }

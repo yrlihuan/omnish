@@ -89,11 +89,10 @@ impl Probe for ChildProcessProbe {
             .last();
         match child_pid {
             Some(pid) => {
-                let name = procfs::process::Process::new(pid)
-                    .ok()
-                    .and_then(|p| p.stat().ok())
-                    .map(|s| s.comm)
-                    .unwrap_or_default();
+                let name = std::fs::read_to_string(format!("/proc/{}/comm", pid))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
                 Some(format!("{}:{}", name, pid))
             }
             None => Some(String::new()),
