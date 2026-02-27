@@ -1,21 +1,25 @@
 use anyhow::Result;
 use omnish_daemon::session_mgr::SessionManager;
+use omnish_daemon::task_mgr::TaskManager;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
 use omnish_protocol::message::*;
 use omnish_transport::rpc_server::RpcServer;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 pub struct DaemonServer {
     session_mgr: Arc<SessionManager>,
     llm_backend: Option<Arc<dyn LlmBackend>>,
+    task_mgr: Arc<Mutex<TaskManager>>,
 }
 
 impl DaemonServer {
-    pub fn new(session_mgr: Arc<SessionManager>, llm_backend: Option<Arc<dyn LlmBackend>>) -> Self {
-        Self {
-            session_mgr,
-            llm_backend,
-        }
+    pub fn new(
+        session_mgr: Arc<SessionManager>,
+        llm_backend: Option<Arc<dyn LlmBackend>>,
+        task_mgr: Arc<Mutex<TaskManager>>,
+    ) -> Self {
+        Self { session_mgr, llm_backend, task_mgr }
     }
 
     pub async fn run(&self, addr: &str) -> Result<()> {
@@ -24,12 +28,14 @@ impl DaemonServer {
 
         let mgr = self.session_mgr.clone();
         let llm = self.llm_backend.clone();
+        let task_mgr = self.task_mgr.clone();
 
         server
             .serve(move |msg| {
                 let mgr = mgr.clone();
                 let llm = llm.clone();
-                Box::pin(async move { handle_message(msg, &mgr, &llm).await })
+                let task_mgr = task_mgr.clone();
+                Box::pin(async move { handle_message(msg, &mgr, &llm, &task_mgr).await })
             })
             .await
     }
@@ -39,6 +45,7 @@ async fn handle_message(
     msg: Message,
     mgr: &SessionManager,
     llm: &Option<Arc<dyn LlmBackend>>,
+    task_mgr: &Arc<Mutex<TaskManager>>,
 ) -> Message {
     match msg {
         Message::SessionStart(s) => {
@@ -83,7 +90,7 @@ async fn handle_message(
         }
         Message::Request(req) => {
             if req.query.starts_with("__cmd:") {
-                let content = handle_builtin_command(&req, &mgr).await;
+                let content = handle_builtin_command(&req, &mgr, &task_mgr).await;
                 return Message::Response(Response {
                     request_id: req.request_id,
                     content,
@@ -166,7 +173,7 @@ async fn resolve_context(req: &Request, mgr: &SessionManager) -> Result<String> 
     }
 }
 
-async fn handle_builtin_command(req: &Request, mgr: &SessionManager) -> String {
+async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>) -> String {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
     match sub {
         "context" => match resolve_context(req, mgr).await {
@@ -178,7 +185,31 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager) -> String {
             Ok(info) => info,
             Err(e) => format!("Error: {}", e),
         },
+        sub if sub == "tasks" || sub.starts_with("tasks ") => {
+            handle_tasks_command(sub, task_mgr).await
+        }
         other => format!("Unknown command: {}", other),
+    }
+}
+
+async fn handle_tasks_command(
+    sub: &str,
+    task_mgr: &Mutex<TaskManager>,
+) -> String {
+    let parts: Vec<&str> = sub.split_whitespace().collect();
+    match parts.as_slice() {
+        ["tasks"] => {
+            let mgr = task_mgr.lock().await;
+            mgr.format_list()
+        }
+        ["tasks", "disable", name] => {
+            let mut mgr = task_mgr.lock().await;
+            match mgr.disable(name).await {
+                Ok(()) => format!("Disabled task '{}'", name),
+                Err(e) => format!("Error: {}", e),
+            }
+        }
+        _ => "Usage: tasks [disable <name>]".to_string(),
     }
 }
 

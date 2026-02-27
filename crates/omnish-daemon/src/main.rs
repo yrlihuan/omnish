@@ -93,7 +93,7 @@ async fn async_main() -> Result<()> {
     task_mgr.start().await?;
     let task_mgr = Arc::new(tokio::sync::Mutex::new(task_mgr));
 
-    let server = DaemonServer::new(session_mgr, llm_backend);
+    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr);
 
     tracing::info!("starting omnishd at {}", socket_path);
     server.run(&socket_path).await
