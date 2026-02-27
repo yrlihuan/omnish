@@ -4,7 +4,8 @@ mod server;
 
 use anyhow::Result;
 use omnish_common::config::{load_daemon_config, omnish_dir};
-use omnish_daemon::daily_notes::spawn_daily_notes_task;
+use omnish_daemon::daily_notes::create_daily_notes_job;
+use tokio_cron_scheduler::JobScheduler;
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_llm::factory::MultiBackend;
 use server::DaemonServer;
@@ -76,12 +77,15 @@ async fn async_main() -> Result<()> {
     // Spawn daily notes task if enabled
     if daily_notes_config.enabled {
         let notes_dir = omnish_dir().join("notes");
-        spawn_daily_notes_task(
+        let job = create_daily_notes_job(
             Arc::clone(&session_mgr),
             llm_backend.clone(),
             notes_dir,
             daily_notes_config.schedule_hour,
-        );
+        )?;
+        let sched = JobScheduler::new().await?;
+        sched.add(job).await?;
+        sched.start().await?;
         tracing::info!(
             "daily notes enabled (schedule_hour={})",
             daily_notes_config.schedule_hour

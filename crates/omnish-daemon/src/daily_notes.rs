@@ -1,48 +1,29 @@
 use crate::session_mgr::SessionManager;
-use chrono::{Local, NaiveTime};
+use chrono::Local;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio_cron_scheduler::Job;
 
-/// Spawn the daily notes background task.
-pub fn spawn_daily_notes_task(
+/// Create a cron job that generates daily notes at the given hour.
+pub fn create_daily_notes_job(
     mgr: Arc<SessionManager>,
     llm_backend: Option<Arc<dyn LlmBackend>>,
     notes_dir: PathBuf,
     schedule_hour: u8,
-) {
-    tokio::spawn(async move {
-        let initial_delay = duration_until_next(schedule_hour);
-        tracing::info!(
-            "daily notes: first run in {:.0?} (schedule_hour={})",
-            initial_delay,
-            schedule_hour,
-        );
-        tokio::time::sleep(initial_delay).await;
-
-        loop {
-            if let Err(e) = generate_daily_note(&mgr, llm_backend.as_deref(), &notes_dir).await {
+) -> anyhow::Result<Job> {
+    let cron = format!("0 0 {} * * *", schedule_hour);
+    Ok(Job::new_async(cron, move |_uuid, _lock| {
+        let mgr = mgr.clone();
+        let llm = llm_backend.clone();
+        let dir = notes_dir.clone();
+        Box::pin(async move {
+            if let Err(e) = generate_daily_note(&mgr, llm.as_deref(), &dir).await {
                 tracing::warn!("daily notes generation failed: {}", e);
             }
-            tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
-        }
-    });
-}
-
-/// Compute duration from now until the next occurrence of `hour:00` local time.
-fn duration_until_next(hour: u8) -> Duration {
-    let now = Local::now();
-    let target_today = now
-        .date_naive()
-        .and_time(NaiveTime::from_hms_opt(hour as u32, 0, 0).unwrap());
-    let target = if now.naive_local() < target_today {
-        target_today
-    } else {
-        target_today + chrono::Duration::days(1)
-    };
-    let diff = target - now.naive_local();
-    diff.to_std().unwrap_or(Duration::from_secs(60))
+        })
+    })?)
 }
 
 /// Generate the daily note markdown file.
@@ -123,21 +104,6 @@ async fn generate_daily_note(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_duration_until_next_future_today() {
-        // Just verify it doesn't panic and returns a positive duration
-        let d = duration_until_next(23);
-        assert!(d.as_secs() > 0);
-    }
-
-    #[test]
-    fn test_duration_until_next_wraps_to_tomorrow() {
-        // hour=0 — if current time is past midnight, should wrap to tomorrow
-        let d = duration_until_next(0);
-        assert!(d.as_secs() > 0);
-        assert!(d.as_secs() <= 24 * 3600);
-    }
 
     #[tokio::test]
     async fn test_generate_daily_note_empty_commands() {
