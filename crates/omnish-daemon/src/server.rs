@@ -64,7 +64,7 @@ async fn handle_message(
             Message::Ack
         }
         Message::SessionUpdate(su) => {
-            if let Err(e) = mgr.update_attrs(&su.session_id, su.timestamp_ms, su.attrs, su.extra).await {
+            if let Err(e) = mgr.update_attrs(&su.session_id, su.timestamp_ms, su.host, su.shell_cwd, su.child_process, su.extra).await {
                 tracing::error!("update_attrs error: {}", e);
             }
             Message::Ack

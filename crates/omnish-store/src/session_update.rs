@@ -12,8 +12,12 @@ pub struct SessionUpdateRecord {
     pub session_id: String,
     /// Timestamp when this record was created (epoch ms)
     pub timestamp_ms: u64,
-    /// Attributes (key-value pairs)
-    pub attrs: HashMap<String, String>,
+    /// Hostname
+    pub host: Option<String>,
+    /// Current working directory of the shell
+    pub shell_cwd: Option<String>,
+    /// Current child process (format: "name:pid")
+    pub child_process: Option<String>,
     /// Extra metadata (stored as JSON string in CSV)
     #[serde(default)]
     pub extra: HashMap<String, Value>,
@@ -42,20 +46,24 @@ impl SessionUpdateRecord {
                 s.to_string()
             }
         };
-        // Serialize attrs as JSON string
-        let attrs_json = serde_json::to_string(&self.attrs).unwrap_or_default();
+        // Serialize optional fields as JSON strings
+        let host_json = serde_json::to_string(&self.host).unwrap_or_default();
+        let shell_cwd_json = serde_json::to_string(&self.shell_cwd).unwrap_or_default();
+        let child_process_json = serde_json::to_string(&self.child_process).unwrap_or_default();
         format!(
-            "{},{},{},{}\n",
+            "{},{},{},{},{},{}\n",
             Self::format_timestamp(self.timestamp_ms),
             escape(&self.session_id),
-            escape(&attrs_json),
+            escape(&host_json),
+            escape(&shell_cwd_json),
+            escape(&child_process_json),
             escape(&extra_json)
         )
     }
 
     /// CSV header
     pub fn csv_header() -> &'static str {
-        "timestamp,session_id,attrs,extra\n"
+        "timestamp,session_id,host,shell_cwd,child_process,extra\n"
     }
 }
 
@@ -140,15 +148,15 @@ mod tests {
 
     #[test]
     fn test_csv_format() {
-        let mut attrs = HashMap::new();
-        attrs.insert("shell_cwd".to_string(), "/home/user/project".to_string());
         let mut extra = HashMap::new();
         extra.insert("key".to_string(), Value::String("value".to_string()));
 
         let record = SessionUpdateRecord {
             session_id: "test_session".to_string(),
             timestamp_ms: 1709000000000,
-            attrs,
+            host: Some("workstation".to_string()),
+            shell_cwd: Some("/home/user/project".to_string()),
+            child_process: Some("vim:12345".to_string()),
             extra,
         };
 
@@ -156,7 +164,8 @@ mod tests {
         // Check for readable timestamp format
         assert!(row.contains("2024-02-27"));
         assert!(row.contains("test_session"));
-        assert!(row.contains("shell_cwd"));
+        assert!(row.contains("workstation"));
+        assert!(row.contains("/home/user/project"));
     }
 
     #[test]
@@ -164,6 +173,9 @@ mod tests {
         let header = SessionUpdateRecord::csv_header();
         assert!(header.starts_with("timestamp"));
         assert!(header.contains("session_id"));
+        assert!(header.contains("host"));
+        assert!(header.contains("shell_cwd"));
+        assert!(header.contains("child_process"));
     }
 
     #[test]
@@ -173,12 +185,12 @@ mod tests {
 
         // Send a few records
         for i in 0..5 {
-            let mut attrs = HashMap::new();
-            attrs.insert("key".to_string(), format!("value{}", i));
             let record = SessionUpdateRecord {
                 session_id: format!("session{}", i),
                 timestamp_ms: 1709000000000 + i as u64,
-                attrs,
+                host: Some("host".to_string()),
+                shell_cwd: Some(format!("/path{}", i)),
+                child_process: Some(format!("proc{}", i)),
                 extra: HashMap::new(),
             };
             tx.send(record).unwrap();

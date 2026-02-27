@@ -267,7 +267,9 @@ impl SessionManager {
         &self,
         session_id: &str,
         timestamp_ms: u64,
-        attrs: HashMap<String, String>,
+        host: Option<String>,
+        shell_cwd: Option<String>,
+        child_process: Option<String>,
         extra: HashMap<String, serde_json::Value>,
     ) -> Result<()> {
         let sessions = self.sessions.read().await;
@@ -275,10 +277,16 @@ impl SessionManager {
             .get(session_id)
             .ok_or_else(|| anyhow!("session {} not found", session_id))?;
         let mut meta = session.meta.write().await;
-        // Clone attrs before iterating to preserve original for the record
-        let attrs_clone = attrs.clone();
-        for (k, v) in attrs {
-            meta.attrs.insert(k, v);
+
+        // Update session attributes
+        if let Some(ref h) = host {
+            meta.attrs.insert("host".to_string(), h.clone());
+        }
+        if let Some(ref cwd) = shell_cwd {
+            meta.attrs.insert("shell_cwd".to_string(), cwd.clone());
+        }
+        if let Some(ref cp) = child_process {
+            meta.attrs.insert("child_process".to_string(), cp.clone());
         }
         meta.save(&session.dir)?;
 
@@ -287,10 +295,12 @@ impl SessionManager {
         *last_update = Some(timestamp_ms);
 
         // Send to session writer for logging (non-blocking)
-        let record = SessionUpdateRecord {
+        let record = omnish_store::session_update::SessionUpdateRecord {
             session_id: session_id.to_string(),
             timestamp_ms,
-            attrs: attrs_clone,
+            host,
+            shell_cwd,
+            child_process,
             extra,
         };
         let _ = self.session_writer.send(record);

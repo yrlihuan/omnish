@@ -115,6 +115,26 @@ pub fn default_polling_probes(child_pid: u32) -> ProbeSet {
     set
 }
 
+/// Get the current child process for a given PID (format: "name:pid")
+pub fn get_child_process(child_pid: u32) -> Option<String> {
+    let children_path = format!("/proc/{}/task/{}/children", child_pid, child_pid);
+    let children_str = std::fs::read_to_string(&children_path).unwrap_or_default();
+    let child_pid: Option<i32> = children_str
+        .split_whitespace()
+        .filter_map(|s| s.parse().ok())
+        .last();
+    match child_pid {
+        Some(pid) => {
+            let name = std::fs::read_to_string(format!("/proc/{}/comm", pid))
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            Some(format!("{}:{}", name, pid))
+        }
+        None => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
