@@ -11,14 +11,18 @@ pub struct OpenAiCompatBackend {
 
 /// Extract thinking from content and return (thinking, cleaned_content)
 fn extract_thinking(content: &str) -> (Option<String>, String) {
-    let thinking_start = "\n<think>";
-    let thinking_end = "</think>";
+    let trimmed = content.trim_start();
+    let tag_start = "<think>";
+    let tag_end = "</think>";
 
-    if let Some(start) = content.find(thinking_start) {
-        if let Some(end) = content.find(thinking_end) {
-            let thinking = content[start + thinking_start.len()..end].trim().to_string();
-            let cleaned = content[..start].to_string() + &content[end + thinking_end.len()..];
-            return (Some(thinking), cleaned.trim().to_string());
+    if let Some(start) = trimmed.find(tag_start) {
+        if let Some(end) = trimmed[start..].find(tag_end) {
+            let thinking = trimmed[start + tag_start.len()..start + end].trim().to_string();
+            let before = trimmed[..start].to_string();
+            let after = trimmed[start + end + tag_end.len()..].to_string();
+            let cleaned = (before + &after).trim().to_string();
+            let thinking = if thinking.is_empty() { None } else { Some(thinking) };
+            return (thinking, cleaned);
         }
     }
     (None, content.to_string())
@@ -121,7 +125,7 @@ mod tests {
     #[test]
     fn test_extract_thinking_multiple_thinking_blocks() {
         // Only the first thinking block is extracted
-        let input = "\n<think>\nFirst thinking.\n</think>\nContent\n</think>\nSecond thinking.";
+        let input = "<think>\nFirst thinking.\n</think>\nContent\n</think>\nSecond thinking.";
         let (thinking, content) = extract_thinking(input);
 
         assert!(thinking.is_some());
@@ -145,6 +149,25 @@ mod tests {
 
         assert!(thinking.is_some());
         assert_eq!(thinking.unwrap(), "Thinking at end");
+        assert_eq!(content, "Some content");
+    }
+
+    #[test]
+    fn test_extract_thinking_starts_with_think_no_newline() {
+        let input = "<think>\nDeepSeek thinking here.\n</think>\nThe answer is 42.";
+        let (thinking, content) = extract_thinking(input);
+
+        assert!(thinking.is_some());
+        assert_eq!(thinking.unwrap(), "DeepSeek thinking here.");
+        assert_eq!(content, "The answer is 42.");
+    }
+
+    #[test]
+    fn test_extract_thinking_empty_think_block() {
+        let input = "<think>\n</think>\nSome content";
+        let (thinking, content) = extract_thinking(input);
+
+        assert!(thinking.is_none());
         assert_eq!(content, "Some content");
     }
 }
