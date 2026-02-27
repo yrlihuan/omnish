@@ -110,6 +110,7 @@ pub fn default_session_probes(child_pid: u32) -> ProbeSet {
 
 pub fn default_polling_probes(child_pid: u32) -> ProbeSet {
     let mut set = ProbeSet::new();
+    set.add(Box::new(HostnameProbe));
     set.add(Box::new(ShellCwdProbe(child_pid)));
     set.add(Box::new(ChildProcessProbe(child_pid)));
     set

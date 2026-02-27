@@ -14,7 +14,6 @@ use anyhow::Result;
 use omnish_common::config::load_client_config;
 use interceptor::{InputInterceptor, InterceptAction, TimeGapGuard};
 use omnish_protocol::message::*;
-use crate::probe::Probe;
 use omnish_pty::proxy::PtyProxy;
 use omnish_pty::raw_mode::RawModeGuard;
 use omnish_transport::rpc_client::RpcClient;
@@ -160,9 +159,8 @@ async fn main() -> Result<()> {
         let child_pid_poll = proxy.child_pid() as u32;
         let poll_buffer = pending_buffer.clone();
         tokio::spawn(async move {
-            // Include hostname probe along with polling probes
-            let hostname_probe = probe::HostnameProbe;
-            let mut polling_probes = probe::default_polling_probes(child_pid_poll);
+            // Polling probes include: hostname, shell_cwd, child_process
+            let polling_probes = probe::default_polling_probes(child_pid_poll);
 
             let mut last_attrs: HashMap<String, String> = HashMap::new();
 
@@ -184,14 +182,8 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                // Collect all probes: hostname + polling probes
-                let mut current: HashMap<String, String> = HashMap::new();
-                // Add hostname (collected once per poll)
-                if let Some(h) = hostname_probe.collect() {
-                    current.insert("host".to_string(), h);
-                }
-                // Add polling probes (shell_cwd, child_process)
-                current.extend(polling_probes.collect_all());
+                // Collect all probes: hostname, shell_cwd, child_process
+                let current = polling_probes.collect_all();
 
                 // Diff: find changed keys
                 let changed: HashMap<String, String> = current.iter()
