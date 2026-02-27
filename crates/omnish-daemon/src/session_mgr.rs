@@ -1655,6 +1655,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cleanup_expired_dirs_edge_cases() {
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+        let mgr = SessionManager::new(base.clone(), Default::default());
+
+        // Get the actual sessions directory path
+        let sessions_dir = base.join("sessions");
+
+        // Test 1: Empty commands.json
+        let empty_dir = sessions_dir.join("2020-01-01T00-00-00Z_empty_session");
+        std::fs::create_dir_all(&empty_dir).unwrap();
+        std::fs::write(empty_dir.join("commands.json"), "[]").unwrap();
+
+        // Should skip (no timestamp to check)
+        let cleaned = mgr.cleanup_expired_dirs(Duration::from_secs(48 * 3600)).await;
+        assert_eq!(cleaned, 0);
+        assert!(empty_dir.exists()); // Should still exist
+
+        // Test 2: Corrupted commands.json
+        let corrupt_dir = sessions_dir.join("2020-01-01T00-00-00Z_corrupt_session");
+        std::fs::create_dir_all(&corrupt_dir).unwrap();
+        std::fs::write(corrupt_dir.join("commands.json"), "not json").unwrap();
+
+        let cleaned = mgr.cleanup_expired_dirs(Duration::from_secs(48 * 3600)).await;
+        assert_eq!(cleaned, 0);
+        assert!(corrupt_dir.exists()); // Should still exist (skip on error)
+
+        // Test 3: Missing commands.json (only directory)
+        let missing_dir = sessions_dir.join("2020-01-01T00-00-00Z_missing_session");
+        std::fs::create_dir_all(&missing_dir).unwrap();
+
+        let cleaned = mgr.cleanup_expired_dirs(Duration::from_secs(48 * 3600)).await;
+        assert_eq!(cleaned, 0);
+        assert!(missing_dir.exists()); // Should still exist
+    }
+
+    #[tokio::test]
     async fn test_load_existing_cleans_up_expired_dirs() {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().to_path_buf();
