@@ -27,7 +27,7 @@ type MessageBuffer = Arc<Mutex<VecDeque<Message>>>;
 const MAX_BUFFER_SIZE: usize = 10_000;
 
 fn should_buffer(msg: &Message) -> bool {
-    matches!(msg, Message::IoData(_) | Message::CommandComplete(_))
+    matches!(msg, Message::IoData(_) | Message::CommandComplete(_) | Message::SessionUpdate(_))
 }
 
 /// Send a message to the daemon, buffering it if the send fails and
