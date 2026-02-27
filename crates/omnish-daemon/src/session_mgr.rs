@@ -1463,7 +1463,8 @@ mod tests {
         let mgr = SessionManager::new(base.clone(), Default::default());
 
         // Create a mock session directory with old commands.json
-        // Note: SessionManager's base_dir is base/sessions
+        // SessionManager's base_dir is base/sessions (created by SessionManager::new)
+        // We need to create test directory under base/sessions
         let session_dir = base.join("sessions").join("test_session");
         std::fs::create_dir_all(&session_dir).unwrap();
 
@@ -1488,9 +1489,8 @@ mod tests {
 
         CommandRecord::save_all(&commands, &session_dir).unwrap();
 
-        // Create other required files
-        std::fs::write(session_dir.join("meta.json"), "{}").unwrap();
-        std::fs::write(session_dir.join("stream.bin"), "").unwrap();
+        // Note: CommandRecord::load_all only requires commands.json
+        // meta.json and stream.bin are not needed for cleanup logic
 
         // Clean up with 48-hour threshold
         let cleaned = mgr.cleanup_expired_dirs(Duration::from_secs(48 * 3600)).await;
