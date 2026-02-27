@@ -267,10 +267,7 @@ impl SessionManager {
         &self,
         session_id: &str,
         timestamp_ms: u64,
-        host: Option<String>,
-        shell_cwd: Option<String>,
-        child_process: Option<String>,
-        extra: HashMap<String, serde_json::Value>,
+        attrs: HashMap<String, String>,
     ) -> Result<()> {
         let sessions = self.sessions.read().await;
         let session = sessions
@@ -279,14 +276,8 @@ impl SessionManager {
         let mut meta = session.meta.write().await;
 
         // Update session attributes
-        if let Some(ref h) = host {
-            meta.attrs.insert("host".to_string(), h.clone());
-        }
-        if let Some(ref cwd) = shell_cwd {
-            meta.attrs.insert("shell_cwd".to_string(), cwd.clone());
-        }
-        if let Some(ref cp) = child_process {
-            meta.attrs.insert("child_process".to_string(), cp.clone());
+        for (k, v) in &attrs {
+            meta.attrs.insert(k.clone(), v.clone());
         }
         meta.save(&session.dir)?;
 
@@ -295,14 +286,11 @@ impl SessionManager {
         *last_update = Some(timestamp_ms);
 
         // Send to session writer for logging (non-blocking)
-        let record = omnish_store::session_update::SessionUpdateRecord {
-            session_id: session_id.to_string(),
+        let record = omnish_store::session_update::SessionUpdateRecord::new(
+            session_id.to_string(),
             timestamp_ms,
-            host,
-            shell_cwd,
-            child_process,
-            extra,
-        };
+            attrs,
+        );
         let _ = self.session_writer.send(record);
 
         Ok(())

@@ -12,13 +12,9 @@ pub struct SessionUpdateRecord {
     pub session_id: String,
     /// Timestamp when this record was created (epoch ms)
     pub timestamp_ms: u64,
-    /// Hostname
-    pub host: Option<String>,
-    /// Current working directory of the shell
-    pub shell_cwd: Option<String>,
-    /// Current child process (format: "name:pid")
-    pub child_process: Option<String>,
-    /// Extra metadata (stored as JSON string in CSV)
+    /// Attributes from probes
+    pub attrs: HashMap<String, String>,
+    /// Extra fields (attrs other than host, shell_cwd, child_process for future extension)
     #[serde(default)]
     pub extra: HashMap<String, Value>,
 }
@@ -34,6 +30,25 @@ impl SessionUpdateRecord {
         }
     }
 
+    /// Create a new SessionUpdateRecord, extracting extra fields from attrs
+    pub fn new(session_id: String, timestamp_ms: u64, attrs: HashMap<String, String>) -> Self {
+        // Extract fields other than host, shell_cwd, child_process into extra
+        let mut extra = HashMap::new();
+        let known_fields = ["host", "shell_cwd", "child_process"];
+        for (k, v) in attrs.iter() {
+            if !known_fields.contains(&k.as_str()) {
+                extra.insert(k.clone(), Value::String(v.clone()));
+            }
+        }
+
+        Self {
+            session_id,
+            timestamp_ms,
+            attrs,
+            extra,
+        }
+    }
+
     /// Convert to CSV row
     pub fn to_csv_row(&self) -> String {
         // Serialize extra as JSON string
@@ -46,24 +61,20 @@ impl SessionUpdateRecord {
                 s.to_string()
             }
         };
-        // Serialize optional fields as JSON strings
-        let host_json = serde_json::to_string(&self.host).unwrap_or_default();
-        let shell_cwd_json = serde_json::to_string(&self.shell_cwd).unwrap_or_default();
-        let child_process_json = serde_json::to_string(&self.child_process).unwrap_or_default();
+        // Serialize attrs as JSON string
+        let attrs_json = serde_json::to_string(&self.attrs).unwrap_or_default();
         format!(
-            "{},{},{},{},{},{}\n",
+            "{},{},{},{}\n",
             Self::format_timestamp(self.timestamp_ms),
             escape(&self.session_id),
-            escape(&host_json),
-            escape(&shell_cwd_json),
-            escape(&child_process_json),
+            escape(&attrs_json),
             escape(&extra_json)
         )
     }
 
     /// CSV header
     pub fn csv_header() -> &'static str {
-        "timestamp,session_id,host,shell_cwd,child_process,extra\n"
+        "timestamp,session_id,attrs,extra\n"
     }
 }
 
@@ -148,17 +159,16 @@ mod tests {
 
     #[test]
     fn test_csv_format() {
-        let mut extra = HashMap::new();
-        extra.insert("key".to_string(), Value::String("value".to_string()));
+        let mut attrs = HashMap::new();
+        attrs.insert("host".to_string(), "workstation".to_string());
+        attrs.insert("shell_cwd".to_string(), "/home/user/project".to_string());
+        attrs.insert("custom_field".to_string(), "custom_value".to_string());
 
-        let record = SessionUpdateRecord {
-            session_id: "test_session".to_string(),
-            timestamp_ms: 1709000000000,
-            host: Some("workstation".to_string()),
-            shell_cwd: Some("/home/user/project".to_string()),
-            child_process: Some("vim:12345".to_string()),
-            extra,
-        };
+        let record = SessionUpdateRecord::new(
+            "test_session".to_string(),
+            1709000000000,
+            attrs,
+        );
 
         let row = record.to_csv_row();
         // Check for readable timestamp format
@@ -166,6 +176,8 @@ mod tests {
         assert!(row.contains("test_session"));
         assert!(row.contains("workstation"));
         assert!(row.contains("/home/user/project"));
+        // custom_field should be in extra
+        assert!(row.contains("custom_value"));
     }
 
     #[test]
@@ -173,9 +185,29 @@ mod tests {
         let header = SessionUpdateRecord::csv_header();
         assert!(header.starts_with("timestamp"));
         assert!(header.contains("session_id"));
-        assert!(header.contains("host"));
-        assert!(header.contains("shell_cwd"));
-        assert!(header.contains("child_process"));
+        assert!(header.contains("attrs"));
+        assert!(header.contains("extra"));
+    }
+
+    #[test]
+    fn test_extra_extraction() {
+        let mut attrs = HashMap::new();
+        attrs.insert("host".to_string(), "workstation".to_string());
+        attrs.insert("shell_cwd".to_string(), "/home/user".to_string());
+        attrs.insert("custom_key".to_string(), "custom_value".to_string());
+
+        let record = SessionUpdateRecord::new(
+            "test".to_string(),
+            1000,
+            attrs,
+        );
+
+        // host and shell_cwd should remain in attrs
+        assert!(record.attrs.contains_key("host"));
+        assert!(record.attrs.contains_key("shell_cwd"));
+        // custom_key should be extracted to extra
+        assert!(record.extra.contains_key("custom_key"));
+        assert_eq!(record.extra.get("custom_key").unwrap(), &Value::String("custom_value".to_string()));
     }
 
     #[test]
@@ -185,14 +217,15 @@ mod tests {
 
         // Send a few records
         for i in 0..5 {
-            let record = SessionUpdateRecord {
-                session_id: format!("session{}", i),
-                timestamp_ms: 1709000000000 + i as u64,
-                host: Some("host".to_string()),
-                shell_cwd: Some(format!("/path{}", i)),
-                child_process: Some(format!("proc{}", i)),
-                extra: HashMap::new(),
-            };
+            let mut attrs = HashMap::new();
+            attrs.insert("host".to_string(), "host".to_string());
+            attrs.insert("shell_cwd".to_string(), format!("/path{}", i));
+            attrs.insert("custom".to_string(), format!("val{}", i));
+            let record = SessionUpdateRecord::new(
+                format!("session{}", i),
+                1709000000000 + i as u64,
+                attrs,
+            );
             tx.send(record).unwrap();
         }
 

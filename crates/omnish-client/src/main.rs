@@ -14,6 +14,7 @@ use anyhow::Result;
 use omnish_common::config::load_client_config;
 use interceptor::{InputInterceptor, InterceptAction, TimeGapGuard};
 use omnish_protocol::message::*;
+use crate::probe::Probe;
 use omnish_pty::proxy::PtyProxy;
 use omnish_pty::raw_mode::RawModeGuard;
 use omnish_transport::rpc_client::RpcClient;
@@ -159,13 +160,11 @@ async fn main() -> Result<()> {
         let child_pid_poll = proxy.child_pid() as u32;
         let poll_buffer = pending_buffer.clone();
         tokio::spawn(async move {
-            // Get hostname once at start (doesn't change during session)
-            let hostname = nix::unistd::gethostname()
-                .ok()
-                .map(|h| h.into_string().unwrap_or_default());
+            // Include hostname probe along with polling probes
+            let hostname_probe = probe::HostnameProbe;
+            let mut polling_probes = probe::default_polling_probes(child_pid_poll);
 
-            let mut last_shell_cwd: Option<String> = None;
-            let mut last_child_process: Option<String> = None;
+            let mut last_attrs: HashMap<String, String> = HashMap::new();
 
             // Progressive polling intervals: 1, 2, 4, 8, 15, 30, then 60 seconds
             let intervals: &[u64] = &[1, 2, 4, 8, 15, 30, 60];
@@ -185,39 +184,40 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                // Collect current values
-                let shell_cwd = util::get_shell_cwd(child_pid_poll);
-                let child_process = probe::get_child_process(child_pid_poll);
+                // Collect all probes: hostname + polling probes
+                let mut current: HashMap<String, String> = HashMap::new();
+                // Add hostname (collected once per poll)
+                if let Some(h) = hostname_probe.collect() {
+                    current.insert("host".to_string(), h);
+                }
+                // Add polling probes (shell_cwd, child_process)
+                current.extend(polling_probes.collect_all());
 
-                // Check if anything changed
-                let cwd_changed = last_shell_cwd != shell_cwd;
-                let child_changed = last_child_process != child_process;
+                // Diff: find changed keys
+                let changed: HashMap<String, String> = current.iter()
+                    .filter(|(k, v)| last_attrs.get(*k) != Some(v))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
 
-                if cwd_changed || child_changed {
+                if !changed.is_empty() {
                     // Update tmux window title if child_process changed
-                    if child_changed {
-                        if let Some(ref cp) = child_process {
-                            let in_tmux = std::env::var("TMUX").is_ok();
-                            let process_name = cp.split(':').next().unwrap_or(cp.as_str());
-                            if let Some(title) = tmux_title(process_name, in_tmux) {
-                                nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
-                            }
+                    if let Some(child_process) = changed.get("child_process") {
+                        let in_tmux = std::env::var("TMUX").is_ok();
+                        let process_name = child_process.split(':').next().unwrap_or(child_process.as_str());
+                        if let Some(title) = tmux_title(process_name, in_tmux) {
+                            nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
                         }
                     }
 
                     let msg = Message::SessionUpdate(SessionUpdate {
                         session_id: sid_poll.clone(),
                         timestamp_ms: timestamp_ms(),
-                        host: hostname.clone(),
-                        shell_cwd: shell_cwd.clone(),
-                        child_process: child_process.clone(),
-                        extra: Default::default(),
+                        attrs: changed,
                     });
                     send_or_buffer(&rpc_poll, msg, &poll_buffer).await;
                 }
 
-                last_shell_cwd = shell_cwd;
-                last_child_process = child_process;
+                last_attrs = current;
 
                 // Move to next interval (but cap at the last interval = 60s)
                 if interval_idx < intervals.len() - 1 {

@@ -42,15 +42,8 @@ pub struct SessionEnd {
 pub struct SessionUpdate {
     pub session_id: String,
     pub timestamp_ms: u64,
-    /// Hostname
-    pub host: Option<String>,
-    /// Current working directory of the shell
-    pub shell_cwd: Option<String>,
-    /// Current child process (format: "name:pid")
-    pub child_process: Option<String>,
-    /// Extra metadata as key-value pairs (stored as JSON in CSV)
-    #[serde(default)]
-    pub extra: HashMap<String, Value>,
+    /// Attributes (includes host, shell_cwd, child_process from probes)
+    pub attrs: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,15 +289,16 @@ mod tests {
 
     #[test]
     fn test_frame_with_session_update() {
+        let mut attrs = HashMap::new();
+        attrs.insert("host".to_string(), "workstation".to_string());
+        attrs.insert("shell_cwd".to_string(), "/home/user/project".to_string());
+        attrs.insert("child_process".to_string(), "vim:12345".to_string());
         let frame = Frame {
             request_id: 20,
             payload: Message::SessionUpdate(SessionUpdate {
                 session_id: "abc".to_string(),
                 timestamp_ms: 2000,
-                host: Some("workstation".to_string()),
-                shell_cwd: Some("/home/user/project".to_string()),
-                child_process: Some("vim:12345".to_string()),
-                extra: HashMap::new(),
+                attrs,
             }),
         };
         let bytes = frame.to_bytes().unwrap();
@@ -312,8 +306,7 @@ mod tests {
         assert_eq!(decoded.request_id, 20);
         if let Message::SessionUpdate(su) = decoded.payload {
             assert_eq!(su.session_id, "abc");
-            assert_eq!(su.shell_cwd.as_deref(), Some("/home/user/project"));
-            assert_eq!(su.child_process.as_deref(), Some("vim:12345"));
+            assert_eq!(su.attrs.get("shell_cwd").unwrap(), "/home/user/project");
         } else {
             panic!("expected SessionUpdate");
         }
