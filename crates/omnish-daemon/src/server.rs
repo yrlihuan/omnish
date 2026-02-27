@@ -56,6 +56,12 @@ async fn handle_message(
             }
             Message::Ack
         }
+        Message::SessionUpdate(su) => {
+            if let Err(e) = mgr.update_attrs(&su.session_id, su.attrs).await {
+                tracing::error!("update_attrs error: {}", e);
+            }
+            Message::Ack
+        }
         Message::IoData(io) => {
             let dir = match io.direction {
                 IoDirection::Input => 0,
