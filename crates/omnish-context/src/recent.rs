@@ -237,7 +237,7 @@ impl ContextFormatter for GroupedFormatter {
                         group_lines.push(format!("{}$ {}{}", prefix_display, cmd_line, failed_tag));
                     } else {
                         let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
-                        group_lines.push(format!("{}$ {}{}\n--------------------\n{}", prefix_display, cmd_line, failed_tag, output));
+                        group_lines.push(format!("{}$ {}{}\n{}\n--------------------", prefix_display, cmd_line, failed_tag, output));
                     }
                 }
 
@@ -329,7 +329,7 @@ impl ContextFormatter for InterleavedFormatter {
                 if output.is_empty() {
                     sections.push(format!("{} {}$ {}{}", label_str, prefix_display, cmd_line, failed_tag));
                 } else {
-                    sections.push(format!("{} {}$ {}{}\n--------------------\n{}", label_str, prefix_display, cmd_line, failed_tag, output));
+                    sections.push(format!("{} {}$ {}{}\n{}\n--------------------", label_str, prefix_display, cmd_line, failed_tag, output));
                 }
             }
         }
@@ -885,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_separator_added_after_command() {
-        // Test that a separator of 20 dashes is added between command and output
+        // Test that a separator of 20 dashes is added after command output
         let detailed = vec![
             CommandContext {
                 session_id: "sess-a".into(),
@@ -907,8 +907,10 @@ mod tests {
         let cmd_pos = result.find("$ ls -la").unwrap();
         let sep_pos = result.find("--------------------").unwrap();
         assert!(cmd_pos < sep_pos, "Command should appear before separator");
-        // Should have output after separator
+        // Should have output before separator
         assert!(result.contains("file1.txt"));
+        let output_pos = result.find("file1.txt").unwrap();
+        assert!(output_pos < sep_pos, "Output should appear before separator");
         // Separator should be on its own line
         let lines: Vec<&str> = result.lines().collect();
         assert!(lines.iter().any(|line| *line == "--------------------"),
