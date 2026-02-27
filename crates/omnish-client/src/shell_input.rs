@@ -277,6 +277,17 @@ mod tests {
     }
 
     #[test]
+    fn test_ignores_csi_13337_after_enter() {
+        let mut t = ShellInputTracker::new();
+        // Enter sets at_prompt=false
+        t.feed_forwarded(&[0x0d]);
+        // CSI sequence \x1b[13337~ should be ignored when not at prompt
+        t.feed_forwarded(b"\x1b[13337~");
+        assert_eq!(t.input(), "");
+        assert!(!t.at_prompt());
+    }
+
+    #[test]
     fn test_take_change() {
         let mut t = ShellInputTracker::new();
         assert!(t.take_change().is_none());
