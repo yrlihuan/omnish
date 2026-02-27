@@ -57,7 +57,7 @@ async fn handle_message(
             Message::Ack
         }
         Message::SessionUpdate(su) => {
-            if let Err(e) = mgr.update_attrs(&su.session_id, su.attrs).await {
+            if let Err(e) = mgr.update_attrs(&su.session_id, su.timestamp_ms, su.attrs).await {
                 tracing::error!("update_attrs error: {}", e);
             }
             Message::Ack
@@ -183,7 +183,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager) -> String {
 }
 
 async fn get_session_debug_info(session_id: &str, mgr: &SessionManager) -> Result<String> {
-    let (meta, cmd_count, last_active_duration) = mgr.get_session_debug_info(session_id).await?;
+    let (meta, cmd_count, last_active_duration, last_update) = mgr.get_session_debug_info(session_id).await?;
     let commands = mgr.get_commands(session_id).await?;
 
     let mut info = String::new();
@@ -194,6 +194,18 @@ async fn get_session_debug_info(session_id: &str, mgr: &SessionManager) -> Resul
     } else {
         info.push_str(&format!("Status: Active\n"));
         info.push_str(&format!("Last active: {}s ago\n", last_active_duration.as_secs()));
+    }
+
+    // Display last update time from SessionUpdate
+    if let Some(ts) = last_update {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let secs_ago = now_ms.saturating_sub(ts) / 1000;
+        info.push_str(&format!("Last update: {}s ago\n", secs_ago));
+    } else {
+        info.push_str("Last update: never\n");
     }
 
     info.push_str(&format!("Commands recorded: {}\n", cmd_count));

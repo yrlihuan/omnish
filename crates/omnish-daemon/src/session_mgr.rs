@@ -52,6 +52,7 @@ struct Session {
     meta: RwLock<SessionMeta>,
     commands: RwLock<Vec<CommandRecord>>,
     stream_writer: Mutex<StreamWriterState>,
+    last_update: Mutex<Option<u64>>, // timestamp_ms of last SessionUpdate
 }
 
 pub struct SessionManager {
@@ -165,6 +166,7 @@ impl SessionManager {
                             last_command_stream_pos,
                             last_active,
                         }),
+                        last_update: Mutex::new(None),
                     }),
                 );
                 count += 1;
@@ -239,6 +241,7 @@ impl SessionManager {
                     last_command_stream_pos: 0,
                     last_active: Instant::now(),
                 }),
+                last_update: Mutex::new(None),
             }),
         );
         Ok(())
@@ -247,6 +250,7 @@ impl SessionManager {
     pub async fn update_attrs(
         &self,
         session_id: &str,
+        timestamp_ms: u64,
         attrs: HashMap<String, String>,
     ) -> Result<()> {
         let sessions = self.sessions.read().await;
@@ -258,6 +262,11 @@ impl SessionManager {
             meta.attrs.insert(k, v);
         }
         meta.save(&session.dir)?;
+
+        // Update last_update timestamp
+        let mut last_update = session.last_update.lock().await;
+        *last_update = Some(timestamp_ms);
+
         Ok(())
     }
 
@@ -334,8 +343,8 @@ impl SessionManager {
         }
     }
 
-    /// Get session debug information including metadata, commands count, and last active time
-    pub async fn get_session_debug_info(&self, session_id: &str) -> Result<(SessionMeta, usize, Duration)> {
+    /// Get session debug information including metadata, commands count, last active time, and last update timestamp
+    pub async fn get_session_debug_info(&self, session_id: &str) -> Result<(SessionMeta, usize, Duration, Option<u64>)> {
         let session = {
             let sessions = self.sessions.read().await;
             sessions
@@ -353,7 +362,9 @@ impl SessionManager {
         let last_active_duration = sw.last_active.elapsed();
         drop(sw);
 
-        Ok((meta, cmd_count, last_active_duration))
+        let last_update = session.last_update.lock().await;
+
+        Ok((meta, cmd_count, last_active_duration, *last_update))
     }
 
     pub async fn list_active(&self) -> Vec<String> {
