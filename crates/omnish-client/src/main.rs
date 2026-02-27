@@ -135,6 +135,15 @@ async fn main() -> Result<()> {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 if !changed.is_empty() {
+                    // Update tmux window title if child_process changed
+                    if let Some(child_process) = changed.get("child_process") {
+                        let in_tmux = std::env::var("TMUX").is_ok();
+                        // Extract process name without PID (format is "name:pid")
+                        let process_name = child_process.split(':').next().unwrap_or(child_process);
+                        if let Some(title) = tmux_title(process_name, in_tmux) {
+                            nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
+                        }
+                    }
                     let msg = Message::SessionUpdate(SessionUpdate {
                         session_id: sid_poll.clone(),
                         timestamp_ms: timestamp_ms(),
