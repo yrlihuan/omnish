@@ -20,6 +20,7 @@ use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 type MessageBuffer = Arc<Mutex<VecDeque<Message>>>;
@@ -117,7 +118,10 @@ async fn main() -> Result<()> {
     let pending_buffer: MessageBuffer = Arc::new(Mutex::new(VecDeque::new()));
     let daemon_conn = connect_daemon(&daemon_addr, &session_id, parent_session_id, proxy.child_pid() as u32, pending_buffer.clone()).await;
 
-    // Spawn shell info polling task (5s interval, diff-based updates)
+    // Spawn shell info polling task (progressive interval: 1/2/4/8/15/30s, then 60s)
+    // Reset to 1s on each command start
+    let (cmd_start_tx, mut cmd_start_rx) = mpsc::channel::<()>(1);
+    let cmd_start_tx_for_loop = cmd_start_tx.clone();
     if let Some(ref rpc) = daemon_conn {
         let rpc_poll = rpc.clone();
         let sid_poll = session_id.clone();
@@ -126,8 +130,24 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             let probes = probe::default_polling_probes(child_pid_poll);
             let mut last_attrs: HashMap<String, String> = HashMap::new();
+            // Progressive polling intervals: 1, 2, 4, 8, 15, 30, then 60 seconds
+            let intervals: &[u64] = &[1, 2, 4, 8, 15, 30, 60];
+            let mut interval_idx: usize = 0;
+
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                let current_interval = intervals.get(interval_idx).unwrap_or(&60);
+
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(*current_interval)) => {
+                        // Time to poll
+                    }
+                    _ = cmd_start_rx.recv() => {
+                        // Command started - reset to first interval
+                        interval_idx = 0;
+                        continue; // Skip this poll, start fresh with 1s interval
+                    }
+                }
+
                 let current = probes.collect_all();
                 // Diff: find changed keys
                 let changed: HashMap<String, String> = current.iter()
@@ -152,6 +172,11 @@ async fn main() -> Result<()> {
                     send_or_buffer(&rpc_poll, msg, &poll_buffer).await;
                 }
                 last_attrs = current;
+
+                // Move to next interval (but cap at the last interval = 60s)
+                if interval_idx < intervals.len() - 1 {
+                    interval_idx += 1;
+                }
             }
         });
     }
@@ -509,6 +534,8 @@ async fn main() -> Result<()> {
                             // at_prompt=false is set by feed_forwarded on Enter key.
                             Osc133EventKind::CommandStart { command, .. } => {
                                 shell_completer.clear();
+                                // Reset polling interval to 1s on command start
+                                let _ = cmd_start_tx_for_loop.try_send(());
                                 if let Some(cmd) = command {
                                     if let Some(title) = tmux_title(command_basename(cmd), in_tmux) {
                                         nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
