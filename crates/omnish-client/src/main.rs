@@ -46,6 +46,17 @@ async fn send_completion_summary(
     }
 }
 
+/// Send completion summary for ignored completion (accepted=false)
+async fn send_ignored_summary(
+    rpc: &RpcClient,
+    shell_completer: &mut completion::ShellCompleter,
+    session_id: &str,
+    cwd: Option<String>,
+) {
+    // take_completion_summary returns None if there's no pending completion
+    send_completion_summary(rpc, shell_completer, session_id, false, cwd).await;
+}
+
 /// Send a message to the daemon, buffering it if the send fails and
 /// the message type is eligible for retry.
 async fn send_or_buffer(rpc: &RpcClient, msg: Message, buffer: &MessageBuffer) {
@@ -381,6 +392,11 @@ async fn main() -> Result<()> {
                                 if shell_completer.on_input_changed(input, seq) {
                                     // Ghost was cleared — erase stale ghost text from screen
                                     nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
+                                    // Send completion summary (ignored - user typed different input)
+                                    if let Some(ref rpc) = daemon_conn {
+                                        let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
+                                        send_ignored_summary(rpc, &mut shell_completer, &session_id, shell_cwd).await;
+                                    }
                                 }
                             }
 
@@ -568,6 +584,11 @@ async fn main() -> Result<()> {
                             // use them to detect "user pressed Enter". Instead,
                             // at_prompt=false is set by feed_forwarded on Enter key.
                             Osc133EventKind::CommandStart { command, .. } => {
+                                // User pressed Enter - send completion summary (ignored)
+                                if let Some(ref rpc) = daemon_conn {
+                                    let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
+                                    send_ignored_summary(rpc, &mut shell_completer, &session_id, shell_cwd).await;
+                                }
                                 shell_completer.clear();
                                 // Reset polling interval to 1s on command start
                                 let _ = cmd_start_tx_for_loop.try_send(());
@@ -578,6 +599,11 @@ async fn main() -> Result<()> {
                                 }
                             }
                             Osc133EventKind::OutputStart => {
+                                // Output started - send completion summary (ignored)
+                                if let Some(ref rpc) = daemon_conn {
+                                    let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
+                                    send_ignored_summary(rpc, &mut shell_completer, &session_id, shell_cwd).await;
+                                }
                                 shell_completer.clear();
                             }
                             Osc133EventKind::ReadlineLine { content } => {

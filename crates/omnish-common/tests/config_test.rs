@@ -19,7 +19,6 @@ command_prefix = ":"
 fn test_parse_daemon_config() {
     let toml_str = r#"
 listen_addr = "/tmp/omnish.sock"
-sessions_dir = "/tmp/omnish/sessions"
 
 [llm]
 default = "claude"
@@ -36,7 +35,6 @@ cooldown_seconds = 5
 "#;
     let config: DaemonConfig = toml::from_str(toml_str).unwrap();
     assert_eq!(config.listen_addr, "/tmp/omnish.sock");
-    assert_eq!(config.sessions_dir, "/tmp/omnish/sessions");
     assert_eq!(config.llm.default, "claude");
     assert!(config.llm.auto_trigger.on_nonzero_exit);
     assert_eq!(config.llm.auto_trigger.cooldown_seconds, 5);
@@ -55,7 +53,6 @@ fn test_daemon_config_defaults() {
     let toml_str = "";
     let config: DaemonConfig = toml::from_str(toml_str).unwrap();
     assert!(config.listen_addr.ends_with("omnish.sock"));
-    assert!(config.sessions_dir.ends_with("sessions"));
     assert_eq!(config.llm.default, "claude");
     assert!(!config.llm.auto_trigger.on_nonzero_exit);
 }

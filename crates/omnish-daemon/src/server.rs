@@ -528,6 +528,7 @@ mod tests {
             input: "git".to_string(),
             cursor_pos: 3,
             sequence_id: 1,
+            cwd: None,
         };
 
         let req2 = ProtoCompletionRequest {
@@ -535,6 +536,7 @@ mod tests {
             input: "ls".to_string(),
             cursor_pos: 2,
             sequence_id: 2,
+            cwd: None,
         };
 
         // Spawn both requests concurrently
@@ -607,6 +609,7 @@ mod tests {
             input: "git".to_string(),
             cursor_pos: 3,
             sequence_id: 1,
+            cwd: None,
         };
 
         let req2 = ProtoCompletionRequest {
@@ -614,6 +617,7 @@ mod tests {
             input: "ls".to_string(),
             cursor_pos: 2,
             sequence_id: 2,
+            cwd: None,
         };
 
         // Spawn both requests concurrently
