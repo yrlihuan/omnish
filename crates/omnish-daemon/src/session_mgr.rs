@@ -5,6 +5,7 @@ use omnish_context::StreamReader;
 use omnish_store::command::CommandRecord;
 use omnish_store::completion::CompletionRecord;
 use omnish_store::session::SessionMeta;
+use omnish_store::session_update::SessionUpdateRecord;
 use omnish_store::stream::{read_range, StreamEntry, StreamWriter};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -62,6 +63,7 @@ pub struct SessionManager {
     sessions: RwLock<HashMap<String, Arc<Session>>>,
     context_config: ContextConfig,
     completion_writer: mpsc::Sender<CompletionRecord>,
+    session_writer: mpsc::Sender<SessionUpdateRecord>,
 }
 
 /// Infer `last_active` from persisted data so that idle time survives daemon restarts.
@@ -114,13 +116,16 @@ impl SessionManager {
     pub fn new(omnish_dir: PathBuf, context_config: ContextConfig) -> Self {
         let sessions_dir = omnish_dir.join("sessions");
         let completions_dir = omnish_dir.join("logs").join("completions");
+        let session_updates_dir = omnish_dir.join("logs").join("sessions");
         std::fs::create_dir_all(&sessions_dir).ok();
-        let writer = omnish_store::completion::spawn_writer_thread(completions_dir);
+        let completion_writer = omnish_store::completion::spawn_writer_thread(completions_dir);
+        let session_writer = omnish_store::session_update::spawn_writer_thread(session_updates_dir);
         Self {
             base_dir: sessions_dir,
             sessions: RwLock::new(HashMap::new()),
             context_config,
-            completion_writer: writer,
+            completion_writer,
+            session_writer,
         }
     }
 
@@ -263,12 +268,15 @@ impl SessionManager {
         session_id: &str,
         timestamp_ms: u64,
         attrs: HashMap<String, String>,
+        extra: HashMap<String, serde_json::Value>,
     ) -> Result<()> {
         let sessions = self.sessions.read().await;
         let session = sessions
             .get(session_id)
             .ok_or_else(|| anyhow!("session {} not found", session_id))?;
         let mut meta = session.meta.write().await;
+        // Clone attrs before iterating to preserve original for the record
+        let attrs_clone = attrs.clone();
         for (k, v) in attrs {
             meta.attrs.insert(k, v);
         }
@@ -277,6 +285,15 @@ impl SessionManager {
         // Update last_update timestamp
         let mut last_update = session.last_update.lock().await;
         *last_update = Some(timestamp_ms);
+
+        // Send to session writer for logging (non-blocking)
+        let record = SessionUpdateRecord {
+            session_id: session_id.to_string(),
+            timestamp_ms,
+            attrs: attrs_clone,
+            extra,
+        };
+        let _ = self.session_writer.send(record);
 
         Ok(())
     }

@@ -199,6 +199,7 @@ async fn main() -> Result<()> {
                         session_id: sid_poll.clone(),
                         timestamp_ms: timestamp_ms(),
                         attrs: changed,
+                        extra: Default::default(),
                     });
                     send_or_buffer(&rpc_poll, msg, &poll_buffer).await;
                 }

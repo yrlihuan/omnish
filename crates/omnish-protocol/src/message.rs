@@ -43,6 +43,9 @@ pub struct SessionUpdate {
     pub session_id: String,
     pub timestamp_ms: u64,
     pub attrs: HashMap<String, String>,
+    /// Extra metadata as key-value pairs (stored as JSON in CSV)
+    #[serde(default)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,6 +299,7 @@ mod tests {
                 session_id: "abc".to_string(),
                 timestamp_ms: 2000,
                 attrs,
+                extra: HashMap::new(),
             }),
         };
         let bytes = frame.to_bytes().unwrap();
