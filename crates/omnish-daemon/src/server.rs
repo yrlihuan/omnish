@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
 use omnish_protocol::message::*;
@@ -268,6 +268,11 @@ async fn handle_llm_request(
                 req.session_id,
                 response.model
             );
+
+            // Log thinking content if present
+            if let Some(ref thinking) = response.thinking {
+                tracing::debug!("LLM thinking: {}", thinking);
+            }
         }
         Err(e) => {
             tracing::warn!(
@@ -413,6 +418,7 @@ mod tests {
             Ok(LlmResponse {
                 content: r#"[{"text": " status", "confidence": 0.9}]"#.to_string(),
                 model: "mock".to_string(),
+                thinking: None,
             })
         }
 

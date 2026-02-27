@@ -60,17 +60,37 @@ impl LlmBackend for AnthropicBackend {
             ));
         }
 
-        let content = json["content"][0]["text"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid response format: missing content[0].text"))?
-            .to_string();
+        // Extract thinking and text content from response
+        // Anthropic returns content as an array of blocks
+        let mut thinking: Option<String> = None;
+        let mut text_content = String::new();
 
-        // Strip thinking tags from response
-        let content = strip_thinking(&content);
+        for block in json["content"].as_array().unwrap_or(&vec![]) {
+            match block["type"].as_str() {
+                Some("thinking") => {
+                    thinking = block["thinking"].as_str().map(|s| s.to_string());
+                }
+                Some("text") => {
+                    if !text_content.is_empty() {
+                        text_content.push('\n');
+                    }
+                    text_content.push_str(block["text"].as_str().unwrap_or(""));
+                }
+                _ => {}
+            }
+        }
+
+        if text_content.is_empty() {
+            return Err(anyhow::anyhow!("Invalid response format: no text content found"));
+        }
+
+        // Strip thinking tags from text content (for backwards compatibility)
+        let content = strip_thinking(&text_content);
 
         Ok(LlmResponse {
             content,
             model: self.model.clone(),
+            thinking,
         })
     }
 

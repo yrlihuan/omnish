@@ -9,9 +9,19 @@ pub struct OpenAiCompatBackend {
     pub client: reqwest::Client,
 }
 
-/// Strip thinking tags from LLM response content.
-fn strip_thinking(content: &str) -> String {
-    content.replace("\n<think>", "").replace("</think>", "")
+/// Extract thinking from content and return (thinking, cleaned_content)
+fn extract_thinking(content: &str) -> (Option<String>, String) {
+    let thinking_start = "\n<think>";
+    let thinking_end = "</think>";
+
+    if let Some(start) = content.find(thinking_start) {
+        if let Some(end) = content.find(thinking_end) {
+            let thinking = content[start + thinking_start.len()..end].to_string();
+            let cleaned = content[..start].to_string() + &content[end + thinking_end.len()..];
+            return (Some(thinking), cleaned.trim().to_string());
+        }
+    }
+    (None, content.to_string())
 }
 
 #[async_trait]
@@ -55,17 +65,18 @@ impl LlmBackend for OpenAiCompatBackend {
             ));
         }
 
-        let content = json["choices"][0]["message"]["content"]
+        let raw_content = json["choices"][0]["message"]["content"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid response format: missing choices[0].message.content"))?
             .to_string();
 
-        // Strip thinking tags from response
-        let content = strip_thinking(&content);
+        // Extract thinking from content
+        let (thinking, content) = extract_thinking(&raw_content);
 
         Ok(LlmResponse {
             content,
             model: self.model.clone(),
+            thinking,
         })
     }
 

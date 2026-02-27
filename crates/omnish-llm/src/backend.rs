@@ -40,6 +40,8 @@ pub enum TriggerType {
 pub struct LlmResponse {
     pub content: String,
     pub model: String,
+    /// Thinking content from models that support it (e.g., o1, Claude with extended thinking)
+    pub thinking: Option<String>,
 }
 
 #[async_trait]

@@ -211,6 +211,7 @@ mod tests {
                 Ok(LlmResponse {
                     content: "今天主要进行了项目构建工作。".to_string(),
                     model: "mock".to_string(),
+                    thinking: None,
                 })
             }
             fn name(&self) -> &str {
