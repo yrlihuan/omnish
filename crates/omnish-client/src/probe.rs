@@ -71,9 +71,7 @@ pub struct ShellCwdProbe(pub u32);
 impl Probe for ShellCwdProbe {
     fn key(&self) -> &str { "shell_cwd" }
     fn collect(&self) -> Option<String> {
-        std::fs::read_link(format!("/proc/{}/cwd", self.0))
-            .ok()
-            .map(|p| p.to_string_lossy().to_string())
+        super::util::get_shell_cwd(self.0)
     }
 }
 

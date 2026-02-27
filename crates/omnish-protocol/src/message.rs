@@ -113,6 +113,8 @@ pub struct CompletionRequest {
     pub input: String,
     pub cursor_pos: usize,
     pub sequence_id: u64,
+    /// Current working directory at the time of request
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +140,8 @@ pub struct CompletionSummary {
     pub latency_ms: u64,
     /// Time from response to accept/ignore (milliseconds)
     pub dwell_time_ms: Option<u64>,
+    /// Current working directory at the time of request
+    pub cwd: Option<String>,
 }
 
 impl Message {
@@ -237,6 +241,7 @@ mod tests {
                 input: "git sta".to_string(),
                 cursor_pos: 7,
                 sequence_id: 42,
+                cwd: Some("/home/user/project".to_string()),
             }),
         };
         let bytes = frame.to_bytes().unwrap();
@@ -245,6 +250,7 @@ mod tests {
         if let Message::CompletionRequest(req) = decoded.payload {
             assert_eq!(req.input, "git sta");
             assert_eq!(req.sequence_id, 42);
+            assert_eq!(req.cwd, Some("/home/user/project".to_string()));
         } else {
             panic!("expected CompletionRequest");
         }

@@ -20,6 +20,8 @@ pub struct CompletionRecord {
     pub latency_ms: u64,
     /// Time from response to accept/ignore (milliseconds)
     pub dwell_time_ms: Option<u64>,
+    /// Current working directory at the time of request
+    pub cwd: Option<String>,
     /// Timestamp when this record was created (epoch ms)
     pub recorded_at: u64,
 }
@@ -28,6 +30,7 @@ impl CompletionRecord {
     /// Convert to CSV row
     pub fn to_csv_row(&self) -> String {
         let dwell = self.dwell_time_ms.map(|d| d.to_string()).unwrap_or_default();
+        let cwd = self.cwd.as_deref().unwrap_or("");
         // Escape fields that might contain commas or newlines
         let escape = |s: &str| {
             if s.contains(',') || s.contains('\n') || s.contains('"') {
@@ -37,7 +40,7 @@ impl CompletionRecord {
             }
         };
         format!(
-            "{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{}\n",
             self.recorded_at,
             self.session_id,
             self.sequence_id,
@@ -45,13 +48,14 @@ impl CompletionRecord {
             escape(&self.completion),
             self.accepted,
             self.latency_ms,
-            dwell
+            dwell,
+            escape(cwd)
         )
     }
 
     /// CSV header
     pub fn csv_header() -> &'static str {
-        "recorded_at,session_id,sequence_id,prompt,completion,accepted,latency_ms,dwell_time_ms\n"
+        "recorded_at,session_id,sequence_id,prompt,completion,accepted,latency_ms,dwell_time_ms,cwd\n"
     }
 }
 
@@ -143,6 +147,7 @@ mod tests {
             accepted: true,
             latency_ms: 100,
             dwell_time_ms: Some(50),
+            cwd: Some("/home/user/project".to_string()),
             recorded_at: 1709000000000,
         };
 
@@ -155,6 +160,7 @@ mod tests {
         assert!(row.contains("true"));
         assert!(row.contains("100"));
         assert!(row.contains("50"));
+        assert!(row.contains("/home/user/project"));
     }
 
     #[test]
@@ -167,6 +173,7 @@ mod tests {
             accepted: false,
             latency_ms: 100,
             dwell_time_ms: None,
+            cwd: None,
             recorded_at: 1709000000000,
         };
 
@@ -197,6 +204,7 @@ mod tests {
                 accepted: i % 2 == 0,
                 latency_ms: 100 + i,
                 dwell_time_ms: Some(50),
+                cwd: Some("/tmp".to_string()),
                 recorded_at: 1709000000000 + i,
             };
             tx.send(record).unwrap();

@@ -299,6 +299,7 @@ impl ShellCompleter {
         &mut self,
         session_id: &str,
         accepted: bool,
+        cwd: Option<String>,
     ) -> Option<CompletionSummary> {
         let completion = self.last_completion.take()?;
 
@@ -318,6 +319,7 @@ impl ShellCompleter {
             accepted,
             latency_ms: completion.latency_ms,
             dwell_time_ms,
+            cwd,
         })
     }
 
@@ -366,12 +368,14 @@ impl ShellCompleter {
         session_id: &str,
         input: &str,
         sequence_id: u64,
+        cwd: Option<String>,
     ) -> Message {
         Message::CompletionRequest(CompletionRequest {
             session_id: session_id.to_string(),
             input: input.to_string(),
             cursor_pos: input.len(),
             sequence_id,
+            cwd,
         })
     }
 }

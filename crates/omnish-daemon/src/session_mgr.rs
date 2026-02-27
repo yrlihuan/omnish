@@ -340,6 +340,7 @@ impl SessionManager {
             accepted: summary.accepted,
             latency_ms: summary.latency_ms,
             dwell_time_ms: summary.dwell_time_ms,
+            cwd: summary.cwd,
             recorded_at: now_ms,
         };
         // Send to writer thread (non-blocking)

@@ -8,6 +8,7 @@ mod probe;
 mod shell_hook;
 mod shell_input;
 mod throttle;
+mod util;
 
 use anyhow::Result;
 use omnish_common::config::load_client_config;
@@ -37,8 +38,9 @@ async fn send_completion_summary(
     shell_completer: &mut completion::ShellCompleter,
     session_id: &str,
     accepted: bool,
+    cwd: Option<String>,
 ) {
-    if let Some(summary) = shell_completer.take_completion_summary(session_id, accepted) {
+    if let Some(summary) = shell_completer.take_completion_summary(session_id, accepted, cwd) {
         let msg = Message::CompletionSummary(summary);
         let _ = rpc.call(msg).await;
     }
@@ -61,6 +63,11 @@ fn timestamp_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64
+}
+
+/// Get the shell's current working directory
+fn get_shell_cwd(pid: u32) -> Option<String> {
+    util::get_shell_cwd(pid)
 }
 
 /// Resolve the real shell to spawn, avoiding infinite recursion when omnish
@@ -324,7 +331,8 @@ async fn main() -> Result<()> {
                                 command_tracker.feed_input(suffix.as_bytes(), timestamp_ms());
                                 // Send completion summary (accepted)
                                 if let Some(ref rpc) = daemon_conn {
-                                    send_completion_summary(rpc, &mut shell_completer, &session_id, true).await;
+                                    let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
+                                    send_completion_summary(rpc, &mut shell_completer, &session_id, true, shell_cwd).await;
                                 }
                             }
                         } else {
@@ -344,7 +352,8 @@ async fn main() -> Result<()> {
                                     if shell_completer.ghost().is_some() {
                                         // Send completion summary (ignored - user pressed Tab/Up/Down)
                                         if let Some(ref rpc) = daemon_conn {
-                                            send_completion_summary(rpc, &mut shell_completer, &session_id, false).await;
+                                            let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
+                                            send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd).await;
                                         }
                                         shell_completer.clear();
                                         nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
@@ -357,7 +366,8 @@ async fn main() -> Result<()> {
                                     if shell_completer.ghost().is_some() {
                                         // Send completion summary (ignored - user pressed Ctrl+R)
                                         if let Some(ref rpc) = daemon_conn {
-                                            send_completion_summary(rpc, &mut shell_completer, &session_id, false).await;
+                                            let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
+                                            send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd).await;
                                         }
                                         shell_completer.clear();
                                         nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
@@ -639,8 +649,9 @@ async fn main() -> Result<()> {
             if at_prompt && !in_chat && shell_completer.should_request(shell_input.sequence_id(), current) {
                 let seq = shell_input.sequence_id();
                 if let Some(ref rpc) = daemon_conn {
+                    let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
                     let msg = completion::ShellCompleter::build_request(
-                        &session_id, current, seq,
+                        &session_id, current, seq, shell_cwd,
                     );
                     shell_completer.mark_sent(seq, current);
                     let rpc_clone = rpc.clone();
@@ -698,7 +709,8 @@ async fn main() -> Result<()> {
         if shell_completer.is_ghost_expired(config.shell.ghost_timeout_ms) {
             // Send completion summary (ignored - ghost expired)
             if let Some(ref rpc) = daemon_conn {
-                send_completion_summary(rpc, &mut shell_completer, &session_id, false).await;
+                let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
+                send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd).await;
             }
             shell_completer.clear();
             nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
