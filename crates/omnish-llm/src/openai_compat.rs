@@ -9,6 +9,11 @@ pub struct OpenAiCompatBackend {
     pub client: reqwest::Client,
 }
 
+/// Strip thinking tags from LLM response content.
+fn strip_thinking(content: &str) -> String {
+    content.replace("\n<think>", "").replace("</think>", "")
+}
+
 #[async_trait]
 impl LlmBackend for OpenAiCompatBackend {
     async fn complete(&self, req: &LlmRequest) -> Result<LlmResponse> {
@@ -54,6 +59,9 @@ impl LlmBackend for OpenAiCompatBackend {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid response format: missing choices[0].message.content"))?
             .to_string();
+
+        // Strip thinking tags from response
+        let content = strip_thinking(&content);
 
         Ok(LlmResponse {
             content,
