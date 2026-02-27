@@ -609,6 +609,9 @@ impl SessionManager {
     pub async fn cleanup_expired_dirs(&self, max_age: std::time::Duration) -> usize {
         let mut cleaned = 0;
 
+        // Snapshot of currently loaded sessions to avoid race conditions
+        let loaded_sessions = self.sessions.read().await;
+
         // Get list of directories in base_dir
         let entries = match std::fs::read_dir(&self.base_dir) {
             Ok(entries) => entries,
@@ -617,6 +620,19 @@ impl SessionManager {
                 return 0;
             }
         };
+
+        // Helper function to parse RFC3339 timestamp to milliseconds
+        let parse_rfc3339_ms = |s: &str| -> Option<u64> {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|dt| dt.timestamp_millis() as u64)
+        };
+
+        // Get current time in milliseconds once
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
 
         for entry in entries {
             let entry = match entry {
@@ -632,28 +648,62 @@ impl SessionManager {
                 continue;
             }
 
-            // Try to load commands.json
-            let commands = match CommandRecord::load_all(&dir) {
-                Ok(cmds) => cmds,
+            // Extract session ID from directory name (format: timestamp_sessionid)
+            // Note: sessionid can contain underscores, so we need to split on first underscore
+            let dir_name = dir.file_name().and_then(|n| n.to_str());
+            let session_id = dir_name.and_then(|name| {
+                if let Some(pos) = name.find('_') {
+                    Some(&name[pos + 1..]) // Everything after first underscore
+                } else {
+                    None
+                }
+            });
+
+            // Skip if this session is currently loaded in memory
+            if let Some(sid) = session_id {
+                if loaded_sessions.contains_key(sid) {
+                    tracing::debug!("skipping cleanup of active session directory: {:?}", dir);
+                    continue;
+                }
+            }
+
+            // Try to get last activity timestamp from commands.json first
+            let last_activity_ms = match CommandRecord::load_all(&dir) {
+                Ok(commands) => {
+                    // Get last command timestamp (ended_at or started_at)
+                    commands
+                        .last()
+                        .and_then(|cmd| cmd.ended_at.or(Some(cmd.started_at)))
+                }
                 Err(e) => {
                     tracing::warn!("failed to load commands.json from {:?}: {}", dir, e);
-                    continue;
+                    None
                 }
             };
 
-            // Get last command timestamp
-            let last_cmd_ms = commands
-                .last()
-                .and_then(|cmd| cmd.ended_at.or(Some(cmd.started_at)));
+            // If no commands or commands.json doesn't exist, try meta.json
+            let last_activity_ms = match last_activity_ms {
+                Some(ms) => Some(ms),
+                None => {
+                    match SessionMeta::load(&dir) {
+                        Ok(meta) => {
+                            // Use same logic as infer_last_active: ended_at or started_at
+                            meta.ended_at
+                                .as_deref()
+                                .and_then(parse_rfc3339_ms)
+                                .or_else(|| parse_rfc3339_ms(&meta.started_at))
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to load meta.json from {:?}: {}", dir, e);
+                            None
+                        }
+                    }
+                }
+            };
 
-            match last_cmd_ms {
+            match last_activity_ms {
                 Some(ms) => {
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-
-                    let age = std::time::Duration::from_millis(now_ms.saturating_sub(ms));
+                    let age = Duration::from_millis(now_ms.saturating_sub(ms));
                     if age >= max_age {
                         match std::fs::remove_dir_all(&dir) {
                             Ok(_) => {
@@ -667,8 +717,9 @@ impl SessionManager {
                     }
                 }
                 None => {
-                    // No commands - could be empty session directory
+                    // No timestamp found - could be corrupt or empty directory
                     // We'll skip it for safety
+                    tracing::debug!("skipping directory with no timestamp: {:?}", dir);
                     continue;
                 }
             }
@@ -1465,7 +1516,9 @@ mod tests {
         // Create a mock session directory with old commands.json
         // SessionManager's base_dir is base/sessions (created by SessionManager::new)
         // We need to create test directory under base/sessions
-        let session_dir = base.join("sessions").join("test_session");
+        // Real session directories have format: timestamp_sessionid
+        // Use a fake timestamp that's clearly old
+        let session_dir = base.join("sessions").join("2020-01-01T00-00-00Z_test_session");
         std::fs::create_dir_all(&session_dir).unwrap();
 
         // Create commands.json with old timestamp (3 days ago)
@@ -1496,5 +1549,96 @@ mod tests {
         let cleaned = mgr.cleanup_expired_dirs(Duration::from_secs(48 * 3600)).await;
         assert_eq!(cleaned, 1);
         assert!(!session_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_expired_dirs_comprehensive() {
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+        let mgr = SessionManager::new(base.clone(), Default::default());
+
+        // Test 1: Directory with only meta.json (no commands.json) - should be cleaned up if old
+        let old_meta_dir = base.join("sessions").join("2020-01-01T00-00-00Z_meta_only_session");
+        std::fs::create_dir_all(&old_meta_dir).unwrap();
+
+        // Create meta.json with old timestamp
+        let old_meta = SessionMeta {
+            session_id: "meta_only_session".into(),
+            parent_session_id: None,
+            started_at: "2020-01-01T00:00:00Z".into(),
+            ended_at: None,
+            attrs: Default::default(),
+        };
+        old_meta.save(&old_meta_dir).unwrap();
+
+        // Test 2: Active session in memory - should NOT be cleaned up even if directory is old
+        mgr.register("active_session", None, Default::default())
+            .await
+            .unwrap();
+
+        // Get the actual directory name created by register()
+        let loaded_sessions = mgr.sessions.read().await;
+        let active_session = loaded_sessions.get("active_session").unwrap();
+        let active_session_dir = active_session.dir.clone();
+        drop(loaded_sessions); // Release lock
+
+        // Manually create an old commands.json in the active session directory
+        // to simulate an old directory that would normally be cleaned up
+        let old_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64 - 3 * 24 * 3600 * 1000;
+
+        let old_commands = vec![CommandRecord {
+            command_id: "old_cmd".into(),
+            session_id: "active_session".into(),
+            command_line: Some("old_command".into()),
+            cwd: Some("/tmp".into()),
+            started_at: old_timestamp,
+            ended_at: Some(old_timestamp + 1000),
+            output_summary: "".into(),
+            stream_offset: 0,
+            stream_length: 0,
+            exit_code: None,
+        }];
+
+        CommandRecord::save_all(&old_commands, &active_session_dir).unwrap();
+
+        // Test 3: Recent session directory - should NOT be cleaned up
+        let recent_dir = base.join("sessions").join("2026-01-01T00-00-00Z_recent_session");
+        std::fs::create_dir_all(&recent_dir).unwrap();
+
+        let recent_commands = vec![CommandRecord {
+            command_id: "recent_cmd".into(),
+            session_id: "recent_session".into(),
+            command_line: Some("recent_command".into()),
+            cwd: Some("/tmp".into()),
+            started_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64 - 1 * 3600 * 1000, // 1 hour ago
+            ended_at: Some(SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64 - 1 * 3600 * 1000 + 1000),
+            output_summary: "".into(),
+            stream_offset: 0,
+            stream_length: 0,
+            exit_code: None,
+        }];
+
+        CommandRecord::save_all(&recent_commands, &recent_dir).unwrap();
+
+        // Run cleanup with 48-hour threshold
+        let cleaned = mgr.cleanup_expired_dirs(Duration::from_secs(48 * 3600)).await;
+
+        // Should clean up: old_meta_dir (old meta.json only)
+        // Should NOT clean up: active_session_dir (active in memory), recent_dir (recent commands)
+        assert_eq!(cleaned, 1, "Should clean up 1 old directory (cleaned={})", cleaned);
+        assert!(!old_meta_dir.exists(), "Old meta-only directory should be cleaned up");
+        assert!(active_session_dir.exists(), "Active session directory should NOT be cleaned up");
+        assert!(recent_dir.exists(), "Recent session directory should NOT be cleaned up");
     }
 }
