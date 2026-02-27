@@ -1,3 +1,4 @@
+pub mod cleanup;
 pub mod daily_notes;
 pub mod eviction;
 pub mod hourly_summary;
