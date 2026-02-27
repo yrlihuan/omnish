@@ -117,6 +117,35 @@ async fn main() -> Result<()> {
     let pending_buffer: MessageBuffer = Arc::new(Mutex::new(VecDeque::new()));
     let daemon_conn = connect_daemon(&daemon_addr, &session_id, parent_session_id, proxy.child_pid() as u32, pending_buffer.clone()).await;
 
+    // Spawn shell info polling task (5s interval, diff-based updates)
+    if let Some(ref rpc) = daemon_conn {
+        let rpc_poll = rpc.clone();
+        let sid_poll = session_id.clone();
+        let child_pid_poll = proxy.child_pid() as u32;
+        tokio::spawn(async move {
+            let probes = probe::default_polling_probes(child_pid_poll);
+            let mut last_attrs: HashMap<String, String> = HashMap::new();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                let current = probes.collect_all();
+                // Diff: find changed keys
+                let changed: HashMap<String, String> = current.iter()
+                    .filter(|(k, v)| last_attrs.get(*k) != Some(v))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                if !changed.is_empty() {
+                    let msg = Message::SessionUpdate(SessionUpdate {
+                        session_id: sid_poll.clone(),
+                        timestamp_ms: timestamp_ms(),
+                        attrs: changed,
+                    });
+                    let _ = rpc_poll.call(msg).await;
+                }
+                last_attrs = current;
+            }
+        });
+    }
+
     // Enter raw mode
     let _raw_guard = RawModeGuard::enter(std::io::stdin().as_raw_fd())?;
 
