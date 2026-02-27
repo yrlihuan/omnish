@@ -8,6 +8,11 @@ pub struct AnthropicBackend {
     pub client: reqwest::Client,
 }
 
+/// Strip thinking tags from LLM response content.
+fn strip_thinking(content: &str) -> String {
+    content.replace("\n<think>", "").replace("</think>", "")
+}
+
 #[async_trait]
 impl LlmBackend for AnthropicBackend {
     async fn complete(&self, req: &LlmRequest) -> Result<LlmResponse> {
@@ -59,6 +64,9 @@ impl LlmBackend for AnthropicBackend {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid response format: missing content[0].text"))?
             .to_string();
+
+        // Strip thinking tags from response
+        let content = strip_thinking(&content);
 
         Ok(LlmResponse {
             content,
