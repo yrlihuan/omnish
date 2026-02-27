@@ -27,6 +27,16 @@ pub struct CompletionRecord {
 }
 
 impl CompletionRecord {
+    /// Convert epoch milliseconds to readable timestamp
+    fn format_timestamp(ts_ms: u64) -> String {
+        // Use chrono::DateTime::from_timestamp_millis to convert
+        if let Some(datetime) = chrono::DateTime::from_timestamp_millis(ts_ms as i64) {
+            datetime.format("%Y-%m-%d %H:%M:%S").to_string()
+        } else {
+            ts_ms.to_string()
+        }
+    }
+
     /// Convert to CSV row
     pub fn to_csv_row(&self) -> String {
         let dwell = self.dwell_time_ms.map(|d| d.to_string()).unwrap_or_default();
@@ -41,7 +51,7 @@ impl CompletionRecord {
         };
         format!(
             "{},{},{},{},{},{},{},{},{}\n",
-            self.recorded_at,
+            Self::format_timestamp(self.recorded_at),
             self.session_id,
             self.sequence_id,
             escape(&self.prompt),
@@ -152,7 +162,9 @@ mod tests {
         };
 
         let row = record.to_csv_row();
-        assert!(row.contains("1709000000000"));
+        // Check for readable timestamp format (1709000000000 ms = 2024-02-27 02:13:20 UTC)
+        assert!(row.contains("2024-02-27"));
+        assert!(row.contains("02:13:20"));
         assert!(row.contains("test"));
         assert!(row.contains("1"));
         assert!(row.contains("git"));
