@@ -42,7 +42,7 @@ pub fn render_input_echo(user_input: &[u8]) -> String {
 /// Render the "(thinking...)" status in dim text.
 /// Moves to a new line, clears it, prints status, then moves to the next line.
 pub fn render_thinking() -> String {
-    "\r\n\x1b[K\x1b[2m(thinking...)\x1b[0m\r\n".to_string()
+    "\r\n\x1b[K\x1b[37m(thinking...)\x1b[0m\r\n".to_string()
 }
 
 /// Format an LLM response for raw-mode display.
@@ -55,7 +55,7 @@ pub fn render_response(content: &str) -> String {
         .map(|line| line.trim_end())
         .collect::<Vec<_>>()
         .join("\r\n");
-    format!("\r\n\x1b[2m{}\x1b[0m\r\n", formatted)
+    format!("\r\n\x1b[37m{}\x1b[0m\r\n", formatted)
 }
 
 /// Format an error message in red.

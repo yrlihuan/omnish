@@ -457,7 +457,7 @@ impl SessionManager {
                 let is_current = s.session_id == current_session_id;
                 let marker = if is_current { "*" } else { " " };
                 let (color_start, color_end) = if is_current {
-                    ("", "")
+                    ("\x1b[1;37m", "\x1b[0m")
                 } else {
                     ("\x1b[2m", "\x1b[0m")
                 };
