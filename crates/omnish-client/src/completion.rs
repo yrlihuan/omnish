@@ -78,95 +78,41 @@ impl ShellCompleter {
         had_ghost
     }
 
-    /// Update pending sequence ID without resetting debounce timer.
-    /// Used when input changes due to readline report rather than user typing.
-    pub fn set_pending_seq(&mut self, sequence_id: u64) {
-        self.pending_seq = sequence_id;
-    }
-
     /// Check if debounce timer has expired and we should send a request.
-    /// Now supports multiple concurrent requests.
     ///
-    /// 参数 current_sequence_id: 当前输入的序列ID（来自shell_input.sequence_id()）
-    /// 参数 current_input: 当前输入内容
+    /// Logic:
+    /// 1. Concurrent limit — don't exceed MAX_CONCURRENT_REQUESTS.
+    /// 2. Debounce — wait DEBOUNCE_MS after last input change.
+    /// 3. Dedup — if an active request already has the same input, only retry
+    ///    after timeout (2× for empty input to reduce spam).
+    /// 4. Require new input — sequence_id must have advanced since last send.
     pub fn should_request(&self, current_sequence_id: u64, current_input: &str) -> bool {
-        // Limit concurrent requests
         if self.active_requests.len() >= MAX_CONCURRENT_REQUESTS {
             return false;
         }
 
-        // Check debounce timer - we need some time after last change
         let debounce_expired = match self.last_change {
             Some(t) => t.elapsed().as_millis() >= DEBOUNCE_MS as u128,
             None => false,
         };
-
         if !debounce_expired {
             return false;
         }
 
-        // For empty input, apply stricter restrictions to avoid spamming
-        if current_input.is_empty() {
-            // Check if we've recently sent a request for empty input
-            let mut empty_request_found = false;
-            for request_state in self.active_requests.values() {
-                if request_state.input.is_empty() {
-                    empty_request_found = true;
-                    let request_age = request_state.sent_at.elapsed().as_millis();
-                    // Only allow another empty request after longer timeout
-                    return request_age >= IN_FLIGHT_TIMEOUT_MS as u128 * 2; // 10 seconds for empty input
-                }
-            }
-            // If no active empty request, check when last empty request was sent
-            if empty_request_found {
-                return false;
-            }
-            // Allow first empty request (e.g., when prompt first appears)
-        }
-
-        // Check if there's already an active request for the same input
-        for request_state in self.active_requests.values() {
-            if request_state.input == current_input {
-                // Same input already has an active request
-                let request_age = request_state.sent_at.elapsed().as_millis();
-                // Only allow if it timed out (IN_FLIGHT_TIMEOUT_MS = 5000ms)
-                return request_age >= IN_FLIGHT_TIMEOUT_MS as u128;
+        // If an active request already covers this input, only allow retry after timeout.
+        let timeout = if current_input.is_empty() {
+            IN_FLIGHT_TIMEOUT_MS * 2
+        } else {
+            IN_FLIGHT_TIMEOUT_MS
+        };
+        for req in self.active_requests.values() {
+            if req.input == current_input {
+                return req.sent_at.elapsed().as_millis() >= timeout as u128;
             }
         }
 
-        // Allow request if:
-        // 1. No requests have been sent yet (initial state)
-        // 2. Current input is different from what was sent (sequence changed)
-        if self.sent_seq == 0 || current_sequence_id > self.sent_seq {
-            // Check if input actually changed, not just sequence ID
-            // But allow first request even if input is empty and same as sent_input
-            if current_input == self.sent_input && self.sent_seq != 0 {
-                // Same input but sequence increased (e.g., from readline report)
-                // Check if there's a timed-out request for this input
-                for request_state in self.active_requests.values() {
-                    if request_state.input == current_input {
-                        let request_age = request_state.sent_at.elapsed().as_millis();
-                        return request_age >= IN_FLIGHT_TIMEOUT_MS as u128;
-                    }
-                }
-                // No active request for same input, but input hasn't changed
-                // Don't send duplicate request
-                return false;
-            }
-            return true;
-        }
-
-        // If current_sequence_id == sent_seq, we need to check if previous request timed out
-        // This allows retrying the same input after timeout, but prevents immediate duplicates
-        if current_sequence_id == self.sent_seq {
-            // Check if there's a timed-out request for this sequence
-            if let Some(request_state) = self.active_requests.get(&current_sequence_id) {
-                let request_age = request_state.sent_at.elapsed().as_millis();
-                return request_age >= IN_FLIGHT_TIMEOUT_MS as u128;
-            }
-        }
-
-        false
+        // Only send if there's been new input (first request or sequence advanced).
+        self.sent_seq == 0 || current_sequence_id > self.sent_seq
     }
 
     /// Mark that a request was sent.
