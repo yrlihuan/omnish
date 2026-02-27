@@ -54,8 +54,8 @@ async fn async_main() -> Result<()> {
             }
         };
 
-    let evict_hours = config.context.session_evict_hours;
-    let daily_notes_config = config.daily_notes.clone();
+    let evict_hours = config.tasks.eviction.session_evict_hours;
+    let daily_notes_config = config.tasks.daily_notes.clone();
     let session_mgr = Arc::new(SessionManager::new(omnish_dir.clone(), config.context));
     match session_mgr.load_existing().await {
         Ok(count) if count > 0 => tracing::info!("loaded {} existing session(s)", count),

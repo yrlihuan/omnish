@@ -76,6 +76,46 @@ fn default_schedule_hour() -> u8 {
 }
 
 // ---------------------------------------------------------------------------
+// Tasks config
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct EvictionConfig {
+    /// Evict sessions from memory after this many hours of inactivity.
+    #[serde(default = "default_session_evict_hours")]
+    pub session_evict_hours: u64,
+}
+
+impl Default for EvictionConfig {
+    fn default() -> Self {
+        Self {
+            session_evict_hours: default_session_evict_hours(),
+        }
+    }
+}
+
+fn default_session_evict_hours() -> u64 {
+    48
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct TasksConfig {
+    #[serde(default)]
+    pub eviction: EvictionConfig,
+    #[serde(default)]
+    pub daily_notes: DailyNotesConfig,
+}
+
+impl Default for TasksConfig {
+    fn default() -> Self {
+        Self {
+            eviction: EvictionConfig::default(),
+            daily_notes: DailyNotesConfig::default(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Daemon config
 // ---------------------------------------------------------------------------
 
@@ -88,7 +128,7 @@ pub struct DaemonConfig {
     #[serde(default)]
     pub context: ContextConfig,
     #[serde(default)]
-    pub daily_notes: DailyNotesConfig,
+    pub tasks: TasksConfig,
 }
 
 impl Default for DaemonConfig {
@@ -97,7 +137,7 @@ impl Default for DaemonConfig {
             listen_addr: default_socket_path(),
             llm: LlmConfig::default(),
             context: ContextConfig::default(),
-            daily_notes: DailyNotesConfig::default(),
+            tasks: TasksConfig::default(),
         }
     }
 }
@@ -264,16 +304,12 @@ impl Default for CompletionContextConfig {
 pub struct ContextConfig {
     #[serde(default)]
     pub completion: CompletionContextConfig,
-    /// Evict sessions from memory after this many hours of inactivity.
-    #[serde(default = "default_session_evict_hours")]
-    pub session_evict_hours: u64,
 }
 
 impl Default for ContextConfig {
     fn default() -> Self {
         Self {
             completion: CompletionContextConfig::default(),
-            session_evict_hours: default_session_evict_hours(),
         }
     }
 }
@@ -296,10 +332,6 @@ fn default_tail_lines() -> usize {
 
 fn default_max_line_width() -> usize {
     512
-}
-
-fn default_session_evict_hours() -> u64 {
-    48
 }
 
 fn default_min_current_session_commands() -> usize {

@@ -1138,7 +1138,6 @@ mod tests {
                 min_current_session_commands: 5,
                 max_context_chars: None,
             },
-            session_evict_hours: 48,
         };
         let mgr_no_limit = SessionManager::new(dir.path().to_path_buf(), cc_no_limit);
         mgr_no_limit.register("sess1", None, Default::default())
@@ -1179,7 +1178,6 @@ mod tests {
                 min_current_session_commands: 5,
                 max_context_chars: Some(200), // Small limit
             },
-            session_evict_hours: 48,
         };
         let mgr_limited = SessionManager::new(dir.path().to_path_buf(), cc_limited);
         mgr_limited.register("sess1", None, Default::default())
