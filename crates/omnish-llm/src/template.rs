@@ -38,8 +38,8 @@ pub fn build_completion_content(context: &str, input: &str, cursor_pos: usize) -
              Cursor position: {}\n\
              Use the recent commands and their output to understand what the user is doing, \
              then suggest the most likely completion.\n\n\
-             Reply with a JSON array:\n\
-             [{{\"text\": \"<text after cursor>\", \"confidence\": <0.0-1.0>}}]\n\
+             Reply with a JSON array containing the FULL completed command (including the user's current input as prefix):\n\
+             [{{\"text\": \"<full command including prefix>\", \"confidence\": <0.0-1.0>}}]\n\
              Return at most 3 suggestions sorted by confidence descending.\n\
              Return [] if no good completion exists.\n\
              Do not include any other text outside the JSON array.",
@@ -72,8 +72,8 @@ pub fn build_simple_completion_content(context: &str, input: &str, cursor_pos: u
              Cursor position: {}\n\
              Use the recent commands and their output to understand what the user is doing, \
              then suggest the most likely completion.\n\n\
-             Reply with a JSON array of up to 2 suggestions (most likely first):\n\
-             [\"<text after cursor>\"]\n\
+             Reply with a JSON array of up to 2 FULL commands (including the user's current input as prefix):\n\
+             [\"<full command including prefix>\"]\n\
              Return [] if no good completion exists.\n\
              Do not include any other text outside the JSON array.",
             context, input, cursor_pos
