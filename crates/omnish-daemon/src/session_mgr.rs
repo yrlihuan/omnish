@@ -604,6 +604,79 @@ impl SessionManager {
         evicted
     }
 
+    /// Clean up session directories that have been inactive longer than `max_age`.
+    /// Returns the number of directories deleted.
+    pub async fn cleanup_expired_dirs(&self, max_age: std::time::Duration) -> usize {
+        let mut cleaned = 0;
+
+        // Get list of directories in base_dir
+        let entries = match std::fs::read_dir(&self.base_dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::warn!("failed to read session store directory: {}", e);
+                return 0;
+            }
+        };
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!("failed to read directory entry: {}", e);
+                    continue;
+                }
+            };
+
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+
+            // Try to load commands.json
+            let commands = match CommandRecord::load_all(&dir) {
+                Ok(cmds) => cmds,
+                Err(e) => {
+                    tracing::warn!("failed to load commands.json from {:?}: {}", dir, e);
+                    continue;
+                }
+            };
+
+            // Get last command timestamp
+            let last_cmd_ms = commands
+                .last()
+                .and_then(|cmd| cmd.ended_at.or(Some(cmd.started_at)));
+
+            match last_cmd_ms {
+                Some(ms) => {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+
+                    let age = std::time::Duration::from_millis(now_ms.saturating_sub(ms));
+                    if age >= max_age {
+                        match std::fs::remove_dir_all(&dir) {
+                            Ok(_) => {
+                                tracing::info!("cleaned up expired session directory: {:?}", dir);
+                                cleaned += 1;
+                            }
+                            Err(e) => {
+                                tracing::error!("failed to delete expired session directory {:?}: {}", dir, e);
+                            }
+                        }
+                    }
+                }
+                None => {
+                    // No commands - could be empty session directory
+                    // We'll skip it for safety
+                    continue;
+                }
+            }
+        }
+
+        cleaned
+    }
+
     pub async fn get_session_context(&self, session_id: &str) -> Result<String> {
         self.get_session_context_with_limit(session_id, self.context_config.completion.max_context_chars).await
     }
@@ -1379,5 +1452,49 @@ mod tests {
             char_count,
             ctx_no_limit.chars().count()
         );
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_expired_dirs() {
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+        let mgr = SessionManager::new(base.clone(), Default::default());
+
+        // Create a mock session directory with old commands.json
+        // Note: SessionManager's base_dir is base/sessions
+        let session_dir = base.join("sessions").join("test_session");
+        std::fs::create_dir_all(&session_dir).unwrap();
+
+        // Create commands.json with old timestamp (3 days ago)
+        let old_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64 - 3 * 24 * 3600 * 1000;
+
+        let commands = vec![CommandRecord {
+            command_id: "cmd1".into(),
+            session_id: "test_session".into(),
+            command_line: Some("ls".into()),
+            cwd: Some("/tmp".into()),
+            started_at: old_timestamp,
+            ended_at: Some(old_timestamp + 1000),
+            output_summary: "".into(),
+            stream_offset: 0,
+            stream_length: 0,
+            exit_code: None,
+        }];
+
+        CommandRecord::save_all(&commands, &session_dir).unwrap();
+
+        // Create other required files
+        std::fs::write(session_dir.join("meta.json"), "{}").unwrap();
+        std::fs::write(session_dir.join("stream.bin"), "").unwrap();
+
+        // Clean up with 48-hour threshold
+        let cleaned = mgr.cleanup_expired_dirs(Duration::from_secs(48 * 3600)).await;
+        assert_eq!(cleaned, 1);
+        assert!(!session_dir.exists());
     }
 }
