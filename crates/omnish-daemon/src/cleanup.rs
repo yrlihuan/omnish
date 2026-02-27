@@ -25,6 +25,7 @@ mod tests {
     use crate::session_mgr::SessionManager;
     use std::sync::Arc;
     use std::time::Duration;
+    use tempfile;
 
     #[test]
     fn test_create_disk_cleanup_job() {
