@@ -1093,4 +1093,99 @@ mod tests {
         assert!(!output.contains("server_dead")); // Should not show dead sessions
         assert!(output.contains("1 dead session(s), 1 command(s)")); // Should show dead stats
     }
+
+    #[tokio::test]
+    async fn test_max_context_chars_reduces_commands() {
+        use omnish_common::config::ContextConfig;
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // First, test WITHOUT limit to see how big the context would be
+        let cc_no_limit = ContextConfig {
+            detailed_commands: 30,
+            history_commands: 100,
+            max_context_chars: None,
+            ..Default::default()
+        };
+        let mgr_no_limit = SessionManager::new(dir.path().to_path_buf(), cc_no_limit);
+        mgr_no_limit.register("sess1", None, Default::default())
+            .await
+            .unwrap();
+
+        for i in 0..20 {
+            mgr_no_limit.receive_command(
+                "sess1",
+                CommandRecord {
+                    command_id: format!("cmd{}", i),
+                    session_id: "sess1".into(),
+                    command_line: Some(format!("command{}", i)),
+                    cwd: Some("/tmp".into()),
+                    started_at: 1000 + i as u64,
+                    ended_at: Some(2000 + i as u64),
+                    output_summary: format!("output{}", i),
+                    stream_offset: 0,
+                    stream_length: 0,
+                    exit_code: Some(0),
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let ctx_no_limit = mgr_no_limit.get_session_context("sess1").await.unwrap();
+        eprintln!("Without limit: {} chars", ctx_no_limit.chars().count());
+
+        // Now test WITH limit
+        let cc_limited = ContextConfig {
+            detailed_commands: 30,
+            history_commands: 100,
+            max_context_chars: Some(200), // Small limit
+            ..Default::default()
+        };
+        let mgr_limited = SessionManager::new(dir.path().to_path_buf(), cc_limited);
+        mgr_limited.register("sess1", None, Default::default())
+            .await
+            .unwrap();
+
+        for i in 0..20 {
+            mgr_limited.receive_command(
+                "sess1",
+                CommandRecord {
+                    command_id: format!("cmd{}", i),
+                    session_id: "sess1".into(),
+                    command_line: Some(format!("command{}", i)),
+                    cwd: Some("/tmp".into()),
+                    started_at: 1000 + i as u64,
+                    ended_at: Some(2000 + i as u64),
+                    output_summary: format!("output{}", i),
+                    stream_offset: 0,
+                    stream_length: 0,
+                    exit_code: Some(0),
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let ctx_limited = mgr_limited.get_session_context("sess1").await.unwrap();
+        let char_count = ctx_limited.chars().count();
+
+        eprintln!("With limit (200): {} chars", char_count);
+        eprintln!("Context:\n{}", ctx_limited);
+
+        // Context should be under the limit
+        assert!(
+            char_count <= 200,
+            "Context {} chars should be under 200 limit",
+            char_count
+        );
+
+        // With limit, should have fewer commands than without limit
+        assert!(
+            char_count < ctx_no_limit.chars().count(),
+            "Limited context ({}) should be smaller than unlimited ({})",
+            char_count,
+            ctx_no_limit.chars().count()
+        );
+    }
 }
