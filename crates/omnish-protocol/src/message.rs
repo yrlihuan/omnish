@@ -8,6 +8,7 @@ const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 pub enum Message {
     SessionStart(SessionStart),
     SessionEnd(SessionEnd),
+    SessionUpdate(SessionUpdate),
     IoData(IoData),
     Event(Event),
     Request(Request),
@@ -16,7 +17,6 @@ pub enum Message {
     CompletionRequest(CompletionRequest),
     CompletionResponse(CompletionResponse),
     Ack,
-    SessionUpdate(SessionUpdate),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
