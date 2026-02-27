@@ -36,6 +36,10 @@ async fn async_main() -> Result<()> {
     let socket_path = std::env::var("OMNISH_SOCKET").unwrap_or_else(|_| config.listen_addr.clone());
 
     let store_dir = std::path::PathBuf::from(&config.sessions_dir);
+    let completions_dir = store_dir
+        .parent()
+        .map(|p| p.join("logs").join("completions"))
+        .unwrap_or_else(|| std::path::PathBuf::from("logs/completions"));
 
     // Create LLM backend if configured
     let llm_backend: Option<Arc<dyn omnish_llm::backend::LlmBackend>> =
@@ -53,7 +57,7 @@ async fn async_main() -> Result<()> {
 
     let evict_hours = config.context.session_evict_hours;
     let daily_notes_config = config.daily_notes.clone();
-    let session_mgr = Arc::new(SessionManager::new(store_dir, config.context));
+    let session_mgr = Arc::new(SessionManager::new(store_dir, config.context, completions_dir));
     match session_mgr.load_existing().await {
         Ok(count) if count > 0 => tracing::info!("loaded {} existing session(s)", count),
         Ok(_) => {}

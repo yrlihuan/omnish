@@ -3,11 +3,13 @@ use omnish_common::config::ContextConfig;
 use omnish_context::recent::{GroupedFormatter, RecentCommands};
 use omnish_context::StreamReader;
 use omnish_store::command::CommandRecord;
+use omnish_store::completion::CompletionRecord;
 use omnish_store::session::SessionMeta;
 use omnish_store::stream::{read_range, StreamEntry, StreamWriter};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock};
 
@@ -59,6 +61,7 @@ pub struct SessionManager {
     base_dir: PathBuf,
     sessions: RwLock<HashMap<String, Arc<Session>>>,
     context_config: ContextConfig,
+    completion_writer: mpsc::Sender<CompletionRecord>,
 }
 
 /// Infer `last_active` from persisted data so that idle time survives daemon restarts.
@@ -104,12 +107,14 @@ fn format_idle(secs: u64) -> String {
 }
 
 impl SessionManager {
-    pub fn new(base_dir: PathBuf, context_config: ContextConfig) -> Self {
+    pub fn new(base_dir: PathBuf, context_config: ContextConfig, completions_dir: PathBuf) -> Self {
         std::fs::create_dir_all(&base_dir).ok();
+        let writer = omnish_store::completion::spawn_writer_thread(completions_dir);
         Self {
             base_dir,
             sessions: RwLock::new(HashMap::new()),
             context_config,
+            completion_writer: writer,
         }
     }
 
@@ -311,6 +316,28 @@ impl SessionManager {
             commands.push(record);
             CommandRecord::save_all(&commands, &session.dir)?;
         }
+        Ok(())
+    }
+
+    /// Receive and persist a completion summary for analytics.
+    /// This sends the record to the async writer thread.
+    pub async fn receive_completion(&self, summary: omnish_protocol::message::CompletionSummary) -> Result<()> {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let record = CompletionRecord {
+            session_id: summary.session_id,
+            sequence_id: summary.sequence_id,
+            prompt: summary.prompt,
+            completion: summary.completion,
+            accepted: summary.accepted,
+            latency_ms: summary.latency_ms,
+            dwell_time_ms: summary.dwell_time_ms,
+            recorded_at: now_ms,
+        };
+        // Send to writer thread (non-blocking)
+        let _ = self.completion_writer.send(record);
         Ok(())
     }
 
