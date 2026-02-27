@@ -225,6 +225,37 @@ async fn main() -> Result<()> {
             for i in 0..n {
                 let byte = input_buf[i];
                 match interceptor.feed_byte(byte) {
+                    InterceptAction::EnterChat(buf) => {
+                        // Just entered chat mode - clear bash readline buffer
+                        if shell_input.at_prompt() {
+                            // Send Ctrl+U to clear bash readline buffer
+                            proxy.write_all(&[0x15])?;
+                            // Update shell input tracker
+                            shell_input.feed_forwarded(&[0x15]);
+                        }
+                        // Same UI logic as Buffering
+                        if buf == prefix_bytes {
+                            // Save cursor column before drawing omnish UI
+                            dismiss_col = col_tracker.col;
+                            shell_completer.clear();
+                            let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+                            let prompt = display::render_prompt(cols);
+                            nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
+                        } else if buf.len() > prefix_bytes.len() && buf.starts_with(prefix_bytes) {
+                            // Echo the user's input after the prompt
+                            let user_input = &buf[prefix_bytes.len()..];
+                            let echo = display::render_input_echo(user_input);
+                            nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
+
+                            // Query completer for ghost text
+                            if let Ok(input_str) = std::str::from_utf8(user_input) {
+                                if let Some(ghost) = completer.update(input_str) {
+                                    let ghost_render = display::render_ghost_text(ghost);
+                                    nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                                }
+                            }
+                        }
+                    }
                     InterceptAction::Buffering(buf) => {
                         if buf == prefix_bytes {
                             // Save cursor column before drawing omnish UI
@@ -1212,7 +1243,7 @@ mod tests {
         let mut detector = AltScreenDetector::new();
 
         // Normal mode: interceptor should buffer ":"
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::EnterChat(vec![b':']));
 
         // Reset for clean test
         interceptor.note_output(b"reset");
@@ -1231,7 +1262,7 @@ mod tests {
         }
 
         // Back to normal: ":" should intercept again
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::EnterChat(vec![b':']));
     }
 
     // --- Message buffer tests ---

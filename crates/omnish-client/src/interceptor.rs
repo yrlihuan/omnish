@@ -168,6 +168,9 @@ pub enum InterceptAction {
     /// Tab pressed while in chat mode. Contains current buffer.
     /// Caller should check GhostCompleter for completion to accept.
     Tab(Vec<u8>),
+    /// Just entered chat mode (full prefix matched). Contains current buffer.
+    /// Caller should clear bash readline buffer (Ctrl+U) before displaying UI.
+    EnterChat(Vec<u8>),
 }
 
 /// Strategy for deciding whether to start intercepting at the current moment.
@@ -418,6 +421,8 @@ impl InputInterceptor {
                 if self.buffer.len() == self.prefix.len() {
                     // Complete prefix match
                     self.in_chat = true;
+                    let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
+                    return InterceptAction::EnterChat(current_buf);
                 }
                 // Keep buffering, don't send to PTY yet, return buffer for echo
                 let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
@@ -512,7 +517,7 @@ mod tests {
     fn test_chat_detected() {
         let mut interceptor = new_interceptor("::");
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::EnterChat(vec![b':', b':']));
         assert_eq!(interceptor.feed_byte(b'a'), InterceptAction::Buffering(vec![b':', b':', b'a']));
         assert_eq!(interceptor.feed_byte(b's'), InterceptAction::Buffering(vec![b':', b':', b'a', b's']));
         assert_eq!(interceptor.feed_byte(b'k'), InterceptAction::Buffering(vec![b':', b':', b'a', b's', b'k']));
@@ -537,10 +542,11 @@ mod tests {
                     panic!("Expected Chat action");
                 }
             } else {
-                if let InterceptAction::Buffering(buf) = action {
-                    assert_eq!(buf, &input[..=idx]);
-                } else {
-                    panic!("Expected Buffering action");
+                match action {
+                    InterceptAction::Buffering(buf) | InterceptAction::EnterChat(buf) => {
+                        assert_eq!(buf, &input[..=idx]);
+                    }
+                    _ => panic!("Expected Buffering or EnterChat action"),
                 }
             }
         }
@@ -572,7 +578,7 @@ mod tests {
     fn test_backspace_in_chat_mode() {
         let mut interceptor = new_interceptor("::");
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::EnterChat(vec![b':', b':']));
         assert_eq!(interceptor.feed_byte(b'a'), InterceptAction::Buffering(vec![b':', b':', b'a']));
 
         // Backspace should remove 'a'
@@ -586,7 +592,7 @@ mod tests {
     fn test_backspace_out_of_chat_mode() {
         let mut interceptor = new_interceptor("::");
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::EnterChat(vec![b':', b':']));
 
         // Backspace once
         assert_eq!(interceptor.feed_byte(0x7f), InterceptAction::Backspace(vec![b':']));
@@ -671,7 +677,7 @@ mod tests {
 
         // Should intercept again
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::EnterChat(vec![b':', b':']));
     }
 
     #[test]
@@ -680,7 +686,7 @@ mod tests {
 
         // Start typing a chat message
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::EnterChat(vec![b':', b':']));
         assert_eq!(interceptor.feed_byte(b'a'), InterceptAction::Buffering(vec![b':', b':', b'a']));
 
         // Enter suppressed mode (e.g. vim opened) - should discard buffer
@@ -896,8 +902,8 @@ mod tests {
         let guard = TimeGapGuard::new(Duration::from_secs(1));
         let mut interceptor = InputInterceptor::new(":", Box::new(guard));
 
-        // ":" with no prior input → guard allows → Buffering (enters chat mode)
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        // ":" with no prior input → guard allows → EnterChat (enters chat mode)
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::EnterChat(vec![b':']));
         assert_eq!(interceptor.feed_byte(b'h'), InterceptAction::Buffering(vec![b':', b'h']));
     }
 
@@ -934,6 +940,16 @@ mod tests {
                     ))
                 }
                 InterceptAction::Buffering(_) => actions.push("buffering".into()),
+                InterceptAction::EnterChat(ref buf) if buf == b":" => {
+                    actions.push("prompt".into())
+                },
+                InterceptAction::EnterChat(ref buf) if buf.starts_with(b":") => {
+                    actions.push(format!(
+                        "echo:{}",
+                        String::from_utf8_lossy(&buf[1..])
+                    ))
+                },
+                InterceptAction::EnterChat(_) => actions.push("enter-chat".into()),
                 InterceptAction::Forward(_) => actions.push("forward".into()),
                 InterceptAction::Cancel => actions.push("cancel".into()),
                 InterceptAction::Chat(msg) => actions.push(format!("chat:{msg}")),
