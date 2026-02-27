@@ -147,6 +147,19 @@ async fn handle_message(
                 })
             }
         }
+        Message::CompletionSummary(summary) => {
+            tracing::info!(
+                "CompletionSummary: session={} seq={} prompt={:?} completion={:?} accepted={} latency_ms={} dwell_time_ms={:?}",
+                summary.session_id,
+                summary.sequence_id,
+                summary.prompt.chars().take(50).collect::<String>(),
+                summary.completion.chars().take(30).collect::<String>(),
+                summary.accepted,
+                summary.latency_ms,
+                summary.dwell_time_ms
+            );
+            Message::Ack
+        }
         _ => Message::Ack,
     }
 }

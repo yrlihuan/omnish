@@ -1,7 +1,7 @@
 use std::time::Instant;
 use std::collections::HashMap;
 use omnish_protocol::message::{
-    CompletionRequest, CompletionResponse, Message,
+    CompletionRequest, CompletionResponse, CompletionSummary, Message,
 };
 
 const DEBOUNCE_MS: u64 = 500;
@@ -16,6 +16,10 @@ struct RequestState {
     input: String,
     sent_at: Instant,
     sequence_id: u64,
+    /// Best suggestion from the response (if received)
+    best_suggestion: Option<String>,
+    /// When the response was received
+    response_at: Option<Instant>,
 }
 
 pub struct ShellCompleter {
@@ -35,6 +39,18 @@ pub struct ShellCompleter {
     ghost_set_at: Option<Instant>,
     /// The input that was sent with the last request.
     sent_input: String,
+    /// Last completion info for tracking (sequence_id, prompt, completion, response_time)
+    last_completion: Option<CompletionInfo>,
+}
+
+/// Info about the last completion response
+#[derive(Debug, Clone)]
+struct CompletionInfo {
+    sequence_id: u64,
+    prompt: String,
+    completion: String,
+    response_time: Instant,
+    latency_ms: u64,
 }
 
 impl ShellCompleter {
@@ -48,6 +64,7 @@ impl ShellCompleter {
             ghost_input: String::new(),
             ghost_set_at: None,
             sent_input: String::new(),
+            last_completion: None,
         }
     }
 
@@ -122,6 +139,8 @@ impl ShellCompleter {
             input: input.to_string(),
             sent_at: Instant::now(),
             sequence_id,
+            best_suggestion: None,
+            response_at: None,
         });
 
         self.sent_seq = sequence_id;
@@ -176,12 +195,15 @@ impl ShellCompleter {
         // Get request state before removing it (for timing check)
         let request_state = self.active_requests.get(&response.sequence_id).cloned();
 
+        // Extract sent_at for latency calculation before removing the request
+        let sent_at = request_state.as_ref().map(|rs| rs.sent_at);
+
         // Remove this completed request from active tracking (only after validation)
         self.active_requests.remove(&response.sequence_id);
 
         // Issue #21: Don't show ghost text if user has typed after the request was sent
-        if let (Some(last_change), Some(request_state)) = (self.last_change, request_state) {
-            if last_change > request_state.sent_at {
+        if let (Some(last_change), Some(rs)) = (self.last_change, request_state) {
+            if last_change > rs.sent_at {
                 // User typed after request was sent - discard completion
                 self.current_ghost = None;
                 return None;
@@ -218,9 +240,24 @@ impl ShellCompleter {
                         self.current_ghost = None;
                         return None;
                     }
+                    // Store completion info for tracking (before updating ghost)
+                    // Calculate latency from request sent to response received
+                    let response_time = Instant::now();
+                    let latency_ms = sent_at
+                        .map(|st| response_time.duration_since(st).as_millis() as u64)
+                        .unwrap_or(0);
+
+                    self.last_completion = Some(CompletionInfo {
+                        sequence_id: response.sequence_id,
+                        prompt: request_input.clone(),
+                        completion: suffix.to_string(),
+                        response_time,
+                        latency_ms,
+                    });
+
                     self.current_ghost = Some(suffix.to_string());
                     self.ghost_input = current_input.to_string();
-                    self.ghost_set_at = Some(Instant::now());
+                    self.ghost_set_at = Some(response_time);
                     return self.current_ghost.as_deref();
                 } else {
                     // Current input is not a prefix of full suggestion
@@ -253,6 +290,35 @@ impl ShellCompleter {
         self.active_requests.clear();
         // Reset last_change to prevent immediate requests on empty prompt
         self.last_change = None;
+    }
+
+    /// Build a CompletionSummary for the current completion (if any).
+    /// This is used when user accepts or ignores the completion.
+    /// Returns the summary and clears the completion info.
+    pub fn take_completion_summary(
+        &mut self,
+        session_id: &str,
+        accepted: bool,
+    ) -> Option<CompletionSummary> {
+        let completion = self.last_completion.take()?;
+
+        let dwell_time_ms = if accepted {
+            // Calculate dwell time from response to accept
+            Some(completion.response_time.elapsed().as_millis() as u64)
+        } else {
+            // For ignored completions, we still track dwell time
+            Some(completion.response_time.elapsed().as_millis() as u64)
+        };
+
+        Some(CompletionSummary {
+            session_id: session_id.to_string(),
+            sequence_id: completion.sequence_id,
+            prompt: completion.prompt,
+            completion: completion.completion,
+            accepted,
+            latency_ms: completion.latency_ms,
+            dwell_time_ms,
+        })
     }
 
     /// Check if the current ghost text has expired.

@@ -16,6 +16,7 @@ pub enum Message {
     CommandComplete(CommandComplete),
     CompletionRequest(CompletionRequest),
     CompletionResponse(CompletionResponse),
+    CompletionSummary(CompletionSummary),
     Ack,
 }
 
@@ -118,6 +119,25 @@ pub struct CompletionRequest {
 pub struct CompletionResponse {
     pub sequence_id: u64,
     pub suggestions: Vec<CompletionSuggestion>,
+}
+
+/// Summary of a completion interaction for analytics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompletionSummary {
+    /// Session ID
+    pub session_id: String,
+    /// Sequence ID of the completion request
+    pub sequence_id: u64,
+    /// User input at the time of request
+    pub prompt: String,
+    /// The suggested completion text
+    pub completion: String,
+    /// Whether the user accepted the completion (Tab key)
+    pub accepted: bool,
+    /// Time from request to response (milliseconds)
+    pub latency_ms: u64,
+    /// Time from response to accept/ignore (milliseconds)
+    pub dwell_time_ms: Option<u64>,
 }
 
 impl Message {

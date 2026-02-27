@@ -31,6 +31,19 @@ fn should_buffer(msg: &Message) -> bool {
     matches!(msg, Message::IoData(_) | Message::CommandComplete(_) | Message::SessionUpdate(_))
 }
 
+/// Send completion summary to daemon if there's a pending completion
+async fn send_completion_summary(
+    rpc: &RpcClient,
+    shell_completer: &mut completion::ShellCompleter,
+    session_id: &str,
+    accepted: bool,
+) {
+    if let Some(summary) = shell_completer.take_completion_summary(session_id, accepted) {
+        let msg = Message::CompletionSummary(summary);
+        let _ = rpc.call(msg).await;
+    }
+}
+
 /// Send a message to the daemon, buffering it if the send fails and
 /// the message type is eligible for retry.
 async fn send_or_buffer(rpc: &RpcClient, msg: Message, buffer: &MessageBuffer) {
@@ -309,6 +322,10 @@ async fn main() -> Result<()> {
                                 proxy.write_all(suffix.as_bytes())?;
                                 shell_input.inject(&suffix);
                                 command_tracker.feed_input(suffix.as_bytes(), timestamp_ms());
+                                // Send completion summary (accepted)
+                                if let Some(ref rpc) = daemon_conn {
+                                    send_completion_summary(rpc, &mut shell_completer, &session_id, true).await;
+                                }
                             }
                         } else {
                             // Forward these bytes to PTY
@@ -325,6 +342,10 @@ async fn main() -> Result<()> {
                                     }
                                     shell_input.mark_pending_report();
                                     if shell_completer.ghost().is_some() {
+                                        // Send completion summary (ignored - user pressed Tab/Up/Down)
+                                        if let Some(ref rpc) = daemon_conn {
+                                            send_completion_summary(rpc, &mut shell_completer, &session_id, false).await;
+                                        }
                                         shell_completer.clear();
                                         nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
                                     }
@@ -334,6 +355,10 @@ async fn main() -> Result<()> {
                                     // stale completions until the next prompt event.
                                     shell_input.mark_pending_report();
                                     if shell_completer.ghost().is_some() {
+                                        // Send completion summary (ignored - user pressed Ctrl+R)
+                                        if let Some(ref rpc) = daemon_conn {
+                                            send_completion_summary(rpc, &mut shell_completer, &session_id, false).await;
+                                        }
                                         shell_completer.clear();
                                         nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
                                     }
@@ -671,6 +696,10 @@ async fn main() -> Result<()> {
 
         // Auto-dismiss expired ghost text
         if shell_completer.is_ghost_expired(config.shell.ghost_timeout_ms) {
+            // Send completion summary (ignored - ghost expired)
+            if let Some(ref rpc) = daemon_conn {
+                send_completion_summary(rpc, &mut shell_completer, &session_id, false).await;
+            }
             shell_completer.clear();
             nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
         }
