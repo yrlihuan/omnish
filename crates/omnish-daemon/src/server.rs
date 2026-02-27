@@ -322,6 +322,11 @@ async fn handle_completion_request(
                 duration, req.session_id, response.model, req.sequence_id, req.input.len()
             );
             tracing::debug!("Completion LLM raw response: {:?}", response.content);
+
+            // Log thinking content if present
+            if let Some(ref thinking) = response.thinking {
+                tracing::debug!("Completion LLM thinking: {}", thinking);
+            }
         }
         Err(e) => {
             tracing::warn!(
