@@ -105,9 +105,60 @@ impl Probe for ChildProcessProbe {
 impl Probe for ChildProcessProbe {
     fn key(&self) -> &str { "child_process" }
     fn collect(&self) -> Option<String> {
-        // On macOS, we could use proc_listpids or lsof, but for basic support
-        // return empty string. The child process tracking is not critical.
-        Some(String::new())
+        use std::process::Command;
+
+        // On macOS, use ps to get child processes
+        // Get all processes with the shell as parent
+        let output = Command::new("ps")
+            .args(["-o", "pid=", "-o", "comm=", "-ax"])
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return Some(String::new());
+        }
+
+        let shell_pid = self.0 as i32;
+
+        // Find child processes of our shell
+        // We need to find processes whose PPID equals our shell's PID
+        // Use ps -ax -o pid= -o ppid= -o comm=
+        let output2 = Command::new("ps")
+            .args(["-ax", "-o", "pid=", "-o", "ppid=", "-o", "comm="])
+            .output()
+            .ok()?;
+
+        if !output2.status.success() {
+            return Some(String::new());
+        }
+
+        let stdout2 = String::from_utf8_lossy(&output2.stdout);
+        let mut child_info: Option<(i32, String)> = None;
+
+        for line in stdout2.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 3 {
+                continue;
+            }
+
+            let pid: i32 = parts[0].parse().ok()?;
+            let ppid: i32 = parts[1].parse().ok()?;
+            let comm = parts[2];
+
+            if ppid == shell_pid {
+                // Skip the shell process itself
+                if pid == shell_pid {
+                    continue;
+                }
+                // Get the most recently started child (last one wins)
+                child_info = Some((pid, comm.to_string()));
+            }
+        }
+
+        match child_info {
+            Some((pid, name)) => Some(format!("{}:{}", name, pid)),
+            None => Some(String::new()),
+        }
     }
 }
 
@@ -192,14 +243,27 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    fn test_shell_cwd_probe_returns_path_for_self_on_macos() {
+        let pid = std::process::id();
+        let probe = ShellCwdProbe(pid);
+        assert_eq!(probe.key(), "shell_cwd");
+        // On macOS, ShellCwdProbe uses lsof to get the path
+        let cwd = probe.collect();
+        assert!(cwd.is_some(), "should return CWD on macOS via lsof");
+        let expected = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        assert_eq!(cwd.unwrap(), expected);
+    }
+
+    #[test]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn test_shell_cwd_probe_returns_none_for_self() {
-        // On non-linux (macOS, etc.), ShellCwdProbe returns None by default
+        // On other platforms (not linux/macos), ShellCwdProbe returns None
         let pid = std::process::id();
         let probe = ShellCwdProbe(pid);
         assert_eq!(probe.key(), "shell_cwd");
         let cwd = probe.collect();
-        assert!(cwd.is_none(), "should return None on non-Linux platforms");
+        assert!(cwd.is_none(), "should return None on unsupported platforms");
     }
 
     #[test]
@@ -210,9 +274,17 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    fn test_shell_cwd_probe_returns_none_for_bad_pid_on_macos() {
+        // On macOS, lsof returns error for bad PID
+        let probe = ShellCwdProbe(999999999);
+        assert_eq!(probe.collect(), None);
+    }
+
+    #[test]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn test_shell_cwd_probe_returns_none_for_bad_pid() {
-        // On non-linux, always returns None
+        // On other platforms, always returns None
         let probe = ShellCwdProbe(999999999);
         assert_eq!(probe.collect(), None);
     }

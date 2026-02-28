@@ -6,15 +6,45 @@ pub fn get_shell_cwd(pid: u32) -> Option<String> {
         .map(|p| p.to_string_lossy().to_string())
 }
 
-/// Get the shell's current working directory using proc_pidpath on macOS
-/// Note: proc_pidpath returns the executable path, not CWD.
-/// Getting CWD on macOS requires additional work (e.g., using lsof).
-/// For now, return None to fall back to other methods.
+/// Get the shell's current working directory on macOS using lsof
 #[cfg(target_os = "macos")]
-pub fn get_shell_cwd(_pid: u32) -> Option<String> {
-    // On macOS, getting CWD of another process is complex.
-    // We could use lsof -p <pid> and parse, but it's slow.
-    // Return None to fall back to session's initial CWD.
+pub fn get_shell_cwd(pid: u32) -> Option<String> {
+    use std::process::Command;
+
+    // Use lsof to get the current working directory of a process
+    // Format: "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME"
+    let output = Command::new("lsof")
+        .args(["-p", &pid.to_string(), "-a", "-d", "cwd"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    // Parse output: find the line with "cwd" in FD column and get the NAME (last field)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Skip the header line
+        if line.starts_with("COMMAND") || line.starts_with("lsof:") {
+            continue;
+        }
+        // Look for lines with "cwd" (file descriptor column)
+        // The FD column is the 4th field
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 4 && parts[3] == "cwd" {
+            // The path is the last field
+            if let Some(path) = parts.last() {
+                if !path.is_empty() && path.starts_with('/') {
+                    return Some(path.to_string());
+                }
+            }
+        }
+    }
     None
 }
 
