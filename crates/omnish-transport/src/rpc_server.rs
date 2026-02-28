@@ -22,6 +22,11 @@ impl RpcServer {
     pub async fn bind_unix(addr: &str) -> Result<Self> {
         let _ = std::fs::remove_file(addr);
         let listener = TokioUnixListener::bind(addr)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(addr, std::fs::Permissions::from_mode(0o600))?;
+        }
         Ok(Self {
             listener: Listener::Unix(listener),
         })
@@ -59,6 +64,19 @@ impl RpcServer {
             match &self.listener {
                 Listener::Unix(l) => {
                     let (stream, _) = l.accept().await?;
+                    #[cfg(unix)]
+                    {
+                        let peer_cred = stream.peer_cred()?;
+                        let my_uid = nix::unistd::getuid();
+                        if peer_cred.uid() != my_uid.as_raw() {
+                            tracing::warn!(
+                                "rejected connection from UID {} (expected {})",
+                                peer_cred.uid(),
+                                my_uid
+                            );
+                            continue;
+                        }
+                    }
                     let (reader, writer) = stream.into_split();
                     spawn_connection(reader, writer, handler.clone(), auth_token.clone());
                 }
