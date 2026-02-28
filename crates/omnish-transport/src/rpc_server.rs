@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixListener as TokioUnixListener};
 use tokio::sync::Mutex;
+use tokio_rustls::TlsAcceptor;
 
 enum Listener {
     Unix(TokioUnixListener),
@@ -54,7 +55,12 @@ impl RpcServer {
         }
     }
 
-    pub async fn serve<F>(&mut self, handler: F, auth_token: Option<String>) -> Result<()>
+    pub async fn serve<F>(
+        &mut self,
+        handler: F,
+        auth_token: Option<String>,
+        tls_acceptor: Option<TlsAcceptor>,
+    ) -> Result<()>
     where
         F: Fn(Message) -> Pin<Box<dyn Future<Output = Message> + Send>> + Send + Sync + 'static,
     {
@@ -83,8 +89,26 @@ impl RpcServer {
                 Listener::Tcp(l) => {
                     let (stream, _) = l.accept().await?;
                     stream.set_nodelay(true)?;
-                    let (reader, writer) = stream.into_split();
-                    spawn_connection(reader, writer, handler.clone(), auth_token.clone());
+                    if let Some(ref acceptor) = tls_acceptor {
+                        match acceptor.accept(stream).await {
+                            Ok(tls_stream) => {
+                                let (reader, writer) = tokio::io::split(tls_stream);
+                                spawn_connection(
+                                    reader,
+                                    writer,
+                                    handler.clone(),
+                                    auth_token.clone(),
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!("TLS handshake failed: {}", e);
+                                continue;
+                            }
+                        }
+                    } else {
+                        let (reader, writer) = stream.into_split();
+                        spawn_connection(reader, writer, handler.clone(), auth_token.clone());
+                    }
                 }
             }
         }
@@ -226,6 +250,7 @@ mod tests {
                         })
                     },
                     None,
+                    None,
                 )
                 .await
                 .ok();
@@ -297,6 +322,7 @@ mod tests {
                         })
                     },
                     None,
+                    None,
                 )
                 .await
                 .ok();
@@ -357,6 +383,7 @@ mod tests {
                             }
                         })
                     },
+                    None,
                     None,
                 )
                 .await
@@ -421,6 +448,7 @@ mod tests {
                             }
                         })
                     },
+                    None,
                     None,
                 )
                 .await

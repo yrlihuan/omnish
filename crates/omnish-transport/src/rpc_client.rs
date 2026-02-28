@@ -10,6 +10,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UnixStream};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
+use tokio_rustls::TlsConnector;
 
 struct WriteRequest {
     frame: Frame,
@@ -38,10 +39,11 @@ type ConnectorFn = Arc<
         + Sync,
 >;
 
-fn make_connector(addr: &str) -> ConnectorFn {
+fn make_connector(addr: &str, tls_connector: Option<TlsConnector>) -> ConnectorFn {
     let addr = addr.to_string();
     Arc::new(move || {
         let addr = addr.clone();
+        let tls = tls_connector.clone();
         Box::pin(async move {
             match parse_addr(&addr) {
                 TransportAddr::Unix(path) => {
@@ -55,11 +57,23 @@ fn make_connector(addr: &str) -> ConnectorFn {
                 TransportAddr::Tcp(hp) => {
                     let stream = TcpStream::connect(&hp).await?;
                     stream.set_nodelay(true)?;
-                    let (r, w) = stream.into_split();
-                    Ok((
-                        Box::new(r) as Box<dyn AsyncRead + Unpin + Send>,
-                        Box::new(w) as Box<dyn AsyncWrite + Unpin + Send>,
-                    ))
+                    if let Some(ref tls) = tls {
+                        let domain = rustls::pki_types::ServerName::try_from("localhost")
+                            .unwrap()
+                            .to_owned();
+                        let tls_stream = tls.connect(domain, stream).await?;
+                        let (r, w) = tokio::io::split(tls_stream);
+                        Ok((
+                            Box::new(r) as Box<dyn AsyncRead + Unpin + Send>,
+                            Box::new(w) as Box<dyn AsyncWrite + Unpin + Send>,
+                        ))
+                    } else {
+                        let (r, w) = stream.into_split();
+                        Ok((
+                            Box::new(r) as Box<dyn AsyncRead + Unpin + Send>,
+                            Box::new(w) as Box<dyn AsyncWrite + Unpin + Send>,
+                        ))
+                    }
                 }
             }
         })
@@ -145,17 +159,18 @@ impl RpcClient {
             + Sync
             + 'static,
     ) -> Result<Self> {
-        Self::connect_with_reconnect(addr, on_reconnect).await
+        Self::connect_with_reconnect(addr, None, on_reconnect).await
     }
 
     pub async fn connect_with_reconnect(
         addr: &str,
+        tls_connector: Option<TlsConnector>,
         on_reconnect: impl Fn(&RpcClient) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>
             + Send
             + Sync
             + 'static,
     ) -> Result<Self> {
-        let connector = make_connector(addr);
+        let connector = make_connector(addr, tls_connector);
 
         // Try initial connection
         let initial_connection_result = connector().await;

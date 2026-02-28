@@ -789,6 +789,7 @@ async fn connect_daemon(
 
     match RpcClient::connect_with_reconnect(
         &socket_path,
+        None,
         move |rpc| {
             let sid = sid.clone();
             let psid = psid.clone();

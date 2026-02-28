@@ -39,6 +39,7 @@ impl DaemonServer {
                     Box::pin(async move { handle_message(msg, &mgr, &llm, &task_mgr).await })
                 },
                 None,
+                None,
             )
             .await
     }

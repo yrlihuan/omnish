@@ -5,7 +5,12 @@ edition = "2021"
 
 [dependencies]
 omnish-protocol = { path = "../omnish-protocol" }
+omnish-common = { path = "../omnish-common" }
 tokio = { workspace = true }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
+rcgen = "0.13"
 anyhow = { workspace = true }
 tracing = { workspace = true }
 
