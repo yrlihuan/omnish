@@ -65,17 +65,18 @@ async fn generate_hourly_summary(
         return Ok(());
     }
 
-    // Generate filename: notes/hourly/YYYY-MM-DD-HH.md
+    // Generate filename: notes/hourly/YYYY-MM-DD/HH.md
     let now = Local::now();
-    let filename = format!("{}.md", now.format("%Y-%m-%d-%H"));
-    let file_path = summaries_dir.join("hourly").join(&filename);
+    let date_dir = summaries_dir.join("hourly").join(now.format("%Y-%m-%d").to_string());
+    let filename = format!("{}.md", now.format("%H"));
+    let file_path = date_dir.join(&filename);
 
     // Build markdown content
     let mut md = format!("# {} 时工作摘要\n\n", now.format("%Y-%m-%d %H:00"));
     md.push_str(&context);
 
     // Write file
-    std::fs::create_dir_all(summaries_dir.join("hourly"))?;
+    std::fs::create_dir_all(&date_dir)?;
     std::fs::write(&file_path, &md)?;
     tracing::info!("hourly summary: wrote {}", file_path.display());
 
