@@ -100,7 +100,7 @@ async fn handle_message(
         }
         Message::Request(req) => {
             if req.query.starts_with("__cmd:") {
-                let content = handle_builtin_command(&req, &mgr, &task_mgr).await;
+                let content = handle_builtin_command(&req, &mgr, &task_mgr, &llm).await;
                 return Message::Response(Response {
                     request_id: req.request_id,
                     content,
@@ -197,14 +197,11 @@ async fn resolve_context(req: &Request, mgr: &SessionManager, max_context_chars:
     }
 }
 
-async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>) -> String {
+async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>) -> String {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
-    // Handle /context <template> for showing templates
-    if let Some(template_name) = sub.strip_prefix("context ") {
-        return match omnish_llm::template::template_by_name(template_name) {
-            Some(tmpl) => tmpl,
-            None => format!("Unknown template: {}. Available: chat, auto-complete, daily-notes, hourly-notes", template_name),
-        };
+    // Handle /context <scenario> for showing context for different scenarios
+    if let Some(scenario) = sub.strip_prefix("context ") {
+        return handle_context_scenario(scenario, req, mgr, llm_backend).await;
     }
     match sub {
         "context" => match resolve_context(req, mgr, None).await {
@@ -220,6 +217,81 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             handle_tasks_command(sub, task_mgr).await
         }
         other => format!("Unknown command: {}", other),
+    }
+}
+
+/// Handle /context <scenario> to show context for different use cases.
+async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionManager, llm_backend: &Option<Arc<dyn LlmBackend>>) -> String {
+    match scenario {
+        "chat" | "analysis" => {
+            // Chat/analysis context - same as default /context
+            match resolve_context(req, mgr, None).await {
+                Ok(ctx) => ctx,
+                Err(e) => format!("Error: {}", e),
+            }
+        }
+        "auto-complete" | "completion" => {
+            // Auto-complete context - uses Completion use case
+            let max_chars = llm_backend
+                .as_ref()
+                .map(|b| b.max_content_chars_for_use_case(UseCase::Completion));
+            let max_chars = max_chars.flatten();
+            match resolve_context(req, mgr, max_chars).await {
+                Ok(ctx) => ctx,
+                Err(e) => format!("Error: {}", e),
+            }
+        }
+        "daily-notes" => {
+            // Show commands from past 24 hours
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let since_ms = now_ms.saturating_sub(24 * 3600 * 1000);
+            let commands = mgr.collect_recent_commands(since_ms).await;
+            if commands.is_empty() {
+                return "No commands in the past 24 hours".to_string();
+            }
+            let mut md = String::from("## Past 24 hours commands\n\n");
+            md.push_str("| Time | Host:Cwd | Command |\n");
+            md.push_str("|------|----------|---------|\n");
+            for (hostname, cmd) in &commands {
+                let time = chrono::DateTime::from_timestamp_millis(cmd.started_at as i64)
+                    .map(|dt| dt.format("%H:%M").to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                let host = if hostname.is_empty() { "?" } else { hostname };
+                let cwd = cmd.cwd.as_deref().unwrap_or("?");
+                let cmd_line = cmd.command_line.as_deref().unwrap_or("?");
+                md.push_str(&format!("| {} | {}:{} | {} |\n", time, host, cwd, cmd_line));
+            }
+            md
+        }
+        "hourly-notes" | "hourly" => {
+            // Show commands from past hour
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let since_ms = now_ms.saturating_sub(3600 * 1000);
+            let commands = mgr.collect_recent_commands(since_ms).await;
+            if commands.is_empty() {
+                return "No commands in the past hour".to_string();
+            }
+            let mut md = String::from("## Past hour commands\n\n");
+            md.push_str("| Time | Host:Cwd | Command |\n");
+            md.push_str("|------|----------|---------|\n");
+            for (hostname, cmd) in &commands {
+                let time = chrono::DateTime::from_timestamp_millis(cmd.started_at as i64)
+                    .map(|dt| dt.format("%H:%M").to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                let host = if hostname.is_empty() { "?" } else { hostname };
+                let cwd = cmd.cwd.as_deref().unwrap_or("?");
+                let cmd_line = cmd.command_line.as_deref().unwrap_or("?");
+                md.push_str(&format!("| {} | {}:{} | {} |\n", time, host, cwd, cmd_line));
+            }
+            md
+        }
+        _ => format!("Unknown scenario: {}. Available: chat, auto-complete, daily-notes, hourly-notes", scenario),
     }
 }
 
