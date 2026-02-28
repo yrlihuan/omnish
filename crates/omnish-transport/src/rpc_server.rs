@@ -1,6 +1,6 @@
 use crate::{parse_addr, TransportAddr};
 use anyhow::Result;
-use omnish_protocol::message::{Frame, Message};
+use omnish_protocol::message::{Auth, Frame, Message};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -49,31 +49,60 @@ impl RpcServer {
         }
     }
 
-    pub async fn serve<F>(&mut self, handler: F) -> Result<()>
+    pub async fn serve<F>(&mut self, handler: F, auth_token: Option<String>) -> Result<()>
     where
         F: Fn(Message) -> Pin<Box<dyn Future<Output = Message> + Send>> + Send + Sync + 'static,
     {
         let handler = Arc::new(handler);
+        let auth_token = auth_token.map(|t| Arc::new(t));
         loop {
             match &self.listener {
                 Listener::Unix(l) => {
                     let (stream, _) = l.accept().await?;
                     let (reader, writer) = stream.into_split();
-                    spawn_connection(reader, writer, handler.clone());
+                    spawn_connection(reader, writer, handler.clone(), auth_token.clone());
                 }
                 Listener::Tcp(l) => {
                     let (stream, _) = l.accept().await?;
                     stream.set_nodelay(true)?;
                     let (reader, writer) = stream.into_split();
-                    spawn_connection(reader, writer, handler.clone());
+                    spawn_connection(reader, writer, handler.clone(), auth_token.clone());
                 }
             }
         }
     }
 }
 
-fn spawn_connection<R, W, F>(reader: R, writer: W, handler: Arc<F>)
-where
+async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Frame> {
+    let len = reader.read_u32().await? as usize;
+    let mut buf = vec![0u8; len];
+    reader.read_exact(&mut buf).await?;
+    Frame::from_bytes(&buf)
+}
+
+async fn write_reply<W: AsyncWrite + Unpin>(
+    writer: &Arc<Mutex<W>>,
+    request_id: u64,
+    payload: Message,
+) -> Result<()> {
+    let reply = Frame {
+        request_id,
+        payload,
+    };
+    let reply_bytes = reply.to_bytes()?;
+    let mut w = writer.lock().await;
+    w.write_u32(reply_bytes.len() as u32).await?;
+    w.write_all(&reply_bytes).await?;
+    w.flush().await?;
+    Ok(())
+}
+
+fn spawn_connection<R, W, F>(
+    reader: R,
+    writer: W,
+    handler: Arc<F>,
+    auth_token: Option<Arc<String>>,
+) where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
     F: Fn(Message) -> Pin<Box<dyn Future<Output = Message> + Send>> + Send + Sync + 'static,
@@ -81,20 +110,55 @@ where
     tokio::spawn(async move {
         let mut reader = reader;
         let writer = Arc::new(Mutex::new(writer));
-        loop {
-            let len = match reader.read_u32().await {
-                Ok(len) => len as usize,
-                Err(_) => break,
+
+        // Authentication phase
+        if let Some(expected_token) = auth_token {
+            let auth_result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                read_frame(&mut reader),
+            )
+            .await;
+
+            let frame = match auth_result {
+                Ok(Ok(frame)) => frame,
+                Ok(Err(_)) => return,
+                Err(_) => {
+                    tracing::warn!("auth timeout: client did not send auth within 5 seconds");
+                    return;
+                }
             };
-            let mut buf = vec![0u8; len];
-            if reader.read_exact(&mut buf).await.is_err() {
-                break;
+
+            match frame.payload {
+                Message::Auth(Auth { ref token }) if token == expected_token.as_str() => {
+                    if write_reply(&writer, frame.request_id, Message::Ack)
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                _ => {
+                    let _ = write_reply(&writer, frame.request_id, Message::AuthFailed).await;
+                    return;
+                }
             }
-            let frame = match Frame::from_bytes(&buf) {
+        }
+
+        // Normal message loop
+        loop {
+            let frame = match read_frame(&mut reader).await {
                 Ok(f) => f,
                 Err(e) => {
-                    tracing::warn!("failed to parse frame: {}", e);
-                    continue;
+                    // EOF is normal (client disconnected); only warn on parse errors
+                    if !e.to_string().contains("unexpected eof")
+                        && !e.to_string().contains("early eof")
+                    {
+                        let msg = e.to_string();
+                        if !msg.contains("eof") {
+                            tracing::warn!("failed to read frame: {}", e);
+                        }
+                    }
+                    break;
                 }
             };
 
@@ -102,25 +166,9 @@ where
             let writer = writer.clone();
             tokio::spawn(async move {
                 let response_payload = handler(frame.payload).await;
-                let reply = Frame {
-                    request_id: frame.request_id,
-                    payload: response_payload,
-                };
-                let reply_bytes = match reply.to_bytes() {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::error!("failed to serialize response frame: {}", e);
-                        return;
-                    }
-                };
-                let mut w = writer.lock().await;
-                if w.write_u32(reply_bytes.len() as u32).await.is_err() {
-                    return;
+                if let Err(e) = write_reply(&writer, frame.request_id, response_payload).await {
+                    tracing::error!("failed to write response: {}", e);
                 }
-                if w.write_all(&reply_bytes).await.is_err() {
-                    return;
-                }
-                let _ = w.flush().await;
             });
         }
     });
@@ -144,20 +192,23 @@ mod tests {
         let server_handle = tokio::spawn(async move {
             let mut server = RpcServer::bind_unix(&server_addr).await.unwrap();
             server
-                .serve(|msg| {
-                    Box::pin(async move {
-                        match msg {
-                            Message::SessionStart(_) => Message::Ack,
-                            Message::Request(req) => Message::Response(Response {
-                                request_id: req.request_id.clone(),
-                                content: format!("answer to: {}", req.query),
-                                is_streaming: false,
-                                is_final: true,
-                            }),
-                            _ => Message::Ack,
-                        }
-                    })
-                })
+                .serve(
+                    |msg| {
+                        Box::pin(async move {
+                            match msg {
+                                Message::SessionStart(_) => Message::Ack,
+                                Message::Request(req) => Message::Response(Response {
+                                    request_id: req.request_id.clone(),
+                                    content: format!("answer to: {}", req.query),
+                                    is_streaming: false,
+                                    is_final: true,
+                                }),
+                                _ => Message::Ack,
+                            }
+                        })
+                    },
+                    None,
+                )
                 .await
                 .ok();
         });
@@ -209,23 +260,26 @@ mod tests {
 
         tokio::spawn(async move {
             server
-                .serve(|msg| {
-                    Box::pin(async move {
-                        match msg {
-                            Message::Request(req) => {
-                                // Simulate slow handler
-                                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                                Message::Response(Response {
-                                    request_id: req.request_id.clone(),
-                                    content: format!("echo: {}", req.query),
-                                    is_streaming: false,
-                                    is_final: true,
-                                })
+                .serve(
+                    |msg| {
+                        Box::pin(async move {
+                            match msg {
+                                Message::Request(req) => {
+                                    // Simulate slow handler
+                                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                                    Message::Response(Response {
+                                        request_id: req.request_id.clone(),
+                                        content: format!("echo: {}", req.query),
+                                        is_streaming: false,
+                                        is_final: true,
+                                    })
+                                }
+                                _ => Message::Ack,
                             }
-                            _ => Message::Ack,
-                        }
-                    })
-                })
+                        })
+                    },
+                    None,
+                )
                 .await
                 .ok();
         });
@@ -270,20 +324,23 @@ mod tests {
 
         let server_handle = tokio::spawn(async move {
             server
-                .serve(|msg| {
-                    Box::pin(async move {
-                        match msg {
-                            Message::SessionStart(_) => Message::Ack,
-                            Message::Request(req) => Message::Response(Response {
-                                request_id: req.request_id.clone(),
-                                content: format!("tcp answer to: {}", req.query),
-                                is_streaming: false,
-                                is_final: true,
-                            }),
-                            _ => Message::Ack,
-                        }
-                    })
-                })
+                .serve(
+                    |msg| {
+                        Box::pin(async move {
+                            match msg {
+                                Message::SessionStart(_) => Message::Ack,
+                                Message::Request(req) => Message::Response(Response {
+                                    request_id: req.request_id.clone(),
+                                    content: format!("tcp answer to: {}", req.query),
+                                    is_streaming: false,
+                                    is_final: true,
+                                }),
+                                _ => Message::Ack,
+                            }
+                        })
+                    },
+                    None,
+                )
                 .await
                 .ok();
         });
@@ -332,19 +389,22 @@ mod tests {
 
         tokio::spawn(async move {
             server
-                .serve(|msg| {
-                    Box::pin(async move {
-                        match msg {
-                            Message::Request(req) => Message::Response(Response {
-                                request_id: req.request_id.clone(),
-                                content: format!("echo: {}", req.query),
-                                is_streaming: false,
-                                is_final: true,
-                            }),
-                            _ => Message::Ack,
-                        }
-                    })
-                })
+                .serve(
+                    |msg| {
+                        Box::pin(async move {
+                            match msg {
+                                Message::Request(req) => Message::Response(Response {
+                                    request_id: req.request_id.clone(),
+                                    content: format!("echo: {}", req.query),
+                                    is_streaming: false,
+                                    is_final: true,
+                                }),
+                                _ => Message::Ack,
+                            }
+                        })
+                    },
+                    None,
+                )
                 .await
                 .ok();
         });

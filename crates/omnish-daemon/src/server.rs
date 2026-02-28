@@ -31,12 +31,15 @@ impl DaemonServer {
         let task_mgr = self.task_mgr.clone();
 
         server
-            .serve(move |msg| {
-                let mgr = mgr.clone();
-                let llm = llm.clone();
-                let task_mgr = task_mgr.clone();
-                Box::pin(async move { handle_message(msg, &mgr, &llm, &task_mgr).await })
-            })
+            .serve(
+                move |msg| {
+                    let mgr = mgr.clone();
+                    let llm = llm.clone();
+                    let task_mgr = task_mgr.clone();
+                    Box::pin(async move { handle_message(msg, &mgr, &llm, &task_mgr).await })
+                },
+                None,
+            )
             .await
     }
 }
