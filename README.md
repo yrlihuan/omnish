@@ -13,7 +13,7 @@ omnish sits between you and your shell as a PTY proxy. It records everything, se
 │  │ Session  │  │ Storage  │  │ LLM Engine │  │
 │  │ Manager  │  │ (stream) │  │ (backends) │  │
 │  └────▲─────┘  └─────────┘  └────────────┘  │
-│       │  Unix Socket                         │
+│       │  Unix Socket / TCP+TLS               │
 ├───────┼──────────────────────────────────────┤
 │  ┌────┴────┐   ┌─────────┐   ┌─────────┐    │
 │  │ omnish  │   │ omnish  │   │ omnish  │    │
@@ -27,7 +27,7 @@ omnish sits between you and your shell as a PTY proxy. It records everything, se
 ```
 
 - **omnish** (client) — PTY proxy per terminal. Spawns your shell via `forkpty()`, forwards all I/O transparently, and sends a copy to the daemon.
-- **omnishd** (daemon) — Aggregates sessions, stores streams, detects shell prompts to segment commands, dispatches LLM queries.
+- **omnishd** (daemon) — Aggregates sessions, stores streams, detects shell prompts to segment commands, runs scheduled tasks, dispatches LLM queries.
 
 For detailed module documentation and implementation details, see the [module documentation](docs/implementation/).
 
@@ -36,9 +36,13 @@ For detailed module documentation and implementation details, see the [module do
 - **Zero interference** — All programs (vim, ssh, htop, etc.) behave identically. The proxy is fully transparent.
 - **Graceful degradation** — Works as a normal shell when the daemon is unavailable.
 - **Command recording** — Detects shell prompts to segment continuous I/O into individual commands with metadata and output summaries.
+- **Ghost completion** — LLM-powered inline command suggestions as you type.
 - **Multi-session aggregation** — Query context from multiple terminals at once.
 - **Multi-backend LLM** — Anthropic (Claude), OpenAI, Azure, local models (Ollama/LM Studio) via OpenAI-compatible API.
 - **Auto-trigger** — Optionally analyze on non-zero exit codes or stderr patterns.
+- **Scheduled tasks** — Hourly summaries, daily notes, session eviction, and disk cleanup run automatically.
+- **Security** — Token authentication, Unix socket permissions (0600) with SO_PEERCRED UID verification, TLS encryption for TCP connections.
+- **Cross-platform** — Linux and macOS support.
 
 ## Build
 
@@ -98,6 +102,14 @@ api_key_cmd = "echo dummy"
 base_url = "http://localhost:1234/v1"
 ```
 
+## Security
+
+omnish uses layered security for daemon/client communication:
+
+- **Token authentication** — A shared 32-byte random token (`~/.omnish/auth_token`, mode 0600) is required for all connections. The client sends an `Auth` message before any other communication.
+- **Unix socket** — Socket file is set to mode 0600 (owner-only). Peer UID is verified via `SO_PEERCRED` to reject connections from other users.
+- **TLS for TCP** — When using TCP transport, connections are encrypted with TLS using a self-signed certificate (auto-generated in `~/.omnish/tls/`).
+
 ## Usage
 
 Start the daemon, then use `omnish` as your shell:
@@ -114,10 +126,14 @@ Inside any omnish session, type `:` to enter chat mode, then you can directly in
 :what are all my terminals doing   # cross-session query
 ```
 
-Debug commands available in chat mode:
+Built-in commands:
+
 ```bash
 /debug context    # show current session context
 /debug template   # show LLM prompt template
+/debug session    # show session info and attributes
+/tasks            # list scheduled tasks and their status
+/tasks disable <name>  # disable a scheduled task
 ```
 
 Results from auto-triggers appear above the shell prompt without disrupting your workflow.
@@ -137,33 +153,40 @@ omnish-commands -s abc123    # filter by session ID prefix
 Session data is stored under `~/.local/share/omnish/sessions/`:
 
 ```
-~/.local/share/omnish/sessions/
-└── 2026-02-13T10-30-00_abc12345/
-    ├── meta.json        # session metadata
-    ├── stream.bin       # raw I/O stream (binary, timestamped)
-    ├── commands.json    # segmented command records
-    └── events.jsonl     # detected events
+~/.local/share/omnish/
+├── sessions/
+│   └── 2026-02-13T10-30-00_abc12345/
+│       ├── meta.json        # session metadata
+│       ├── stream.bin       # raw I/O stream (binary, timestamped)
+│       └── commands.json    # segmented command records
+├── logs/
+│   ├── sessions/            # session update logs
+│   └── completions/         # completion tracking CSV
+├── notes/
+│   ├── hourly/              # hourly activity summaries
+│   └── daily/               # daily notes
+├── auth_token               # shared auth token (0600)
+└── tls/                     # TLS cert and key for TCP mode
+    ├── cert.pem
+    └── key.pem
 ```
 
 ## Workspace
 
-omnish 项目由以下 11 个 crate 组成：
-
 | Crate | Purpose |
 |-------|---------|
-| `omnish-client` | PTY proxy binary, input interception, display |
-| `omnish-daemon` | Session manager, prompt detection, command tracking, server |
-| `omnish-transport` | Abstracted transport layer (Unix socket now, TCP/HTTP later) |
-| `omnish-protocol` | Binary framed message format (magic + length + bincode) |
+| `omnish-client` | PTY proxy binary, input interception, ghost completion, display |
+| `omnish-daemon` | Session manager, scheduled tasks, prompt detection, command tracking, server |
+| `omnish-transport` | Transport layer (Unix socket, TCP+TLS), RPC client/server, token auth |
+| `omnish-protocol` | Binary framed message format (length + bincode) |
 | `omnish-pty` | `forkpty()` wrapper, raw mode guard |
 | `omnish-store` | Session metadata (JSON), stream storage (binary), command records |
 | `omnish-llm` | LLM backend trait + Anthropic/OpenAI-compatible implementations |
-| `omnish-common` | Shared config types |
+| `omnish-common` | Shared config types, auth token utilities |
 | `omnish-tracker` | Command tracker for shell command monitoring and analysis |
 | `omnish-context` | Context builder for LLM prompt construction |
-| `shell-prompt-state-tracking` | Technical explanation of shell prompt state tracking |
 
-**详细模块文档**：每个模块的详细说明文档可在 [`docs/implementation/`](docs/implementation/) 目录中找到，包含模块概述、重要数据结构、关键函数说明、使用示例和依赖关系。
+For detailed module documentation, see [`docs/implementation/`](docs/implementation/).
 
 ## Tests
 
