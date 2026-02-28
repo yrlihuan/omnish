@@ -5,6 +5,7 @@ mod server;
 use anyhow::Result;
 use omnish_common::config::{load_daemon_config, omnish_dir};
 use omnish_daemon::daily_notes::create_daily_notes_job;
+use omnish_daemon::hourly_summary::create_hourly_summary_job;
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_llm::factory::MultiBackend;
 use server::DaemonServer;
@@ -74,6 +75,18 @@ async fn async_main() -> Result<()> {
             max_inactive,
         )?;
         task_mgr.register("eviction", "0 0 * * * *", job).await?;
+    }
+
+    // Register hourly summary job (runs every hour at minute 0)
+    {
+        let summaries_dir = omnish_dir.join("logs").join("hourly_summaries");
+        let job = create_hourly_summary_job(
+            Arc::clone(&session_mgr),
+            llm_backend.clone(),
+            summaries_dir,
+        )?;
+        task_mgr.register("hourly_summary", "0 0 * * * *", job).await?;
+        tracing::info!("hourly summary enabled");
     }
 
     // Register daily notes job if enabled

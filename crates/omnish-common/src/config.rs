@@ -300,16 +300,59 @@ impl Default for CompletionContextConfig {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Hourly summary config
+// ---------------------------------------------------------------------------
+
+/// Hourly summary context configuration
+#[derive(Debug, Deserialize, Clone)]
+pub struct HourlySummaryConfig {
+    /// Number of lines to keep from the start of each command output.
+    #[serde(default = "default_hourly_head_lines")]
+    pub head_lines: usize,
+    /// Number of lines to keep from the end of each command output.
+    #[serde(default = "default_hourly_tail_lines")]
+    pub tail_lines: usize,
+    /// Maximum width (in characters) per output line; longer lines are truncated.
+    #[serde(default = "default_hourly_max_line_width")]
+    pub max_line_width: usize,
+}
+
+impl Default for HourlySummaryConfig {
+    fn default() -> Self {
+        Self {
+            head_lines: default_hourly_head_lines(),
+            tail_lines: default_hourly_tail_lines(),
+            max_line_width: default_hourly_max_line_width(),
+        }
+    }
+}
+
+fn default_hourly_head_lines() -> usize {
+    50
+}
+
+fn default_hourly_tail_lines() -> usize {
+    100
+}
+
+fn default_hourly_max_line_width() -> usize {
+    128
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct ContextConfig {
     #[serde(default)]
     pub completion: CompletionContextConfig,
+    #[serde(default)]
+    pub hourly_summary: HourlySummaryConfig,
 }
 
 impl Default for ContextConfig {
     fn default() -> Self {
         Self {
             completion: CompletionContextConfig::default(),
+            hourly_summary: HourlySummaryConfig::default(),
         }
     }
 }

@@ -46,6 +46,11 @@ cooldown_seconds = 5
 # tail_lines = 20          # output lines kept from end of each command
 # max_context_chars = 8000 # fallback limit if backend doesn't specify max_content_chars
 
+[context.hourly_summary]
+# head_lines = 50         # output lines kept from start of each command (for hourly summary)
+# tail_lines = 100        # output lines kept from end of each command (for hourly summary)
+# max_line_width = 128   # max characters per line for hourly summary
+
 [tasks.eviction]
 # session_evict_hours = 48 # evict inactive sessions from memory after N hours
 
