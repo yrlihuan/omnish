@@ -12,6 +12,7 @@ omnish-store = { path = "../omnish-store" }
 omnish-llm = { path = "../omnish-llm" }
 omnish-context = { path = "../omnish-context" }
 tokio = { workspace = true }
+tokio-rustls = "0.26"
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

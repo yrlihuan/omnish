@@ -6,6 +6,7 @@ use omnish_protocol::message::*;
 use omnish_transport::rpc_server::RpcServer;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio_rustls::TlsAcceptor;
 
 pub struct DaemonServer {
     session_mgr: Arc<SessionManager>,
@@ -22,7 +23,12 @@ impl DaemonServer {
         Self { session_mgr, llm_backend, task_mgr }
     }
 
-    pub async fn run(&self, addr: &str) -> Result<()> {
+    pub async fn run(
+        &self,
+        addr: &str,
+        auth_token: String,
+        tls_acceptor: Option<TlsAcceptor>,
+    ) -> Result<()> {
         let mut server = RpcServer::bind(addr).await?;
         tracing::info!("omnishd listening on {}", addr);
 
@@ -38,8 +44,8 @@ impl DaemonServer {
                     let task_mgr = task_mgr.clone();
                     Box::pin(async move { handle_message(msg, &mgr, &llm, &task_mgr).await })
                 },
-                None,
-                None,
+                Some(auth_token),
+                tls_acceptor,
             )
             .await
     }

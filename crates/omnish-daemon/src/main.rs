@@ -121,8 +121,23 @@ async fn async_main() -> Result<()> {
     task_mgr.start().await?;
     let task_mgr = Arc::new(tokio::sync::Mutex::new(task_mgr));
 
+    // Load or create auth token
+    let token_path = omnish_common::auth::default_token_path();
+    let auth_token = omnish_common::auth::load_or_create_token(&token_path)?;
+    tracing::info!("auth token loaded from {}", token_path.display());
+
+    // Load or create TLS cert (only for TCP mode)
+    let tls_acceptor = if socket_path.contains(':') {
+        let tls_dir = omnish_transport::tls::default_tls_dir();
+        let acceptor = omnish_transport::tls::make_acceptor(&tls_dir)?;
+        tracing::info!("TLS enabled for TCP (cert dir: {})", tls_dir.display());
+        Some(acceptor)
+    } else {
+        None
+    };
+
     let server = DaemonServer::new(session_mgr, llm_backend, task_mgr);
 
     tracing::info!("starting omnishd at {}", socket_path);
-    server.run(&socket_path).await
+    server.run(&socket_path, auth_token, tls_acceptor).await
 }
