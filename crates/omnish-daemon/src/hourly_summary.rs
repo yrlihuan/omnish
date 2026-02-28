@@ -63,11 +63,10 @@ async fn generate_hourly_summary(
         return Ok(());
     }
 
-    // Generate filename: notes/YYYY-MM-DD/HH.md
+    // Generate filename: notes/hourly/YYYY-MM-DD-HH.md
     let now = Local::now();
-    let date_dir = now.format("%Y-%m-%d").to_string();
-    let filename = format!("{}.md", now.format("%H"));
-    let file_path = summaries_dir.join(&date_dir).join(&filename);
+    let filename = format!("{}.md", now.format("%Y-%m-%d-%H"));
+    let file_path = summaries_dir.join("hourly").join(&filename);
 
     // Build markdown content
     let mut md = format!("# {} 时工作摘要\n\n", now.format("%Y-%m-%d %H:00"));
