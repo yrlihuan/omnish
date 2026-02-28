@@ -19,6 +19,13 @@ pub enum Message {
     CompletionResponse(CompletionResponse),
     CompletionSummary(CompletionSummary),
     Ack,
+    Auth(Auth),
+    AuthFailed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Auth {
+    pub token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
