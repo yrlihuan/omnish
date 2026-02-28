@@ -787,15 +787,50 @@ async fn connect_daemon(
     let sid = session_id.to_string();
     let psid = parent_session_id.clone();
 
+    // Load auth token
+    let token_path = omnish_common::auth::default_token_path();
+    let auth_token = match omnish_common::auth::load_token(&token_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("\x1b[33m[omnish]\x1b[0m Failed to load auth token: {}", e);
+            eprintln!("\x1b[33m[omnish]\x1b[0m Running in passthrough mode (no daemon)");
+            return None;
+        }
+    };
+
+    // Set up TLS connector for TCP mode
+    let tls_connector = if socket_path.contains(':') {
+        let tls_dir = omnish_transport::tls::default_tls_dir();
+        let cert_path = tls_dir.join("cert.pem");
+        match omnish_transport::tls::make_connector(&cert_path) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                eprintln!("\x1b[33m[omnish]\x1b[0m Failed to set up TLS: {}", e);
+                eprintln!("\x1b[33m[omnish]\x1b[0m Running in passthrough mode (no daemon)");
+                return None;
+            }
+        }
+    } else {
+        None
+    };
+
     match RpcClient::connect_with_reconnect(
         &socket_path,
-        None,
+        tls_connector,
         move |rpc| {
             let sid = sid.clone();
             let psid = psid.clone();
             let rpc = rpc.clone();
             let buffer = buffer.clone();
+            let token = auth_token.clone();
             Box::pin(async move {
+                // Authenticate first
+                let auth_resp = rpc.call(Message::Auth(Auth { token })).await?;
+                if matches!(auth_resp, Message::AuthFailed) {
+                    anyhow::bail!("authentication failed");
+                }
+
+                // Then register session
                 let attrs = probe::default_session_probes(child_pid).collect_all();
                 rpc.call(Message::SessionStart(SessionStart {
                     session_id: sid,
