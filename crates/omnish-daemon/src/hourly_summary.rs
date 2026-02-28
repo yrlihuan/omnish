@@ -1,6 +1,6 @@
 use crate::session_mgr::SessionManager;
 use chrono::Local;
-use omnish_llm::backend::{LlmBackend, UseCase};
+use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,7 +28,7 @@ pub fn create_hourly_summary_job(
     })?)
 }
 
-/// Generate the hourly summary context file.
+/// Generate the hourly summary file with LLM summary only.
 async fn generate_hourly_summary(
     mgr: &SessionManager,
     llm_backend: Option<&dyn LlmBackend>,
@@ -47,23 +47,56 @@ async fn generate_hourly_summary(
         return Ok(());
     }
 
-    // Get max_content_chars from analysis use case
-    let max_content_chars = llm_backend
-        .map(|b| b.max_content_chars_for_use_case(UseCase::Analysis))
-        .unwrap_or(None);
-
-    // Get hourly summary config
-    let config = mgr.get_hourly_summary_config();
-
-    // Build context using hourly summary config
-    let context = mgr
-        .build_hourly_summary_context(&commands, max_content_chars, &config)
-        .await?;
-
-    if context.is_empty() {
-        tracing::info!("hourly summary: context is empty after building, skipping");
-        return Ok(());
+    // Build the markdown table for LLM context
+    let mut table_md = String::new();
+    for (hostname, cmd) in &commands {
+        let time = {
+            let dt = chrono::DateTime::from_timestamp_millis(cmd.started_at as i64)
+                .unwrap_or_default()
+                .with_timezone(&Local);
+            dt.format("%H:%M").to_string()
+        };
+        let host = if hostname.is_empty() { "?" } else { hostname };
+        let cwd = cmd.cwd.as_deref().unwrap_or("?");
+        let command_line = cmd.command_line.as_deref().unwrap_or("?");
+        let command_line = command_line.replace('|', "\\|");
+        table_md.push_str(&format!(
+            "| {} | {}:{} | {} |\n",
+            time, host, cwd, command_line
+        ));
     }
+
+    // Try LLM summary
+    let summary = if let Some(backend) = llm_backend {
+        let use_case = UseCase::Analysis;
+        let max_content_chars = backend.max_content_chars_for_use_case(use_case);
+        let req = LlmRequest {
+            context: table_md,
+            query: Some(omnish_llm::template::HOURLY_NOTES_PROMPT.to_string()),
+            trigger: TriggerType::AutoPattern,
+            session_ids: vec![],
+            use_case,
+            max_content_chars,
+        };
+        match backend.complete(&req).await {
+            Ok(resp) => Some(resp.content),
+            Err(e) => {
+                tracing::warn!("hourly summary: LLM summary failed, skipping: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Skip if no LLM available
+    let summary = match summary {
+        Some(s) => s,
+        None => {
+            tracing::info!("hourly summary: no LLM available, skipping");
+            return Ok(());
+        }
+    };
 
     // Generate filename: notes/hourly/YYYY-MM-DD/HH.md
     let now = Local::now();
@@ -71,9 +104,8 @@ async fn generate_hourly_summary(
     let filename = format!("{}.md", now.format("%H"));
     let file_path = date_dir.join(&filename);
 
-    // Build markdown content
-    let mut md = format!("# {} 时工作摘要\n\n", now.format("%Y-%m-%d %H:00"));
-    md.push_str(&context);
+    // Build markdown content - only the LLM summary
+    let md = format!("# {} 时工作摘要\n\n{}", now.format("%Y-%m-%d %H:00"), summary);
 
     // Write file
     std::fs::create_dir_all(&date_dir)?;
