@@ -99,11 +99,31 @@ fn default_session_evict_hours() -> u64 {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct DiskCleanupConfig {
+    #[serde(default = "default_disk_cleanup_schedule")]
+    pub schedule: String,
+}
+
+impl Default for DiskCleanupConfig {
+    fn default() -> Self {
+        Self {
+            schedule: default_disk_cleanup_schedule(),
+        }
+    }
+}
+
+fn default_disk_cleanup_schedule() -> String {
+    "0 0 */6 * * *".to_string()
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct TasksConfig {
     #[serde(default)]
     pub eviction: EvictionConfig,
     #[serde(default)]
     pub daily_notes: DailyNotesConfig,
+    #[serde(default)]
+    pub disk_cleanup: DiskCleanupConfig,
 }
 
 impl Default for TasksConfig {
@@ -111,6 +131,7 @@ impl Default for TasksConfig {
         Self {
             eviction: EvictionConfig::default(),
             daily_notes: DailyNotesConfig::default(),
+            disk_cleanup: DiskCleanupConfig::default(),
         }
     }
 }

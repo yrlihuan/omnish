@@ -57,6 +57,7 @@ async fn async_main() -> Result<()> {
 
     let evict_hours = config.tasks.eviction.session_evict_hours;
     let daily_notes_config = config.tasks.daily_notes.clone();
+    let disk_cleanup_config = config.tasks.disk_cleanup.clone();
     let session_mgr = Arc::new(SessionManager::new(omnish_dir.clone(), config.context));
     match session_mgr.load_existing().await {
         Ok(count) if count > 0 => tracing::info!("loaded {} existing session(s)", count),
@@ -87,6 +88,17 @@ async fn async_main() -> Result<()> {
         )?;
         task_mgr.register("hourly_summary", "0 0 * * * *", job).await?;
         tracing::info!("hourly summary enabled");
+    }
+
+    // Register disk cleanup job
+    {
+        let max_age = std::time::Duration::from_secs(48 * 3600);
+        let job = omnish_daemon::cleanup::create_disk_cleanup_job(
+            Arc::clone(&session_mgr),
+            max_age,
+            &disk_cleanup_config.schedule,
+        )?;
+        task_mgr.register("disk_cleanup", &disk_cleanup_config.schedule, job).await?;
     }
 
     // Register daily notes job if enabled
