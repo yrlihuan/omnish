@@ -199,6 +199,13 @@ async fn resolve_context(req: &Request, mgr: &SessionManager, max_context_chars:
 
 async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>) -> String {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
+    // Handle /context <template> for showing templates
+    if let Some(template_name) = sub.strip_prefix("context ") {
+        return match omnish_llm::template::template_by_name(template_name) {
+            Some(tmpl) => tmpl,
+            None => format!("Unknown template: {}. Available: chat, auto-complete, daily-notes, hourly-notes", template_name),
+        };
+    }
     match sub {
         "context" => match resolve_context(req, mgr, None).await {
             Ok(ctx) => ctx,

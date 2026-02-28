@@ -68,7 +68,7 @@ const COMMANDS: &[CommandEntry] = &[
     CommandEntry {
         path: "/context",
         kind: CommandKind::Daemon("context"),
-        help: "Show LLM context",
+        help: "Show LLM context or template",
     },
     CommandEntry {
         path: "/template",
@@ -107,6 +107,7 @@ pub fn completable_commands() -> Vec<String> {
     let mut cmds: Vec<String> = COMMANDS.iter().map(|e| e.path.to_string()).collect();
     for name in omnish_llm::template::TEMPLATE_NAMES {
         cmds.push(format!("/template {}", name));
+        cmds.push(format!("/context {}", name));
     }
     cmds
 }
