@@ -79,11 +79,11 @@ async fn async_main() -> Result<()> {
 
     // Register hourly summary job (runs every hour at minute 0)
     {
-        let summaries_dir = omnish_dir.join("logs").join("hourly_summaries");
+        let notes_dir = omnish_dir.join("notes");
         let job = create_hourly_summary_job(
             Arc::clone(&session_mgr),
             llm_backend.clone(),
-            summaries_dir,
+            notes_dir,
         )?;
         task_mgr.register("hourly_summary", "0 0 * * * *", job).await?;
         tracing::info!("hourly summary enabled");
