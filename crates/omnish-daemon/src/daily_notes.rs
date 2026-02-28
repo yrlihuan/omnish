@@ -19,9 +19,11 @@ pub fn create_daily_notes_job(
         let llm = llm_backend.clone();
         let dir = notes_dir.clone();
         Box::pin(async move {
+            tracing::debug!("task [daily_notes] started");
             if let Err(e) = generate_daily_note(&mgr, llm.as_deref(), &dir).await {
-                tracing::warn!("daily notes generation failed: {}", e);
+                tracing::warn!("task [daily_notes] failed: {}", e);
             }
+            tracing::debug!("task [daily_notes] finished");
         })
     })?)
 }

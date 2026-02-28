@@ -19,9 +19,11 @@ pub fn create_hourly_summary_job(
         let llm = llm_backend.clone();
         let dir = summaries_dir.clone();
         Box::pin(async move {
+            tracing::debug!("task [hourly_summary] started");
             if let Err(e) = generate_hourly_summary(&mgr, llm.as_deref(), &dir).await {
-                tracing::warn!("hourly summary generation failed: {}", e);
+                tracing::warn!("task [hourly_summary] failed: {}", e);
             }
+            tracing::debug!("task [hourly_summary] finished");
         })
     })?)
 }
@@ -73,7 +75,7 @@ async fn generate_hourly_summary(
     md.push_str(&context);
 
     // Write file
-    std::fs::create_dir_all(summaries_dir)?;
+    std::fs::create_dir_all(summaries_dir.join("hourly"))?;
     std::fs::write(&file_path, &md)?;
     tracing::info!("hourly summary: wrote {}", file_path.display());
 

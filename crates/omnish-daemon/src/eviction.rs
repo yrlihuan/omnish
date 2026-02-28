@@ -11,7 +11,12 @@ pub fn create_eviction_job(
     Ok(Job::new_async("0 0 * * * *", move |_uuid, _lock| {
         let mgr = mgr.clone();
         Box::pin(async move {
-            mgr.evict_inactive(max_inactive).await;
+            tracing::debug!("task [eviction] started");
+            let evicted = mgr.evict_inactive(max_inactive).await;
+            if evicted > 0 {
+                tracing::info!("task [eviction] evicted {} inactive sessions", evicted);
+            }
+            tracing::debug!("task [eviction] finished");
         })
     })?)
 }

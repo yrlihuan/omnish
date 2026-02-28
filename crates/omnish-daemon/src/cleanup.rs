@@ -18,12 +18,12 @@ pub fn create_disk_cleanup_job(
     Ok(Job::new_async(schedule, move |_uuid, _lock| {
         let mgr = mgr.clone();
         Box::pin(async move {
+            tracing::debug!("task [disk_cleanup] started");
             let cleaned = mgr.cleanup_expired_dirs(max_age).await;
             if cleaned > 0 {
-                tracing::info!("cleaned up {} expired session directories", cleaned);
-            } else {
-                tracing::debug!("no expired session directories to clean up");
+                tracing::info!("task [disk_cleanup] cleaned {} expired session directories", cleaned);
             }
+            tracing::debug!("task [disk_cleanup] finished");
         })
     })?)
 }
