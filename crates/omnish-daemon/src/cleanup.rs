@@ -6,8 +6,8 @@ use tokio_cron_scheduler::Job;
 
 /// Create a cron job that cleans up expired session directories.
 ///
-/// The job runs according to the provided cron schedule and removes session directories
-/// older than `max_age`.
+/// The job runs according to the provided cron schedule (e.g., "0 0 */6 * * *" for every 6 hours)
+/// and removes session directories older than `max_age`.
 ///
 /// Returns a `tokio_cron_scheduler::Job` that can be registered with a task manager.
 pub fn create_disk_cleanup_job(
