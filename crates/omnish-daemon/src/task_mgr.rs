@@ -16,9 +16,6 @@ pub struct TaskManager {
 
 impl TaskManager {
     pub async fn new() -> Result<Self> {
-        // Set TZ environment variable to use local timezone
-        // This ensures cron expressions are interpreted in local time
-        std::env::set_var("TZ", "");
         let scheduler = JobScheduler::new().await?;
         Ok(Self {
             scheduler,
