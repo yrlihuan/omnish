@@ -94,8 +94,12 @@ pub fn prompt_template(has_query: bool) -> &'static str {
 pub const DAILY_NOTES_PROMPT: &str =
     "请用中文简要总结今天的工作内容，包括主要活动和成果，2-3段即可。";
 
+/// The hourly-notes LLM summary prompt.
+pub const HOURLY_NOTES_PROMPT: &str =
+    "请用中文简要总结这一个小时的工作内容，包括主要活动和成果，1-2段即可。";
+
 /// Known template names for `/template <name>`.
-pub const TEMPLATE_NAMES: &[&str] = &["chat", "auto-complete", "daily-notes"];
+pub const TEMPLATE_NAMES: &[&str] = &["chat", "auto-complete", "daily-notes", "hourly-notes"];
 
 /// Return a named template with placeholders for inspection.
 /// Returns `None` if the name is unknown.
@@ -113,6 +117,7 @@ pub fn template_by_name(name: &str) -> Option<String> {
             build_simple_completion_content("{context}", "{input}", 0),
         )),
         "daily-notes" => Some(DAILY_NOTES_PROMPT.to_string()),
+        "hourly-notes" => Some(HOURLY_NOTES_PROMPT.to_string()),
         _ => None,
     }
 }
