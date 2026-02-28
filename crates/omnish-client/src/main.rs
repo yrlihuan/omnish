@@ -363,7 +363,9 @@ async fn main() -> Result<()> {
                                     // trigger so bash reports the real READLINE_LINE.
                                     // Note: Tab trigger removed here - now triggered on completion response
                                     // to avoid interfering with bash completion list display (issue #23)
-                                    if osc133_hook_installed {
+                                    // Skip trigger if already pending (e.g. isearch mode from Ctrl+R)
+                                    // to avoid "cannot find keymap for command" error (issue #49)
+                                    if osc133_hook_installed && !shell_input.pending_rl_report() {
                                         proxy.write_all(b"\x1b[13337~")?;
                                     }
                                     shell_input.mark_pending_report();
@@ -713,7 +715,9 @@ async fn main() -> Result<()> {
             if !readline_triggered_for_completions {
                 readline_triggered_for_completions = true;
                 readline_trigger_time = Some(std::time::Instant::now());
-                if osc133_hook_installed && shell_input.at_prompt() {
+                if osc133_hook_installed && shell_input.at_prompt()
+                    && !shell_input.pending_rl_report()
+                {
                     shell_input.mark_pending_report();
                     proxy.write_all(b"\x1b[13337~")?;
                 }
