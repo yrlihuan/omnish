@@ -861,6 +861,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-cron-scheduler",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
  "uuid",
