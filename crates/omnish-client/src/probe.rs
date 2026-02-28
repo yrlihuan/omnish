@@ -76,6 +76,8 @@ impl Probe for ShellCwdProbe {
 }
 
 pub struct ChildProcessProbe(pub u32);
+
+#[cfg(target_os = "linux")]
 impl Probe for ChildProcessProbe {
     fn key(&self) -> &str { "child_process" }
     fn collect(&self) -> Option<String> {
@@ -95,6 +97,24 @@ impl Probe for ChildProcessProbe {
             }
             None => Some(String::new()),
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Probe for ChildProcessProbe {
+    fn key(&self) -> &str { "child_process" }
+    fn collect(&self) -> Option<String> {
+        // On macOS, we could use proc_listpids or lsof, but for basic support
+        // return empty string. The child process tracking is not critical.
+        Some(String::new())
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+impl Probe for ChildProcessProbe {
+    fn key(&self) -> &str { "child_process" }
+    fn collect(&self) -> Option<String> {
+        Some(String::new())
     }
 }
 
@@ -159,6 +179,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_shell_cwd_probe_returns_path_for_self() {
         let pid = std::process::id();
         let probe = ShellCwdProbe(pid);
@@ -170,7 +191,27 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn test_shell_cwd_probe_returns_none_for_self() {
+        // On non-linux (macOS, etc.), ShellCwdProbe returns None by default
+        let pid = std::process::id();
+        let probe = ShellCwdProbe(pid);
+        assert_eq!(probe.key(), "shell_cwd");
+        let cwd = probe.collect();
+        assert!(cwd.is_none(), "should return None on non-Linux platforms");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
     fn test_shell_cwd_probe_returns_none_for_bad_pid() {
+        let probe = ShellCwdProbe(999999999);
+        assert_eq!(probe.collect(), None);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn test_shell_cwd_probe_returns_none_for_bad_pid() {
+        // On non-linux, always returns None
         let probe = ShellCwdProbe(999999999);
         assert_eq!(probe.collect(), None);
     }

@@ -26,7 +26,7 @@ impl PtyProxy {
 
                 setsid().ok();
                 unsafe {
-                    libc::ioctl(slave.as_raw_fd(), libc::TIOCSCTTY, 0);
+                    libc::ioctl(slave.as_raw_fd(), libc::TIOCSCTTY as _, 0);
                 }
 
                 dup2(slave.as_raw_fd(), 0).ok();
