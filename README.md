@@ -129,10 +129,17 @@ Inside any omnish session, type `:` to enter chat mode, then you can directly in
 Built-in commands:
 
 ```bash
-/debug context    # show current session context
-/debug template   # show LLM prompt template
-/debug session    # show session info and attributes
-/tasks            # list scheduled tasks and their status
+/context              # show current session context
+/context chat         # show chat/analysis context
+/context auto-complete # show auto-complete context
+/context hourly-notes # show hourly summary context (past hour)
+/context daily-notes  # show daily summary context (past 24 hours)
+/template             # show prompt templates
+/template <name>     # show specific template (chat, auto-complete, daily-notes, hourly-notes)
+/debug client        # show client debug state
+/debug session       # show session info and attributes
+/sessions            # list active sessions
+/tasks               # list scheduled tasks and their status
 /tasks disable <name>  # disable a scheduled task
 ```
 
