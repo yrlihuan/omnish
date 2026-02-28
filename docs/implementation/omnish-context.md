@@ -56,22 +56,24 @@ pub struct RecentCommands {
 ```
 
 ### `GroupedFormatter`
-按会话分组的格式化器，将当前会话的命令放在前面：
+按会话分组的格式化器，将当前会话的命令放在前面。每个命令和输出之间用20个连字符分隔：
 ```rust
 pub struct GroupedFormatter {
     current_session_id: String,
     now_ms: u64,
 }
 ```
+**分隔符位置:** 分隔符放在每个命令的输出之后，用于清晰地分隔多个命令块。
 
 ### `InterleavedFormatter`
-按时间交错排序的格式化器，所有命令按时间顺序排列：
+按时间交错排序的格式化器，所有命令按时间顺序排列。每个命令和输出之间用20个连字符分隔：
 ```rust
 pub struct InterleavedFormatter {
     current_session_id: String,
     now_ms: u64,
 }
 ```
+**分隔符位置:** 分隔符放在每个命令的输出之后，用于清晰地分隔多个命令块。
 
 ## 关键函数说明
 

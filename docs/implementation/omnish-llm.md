@@ -12,6 +12,8 @@ omnish-llm 提供LLM后端抽象，支持多种LLM提供商，包括Anthropic、
 LLM后端接口，定义所有LLM后端必须实现的方法：
 - `complete()`: 发送补全请求并获取响应
 - `name()`: 返回后端名称标识符
+- `max_content_chars()`: 返回该后端模型的上下文最大字符数（可选，默认None）
+- `max_content_chars_for_use_case()`: 根据用途返回上下文字符数限制（可选，默认返回max_content_chars()）
 
 ### `LlmRequest`
 LLM请求结构体，包含发送给LLM的完整请求信息：
@@ -19,6 +21,8 @@ LLM请求结构体，包含发送给LLM的完整请求信息：
 - `query`: 用户查询（可选）
 - `trigger`: 触发类型（手动、自动错误检测、自动模式检测）
 - `session_ids`: 相关会话ID列表
+- `use_case`: 请求用途（用于选择合适的模型）
+- `max_content_chars`: 模型上下文最大字符数限制（可选，用于限制上下文大小）
 
 ### `LlmResponse`
 LLM响应结构体，包含LLM返回的结果：
@@ -49,6 +53,7 @@ LLM后端配置结构体（来自omnish-common）：
 - `model`: 模型名称
 - `api_key_cmd`: 获取API密钥的命令
 - `base_url`: API基础URL（仅openai-compat需要）
+- `max_content_chars`: 该模型的上下文最大字符数（可选，用于限制上下文大小）
 
 ## 关键函数说明
 
@@ -190,12 +195,14 @@ default = "anthropic"
 backend_type = "anthropic"
 model = "claude-3-5-sonnet-20241022"
 api_key_cmd = "echo $ANTHROPIC_API_KEY"
+max_content_chars = 200000
 
 [llm.backends.openai]
 backend_type = "openai-compat"
 model = "gpt-4"
 api_key_cmd = "echo $OPENAI_API_KEY"
 base_url = "https://api.openai.com/v1"
+max_content_chars = 128000
 ```
 
 ## 错误处理

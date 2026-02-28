@@ -237,6 +237,27 @@ let addr4 = parse_addr("./local.sock");          // 相对路径Unix socket
 2. **请求-响应匹配**: 使用`request_id`关联请求和响应
 3. **错误处理**: 连接断开时清理挂起的请求
 
+### 连接断开处理
+当守护进程意外断开连接或网络故障导致连接中断时，必须防止客户端的`call()`方法永久挂起。这是通过显式清空待处理的请求映射来实现的。
+
+**核心机制:**
+在`read_loop`和`write_loop`函数退出时，调用`pending.lock().await.clear()`清空挂起的请求映射。此映射存储了所有等待响应的请求ID与oneshot发送端的对应关系。
+
+**必要性:**
+- 当守护进程死亡时，`read_loop`停止并退出，但`write_loop`仍保有`pending` Arc的引用，使其内部的oneshot发送端保持活动状态
+- 客户端中调用`call()`的协程通过`reply_rx.await`等待响应，而oneshot接收端持有对发送端的引用
+- 如果不显式清空mapping，oneshot发送端将保持活动状态，导致`reply_rx.await`永久阻塞，客户端出现"僵尸"状态
+
+**工作流程:**
+1. 连接断开（e.g., 守护进程崩溃或网络故障）
+2. `read_loop`或`write_loop`检测到I/O错误并退出
+3. 循环退出前调用`pending.lock().await.clear()`
+4. 所有oneshot发送端被销毁
+5. 所有正在`reply_rx.await`的协程收到`RecvError`并解除阻塞
+6. `call()`返回错误而非永久挂起
+
+这个设计确保客户端能够快速检测到与守护进程的连接失败，从而进行重连或返回错误。
+
 ## 依赖关系
 - **omnish-protocol**: 消息类型定义和序列化
 - **tokio**: 异步运行时、网络I/O和同步原语

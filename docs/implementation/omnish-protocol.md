@@ -41,11 +41,15 @@ omnish-protocol 定义了客户端和守护进程之间交换的消息类型，�
 - `timestamp_ms`: 时间戳（毫秒）
 - `attrs`: 会话属性键值对（`HashMap<String, String>`）
 
-**用途：** 客户端定期向守护进程发送会话属性更新，包含 `shell_cwd`（当前工作目录）和 `child_process`（子进程信息）等状态信息，使守护进程能够跟踪会话的实时状态。
+**用途：** 客户端定期向守护进程发送会话属性更新，通过各种探针（Probe）收集的状态信息，使守护进程能够跟踪会话的实时状态。属性值包含来自不同探针的数据。
 
-**典型属性：**
-- `shell_cwd`: Shell 当前工作目录
-- `child_process`: 当前子进程信息（如命令名称、PID等）
+**标准属性：**
+- `host`: 主机名（来自HostnameProbe）
+- `shell_cwd`: Shell当前工作目录（来自ShellCwdProbe）
+- `child_process`: 当前子进程信息，格式为"name:pid"（来自ChildProcessProbe）
+- 其他自定义属性可作为扩展字段存储
+
+**属性来源：** SessionUpdate中的attrs由多个Probe产生，包括HostnameProbe、ShellCwdProbe、ChildProcessProbe等
 
 ### `IoData`
 I/O数据消息，包含：

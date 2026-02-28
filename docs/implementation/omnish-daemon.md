@@ -48,6 +48,190 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 ### `MultiSessionReader`
 多会话流读取器，实现`StreamReader` trait，用于跨多个会话读取流数据。
 
+## 任务管理
+
+### TaskManager
+
+`TaskManager` 是一个集中式的定时任务管理器，用于管理守护进程中的所有定时任务。它基于 `tokio-cron-scheduler` 库实现，提供了统一的任务注册、启动、列表和禁用等功能。
+
+**结构说明:**
+- `scheduler`: `JobScheduler` - 底层的 cron 任务调度器
+- `tasks`: `HashMap<String, TaskEntry>` - 已注册任务的映射表，key为任务名称，value为任务信息
+- `TaskEntry` 包含：
+  - `uuid`: 任务在调度器中的唯一标识符
+  - `cron`: cron 表达式字符串
+  - `enabled`: 任务启用/禁用状态
+
+**主要特点:**
+- 支持 cron 表达式定义任务执行计划
+- 使用本地时区进行时间计算（通过设置 `TZ` 环境变量）
+- 支持运行时任务列表查询和禁用
+- 任务注册后自动添加到调度器并记录日志
+
+### 内置定时任务
+
+守护进程注册了以下内置定时任务：
+
+#### 1. `eviction` - 会话驱逐任务
+**执行周期:** 每小时 (`0 0 * * * *`)
+**功能:** 驱逐长时间不活跃的会话，防止内存无限增长
+**相关配置:**
+```toml
+[tasks.eviction]
+session_evict_hours = 48  # 默认：48小时后驱逐
+```
+**实现:** 通过 `create_eviction_job()` 函数创建，调用 `SessionManager::evict_inactive()`
+
+#### 2. `hourly_summary` - 小时总结任务
+**执行周期:** 每小时整点 (`0 0 * * * *`)
+**功能:** 生成过去1小时内的命令执行摘要，保存到 `~/.omnish/notes/hourly/YYYY-MM-DD-HH.md`
+**特点:**
+- 调用 LLM 后端（如果可用）生成执行摘要
+- 支持上下文大小限制和内容精简
+- 如果没有命令或上下文为空会自动跳过
+
+**相关配置:**
+```toml
+[context.hourly_summary]
+head_lines = 50         # 命令输出头部行数
+tail_lines = 100        # 命令输出尾部行数
+max_line_width = 128    # 每行最大字符数
+```
+**实现:** 通过 `create_hourly_summary_job()` 函数创建
+
+#### 3. `daily_notes` - 日报生成任务
+**执行周期:** 每天指定时刻 (默认 `0 0 23 * * *` - 每天23:00)
+**功能:** 生成过去24小时内的命令记录和 LLM 摘要，保存到 `~/.omnish/notes/YYYY-MM-DD.md`
+**相关配置:**
+```toml
+[tasks.daily_notes]
+enabled = true
+schedule_hour = 23      # 每天几点生成（0-23），默认 23:00
+```
+**实现:** 通过 `create_daily_notes_job()` 函数创建
+
+#### 4. `disk_cleanup` - 磁盘清理任务
+**执行周期:** 默认每6小时 (`0 0 */6 * * *`)
+**功能:** 清理距今超过48小时的过期会话目录，释放磁盘空间
+**相关配置:**
+```toml
+[tasks.disk_cleanup]
+schedule = "0 0 */6 * * *"  # Cron 表达式，默认每6小时
+```
+**实现:** 通过 `create_disk_cleanup_job()` 函数创建，调用 `SessionManager::cleanup_expired_dirs()`
+
+### TaskManager 关键函数说明
+
+#### `TaskManager::new()`
+创建新的任务管理器实例。
+
+**返回:** `Result<Self>`
+
+**用途:** 初始化 TaskManager，创建内部的 JobScheduler
+
+**注意:** 自动设置 `TZ` 环境变量为空字符串，使用本地时区
+
+#### `TaskManager::register()`
+注册一个新的定时任务。
+
+**参数:**
+- `name`: `&str` - 任务名称
+- `cron`: `&str` - cron 表达式 (格式: "second minute hour day month day_of_week")
+- `job`: `Job` - 使用 `tokio_cron_scheduler::Job::new_async()` 创建的异步任务
+
+**返回:** `Result<()>`
+
+**用途:** 将定时任务添加到调度器，记录日志
+
+#### `TaskManager::start()`
+启动任务调度器，开始执行所有已注册的定时任务。
+
+**返回:** `Result<()>`
+
+**用途:** 在守护进程启动时调用，开始执行定时任务
+
+#### `TaskManager::list()`
+获取所有已注册任务的列表。
+
+**返回:** `Vec<(String, String, bool)>`（任务名、cron表达式、启用状态）
+
+**用途:** 查询当前注册的所有任务
+
+#### `TaskManager::disable()`
+在运行时禁用一个已注册的任务。
+
+**参数:**
+- `name`: `&str` - 要禁用的任务名称
+
+**返回:** `Result<()>`
+
+**用途:** 运行时管理，通过 `/tasks` 命令禁用特定任务
+
+#### `TaskManager::format_list()`
+格式化任务列表为可读的字符串（用于显示给用户）。
+
+**返回:** `String`
+
+**用途:** 在 `/tasks` 命令中显示当前的任务状态
+
+### 创建 Job 的模式
+
+omnish 中所有定时任务都遵循统一的模式，使用 `tokio_cron_scheduler::Job::new_async()` 创建异步任务：
+
+```rust
+pub fn create_custom_job(
+    mgr: Arc<SessionManager>,
+    config_param: SomeType,
+) -> anyhow::Result<Job> {
+    let cron = "0 0 * * * *";  // 定义 cron 表达式
+    Ok(Job::new_async(cron, move |_uuid, _lock| {
+        let mgr = mgr.clone();
+        let param = config_param.clone();
+        Box::pin(async move {
+            // 任务实现逻辑
+            if let Err(e) = perform_task(&mgr, &param).await {
+                tracing::warn!("task failed: {}", e);
+            }
+        })
+    })?)
+}
+
+async fn perform_task(
+    mgr: &SessionManager,
+    param: &SomeType,
+) -> anyhow::Result<()> {
+    // 实现具体逻辑
+    Ok(())
+}
+```
+
+**关键点:**
+1. 使用 `Box::pin()` 包装异步块，符合 `tokio_cron_scheduler` 的接口要求
+2. 在闭包中克隆必要的参数（Arc<T> 支持廉价克隆）
+3. 使用 `tracing::warn!()` 记录任务执行错误，但不让错误中断任务调度器
+4. cron 表达式采用标准 Unix cron 格式：`秒 分 时 日 月 周几`
+
+### 配置示例
+
+在 `~/.omnish/daemon.toml` 中配置所有定时任务：
+
+```toml
+[tasks.eviction]
+session_evict_hours = 48
+
+[tasks.daily_notes]
+enabled = true
+schedule_hour = 23
+
+[tasks.disk_cleanup]
+schedule = "0 0 */6 * * *"
+
+[context.hourly_summary]
+head_lines = 50
+tail_lines = 100
+max_line_width = 128
+```
+
 ## 关键函数说明
 
 ### `DaemonServer::new()`

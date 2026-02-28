@@ -37,6 +37,7 @@ LLM后端具体配置，包含：
 - `model`: 模型名称
 - `api_key_cmd`: 获取API密钥的命令（可选）
 - `base_url`: API基础URL（可选）
+- `max_content_chars`: 模型上下文最大字符数（可选）
 
 ### `AutoTriggerConfig`
 自动触发LLM分析的配置，包含：
@@ -111,6 +112,7 @@ default = "claude"
 backend_type = "anthropic"
 model = "claude-3-haiku-20240307"
 api_key_cmd = "pass show api/anthropic"
+max_content_chars = 200000
 
 [llm.auto_trigger]
 on_nonzero_exit = true

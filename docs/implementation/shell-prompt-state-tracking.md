@@ -79,32 +79,71 @@ To prevent this, the CSI trigger is now guarded by two conditions:
 
 This fix resolves issue #27 where raw escape sequences appeared in the terminal.
 
-## CWD Tracking via ShellCwdProbe
+## Probe System for Session State Tracking
 
-Traditional shell tracking relies on `$PWD` environment variable, but this can become stale or incorrect when:
-- The shell changes directory without updating PWD (e.g., `cd` in a subshell)
-- Symbolic links are involved
-- The client process has a different working directory than the shell
+Omnish uses a **Probe** system to collect session state information via polling. Probes run periodically and generate `SessionUpdate` messages with `attrs` containing state snapshots.
 
-Omnish now uses `ShellCwdProbe` to periodically poll the shell process's actual working directory by reading `/proc/{shell_pid}/cwd`:
+### Key Probes
+
+#### ShellCwdProbe
+Tracks the shell's actual working directory by reading `/proc/{shell_pid}/cwd` (Linux-specific, returns None on macOS/other platforms):
 
 ```rust
 pub struct ShellCwdProbe(pub u32);
 impl Probe for ShellCwdProbe {
     fn key(&self) -> &str { "shell_cwd" }
     fn collect(&self) -> Option<String> {
-        std::fs::read_link(format!("/proc/{}/cwd", self.0))
-            .ok()
-            .map(|p| p.to_string_lossy().to_string())
+        // Linux: read /proc/{pid}/cwd symlink
+        // macOS/others: return None (fallback to session cwd)
     }
 }
 ```
 
-This probe is included in `default_polling_probes()` and runs alongside `ChildProcessProbe` to track:
-- `shell_cwd` — The shell's actual working directory
-- `child_process` — The currently running foreground process (name:pid)
+**Why needed:** Traditional `$PWD` environment variable can become stale or incorrect when:
+- The shell changes directory without updating PWD (e.g., `cd` in a subshell)
+- Symbolic links are involved
+- The client process has a different working directory than the shell
 
-This provides more accurate context for the LLM about where commands are executing.
+By reading the process's actual cwd via `/proc` (Linux) or returning None (other platforms), we get accurate directory tracking.
+
+#### ChildProcessProbe
+Tracks the currently running foreground process:
+
+```rust
+pub struct ChildProcessProbe(pub u32);
+impl Probe for ChildProcessProbe {
+    fn key(&self) -> &str { "child_process" }
+    fn collect(&self) -> Option<String> {
+        // Returns "name:pid" format
+        // e.g., "vim:12345"
+    }
+}
+```
+
+#### HostnameProbe
+Tracks the hostname:
+
+```rust
+pub struct HostnameProbe;
+impl Probe for HostnameProbe {
+    fn key(&self) -> &str { "host" }
+    fn collect(&self) -> Option<String> {
+        // Returns system hostname
+    }
+}
+```
+
+### Probe Integration
+
+All active probes are run in `default_polling_probes()` and their results are collected into a `HashMap<String, String>`. This attrs map is then sent in `SessionUpdate` messages. The daemon stores these updates with explicit fields extracted:
+
+```
+SessionUpdate.attrs: {"host": "workstation", "shell_cwd": "/home/user/project", "child_process": "vim:12345"}
+    ↓ (extracted in SessionUpdateRecord.new())
+SessionUpdateRecord: {host: Some("workstation"), shell_cwd: Some("/home/user/project"), child_process: Some("vim:12345"), extra: {}}
+```
+
+This provides accurate, up-to-date context for the LLM about where commands are executing and on which host.
 
 ## State Diagram
 

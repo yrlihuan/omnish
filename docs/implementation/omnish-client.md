@@ -186,22 +186,32 @@ Probe 集合容器，管理多个 Probe 实例。
 - `HostnameProbe` - 获取主机名
 
 **动态 Probe (定期轮询收集):**
-- `ShellCwdProbe(pid: u32)` - 通过 `/proc/{pid}/cwd` 获取 shell 进程当前工作目录
-  - 读取 shell 进程的符号链接 `/proc/<pid>/cwd` 获取当前工作目录
+- `ShellCwdProbe(pid: u32)` - 获取 shell 进程当前工作目录
+  - **Linux**: 读取 `/proc/{pid}/cwd` 符号链接
+  - **macOS**: 返回 None（获取其他进程 CWD 在 macOS 上需要 lsof 等复杂方案）
+  - **其他平台**: 返回 None
   - 用于实时跟踪 shell 的实际工作目录
-- `ChildProcessProbe(pid: u32)` - 通过 `/proc/{pid}/task/{pid}/children` 获取子进程信息
-  - 读取 `/proc/<pid>/task/<pid>/children` 获取子进程 PID 列表
-  - 取最后一个子进程，读取其 `/proc/<pid>/comm` 获取进程名
-  - 返回格式为 `"name:pid"` 的字符串（如 `"vim:12345"`）
+- `ChildProcessProbe(pid: u32)` - 获取 shell 的最新子进程信息
+  - **Linux**: 读取 `/proc/{pid}/task/{pid}/children` 获取子进程 PID 列表，取最后一个，读取其 `/proc/{pid}/comm` 获取进程名
+  - **macOS**: 返回空字符串（基础支持，完整实现需要系统框架）
+  - **其他平台**: 返回空字符串
+  - 返回格式: `"name:pid"` 的字符串（如 `"vim:12345"`）
   - 如果没有子进程则返回空字符串
+  - 主要用于 tmux 窗口标题更新
 
 ### 默认 Probe 集合
 
 **会话探测 (`default_session_probes`)**: 静态 Probe 集合，在会话开始时收集一次
-- 包含: ShellProbe, PidProbe, TtyProbe, CwdProbe, HostnameProbe
+- `ShellProbe` - 使用的 shell（环境变量 `SHELL`）
+- `PidProbe` - shell 子进程 PID
+- `TtyProbe` - 终端设备路径（环境变量 `TTY`）
+- `CwdProbe` - 客户端启动时的工作目录
+- `HostnameProbe` - 主机名（通过 `gethostname()` 系统调用获取）
 
 **轮询探测 (`default_polling_probes`)**: 动态 Probe 集合，用于定期轮询
-- 包含: ShellCwdProbe, ChildProcessProbe
+- `HostnameProbe` - 主机名（定期轮询以检测集群环境中的变化）
+- `ShellCwdProbe` - 当前 shell 进程工作目录
+- `ChildProcessProbe` - 当前子进程信息（进程名:PID 格式）
 
 ## 关键函数说明
 
@@ -230,8 +240,24 @@ Probe 集合容器，管理多个 Probe 实例。
 - `buffer: &MessageBuffer` - 消息缓冲区
 
 **逻辑:**
-- 如果发送失败且消息类型可缓冲（`IoData`或`CommandComplete`），则加入缓冲区
+- 如果发送失败且消息类型可缓冲（`IoData`、`CommandComplete` 或 `SessionUpdate`），则加入缓冲区
 - 缓冲区有大小限制（`MAX_BUFFER_SIZE = 10_000`），满时丢弃最旧消息
+
+### SessionUpdate 消息
+
+`SessionUpdate` 消息用于实时更新会话状态信息，携带来自 Polling 探针的数据变化。
+
+**字段:**
+- `session_id: String` - 会话ID
+- `timestamp_ms: u64` - 消息发送时间戳（毫秒）
+- `attrs: HashMap<String, String>` - 变化的属性映射
+  - 仅包含自上次探测以来发生变化的属性
+  - 常见属性: `hostname`, `shell_cwd`, `child_process`
+
+**特性:**
+- 差异更新：仅发送变化的字段，减少网络流量
+- 可缓冲消息：发送失败时自动加入重试缓冲区
+- 由轮询任务异步生成和发送
 
 ### Polling 机制
 
@@ -239,17 +265,30 @@ Probe 集合容器，管理多个 Probe 实例。
 
 **工作机制:**
 1. **启动时机**: 与守护进程建立连接后自动启动
-2. **探测间隔**: 每 5 秒执行一次探测
-3. **数据来源**: 使用 `default_polling_probes` 收集 ShellCwdProbe 和 ChildProcessProbe
+2. **探测间隔**: 使用渐进式间隔策略
+   - 默认间隔序列: 1, 2, 4, 8, 15, 30, 60 秒
+   - 最后维持 60 秒间隔
+   - 命令开始时（OSC 133 CommandStart 事件）重置为 1 秒间隔
+3. **数据来源**: 使用 `default_polling_probes` 收集以下内容
+   - `HostnameProbe` - 主机名（定期轮询，可能在集群环境中变化）
+   - `ShellCwdProbe(pid)` - 读取 `/proc/{pid}/cwd` 获取 shell 进程当前工作目录
+   - `ChildProcessProbe(pid)` - 获取 shell 的最新子进程信息
 4. **差异更新**: 维护上一次探测结果的副本，仅当数值发生变化时才更新
 5. **消息发送**: 通过 `SessionUpdate` 消息将变化的数据发送到守护进程
+   - `SessionUpdate` 包含: `session_id`, `timestamp_ms`, `attrs` (HashMap)
+   - `attrs` 仅包含已变化的字段，减少网络传输
+
+**平台支持:**
+- **Linux**: `ShellCwdProbe` 通过 `/proc/{pid}/cwd` 符号链接读取，`ChildProcessProbe` 通过 `/proc/{pid}/task/{pid}/children` 读取
+- **macOS**: `ShellCwdProbe` 返回 None（系统复杂性），`ChildProcessProbe` 返回空字符串（基础支持）
+- **其他平台**: 两个探针均返回 None/空字符串
 
 **tmux 窗口标题更新:**
 - 当 `child_process` 探测值发生变化时，自动更新 tmux 窗口标题
 - 提取进程名（不含 PID）作为窗口标题
 - 使用 tmux OSC 序列 `\x1b_k{name}\x1b\\` 设置窗口名称
 
-**代码位置**: `main.rs` 中的异步任务块 (约第 120-157 行)
+**代码位置**: `main.rs` 中的异步任务块和轮询任务
 
 ### `connect_daemon()`
 连接守护进程，支持优雅降级（守护进程不可用时进入直通模式）。
@@ -420,8 +459,8 @@ daemon_addr = "~/.omnish/omnish.sock"
 - `ShellInputTracker`作为防御措施，过滤ESC序列
 
 ### 消息缓冲
-- 可重试消息（`IoData`, `CommandComplete`）在连接失败时缓冲
-- 缓冲区大小限制防止内存泄漏
+- 可重试消息（`IoData`, `CommandComplete`, `SessionUpdate`）在连接失败时缓冲
+- 缓冲区大小限制（`MAX_BUFFER_SIZE = 10_000`）防止内存泄漏
 - 重新连接后重放缓冲的消息
 
 ### 终端渲染

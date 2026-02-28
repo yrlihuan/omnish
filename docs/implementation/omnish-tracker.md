@@ -217,6 +217,19 @@ let events = detector.feed(b"output\r\ngit@github.com:user/repo $ ");
 - **regex**: 用于shell提示模式的正则表达式匹配
 - **标准库**: 基础数据结构和字符串处理
 
+## CWD跟踪
+
+命令记录中的`cwd`（当前工作目录）通过以下方式获得：
+
+1. **优先：运行时CWD**（来自OSC 133 CommandStart事件或client通过ShellCwdProbe探针发送）
+   - ShellCwdProbe通过读取`/proc/{shell_pid}/cwd`符号链接获得Shell的实际工作目录
+   - 比环境变量更准确，避免$PWD过时或不正确的问题
+
+2. **回退：会话CWD**（来自SessionUpdate中的shell_cwd属性或会话起始时的cwd）
+   - 如果运行时CWD不可用，使用会话保存的cwd
+
+这样既支持精确的运行时跟踪，又在信息不完整时有合理的回退策略。
+
 ## 设计特点
 
 ### 1. 双模式检测

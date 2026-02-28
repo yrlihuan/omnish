@@ -211,14 +211,47 @@ let range_entries = read_range(Path::new("/path/to/stream.bin"), 0, 100)?;
 - **anyhow**: 错误处理
 - **std::fs, std::io**: 文件系统操作和I/O处理
 
+### `SessionUpdateRecord`
+会话更新记录结构，用于保存会话状态快照（来自SessionUpdate消息）：
+
+```rust
+pub struct SessionUpdateRecord {
+    pub session_id: String,              // 会话ID
+    pub timestamp_ms: u64,               // 时间戳（毫秒）
+    pub host: Option<String>,            // 主机名
+    pub shell_cwd: Option<String>,       // Shell当前工作目录
+    pub child_process: Option<String>,   // 当前子进程（格式: "name:pid"）
+    pub extra: HashMap<String, Value>,   // 其他扩展属性（JSON Value）
+}
+```
+
+**用途:** 定期记录会话的状态变化，包括主机、工作目录和当前执行的进程信息。已知属性（host、shell_cwd、child_process）被提取为明确字段，其他属性存入extra用于未来扩展。
+
 ## 文件结构
 omnish-store模块使用以下文件结构存储数据：
 ```
 store_directory/
-├── commands.json      # 命令记录（JSON格式）
-├── meta.json         # 会话元数据（JSON格式）
-└── stream.bin        # 原始流数据（二进制格式）
+├── commands.json              # 命令记录（JSON格式）
+├── meta.json                 # 会话元数据（JSON格式）
+├── stream.bin                # 原始流数据（二进制格式）
+└── logs/
+    └── sessions/
+        └── session_updates.csv  # 会话更新记录（CSV格式）
 ```
+
+### CSV格式
+会话更新记录保存为CSV格式，包含以下列：
+```
+timestamp,session_id,host,shell_cwd,child_process,extra
+2024-01-01 10:00:00,session-123,workstation,/home/user/project,vim:12345,{}
+```
+
+- `timestamp`: 可读的时间戳格式
+- `session_id`: 会话标识符
+- `host`: 主机名（无则为空）
+- `shell_cwd`: 工作目录（无则为空）
+- `child_process`: 子进程信息（无则为空）
+- `extra`: 额外属性的JSON字符串
 
 ## 设计特点
 1. **高效存储**: 流数据使用紧凑的二进制格式，减少存储空间
