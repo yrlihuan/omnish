@@ -361,12 +361,54 @@ fn default_hourly_max_line_width() -> usize {
     128
 }
 
+// ---------------------------------------------------------------------------
+// Daily summary config
+// ---------------------------------------------------------------------------
+
+/// Daily summary context configuration
+#[derive(Debug, Deserialize, Clone)]
+pub struct DailySummaryConfig {
+    /// Number of lines to keep from the start of each command output.
+    #[serde(default = "default_daily_head_lines")]
+    pub head_lines: usize,
+    /// Number of lines to keep from the end of each command output.
+    #[serde(default = "default_daily_tail_lines")]
+    pub tail_lines: usize,
+    /// Maximum width (in characters) per output line; longer lines are truncated.
+    #[serde(default = "default_daily_max_line_width")]
+    pub max_line_width: usize,
+}
+
+impl Default for DailySummaryConfig {
+    fn default() -> Self {
+        Self {
+            head_lines: default_daily_head_lines(),
+            tail_lines: default_daily_tail_lines(),
+            max_line_width: default_daily_max_line_width(),
+        }
+    }
+}
+
+fn default_daily_head_lines() -> usize {
+    20
+}
+
+fn default_daily_tail_lines() -> usize {
+    50
+}
+
+fn default_daily_max_line_width() -> usize {
+    128
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct ContextConfig {
     #[serde(default)]
     pub completion: CompletionContextConfig,
     #[serde(default)]
     pub hourly_summary: HourlySummaryConfig,
+    #[serde(default)]
+    pub daily_summary: DailySummaryConfig,
 }
 
 impl Default for ContextConfig {
@@ -374,6 +416,7 @@ impl Default for ContextConfig {
         Self {
             completion: CompletionContextConfig::default(),
             hourly_summary: HourlySummaryConfig::default(),
+            daily_summary: DailySummaryConfig::default(),
         }
     }
 }

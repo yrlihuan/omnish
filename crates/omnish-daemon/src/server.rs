@@ -242,7 +242,7 @@ async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionMan
             }
         }
         "daily-notes" => {
-            // Show commands from past 24 hours
+            // Show commands from past 24 hours using build_daily_summary_context
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -252,22 +252,17 @@ async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionMan
             if commands.is_empty() {
                 return "No commands in the past 24 hours".to_string();
             }
-            let mut md = String::from("## Past 24 hours commands\n\n");
-            md.push_str("| Time | Host:Cwd | Command |\n");
-            md.push_str("|------|----------|---------|\n");
-            for (hostname, cmd) in &commands {
-                let time = chrono::DateTime::from_timestamp_millis(cmd.started_at as i64)
-                    .map(|dt| dt.format("%H:%M").to_string())
-                    .unwrap_or_else(|| "?".to_string());
-                let host = if hostname.is_empty() { "?" } else { hostname };
-                let cwd = cmd.cwd.as_deref().unwrap_or("?");
-                let cmd_line = cmd.command_line.as_deref().unwrap_or("?");
-                md.push_str(&format!("| {} | {}:{} | {} |\n", time, host, cwd, cmd_line));
+            let max_chars = llm_backend
+                .as_ref()
+                .and_then(|b| b.max_content_chars());
+            let config = mgr.get_daily_summary_config();
+            match mgr.build_daily_summary_context(&commands, max_chars, &config).await {
+                Ok(ctx) => ctx,
+                Err(e) => format!("Error: {}", e),
             }
-            md
         }
         "hourly-notes" | "hourly" => {
-            // Show commands from past hour
+            // Show commands from past hour using build_hourly_summary_context
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -277,19 +272,14 @@ async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionMan
             if commands.is_empty() {
                 return "No commands in the past hour".to_string();
             }
-            let mut md = String::from("## Past hour commands\n\n");
-            md.push_str("| Time | Host:Cwd | Command |\n");
-            md.push_str("|------|----------|---------|\n");
-            for (hostname, cmd) in &commands {
-                let time = chrono::DateTime::from_timestamp_millis(cmd.started_at as i64)
-                    .map(|dt| dt.format("%H:%M").to_string())
-                    .unwrap_or_else(|| "?".to_string());
-                let host = if hostname.is_empty() { "?" } else { hostname };
-                let cwd = cmd.cwd.as_deref().unwrap_or("?");
-                let cmd_line = cmd.command_line.as_deref().unwrap_or("?");
-                md.push_str(&format!("| {} | {}:{} | {} |\n", time, host, cwd, cmd_line));
+            let max_chars = llm_backend
+                .as_ref()
+                .and_then(|b| b.max_content_chars());
+            let config = mgr.get_hourly_summary_config();
+            match mgr.build_hourly_summary_context(&commands, max_chars, &config).await {
+                Ok(ctx) => ctx,
+                Err(e) => format!("Error: {}", e),
             }
-            md
         }
         _ => format!("Unknown scenario: {}. Available: chat, auto-complete, daily-notes, hourly-notes", scenario),
     }
