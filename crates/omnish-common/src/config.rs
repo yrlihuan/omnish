@@ -116,10 +116,6 @@ impl Default for DiskCleanupConfig {
     }
 }
 
-fn default_disk_cleanup_schedule() -> String {
-    "0 0 */6 * * *".to_string()
-}
-
 #[derive(Debug, Deserialize, Clone)]
 pub struct TasksConfig {
     #[serde(default)]
