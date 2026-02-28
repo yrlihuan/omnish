@@ -129,6 +129,7 @@ Inside any omnish session, type `:` to enter chat mode, then you can directly in
 Built-in commands:
 
 ```bash
+/version             # show omnish version
 /context              # show current session context
 /context chat         # show chat/analysis context
 /context auto-complete # show auto-complete context

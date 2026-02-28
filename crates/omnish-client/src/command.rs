@@ -64,6 +64,10 @@ fn template_command(args: &str) -> String {
     }
 }
 
+fn version_command(_args: &str) -> String {
+    format!("omnish {}", env!("CARGO_PKG_VERSION"))
+}
+
 const COMMANDS: &[CommandEntry] = &[
     CommandEntry {
         path: "/context",
@@ -74,6 +78,11 @@ const COMMANDS: &[CommandEntry] = &[
         path: "/template",
         kind: CommandKind::Local(template_command),
         help: "Show prompt template",
+    },
+    CommandEntry {
+        path: "/version",
+        kind: CommandKind::Local(version_command),
+        help: "Show omnish version",
     },
     CommandEntry {
         path: "/debug",
@@ -317,6 +326,7 @@ mod tests {
         let cmds = completable_commands();
         assert!(cmds.contains(&"/context".to_string()));
         assert!(cmds.contains(&"/template".to_string()));
+        assert!(cmds.contains(&"/version".to_string()));
         assert!(cmds.contains(&"/debug".to_string()));
         assert!(cmds.contains(&"/debug client".to_string()));
         assert!(cmds.contains(&"/debug session".to_string()));
@@ -372,6 +382,17 @@ mod tests {
                 assert!(redirect.is_none());
             }
             _ => panic!("expected DaemonQuery"),
+        }
+    }
+
+    #[test]
+    fn test_version_command() {
+        match dispatch("/version") {
+            ChatAction::Command { result, redirect } => {
+                assert!(result.starts_with("omnish "));
+                assert!(redirect.is_none());
+            }
+            _ => panic!("expected Command"),
         }
     }
 }
