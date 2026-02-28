@@ -370,6 +370,8 @@ impl RpcClient {
                 break;
             }
         }
+        // Drop all pending reply senders so callers unblock on write failure too.
+        pending.lock().await.clear();
     }
 
     async fn read_loop<R: AsyncRead + Unpin>(
@@ -397,6 +399,9 @@ impl RpcClient {
             }
         }
         connected.store(false, Ordering::SeqCst);
+        // Drop all pending reply senders so callers' reply_rx.await unblocks
+        // with RecvError instead of hanging forever.
+        pending.lock().await.clear();
         if let Some(tx) = disconnect_tx {
             let _ = tx.send(());
         }
