@@ -75,6 +75,7 @@ impl Probe for ShellCwdProbe {
     }
 }
 
+#[allow(dead_code)]
 pub struct ChildProcessProbe(pub u32);
 
 #[cfg(target_os = "linux")]
