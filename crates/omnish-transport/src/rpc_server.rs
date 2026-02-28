@@ -484,4 +484,137 @@ mod tests {
             other => panic!("expected Response, got {:?}", other),
         }
     }
+
+    #[tokio::test]
+    async fn test_auth_required_and_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("auth.sock");
+        let sock_str = sock.to_str().unwrap().to_string();
+        let token = "test-secret-token".to_string();
+
+        let server_token = token.clone();
+        let server_addr = sock_str.clone();
+        let server_handle = tokio::spawn(async move {
+            let mut server = RpcServer::bind_unix(&server_addr).await.unwrap();
+            server
+                .serve(
+                    |msg| {
+                        Box::pin(async move {
+                            match msg {
+                                Message::SessionStart(_) => Message::Ack,
+                                _ => Message::Ack,
+                            }
+                        })
+                    },
+                    Some(server_token),
+                    None,
+                )
+                .await
+                .ok();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Client sends correct auth token
+        let client = RpcClient::connect_unix(&sock_str).await.unwrap();
+        let resp = client
+            .call(Message::Auth(Auth {
+                token: token.clone(),
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(resp, Message::Ack));
+
+        // Normal messages should work after auth
+        let resp = client
+            .call(Message::SessionStart(SessionStart {
+                session_id: "s1".into(),
+                parent_session_id: None,
+                timestamp_ms: 1000,
+                attrs: HashMap::new(),
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(resp, Message::Ack));
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_auth_wrong_token_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("auth_fail.sock");
+        let sock_str = sock.to_str().unwrap().to_string();
+
+        let server_addr = sock_str.clone();
+        let server_handle = tokio::spawn(async move {
+            let mut server = RpcServer::bind_unix(&server_addr).await.unwrap();
+            server
+                .serve(
+                    |_msg| Box::pin(async move { Message::Ack }),
+                    Some("correct-token".to_string()),
+                    None,
+                )
+                .await
+                .ok();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let client = RpcClient::connect_unix(&sock_str).await.unwrap();
+        let resp = client
+            .call(Message::Auth(Auth {
+                token: "wrong-token".into(),
+            }))
+            .await;
+        // Should get AuthFailed or connection closed
+        match resp {
+            Ok(Message::AuthFailed) => {} // expected
+            Err(_) => {}                  // also acceptable (server closes connection)
+            other => panic!("expected AuthFailed or error, got {:?}", other),
+        }
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_auth_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("auth_timeout.sock");
+        let sock_str = sock.to_str().unwrap().to_string();
+
+        let server_addr = sock_str.clone();
+        let server_handle = tokio::spawn(async move {
+            let mut server = RpcServer::bind_unix(&server_addr).await.unwrap();
+            server
+                .serve(
+                    |_msg| Box::pin(async move { Message::Ack }),
+                    Some("some-token".to_string()),
+                    None,
+                )
+                .await
+                .ok();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Connect but don't send anything — server should timeout after 5s
+        let client = RpcClient::connect_unix(&sock_str).await.unwrap();
+
+        // Wait for server to timeout the connection
+        tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+
+        // Now try to send something — should fail since server closed the connection
+        let resp = client
+            .call(Message::SessionStart(SessionStart {
+                session_id: "s1".into(),
+                parent_session_id: None,
+                timestamp_ms: 1000,
+                attrs: HashMap::new(),
+            }))
+            .await;
+        assert!(resp.is_err());
+
+        server_handle.abort();
+    }
 }
