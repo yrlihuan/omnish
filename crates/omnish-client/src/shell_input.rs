@@ -142,6 +142,7 @@ impl ShellInputTracker {
 
     /// ESC sequence processing state for debugging.
     /// Returns: 0=normal, 1=saw ESC, 2=in CSI params
+    #[allow(dead_code)]
     pub fn esc_state(&self) -> u8 {
         self.esc_state
     }

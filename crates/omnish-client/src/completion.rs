@@ -12,6 +12,7 @@ const MAX_CONCURRENT_REQUESTS: usize = 5;
 
 /// State of an active completion request
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct RequestState {
     input: String,
     sent_at: Instant,
@@ -338,6 +339,7 @@ impl ShellCompleter {
     }
 
     /// Get the input that produced the current ghost text.
+    #[allow(dead_code)]
     pub fn ghost_input(&self) -> &str {
         &self.ghost_input
     }

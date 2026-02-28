@@ -966,7 +966,7 @@ impl SessionManager {
             cc.completion.history_commands,
             cc.completion.min_current_session_commands,
             cc.completion.max_line_width,
-            cc.completion.max_context_chars,
+            max_context_chars,
         )
         .await
     }
