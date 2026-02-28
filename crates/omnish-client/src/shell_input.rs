@@ -22,6 +22,9 @@ pub struct ShellInputTracker {
     /// When true, a readline report is expected; `take_change()` returns None
     /// to suppress stale completions until the real readline content arrives.
     pending_rl_report: bool,
+    /// When pending_rl_report was set. Used to auto-clear after timeout
+    /// in case bash never responds (e.g., trigger sent during Tab completion).
+    pending_rl_report_at: Option<std::time::Instant>,
 }
 
 impl ShellInputTracker {
@@ -33,6 +36,7 @@ impl ShellInputTracker {
             changed: false,
             esc_state: 0,
             pending_rl_report: false,
+            pending_rl_report_at: None,
         }
     }
 
@@ -41,7 +45,8 @@ impl ShellInputTracker {
         self.at_prompt = true;
         self.input.clear();
         self.esc_state = 0;
-        self.pending_rl_report = false; // Clear pending report on new prompt
+        self.pending_rl_report = false;
+        self.pending_rl_report_at = None;
         self.bump(); // always bump so completion can fire on empty prompt
     }
 
@@ -136,7 +141,18 @@ impl ShellInputTracker {
     }
 
     /// Whether a readline report is pending (e.g., after Tab/Up/Down/Ctrl+R).
-    pub fn pending_rl_report(&self) -> bool {
+    /// Auto-clears after 1 second to prevent getting stuck when bash doesn't
+    /// respond (e.g., trigger sent during bash's own Tab completion).
+    pub fn pending_rl_report(&mut self) -> bool {
+        if self.pending_rl_report {
+            if let Some(at) = self.pending_rl_report_at {
+                if at.elapsed() > std::time::Duration::from_secs(1) {
+                    self.pending_rl_report = false;
+                    self.pending_rl_report_at = None;
+                    return false;
+                }
+            }
+        }
         self.pending_rl_report
     }
 
@@ -167,6 +183,7 @@ impl ShellInputTracker {
             return;
         }
         self.pending_rl_report = false;
+        self.pending_rl_report_at = None;
         if self.input != content {
             self.input = content.to_string();
             self.bump();
@@ -178,6 +195,7 @@ impl ShellInputTracker {
     /// to avoid triggering completions based on stale input.
     pub fn mark_pending_report(&mut self) {
         self.pending_rl_report = true;
+        self.pending_rl_report_at = Some(std::time::Instant::now());
     }
 
     /// Check if input changed since last call, and return current state.
@@ -439,6 +457,27 @@ mod tests {
         assert!(t.at_prompt());
 
         // Now take_change should work
+        assert!(t.take_change().is_some());
+    }
+
+    /// Regression: pending_rl_report should auto-clear after timeout (issue #57).
+    /// On macOS bash 3.2, the bind -x handler may not fire after Tab completion,
+    /// leaving pending_rl_report stuck forever.
+    #[test]
+    fn test_pending_rl_report_auto_clears_after_timeout() {
+        let mut t = ShellInputTracker::new();
+        t.feed_forwarded(b"ls");
+        t.mark_pending_report();
+        assert!(t.pending_rl_report());
+
+        // Simulate time passing by directly setting the timestamp to the past
+        t.pending_rl_report_at = Some(
+            std::time::Instant::now() - std::time::Duration::from_secs(2),
+        );
+
+        // Should auto-clear after timeout
+        assert!(!t.pending_rl_report());
+        // take_change should work again
         assert!(t.take_change().is_some());
     }
 }
