@@ -28,25 +28,12 @@ pub fn create_daily_notes_job(
     })?)
 }
 
-/// Generate the daily note markdown file.
-async fn generate_daily_note(
-    mgr: &SessionManager,
-    llm_backend: Option<&dyn LlmBackend>,
+/// Build the daily notes LLM context: command table + hourly notes.
+/// This is used by both the daily note generator and the `/context daily-notes` command.
+pub fn build_daily_notes_context(
+    commands: &[(String, omnish_store::command::CommandRecord)],
     notes_dir: &PathBuf,
-) -> anyhow::Result<()> {
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    let twenty_four_hours_ms = 24 * 3600 * 1000;
-    let since_ms = now_ms.saturating_sub(twenty_four_hours_ms);
-
-    let commands = mgr.collect_recent_commands(since_ms).await;
-    if commands.is_empty() {
-        tracing::info!("daily notes: no commands in the last 24h, skipping");
-        return Ok(());
-    }
-
+) -> String {
     let today = Local::now().format("%Y-%m-%d").to_string();
 
     // Build the markdown table
@@ -54,7 +41,7 @@ async fn generate_daily_note(
     md.push_str("| 时间 | 主机:工作目录 | 命令 |\n");
     md.push_str("|------|--------------|------|\n");
 
-    for (hostname, cmd) in &commands {
+    for (hostname, cmd) in commands {
         let time = {
             let dt = chrono::DateTime::from_timestamp_millis(cmd.started_at as i64)
                 .unwrap_or_default()
@@ -74,18 +61,41 @@ async fn generate_daily_note(
 
     // Collect hourly notes for today as additional context
     let hourly_context = collect_hourly_notes(notes_dir, &today);
+    if !hourly_context.is_empty() {
+        md.push_str("\n## 每小时工作摘要\n\n");
+        md.push_str(&hourly_context);
+    }
+
+    md
+}
+
+/// Generate the daily note markdown file.
+async fn generate_daily_note(
+    mgr: &SessionManager,
+    llm_backend: Option<&dyn LlmBackend>,
+    notes_dir: &PathBuf,
+) -> anyhow::Result<()> {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let twenty_four_hours_ms = 24 * 3600 * 1000;
+    let since_ms = now_ms.saturating_sub(twenty_four_hours_ms);
+
+    let commands = mgr.collect_recent_commands(since_ms).await;
+    if commands.is_empty() {
+        tracing::info!("daily notes: no commands in the last 24h, skipping");
+        return Ok(());
+    }
+
+    let mut md = build_daily_notes_context(&commands, notes_dir);
 
     // Try LLM summary
     if let Some(backend) = llm_backend {
-        let mut context = md.clone();
-        if !hourly_context.is_empty() {
-            context.push_str("\n## 每小时工作摘要\n\n");
-            context.push_str(&hourly_context);
-        }
         let use_case = UseCase::Analysis;
         let max_content_chars = backend.max_content_chars_for_use_case(use_case);
         let req = LlmRequest {
-            context,
+            context: md.clone(),
             query: Some(omnish_llm::template::DAILY_NOTES_PROMPT.to_string()),
             trigger: TriggerType::AutoPattern,
             session_ids: vec![],
@@ -106,6 +116,7 @@ async fn generate_daily_note(
 
     // Write file
     std::fs::create_dir_all(notes_dir)?;
+    let today = Local::now().format("%Y-%m-%d").to_string();
     let file_path = notes_dir.join(format!("{}.md", today));
     std::fs::write(&file_path, &md)?;
     tracing::info!("daily notes: wrote {}", file_path.display());

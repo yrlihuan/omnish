@@ -242,7 +242,8 @@ async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionMan
             }
         }
         "daily-notes" => {
-            // Show commands from past 24 hours using build_daily_summary_context
+            // Show the same context that gets sent to the LLM for daily notes:
+            // command table + hourly notes
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -252,14 +253,8 @@ async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionMan
             if commands.is_empty() {
                 return "No commands in the past 24 hours".to_string();
             }
-            let max_chars = llm_backend
-                .as_ref()
-                .and_then(|b| b.max_content_chars());
-            let config = mgr.get_daily_summary_config();
-            match mgr.build_daily_summary_context(&commands, max_chars, &config).await {
-                Ok(ctx) => ctx,
-                Err(e) => format!("Error: {}", e),
-            }
+            let notes_dir = omnish_common::config::omnish_dir().join("notes");
+            omnish_daemon::daily_notes::build_daily_notes_context(&commands, &notes_dir)
         }
         "hourly-notes" | "hourly" => {
             // Show commands from past hour using build_hourly_summary_context
