@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use omnish_store::command::CommandRecord;
 
-use crate::format_utils::{assign_term_labels, truncate_lines};
+use crate::format_utils::{assign_stable_term_labels, assign_term_labels, truncate_lines};
 use crate::{CommandContext, ContextFormatter, ContextStrategy};
 
 fn format_command_prefix(hostname: &Option<String>, cwd: &Option<String>) -> String {
@@ -380,7 +380,21 @@ impl ContextFormatter for CompletionFormatter {
 
         // Recent section: all detailed commands interleaved by time, uniform labels
         if !detailed.is_empty() {
-            let labels = assign_term_labels(detailed, &self.current_session_id);
+            // Use stable labels based on chronological first appearance across ALL
+            // commands (history + detailed) so labels never shift between requests.
+            let mut all_commands: Vec<&CommandContext> = history.iter().chain(detailed.iter()).collect();
+            all_commands.sort_by_key(|c| c.started_at);
+            let all_contexts: Vec<CommandContext> = all_commands.iter().map(|c| CommandContext {
+                session_id: c.session_id.clone(),
+                hostname: c.hostname.clone(),
+                command_line: c.command_line.clone(),
+                cwd: c.cwd.clone(),
+                started_at: c.started_at,
+                ended_at: c.ended_at,
+                output: String::new(),
+                exit_code: c.exit_code,
+            }).collect();
+            let labels = assign_stable_term_labels(&all_contexts);
 
             let mut sorted: Vec<&CommandContext> = detailed.iter().collect();
             sorted.sort_by_key(|c| c.started_at);
@@ -1094,5 +1108,23 @@ mod tests {
         let formatter = CompletionFormatter::new("sess-a", 10, 10);
         let result = formatter.format(&[], &[]);
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_completion_formatter_stable_labels_across_sessions() {
+        // Labels should be the same regardless of which session is "current"
+        let detailed = vec![
+            make_ctx("sess-a", "ls", 25000, "file1.txt"),
+            make_ctx("sess-b", "npm start", 28000, "Server running"),
+        ];
+        // First request: current = sess-a
+        let fmt_a = CompletionFormatter::new("sess-a", 10, 10);
+        let result_a = fmt_a.format(&[], &detailed);
+        // Second request: current = sess-b (different terminal)
+        let fmt_b = CompletionFormatter::new("sess-b", 10, 10);
+        let result_b = fmt_b.format(&[], &detailed);
+        // Labels should be identical: sess-a = term A (first by time), sess-b = term B
+        assert_eq!(result_a, result_b,
+            "Labels should be stable regardless of current session.\nWith sess-a current:\n{}\n\nWith sess-b current:\n{}", result_a, result_b);
     }
 }

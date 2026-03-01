@@ -68,6 +68,48 @@ pub fn assign_term_labels(
     labels
 }
 
+/// Assign session labels by chronological order of first appearance.
+/// Unlike `assign_term_labels`, this does NOT prioritize the current session —
+/// labels are stable across requests regardless of which terminal is "current".
+/// Format: "hostname (term A)", or "term A" if no hostname available.
+pub fn assign_stable_term_labels(
+    commands: &[super::CommandContext],
+) -> HashMap<String, String> {
+    let mut term_letters: HashMap<String, String> = HashMap::new();
+    let mut next_letter = b'A';
+
+    for cmd in commands {
+        if !term_letters.contains_key(&cmd.session_id) {
+            term_letters.insert(
+                cmd.session_id.clone(),
+                format!("term {}", next_letter as char),
+            );
+            next_letter += 1;
+        }
+    }
+
+    // Build hostname lookup from commands
+    let mut hostnames: HashMap<String, String> = HashMap::new();
+    for cmd in commands {
+        if !hostnames.contains_key(&cmd.session_id) {
+            if let Some(ref h) = cmd.hostname {
+                hostnames.insert(cmd.session_id.clone(), h.clone());
+            }
+        }
+    }
+
+    // Combine: "hostname (term X)" or just "term X"
+    let mut labels = HashMap::new();
+    for (sid, term) in &term_letters {
+        let label = match hostnames.get(sid) {
+            Some(hostname) => format!("{} ({})", hostname, term),
+            None => term.clone(),
+        };
+        labels.insert(sid.clone(), label);
+    }
+    labels
+}
+
 /// Truncate each line to at most `max_width` characters.
 /// Lines that exceed the limit are cut and appended with "..." (the total may be max_width + 3).
 pub fn truncate_line_width(text: &str, max_width: usize) -> String {
