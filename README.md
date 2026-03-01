@@ -10,8 +10,8 @@ omnish sits between you and your shell as a PTY proxy. It records everything, se
 ┌──────────────────────────────────────────────┐
 │              omnishd (daemon)                │
 │  ┌──────────┐  ┌─────────┐  ┌────────────┐   │
-│  │ Session  │  │ Storage │  │ LLM Engine │   │
-│  │ Manager  │  │ (stream)│  │ (backends) │   │
+│  │ Session  │  │ Storage  │  │ LLM Engine │  │
+│  │ Manager  │  │ (stream) │  │ (backends) │  │
 │  └────▲─────┘  └─────────┘  └────────────┘   │
 │       │  Unix Socket / TCP+TLS               │
 ├───────┼──────────────────────────────────────┤
