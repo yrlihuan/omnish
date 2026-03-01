@@ -24,29 +24,23 @@ pub fn format_relative_time(timestamp_ms: u64, now_ms: u64) -> String {
     }
 }
 
-/// Assign session labels using hostname as primary identifier.
-/// Format: "hostname (term A)", or "term A" if no hostname available.
-/// current_session_id always gets "term A", others get "term B", "term C", etc.
-pub fn assign_term_labels(
-    commands: &[super::CommandContext],
-    current_session_id: &str,
-) -> HashMap<String, String> {
-    // First, build term letter assignments
-    let mut term_letters: HashMap<String, String> = HashMap::new();
-    term_letters.insert(current_session_id.to_string(), "term A".to_string());
-
-    let mut next_letter = b'B';
-    for cmd in commands {
-        if !term_letters.contains_key(&cmd.session_id) {
-            term_letters.insert(
-                cmd.session_id.clone(),
-                format!("term {}", next_letter as char),
-            );
-            next_letter += 1;
-        }
+/// Generate a term name for index 0..N.
+/// 0 → "term A", 25 → "term Z", 26 → "term AA", 27 → "term AB", etc.
+fn term_name(index: usize) -> String {
+    if index < 26 {
+        format!("term {}", (b'A' + index as u8) as char)
+    } else {
+        let first = (b'A' + ((index - 26) / 26) as u8) as char;
+        let second = (b'A' + ((index - 26) % 26) as u8) as char;
+        format!("term {}{}", first, second)
     }
+}
 
-    // Build hostname lookup from commands
+/// Build the final label map from term_letters + hostname lookup.
+fn build_labels(
+    term_letters: &HashMap<String, String>,
+    commands: &[super::CommandContext],
+) -> HashMap<String, String> {
     let mut hostnames: HashMap<String, String> = HashMap::new();
     for cmd in commands {
         if !hostnames.contains_key(&cmd.session_id) {
@@ -56,9 +50,8 @@ pub fn assign_term_labels(
         }
     }
 
-    // Combine: "hostname (term X)" or just "term X"
     let mut labels = HashMap::new();
-    for (sid, term) in &term_letters {
+    for (sid, term) in term_letters {
         let label = match hostnames.get(sid) {
             Some(hostname) => format!("{} ({})", hostname, term),
             None => term.clone(),
@@ -66,6 +59,27 @@ pub fn assign_term_labels(
         labels.insert(sid.clone(), label);
     }
     labels
+}
+
+/// Assign session labels using hostname as primary identifier.
+/// Format: "hostname (term A)", or "term A" if no hostname available.
+/// current_session_id always gets "term A", others get "term B", "term C", etc.
+pub fn assign_term_labels(
+    commands: &[super::CommandContext],
+    current_session_id: &str,
+) -> HashMap<String, String> {
+    let mut term_letters: HashMap<String, String> = HashMap::new();
+    term_letters.insert(current_session_id.to_string(), term_name(0));
+
+    let mut index = 1usize;
+    for cmd in commands {
+        if !term_letters.contains_key(&cmd.session_id) {
+            term_letters.insert(cmd.session_id.clone(), term_name(index));
+            index += 1;
+        }
+    }
+
+    build_labels(&term_letters, commands)
 }
 
 /// Assign session labels by chronological order of first appearance.
@@ -76,38 +90,16 @@ pub fn assign_stable_term_labels(
     commands: &[super::CommandContext],
 ) -> HashMap<String, String> {
     let mut term_letters: HashMap<String, String> = HashMap::new();
-    let mut next_letter = b'A';
+    let mut index = 0usize;
 
     for cmd in commands {
         if !term_letters.contains_key(&cmd.session_id) {
-            term_letters.insert(
-                cmd.session_id.clone(),
-                format!("term {}", next_letter as char),
-            );
-            next_letter += 1;
+            term_letters.insert(cmd.session_id.clone(), term_name(index));
+            index += 1;
         }
     }
 
-    // Build hostname lookup from commands
-    let mut hostnames: HashMap<String, String> = HashMap::new();
-    for cmd in commands {
-        if !hostnames.contains_key(&cmd.session_id) {
-            if let Some(ref h) = cmd.hostname {
-                hostnames.insert(cmd.session_id.clone(), h.clone());
-            }
-        }
-    }
-
-    // Combine: "hostname (term X)" or just "term X"
-    let mut labels = HashMap::new();
-    for (sid, term) in &term_letters {
-        let label = match hostnames.get(sid) {
-            Some(hostname) => format!("{} ({})", hostname, term),
-            None => term.clone(),
-        };
-        labels.insert(sid.clone(), label);
-    }
-    labels
+    build_labels(&term_letters, commands)
 }
 
 /// Truncate each line to at most `max_width` characters.
@@ -294,5 +286,20 @@ mod tests {
     fn test_truncate_line_width_zero_is_noop() {
         let text = "x".repeat(1000);
         assert_eq!(truncate_line_width(&text, 0), text);
+    }
+
+    #[test]
+    fn test_term_name_single_letter() {
+        assert_eq!(term_name(0), "term A");
+        assert_eq!(term_name(1), "term B");
+        assert_eq!(term_name(25), "term Z");
+    }
+
+    #[test]
+    fn test_term_name_double_letter() {
+        assert_eq!(term_name(26), "term AA");
+        assert_eq!(term_name(27), "term AB");
+        assert_eq!(term_name(51), "term AZ");
+        assert_eq!(term_name(52), "term BA");
     }
 }
