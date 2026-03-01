@@ -49,33 +49,38 @@ pub fn build_completion_content(context: &str, input: &str, cursor_pos: usize) -
 }
 
 /// Build the user-content prompt for shell command completion (up to 2 suggestions, JSON array).
+///
+/// Instructions are placed first, then context, then input — this ordering maximizes
+/// prefix stability across consecutive requests for better KV cache hit rates.
 pub fn build_simple_completion_content(context: &str, input: &str, cursor_pos: usize) -> String {
     if input.is_empty() {
         format!(
-            "Here is the terminal session context (most recent commands last):\n\n\
-             ```\n{}\n```\n\n\
-             The user just returned to the shell prompt. \
-             Predict the next command they are most likely to type.\n\
+            "You are a shell command completion engine.\n\
+             Predict the next command the user is most likely to type.\n\
              Pay close attention to the most recent commands and their output — \
              infer what the user is trying to accomplish and what logical next step follows.\n\n\
              Reply with a JSON array of up to 2 suggestions (most likely first):\n\
              [\"<completion1>\", \"<completion2>\"]\n\
              Return [] if no good prediction exists.\n\
-             Do not include any other text outside the JSON array.",
+             Do not include any other text outside the JSON array.\n\n\
+             Terminal session context (most recent commands last):\n\
+             ```\n{}\n```\n\n\
+             The user just returned to the shell prompt.",
             context
         )
     } else {
         format!(
-            "Here is the terminal session context (most recent commands last):\n\n\
-             ```\n{}\n```\n\n\
-             The user is typing a shell command. Current input: `{}`\n\
-             Cursor position: {}\n\
+            "You are a shell command completion engine.\n\
              Use the recent commands and their output to understand what the user is doing, \
              then suggest the most likely completion.\n\n\
              Reply with a JSON array of up to 2 FULL commands (including the user's current input as prefix):\n\
              [\"<full command including prefix>\"]\n\
              Return [] if no good completion exists.\n\
-             Do not include any other text outside the JSON array.",
+             Do not include any other text outside the JSON array.\n\n\
+             Terminal session context (most recent commands last):\n\
+             ```\n{}\n```\n\n\
+             Current input: `{}`\n\
+             Cursor position: {}",
             context, input, cursor_pos
         )
     }
@@ -136,5 +141,28 @@ mod tests {
     #[test]
     fn test_template_by_name_unknown() {
         assert!(template_by_name("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_simple_completion_instructions_before_context() {
+        let context = "$ ls\nfile.txt";
+        let result = build_simple_completion_content(context, "git", 3);
+        let instructions_pos = result.find("You are a shell command completion engine").unwrap();
+        let context_pos = result.find(context).unwrap();
+        let input_pos = result.find("Current input: `git`").unwrap();
+        assert!(instructions_pos < context_pos,
+            "Instructions should appear before context");
+        assert!(context_pos < input_pos,
+            "Context should appear before input");
+    }
+
+    #[test]
+    fn test_simple_completion_empty_input_instructions_first() {
+        let context = "$ ls\nfile.txt";
+        let result = build_simple_completion_content(context, "", 0);
+        let instructions_pos = result.find("You are a shell command completion engine").unwrap();
+        let context_pos = result.find(context).unwrap();
+        assert!(instructions_pos < context_pos,
+            "Instructions should appear before context for empty input too");
     }
 }

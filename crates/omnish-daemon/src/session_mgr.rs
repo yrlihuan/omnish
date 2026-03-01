@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use omnish_common::config::ContextConfig;
-use omnish_context::recent::{GroupedFormatter, RecentCommands};
+use omnish_context::recent::{CompletionFormatter, GroupedFormatter, RecentCommands};
 use omnish_context::StreamReader;
 use omnish_store::command::CommandRecord;
 use omnish_store::completion::CompletionRecord;
@@ -64,6 +64,9 @@ pub struct SessionManager {
     context_config: ContextConfig,
     completion_writer: mpsc::Sender<CompletionRecord>,
     session_writer: mpsc::Sender<SessionUpdateRecord>,
+    /// Elastic window watermark: number of detailed commands at last reset.
+    /// When total detailed exceeds `detailed_max`, reset to `detailed_min`.
+    detailed_watermark: RwLock<usize>,
 }
 
 /// Infer `last_active` from persisted data so that idle time survives daemon restarts.
@@ -120,12 +123,14 @@ impl SessionManager {
         std::fs::create_dir_all(&sessions_dir).ok();
         let completion_writer = omnish_store::completion::spawn_writer_thread(completions_dir);
         let session_writer = omnish_store::session_update::spawn_writer_thread(session_updates_dir);
+        let initial_watermark = context_config.completion.detailed_min;
         Self {
             base_dir: sessions_dir,
             sessions: RwLock::new(HashMap::new()),
             context_config,
             completion_writer,
             session_writer,
+            detailed_watermark: RwLock::new(initial_watermark),
         }
     }
 
@@ -971,6 +976,140 @@ impl SessionManager {
         .await
     }
 
+    /// Build completion-specific context optimized for KV cache hit rate.
+    ///
+    /// Uses elastic window: detailed count stays in [detailed_min, detailed_max].
+    /// New commands append to the end (prefix-stable). When count exceeds
+    /// `detailed_max`, it resets to `detailed_min` by evicting oldest into history.
+    /// Uses `CompletionFormatter` for interleaved, uniform-label formatting.
+    pub async fn build_completion_context(
+        &self,
+        current_session_id: &str,
+        max_context_chars: Option<usize>,
+    ) -> Result<String> {
+        let cc = &self.context_config.completion;
+
+        // Gather all commands and stream paths from all sessions
+        let (all_commands, offset_to_path, hostnames) = {
+            let sessions = self.sessions.read().await;
+            let mut all_commands = Vec::new();
+            let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
+            let mut hostnames: HashMap<String, String> = HashMap::new();
+
+            for (sid, session) in sessions.iter() {
+                let stream_path = session.dir.join("stream.bin");
+                let meta = session.meta.read().await;
+                if let Some(h) = meta.attrs.get("hostname") {
+                    hostnames.insert(sid.clone(), h.clone());
+                }
+                let commands = session.commands.read().await;
+                for cmd in commands.iter() {
+                    offset_to_path
+                        .insert((cmd.stream_offset, cmd.stream_length), stream_path.clone());
+                }
+                all_commands.extend(commands.clone());
+            }
+            (all_commands, offset_to_path, hostnames)
+        };
+
+        let mut all_commands = all_commands;
+        all_commands.sort_by_key(|c| c.started_at);
+
+        if all_commands.is_empty() {
+            return Ok(String::new());
+        }
+
+        // Count meaningful (non-empty) commands for elastic window
+        let meaningful_count = all_commands.iter()
+            .filter(|c| c.command_line.is_some())
+            .count();
+
+        // Elastic window: determine detailed_commands count
+        let detailed_commands = {
+            let mut watermark = self.detailed_watermark.write().await;
+            if meaningful_count > cc.detailed_max {
+                // Reset: evict oldest into history
+                *watermark = cc.detailed_min;
+                cc.detailed_min
+            } else if meaningful_count > *watermark {
+                // Growing: use current count (append-only, prefix stable)
+                meaningful_count
+            } else {
+                *watermark
+            }
+        };
+
+        let reader = MultiSessionReader {
+            readers: offset_to_path,
+        };
+        let formatter = CompletionFormatter::new(
+            current_session_id,
+            cc.head_lines,
+            cc.tail_lines,
+        );
+
+        let total = detailed_commands + cc.history_commands;
+        let strategy = RecentCommands::new(total);
+
+        // No character limit — build directly
+        if max_context_chars.is_none() {
+            return omnish_context::build_context_with_session(
+                &strategy,
+                &formatter,
+                &all_commands,
+                &reader,
+                &hostnames,
+                detailed_commands,
+                cc.max_line_width,
+                Some(current_session_id),
+                0, // no min_current_session guarantee needed
+            )
+            .await;
+        }
+
+        // With character limit — try building, reduce if needed
+        let max_chars = max_context_chars.unwrap();
+        let mut current_detailed = detailed_commands;
+        let mut current_history = cc.history_commands;
+
+        loop {
+            let total = current_detailed + current_history;
+            if total == 0 {
+                break;
+            }
+
+            let strategy = RecentCommands::new(total);
+            let context = omnish_context::build_context_with_session(
+                &strategy,
+                &formatter,
+                &all_commands,
+                &reader,
+                &hostnames,
+                current_detailed,
+                cc.max_line_width,
+                Some(current_session_id),
+                0,
+            )
+            .await?;
+
+            if context.chars().count() <= max_chars {
+                return Ok(context);
+            }
+
+            let reduction = (total / 4).max(1);
+            if reduction >= total {
+                return Ok(context);
+            }
+
+            let ratio = current_detailed as f64 / total as f64;
+            let new_total = total - reduction;
+            current_detailed = (new_total as f64 * ratio) as usize;
+            current_history = new_total - current_detailed;
+        }
+
+        Ok(String::new())
+    }
+
     /// Get the hourly summary configuration.
     pub fn get_hourly_summary_config(&self) -> omnish_common::config::HourlySummaryConfig {
         self.context_config.hourly_summary.clone()
@@ -1574,6 +1713,8 @@ mod tests {
                 max_line_width: 512,
                 min_current_session_commands: 5,
                 max_context_chars: None,
+                detailed_min: 20,
+                detailed_max: 30,
             },
             hourly_summary: HourlySummaryConfig::default(),
             daily_summary: DailySummaryConfig::default(),
@@ -1616,6 +1757,8 @@ mod tests {
                 max_line_width: 512,
                 min_current_session_commands: 5,
                 max_context_chars: Some(200), // Small limit
+                detailed_min: 20,
+                detailed_max: 30,
             },
             hourly_summary: HourlySummaryConfig::default(),
             daily_summary: DailySummaryConfig::default(),

@@ -338,6 +338,89 @@ impl ContextFormatter for InterleavedFormatter {
     }
 }
 
+/// Formats commands for completion context, optimized for KV cache hit rate.
+/// All detailed commands are interleaved by `started_at` with uniform labels
+/// (no current-session marker), so new commands always append at the end and
+/// the prefix stays stable across consecutive requests.
+pub struct CompletionFormatter {
+    current_session_id: String,
+    head_lines: usize,
+    tail_lines: usize,
+}
+
+impl CompletionFormatter {
+    pub fn new(current_session_id: &str, head_lines: usize, tail_lines: usize) -> Self {
+        Self {
+            current_session_id: current_session_id.to_string(),
+            head_lines,
+            tail_lines,
+        }
+    }
+}
+
+impl ContextFormatter for CompletionFormatter {
+    fn format(&self, history: &[CommandContext], detailed: &[CommandContext]) -> String {
+        if history.is_empty() && detailed.is_empty() {
+            return String::new();
+        }
+
+        let mut sections = Vec::new();
+
+        // History section: command-line only
+        if !history.is_empty() {
+            let mut history_lines = vec!["--- History ---".to_string()];
+            for cmd in history {
+                let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
+                let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
+                let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
+                history_lines.push(format!("{}$ {}", prefix_display, cmd_line));
+            }
+            sections.push(history_lines.join("\n"));
+        }
+
+        // Recent section: all detailed commands interleaved by time, uniform labels
+        if !detailed.is_empty() {
+            let labels = assign_term_labels(detailed, &self.current_session_id);
+
+            let mut sorted: Vec<&CommandContext> = detailed.iter().collect();
+            sorted.sort_by_key(|c| c.started_at);
+
+            let mut recent_lines = vec!["--- Recent ---".to_string()];
+            for cmd in &sorted {
+                let label = labels.get(&cmd.session_id).unwrap();
+                let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
+                let max_lines = self.head_lines + self.tail_lines;
+                let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
+
+                let failed_tag = match cmd.exit_code {
+                    Some(code) if code != 0 => format!("  [FAILED: {}]", code),
+                    _ => String::new(),
+                };
+                let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
+                let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
+                if output.is_empty() {
+                    recent_lines.push(format!("{} {}$ {}{}", label, prefix_display, cmd_line, failed_tag));
+                } else {
+                    recent_lines.push(format!("{} {}$ {}{}\n{}\n--------------------", label, prefix_display, cmd_line, failed_tag, output));
+                }
+            }
+
+            // Append current path from the most recent current-session command
+            let current_path = sorted.iter().rev()
+                .find(|c| c.session_id == self.current_session_id)
+                .and_then(|c| c.cwd.as_deref())
+                .unwrap_or("");
+            if !current_path.is_empty() {
+                recent_lines.push(format!("Current path: {}", current_path));
+            }
+
+            sections.push(recent_lines.join("\n"));
+        }
+
+        sections.join("\n\n")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -921,5 +1004,95 @@ mod tests {
         let result2 = formatter2.format(&[], &detailed);
         assert!(result2.contains("--------------------"),
                 "Separator not found in interleaved output: {}", result2);
+    }
+
+    // --- CompletionFormatter tests ---
+
+    #[test]
+    fn test_completion_formatter_history_and_recent_sections() {
+        let history = vec![
+            make_ctx("sess-a", "cd /tmp", 10000, ""),
+            make_ctx("sess-b", "echo hi", 11000, ""),
+        ];
+        let detailed = vec![
+            make_ctx("sess-a", "ls", 30000, "file1.txt"),
+            make_ctx("sess-b", "pwd", 31000, "/home"),
+        ];
+        let formatter = CompletionFormatter::new("sess-a", 10, 10);
+        let result = formatter.format(&history, &detailed);
+        assert!(result.contains("--- History ---"), "Should have History section");
+        assert!(result.contains("--- Recent ---"), "Should have Recent section");
+        let pos_history = result.find("--- History ---").unwrap();
+        let pos_recent = result.find("--- Recent ---").unwrap();
+        assert!(pos_history < pos_recent, "History should come before Recent");
+    }
+
+    #[test]
+    fn test_completion_formatter_interleaved_by_time() {
+        let detailed = vec![
+            make_ctx("sess-a", "ls", 28000, "file1.txt"),
+            make_ctx("sess-b", "npm start", 25000, "Server running"),
+            make_ctx("sess-a", "pwd", 29000, "/home"),
+        ];
+        let formatter = CompletionFormatter::new("sess-a", 10, 10);
+        let result = formatter.format(&[], &detailed);
+        let pos_npm = result.find("npm start").unwrap();
+        let pos_ls = result.find("$ ls").unwrap();
+        let pos_pwd = result.find("$ pwd").unwrap();
+        assert!(pos_npm < pos_ls, "npm start (25000) should be before ls (28000)");
+        assert!(pos_ls < pos_pwd, "ls (28000) should be before pwd (29000)");
+    }
+
+    #[test]
+    fn test_completion_formatter_uniform_labels() {
+        let detailed = vec![
+            make_ctx("sess-a", "ls", 28000, "file1.txt"),
+            make_ctx("sess-b", "npm start", 25000, "Server running"),
+        ];
+        let formatter = CompletionFormatter::new("sess-a", 10, 10);
+        let result = formatter.format(&[], &detailed);
+        // Should NOT have current-session markers like "*" or "[current]"
+        assert!(!result.contains("*"), "Should not have current-session asterisk marker");
+        assert!(!result.contains("[current]"), "Should not have [current] marker");
+        // Should have uniform labels
+        assert!(result.contains("term A"), "Should have term A label");
+        assert!(result.contains("term B"), "Should have term B label");
+    }
+
+    #[test]
+    fn test_completion_formatter_current_path_appended() {
+        let detailed = vec![
+            CommandContext {
+                session_id: "sess-a".into(),
+                hostname: None,
+                command_line: Some("cd /tmp".into()),
+                cwd: Some("/home/user".into()),
+                started_at: 1000,
+                ended_at: Some(1050),
+                output: "".into(),
+                exit_code: Some(0),
+            },
+            CommandContext {
+                session_id: "sess-a".into(),
+                hostname: None,
+                command_line: Some("pwd".into()),
+                cwd: Some("/tmp".into()),
+                started_at: 2000,
+                ended_at: Some(2050),
+                output: "/tmp".into(),
+                exit_code: Some(0),
+            },
+        ];
+        let formatter = CompletionFormatter::new("sess-a", 10, 10);
+        let result = formatter.format(&[], &detailed);
+        assert!(result.contains("Current path: /tmp"),
+                "Should append current path from most recent current-session command: {}", result);
+    }
+
+    #[test]
+    fn test_completion_formatter_empty() {
+        let formatter = CompletionFormatter::new("sess-a", 10, 10);
+        let result = formatter.format(&[], &[]);
+        assert_eq!(result, "");
     }
 }

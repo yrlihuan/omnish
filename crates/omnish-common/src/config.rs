@@ -305,6 +305,12 @@ pub struct CompletionContextConfig {
     /// If exceeded, the system will try reducing history_commands + detailed_commands by 1/4.
     #[serde(default = "default_max_context_chars")]
     pub max_context_chars: Option<usize>,
+    /// Minimum number of detailed commands after elastic window reset.
+    #[serde(default = "default_detailed_min")]
+    pub detailed_min: usize,
+    /// Maximum number of detailed commands before elastic window reset.
+    #[serde(default = "default_detailed_max")]
+    pub detailed_max: usize,
 }
 
 impl Default for CompletionContextConfig {
@@ -317,6 +323,8 @@ impl Default for CompletionContextConfig {
             max_line_width: default_max_line_width(),
             min_current_session_commands: default_min_current_session_commands(),
             max_context_chars: default_max_context_chars(),
+            detailed_min: default_detailed_min(),
+            detailed_max: default_detailed_max(),
         }
     }
 }
@@ -447,4 +455,12 @@ fn default_min_current_session_commands() -> usize {
 
 fn default_max_context_chars() -> Option<usize> {
     None
+}
+
+fn default_detailed_min() -> usize {
+    20
+}
+
+fn default_detailed_max() -> usize {
+    30
 }

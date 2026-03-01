@@ -231,12 +231,11 @@ async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionMan
             }
         }
         "auto-complete" | "completion" => {
-            // Auto-complete context - uses Completion use case
+            // Auto-complete context - uses CompletionFormatter with elastic window
             let max_chars = llm_backend
                 .as_ref()
-                .map(|b| b.max_content_chars_for_use_case(UseCase::Completion));
-            let max_chars = max_chars.flatten();
-            match resolve_context(req, mgr, max_chars).await {
+                .and_then(|b| b.max_content_chars_for_use_case(UseCase::Completion));
+            match mgr.build_completion_context(&req.session_id, max_chars).await {
                 Ok(ctx) => ctx,
                 Err(e) => format!("Error: {}", e),
             }
@@ -417,13 +416,7 @@ async fn handle_completion_request(
     let use_case = UseCase::Completion;
     let max_context_chars = backend.max_content_chars_for_use_case(use_case);
 
-    let context_req = Request {
-        request_id: String::new(),
-        session_id: req.session_id.clone(),
-        query: String::new(),
-        scope: RequestScope::AllSessions,
-    };
-    let context = resolve_context(&context_req, mgr, max_context_chars).await?;
+    let context = mgr.build_completion_context(&req.session_id, max_context_chars).await?;
 
     let prompt =
         omnish_llm::template::build_simple_completion_content(&context, &req.input, req.cursor_pos);
