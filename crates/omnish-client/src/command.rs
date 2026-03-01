@@ -331,13 +331,19 @@ mod tests {
         assert!(cmds.contains(&"/debug client".to_string()));
         assert!(cmds.contains(&"/debug session".to_string()));
         assert!(cmds.contains(&"/sessions".to_string()));
-        // Template subcommands are also completable.
+        // Template and context subcommands are also completable.
         assert!(cmds.contains(&"/template chat".to_string()));
         assert!(cmds.contains(&"/template auto-complete".to_string()));
         assert!(cmds.contains(&"/template daily-notes".to_string()));
+        assert!(cmds.contains(&"/context chat".to_string()));
+        assert!(cmds.contains(&"/context auto-complete".to_string()));
+        assert!(cmds.contains(&"/context daily-notes".to_string()));
+        assert!(cmds.contains(&"/context hourly-notes".to_string()));
+        // COMMANDS + /template subcommands + /context subcommands
+        let template_count = omnish_llm::template::TEMPLATE_NAMES.len();
         assert_eq!(
             cmds.len(),
-            COMMANDS.len() + omnish_llm::template::TEMPLATE_NAMES.len()
+            COMMANDS.len() + template_count * 2
         );
     }
 
