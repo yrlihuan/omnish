@@ -1560,7 +1560,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_max_context_chars_reduces_commands() {
-        use omnish_common::config::{CompletionContextConfig, ContextConfig, HourlySummaryConfig};
+        use omnish_common::config::{CompletionContextConfig, ContextConfig, DailySummaryConfig, HourlySummaryConfig};
 
         let dir = tempfile::tempdir().unwrap();
 
@@ -1576,6 +1576,7 @@ mod tests {
                 max_context_chars: None,
             },
             hourly_summary: HourlySummaryConfig::default(),
+            daily_summary: DailySummaryConfig::default(),
         };
         let mgr_no_limit = SessionManager::new(dir.path().to_path_buf(), cc_no_limit);
         mgr_no_limit.register("sess1", None, Default::default())
@@ -1617,6 +1618,7 @@ mod tests {
                 max_context_chars: Some(200), // Small limit
             },
             hourly_summary: HourlySummaryConfig::default(),
+            daily_summary: DailySummaryConfig::default(),
         };
         let mgr_limited = SessionManager::new(dir.path().to_path_buf(), cc_limited);
         mgr_limited.register("sess1", None, Default::default())
