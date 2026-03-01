@@ -204,10 +204,13 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
         return handle_context_scenario(scenario, req, mgr, llm_backend).await;
     }
     match sub {
-        "context" => match resolve_context(req, mgr, None).await {
-            Ok(ctx) => ctx,
-            Err(e) => format!("Error: {}", e),
-        },
+        "context" => {
+            // Default to completion context (most common LLM use case)
+            match mgr.build_completion_context(&req.session_id, None).await {
+                Ok(ctx) => ctx,
+                Err(e) => format!("Error: {}", e),
+            }
+        }
         "sessions" => mgr.format_sessions_list(&req.session_id).await,
         "session" => match get_session_debug_info(&req.session_id, mgr).await {
             Ok(info) => info,
