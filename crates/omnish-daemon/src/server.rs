@@ -518,9 +518,9 @@ async fn handle_completion_request(
     match &result {
         Ok(response) => {
             if duration_secs > 1.5 {
-                // Red output for slow requests (>1.5s)
-                tracing::info!(
-                    "\x1b[31mCompletion LLM request completed in {} (session={}, model={}, sequence_id={}, input_len={})\x1b[0m",
+                // Slow requests (>1.5s) logged as WARN so tracing colors them
+                tracing::warn!(
+                    "Completion LLM request completed in {} (session={}, model={}, sequence_id={}, input_len={})",
                     duration_str, req.session_id, response.model, req.sequence_id, req.input.len()
                 );
             } else {
