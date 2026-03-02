@@ -14,7 +14,7 @@ pub fn create_daily_notes_job(
     schedule_hour: u8,
 ) -> anyhow::Result<Job> {
     let cron = format!("0 0 {} * * *", schedule_hour);
-    Ok(Job::new_async(cron, move |_uuid, _lock| {
+    Ok(Job::new_async_tz(cron, Local, move |_uuid, _lock| {
         let mgr = mgr.clone();
         let llm = llm_backend.clone();
         let dir = notes_dir.clone();
