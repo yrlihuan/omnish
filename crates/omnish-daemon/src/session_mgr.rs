@@ -1218,6 +1218,13 @@ impl SessionManager {
         self.context_config.hourly_summary.clone()
     }
 
+    /// Get the last completion context (read-only) for logging/analytics purposes.
+    /// Returns the cached context from the previous build, or empty string if no previous context.
+    pub async fn get_last_completion_context(&self) -> String {
+        let cached = self.last_completion_context.read().await;
+        cached.clone()
+    }
+
     /// Build hourly summary context from recent commands with the given config.
     /// Implements the reduction logic from issue 44:
     /// 1. First try with head_lines/tail_lines reduction (10 iterations, reduce by 1/10 each time)

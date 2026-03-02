@@ -468,7 +468,28 @@ async fn handle_completion_request(
     let use_case = UseCase::Completion;
     let max_context_chars = backend.max_content_chars_for_use_case(use_case);
 
+    // Get previous context for prefix match ratio calculation
+    let last_context = mgr.get_last_completion_context().await;
+
     let context = mgr.build_completion_context(&req.session_id, max_context_chars).await?;
+
+    // Log prefix match ratio with previous completion request
+    if !last_context.is_empty() {
+        let common_prefix_len = last_context
+            .bytes()
+            .zip(context.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let ratio = common_prefix_len as f64 / last_context.len() as f64;
+        tracing::debug!(
+            "Completion context prefix ratio: {:.3} (common={}/old={}, session={}, seq={})",
+            ratio,
+            common_prefix_len,
+            last_context.len(),
+            req.session_id,
+            req.sequence_id
+        );
+    }
 
     let prompt =
         omnish_llm::template::build_simple_completion_content(&context, &req.input, req.cursor_pos);
