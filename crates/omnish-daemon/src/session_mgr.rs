@@ -68,6 +68,9 @@ pub struct SessionManager {
     /// Between elastic resets this value is stable, so the History prefix never changes.
     /// `None` means the cutoff has not been established yet (first call).
     history_frozen_until: RwLock<Option<u64>>,
+    /// Cached completion context from last build, used to detect prefix changes
+    /// for KV cache warmup.
+    last_completion_context: RwLock<String>,
 }
 
 /// Infer `last_active` from persisted data so that idle time survives daemon restarts.
@@ -131,6 +134,7 @@ impl SessionManager {
             completion_writer,
             session_writer,
             history_frozen_until: RwLock::new(None),
+            last_completion_context: RwLock::new(String::new()),
         }
     }
 
@@ -1168,6 +1172,45 @@ impl SessionManager {
         }
 
         Ok(String::new())
+    }
+
+    /// Build completion context and compare with cached version.
+    /// Returns `Some(new_context)` if the prefix changed enough to warrant a KV cache warmup
+    /// (shared prefix ratio < 0.95), `None` otherwise.
+    /// Always updates the cached context.
+    pub async fn check_and_warmup_context(
+        &self,
+        session_id: &str,
+        max_context_chars: Option<usize>,
+    ) -> Result<Option<String>> {
+        let new_context = self.build_completion_context(session_id, max_context_chars).await?;
+
+        let mut cached = self.last_completion_context.write().await;
+        let old_context = std::mem::replace(&mut *cached, new_context.clone());
+
+        if old_context.is_empty() {
+            // First build — no previous context to compare against
+            return Ok(None);
+        }
+
+        let common_prefix_len = old_context
+            .bytes()
+            .zip(new_context.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let ratio = common_prefix_len as f64 / old_context.len() as f64;
+
+        if ratio < 0.66 {
+            tracing::debug!(
+                "KV cache warmup needed: prefix ratio={:.3} (common={}/old={})",
+                ratio,
+                common_prefix_len,
+                old_context.len()
+            );
+            Ok(Some(new_context))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Get the hourly summary configuration.

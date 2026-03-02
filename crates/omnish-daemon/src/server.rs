@@ -42,7 +42,7 @@ impl DaemonServer {
                     let mgr = mgr.clone();
                     let llm = llm.clone();
                     let task_mgr = task_mgr.clone();
-                    Box::pin(async move { handle_message(msg, &mgr, &llm, &task_mgr).await })
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -53,10 +53,13 @@ impl DaemonServer {
 
 async fn handle_message(
     msg: Message,
-    mgr: &SessionManager,
+    mgr: Arc<SessionManager>,
     llm: &Option<Arc<dyn LlmBackend>>,
     task_mgr: &Arc<Mutex<TaskManager>>,
 ) -> Message {
+    // Shadow with reference for existing code; use mgr_arc for spawned tasks
+    let mgr_arc = mgr;
+    let mgr = &*mgr_arc;
     match msg {
         Message::SessionStart(s) => {
             if let Err(e) = mgr
@@ -95,6 +98,15 @@ async fn handle_message(
         Message::CommandComplete(cc) => {
             if let Err(e) = mgr.receive_command(&cc.session_id, cc.record).await {
                 tracing::error!("receive_command error: {}", e);
+            }
+            // Proactively warm the LLM KV cache if the context prefix changed
+            if llm.is_some() {
+                let mgr = mgr_arc.clone();
+                let llm = llm.clone();
+                let sid = cc.session_id.clone();
+                tokio::spawn(async move {
+                    try_warmup_kv_cache(&sid, &mgr, &llm).await;
+                });
             }
             Message::Ack
         }
@@ -172,6 +184,43 @@ async fn handle_message(
             Message::Ack
         }
         _ => Message::Ack,
+    }
+}
+
+async fn try_warmup_kv_cache(
+    session_id: &str,
+    mgr: &SessionManager,
+    llm: &Option<Arc<dyn LlmBackend>>,
+) {
+    let backend = match llm {
+        Some(b) => b,
+        None => return,
+    };
+
+    let max_chars = backend.max_content_chars_for_use_case(UseCase::Completion);
+
+    let new_context = match mgr.check_and_warmup_context(session_id, max_chars).await {
+        Ok(Some(ctx)) => ctx,
+        Ok(None) => return, // prefix stable, no warmup needed
+        Err(e) => {
+            tracing::debug!("KV cache warmup context check failed: {}", e);
+            return;
+        }
+    };
+
+    let prompt = omnish_llm::template::build_simple_completion_content(&new_context, "", 0);
+    let req = LlmRequest {
+        context: String::new(),
+        query: Some(prompt),
+        trigger: TriggerType::Manual,
+        session_ids: vec![session_id.to_string()],
+        use_case: UseCase::Completion,
+        max_content_chars: max_chars,
+    };
+
+    match backend.complete(&req).await {
+        Ok(_) => tracing::debug!("KV cache warmup completed for session {}", session_id),
+        Err(e) => tracing::debug!("KV cache warmup failed for session {}: {}", session_id, e),
     }
 }
 
