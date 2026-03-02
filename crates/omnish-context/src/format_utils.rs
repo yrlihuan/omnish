@@ -25,15 +25,21 @@ pub fn format_relative_time(timestamp_ms: u64, now_ms: u64) -> String {
 }
 
 /// Generate a term name for index 0..N.
-/// 0 → "term A", 25 → "term Z", 26 → "term AA", 27 → "term AB", etc.
+/// 0 → "term A", 25 → "term Z", 26 → "term AA", 27 → "term AB", ...,
+/// 701 → "term ZZ", 702 → "term AAA", etc.  Works for any index.
 fn term_name(index: usize) -> String {
-    if index < 26 {
-        format!("term {}", (b'A' + index as u8) as char)
-    } else {
-        let first = (b'A' + ((index - 26) / 26) as u8) as char;
-        let second = (b'A' + ((index - 26) % 26) as u8) as char;
-        format!("term {}{}", first, second)
+    // Convert index to bijective base-26: A=0..Z=25, AA=26..AZ=51, BA=52..
+    let mut n = index;
+    let mut letters = Vec::new();
+    loop {
+        letters.push((b'A' + (n % 26) as u8) as char);
+        if n < 26 {
+            break;
+        }
+        n = n / 26 - 1;
     }
+    letters.reverse();
+    format!("term {}", letters.into_iter().collect::<String>())
 }
 
 /// Build the final label map from term_letters + hostname lookup.
@@ -301,5 +307,13 @@ mod tests {
         assert_eq!(term_name(27), "term AB");
         assert_eq!(term_name(51), "term AZ");
         assert_eq!(term_name(52), "term BA");
+        assert_eq!(term_name(701), "term ZZ");
+    }
+
+    #[test]
+    fn test_term_name_triple_letter() {
+        assert_eq!(term_name(702), "term AAA");
+        assert_eq!(term_name(703), "term AAB");
+        assert_eq!(term_name(728), "term ABA");
     }
 }
