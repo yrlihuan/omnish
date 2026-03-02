@@ -65,7 +65,7 @@ fn template_command(args: &str) -> String {
 }
 
 fn version_command(_args: &str) -> String {
-    format!("omnish {}", env!("CARGO_PKG_VERSION"))
+    format!("omnish {}", omnish_common::VERSION)
 }
 
 const COMMANDS: &[CommandEntry] = &[
