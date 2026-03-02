@@ -137,6 +137,8 @@ pub async fn build_context_with_session(
             Some(pos) => output[pos + 1..].to_string(),
             None => String::new(),
         };
+        // Trim leading whitespace (including \r, \n that may remain after stripping first line).
+        let output = output.trim_start().to_string();
 
         // Truncate overly long lines (e.g. snap progress bars).
         let output = format_utils::truncate_line_width(&output, max_line_width);
