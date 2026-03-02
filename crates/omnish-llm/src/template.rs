@@ -2,12 +2,12 @@
 pub fn build_user_content(context: &str, query: Option<&str>) -> String {
     if let Some(q) = query {
         format!(
-            "Here is the terminal session context:\n\n```\n{}\n```\n\nUser question: {}",
+            "Here is the terminal session context:\n\n{}\n\nUser question: {}",
             context, q
         )
     } else {
         format!(
-            "Analyze this terminal session output and explain any errors or issues:\n\n```\n{}\n```",
+            "Analyze this terminal session output and explain any errors or issues:\n\n{}",
             context
         )
     }
@@ -17,11 +17,11 @@ pub fn build_user_content(context: &str, query: Option<&str>) -> String {
 pub fn build_completion_content(context: &str, input: &str, cursor_pos: usize) -> String {
     if input.is_empty() {
         format!(
-            "Here is the terminal session context (most recent commands last):\n\n\
-             ```\n{}\n```\n\n\
+            "Here is the terminal session context:\n\n\
+             {}\n\n\
              The user just returned to the shell prompt. \
              Predict the next command they are most likely to type.\n\
-             Pay close attention to the most recent commands and their output — \
+             Pay close attention to <recent_commands> and their output — \
              infer what the user is trying to accomplish and what logical next step follows.\n\n\
              Reply with a JSON array:\n\
              [{{\"text\": \"<full command>\", \"confidence\": <0.0-1.0>}}]\n\
@@ -32,11 +32,11 @@ pub fn build_completion_content(context: &str, input: &str, cursor_pos: usize) -
         )
     } else {
         format!(
-            "Here is the terminal session context (most recent commands last):\n\n\
-             ```\n{}\n```\n\n\
+            "Here is the terminal session context:\n\n\
+             {}\n\n\
              The user is typing a shell command. Current input: `{}`\n\
              Cursor position: {}\n\
-             Use the recent commands and their output to understand what the user is doing, \
+             Use <recent_commands> and their output to understand what the user is doing, \
              then suggest the most likely completion.\n\n\
              Reply with a JSON array containing the FULL completed command (including the user's current input as prefix):\n\
              [{{\"text\": \"<full command including prefix>\", \"confidence\": <0.0-1.0>}}]\n\
@@ -57,28 +57,26 @@ pub fn build_simple_completion_content(context: &str, input: &str, cursor_pos: u
         format!(
             "You are a shell command completion engine.\n\
              Predict the next command the user is most likely to type.\n\
-             Pay close attention to the most recent commands and their output — \
+             Pay close attention to <recent_commands> and their output — \
              infer what the user is trying to accomplish and what logical next step follows.\n\n\
              Reply with a JSON array of up to 2 suggestions (most likely first):\n\
              [\"<completion1>\", \"<completion2>\"]\n\
              Return [] if no good prediction exists.\n\
              Do not include any other text outside the JSON array.\n\n\
-             Terminal session context (most recent commands last):\n\
-             ```\n{}\n```\n\n\
+             {}\n\n\
              The user just returned to the shell prompt.",
             context
         )
     } else {
         format!(
             "You are a shell command completion engine.\n\
-             Use the recent commands and their output to understand what the user is doing, \
+             Use <recent_commands> and their output to understand what the user is doing, \
              then suggest the most likely completion.\n\n\
              Reply with a JSON array of up to 2 FULL commands (including the user's current input as prefix):\n\
              [\"<full command including prefix>\"]\n\
              Return [] if no good completion exists.\n\
              Do not include any other text outside the JSON array.\n\n\
-             Terminal session context (most recent commands last):\n\
-             ```\n{}\n```\n\n\
+             {}\n\n\
              Current input: `{}`\n\
              Cursor position: {}",
             context, input, cursor_pos
@@ -89,9 +87,9 @@ pub fn build_simple_completion_content(context: &str, input: &str, cursor_pos: u
 /// Return the prompt template with `{context}` and `{query}` placeholders.
 pub fn prompt_template(has_query: bool) -> &'static str {
     if has_query {
-        "Here is the terminal session context:\n\n```\n{context}\n```\n\nUser question: {query}"
+        "Here is the terminal session context:\n\n{context}\n\nUser question: {query}"
     } else {
-        "Analyze this terminal session output and explain any errors or issues:\n\n```\n{context}\n```"
+        "Analyze this terminal session output and explain any errors or issues:\n\n{context}"
     }
 }
 
