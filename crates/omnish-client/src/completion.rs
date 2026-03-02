@@ -229,6 +229,11 @@ impl ShellCompleter {
                 } else if best.text.starts_with(&request_input) {
                     // Suggestion starts with request_input - it's a full command
                     best.text.clone()
+                } else if request_input.starts_with(&best.text) {
+                    // LLM returned a prefix/subset of the input (e.g. input="rm 1.txt "
+                    // and LLM returned "rm 1.txt") — nothing to add, discard.
+                    self.current_ghost = None;
+                    return None;
                 } else {
                     // Suggestion doesn't start with request_input - it's a suffix
                     format!("{}{}", request_input, best.text)
@@ -1021,6 +1026,27 @@ mod tests {
 
         // The final ghost should be from the last response processed
         assert_eq!(c.ghost(), Some("tatus"), "Final ghost should be from last response");
+    }
+
+    /// Regression: input="rm 1.txt " (trailing space), LLM returns "rm 1.txt"
+    /// (without space). The completion is a prefix of the input, meaning the LLM
+    /// has nothing to add — ghost should be None, not a duplicate of the input.
+    #[test]
+    fn test_completion_subset_of_input_discarded() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("rm 1.txt ", 1);
+        c.mark_sent(1, "rm 1.txt ");
+
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: "rm 1.txt".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        let ghost = c.on_response(&resp, "rm 1.txt ");
+        assert_eq!(ghost, None, "Completion that is a prefix of the input should be discarded");
+        assert_eq!(c.ghost(), None);
     }
 
     #[test]
