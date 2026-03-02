@@ -587,6 +587,7 @@ async fn main() -> Result<()> {
                             | Osc133EventKind::CommandEnd { .. } => {
                                 shell_input.on_prompt();
                                 shell_completer.clear();
+                                last_readline_content = None;
                                 if let Some(title) = tmux_title("omnish", in_tmux) {
                                     nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
                                 }
