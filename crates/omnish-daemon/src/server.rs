@@ -507,12 +507,28 @@ async fn handle_completion_request(
     let result = backend.complete(&llm_req).await;
     let duration = start.elapsed();
 
+    // Format duration: use %.3f when > 1s, otherwise use default Debug format
+    let duration_secs = duration.as_secs_f64();
+    let duration_str = if duration_secs > 1.0 {
+        format!("{:.3}s", duration_secs)
+    } else {
+        format!("{:?}", duration)
+    };
+
     match &result {
         Ok(response) => {
-            tracing::info!(
-                "Completion LLM request completed in {:?} (session={}, model={}, sequence_id={}, input_len={})",
-                duration, req.session_id, response.model, req.sequence_id, req.input.len()
-            );
+            if duration_secs > 1.5 {
+                // Red output for slow requests (>1.5s)
+                tracing::info!(
+                    "\x1b[31mCompletion LLM request completed in {} (session={}, model={}, sequence_id={}, input_len={})\x1b[0m",
+                    duration_str, req.session_id, response.model, req.sequence_id, req.input.len()
+                );
+            } else {
+                tracing::info!(
+                    "Completion LLM request completed in {} (session={}, model={}, sequence_id={}, input_len={})",
+                    duration_str, req.session_id, response.model, req.sequence_id, req.input.len()
+                );
+            }
             tracing::debug!("Completion LLM raw response: {:?}", response.content);
 
             // Log thinking content if present
@@ -522,8 +538,8 @@ async fn handle_completion_request(
         }
         Err(e) => {
             tracing::warn!(
-                "Completion LLM request failed after {:?} (session={}, sequence_id={}, input_len={}, error={})",
-                duration, req.session_id, req.sequence_id, req.input.len(), e
+                "Completion LLM request failed after {} (session={}, sequence_id={}, input_len={}, error={})",
+                duration_str, req.session_id, req.sequence_id, req.input.len(), e
             );
         }
     }
