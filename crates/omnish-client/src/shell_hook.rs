@@ -36,7 +36,7 @@ __omnish_preexec() {
 trap '__omnish_preexec' DEBUG
 
 __omnish_rl_report() {
-    printf '\033]133;RL;%s\007' "$READLINE_LINE"
+    printf '\033]133;RL;%s;%s\007' "$READLINE_LINE" "$READLINE_POINT"
 }
 bind -x '"\e[13337~": __omnish_rl_report'
 "#;

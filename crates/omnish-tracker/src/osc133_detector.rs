@@ -4,7 +4,7 @@ pub enum Osc133EventKind {
     CommandStart { command: Option<String>, cwd: Option<String> },
     OutputStart,
     CommandEnd { exit_code: i32 },
-    ReadlineLine { content: String },
+    ReadlineLine { content: String, point: Option<usize> },
 }
 
 #[derive(Debug, Clone)]
@@ -120,8 +120,22 @@ impl Osc133Detector {
             _ => {
                 // RL;... — readline line report
                 if payload.len() >= 3 && payload[0] == b'R' && payload[1] == b'L' && payload[2] == b';' {
-                    let content = std::str::from_utf8(&payload[3..]).ok()?.to_string();
-                    return Some(Osc133EventKind::ReadlineLine { content });
+                    let rest = &payload[3..];
+                    // Find the last semicolon to split content;point
+                    // Point is always a numeric suffix, so search from the end
+                    let (content, point) = if let Some(pos) = rest.iter().rposition(|&b| b == b';') {
+                        let maybe_point = std::str::from_utf8(&rest[pos + 1..]).ok()
+                            .and_then(|s| s.parse::<usize>().ok());
+                        if maybe_point.is_some() {
+                            let content = std::str::from_utf8(&rest[..pos]).ok()?.to_string();
+                            (content, maybe_point)
+                        } else {
+                            (std::str::from_utf8(rest).ok()?.to_string(), None)
+                        }
+                    } else {
+                        (std::str::from_utf8(rest).ok()?.to_string(), None)
+                    };
+                    return Some(Osc133EventKind::ReadlineLine { content, point });
                 }
                 if payload.len() >= 2 && payload[0] == b'B' && payload[1] == b';' {
                     // B;command_text;cwd:/path
@@ -333,7 +347,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0].kind,
-            Osc133EventKind::ReadlineLine { content: "git status".into() }
+            Osc133EventKind::ReadlineLine { content: "git status".into(), point: None }
         );
     }
 
@@ -344,7 +358,41 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0].kind,
-            Osc133EventKind::ReadlineLine { content: String::new() }
+            Osc133EventKind::ReadlineLine { content: String::new(), point: None }
+        );
+    }
+
+    #[test]
+    fn test_readline_line_with_point() {
+        let mut detector = Osc133Detector::new();
+        let events = detector.feed(b"\x1b]133;RL;git status;10\x07");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].kind,
+            Osc133EventKind::ReadlineLine { content: "git status".into(), point: Some(10) }
+        );
+    }
+
+    #[test]
+    fn test_readline_line_with_point_mid_cursor() {
+        let mut detector = Osc133Detector::new();
+        // Cursor at position 3 in "cd work" (7 chars)
+        let events = detector.feed(b"\x1b]133;RL;cd work;3\x07");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].kind,
+            Osc133EventKind::ReadlineLine { content: "cd work".into(), point: Some(3) }
+        );
+    }
+
+    #[test]
+    fn test_readline_line_empty_with_point() {
+        let mut detector = Osc133Detector::new();
+        let events = detector.feed(b"\x1b]133;RL;;0\x07");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].kind,
+            Osc133EventKind::ReadlineLine { content: String::new(), point: Some(0) }
         );
     }
 

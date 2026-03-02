@@ -344,6 +344,10 @@ async fn main() -> Result<()> {
                         // Check if Tab should be intercepted for shell completion
                         if bytes == [b'\t'] && shell_completer.ghost().is_some() {
                             if let Some(suffix) = shell_completer.accept() {
+                                // Safety: if cursor is not at end, move to end first
+                                if !shell_input.cursor_at_end() {
+                                    proxy.write_all(b"\x05")?; // Ctrl-E: move to end of line
+                                }
                                 proxy.write_all(suffix.as_bytes())?;
                                 shell_input.inject(&suffix);
                                 command_tracker.feed_input(suffix.as_bytes(), timestamp_ms());
@@ -615,17 +619,26 @@ async fn main() -> Result<()> {
                                 }
                                 shell_completer.clear();
                             }
-                            Osc133EventKind::ReadlineLine { content } => {
-                                shell_input.set_readline(content);
+                            Osc133EventKind::ReadlineLine { content, point } => {
+                                shell_input.set_readline(content, *point);
                                 last_readline_content = Some(content.to_string());
 
                                 // Process any pending completion responses now that we have latest input
                                 if !pending_completion_responses.is_empty() {
-                                    let current = shell_input.input();
-                                    for resp in pending_completion_responses.drain(..) {
-                                        if let Some(ghost) = shell_completer.on_response(&resp, current) {
-                                            let ghost_render = display::render_ghost_text(ghost);
-                                            nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                                    if shell_input.cursor_at_end() {
+                                        let current = shell_input.input();
+                                        for resp in pending_completion_responses.drain(..) {
+                                            if let Some(ghost) = shell_completer.on_response(&resp, current) {
+                                                let ghost_render = display::render_ghost_text(ghost);
+                                                nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                                            }
+                                        }
+                                    } else {
+                                        // Cursor not at end — discard pending completions
+                                        pending_completion_responses.clear();
+                                        if shell_completer.ghost().is_some() {
+                                            shell_completer.clear();
+                                            nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
                                         }
                                     }
                                     readline_triggered_for_completions = false;
@@ -681,7 +694,7 @@ async fn main() -> Result<()> {
             // Clean up timed-out requests first
             let _cleaned = shell_completer.cleanup_timed_out_requests();
 
-            if at_prompt && !in_chat && shell_completer.should_request(shell_input.sequence_id(), current) {
+            if at_prompt && !in_chat && shell_input.cursor_at_end() && shell_completer.should_request(shell_input.sequence_id(), current) {
                 let seq = shell_input.sequence_id();
                 if let Some(ref rpc) = daemon_conn {
                     let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
@@ -729,12 +742,16 @@ async fn main() -> Result<()> {
             if let Some(trigger_time) = readline_trigger_time {
                 if trigger_time.elapsed() > std::time::Duration::from_millis(500) {
                     // Timeout - process pending responses with current input
-                    let current = shell_input.input();
-                    for resp in pending_completion_responses.drain(..) {
-                        if let Some(ghost) = shell_completer.on_response(&resp, current) {
-                            let ghost_render = display::render_ghost_text(ghost);
-                            nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                    if shell_input.cursor_at_end() {
+                        let current = shell_input.input();
+                        for resp in pending_completion_responses.drain(..) {
+                            if let Some(ghost) = shell_completer.on_response(&resp, current) {
+                                let ghost_render = display::render_ghost_text(ghost);
+                                nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                            }
                         }
+                    } else {
+                        pending_completion_responses.clear();
                     }
                     readline_triggered_for_completions = false;
                     readline_trigger_time = None;

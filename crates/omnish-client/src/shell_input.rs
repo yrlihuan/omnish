@@ -25,6 +25,9 @@ pub struct ShellInputTracker {
     /// When pending_rl_report was set. Used to auto-clear after timeout
     /// in case bash never responds (e.g., trigger sent during Tab completion).
     pending_rl_report_at: Option<std::time::Instant>,
+    /// Whether the cursor is at the end of the input line.
+    /// When false, ghost completions are suppressed (like fish/zsh-autosuggestions).
+    cursor_at_end: bool,
 }
 
 impl ShellInputTracker {
@@ -37,6 +40,7 @@ impl ShellInputTracker {
             esc_state: 0,
             pending_rl_report: false,
             pending_rl_report_at: None,
+            cursor_at_end: true,
         }
     }
 
@@ -47,6 +51,7 @@ impl ShellInputTracker {
         self.esc_state = 0;
         self.pending_rl_report = false;
         self.pending_rl_report_at = None;
+        self.cursor_at_end = true;
         self.bump(); // always bump so completion can fire on empty prompt
     }
 
@@ -178,16 +183,28 @@ impl ShellInputTracker {
     /// Only effective while at the prompt.
     /// Only bumps sequence_id if content actually changed, to avoid spurious
     /// completion requests from readline triggers sent for response processing.
-    pub fn set_readline(&mut self, content: &str) {
+    /// When `point` is provided, updates `cursor_at_end` based on whether the
+    /// cursor is at the end of the line.
+    pub fn set_readline(&mut self, content: &str, point: Option<usize>) {
         if !self.at_prompt {
             return;
         }
         self.pending_rl_report = false;
         self.pending_rl_report_at = None;
+        self.cursor_at_end = match point {
+            Some(p) => p >= content.len(),
+            None => true, // assume at end if point not reported
+        };
         if self.input != content {
             self.input = content.to_string();
             self.bump();
         }
+    }
+
+    /// Whether the cursor is at the end of the input line.
+    /// Ghost completions are suppressed when this is false.
+    pub fn cursor_at_end(&self) -> bool {
+        self.cursor_at_end
     }
 
     /// Mark that a readline report is expected (e.g. after sending a trigger
@@ -358,7 +375,7 @@ mod tests {
         let mut t = ShellInputTracker::new();
         t.feed_forwarded(b"gi");
         let _ = t.take_change(); // consume
-        t.set_readline("git");
+        t.set_readline("git", None);
         assert_eq!(t.input(), "git");
         let (input, _seq) = t.take_change().unwrap();
         assert_eq!(input, "git");
@@ -382,7 +399,7 @@ mod tests {
         let _ = t.take_change();
         t.mark_pending_report();
         assert!(t.take_change().is_none());
-        t.set_readline("git");
+        t.set_readline("git", None);
         // After set_readline, take_change works again
         let (input, _seq) = t.take_change().unwrap();
         assert_eq!(input, "git");
@@ -401,7 +418,7 @@ mod tests {
 
         // Simulate readline trigger for completion: content unchanged
         t.mark_pending_report();
-        t.set_readline("git"); // same content
+        t.set_readline("git", None); // same content
 
         // Should clear pending_rl_report
         assert!(!t.pending_rl_report());
@@ -414,12 +431,46 @@ mod tests {
     }
 
     #[test]
+    fn test_cursor_at_end_when_point_at_end() {
+        let mut t = ShellInputTracker::new();
+        t.feed_forwarded(b"cd work");
+        t.set_readline("cd work", Some(7));
+        assert!(t.cursor_at_end());
+    }
+
+    #[test]
+    fn test_cursor_not_at_end_when_point_mid_line() {
+        let mut t = ShellInputTracker::new();
+        t.feed_forwarded(b"cd work");
+        t.set_readline("cd work", Some(3));
+        assert!(!t.cursor_at_end());
+    }
+
+    #[test]
+    fn test_cursor_at_end_default_when_no_point() {
+        let mut t = ShellInputTracker::new();
+        t.feed_forwarded(b"cd work");
+        t.set_readline("cd work", None);
+        assert!(t.cursor_at_end());
+    }
+
+    #[test]
+    fn test_cursor_at_end_reset_on_prompt() {
+        let mut t = ShellInputTracker::new();
+        t.feed_forwarded(b"cd work");
+        t.set_readline("cd work", Some(3));
+        assert!(!t.cursor_at_end());
+        t.on_prompt();
+        assert!(t.cursor_at_end());
+    }
+
+    #[test]
     fn test_set_readline_ignored_when_not_at_prompt() {
         let mut t = ShellInputTracker::new();
         t.feed_forwarded(b"ls");
         t.feed_forwarded(&[0x0d]); // Enter — not at prompt
         assert!(!t.at_prompt());
-        t.set_readline("should be ignored");
+        t.set_readline("should be ignored", None);
         assert_eq!(t.input(), "");
     }
 
