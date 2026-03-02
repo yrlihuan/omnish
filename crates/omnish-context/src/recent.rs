@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use omnish_store::command::CommandRecord;
 
-use crate::format_utils::{assign_stable_term_labels, assign_term_labels, truncate_lines};
+use crate::format_utils::{assign_term_labels, truncate_lines};
 use crate::{CommandContext, ContextFormatter, ContextStrategy};
 
 fn format_command_prefix(hostname: &Option<String>, cwd: &Option<String>) -> String {
@@ -368,40 +368,31 @@ impl ContextFormatter for CompletionFormatter {
 
         // History section: command-line only
         if !history.is_empty() {
-            let mut history_lines = vec!["--- History ---".to_string()];
+            let mut history_lines = vec!["<history_commands>".to_string()];
             for cmd in history {
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
                 let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
                 let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
                 history_lines.push(format!("{}$ {}", prefix_display, cmd_line));
             }
+            history_lines.push("</history_commands>".to_string());
             sections.push(history_lines.join("\n"));
         }
 
-        // Recent section: all detailed commands interleaved by time, uniform labels
-        if !detailed.is_empty() {
-            // Use stable labels based on chronological first appearance across ALL
-            // commands (history + detailed) so labels never shift between requests.
-            let mut all_commands: Vec<&CommandContext> = history.iter().chain(detailed.iter()).collect();
-            all_commands.sort_by_key(|c| c.started_at);
-            let all_contexts: Vec<CommandContext> = all_commands.iter().map(|c| CommandContext {
-                session_id: c.session_id.clone(),
-                hostname: c.hostname.clone(),
-                command_line: c.command_line.clone(),
-                cwd: c.cwd.clone(),
-                started_at: c.started_at,
-                ended_at: c.ended_at,
-                output: String::new(),
-                exit_code: c.exit_code,
-            }).collect();
-            let labels = assign_stable_term_labels(&all_contexts);
+        // Get current path first (needed for both recent section and current_prompt section)
+        let current_path = detailed.iter()
+            .rev()
+            .find(|c| c.session_id == self.current_session_id)
+            .and_then(|c| c.cwd.as_deref())
+            .unwrap_or("");
 
+        // Recent section: all detailed commands interleaved by time
+        if !detailed.is_empty() {
             let mut sorted: Vec<&CommandContext> = detailed.iter().collect();
             sorted.sort_by_key(|c| c.started_at);
 
-            let mut recent_lines = vec!["--- Recent ---".to_string()];
+            let mut recent_lines = vec!["<recent_commands>".to_string()];
             for cmd in &sorted {
-                let label = labels.get(&cmd.session_id).unwrap();
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
                 let max_lines = self.head_lines + self.tail_lines;
                 let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
@@ -410,25 +401,31 @@ impl ContextFormatter for CompletionFormatter {
                     Some(code) if code != 0 => format!("  [FAILED: {}]", code),
                     _ => String::new(),
                 };
-                let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
-                let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
+                // Use hostname:cwd$ as prompt directly
+                let prompt = format_command_prefix(&cmd.hostname, &cmd.cwd);
+                let prompt_display = if prompt.is_empty() { String::new() } else { format!("{} ", prompt) };
+
+                // Simplified format: prompt as attribute, command + output as content
                 if output.is_empty() {
-                    recent_lines.push(format!("{} {}$ {}{}", label, prefix_display, cmd_line, failed_tag));
+                    recent_lines.push(format!(
+                        "<item prompt=\"{}$\">{}{}</item>",
+                        prompt_display, cmd_line, failed_tag
+                    ));
                 } else {
-                    recent_lines.push(format!("{} {}$ {}{}\n{}\n--------------------", label, prefix_display, cmd_line, failed_tag, output));
+                    recent_lines.push(format!(
+                        "<item prompt=\"{}\">{}{}</item>\n{}",
+                        prompt_display, cmd_line, failed_tag, output
+                    ));
                 }
             }
 
-            // Append current path from the most recent current-session command
-            let current_path = sorted.iter().rev()
-                .find(|c| c.session_id == self.current_session_id)
-                .and_then(|c| c.cwd.as_deref())
-                .unwrap_or("");
-            if !current_path.is_empty() {
-                recent_lines.push(format!("Current path: {}", current_path));
-            }
-
+            recent_lines.push("</recent_commands>".to_string());
             sections.push(recent_lines.join("\n"));
+        }
+
+        // Current prompt section (outside recent_commands)
+        if !current_path.is_empty() {
+            sections.push(format!("<current_prompt>{}</current_prompt>", current_path));
         }
 
         sections.join("\n\n")
@@ -1034,10 +1031,10 @@ mod tests {
         ];
         let formatter = CompletionFormatter::new("sess-a", 10, 10);
         let result = formatter.format(&history, &detailed);
-        assert!(result.contains("--- History ---"), "Should have History section");
-        assert!(result.contains("--- Recent ---"), "Should have Recent section");
-        let pos_history = result.find("--- History ---").unwrap();
-        let pos_recent = result.find("--- Recent ---").unwrap();
+        assert!(result.contains("<history_commands>"), "Should have History section");
+        assert!(result.contains("<recent_commands>"), "Should have Recent section");
+        let pos_history = result.find("<history_commands>").unwrap();
+        let pos_recent = result.find("<recent_commands>").unwrap();
         assert!(pos_history < pos_recent, "History should come before Recent");
     }
 
@@ -1051,14 +1048,14 @@ mod tests {
         let formatter = CompletionFormatter::new("sess-a", 10, 10);
         let result = formatter.format(&[], &detailed);
         let pos_npm = result.find("npm start").unwrap();
-        let pos_ls = result.find("$ ls").unwrap();
-        let pos_pwd = result.find("$ pwd").unwrap();
+        let pos_ls = result.find(">ls</item>").unwrap();
+        let pos_pwd = result.find(">pwd</item>").unwrap();
         assert!(pos_npm < pos_ls, "npm start (25000) should be before ls (28000)");
         assert!(pos_ls < pos_pwd, "ls (28000) should be before pwd (29000)");
     }
 
     #[test]
-    fn test_completion_formatter_uniform_labels() {
+    fn test_completion_formatter_no_term_labels() {
         let detailed = vec![
             make_ctx("sess-a", "ls", 28000, "file1.txt"),
             make_ctx("sess-b", "npm start", 25000, "Server running"),
@@ -1068,9 +1065,9 @@ mod tests {
         // Should NOT have current-session markers like "*" or "[current]"
         assert!(!result.contains("*"), "Should not have current-session asterisk marker");
         assert!(!result.contains("[current]"), "Should not have [current] marker");
-        // Should have uniform labels
-        assert!(result.contains("term A"), "Should have term A label");
-        assert!(result.contains("term B"), "Should have term B label");
+        // Should NOT have term labels like "term A" or "term B"
+        assert!(!result.contains("term A"), "Should not have term A label");
+        assert!(!result.contains("term B"), "Should not have term B label");
     }
 
     #[test]
@@ -1099,8 +1096,29 @@ mod tests {
         ];
         let formatter = CompletionFormatter::new("sess-a", 10, 10);
         let result = formatter.format(&[], &detailed);
-        assert!(result.contains("Current path: /tmp"),
-                "Should append current path from most recent current-session command: {}", result);
+        // current_prompt should be outside recent_commands
+        assert!(result.contains("<current_prompt>/tmp</current_prompt>"),
+                "Should append current path: {}", result);
+        // Verify it's after </recent_commands>
+        let pos_recent_close = result.find("</recent_commands>").unwrap();
+        let pos_current = result.find("<current_prompt>").unwrap();
+        assert!(pos_current > pos_recent_close,
+                "current_prompt should be after </recent_commands>: {}", result);
+    }
+
+    #[test]
+    fn test_completion_formatter_xml_item_structure() {
+        // Test that recent commands have proper XML structure
+        let detailed = vec![
+            make_ctx("sess-a", "ls", 28000, "file1.txt"),
+        ];
+        let formatter = CompletionFormatter::new("sess-a", 10, 10);
+        let result = formatter.format(&[], &detailed);
+        // Check XML structure - simplified format with attributes
+        assert!(result.contains("<item prompt="), "Should have item tag with prompt attribute");
+        assert!(result.contains("</item>"), "Should have item close tag");
+        assert!(result.contains(">ls</item>"), "Command should be in item content");
+        assert!(result.contains("file1.txt"), "Output should be present after item");
     }
 
     #[test]
@@ -1111,8 +1129,8 @@ mod tests {
     }
 
     #[test]
-    fn test_completion_formatter_stable_labels_across_sessions() {
-        // Labels should be the same regardless of which session is "current"
+    fn test_completion_formatter_stable_across_sessions() {
+        // Output should be the same regardless of which session is "current"
         let detailed = vec![
             make_ctx("sess-a", "ls", 25000, "file1.txt"),
             make_ctx("sess-b", "npm start", 28000, "Server running"),
@@ -1123,8 +1141,8 @@ mod tests {
         // Second request: current = sess-b (different terminal)
         let fmt_b = CompletionFormatter::new("sess-b", 10, 10);
         let result_b = fmt_b.format(&[], &detailed);
-        // Labels should be identical: sess-a = term A (first by time), sess-b = term B
+        // Output should be identical - prompt is based on hostname:cwd, not session
         assert_eq!(result_a, result_b,
-            "Labels should be stable regardless of current session.\nWith sess-a current:\n{}\n\nWith sess-b current:\n{}", result_a, result_b);
+            "Output should be stable regardless of current session.\nWith sess-a current:\n{}\n\nWith sess-b current:\n{}", result_a, result_b);
     }
 }
