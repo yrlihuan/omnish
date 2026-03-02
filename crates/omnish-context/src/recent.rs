@@ -376,18 +376,18 @@ impl ContextFormatter for CompletionFormatter {
 
         // History section: command-line only
         if !history.is_empty() {
-            let mut history_lines = vec!["<history_commands>".to_string()];
+            let mut history_lines = vec!["<history>".to_string()];
             for cmd in history {
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
                 let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
                 let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
                 history_lines.push(format!("{}$ {}", prefix_display, cmd_line));
             }
-            history_lines.push("</history_commands>".to_string());
+            history_lines.push("</history>".to_string());
             sections.push(history_lines.join("\n"));
         }
 
-        // Get current path first (needed for both recent section and current_prompt section)
+        // Get current path first (needed for current_path section)
         let current_path = detailed.iter()
             .rev()
             .find(|c| c.session_id == self.current_session_id)
@@ -399,7 +399,7 @@ impl ContextFormatter for CompletionFormatter {
             let mut sorted: Vec<&CommandContext> = detailed.iter().collect();
             sorted.sort_by_key(|c| c.started_at);
 
-            let mut recent_lines = vec!["<recent_commands>".to_string()];
+            let mut recent_lines = vec!["<recent>".to_string()];
             for cmd in &sorted {
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
                 let max_lines = self.head_lines + self.tail_lines;
@@ -409,31 +409,23 @@ impl ContextFormatter for CompletionFormatter {
                     Some(code) if code != 0 => format!("  [FAILED: {}]", code),
                     _ => String::new(),
                 };
-                // Use hostname:cwd$ as prompt directly
-                let prompt = format_command_prefix(&cmd.hostname, &cmd.cwd);
-                let prompt_display = if prompt.is_empty() { String::new() } else { format!("{} ", prompt) };
+                let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
+                let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
 
-                // Simplified format: prompt as attribute, command + output as content
                 if output.is_empty() {
-                    recent_lines.push(format!(
-                        "<item prompt=\"{}$\">{}{}</item>",
-                        prompt_display, cmd_line, failed_tag
-                    ));
+                    recent_lines.push(format!("{}$ {}{}", prefix_display, cmd_line, failed_tag));
                 } else {
-                    recent_lines.push(format!(
-                        "<item prompt=\"{}\">{}{}</item>\n{}",
-                        prompt_display, cmd_line, failed_tag, output
-                    ));
+                    recent_lines.push(format!("{}$ {}{}\n{}\n--------------------", prefix_display, cmd_line, failed_tag, output));
                 }
             }
 
-            recent_lines.push("</recent_commands>".to_string());
+            recent_lines.push("</recent>".to_string());
             sections.push(recent_lines.join("\n"));
         }
 
-        // Current prompt section (outside recent_commands)
+        // Current path section
         if !current_path.is_empty() {
-            sections.push(format!("<current_prompt>{}</current_prompt>", current_path));
+            sections.push(format!("<current_path>{}</current_path>", current_path));
         }
 
         sections.join("\n\n")
@@ -1039,10 +1031,10 @@ mod tests {
         ];
         let formatter = CompletionFormatter::new("sess-a", 10, 10);
         let result = formatter.format(&history, &detailed);
-        assert!(result.contains("<history_commands>"), "Should have History section");
-        assert!(result.contains("<recent_commands>"), "Should have Recent section");
-        let pos_history = result.find("<history_commands>").unwrap();
-        let pos_recent = result.find("<recent_commands>").unwrap();
+        assert!(result.contains("<history>"), "Should have History section");
+        assert!(result.contains("<recent>"), "Should have Recent section");
+        let pos_history = result.find("<history>").unwrap();
+        let pos_recent = result.find("<recent>").unwrap();
         assert!(pos_history < pos_recent, "History should come before Recent");
     }
 
@@ -1056,8 +1048,8 @@ mod tests {
         let formatter = CompletionFormatter::new("sess-a", 10, 10);
         let result = formatter.format(&[], &detailed);
         let pos_npm = result.find("npm start").unwrap();
-        let pos_ls = result.find(">ls</item>").unwrap();
-        let pos_pwd = result.find(">pwd</item>").unwrap();
+        let pos_ls = result.find("$ ls").unwrap();
+        let pos_pwd = result.find("$ pwd").unwrap();
         assert!(pos_npm < pos_ls, "npm start (25000) should be before ls (28000)");
         assert!(pos_ls < pos_pwd, "ls (28000) should be before pwd (29000)");
     }
@@ -1104,29 +1096,29 @@ mod tests {
         ];
         let formatter = CompletionFormatter::new("sess-a", 10, 10);
         let result = formatter.format(&[], &detailed);
-        // current_prompt should be outside recent_commands
-        assert!(result.contains("<current_prompt>/tmp</current_prompt>"),
+        // current_path should be outside recent section
+        assert!(result.contains("<current_path>/tmp</current_path>"),
                 "Should append current path: {}", result);
-        // Verify it's after </recent_commands>
-        let pos_recent_close = result.find("</recent_commands>").unwrap();
-        let pos_current = result.find("<current_prompt>").unwrap();
+        // Verify it's after </recent>
+        let pos_recent_close = result.find("</recent>").unwrap();
+        let pos_current = result.find("<current_path>").unwrap();
         assert!(pos_current > pos_recent_close,
-                "current_prompt should be after </recent_commands>: {}", result);
+                "current_path should be after </recent>: {}", result);
     }
 
     #[test]
-    fn test_completion_formatter_xml_item_structure() {
-        // Test that recent commands have proper XML structure
+    fn test_completion_formatter_plain_text_format() {
+        // Test that recent commands use plain text format (no sub-tags)
         let detailed = vec![
             make_ctx("sess-a", "ls", 28000, "file1.txt"),
         ];
         let formatter = CompletionFormatter::new("sess-a", 10, 10);
         let result = formatter.format(&[], &detailed);
-        // Check XML structure - simplified format with attributes
-        assert!(result.contains("<item prompt="), "Should have item tag with prompt attribute");
-        assert!(result.contains("</item>"), "Should have item close tag");
-        assert!(result.contains(">ls</item>"), "Command should be in item content");
-        assert!(result.contains("file1.txt"), "Output should be present after item");
+        // Should use plain text, not XML item tags
+        assert!(!result.contains("<item"), "Should NOT have item tags");
+        assert!(result.contains("$ ls"), "Should have plain text command");
+        assert!(result.contains("file1.txt"), "Output should be present");
+        assert!(result.contains("--------------------"), "Should have separator after output");
     }
 
     #[test]
