@@ -1054,6 +1054,9 @@ fn debug_client_state(
     let mut output = String::new();
     output.push_str("=== Client Debug State ===\n\n");
 
+    // Version info
+    output.push_str(&format!("Version: omnish {}\n\n", omnish_common::VERSION));
+
     // Shell Input Tracker state
     output.push_str("Shell Input Tracker:\n");
     let (input, seq, at_prompt, pending_rl, esc_state) = shell_input.get_debug_info();
