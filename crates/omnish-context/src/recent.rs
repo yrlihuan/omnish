@@ -413,7 +413,7 @@ impl ContextFormatter for CompletionFormatter {
                 let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
 
                 if output.is_empty() {
-                    recent_lines.push(format!("{}$ {}{}", prefix_display, cmd_line, failed_tag));
+                    recent_lines.push(format!("{}$ {}{}\n--------------------", prefix_display, cmd_line, failed_tag));
                 } else {
                     recent_lines.push(format!("{}$ {}{}\n{}\n--------------------", prefix_display, cmd_line, failed_tag, output));
                 }
