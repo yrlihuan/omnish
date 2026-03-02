@@ -44,6 +44,7 @@ cooldown_seconds = 5
 # history_commands = 500   # older commands listed as command-line only
 # head_lines = 20          # output lines kept from start of each command
 # tail_lines = 20          # output lines kept from end of each command
+# max_line_width = 200     # max characters per output line (default: 200)
 # max_context_chars = 8000 # fallback limit if backend doesn't specify max_content_chars
 
 [context.hourly_summary]

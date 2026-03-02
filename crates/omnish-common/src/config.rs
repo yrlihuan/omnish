@@ -446,7 +446,7 @@ fn default_tail_lines() -> usize {
 }
 
 fn default_max_line_width() -> usize {
-    512
+    200
 }
 
 fn default_min_current_session_commands() -> usize {

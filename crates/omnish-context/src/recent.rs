@@ -226,7 +226,7 @@ impl ContextFormatter for GroupedFormatter {
                     let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
                     let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
                     let max_lines = self.head_lines + self.tail_lines;
-                    let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
+                    let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines, None);
 
                     let failed_tag = match cmd.exit_code {
                         Some(code) if code != 0 => format!("  [FAILED: {}]", code),
@@ -318,7 +318,7 @@ impl ContextFormatter for InterleavedFormatter {
                 };
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
                 let max_lines = self.head_lines + self.tail_lines;
-                let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
+                let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines, None);
 
                 let failed_tag = match cmd.exit_code {
                     Some(code) if code != 0 => format!("  [FAILED: {}]", code),
@@ -346,6 +346,8 @@ pub struct CompletionFormatter {
     current_session_id: String,
     head_lines: usize,
     tail_lines: usize,
+    /// Maximum characters per command output. If exceeded, output is truncated.
+    max_command_output_chars: usize,
 }
 
 impl CompletionFormatter {
@@ -354,7 +356,13 @@ impl CompletionFormatter {
             current_session_id: current_session_id.to_string(),
             head_lines,
             tail_lines,
+            max_command_output_chars: 500, // Default limit
         }
+    }
+
+    pub fn with_max_command_output_chars(mut self, max_chars: usize) -> Self {
+        self.max_command_output_chars = max_chars;
+        self
     }
 }
 
@@ -395,7 +403,7 @@ impl ContextFormatter for CompletionFormatter {
             for cmd in &sorted {
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
                 let max_lines = self.head_lines + self.tail_lines;
-                let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines);
+                let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines, Some(self.max_command_output_chars));
 
                 let failed_tag = match cmd.exit_code {
                     Some(code) if code != 0 => format!("  [FAILED: {}]", code),
@@ -1144,5 +1152,35 @@ mod tests {
         // Output should be identical - prompt is based on hostname:cwd, not session
         assert_eq!(result_a, result_b,
             "Output should be stable regardless of current session.\nWith sess-a current:\n{}\n\nWith sess-b current:\n{}", result_a, result_b);
+    }
+
+    #[test]
+    fn test_completion_formatter_output_char_limit() {
+        // Create output with 600 characters - should be truncated to 500
+        let long_output = "x".repeat(600);
+        let detailed = vec![
+            make_ctx("sess-a", "ls", 30000, &long_output),
+        ];
+        // Default max_output_chars is 500
+        let formatter = CompletionFormatter::new("sess-a", 10, 10);
+        let result = formatter.format(&[], &detailed);
+        // Output should be truncated - less than 600 chars
+        assert!(result.len() < 600, "Output should be truncated: got {} chars", result.len());
+        // Should contain truncation indicator
+        assert!(result.contains("..."), "Truncated output should contain ...");
+    }
+
+    #[test]
+    fn test_completion_formatter_custom_output_char_limit() {
+        // Create output with 200 characters
+        let output = "x".repeat(200);
+        let detailed = vec![
+            make_ctx("sess-a", "ls", 30000, &output),
+        ];
+        // Set custom limit of 100 chars
+        let formatter = CompletionFormatter::new("sess-a", 10, 10).with_max_command_output_chars(100);
+        let result = formatter.format(&[], &detailed);
+        // Output should be truncated to 100 chars
+        assert!(result.len() < 200, "Output should be truncated to 100 chars");
     }
 }

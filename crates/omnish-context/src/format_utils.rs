@@ -129,8 +129,9 @@ pub fn truncate_line_width(text: &str, max_width: usize) -> String {
     result
 }
 
-/// Truncate output lines. If over max_lines, keep head + "... (N lines omitted) ..." + tail.
-pub fn truncate_lines(text: &str, max_lines: usize, head: usize, tail: usize) -> String {
+/// Truncate output lines. If over max_lines, keep head + "..." + tail.
+/// Also limits total characters to max_chars if provided.
+pub fn truncate_lines(text: &str, max_lines: usize, head: usize, tail: usize, max_chars: Option<usize>) -> String {
     let lines: Vec<&str> = text
         .lines()
         .map(|l| l.trim_end_matches('\r'))
@@ -139,6 +140,13 @@ pub fn truncate_lines(text: &str, max_lines: usize, head: usize, tail: usize) ->
 
     let total = lines.len();
     if total <= max_lines {
+        // Even if within line limit, still check character limit
+        if let Some(limit) = max_chars {
+            let content = lines.join("\n");
+            if content.chars().count() > limit {
+                return truncate_by_chars(&content, limit);
+            }
+        }
         lines.join("\n")
     } else {
         let head_part = &lines[..head];
@@ -151,6 +159,25 @@ pub fn truncate_lines(text: &str, max_lines: usize, head: usize, tail: usize) ->
             tail_part.join("\n")
         )
     }
+}
+
+/// Truncate text to at most max_chars characters.
+/// Keeps head + "..." + tail where head and tail are roughly equal.
+fn truncate_by_chars(text: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_chars {
+        return text.to_string();
+    }
+
+    // Reserve 5 chars for "..."
+    let available = max_chars.saturating_sub(5);
+    let head_len = available / 2;
+    let tail_len = available - head_len;
+
+    let head: String = chars[..head_len].iter().collect();
+    let tail: String = chars[chars.len() - tail_len..].iter().collect();
+
+    format!("{}...{}", head, tail)
 }
 
 #[cfg(test)]
@@ -251,7 +278,7 @@ mod tests {
     #[test]
     fn test_truncate_lines_short() {
         let text = "line 1\nline 2\nline 3\n";
-        let result = truncate_lines(text, 20, 10, 10);
+        let result = truncate_lines(text, 20, 10, 10, None);
         assert_eq!(result, "line 1\nline 2\nline 3");
     }
 
@@ -261,13 +288,31 @@ mod tests {
         for i in 0..30 {
             text.push_str(&format!("line {}\n", i));
         }
-        let result = truncate_lines(&text, 20, 10, 10);
+        let result = truncate_lines(&text, 20, 10, 10, None);
         assert!(result.contains("line 0"));
         assert!(result.contains("line 9"));
         assert!(result.contains("... (10 lines omitted) ..."));
         assert!(result.contains("line 20"));
         assert!(result.contains("line 29"));
         assert!(!result.contains("\nline 10\n"));
+    }
+
+    #[test]
+    fn test_truncate_lines_by_chars() {
+        // Test character limit - text with 600 chars should be truncated to 500
+        let text = "x".repeat(600);
+        let result = truncate_lines(&text, 1000, 500, 500, Some(500));
+        assert!(result.len() <= 503); // 500 chars + "..."
+    }
+
+    #[test]
+    fn test_truncate_by_chars_head_tail() {
+        // Test that truncation keeps head and tail
+        let text = "abcdefghijklmnopqrstuvwxyz";
+        let result = truncate_by_chars(&text, 10);
+        assert!(result.starts_with("ab"));
+        assert!(result.ends_with("yz"));
+        assert!(result.contains("..."));
     }
 
     #[test]
