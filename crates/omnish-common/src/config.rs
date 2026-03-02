@@ -27,6 +27,12 @@ pub struct ClientConfig {
     pub shell: ShellConfig,
     #[serde(default = "default_socket_path")]
     pub daemon_addr: String,
+    #[serde(default = "default_true")]
+    pub completion_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for ClientConfig {
@@ -34,6 +40,7 @@ impl Default for ClientConfig {
         Self {
             shell: ShellConfig::default(),
             daemon_addr: default_socket_path(),
+            completion_enabled: true,
         }
     }
 }

@@ -695,7 +695,7 @@ async fn main() -> Result<()> {
             // Clean up timed-out requests first
             let _cleaned = shell_completer.cleanup_timed_out_requests();
 
-            if at_prompt && !in_chat && shell_input.cursor_at_end() && shell_completer.should_request(shell_input.sequence_id(), current) {
+            if config.completion_enabled && at_prompt && !in_chat && shell_input.cursor_at_end() && shell_completer.should_request(shell_input.sequence_id(), current) {
                 let seq = shell_input.sequence_id();
                 if let Some(ref rpc) = daemon_conn {
                     let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
