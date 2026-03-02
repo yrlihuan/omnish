@@ -64,9 +64,10 @@ pub struct SessionManager {
     context_config: ContextConfig,
     completion_writer: mpsc::Sender<CompletionRecord>,
     session_writer: mpsc::Sender<SessionUpdateRecord>,
-    /// Elastic window watermark: number of detailed commands at last reset.
-    /// When total detailed exceeds `detailed_max`, reset to `detailed_min`.
-    detailed_watermark: RwLock<usize>,
+    /// Frozen history cutoff: commands with `started_at <= this` are history.
+    /// Between elastic resets this value is stable, so the History prefix never changes.
+    /// `None` means the cutoff has not been established yet (first call).
+    history_frozen_until: RwLock<Option<u64>>,
 }
 
 /// Infer `last_active` from persisted data so that idle time survives daemon restarts.
@@ -123,14 +124,13 @@ impl SessionManager {
         std::fs::create_dir_all(&sessions_dir).ok();
         let completion_writer = omnish_store::completion::spawn_writer_thread(completions_dir);
         let session_writer = omnish_store::session_update::spawn_writer_thread(session_updates_dir);
-        let initial_watermark = context_config.completion.detailed_min;
         Self {
             base_dir: sessions_dir,
             sessions: RwLock::new(HashMap::new()),
             context_config,
             completion_writer,
             session_writer,
-            detailed_watermark: RwLock::new(initial_watermark),
+            history_frozen_until: RwLock::new(None),
         }
     }
 
@@ -1019,24 +1019,83 @@ impl SessionManager {
             return Ok(String::new());
         }
 
-        // Count meaningful (non-empty) commands for elastic window
-        let meaningful_count = all_commands.iter()
+        // Filter meaningful (non-empty command_line) and sort by started_at
+        let meaningful: Vec<&CommandRecord> = all_commands
+            .iter()
             .filter(|c| c.command_line.is_some())
-            .count();
+            .collect();
 
-        // Elastic window: determine detailed_commands count
-        let detailed_commands = {
-            let mut watermark = self.detailed_watermark.write().await;
-            if meaningful_count > cc.detailed_max {
-                // Reset: evict oldest into history
-                *watermark = cc.detailed_min;
-                cc.detailed_min
-            } else if meaningful_count > *watermark {
-                // Growing: use current count (append-only, prefix stable)
-                meaningful_count
+        if meaningful.is_empty() {
+            return Ok(String::new());
+        }
+
+        // --- Frozen history split ---
+        // Between resets, history_frozen_until is stable, so the History section
+        // is byte-identical across consecutive requests → KV cache prefix reuse.
+        let (selected_commands, detailed_count) = {
+            let mut frozen = self.history_frozen_until.write().await;
+
+            let cutoff_ts = match *frozen {
+                Some(ts) => ts,
+                None => {
+                    // First call: take latest (history + detailed_min) commands
+                    let total_desired = cc.history_commands + cc.detailed_min;
+                    let start = meaningful.len().saturating_sub(total_desired);
+                    let selected = &meaningful[start..];
+                    let split = selected.len().saturating_sub(cc.detailed_min);
+                    let ts = if split > 0 {
+                        selected[split - 1].started_at
+                    } else {
+                        0
+                    };
+                    *frozen = Some(ts);
+                    ts
+                }
+            };
+
+            // Split by frozen timestamp
+            let mut detailed: Vec<&CommandRecord> = meaningful
+                .iter()
+                .filter(|c| c.started_at > cutoff_ts)
+                .copied()
+                .collect();
+
+            // Elastic reset: if detailed exceeds max, move oldest into history
+            let final_cutoff = if detailed.len() > cc.detailed_max {
+                // Keep latest detailed_min as detailed
+                let new_split = detailed.len() - cc.detailed_min;
+                let new_ts = detailed[new_split - 1].started_at;
+                *frozen = Some(new_ts);
+                // Re-filter with new cutoff
+                detailed = meaningful
+                    .iter()
+                    .filter(|c| c.started_at > new_ts)
+                    .copied()
+                    .collect();
+                new_ts
             } else {
-                *watermark
-            }
+                cutoff_ts
+            };
+
+            // History: latest N commands with started_at <= cutoff
+            let history_pool: Vec<&CommandRecord> = meaningful
+                .iter()
+                .filter(|c| c.started_at <= final_cutoff)
+                .copied()
+                .collect();
+            let history_start = history_pool.len().saturating_sub(cc.history_commands);
+            let history = &history_pool[history_start..];
+
+            // Combine history + detailed into a single sorted list
+            let mut selected: Vec<CommandRecord> = history
+                .iter()
+                .chain(detailed.iter())
+                .map(|c| (*c).clone())
+                .collect();
+            selected.sort_by_key(|c| c.started_at);
+
+            let det_count = detailed.len();
+            (selected, det_count)
         };
 
         let reader = MultiSessionReader {
@@ -1048,7 +1107,7 @@ impl SessionManager {
             cc.tail_lines,
         );
 
-        let total = detailed_commands + cc.history_commands;
+        let total = selected_commands.len();
         let strategy = RecentCommands::new(total);
 
         // No character limit — build directly
@@ -1056,33 +1115,33 @@ impl SessionManager {
             return omnish_context::build_context_with_session(
                 &strategy,
                 &formatter,
-                &all_commands,
+                &selected_commands,
                 &reader,
                 &hostnames,
-                detailed_commands,
+                detailed_count,
                 cc.max_line_width,
                 Some(current_session_id),
-                0, // no min_current_session guarantee needed
+                0,
             )
             .await;
         }
 
-        // With character limit — try building, reduce if needed
+        // With character limit — reduce detailed first, then history
         let max_chars = max_context_chars.unwrap();
-        let mut current_detailed = detailed_commands;
-        let mut current_history = cc.history_commands;
+        let mut current_detailed = detailed_count;
+        let mut current_history = total.saturating_sub(detailed_count);
 
         loop {
-            let total = current_detailed + current_history;
-            if total == 0 {
+            let current_total = current_detailed + current_history;
+            if current_total == 0 {
                 break;
             }
 
-            let strategy = RecentCommands::new(total);
+            let strategy = RecentCommands::new(current_total);
             let context = omnish_context::build_context_with_session(
                 &strategy,
                 &formatter,
-                &all_commands,
+                &selected_commands,
                 &reader,
                 &hostnames,
                 current_detailed,
@@ -1096,15 +1155,16 @@ impl SessionManager {
                 return Ok(context);
             }
 
-            let reduction = (total / 4).max(1);
-            if reduction >= total {
+            // Reduce detailed first to preserve history prefix stability
+            if current_detailed > 1 {
+                let reduction = (current_detailed / 4).max(1);
+                current_detailed = current_detailed.saturating_sub(reduction);
+            } else if current_history > 0 {
+                let reduction = (current_history / 4).max(1);
+                current_history = current_history.saturating_sub(reduction);
+            } else {
                 return Ok(context);
             }
-
-            let ratio = current_detailed as f64 / total as f64;
-            let new_total = total - reduction;
-            current_detailed = (new_total as f64 * ratio) as usize;
-            current_history = new_total - current_detailed;
         }
 
         Ok(String::new())
