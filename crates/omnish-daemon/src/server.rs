@@ -507,12 +507,12 @@ async fn handle_completion_request(
     let result = backend.complete(&llm_req).await;
     let duration = start.elapsed();
 
-    // Format duration: use %.3f when > 1s, otherwise use default Debug format
+    // Format duration: use %.3f when > 1s, otherwise show as milliseconds
     let duration_secs = duration.as_secs_f64();
     let duration_str = if duration_secs > 1.0 {
         format!("{:.3}s", duration_secs)
     } else {
-        format!("{:?}", duration)
+        format!("{}ms", duration.as_millis())
     };
 
     match &result {
