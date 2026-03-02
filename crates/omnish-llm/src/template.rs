@@ -53,35 +53,25 @@ pub fn build_completion_content(context: &str, input: &str, cursor_pos: usize) -
 /// Instructions are placed first, then context, then input — this ordering maximizes
 /// prefix stability across consecutive requests for better KV cache hit rates.
 pub fn build_simple_completion_content(context: &str, input: &str, cursor_pos: usize) -> String {
-    if input.is_empty() {
-        format!(
-            "You are a shell command completion engine.\n\
-             Predict the next command the user is most likely to type.\n\
-             Pay close attention to <recent> and their output — \
-             infer what the user is trying to accomplish and what logical next step follows.\n\n\
-             Reply with a JSON array of up to 2 suggestions (most likely first):\n\
-             [\"<completion1>\", \"<completion2>\"]\n\
-             Return [] if no good prediction exists.\n\
-             Do not include any other text outside the JSON array.\n\n\
-             {}\n\n\
-             The user just returned to the shell prompt.",
-            context
-        )
+    // Unified template: instructions + context form a stable prefix for KV cache,
+    // only the trailing input line varies between requests.
+    let input_line = if input.is_empty() {
+        "Current input: (empty — user just returned to the shell prompt)".to_string()
     } else {
-        format!(
-            "You are a shell command completion engine.\n\
-             Use <recent> and their output to understand what the user is doing, \
-             then suggest the most likely completion.\n\n\
-             Reply with a JSON array of up to 2 FULL commands (including the user's current input as prefix):\n\
-             [\"<full command including prefix>\"]\n\
-             Return [] if no good completion exists.\n\
-             Do not include any other text outside the JSON array.\n\n\
-             {}\n\n\
-             Current input: `{}`\n\
-             Cursor position: {}",
-            context, input, cursor_pos
-        )
-    }
+        format!("Current input: `{}`\nCursor position: {}", input, cursor_pos)
+    };
+    format!(
+        "You are a shell command completion engine.\n\
+         Use <recent> and their output to understand what the user is doing, \
+         then predict or complete the command.\n\n\
+         Reply with a JSON array of up to 2 FULL commands:\n\
+         [\"<command1>\", \"<command2>\"]\n\
+         Return [] if no good completion exists.\n\
+         Do not include any other text outside the JSON array.\n\n\
+         {}\n\n\
+         {}",
+        context, input_line
+    )
 }
 
 /// Return the prompt template with `{context}` and `{query}` placeholders.
@@ -114,8 +104,8 @@ pub fn template_by_name(name: &str) -> Option<String> {
             prompt_template(false),
         )),
         "auto-complete" => Some(format!(
-            "--- auto-complete (empty input → predict next command) ---\n{}\n\n\
-             --- auto-complete (partial input → complete command) ---\n{}",
+            "--- auto-complete (empty input) ---\n{}\n\n\
+             --- auto-complete (with input) ---\n{}",
             build_simple_completion_content("{context}", "", 0),
             build_simple_completion_content("{context}", "{input}", 0),
         )),
@@ -162,5 +152,20 @@ mod tests {
         let context_pos = result.find(context).unwrap();
         assert!(instructions_pos < context_pos,
             "Instructions should appear before context for empty input too");
+    }
+
+    /// KV cache stability: empty-input and non-empty-input prompts must share
+    /// the same prefix up to (and including) the context, so the LLM server
+    /// can reuse cached KV state from warmup requests.
+    #[test]
+    fn test_simple_completion_prefix_stable_across_inputs() {
+        let context = "<history>\nls\ngit status\n</history>";
+        let empty = build_simple_completion_content(context, "", 0);
+        let typed = build_simple_completion_content(context, "git", 3);
+        // Find where context ends in both strings
+        let ctx_end_empty = empty.find(context).unwrap() + context.len();
+        let ctx_end_typed = typed.find(context).unwrap() + context.len();
+        assert_eq!(&empty[..ctx_end_empty], &typed[..ctx_end_typed],
+            "Instruction + context prefix must be identical for KV cache reuse");
     }
 }
