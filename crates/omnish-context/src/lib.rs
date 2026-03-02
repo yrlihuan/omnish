@@ -8,6 +8,23 @@ use async_trait::async_trait;
 use omnish_store::command::CommandRecord;
 use omnish_store::stream::StreamEntry;
 
+/// Replace the user's home directory prefix with `~` to reduce context size.
+fn shorten_home(path: &str) -> String {
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = home.to_string_lossy();
+        if let Some(rest) = path.strip_prefix(home.as_ref()) {
+            if rest.is_empty() || rest.starts_with('/') {
+                return format!("~{}", rest);
+            }
+        }
+    }
+    path.to_string()
+}
+
+fn shorten_cwd(cwd: &Option<String>) -> Option<String> {
+    cwd.as_ref().map(|p| shorten_home(p))
+}
+
 /// Pre-processed command data, ready for formatting.
 pub struct CommandContext {
     pub session_id: String,
@@ -110,7 +127,7 @@ pub async fn build_context_with_session(
             session_id: cmd.session_id.clone(),
             hostname: session_hostnames.get(&cmd.session_id).cloned(),
             command_line: cmd.command_line.clone(),
-            cwd: cmd.cwd.clone(),
+            cwd: shorten_cwd(&cmd.cwd),
             started_at: cmd.started_at,
             ended_at: cmd.ended_at,
             output: String::new(),
@@ -147,7 +164,7 @@ pub async fn build_context_with_session(
             session_id: cmd.session_id.clone(),
             hostname: session_hostnames.get(&cmd.session_id).cloned(),
             command_line: cmd.command_line.clone(),
-            cwd: cmd.cwd.clone(),
+            cwd: shorten_cwd(&cmd.cwd),
             started_at: cmd.started_at,
             ended_at: cmd.ended_at,
             output,
