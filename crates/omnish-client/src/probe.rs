@@ -1,5 +1,11 @@
 use std::collections::HashMap;
 
+/// Extract the short process name from a potentially full path.
+/// e.g. "/opt/homebrew/.../MacOS/Vim" -> "Vim", "vim" -> "vim"
+fn process_basename(name: &str) -> &str {
+    name.rsplit('/').next().unwrap_or(name)
+}
+
 pub trait Probe: Send + Sync {
     fn key(&self) -> &str;
     fn collect(&self) -> Option<String>;
@@ -156,7 +162,10 @@ impl Probe for ChildProcessProbe {
         }
 
         match child_info {
-            Some((pid, name)) => Some(format!("{}:{}", name, pid)),
+            Some((pid, name)) => {
+                // ps -o comm= returns full path on macOS; extract basename
+                Some(format!("{}:{}", process_basename(&name), pid))
+            }
             None => Some(String::new()),
         }
     }
@@ -300,5 +309,28 @@ mod tests {
         let probe = ChildProcessProbe(std::process::id());
         let result = probe.collect();
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_process_basename_full_path() {
+        assert_eq!(
+            process_basename("/opt/homebrew/Cellar/macvim/9.1.1128/MacVim.app/Contents/MacOS/Vim"),
+            "Vim"
+        );
+    }
+
+    #[test]
+    fn test_process_basename_simple_name() {
+        assert_eq!(process_basename("vim"), "vim");
+    }
+
+    #[test]
+    fn test_process_basename_single_slash() {
+        assert_eq!(process_basename("/usr/bin/python3"), "python3");
+    }
+
+    #[test]
+    fn test_process_basename_empty() {
+        assert_eq!(process_basename(""), "");
     }
 }
