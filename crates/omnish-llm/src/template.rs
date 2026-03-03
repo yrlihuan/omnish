@@ -66,6 +66,8 @@ pub fn build_simple_completion_content(context: &str, input: &str, cursor_pos: u
          then predict or complete the command.\n\n\
          Reply with a JSON array of up to 2 FULL commands:\n\
          [\"<command1>\", \"<command2>\"]\n\
+         - 1st: the most likely completion (only if high confidence).\n\
+         - 2nd: a longer command that completes the entire task end-to-end.\n\
          Return [] if no good completion exists.\n\
          Do not include any other text outside the JSON array.\n\n\
          {}\n\n\
