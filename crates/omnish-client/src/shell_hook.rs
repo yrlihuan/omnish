@@ -43,6 +43,7 @@ __omnish_rl_report() {
     printf '\033]133;RL;%s;%s\007' "$READLINE_LINE" "$READLINE_POINT"
 }
 bind -x '"\e[13337~": __omnish_rl_report'
+bind -m emacs-isearch -x '"\e[13337~": __omnish_rl_report'
 "#;
 
 /// Generate an rcfile that sources the user's original bashrc then loads the OSC 133 hook.

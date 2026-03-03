@@ -272,7 +272,7 @@ mod tests {
     fn test_template_auto_complete() {
         match dispatch("/template auto-complete") {
             ChatAction::Command { result, redirect } => {
-                assert!(result.contains("auto-complete"));
+                assert!(result.contains("completion engine"));
                 assert!(redirect.is_none());
             }
             _ => panic!("expected Command"),
@@ -283,7 +283,7 @@ mod tests {
     fn test_template_daily_notes() {
         match dispatch("/template daily-notes") {
             ChatAction::Command { result, redirect } => {
-                assert!(result.contains("总结"));
+                assert!(result.contains("<commands>"));
                 assert!(redirect.is_none());
             }
             _ => panic!("expected Command"),
