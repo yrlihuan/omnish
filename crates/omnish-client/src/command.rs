@@ -64,8 +64,12 @@ fn template_command(args: &str) -> String {
     }
 }
 
-fn version_command(_args: &str) -> String {
-    format!("omnish {}", omnish_common::VERSION)
+fn help_command(_args: &str) -> String {
+    let mut output = String::from("Available commands:\n");
+    for entry in COMMANDS {
+        output.push_str(&format!("  {} — {}\n", entry.path, entry.help));
+    }
+    output
 }
 
 fn events_command(args: &str) -> String {
@@ -90,9 +94,9 @@ const COMMANDS: &[CommandEntry] = &[
         help: "Show prompt template",
     },
     CommandEntry {
-        path: "/version",
-        kind: CommandKind::Local(version_command),
-        help: "Show omnish version",
+        path: "/help",
+        kind: CommandKind::Local(help_command),
+        help: "Show available commands",
     },
     CommandEntry {
         path: "/debug",
@@ -341,7 +345,7 @@ mod tests {
         let cmds = completable_commands();
         assert!(cmds.contains(&"/context".to_string()));
         assert!(cmds.contains(&"/template".to_string()));
-        assert!(cmds.contains(&"/version".to_string()));
+        assert!(cmds.contains(&"/help".to_string()));
         assert!(cmds.contains(&"/debug".to_string()));
         assert!(cmds.contains(&"/debug client".to_string()));
         assert!(cmds.contains(&"/debug events".to_string()));
@@ -431,10 +435,12 @@ mod tests {
     }
 
     #[test]
-    fn test_version_command() {
-        match dispatch("/version") {
+    fn test_help_command() {
+        match dispatch("/help") {
             ChatAction::Command { result, redirect } => {
-                assert!(result.starts_with("omnish "));
+                assert!(result.contains("Available commands"));
+                assert!(result.contains("/context"));
+                assert!(result.contains("/help"));
                 assert!(redirect.is_none());
             }
             _ => panic!("expected Command"),
