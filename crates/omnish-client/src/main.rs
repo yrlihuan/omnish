@@ -379,6 +379,7 @@ async fn main() -> Result<()> {
                                     // Skip trigger if already pending (e.g. isearch mode from Ctrl+R)
                                     // to avoid "cannot find keymap for command" error (issue #49)
                                     if osc133_hook_installed && !shell_input.pending_rl_report() {
+                                        event_log::push("readline request (input key)");
                                         proxy.write_all(b"\x1b[13337~")?;
                                     }
                                     shell_input.mark_pending_report();
@@ -653,7 +654,7 @@ async fn main() -> Result<()> {
                             }
                             Osc133EventKind::ReadlineLine { content, point } => {
                                 event_log::push(format!(
-                                    "osc133 ReadlineLine content={:?} point={:?}",
+                                    "readline response content={:?} point={:?}",
                                     content, point
                                 ));
                                 shell_input.set_readline(content, *point);
@@ -774,6 +775,7 @@ async fn main() -> Result<()> {
                     && !shell_input.pending_rl_report()
                 {
                     shell_input.mark_pending_report();
+                    event_log::push("readline request (completion)");
                     proxy.write_all(b"\x1b[13337~")?;
                 }
             }
