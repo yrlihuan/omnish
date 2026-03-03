@@ -1,6 +1,7 @@
 // crates/omnish-client/src/main.rs
 mod command;
 mod completion;
+pub mod event_log;
 mod ghost_complete;
 mod display;
 mod interceptor;
@@ -351,6 +352,7 @@ async fn main() -> Result<()> {
                         // Check if Tab should be intercepted for shell completion
                         if bytes == [b'\t'] && shell_completer.ghost().is_some() {
                             if let Some(suffix) = shell_completer.accept() {
+                                event_log::push(format!("completion accepted suffix={suffix:?}"));
                                 // Safety: if cursor is not at end, move to end first
                                 if !shell_input.cursor_at_end() {
                                     proxy.write_all(b"\x05")?; // Ctrl-E: move to end of line
@@ -446,6 +448,7 @@ async fn main() -> Result<()> {
                         nix::unistd::write(std::io::stdout(), restore.as_bytes()).ok();
                     }
                     InterceptAction::Chat(msg) => {
+                        event_log::push(format!("chat enter: {:?}", msg));
                         completer.clear();
                         // Save pre-chat input to restore after chat (issue #24)
                         let saved_input = shell_input.input().to_string();
@@ -596,8 +599,17 @@ async fn main() -> Result<()> {
                         match &event.kind {
                             // 133;A (PromptStart) / 133;D (CommandEnd):
                             // prompt is being displayed → user can type
-                            Osc133EventKind::PromptStart
-                            | Osc133EventKind::CommandEnd { .. } => {
+                            Osc133EventKind::PromptStart => {
+                                event_log::push("osc133 PromptStart");
+                                shell_input.on_prompt();
+                                shell_completer.clear();
+                                last_readline_content = None;
+                                if let Some(title) = tmux_title("omnish", in_tmux) {
+                                    nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
+                                }
+                            }
+                            Osc133EventKind::CommandEnd { exit_code } => {
+                                event_log::push(format!("osc133 CommandEnd exit_code={exit_code}"));
                                 shell_input.on_prompt();
                                 shell_completer.clear();
                                 last_readline_content = None;
@@ -610,7 +622,12 @@ async fn main() -> Result<()> {
                             // command substitution (e.g. git branch). So we can NOT
                             // use them to detect "user pressed Enter". Instead,
                             // at_prompt=false is set by feed_forwarded on Enter key.
-                            Osc133EventKind::CommandStart { command, .. } => {
+                            Osc133EventKind::CommandStart { command, original, .. } => {
+                                event_log::push(format!(
+                                    "osc133 CommandStart cmd={} orig={}",
+                                    command.as_deref().unwrap_or("(none)"),
+                                    original.as_deref().unwrap_or("(none)"),
+                                ));
                                 // User pressed Enter - send completion summary (ignored)
                                 if let Some(ref rpc) = daemon_conn {
                                     let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
@@ -626,6 +643,7 @@ async fn main() -> Result<()> {
                                 }
                             }
                             Osc133EventKind::OutputStart => {
+                                event_log::push("osc133 OutputStart");
                                 // Output started - send completion summary (ignored)
                                 if let Some(ref rpc) = daemon_conn {
                                     let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
@@ -634,6 +652,10 @@ async fn main() -> Result<()> {
                                 shell_completer.clear();
                             }
                             Osc133EventKind::ReadlineLine { content, point } => {
+                                event_log::push(format!(
+                                    "osc133 ReadlineLine content={:?} point={:?}",
+                                    content, point
+                                ));
                                 shell_input.set_readline(content, *point);
                                 last_readline_content = Some(content.to_string());
 
@@ -683,6 +705,10 @@ async fn main() -> Result<()> {
 
                     // Send completed commands to daemon
                     for record in &completed {
+                        event_log::push(format!(
+                            "command complete: {:?} exit={:?}",
+                            record.command_line, record.exit_code
+                        ));
                         if let Some(ref rpc) = daemon_conn {
                             let msg = Message::CommandComplete(omnish_protocol::message::CommandComplete {
                                 session_id: session_id.clone(),
@@ -715,6 +741,7 @@ async fn main() -> Result<()> {
                     let msg = completion::ShellCompleter::build_request(
                         &session_id, current, seq, shell_cwd,
                     );
+                    event_log::push(format!("completion request seq={seq} input={current:?}"));
                     shell_completer.mark_sent(seq, current);
                     let rpc_clone = rpc.clone();
                     let tx = completion_tx.clone();
@@ -735,6 +762,7 @@ async fn main() -> Result<()> {
                 continue;
             }
 
+            event_log::push(format!("completion response seq={}", resp.sequence_id));
             // Store response in pending queue for processing after readline report
             pending_completion_responses.push(resp);
 

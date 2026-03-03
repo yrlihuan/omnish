@@ -68,6 +68,16 @@ fn version_command(_args: &str) -> String {
     format!("omnish {}", omnish_common::VERSION)
 }
 
+fn events_command(args: &str) -> String {
+    let n: usize = args.trim().parse().unwrap_or(20);
+    let events = crate::event_log::recent(n);
+    if events.is_empty() {
+        "No events recorded yet.".to_string()
+    } else {
+        events.join("\n")
+    }
+}
+
 const COMMANDS: &[CommandEntry] = &[
     CommandEntry {
         path: "/context",
@@ -88,6 +98,11 @@ const COMMANDS: &[CommandEntry] = &[
         path: "/debug",
         kind: CommandKind::Local(debug_usage),
         help: "Show debug subcommands",
+    },
+    CommandEntry {
+        path: "/debug events",
+        kind: CommandKind::Local(events_command),
+        help: "Show recent client events",
     },
     CommandEntry {
         path: "/debug client",
@@ -329,6 +344,7 @@ mod tests {
         assert!(cmds.contains(&"/version".to_string()));
         assert!(cmds.contains(&"/debug".to_string()));
         assert!(cmds.contains(&"/debug client".to_string()));
+        assert!(cmds.contains(&"/debug events".to_string()));
         assert!(cmds.contains(&"/debug session".to_string()));
         assert!(cmds.contains(&"/sessions".to_string()));
         // Template and context subcommands are also completable.
@@ -388,6 +404,29 @@ mod tests {
                 assert!(redirect.is_none());
             }
             _ => panic!("expected DaemonQuery"),
+        }
+    }
+
+    #[test]
+    fn test_debug_events_command() {
+        // Push a test event and verify it appears
+        crate::event_log::push("test-event-123");
+        match dispatch("/debug events 5") {
+            ChatAction::Command { result, .. } => {
+                assert!(result.contains("test-event-123"));
+            }
+            _ => panic!("expected Command"),
+        }
+    }
+
+    #[test]
+    fn test_debug_events_default_count() {
+        match dispatch("/debug events") {
+            ChatAction::Command { result, .. } => {
+                // Should not panic; returns either events or "No events" message
+                assert!(!result.is_empty());
+            }
+            _ => panic!("expected Command"),
         }
     }
 
