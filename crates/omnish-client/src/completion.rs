@@ -212,7 +212,7 @@ impl ShellCompleter {
         }
 
         // Take best suggestion
-        // Issue #95: if top suggestion is a prefix of second and length < 10, prefer second
+        // Issue #95/99: if suggestion suffix length < 10 and first is prefix of second, prefer second
         let suggestions = &response.suggestions;
         let mut sorted: Vec<_> = suggestions.iter().collect();
         sorted.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
@@ -220,7 +220,9 @@ impl ShellCompleter {
         let best = if sorted.len() >= 2 {
             let first = sorted[0];
             let second = sorted[1];
-            if first.text.len() < 10 && second.text.starts_with(&first.text) {
+            // Calculate suffix length (what LLM adds beyond user's input)
+            let suffix_len = first.text.len().saturating_sub(request_input.len());
+            if suffix_len < 10 && second.text.starts_with(&first.text) {
                 Some(second)
             } else {
                 Some(first)
