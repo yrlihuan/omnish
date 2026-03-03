@@ -19,6 +19,8 @@ use tokio::sync::{Mutex, RwLock};
 const SAMPLE_SIMILARITY_THRESHOLD: f64 = 0.3;
 /// Global rate limit: at most one sample per this many seconds.
 const SAMPLE_RATE_LIMIT_SECS: u64 = 300; // 5 minutes
+/// Max elapsed time (seconds) between completion request and next command for sampling.
+const SAMPLE_MAX_ELAPSED_SECS: u64 = 15;
 
 struct FileStreamReader {
     stream_path: PathBuf,
@@ -404,7 +406,8 @@ impl SessionManager {
             };
             if let Some(pending) = pending {
                 let next_cmd = next_cmd_line.as_deref().unwrap_or("");
-                if !pending.accepted && !next_cmd.is_empty() {
+                let elapsed = pending.created_at.elapsed().as_secs();
+                if !pending.accepted && !next_cmd.is_empty() && elapsed <= SAMPLE_MAX_ELAPSED_SECS {
                     // Find best similarity across all suggestions
                     let best_sim = pending
                         .suggestions

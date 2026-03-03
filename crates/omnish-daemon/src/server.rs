@@ -561,6 +561,7 @@ async fn handle_completion_request(
         cwd: req.cwd.clone(),
         latency_ms: duration.as_millis() as u64,
         accepted: false,
+        created_at: std::time::Instant::now(),
     }).await;
 
     Ok(suggestions)

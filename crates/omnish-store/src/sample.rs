@@ -2,6 +2,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +17,7 @@ pub struct PendingSample {
     pub cwd: Option<String>,
     pub latency_ms: u64,
     pub accepted: bool,
+    pub created_at: Instant,
 }
 
 /// A completed sample record written to JSONL.
