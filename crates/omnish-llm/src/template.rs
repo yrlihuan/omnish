@@ -108,12 +108,7 @@ pub fn template_by_name(name: &str) -> Option<String> {
             prompt_template(true),
             prompt_template(false),
         )),
-        "auto-complete" => Some(format!(
-            "--- auto-complete (empty input) ---\n{}\n\n\
-             --- auto-complete (with input) ---\n{}",
-            build_simple_completion_content("{context}", "", 0),
-            build_simple_completion_content("{context}", "{input}", 0),
-        )),
+        "auto-complete" => Some(build_simple_completion_content("{context}", "{input}", 0)),
         "daily-notes" => Some(DAILY_NOTES_PROMPT.to_string()),
         "hourly-notes" => Some(HOURLY_NOTES_PROMPT.to_string()),
         _ => None,
