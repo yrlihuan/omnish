@@ -99,7 +99,7 @@ LLM后端配置结构体（来自omnish-common）：
 **用途:** 根据是否有查询构建不同的提示模板
 
 ### `build_completion_content()`
-构建shell命令补全的提示内容。
+构建shell命令补全的提示内容（旧版，空输入和非空输入使用不同的指令前缀，最多3个建议）。
 
 **参数:**
 - `context: &str` - 终端会话上下文
@@ -109,12 +109,36 @@ LLM后端配置结构体（来自omnish-common）：
 **返回:** `String` - 格式化后的补全提示
 **用途:** 为shell命令补全生成专门的提示，要求LLM返回JSON格式的补全建议
 
+### `build_simple_completion_content()`
+构建shell命令补全的统一提示内容（新版，用于KV cache前缀稳定性）。
+
+**参数:**
+- `context: &str` - 终端会话上下文（XML格式，`<recent>` 标签）
+- `input: &str` - 当前输入的命令
+- `cursor_pos: usize` - 光标位置
+
+**返回:** `String` - 格式化后的补全提示
+**用途:** 统一空输入和非空输入的模板，指令+上下文形成稳定前缀，仅末尾的 `Current input:` 行变化。返回JSON数组格式 `["cmd1", "cmd2"]`，最多2个建议。此设计使LLM服务器可在连续请求间复用KV cache。
+
 ### `prompt_template()`
 获取提示模板。
 
 **参数:** `has_query: bool` - 是否有用户查询
 **返回:** `&'static str` - 提示模板字符串
 **用途:** 返回包含占位符的提示模板
+
+### 常量
+
+- `DAILY_NOTES_PROMPT` — 每日工作总结的LLM提示（中文）
+- `HOURLY_NOTES_PROMPT` — 每小时工作总结的LLM提示（中文）
+- `TEMPLATE_NAMES` — 已知模板名列表：`["chat", "auto-complete", "daily-notes", "hourly-notes"]`
+
+### `template_by_name()`
+根据名称返回模板内容（用于 `/template <name>` 命令）。
+
+**参数:** `name: &str` - 模板名称
+**返回:** `Option<String>` - 模板内容或None
+**用途:** `auto-complete` 使用 `build_simple_completion_content()` 渲染两种变体（空输入/有输入）
 
 ## 使用示例
 

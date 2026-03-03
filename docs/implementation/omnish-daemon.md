@@ -10,6 +10,8 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 3. 存储命令历史记录和终端输出
 4. 集成LLM后端处理用户查询和自动补全请求
 5. 提供RPC服务接口供客户端调用
+6. 认证和安全（令牌认证、TLS加密）
+7. 定时任务管理（会话驱逐、日报、小时摘要、磁盘清理）
 
 守护进程以Unix domain socket方式运行，支持多个客户端同时连接。
 
@@ -19,6 +21,8 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 守护进程服务器主结构，包含：
 - `session_mgr`: `Arc<SessionManager>` - 会话管理器实例
 - `llm_backend`: `Option<Arc<dyn LlmBackend>>` - 可选的LLM后端
+- `auth_token`: `Option<String>` - 认证令牌
+- `tls_acceptor`: `Option<TlsAcceptor>` - TLS接受器（TCP连接加密）
 
 ### `SessionManager`
 会话管理器，负责管理所有活跃会话，包含：
@@ -84,7 +88,8 @@ session_evict_hours = 48  # 默认：48小时后驱逐
 
 #### 2. `hourly_summary` - 小时总结任务
 **执行周期:** 每小时整点 (`0 0 * * * *`)
-**功能:** 生成过去1小时内的命令执行摘要，保存到 `~/.omnish/notes/hourly/YYYY-MM-DD-HH.md`
+**功能:** 生成过去1小时内的命令执行摘要，保存到 `~/.omnish/notes/hourly/YYYY-MM-DD/HH.md`
+**内容:** 仅保存LLM生成的摘要（不含原始命令上下文）
 **特点:**
 - 调用 LLM 后端（如果可用）生成执行摘要
 - 支持上下文大小限制和内容精简
@@ -100,13 +105,14 @@ max_line_width = 128    # 每行最大字符数
 **实现:** 通过 `create_hourly_summary_job()` 函数创建
 
 #### 3. `daily_notes` - 日报生成任务
-**执行周期:** 每天指定时刻 (默认 `0 0 23 * * *` - 每天23:00)
-**功能:** 生成过去24小时内的命令记录和 LLM 摘要，保存到 `~/.omnish/notes/YYYY-MM-DD.md`
+**执行周期:** 每天指定时刻 (默认 `0 0 18 * * *` - 每天18:00)
+**功能:** 生成过去24小时的工作总结，保存到 `~/.omnish/notes/YYYY-MM-DD.md`
+**特点:** LLM上下文中包含当天已有的小时摘要，帮助生成更准确的日报
 **相关配置:**
 ```toml
 [tasks.daily_notes]
 enabled = true
-schedule_hour = 23      # 每天几点生成（0-23），默认 23:00
+schedule_hour = 18      # 每天几点生成（0-23），默认 18:00
 ```
 **实现:** 通过 `create_daily_notes_job()` 函数创建
 
@@ -129,7 +135,7 @@ schedule = "0 0 */6 * * *"  # Cron 表达式，默认每6小时
 
 **用途:** 初始化 TaskManager，创建内部的 JobScheduler
 
-**注意:** 自动设置 `TZ` 环境变量为空字符串，使用本地时区
+**注意:** 使用本地时区进行cron调度（通过`chrono::Local`）
 
 #### `TaskManager::register()`
 注册一个新的定时任务。
@@ -396,6 +402,23 @@ max_line_width = 128
 
 **用途:** 为shell命令提供智能补全建议
 
+### UseCase路由
+
+守护进程根据请求类型自动选择合适的LLM后端：
+- **Chat**: 用户主动发起的聊天查询（`:` 前缀触发）
+- **Completion**: 自动补全请求
+- **Analysis**: 自动触发的错误分析
+
+通过`LlmConfig.use_cases`映射配置不同use case使用不同后端，未配置时回退到默认后端。
+
+### KV Cache预热
+
+守护进程支持在补全上下文前缀变化时主动预热LLM的KV cache：
+- 检测补全上下文前缀（指令+历史命令部分）是否变化
+- 前缀变化时发送预热请求（空输入），使LLM服务器预先缓存前缀对应的KV
+- 后续补全请求仅变化末尾的用户输入行，实现高KV cache命中率
+- 使用`prefix_match_ratio`日志监控命中率
+
 ### `parse_completion_suggestions()`
 解析LLM返回的补全建议JSON。
 
@@ -423,7 +446,6 @@ RUST_LOG=debug omnishd
 ### 配置文件示例 (daemon.toml)
 ```toml
 listen_addr = "~/.omnish/omnish.sock"
-sessions_dir = "~/.omnish/sessions"
 
 [llm]
 default = "claude"
@@ -432,11 +454,29 @@ default = "claude"
 backend_type = "anthropic"
 model = "claude-3-haiku-20240307"
 api_key_cmd = "pass show api/anthropic"
+max_content_chars = 200000
 
 [llm.auto_trigger]
 on_nonzero_exit = true
 on_stderr_patterns = ["error:", "fatal:", "not found"]
 cooldown_seconds = 10
+
+[llm.use_cases]
+completion = "claude-haiku"
+chat = "claude-sonnet"
+
+[tasks.eviction]
+session_evict_hours = 48
+
+[tasks.daily_notes]
+schedule_hour = 18
+
+[tasks.disk_cleanup]
+schedule = "0 0 */6 * * *"
+
+[context.completion]
+max_commands = 50
+max_chars = 8000
 ```
 
 ### 程序化使用示例
@@ -500,6 +540,7 @@ async fn main() -> anyhow::Result<()> {
 - `tracing`: 结构化日志
 - `serde`: 序列化/反序列化
 - `chrono`: 时间处理
+- `tokio-cron-scheduler`: 定时任务调度
 
 ## 数据持久化
 
@@ -536,11 +577,13 @@ async fn main() -> anyhow::Result<()> {
 3. **I/O优化**: 流数据使用二进制格式，批量写入
 4. **上下文构建**: 按需构建上下文，避免不必要的计算
 
-## 调试支持
+## 内部命令
 
-在调试构建中，守护进程支持特殊的调试请求：
-```
-__debug:context  # 获取原始上下文信息
-```
+守护进程支持`__cmd:`前缀的内部命令请求：
+- `__cmd:context [template]` — 获取LLM上下文（支持`completion`、`chat`、`daily-notes`、`hourly-notes`等模板名）
+- `__cmd:sessions` — 列出所有活跃会话
+- `__cmd:session` — 显示当前会话调试信息
+- `__cmd:client_debug` — 显示客户端调试状态
+- `__cmd:tasks [disable <name>]` — 查看或管理定时任务
 
-可以通过发送包含`__debug:`前缀的查询来获取内部状态信息。
+这些命令由客户端的`/`命令转发，通过`dispatch_cmd()`函数处理。

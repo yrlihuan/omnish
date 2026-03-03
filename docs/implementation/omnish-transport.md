@@ -10,6 +10,8 @@ omnish-transport 提供客户端和守护进程之间的RPC通信层，支持Uni
 - 自动重连机制
 - 并发请求处理
 - 连接状态监控
+- 认证和访问控制
+- TLS加密（TCP连接）
 
 模块包含两个主要组件：
 - `RpcClient`: 客户端连接管理器，支持自动重连
@@ -48,6 +50,16 @@ RPC服务器结构，负责：
 **内部结构:**
 - `listener`: 监听器（Unix或TCP）
 - 为每个连接生成独立的异步任务
+
+### TLS支持
+
+omnish-transport 支持TCP连接的TLS加密，使用自签名证书。
+
+**tls模块函数:**
+- `default_tls_dir() -> PathBuf`: 返回默认TLS目录（`~/.omnish/tls/`）
+- `load_or_create_cert(tls_dir: &Path) -> Result<(Vec<CertificateDer>, PrivateKeyDer)>`: 加载或生成自签名证书（cert.pem + key.pem，权限0600）
+- `make_acceptor(tls_dir: &Path) -> Result<TlsAcceptor>`: 创建服务器TLS接受器
+- `make_connector(cert_path: &Path) -> Result<TlsConnector>`: 创建客户端TLS连接器（信任指定的自签名证书）
 
 ### `Frame`
 消息帧结构（来自omnish-protocol）：
@@ -124,9 +136,18 @@ pub struct Frame {
 ### `RpcServer::serve()`
 开始处理客户端连接。
 
-**参数:** `handler: Fn(Message) -> Future<Output = Message>`
+**参数:**
+- `handler: Fn(Message) -> Future<Output = Message>` - 消息处理回调
+- `auth_token: Option<String>` - 认证令牌（Some时启用认证）
+- `tls_acceptor: Option<TlsAcceptor>` - TLS接受器（Some时启用TLS，仅TCP）
+
 **返回:** `Result<()>`
 **用途:** 循环接受连接并为每个连接生成处理任务
+
+**安全机制:**
+- **Unix socket**: 绑定时设置权限0600，接受连接时验证peer UID必须与服务器进程相同
+- **TCP + TLS**: 使用`tls_acceptor`对TCP连接进行TLS握手，握手失败则拒绝连接
+- **认证**: 启用`auth_token`时，客户端必须在连接后5秒内发送`Auth`消息，令牌匹配返回`Ack`，不匹配返回`AuthFailed`并关闭连接
 
 ### `RpcServer::local_tcp_addr()`
 获取TCP监听器的本地地址。
@@ -258,11 +279,35 @@ let addr4 = parse_addr("./local.sock");          // 相对路径Unix socket
 
 这个设计确保客户端能够快速检测到与守护进程的连接失败，从而进行重连或返回错误。
 
+## 安全模型
+
+### Unix Socket安全
+- 绑定时设置文件权限为0600（仅所有者可读写）
+- 接受连接时验证peer UID，拒绝非同一用户的连接
+- 提供操作系统级别的进程隔离
+
+### TCP安全
+- 支持TLS加密（自签名证书，存储于`~/.omnish/tls/`）
+- 证书和密钥文件权限0600
+- 客户端通过`make_connector`信任守护进程的自签名证书
+
+### 认证流程
+1. 守护进程启动时加载或创建认证令牌（`~/.omnish/auth_token`）
+2. 客户端连接后必须在5秒内发送`Auth`消息
+3. 令牌匹配: 服务器返回`Ack`，进入正常消息循环
+4. 令牌不匹配: 服务器返回`AuthFailed`并关闭连接
+5. 超时: 服务器关闭连接
+
 ## 依赖关系
 - **omnish-protocol**: 消息类型定义和序列化
 - **tokio**: 异步运行时、网络I/O和同步原语
 - **anyhow**: 错误处理
 - **tracing**: 日志记录
+- **nix**: Unix系统调用（peer UID验证）
+- **tokio-rustls**: 异步TLS支持
+- **rustls**: TLS协议实现
+- **rustls-pemfile**: PEM文件解析
+- **rcgen**: 自签名证书生成
 - **std::sync**: 原子操作和同步原语
 
 ## 测试覆盖
@@ -273,3 +318,5 @@ let addr4 = parse_addr("./local.sock");          // 相对路径Unix socket
 - 连接状态监控测试
 - Unix socket和TCP协议测试
 - 多客户端并发测试
+- 认证成功/失败/超时测试
+- TLS连接测试
