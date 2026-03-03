@@ -293,6 +293,13 @@ async fn main() -> Result<()> {
                 break;
             }
 
+            // Suppress interceptor when not at prompt (child process running:
+            // ssh, python REPL, etc.) so ':' is forwarded to the child.
+            // Alt screen detector is handled separately in the output path.
+            if !alt_screen_detector.is_active() {
+                interceptor.set_suppressed(!shell_input.at_prompt());
+            }
+
             // Feed bytes to interceptor one by one
             for i in 0..n {
                 let byte = input_buf[i];
