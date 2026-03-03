@@ -212,11 +212,24 @@ impl ShellCompleter {
         }
 
         // Take best suggestion
-        if let Some(best) = response
-            .suggestions
-            .iter()
-            .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap_or(std::cmp::Ordering::Equal))
-        {
+        // Issue #95: if top suggestion is a prefix of second and length < 10, prefer second
+        let suggestions = &response.suggestions;
+        let mut sorted: Vec<_> = suggestions.iter().collect();
+        sorted.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+
+        let best = if sorted.len() >= 2 {
+            let first = sorted[0];
+            let second = sorted[1];
+            if first.text.len() < 10 && second.text.starts_with(&first.text) {
+                Some(second)
+            } else {
+                Some(first)
+            }
+        } else {
+            sorted.first().copied()
+        };
+
+        if let Some(best) = best {
             if !best.text.is_empty() {
                 // Compute full suggestion based on what was sent to LLM
                 // LLM returns either:
@@ -526,6 +539,47 @@ mod tests {
         };
         let ghost = c.on_response(&resp, "git");
         assert_eq!(ghost, Some(" stash"));
+    }
+
+    /// Issue #95: if first suggestion is prefix of second and length < 10, prefer second
+    #[test]
+    fn test_issue95_prefer_second_when_first_is_short_prefix() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("cd ", 1);
+        c.mark_sent(1, "cd ");
+
+        // First suggestion: " work" (length 5 < 10), second: " workspace"
+        // First is prefix of second, should prefer second
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![
+                CompletionSuggestion { text: " work".to_string(), confidence: 0.9 },
+                CompletionSuggestion { text: " workspace".to_string(), confidence: 0.8 },
+            ],
+        };
+        let ghost = c.on_response(&resp, "cd ");
+        // Should prefer " workspace" because " work" is a prefix and length < 10
+        assert_eq!(ghost, Some(" workspace"));
+    }
+
+    /// Issue #95: first suggestion length >= 10, don't apply the heuristic
+    #[test]
+    fn test_issue95_no_preference_when_first_long() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("cd ", 1);
+        c.mark_sent(1, "cd ");
+
+        // First suggestion: " verylongtext" (length 12 >= 10)
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![
+                CompletionSuggestion { text: " verylongtext".to_string(), confidence: 0.9 },
+                CompletionSuggestion { text: " workspace".to_string(), confidence: 0.8 },
+            ],
+        };
+        let ghost = c.on_response(&resp, "cd ");
+        // Should prefer first (higher confidence), not apply heuristic
+        assert_eq!(ghost, Some(" verylongtext"));
     }
 
     #[test]
