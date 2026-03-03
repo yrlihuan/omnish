@@ -116,10 +116,11 @@ async fn generate_daily_note(
         // Build LLM context: include hourly notes for better summary, but not in final output
         let today = Local::now().format("%Y-%m-%d").to_string();
         let hourly_context = collect_hourly_notes(notes_dir, &today);
-        let mut llm_context = md.clone();
+        let mut llm_context = format!("<commands>\n{}</commands>", md);
         if !hourly_context.is_empty() {
-            llm_context.push_str("\n## 每小时工作摘要\n\n");
+            llm_context.push_str("\n\n<hourly_summaries>\n");
             llm_context.push_str(&hourly_context);
+            llm_context.push_str("</hourly_summaries>");
         }
 
         let req = LlmRequest {

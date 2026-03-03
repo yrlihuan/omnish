@@ -71,7 +71,7 @@ async fn generate_hourly_summary(
         let use_case = UseCase::Analysis;
         let max_content_chars = backend.max_content_chars_for_use_case(use_case);
         let req = LlmRequest {
-            context: table_md,
+            context: format!("<commands>\n{}</commands>", table_md),
             query: Some(omnish_llm::template::HOURLY_NOTES_PROMPT.to_string()),
             trigger: TriggerType::AutoPattern,
             session_ids: vec![],
