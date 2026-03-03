@@ -4,6 +4,7 @@ use omnish_context::recent::{CompletionFormatter, GroupedFormatter, RecentComman
 use omnish_context::StreamReader;
 use omnish_store::command::CommandRecord;
 use omnish_store::completion::CompletionRecord;
+use omnish_store::sample::{CompletionSample, PendingSample};
 use omnish_store::session::SessionMeta;
 use omnish_store::session_update::SessionUpdateRecord;
 use omnish_store::stream::{read_range, StreamEntry, StreamWriter};
@@ -13,6 +14,11 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock};
+
+/// Minimum edit distance similarity to consider a completion a "near miss".
+const SAMPLE_SIMILARITY_THRESHOLD: f64 = 0.3;
+/// Global rate limit: at most one sample per this many seconds.
+const SAMPLE_RATE_LIMIT_SECS: u64 = 300; // 5 minutes
 
 struct FileStreamReader {
     stream_path: PathBuf,
@@ -56,6 +62,7 @@ struct Session {
     commands: RwLock<Vec<CommandRecord>>,
     stream_writer: Mutex<StreamWriterState>,
     last_update: Mutex<Option<u64>>, // timestamp_ms of last SessionUpdate
+    pending_sample: Mutex<Option<PendingSample>>,
 }
 
 pub struct SessionManager {
@@ -71,6 +78,8 @@ pub struct SessionManager {
     /// Cached completion context from last build, used to detect prefix changes
     /// for KV cache warmup.
     last_completion_context: RwLock<String>,
+    sample_writer: mpsc::Sender<CompletionSample>,
+    last_sample_time: Mutex<Option<Instant>>,
 }
 
 /// Infer `last_active` from persisted data so that idle time survives daemon restarts.
@@ -115,6 +124,27 @@ fn format_idle(secs: u64) -> String {
     }
 }
 
+fn pending_to_sample(
+    pending: PendingSample,
+    next_command: Option<&str>,
+    similarity: Option<f64>,
+) -> CompletionSample {
+    let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+    CompletionSample {
+        recorded_at: now,
+        session_id: pending.session_id,
+        context: pending.context,
+        prompt: pending.prompt,
+        suggestions: pending.suggestions,
+        input: pending.input,
+        accepted: pending.accepted,
+        next_command: next_command.map(|s| s.to_string()),
+        similarity,
+        cwd: pending.cwd,
+        latency_ms: pending.latency_ms,
+    }
+}
+
 impl SessionManager {
     /// Create a new SessionManager.
     /// - `omnish_dir`: base directory (e.g., ~/.omnish)
@@ -127,6 +157,8 @@ impl SessionManager {
         std::fs::create_dir_all(&sessions_dir).ok();
         let completion_writer = omnish_store::completion::spawn_writer_thread(completions_dir);
         let session_writer = omnish_store::session_update::spawn_writer_thread(session_updates_dir);
+        let samples_dir = omnish_dir.join("logs").join("samples");
+        let sample_writer = omnish_store::sample::spawn_sample_writer(samples_dir);
         Self {
             base_dir: sessions_dir,
             sessions: RwLock::new(HashMap::new()),
@@ -135,6 +167,8 @@ impl SessionManager {
             session_writer,
             history_frozen_until: RwLock::new(None),
             last_completion_context: RwLock::new(String::new()),
+            sample_writer,
+            last_sample_time: Mutex::new(None),
         }
     }
 
@@ -192,6 +226,7 @@ impl SessionManager {
                             last_active,
                         }),
                         last_update: Mutex::new(None),
+                        pending_sample: Mutex::new(None),
                     }),
                 );
                 count += 1;
@@ -279,6 +314,7 @@ impl SessionManager {
                     last_active: Instant::now(),
                 }),
                 last_update: Mutex::new(None),
+                pending_sample: Mutex::new(None),
             }),
         );
         Ok(())
@@ -342,6 +378,9 @@ impl SessionManager {
             sessions.get(session_id).cloned()
         };
         if let Some(session) = session {
+            // Extract command line before record is moved
+            let next_cmd_line = record.command_line.clone();
+
             // Lock stream_writer to get position info
             let current_pos;
             {
@@ -357,6 +396,48 @@ impl SessionManager {
             let mut commands = session.commands.write().await;
             commands.push(record);
             CommandRecord::save_all(&commands, &session.dir)?;
+
+            // Check pending sample for completion sampling
+            let pending = {
+                let mut p = session.pending_sample.lock().await;
+                p.take()
+            };
+            if let Some(pending) = pending {
+                let next_cmd = next_cmd_line.as_deref().unwrap_or("");
+                if !pending.accepted && !next_cmd.is_empty() {
+                    // Find best similarity across all suggestions
+                    let best_sim = pending
+                        .suggestions
+                        .iter()
+                        .map(|s| omnish_store::sample::similarity(s, next_cmd))
+                        .fold(0.0_f64, f64::max);
+
+                    if best_sim > SAMPLE_SIMILARITY_THRESHOLD {
+                        // Check global rate limit
+                        let should_sample = {
+                            let mut last = self.last_sample_time.lock().await;
+                            let now = Instant::now();
+                            let ok = last.map_or(true, |t| {
+                                now.duration_since(t).as_secs() >= SAMPLE_RATE_LIMIT_SECS
+                            });
+                            if ok {
+                                *last = Some(now);
+                            }
+                            ok
+                        };
+                        if should_sample {
+                            let sample = pending_to_sample(pending, Some(next_cmd), Some(best_sim));
+                            tracing::info!(
+                                "Sampling completion near-miss: sim={:.2}, suggestion={:?}, actual={:?}",
+                                best_sim,
+                                sample.suggestions.first(),
+                                next_cmd
+                            );
+                            let _ = self.sample_writer.send(sample);
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -397,8 +478,45 @@ impl SessionManager {
 
             let commands = session.commands.read().await;
             CommandRecord::save_all(&commands, &session.dir)?;
+
+            // Flush any pending sample without next_command
+            let pending = {
+                let mut p = session.pending_sample.lock().await;
+                p.take()
+            };
+            if let Some(pending) = pending {
+                let sample = pending_to_sample(pending, None, None);
+                let _ = self.sample_writer.send(sample);
+            }
         }
         Ok(())
+    }
+
+    /// Store a pending completion sample for a session.
+    /// Called from handle_completion_request after getting LLM suggestions.
+    pub async fn store_pending_sample(&self, sample: PendingSample) {
+        let session = {
+            let sessions = self.sessions.read().await;
+            sessions.get(&sample.session_id).cloned()
+        };
+        if let Some(session) = session {
+            let mut pending = session.pending_sample.lock().await;
+            *pending = Some(sample);
+        }
+    }
+
+    /// Update the pending sample's accepted flag when CompletionSummary arrives.
+    pub async fn update_pending_sample_accepted(&self, session_id: &str, accepted: bool) {
+        let session = {
+            let sessions = self.sessions.read().await;
+            sessions.get(session_id).cloned()
+        };
+        if let Some(session) = session {
+            let mut pending = session.pending_sample.lock().await;
+            if let Some(ref mut sample) = *pending {
+                sample.accepted = accepted;
+            }
+        }
     }
 
     pub async fn get_commands(&self, session_id: &str) -> Result<Vec<CommandRecord>> {
