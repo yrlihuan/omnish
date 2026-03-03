@@ -30,7 +30,11 @@ __omnish_preexec() {
   # Escape semicolons in command and PWD for OSC 133 payload
   local cmd_esc="${BASH_COMMAND//;/\\;}"
   local pwd_esc="${PWD//;/\\;}"
-  printf '\033]133;B;%s;cwd:%s\007' "$cmd_esc" "$pwd_esc"
+  # Extract original user input from history (preserves aliases unexpanded)
+  local orig_esc
+  orig_esc="$(HISTTIMEFORMAT= history 1 | sed 's/^[ ]*[0-9]*[ ]*//')"
+  orig_esc="${orig_esc//;/\\;}"
+  printf '\033]133;B;%s;cwd:%s;orig:%s\007' "$cmd_esc" "$pwd_esc" "$orig_esc"
   printf '\033]133;C\007'
 }
 trap '__omnish_preexec' DEBUG
