@@ -447,6 +447,8 @@ async fn main() -> Result<()> {
                     }
                     InterceptAction::Chat(msg) => {
                         completer.clear();
+                        // Save pre-chat input to restore after chat (issue #24)
+                        let saved_input = shell_input.input().to_string();
                         match command::dispatch(&msg) {
                             command::ChatAction::Command { result, redirect } => {
                                 handle_command_result(&result, redirect.as_deref(), &proxy);
@@ -461,7 +463,7 @@ async fn main() -> Result<()> {
                                 } else {
                                     let err = display::render_error("Daemon not connected");
                                     nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                                    proxy.write_all(b"\r").ok();
+                                    proxy.write_all(b"\x15\r").ok();
                                 }
                             }
                             command::ChatAction::LlmQuery(query) => {
@@ -470,9 +472,13 @@ async fn main() -> Result<()> {
                                 } else {
                                     let err = display::render_error("Daemon not connected");
                                     nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                                    proxy.write_all(b"\r").ok();
+                                    proxy.write_all(b"\x15\r").ok();
                                 }
                             }
+                        }
+                        // Restore pre-chat input so user doesn't lose their work (issue #24)
+                        if !saved_input.is_empty() {
+                            proxy.write_all(saved_input.as_bytes()).ok();
                         }
                     }
                     InterceptAction::Tab(_buf) => {
@@ -1286,7 +1292,8 @@ fn handle_command_result(content: &str, redirect: Option<&str>, proxy: &PtyProxy
         let output = display::render_response(content);
         nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
     }
-    proxy.write_all(b"\r").ok();
+    // Clear bash readline before Enter so pre-chat input isn't executed (issue #24).
+    proxy.write_all(b"\x15\r").ok();
 }
 
 /// Send a query to the daemon and display the result.
@@ -1331,7 +1338,7 @@ async fn send_daemon_query(
         _ => {
             let err = display::render_error("Failed to receive response");
             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-            proxy.write_all(b"\r").ok();
+            proxy.write_all(b"\x15\r").ok();
         }
     }
 }
