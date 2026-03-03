@@ -234,6 +234,10 @@ impl ShellCompleter {
                     // and LLM returned "rm 1.txt") — nothing to add, discard.
                     self.current_ghost = None;
                     return None;
+                } else if best.text.trim().is_empty() {
+                    // Suggestion is just whitespace - discard (issue #91)
+                    self.current_ghost = None;
+                    return None;
                 } else {
                     // Suggestion doesn't start with request_input - it's a suffix
                     format!("{}{}", request_input, best.text)
@@ -1046,6 +1050,28 @@ mod tests {
         };
         let ghost = c.on_response(&resp, "rm 1.txt ");
         assert_eq!(ghost, None, "Completion that is a prefix of the input should be discarded");
+        assert_eq!(c.ghost(), None);
+    }
+
+    /// Issue #91: input="cd work", LLM returns " " (just a space)
+    /// The suggestion is just a suffix, not starting with request_input,
+    /// should be discarded instead of showing meaningless ghost text.
+    #[test]
+    fn test_completion_suffix_only_discarded() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("cd work", 1);
+        c.mark_sent(1, "cd work");
+
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: " ".to_string(),  // LLM returns just a space
+                confidence: 0.9,
+            }],
+        };
+        let ghost = c.on_response(&resp, "cd work");
+        // Should discard - a single space is not meaningful completion
+        assert_eq!(ghost, None, "Completion that is just a suffix should be discarded");
         assert_eq!(c.ghost(), None);
     }
 
