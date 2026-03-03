@@ -415,7 +415,7 @@ async fn handle_llm_request(
     mgr: &SessionManager,
     backend: &Arc<dyn LlmBackend>,
 ) -> Result<omnish_llm::backend::LlmResponse> {
-    let use_case = UseCase::Analysis; // Manual requests are for analysis/chat
+    let use_case = UseCase::Chat;
     let max_context_chars = backend.max_content_chars_for_use_case(use_case);
     let context = resolve_context(req, mgr, max_context_chars).await?;
 
