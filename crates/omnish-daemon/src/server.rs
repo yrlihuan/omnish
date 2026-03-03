@@ -170,6 +170,9 @@ async fn handle_message(
             }
         }
         Message::CompletionSummary(summary) => {
+            // Update pending sample's accepted flag (issue #101)
+            mgr.update_pending_sample_accepted(&summary.session_id, summary.accepted).await;
+
             if let Err(e) = mgr.receive_completion(summary.clone()).await {
                 tracing::error!("receive_completion error: {}", e);
             }
@@ -492,6 +495,7 @@ async fn handle_completion_request(
 
     let prompt =
         omnish_llm::template::build_simple_completion_content(&context, &req.input, req.cursor_pos);
+    let prompt_clone = prompt.clone();
 
     let llm_req = LlmRequest {
         context: String::new(),
@@ -544,7 +548,22 @@ async fn handle_completion_request(
     }
 
     let response = result?;
-    parse_completion_suggestions(&response.content)
+    let suggestions = parse_completion_suggestions(&response.content)?;
+
+    // Store pending sample for completion sampling (issue #101)
+    let suggestion_texts: Vec<String> = suggestions.iter().map(|s| s.text.clone()).collect();
+    mgr.store_pending_sample(omnish_store::sample::PendingSample {
+        session_id: req.session_id.clone(),
+        context,
+        prompt: prompt_clone,
+        suggestions: suggestion_texts,
+        input: req.input.clone(),
+        cwd: req.cwd.clone(),
+        latency_ms: duration.as_millis() as u64,
+        accepted: false,
+    }).await;
+
+    Ok(suggestions)
 }
 
 fn parse_completion_suggestions(
