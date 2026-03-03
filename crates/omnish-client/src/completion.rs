@@ -69,6 +69,13 @@ impl ShellCompleter {
         }
     }
 
+    /// Reset the debounce timer without processing input changes.
+    /// Call this whenever user input activity is detected, even if
+    /// `on_input_changed` won't be called (e.g., during pending_rl_report).
+    pub fn note_activity(&mut self) {
+        self.last_change = Some(Instant::now());
+    }
+
     /// Notify that input changed. Resets debounce timer and clears stale ghost.
     /// Returns `true` if ghost text was cleared (caller should erase it from screen).
     pub fn on_input_changed(&mut self, input: &str, sequence_id: u64) -> bool {

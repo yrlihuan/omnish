@@ -411,6 +411,9 @@ async fn main() -> Result<()> {
 
                             // Track shell input for LLM completion
                             shell_input.feed_forwarded(&bytes);
+                            // Always reset debounce on input activity, even if
+                            // take_change() returns None due to pending_rl_report
+                            shell_completer.note_activity();
                             if let Some((input, seq)) = shell_input.take_change() {
                                 if shell_completer.on_input_changed(input, seq) {
                                     // Ghost was cleared — erase stale ghost text from screen
