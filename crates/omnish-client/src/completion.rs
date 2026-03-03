@@ -313,8 +313,9 @@ impl ShellCompleter {
         self.ghost_set_at = None;
         // Clear active requests when ghost is cleared
         self.active_requests.clear();
-        // Reset last_change to prevent immediate requests on empty prompt
-        self.last_change = None;
+        // Set last_change to a time in the past so debounce is expired
+        // This allows completion requests to fire immediately after prompt appears
+        self.last_change = Some(Instant::now() - std::time::Duration::from_millis(DEBOUNCE_MS + 1));
     }
 
     /// Build a CompletionSummary for the current completion (if any).
