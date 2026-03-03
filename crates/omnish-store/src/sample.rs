@@ -1,3 +1,8 @@
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
+
 use serde::{Deserialize, Serialize};
 
 /// A pending sample buffered in the daemon session, waiting for the next command.
@@ -64,6 +69,56 @@ pub fn similarity(a: &str, b: &str) -> f64 {
     1.0 - (levenshtein(a, b) as f64 / max_len as f64)
 }
 
+/// Spawn a writer thread that writes CompletionSample records to daily-rotated JSONL files.
+pub fn spawn_sample_writer(samples_dir: PathBuf) -> mpsc::Sender<CompletionSample> {
+    let (tx, rx): (mpsc::Sender<CompletionSample>, mpsc::Receiver<CompletionSample>) =
+        mpsc::channel();
+
+    thread::spawn(move || {
+        std::fs::create_dir_all(&samples_dir).ok();
+        let mut current_date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let mut writer: Option<Box<dyn std::io::Write + Send>> = None;
+
+        loop {
+            match rx.try_recv() {
+                Ok(sample) => {
+                    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                    if today != current_date {
+                        current_date = today;
+                        writer = None;
+                    }
+                    if writer.is_none() {
+                        let path = samples_dir.join(format!("{}.jsonl", current_date));
+                        match std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&path)
+                        {
+                            Ok(file) => writer = Some(Box::new(file)),
+                            Err(e) => {
+                                tracing::error!("Failed to open samples file: {}", e);
+                                continue;
+                            }
+                        }
+                    }
+                    if let Some(ref mut w) = writer {
+                        if let Ok(json) = serde_json::to_string(&sample) {
+                            let _ = writeln!(w, "{}", json);
+                            let _ = w.flush();
+                        }
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => break,
+            }
+        }
+    });
+
+    tx
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,5 +162,44 @@ mod tests {
     fn test_similarity_empty() {
         assert!((similarity("", "") - 1.0).abs() < f64::EPSILON);
         assert!((similarity("abc", "")).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_sample_writer() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tx = spawn_sample_writer(dir.path().to_path_buf());
+
+        let sample = CompletionSample {
+            recorded_at: "2026-03-03T12:00:00".to_string(),
+            session_id: "test".to_string(),
+            context: "$ ls\nfile.txt".to_string(),
+            prompt: "You are a completion engine...".to_string(),
+            suggestions: vec!["git status".to_string()],
+            input: "git st".to_string(),
+            accepted: false,
+            next_command: Some("git status -s".to_string()),
+            similarity: Some(0.61),
+            cwd: Some("/tmp".to_string()),
+            latency_ms: 150,
+        };
+        tx.send(sample).unwrap();
+        thread::sleep(std::time::Duration::from_millis(100));
+        drop(tx);
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let entries = std::fs::read_dir(dir.path()).unwrap();
+        let jsonl_files: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|ext| ext == "jsonl").unwrap_or(false))
+            .collect();
+        assert_eq!(jsonl_files.len(), 1);
+
+        let content = std::fs::read_to_string(jsonl_files[0].path()).unwrap();
+        let lines: Vec<_> = content.lines().collect();
+        assert_eq!(lines.len(), 1);
+
+        let parsed: CompletionSample = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(parsed.session_id, "test");
+        assert_eq!(parsed.next_command.as_deref(), Some("git status -s"));
     }
 }
