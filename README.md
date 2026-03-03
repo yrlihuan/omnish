@@ -61,14 +61,25 @@ A diagnostic tool is also built:
 
 ## Configuration
 
-Create `~/.config/omnish/config.toml` (or set `$OMNISH_CONFIG`):
+Configuration uses two files under `~/.omnish/`:
+
+**Client config** — `~/.omnish/client.toml` (or `$OMNISH_CLIENT_CONFIG`):
 
 ```toml
 [shell]
-command_prefix = ":"    # prefix for omnish commands (default: ":")
+command = "/bin/bash"
+command_prefix = ":"        # prefix for chat mode (default: ":")
+intercept_gap_ms = 1000     # min ms between inputs to trigger interception
+ghost_timeout_ms = 10000    # ghost-text suggestion timeout
 
-[daemon]
-# socket_path = "/run/user/1000/omnish.sock"  # default: $XDG_RUNTIME_DIR/omnish.sock
+daemon_addr = "~/.omnish/omnish.sock"
+completion_enabled = true
+```
+
+**Daemon config** — `~/.omnish/daemon.toml` (or `$OMNISH_DAEMON_CONFIG`):
+
+```toml
+listen_addr = "~/.omnish/omnish.sock"
 
 [llm]
 default = "claude"
@@ -77,11 +88,29 @@ default = "claude"
 backend_type = "anthropic"
 model = "claude-sonnet-4-5-20250929"
 api_key_cmd = "pass show anthropic/api-key"
+max_content_chars = 200000
 
 [llm.auto_trigger]
 on_nonzero_exit = true
 on_stderr_patterns = ["error", "panic", "traceback", "fatal"]
 cooldown_seconds = 5
+
+[llm.use_cases]
+completion = "claude-haiku"
+chat = "claude"
+
+[tasks.eviction]
+session_evict_hours = 48
+
+[tasks.daily_notes]
+schedule_hour = 18
+
+[tasks.disk_cleanup]
+schedule = "0 0 */6 * * *"
+
+[context.completion]
+max_commands = 50
+max_chars = 8000
 ```
 
 ### Other backend examples
@@ -93,6 +122,7 @@ backend_type = "openai-compat"
 model = "gpt-4"
 api_key_cmd = "cat ~/.openai_api_key"
 base_url = "https://api.openai.com/v1"
+max_content_chars = 128000
 
 # Local (Ollama, LM Studio)
 [llm.backends.local]
@@ -129,19 +159,18 @@ Inside any omnish session, type `:` to enter chat mode, then you can directly in
 Built-in commands:
 
 ```bash
-/version             # show omnish version
-/context              # show current session context
+/help                # show available commands
+/context              # show completion context (default)
 /context chat         # show chat/analysis context
-/context auto-complete # show auto-complete context
-/context hourly-notes # show hourly summary context (past hour)
 /context daily-notes  # show daily summary context (past 24 hours)
-/template             # show prompt templates
-/template <name>     # show specific template (chat, auto-complete, daily-notes, hourly-notes)
+/context hourly-notes # show hourly summary context (past hour)
+/template <name>     # show prompt template (chat, auto-complete, daily-notes, hourly-notes)
+/debug events [n]    # show recent client events (default: 20)
 /debug client        # show client debug state
 /debug session       # show session info and attributes
 /sessions            # list active sessions
 /tasks               # list scheduled tasks and their status
-/tasks disable <name>  # disable a scheduled task
+/tasks disable <name> # disable a scheduled task
 ```
 
 Results from auto-triggers appear above the shell prompt without disrupting your workflow.
@@ -158,25 +187,26 @@ omnish-commands -s abc123    # filter by session ID prefix
 
 ## Storage
 
-Session data is stored under `~/.local/share/omnish/sessions/`:
+Session data is stored under `~/.omnish/`:
 
 ```
-~/.local/share/omnish/
+~/.omnish/
+├── client.toml              # client configuration
+├── daemon.toml              # daemon configuration
+├── omnish.sock              # Unix domain socket
+├── auth_token               # shared auth token (0600)
+├── tls/                     # TLS cert and key for TCP mode
+│   ├── cert.pem
+│   └── key.pem
 ├── sessions/
 │   └── 2026-02-13T10-30-00_abc12345/
 │       ├── meta.json        # session metadata
 │       ├── stream.bin       # raw I/O stream (binary, timestamped)
-│       └── commands.json    # segmented command records
-├── logs/
-│   ├── sessions/            # session update logs
-│   └── completions/         # completion tracking CSV
-├── notes/
-│   ├── hourly/              # hourly activity summaries
-│   └── daily/               # daily notes
-├── auth_token               # shared auth token (0600)
-└── tls/                     # TLS cert and key for TCP mode
-    ├── cert.pem
-    └── key.pem
+│       ├── commands.jsonl   # segmented command records
+│       └── completions.jsonl # completion interaction summaries
+└── notes/
+    ├── hourly/              # hourly activity summaries (YYYY-MM-DD/HH.md)
+    └── 2026-03-03.md        # daily notes
 ```
 
 ## Workspace
