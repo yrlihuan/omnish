@@ -324,13 +324,9 @@ impl InputInterceptor {
 
     /// Feed a single input byte, returns action
     pub fn feed_byte(&mut self, byte: u8) -> InterceptAction {
-
-        // When suppressed (e.g. inside vim), forward everything directly
-        if self.suppressed {
-            return self.forward(vec![byte]);
-        }
-
-        // If an ESC sequence filter is active, feed bytes into it
+        // If an ESC sequence filter is active, feed bytes into it.
+        // This must happen even when suppressed to ensure escape sequences
+        // like arrow keys are forwarded as complete units.
         if self.esc_filter.is_some() {
             let result = self.esc_filter.as_mut().unwrap().feed(byte);
             match result {
@@ -345,11 +341,18 @@ impl InputInterceptor {
         // Handle ESC — always start filter to buffer complete escape sequences.
         // This ensures arrow keys etc. are forwarded as a single write to PTY,
         // preventing child processes from seeing fragmented escape sequences.
+        // This must happen even when suppressed.
         if byte == 0x1b {
             let mut filter = EscSeqFilter::new();
             filter.feed(byte); // transitions to EscGot
             self.esc_filter = Some(filter);
             return InterceptAction::Pending;
+        }
+
+        // When suppressed (e.g. inside vim), forward everything directly
+        // except escape sequences which are handled above.
+        if self.suppressed {
+            return self.forward(vec![byte]);
         }
 
         // Handle Tab
@@ -1140,5 +1143,43 @@ mod tests {
         ic.inject_byte(b'l');
         ic.inject_byte(b'p');
         assert_eq!(ic.current_buffer(), b":help");
+    }
+
+    #[test]
+    fn test_suppressed_mode_arrow_keys_forwarded_as_complete_sequence() {
+        let mut interceptor = new_interceptor("::");
+        interceptor.set_suppressed(true);
+
+        // Down arrow: \x1b[B — all bytes buffered, then forwarded as one unit
+        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
+        assert_eq!(interceptor.feed_byte(b'['), InterceptAction::Pending);
+        assert_eq!(
+            interceptor.feed_byte(b'B'),
+            InterceptAction::Forward(vec![0x1b, b'[', b'B'])
+        );
+
+        // Up arrow: \x1b[A
+        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
+        assert_eq!(interceptor.feed_byte(b'['), InterceptAction::Pending);
+        assert_eq!(
+            interceptor.feed_byte(b'A'),
+            InterceptAction::Forward(vec![0x1b, b'[', b'A'])
+        );
+
+        // Right arrow: \x1b[C
+        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
+        assert_eq!(interceptor.feed_byte(b'['), InterceptAction::Pending);
+        assert_eq!(
+            interceptor.feed_byte(b'C'),
+            InterceptAction::Forward(vec![0x1b, b'[', b'C'])
+        );
+
+        // Left arrow: \x1b[D
+        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
+        assert_eq!(interceptor.feed_byte(b'['), InterceptAction::Pending);
+        assert_eq!(
+            interceptor.feed_byte(b'D'),
+            InterceptAction::Forward(vec![0x1b, b'[', b'D'])
+        );
     }
 }
