@@ -87,11 +87,11 @@ pub fn prompt_template(has_query: bool) -> &'static str {
 
 /// The daily-notes LLM summary prompt.
 pub const DAILY_NOTES_PROMPT: &str =
-    "请用中文简要总结今天的工作内容，包括主要活动和成果，2-3段即可。";
+    "请用中文以项目符号列表形式列出今天的工作内容，每个条目包含一项主要活动或成果。适合直接作为工作日志。";
 
 /// The hourly-notes LLM summary prompt.
 pub const HOURLY_NOTES_PROMPT: &str =
-    "请用中文简要总结这一个小时的工作内容，包括主要活动和成果，1-2段即可。";
+    "请用中文以项目符号列表形式列出这一个小时的工作内容，每个条目包含一项主要活动或成果。适合直接作为工作日志。";
 
 /// Known template names for `/template <name>`.
 pub const TEMPLATE_NAMES: &[&str] = &["chat", "auto-complete", "daily-notes", "hourly-notes"];
