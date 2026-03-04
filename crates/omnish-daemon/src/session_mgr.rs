@@ -589,33 +589,32 @@ impl SessionManager {
             context_cmd_count: usize, // number of detailed commands from this session that would be included in context
         }
 
-        // Collect snapshots and all commands under brief lock
-        let (mut snapshots, mut all_commands) = {
+        // Snapshot session Arcs under brief read lock, then collect data without holding it
+        let session_arcs: Vec<_> = {
             let sessions = self.sessions.read().await;
-            let mut snaps = Vec::new();
-            let mut all_cmds = Vec::new();
-            for session in sessions.values() {
-                let commands = session.commands.read().await;
-                if commands.is_empty() {
-                    continue;
-                }
-                let meta = session.meta.read().await;
-                let sw = session.stream_writer.lock().await;
-                // Count only meaningful commands (command_line.is_some())
-                let cmd_count = commands.iter().filter(|c| c.command_line.is_some()).count();
-                snaps.push(SessionSnapshot {
-                    session_id: meta.session_id.clone(),
-                    hostname: meta.attrs.get("hostname").cloned(),
-                    ended: meta.ended_at.is_some(),
-                    last_active: sw.last_active,
-                    cmd_count,
-                    context_cmd_count: 0, // will be calculated later
-                });
-                // Only include meaningful commands in all_commands
-                all_cmds.extend(commands.iter().filter(|c| c.command_line.is_some()).cloned());
-            }
-            (snaps, all_cmds)
+            sessions.values().cloned().collect()
         };
+
+        let mut snapshots = Vec::new();
+        let mut all_commands = Vec::new();
+        for session in &session_arcs {
+            let commands = session.commands.read().await;
+            if commands.is_empty() {
+                continue;
+            }
+            let meta = session.meta.read().await;
+            let sw = session.stream_writer.lock().await;
+            let cmd_count = commands.iter().filter(|c| c.command_line.is_some()).count();
+            snapshots.push(SessionSnapshot {
+                session_id: meta.session_id.clone(),
+                hostname: meta.attrs.get("hostname").cloned(),
+                ended: meta.ended_at.is_some(),
+                last_active: sw.last_active,
+                cmd_count,
+                context_cmd_count: 0,
+            });
+            all_commands.extend(commands.iter().filter(|c| c.command_line.is_some()).cloned());
+        }
 
         if snapshots.is_empty() {
             return "(no sessions)".to_string();
@@ -725,21 +724,32 @@ impl SessionManager {
     /// Data is already persisted on disk; evicted sessions will be reloaded
     /// on demand if they reconnect via `register()`.
     pub async fn evict_inactive(&self, max_inactive: std::time::Duration) -> usize {
-        let mut sessions = self.sessions.write().await;
-        let before = sessions.len();
+        // Phase 1: scan under read lock to find candidates (doesn't block other readers)
+        let to_remove = {
+            let sessions = self.sessions.read().await;
+            let mut candidates = Vec::new();
+            for (sid, session) in sessions.iter() {
+                let sw = session.stream_writer.lock().await;
+                if sw.last_active.elapsed() >= max_inactive {
+                    candidates.push(sid.clone());
+                }
+            }
+            candidates
+        };
 
-        let mut to_remove = Vec::new();
-        for (sid, session) in sessions.iter() {
-            let sw = session.stream_writer.lock().await;
-            if sw.last_active.elapsed() >= max_inactive {
-                to_remove.push(sid.clone());
+        if to_remove.is_empty() {
+            return 0;
+        }
+
+        // Phase 2: remove under write lock (brief, no nested awaits)
+        let mut sessions = self.sessions.write().await;
+        let mut evicted = 0;
+        for sid in &to_remove {
+            if sessions.remove(sid).is_some() {
+                evicted += 1;
             }
         }
-        for sid in &to_remove {
-            sessions.remove(sid);
-        }
 
-        let evicted = before - sessions.len();
         if evicted > 0 {
             tracing::info!("evicted {} inactive session(s) from memory", evicted);
         }
@@ -1027,9 +1037,14 @@ impl SessionManager {
     /// Collect commands from all sessions where `started_at >= since_ms`.
     /// Returns `(hostname, CommandRecord)` pairs sorted by `started_at`.
     pub async fn collect_recent_commands(&self, since_ms: u64) -> Vec<(String, CommandRecord)> {
-        let sessions = self.sessions.read().await;
+        // Snapshot session Arcs under brief read lock
+        let session_arcs: Vec<_> = {
+            let sessions = self.sessions.read().await;
+            sessions.values().cloned().collect()
+        };
+
         let mut result = Vec::new();
-        for session in sessions.values() {
+        for session in &session_arcs {
             let meta = session.meta.read().await;
             let hostname = meta.attrs.get("hostname").cloned().unwrap_or_default();
             let commands = session.commands.read().await;
@@ -1051,30 +1066,29 @@ impl SessionManager {
     pub async fn get_all_sessions_context_with_limit(&self, current_session_id: &str, max_context_chars: Option<usize>) -> Result<String> {
         let cc = &self.context_config;
 
-        // Clone data under brief locks
-        let (all_commands, offset_to_path, hostnames) = {
+        // Snapshot session Arcs under brief read lock
+        let session_entries: Vec<_> = {
             let sessions = self.sessions.read().await;
-            let mut all_commands = Vec::new();
-            let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
-            let mut hostnames: HashMap<String, String> = HashMap::new();
-
-            for (sid, session) in sessions.iter() {
-                let stream_path = session.dir.join("stream.bin");
-                let meta = session.meta.read().await;
-                if let Some(h) = meta.attrs.get("hostname") {
-                    hostnames.insert(sid.clone(), h.clone());
-                }
-                let commands = session.commands.read().await;
-                for cmd in commands.iter() {
-                    offset_to_path
-                        .insert((cmd.stream_offset, cmd.stream_length), stream_path.clone());
-                }
-                all_commands.extend(commands.clone());
-            }
-            (all_commands, offset_to_path, hostnames)
+            sessions.iter().map(|(sid, s)| (sid.clone(), s.clone())).collect()
         };
 
-        let mut all_commands = all_commands;
+        let mut all_commands = Vec::new();
+        let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
+        let mut hostnames: HashMap<String, String> = HashMap::new();
+        for (sid, session) in &session_entries {
+            let stream_path = session.dir.join("stream.bin");
+            let meta = session.meta.read().await;
+            if let Some(h) = meta.attrs.get("hostname") {
+                hostnames.insert(sid.clone(), h.clone());
+            }
+            let commands = session.commands.read().await;
+            for cmd in commands.iter() {
+                offset_to_path
+                    .insert((cmd.stream_offset, cmd.stream_length), stream_path.clone());
+            }
+            all_commands.extend(commands.clone());
+        }
+
         all_commands.sort_by_key(|c| c.started_at);
 
         if all_commands.is_empty() {
@@ -1114,30 +1128,29 @@ impl SessionManager {
     ) -> Result<String> {
         let cc = &self.context_config.completion;
 
-        // Gather all commands and stream paths from all sessions
-        let (all_commands, offset_to_path, hostnames) = {
+        // Snapshot session Arcs under brief read lock
+        let session_entries: Vec<_> = {
             let sessions = self.sessions.read().await;
-            let mut all_commands = Vec::new();
-            let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
-            let mut hostnames: HashMap<String, String> = HashMap::new();
-
-            for (sid, session) in sessions.iter() {
-                let stream_path = session.dir.join("stream.bin");
-                let meta = session.meta.read().await;
-                if let Some(h) = meta.attrs.get("hostname") {
-                    hostnames.insert(sid.clone(), h.clone());
-                }
-                let commands = session.commands.read().await;
-                for cmd in commands.iter() {
-                    offset_to_path
-                        .insert((cmd.stream_offset, cmd.stream_length), stream_path.clone());
-                }
-                all_commands.extend(commands.clone());
-            }
-            (all_commands, offset_to_path, hostnames)
+            sessions.iter().map(|(sid, s)| (sid.clone(), s.clone())).collect()
         };
 
-        let mut all_commands = all_commands;
+        let mut all_commands = Vec::new();
+        let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
+        let mut hostnames: HashMap<String, String> = HashMap::new();
+        for (sid, session) in &session_entries {
+            let stream_path = session.dir.join("stream.bin");
+            let meta = session.meta.read().await;
+            if let Some(h) = meta.attrs.get("hostname") {
+                hostnames.insert(sid.clone(), h.clone());
+            }
+            let commands = session.commands.read().await;
+            for cmd in commands.iter() {
+                offset_to_path
+                    .insert((cmd.stream_offset, cmd.stream_length), stream_path.clone());
+            }
+            all_commands.extend(commands.clone());
+        }
+
         all_commands.sort_by_key(|c| c.started_at);
 
         if all_commands.is_empty() {
@@ -1357,37 +1370,35 @@ impl SessionManager {
         max_content_chars: Option<usize>,
         config: &omnish_common::config::HourlySummaryConfig,
     ) -> Result<String> {
-        // Clone data under brief locks
-        let (all_commands, offset_to_path, hostnames) = {
+        // Snapshot session Arcs under brief read lock
+        let session_arcs: Vec<_> = {
             let sessions = self.sessions.read().await;
-            let mut all_commands: Vec<CommandRecord> = Vec::new();
-            let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
-            let mut hostnames: HashMap<String, String> = HashMap::new();
-
-            for (hostname, cmd) in commands.iter() {
-                // Find the session to get stream info
-                for session in sessions.values() {
-                    let cmds = session.commands.read().await;
-                    if cmds.iter().any(|c| c.command_id == cmd.command_id) {
-                        let stream_path = session.dir.join("stream.bin");
-                        offset_to_path.insert(
-                            (cmd.stream_offset, cmd.stream_length),
-                            stream_path,
-                        );
-                        hostnames.insert(cmd.session_id.clone(), hostname.clone());
-                        break;
-                    }
-                }
-                all_commands.push(cmd.clone());
-            }
-            (all_commands, offset_to_path, hostnames)
+            sessions.values().cloned().collect()
         };
+
+        let mut all_commands: Vec<CommandRecord> = Vec::new();
+        let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
+        let mut hostnames: HashMap<String, String> = HashMap::new();
+        for (hostname, cmd) in commands.iter() {
+            for session in &session_arcs {
+                let cmds = session.commands.read().await;
+                if cmds.iter().any(|c| c.command_id == cmd.command_id) {
+                    let stream_path = session.dir.join("stream.bin");
+                    offset_to_path.insert(
+                        (cmd.stream_offset, cmd.stream_length),
+                        stream_path,
+                    );
+                    hostnames.insert(cmd.session_id.clone(), hostname.clone());
+                    break;
+                }
+            }
+            all_commands.push(cmd.clone());
+        }
 
         if all_commands.is_empty() {
             return Ok(String::new());
         }
 
-        let mut all_commands = all_commands;
         all_commands.sort_by_key(|c| c.started_at);
 
         let reader = MultiSessionReader {
@@ -1507,37 +1518,35 @@ impl SessionManager {
         max_content_chars: Option<usize>,
         config: &omnish_common::config::DailySummaryConfig,
     ) -> Result<String> {
-        // Clone data under brief locks
-        let (all_commands, offset_to_path, hostnames) = {
+        // Snapshot session Arcs under brief read lock
+        let session_arcs: Vec<_> = {
             let sessions = self.sessions.read().await;
-            let mut all_commands: Vec<CommandRecord> = Vec::new();
-            let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
-            let mut hostnames: HashMap<String, String> = HashMap::new();
-
-            for (hostname, cmd) in commands.iter() {
-                // Find the session to get stream info
-                for session in sessions.values() {
-                    let cmds = session.commands.read().await;
-                    if cmds.iter().any(|c| c.command_id == cmd.command_id) {
-                        let stream_path = session.dir.join("stream.bin");
-                        offset_to_path.insert(
-                            (cmd.stream_offset, cmd.stream_length),
-                            stream_path,
-                        );
-                        hostnames.insert(cmd.session_id.clone(), hostname.clone());
-                        break;
-                    }
-                }
-                all_commands.push(cmd.clone());
-            }
-            (all_commands, offset_to_path, hostnames)
+            sessions.values().cloned().collect()
         };
+
+        let mut all_commands: Vec<CommandRecord> = Vec::new();
+        let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
+        let mut hostnames: HashMap<String, String> = HashMap::new();
+        for (hostname, cmd) in commands.iter() {
+            for session in &session_arcs {
+                let cmds = session.commands.read().await;
+                if cmds.iter().any(|c| c.command_id == cmd.command_id) {
+                    let stream_path = session.dir.join("stream.bin");
+                    offset_to_path.insert(
+                        (cmd.stream_offset, cmd.stream_length),
+                        stream_path,
+                    );
+                    hostnames.insert(cmd.session_id.clone(), hostname.clone());
+                    break;
+                }
+            }
+            all_commands.push(cmd.clone());
+        }
 
         if all_commands.is_empty() {
             return Ok(String::new());
         }
 
-        let mut all_commands = all_commands;
         all_commands.sort_by_key(|c| c.started_at);
 
         let reader = MultiSessionReader {
