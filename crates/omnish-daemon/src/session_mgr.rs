@@ -887,6 +887,99 @@ impl SessionManager {
         self.get_session_context_with_limit(session_id, self.context_config.completion.max_context_chars).await
     }
 
+    /// Get session context for chat (without history, only recent commands with output).
+    /// This is used for LLM chat requests where we only want recent commands.
+    pub async fn get_chat_context(&self, session_id: &str, max_context_chars: Option<usize>) -> Result<String> {
+        // Clone data under brief locks
+        let (commands, stream_path, hostnames) = {
+            let sessions = self.sessions.read().await;
+            let session = sessions
+                .get(session_id)
+                .ok_or_else(|| anyhow!("session not found: {}", session_id))?;
+
+            let cmds = session.commands.read().await.clone();
+            let path = session.dir.join("stream.bin");
+            let meta = session.meta.read().await;
+            let mut hostnames = HashMap::new();
+            if let Some(h) = meta.attrs.get("hostname") {
+                hostnames.insert(session_id.to_string(), h.clone());
+            }
+            (cmds, path, hostnames)
+        };
+
+        // Build context outside all locks — expensive I/O happens here
+        let reader = FileStreamReader { stream_path };
+        let cc = &self.context_config;
+
+        // Build context with NO history (only detailed commands with output)
+        self.build_context_with_limit(
+            &commands,
+            &reader,
+            &hostnames,
+            session_id,
+            cc.completion.detailed_commands,
+            0, // No history for chat
+            cc.completion.min_current_session_commands,
+            cc.completion.max_line_width,
+            max_context_chars,
+        )
+        .await
+    }
+
+    /// Get all sessions context for chat (without history, only recent commands with output).
+    /// This is used for LLM chat requests where we only want recent commands with output.
+    pub async fn get_all_sessions_chat_context(&self, current_session_id: &str, max_context_chars: Option<usize>) -> Result<String> {
+        let cc = &self.context_config;
+
+        // Snapshot session Arcs under brief read lock
+        let session_entries: Vec<_> = {
+            let sessions = self.sessions.read().await;
+            sessions.iter().map(|(sid, s)| (sid.clone(), s.clone())).collect()
+        };
+
+        let mut all_commands = Vec::new();
+        let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
+        let mut hostnames: HashMap<String, String> = HashMap::new();
+        for (sid, session) in &session_entries {
+            let stream_path = session.dir.join("stream.bin");
+            let meta = session.meta.read().await;
+            if let Some(h) = meta.attrs.get("hostname") {
+                hostnames.insert(sid.clone(), h.clone());
+            }
+            let commands = session.commands.read().await;
+            for cmd in commands.iter() {
+                offset_to_path
+                    .insert((cmd.stream_offset, cmd.stream_length), stream_path.clone());
+            }
+            all_commands.extend(commands.clone());
+        }
+
+        all_commands.sort_by_key(|c| c.started_at);
+
+        if all_commands.is_empty() {
+            return Ok(String::new());
+        }
+
+        // Build context outside all locks
+        let reader = MultiSessionReader {
+            readers: offset_to_path,
+        };
+
+        // Build context with NO history (only detailed commands with output)
+        self.build_context_with_limit(
+            &all_commands,
+            &reader,
+            &hostnames,
+            current_session_id,
+            cc.completion.detailed_commands,
+            0, // No history for chat
+            cc.completion.min_current_session_commands,
+            cc.completion.max_line_width,
+            max_context_chars,
+        )
+        .await
+    }
+
     /// Get session context with explicit max_context_chars limit (overrides config)
     pub async fn get_session_context_with_limit(&self, session_id: &str, max_context_chars: Option<usize>) -> Result<String> {
         // Clone data under brief locks

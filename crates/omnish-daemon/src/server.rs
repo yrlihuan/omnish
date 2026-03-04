@@ -227,20 +227,22 @@ async fn try_warmup_kv_cache(
     }
 }
 
-async fn resolve_context(req: &Request, mgr: &SessionManager, max_context_chars: Option<usize>) -> Result<String> {
+/// Resolve context for chat requests (without history, only recent commands with output).
+/// This is used for LLM chat/analysis requests where we only want recent commands.
+async fn resolve_chat_context(req: &Request, mgr: &SessionManager, max_context_chars: Option<usize>) -> Result<String> {
     match &req.scope {
-        RequestScope::CurrentSession => mgr.get_session_context_with_limit(&req.session_id, max_context_chars).await,
-        RequestScope::AllSessions => mgr.get_all_sessions_context_with_limit(&req.session_id, max_context_chars).await,
+        RequestScope::CurrentSession => mgr.get_chat_context(&req.session_id, max_context_chars).await,
+        RequestScope::AllSessions => mgr.get_all_sessions_chat_context(&req.session_id, max_context_chars).await,
         RequestScope::Sessions(ids) => {
             let mut combined = String::new();
             for sid in ids {
-                match mgr.get_session_context_with_limit(sid, max_context_chars).await {
+                match mgr.get_chat_context(sid, max_context_chars).await {
                     Ok(ctx) => {
                         combined.push_str(&format!("\n=== Session {} ===\n", sid));
                         combined.push_str(&ctx);
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to get context for session {}: {}", sid, e);
+                        tracing::warn!("Failed to get chat context for session {}: {}", sid, e);
                     }
                 }
             }
@@ -248,6 +250,7 @@ async fn resolve_context(req: &Request, mgr: &SessionManager, max_context_chars:
         }
     }
 }
+
 
 async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>) -> String {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
@@ -279,8 +282,8 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
 async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionManager, llm_backend: &Option<Arc<dyn LlmBackend>>) -> String {
     match scenario {
         "chat" | "analysis" => {
-            // Chat/analysis context - same as default /context
-            match resolve_context(req, mgr, None).await {
+            // Chat/analysis context - only recent commands with output (no history)
+            match resolve_chat_context(req, mgr, None).await {
                 Ok(ctx) => ctx,
                 Err(e) => format!("Error: {}", e),
             }
@@ -420,7 +423,7 @@ async fn handle_llm_request(
 ) -> Result<omnish_llm::backend::LlmResponse> {
     let use_case = UseCase::Chat;
     let max_context_chars = backend.max_content_chars_for_use_case(use_case);
-    let context = resolve_context(req, mgr, max_context_chars).await?;
+    let context = resolve_chat_context(req, mgr, max_context_chars).await?;
 
     let llm_req = LlmRequest {
         context,
