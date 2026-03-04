@@ -550,6 +550,23 @@ async fn handle_completion_request(
     let response = result?;
     let suggestions = parse_completion_suggestions(&response.content)?;
 
+    // Truncate suggestions at && when user input doesn't contain && (issue #107)
+    let suggestions = if req.input.contains("&&") {
+        suggestions
+    } else {
+        let mut seen = std::collections::HashSet::new();
+        suggestions
+            .into_iter()
+            .map(|mut s| {
+                if let Some(pos) = s.text.find("&&") {
+                    s.text = s.text[..pos].trim_end().to_string();
+                }
+                s
+            })
+            .filter(|s| !s.text.is_empty() && seen.insert(s.text.clone()))
+            .collect()
+    };
+
     // Store pending sample for completion sampling (issue #101)
     let suggestion_texts: Vec<String> = suggestions.iter().map(|s| s.text.clone()).collect();
     mgr.store_pending_sample(omnish_store::sample::PendingSample {
