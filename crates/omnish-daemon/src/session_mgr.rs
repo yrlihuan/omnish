@@ -761,8 +761,11 @@ impl SessionManager {
     pub async fn cleanup_expired_dirs(&self, max_age: std::time::Duration) -> usize {
         let mut cleaned = 0;
 
-        // Snapshot of currently loaded sessions to avoid race conditions
-        let loaded_sessions = self.sessions.read().await;
+        // Snapshot loaded session IDs under brief read lock, then release
+        let loaded_ids: std::collections::HashSet<String> = {
+            let sessions = self.sessions.read().await;
+            sessions.keys().cloned().collect()
+        };
 
         // Get list of directories in base_dir
         let entries = match std::fs::read_dir(&self.base_dir) {
@@ -813,7 +816,7 @@ impl SessionManager {
 
             // Skip if this session is currently loaded in memory
             if let Some(sid) = session_id {
-                if loaded_sessions.contains_key(sid) {
+                if loaded_ids.contains(sid) {
                     tracing::debug!("skipping cleanup of active session directory: {:?}", dir);
                     continue;
                 }
