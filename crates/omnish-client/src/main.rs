@@ -282,6 +282,7 @@ async fn main() -> Result<()> {
             },
         ];
 
+        let poll_start = std::time::Instant::now();
         let ret = unsafe { libc::poll(fds.as_mut_ptr(), 2, 100) };
         if ret < 0 {
             continue;
@@ -546,6 +547,11 @@ async fn main() -> Result<()> {
                     }
                     _ => {}
                 }
+            }
+
+            let input_elapsed = poll_start.elapsed();
+            if input_elapsed.as_millis() > 50 {
+                event_log::push(format!("input lag {}ms ({}B)", input_elapsed.as_millis(), n));
             }
         }
 
