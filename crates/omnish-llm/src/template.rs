@@ -13,41 +13,6 @@ pub fn build_user_content(context: &str, query: Option<&str>) -> String {
     }
 }
 
-/// Build the user-content prompt for shell command completion.
-pub fn build_completion_content(context: &str, input: &str, cursor_pos: usize) -> String {
-    if input.is_empty() {
-        format!(
-            "Here is the terminal session context:\n\n\
-             {}\n\n\
-             The user just returned to the shell prompt. \
-             Predict the next command they are most likely to type.\n\
-             Pay close attention to <recent> and their output — \
-             infer what the user is trying to accomplish and what logical next step follows.\n\n\
-             Reply with a JSON array:\n\
-             [{{\"text\": \"<full command>\", \"confidence\": <0.0-1.0>}}]\n\
-             Return at most 3 suggestions sorted by confidence descending.\n\
-             Return [] if no good prediction exists.\n\
-             Do not include any other text outside the JSON array.",
-            context
-        )
-    } else {
-        format!(
-            "Here is the terminal session context:\n\n\
-             {}\n\n\
-             The user is typing a shell command. Current input: `{}`\n\
-             Cursor position: {}\n\
-             Use <recent> and their output to understand what the user is doing, \
-             then suggest the most likely completion.\n\n\
-             Reply with a JSON array containing the FULL completed command (including the user's current input as prefix):\n\
-             [{{\"text\": \"<full command including prefix>\", \"confidence\": <0.0-1.0>}}]\n\
-             Return at most 3 suggestions sorted by confidence descending.\n\
-             Return [] if no good completion exists.\n\
-             Do not include any other text outside the JSON array.",
-            context, input, cursor_pos
-        )
-    }
-}
-
 /// Build the user-content prompt for shell command completion (up to 2 suggestions, JSON array).
 ///
 /// Instructions are placed first, then context, then input — this ordering maximizes
@@ -67,9 +32,8 @@ pub fn build_simple_completion_content(context: &str, input: &str, cursor_pos: u
          Reply with a JSON array of up to 2 FULL commands:\n\
          [\"<command1>\", \"<command2>\"]\n\
          - 1st: the most likely completion (only if high confidence).\n\
-         - 2nd: a longer command that completes the entire task end-to-end. \
-                Do NOT include `&&` chained commands in either suggestion unless the user input \
-                already contains `&&`.\n\
+         - 2nd: a longer command that completes the entire task end-to-end. \n\
+         Do NOT include `&&` unless the user input already contains `&&`.\n\
          Return [] if no good completion exists.\n\
          Do not include any other text outside the JSON array.\n\n\
          {}\n\n\
