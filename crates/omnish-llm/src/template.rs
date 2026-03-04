@@ -68,8 +68,8 @@ pub fn build_simple_completion_content(context: &str, input: &str, cursor_pos: u
          [\"<command1>\", \"<command2>\"]\n\
          - 1st: the most likely completion (only if high confidence).\n\
          - 2nd: a longer command that completes the entire task end-to-end. \
-                Do NOT include `&&` chained commands unless the command history \
-                already contains the exact same combination.\n\
+                Do NOT include `&&` chained commands in either suggestion unless the user input \
+                already contains `&&`.\n\
          Return [] if no good completion exists.\n\
          Do not include any other text outside the JSON array.\n\n\
          {}\n\n\
