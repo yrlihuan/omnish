@@ -18,6 +18,10 @@ pub enum Message {
     CompletionRequest(CompletionRequest),
     CompletionResponse(CompletionResponse),
     CompletionSummary(CompletionSummary),
+    ChatStart(ChatStart),
+    ChatReady(ChatReady),
+    ChatMessage(ChatMessage),
+    ChatResponse(ChatResponse),
     Ack,
     Auth(Auth),
     AuthFailed,
@@ -154,6 +158,42 @@ pub struct CompletionSummary {
     /// Extra metadata as key-value pairs (stored as JSON in CSV)
     #[serde(default)]
     pub extra: HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatTurn {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatStart {
+    pub request_id: String,
+    pub session_id: String,
+    pub new_thread: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatReady {
+    pub request_id: String,
+    pub thread_id: String,
+    pub last_exchange: Option<(String, String)>,
+    pub earlier_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub request_id: String,
+    pub session_id: String,
+    pub thread_id: String,
+    pub query: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatResponse {
+    pub request_id: String,
+    pub thread_id: String,
+    pub content: String,
 }
 
 impl Message {
@@ -316,6 +356,44 @@ mod tests {
             assert_eq!(su.attrs.get("shell_cwd").unwrap(), "/home/user/project");
         } else {
             panic!("expected SessionUpdate");
+        }
+    }
+
+    #[test]
+    fn test_frame_with_chat_start() {
+        let frame = Frame {
+            request_id: 30,
+            payload: Message::ChatStart(ChatStart {
+                request_id: "abc".to_string(),
+                session_id: "sess1".to_string(),
+                new_thread: false,
+            }),
+        };
+        let bytes = frame.to_bytes().unwrap();
+        let decoded = Frame::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.request_id, 30);
+        assert!(matches!(decoded.payload, Message::ChatStart(_)));
+    }
+
+    #[test]
+    fn test_frame_with_chat_message() {
+        let frame = Frame {
+            request_id: 31,
+            payload: Message::ChatMessage(ChatMessage {
+                request_id: "def".to_string(),
+                session_id: "sess1".to_string(),
+                thread_id: "thread-uuid".to_string(),
+                query: "hello".to_string(),
+            }),
+        };
+        let bytes = frame.to_bytes().unwrap();
+        let decoded = Frame::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.request_id, 31);
+        if let Message::ChatMessage(cm) = decoded.payload {
+            assert_eq!(cm.query, "hello");
+            assert_eq!(cm.thread_id, "thread-uuid");
+        } else {
+            panic!("expected ChatMessage");
         }
     }
 }
