@@ -30,6 +30,9 @@ pub struct LlmRequest {
     /// Maximum content characters for context (model-specific limit)
     pub max_content_chars: Option<usize>,
     pub conversation: Vec<omnish_protocol::message::ChatTurn>,
+    /// Whether to enable extended thinking mode (e.g., Claude extended thinking, DeepSeek R1).
+    /// None means use backend default. Set to false to disable, true to enable.
+    pub enable_thinking: Option<bool>,
 }
 
 #[derive(Debug, Clone)]

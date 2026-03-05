@@ -92,8 +92,12 @@ impl LlmBackend for OpenAiCompatBackend {
             .ok_or_else(|| anyhow::anyhow!("Invalid response format: missing choices[0].message.content"))?
             .to_string();
 
-        // Extract thinking from content
-        let (thinking, content) = extract_thinking(&raw_content);
+        // Extract thinking from content, unless explicitly disabled
+        let (thinking, content) = if req.enable_thinking == Some(false) {
+            (None, raw_content.clone())
+        } else {
+            extract_thinking(&raw_content)
+        };
 
         Ok(LlmResponse {
             content,

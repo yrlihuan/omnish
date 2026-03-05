@@ -10,6 +10,7 @@ fn test_llm_request_build() {
         use_case: UseCase::Analysis,
         max_content_chars: None,
         conversation: vec![],
+        enable_thinking: None,
     };
     assert_eq!(req.session_ids.len(), 1);
     assert!(req.query.is_some());

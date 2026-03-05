@@ -44,11 +44,21 @@ impl LlmBackend for AnthropicBackend {
             msgs
         };
 
-        let body = serde_json::json!({
-            "model": self.model,
-            "max_tokens": 1024,
-            "messages": messages
-        });
+        // Build request body, conditionally disable thinking if requested
+        let mut body_map = serde_json::Map::new();
+        body_map.insert("model".to_string(), serde_json::Value::String(self.model.clone()));
+        body_map.insert("max_tokens".to_string(), serde_json::Value::Number(1024.into()));
+        body_map.insert("messages".to_string(), serde_json::Value::Array(messages));
+
+        // Add thinking parameter if explicitly disabled
+        if req.enable_thinking == Some(false) {
+            let mut thinking_map = serde_json::Map::new();
+            thinking_map.insert("type".to_string(), serde_json::Value::String("enabled".to_string()));
+            thinking_map.insert("disabled_reason".to_string(), serde_json::Value::String("disabled_by_client".to_string()));
+            body_map.insert("thinking".to_string(), serde_json::Value::Object(thinking_map));
+        }
+
+        let body = serde_json::Value::Object(body_map);
 
         let resp = client
             .post("https://api.anthropic.com/v1/messages")

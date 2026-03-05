@@ -78,6 +78,7 @@ async fn generate_hourly_summary(
             use_case,
             max_content_chars,
             conversation: vec![],
+            enable_thinking: None, // Use default (thinking enabled for analysis)
         };
         match backend.complete(&req).await {
             Ok(resp) => Some(resp.content),

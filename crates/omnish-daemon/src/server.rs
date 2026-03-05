@@ -233,6 +233,7 @@ async fn handle_message(
                     use_case,
                     max_content_chars: max_context_chars,
                     conversation,
+                    enable_thinking: None, // Use default (thinking enabled for chat)
                 };
 
                 let start = std::time::Instant::now();
@@ -291,6 +292,7 @@ async fn try_warmup_kv_cache(
         use_case: UseCase::Completion,
         max_content_chars: max_chars,
         conversation: vec![],
+        enable_thinking: Some(false), // Disable thinking for completion
     };
 
     match backend.complete(&req).await {
@@ -505,6 +507,7 @@ async fn handle_llm_request(
         use_case,
         max_content_chars: max_context_chars,
         conversation: vec![],
+        enable_thinking: None, // Use default (thinking enabled for chat)
     };
 
     let start = std::time::Instant::now();
@@ -581,6 +584,7 @@ async fn handle_completion_request(
         use_case,
         max_content_chars: max_context_chars,
         conversation: vec![],
+        enable_thinking: Some(false), // Disable thinking for completion requests
     };
 
     let start = std::time::Instant::now();
