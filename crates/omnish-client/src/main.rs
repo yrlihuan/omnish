@@ -1437,11 +1437,37 @@ async fn run_chat_loop(rpc: &RpcClient, session_id: &str, proxy: &PtyProxy) {
         if trimmed.starts_with('/') {
             match command::dispatch(trimmed) {
                 command::ChatAction::Command { result, redirect } => {
-                    handle_command_result(&result, redirect.as_deref(), proxy);
+                    if let Some(path) = redirect.as_deref() {
+                        handle_command_result(&result, Some(path), proxy);
+                    } else {
+                        let output = display::render_response(&result);
+                        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                    }
                     continue;
                 }
                 command::ChatAction::DaemonQuery { query, redirect } => {
-                    send_daemon_query(&query, session_id, rpc, proxy, redirect.as_deref(), false).await;
+                    if let Some(path) = redirect.as_deref() {
+                        send_daemon_query(&query, session_id, rpc, proxy, Some(path), false).await;
+                    } else {
+                        // Send query and display inline (no PTY cleanup)
+                        let request_id = Uuid::new_v4().to_string()[..8].to_string();
+                        let request = Message::Request(Request {
+                            request_id: request_id.clone(),
+                            session_id: session_id.to_string(),
+                            query,
+                            scope: RequestScope::AllSessions,
+                        });
+                        match rpc.call(request).await {
+                            Ok(Message::Response(resp)) if resp.request_id == request_id => {
+                                let output = display::render_response(&resp.content);
+                                nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                            }
+                            _ => {
+                                let err = display::render_error("Failed to receive response");
+                                nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                            }
+                        }
+                    }
                     continue;
                 }
                 command::ChatAction::LlmQuery(_) => {
