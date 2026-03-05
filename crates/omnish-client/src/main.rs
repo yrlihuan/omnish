@@ -1596,7 +1596,7 @@ async fn run_chat_loop(
         let thinking = display::render_thinking();
         nix::unistd::write(std::io::stdout(), thinking.as_bytes()).ok();
 
-        // Send ChatMessage
+        // Send ChatMessage, allow Ctrl-C to interrupt
         let req_id = Uuid::new_v4().to_string()[..8].to_string();
         let chat_msg = Message::ChatMessage(omnish_protocol::message::ChatMessage {
             request_id: req_id.clone(),
@@ -1605,27 +1605,86 @@ async fn run_chat_loop(
             query: trimmed.to_string(),
         });
 
-        match rpc.call(chat_msg).await {
-            Ok(Message::ChatResponse(resp)) if resp.request_id == req_id => {
-                let output = display::render_response(&resp.content);
-                nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+        // Race RPC call against Ctrl-C on stdin
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        let interrupt = tokio::task::spawn_blocking(move || wait_for_ctrl_c(stop_rx));
+        let rpc_result = rpc.call(chat_msg);
 
-                // Show separator
-                let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
-                let separator = display::render_separator(cols);
-                let sep_line = format!("{}\r\n", separator);
-                nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
+        tokio::select! {
+            result = rpc_result => {
+                // Signal the stdin reader to stop
+                let _ = stop_tx.send(());
+                match result {
+                    Ok(Message::ChatResponse(resp)) if resp.request_id == req_id => {
+                        // Clear thinking indicator
+                        nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
+                        let output = display::render_response(&resp.content);
+                        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+
+                        // Show separator
+                        let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+                        let separator = display::render_separator(cols);
+                        let sep_line = format!("{}\r\n", separator);
+                        nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
+                    }
+                    _ => {
+                        nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
+                        let err = display::render_error("Failed to receive chat response");
+                        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                    }
+                }
             }
-            _ => {
-                let err = display::render_error("Failed to receive chat response");
-                nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+            _ = interrupt => {
+                // Ctrl-C pressed — record interrupt in conversation
+                nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
+                let info = "\r\n\x1b[2;37m(interrupted)\x1b[0m";
+                nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
+
+                // Send interrupt to daemon to record in conversation
+                let interrupt_msg = Message::ChatInterrupt(omnish_protocol::message::ChatInterrupt {
+                    session_id: session_id.to_string(),
+                    thread_id: current_thread_id.clone(),
+                    query: trimmed.to_string(),
+                });
+                // Fire and forget — don't wait for response
+                let rpc_clone = rpc.clone();
+                tokio::spawn(async move {
+                    let _ = rpc_clone.call(interrupt_msg).await;
+                });
             }
         }
     }
 }
 
+/// Block until Ctrl-C (0x03) is read from stdin. Uses poll with 100ms timeout
+/// so the thread exits promptly when `stop` is signalled.
+fn wait_for_ctrl_c(stop: std::sync::mpsc::Receiver<()>) -> bool {
+    let stdin_fd = std::io::stdin().as_raw_fd();
+    let mut byte = [0u8; 1];
+    loop {
+        // Check if we should stop
+        if stop.try_recv().is_ok() {
+            return false;
+        }
+        let mut pfd = libc::pollfd {
+            fd: stdin_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ret = unsafe { libc::poll(&mut pfd, 1, 100) }; // 100ms timeout
+        if ret <= 0 {
+            continue;
+        }
+        match nix::unistd::read(stdin_fd, &mut byte) {
+            Ok(1) if byte[0] == 0x03 => return true,
+            Ok(1) => {} // Ignore other keys while waiting
+            _ => return false,
+        }
+    }
+}
+
 /// Read a line of input in raw mode for the chat loop.
-/// Returns None on ESC, Ctrl-C, Ctrl-D, or backspace on empty input.
+/// Returns None on ESC, Ctrl-D, or backspace on empty input.
 fn read_chat_input(completer: &mut ghost_complete::GhostCompleter) -> Option<String> {
     let stdin_fd = std::io::stdin().as_raw_fd();
     let mut buf = Vec::new();
@@ -1637,7 +1696,6 @@ fn read_chat_input(completer: &mut ghost_complete::GhostCompleter) -> Option<Str
             Ok(1) => {
                 match byte[0] {
                     0x1b => return None,  // ESC — exit chat
-                    0x03 => return None,  // Ctrl-C — exit chat
                     0x04 => return None,  // Ctrl-D — exit chat
                     0x0d => {             // Enter — submit line
                         if has_ghost {

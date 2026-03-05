@@ -22,6 +22,7 @@ pub enum Message {
     ChatReady(ChatReady),
     ChatMessage(ChatMessage),
     ChatResponse(ChatResponse),
+    ChatInterrupt(ChatInterrupt),
     Ack,
     Auth(Auth),
     AuthFailed,
@@ -194,6 +195,13 @@ pub struct ChatResponse {
     pub request_id: String,
     pub thread_id: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatInterrupt {
+    pub session_id: String,
+    pub thread_id: String,
+    pub query: String,
 }
 
 impl Message {

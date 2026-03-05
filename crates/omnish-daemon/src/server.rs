@@ -258,6 +258,11 @@ async fn handle_message(
                 content,
             })
         }
+        Message::ChatInterrupt(ci) => {
+            conv_mgr.append_exchange(&ci.thread_id, &ci.query, "<event>user interrupted</event>");
+            tracing::info!("Chat interrupted by user (thread={})", ci.thread_id);
+            Message::Ack
+        }
         _ => Message::Ack,
     }
 }
