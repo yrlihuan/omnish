@@ -398,6 +398,7 @@ async fn main() -> Result<()> {
                                     // so we can't send the trigger, but still suppress
                                     // stale completions until the next prompt event.
                                     event_log::push("ctrl+r (isearch mode)");
+                                    shell_input.enter_isearch();
                                     shell_input.mark_pending_report();
                                     if shell_completer.ghost().is_some() {
                                         // Send completion summary (ignored - user pressed Ctrl+R)
@@ -738,7 +739,7 @@ async fn main() -> Result<()> {
             // Clean up timed-out requests first
             let _cleaned = shell_completer.cleanup_timed_out_requests();
 
-            if config.completion_enabled && at_prompt && !in_chat && shell_input.cursor_at_end() && shell_completer.should_request(shell_input.sequence_id(), current) {
+            if config.completion_enabled && at_prompt && !in_chat && !shell_input.in_isearch() && shell_input.cursor_at_end() && shell_completer.should_request(shell_input.sequence_id(), current) {
                 let seq = shell_input.sequence_id();
                 if let Some(ref rpc) = daemon_conn {
                     let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
@@ -767,7 +768,7 @@ async fn main() -> Result<()> {
             }
 
             // In isearch mode (Ctrl+R) — discard to avoid "cannot find keymap" error (issue #88)
-            if shell_input.pending_rl_report() {
+            if shell_input.in_isearch() || shell_input.pending_rl_report() {
                 event_log::push(format!("completion response seq={} discarded (isearch)", resp.sequence_id));
                 continue;
             }

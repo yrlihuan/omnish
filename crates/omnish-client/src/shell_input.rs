@@ -28,6 +28,10 @@ pub struct ShellInputTracker {
     /// Whether the cursor is at the end of the input line.
     /// When false, ghost completions are suppressed (like fish/zsh-autosuggestions).
     cursor_at_end: bool,
+    /// Whether the user is in Ctrl+R isearch mode. Set on Ctrl+R detection,
+    /// cleared on next prompt (on_prompt). Unlike pending_rl_report, this does
+    /// NOT auto-clear after timeout — isearch can last indefinitely.
+    in_isearch: bool,
 }
 
 impl ShellInputTracker {
@@ -41,6 +45,7 @@ impl ShellInputTracker {
             pending_rl_report: false,
             pending_rl_report_at: None,
             cursor_at_end: true,
+            in_isearch: false,
         }
     }
 
@@ -52,6 +57,7 @@ impl ShellInputTracker {
         self.pending_rl_report = false;
         self.pending_rl_report_at = None;
         self.cursor_at_end = true;
+        self.in_isearch = false;
         self.bump(); // always bump so completion can fire on empty prompt
     }
 
@@ -205,6 +211,16 @@ impl ShellInputTracker {
     /// Ghost completions are suppressed when this is false.
     pub fn cursor_at_end(&self) -> bool {
         self.cursor_at_end
+    }
+
+    /// Mark that the user entered Ctrl+R isearch mode.
+    pub fn enter_isearch(&mut self) {
+        self.in_isearch = true;
+    }
+
+    /// Whether the user is in Ctrl+R isearch mode.
+    pub fn in_isearch(&self) -> bool {
+        self.in_isearch
     }
 
     /// Mark that a readline report is expected (e.g. after sending a trigger
