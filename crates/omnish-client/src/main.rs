@@ -452,15 +452,16 @@ async fn main() -> Result<()> {
                         nix::unistd::write(std::io::stdout(), dismiss.as_bytes()).ok();
                         nix::unistd::write(std::io::stdout(), restore.as_bytes()).ok();
                     }
-                    InterceptAction::Chat(_msg) => {
+                    InterceptAction::Chat(msg) => {
                         event_log::push("chat mode enter");
                         completer.clear();
                         // Save pre-chat input to restore after chat (issue #24)
                         let saved_input = shell_input.input().to_string();
 
-                        // Enter chat mode loop
+                        // Enter chat mode loop (pass initial message if any)
                         if let Some(ref rpc) = daemon_conn {
-                            run_chat_loop(rpc, &session_id, &proxy).await;
+                            let initial = if msg.trim().is_empty() { None } else { Some(msg) };
+                            run_chat_loop(rpc, &session_id, &proxy, initial).await;
                         } else {
                             let err = display::render_error("Daemon not connected");
                             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
@@ -1367,7 +1368,7 @@ async fn send_daemon_query(
 }
 
 /// Run the multi-turn chat loop. Returns when user presses ESC or Ctrl-C.
-async fn run_chat_loop(rpc: &RpcClient, session_id: &str, proxy: &PtyProxy) {
+async fn run_chat_loop(rpc: &RpcClient, session_id: &str, proxy: &PtyProxy, initial_msg: Option<String>) {
     // Step 1: Send ChatStart to get thread info
     let request_id = Uuid::new_v4().to_string()[..8].to_string();
     let start_msg = Message::ChatStart(ChatStart {
@@ -1395,15 +1396,20 @@ async fn run_chat_loop(rpc: &RpcClient, session_id: &str, proxy: &PtyProxy) {
 
     // Step 3: Show prompt and enter loop
     let mut current_thread_id = thread_id;
+    let mut pending_input = initial_msg;
 
     loop {
-        let prompt = display::render_chat_prompt();
-        nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
+        // Use pending initial message or read new input
+        let input = if let Some(msg) = pending_input.take() {
+            msg
+        } else {
+            let prompt = display::render_chat_prompt();
+            nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
 
-        // Read a line of input in raw mode
-        let input = match read_chat_input() {
-            Some(line) => line,
-            None => break, // ESC or Ctrl-C
+            match read_chat_input() {
+                Some(line) => line,
+                None => break, // ESC or Ctrl-C
+            }
         };
 
         let trimmed = input.trim();
