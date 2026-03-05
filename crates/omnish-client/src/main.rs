@@ -758,10 +758,16 @@ async fn main() -> Result<()> {
         }
 
         // Check for completion responses (non-blocking)
-        // Discard responses if user has entered chat mode since the request was sent.
+        // Discard responses if user has entered chat mode or isearch mode.
         while let Ok(resp) = completion_rx.try_recv() {
             if interceptor.is_in_chat() {
                 shell_completer.clear();
+                continue;
+            }
+
+            // In isearch mode (Ctrl+R) — discard to avoid "cannot find keymap" error (issue #88)
+            if shell_input.pending_rl_report() {
+                event_log::push(format!("completion response seq={} discarded (isearch)", resp.sequence_id));
                 continue;
             }
 
@@ -773,9 +779,7 @@ async fn main() -> Result<()> {
             if !readline_triggered_for_completions {
                 readline_triggered_for_completions = true;
                 readline_trigger_time = Some(std::time::Instant::now());
-                if osc133_hook_installed && shell_input.at_prompt()
-                    && !shell_input.pending_rl_report()
-                {
+                if osc133_hook_installed && shell_input.at_prompt() {
                     shell_input.mark_pending_report();
                     event_log::push("readline request (completion)");
                     proxy.write_all(b"\x1b[13337~")?;
