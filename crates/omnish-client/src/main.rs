@@ -1452,6 +1452,13 @@ async fn run_chat_loop(rpc: &RpcClient, session_id: &str, proxy: &PtyProxy, init
                     continue;
                 }
                 command::ChatAction::DaemonQuery { query, redirect } => {
+                    // /debug client needs client-side state not available in chat mode
+                    if query == "__cmd:client_debug" {
+                        let msg = "/debug client is not available in chat mode (requires main loop state)";
+                        let output = display::render_response(msg);
+                        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                        continue;
+                    }
                     if let Some(path) = redirect.as_deref() {
                         send_daemon_query(&query, session_id, rpc, proxy, Some(path), false).await;
                     } else {
