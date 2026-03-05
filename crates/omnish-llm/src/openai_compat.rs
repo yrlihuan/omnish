@@ -64,11 +64,11 @@ impl LlmBackend for OpenAiCompatBackend {
         body_map.insert("model".to_string(), serde_json::Value::String(self.model.clone()));
         body_map.insert("messages".to_string(), serde_json::Value::Array(messages));
 
-        // Add thinking control for models like Qwen3 via extra_body
+        // Add thinking control for models like Qwen3
         if req.enable_thinking == Some(false) {
             let mut chat_template_kwargs = serde_json::Map::new();
             chat_template_kwargs.insert("enable_thinking".to_string(), serde_json::Value::Bool(false));
-            body_map.insert("extra_body".to_string(), serde_json::Value::Object(chat_template_kwargs));
+            body_map.insert("chat_template_kwargs".to_string(), serde_json::Value::Object(chat_template_kwargs));
         }
 
         let body = serde_json::Value::Object(body_map);
