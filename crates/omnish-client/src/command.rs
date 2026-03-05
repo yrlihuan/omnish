@@ -111,7 +111,6 @@ const COMMANDS: &[CommandEntry] = &[
     // HACK: registered as Daemon but intercepted client-side in main.rs
     // because it needs local client state (shell_input, interceptor, etc.)
     // that doesn't fit the Local fn(&str) -> String signature.
-    // Not available in chat mode (run_chat_loop lacks these references).
     CommandEntry {
         path: "/debug client",
         kind: CommandKind::Daemon("client_debug"),
@@ -134,12 +133,18 @@ const COMMANDS: &[CommandEntry] = &[
     },
 ];
 
+/// Chat-mode-only commands (not in COMMANDS registry).
+pub const CHAT_ONLY_COMMANDS: &[&str] = &["/chat", "/ask", "/resume", "/new"];
+
 /// Return all command paths for ghost-text completion.
 pub fn completable_commands() -> Vec<String> {
     let mut cmds: Vec<String> = COMMANDS.iter().map(|e| e.path.to_string()).collect();
     for name in omnish_llm::template::TEMPLATE_NAMES {
         cmds.push(format!("/template {}", name));
         cmds.push(format!("/context {}", name));
+    }
+    for cmd in CHAT_ONLY_COMMANDS {
+        cmds.push(cmd.to_string());
     }
     cmds
 }
@@ -363,11 +368,16 @@ mod tests {
         assert!(cmds.contains(&"/context auto-complete".to_string()));
         assert!(cmds.contains(&"/context daily-notes".to_string()));
         assert!(cmds.contains(&"/context hourly-notes".to_string()));
-        // COMMANDS + /template subcommands + /context subcommands
+        // Chat-mode commands
+        assert!(cmds.contains(&"/chat".to_string()));
+        assert!(cmds.contains(&"/ask".to_string()));
+        assert!(cmds.contains(&"/resume".to_string()));
+        assert!(cmds.contains(&"/new".to_string()));
+        // COMMANDS + /template subcommands + /context subcommands + chat commands
         let template_count = omnish_llm::template::TEMPLATE_NAMES.len();
         assert_eq!(
             cmds.len(),
-            COMMANDS.len() + template_count * 2
+            COMMANDS.len() + template_count * 2 + CHAT_ONLY_COMMANDS.len()
         );
     }
 

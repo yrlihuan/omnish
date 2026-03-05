@@ -1375,6 +1375,59 @@ async fn send_daemon_query(
     }
 }
 
+/// Handle a /command in chat mode. Returns true if the command was handled.
+async fn handle_slash_command(
+    trimmed: &str,
+    session_id: &str,
+    rpc: &RpcClient,
+    proxy: &PtyProxy,
+    client_debug_fn: &dyn Fn() -> String,
+) -> bool {
+    match command::dispatch(trimmed) {
+        command::ChatAction::Command { result, redirect } => {
+            if let Some(path) = redirect.as_deref() {
+                handle_command_result(&result, Some(path), proxy);
+            } else {
+                let output = display::render_response(&result);
+                nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+            }
+            true
+        }
+        command::ChatAction::DaemonQuery { query, redirect } => {
+            // /debug client is intercepted client-side (needs local state)
+            if query == "__cmd:client_debug" {
+                let result = client_debug_fn();
+                let output = display::render_response(&result);
+                nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                return true;
+            }
+            if let Some(path) = redirect.as_deref() {
+                send_daemon_query(&query, session_id, rpc, proxy, Some(path), false).await;
+            } else {
+                let request_id = Uuid::new_v4().to_string()[..8].to_string();
+                let request = Message::Request(Request {
+                    request_id: request_id.clone(),
+                    session_id: session_id.to_string(),
+                    query,
+                    scope: RequestScope::AllSessions,
+                });
+                match rpc.call(request).await {
+                    Ok(Message::Response(resp)) if resp.request_id == request_id => {
+                        let output = display::render_response(&resp.content);
+                        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                    }
+                    _ => {
+                        let err = display::render_error("Failed to receive response");
+                        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                    }
+                }
+            }
+            true
+        }
+        command::ChatAction::LlmQuery(_) => false,
+    }
+}
+
 /// Run the multi-turn chat loop. Returns when user presses ESC or Ctrl-C.
 async fn run_chat_loop(
     rpc: &RpcClient,
@@ -1383,40 +1436,15 @@ async fn run_chat_loop(
     initial_msg: Option<String>,
     client_debug_fn: &dyn Fn() -> String,
 ) {
-    // Step 1: Send ChatStart to get thread info
-    let request_id = Uuid::new_v4().to_string()[..8].to_string();
-    let start_msg = Message::ChatStart(ChatStart {
-        request_id: request_id.clone(),
-        session_id: session_id.to_string(),
-        new_thread: false,
-    });
-
-    let (thread_id, last_exchange, earlier_count) = match rpc.call(start_msg).await {
-        Ok(Message::ChatReady(ready)) if ready.request_id == request_id => {
-            (ready.thread_id, ready.last_exchange, ready.earlier_count)
-        }
-        _ => {
-            let err = display::render_error("Failed to start chat session");
-            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-            return;
-        }
-    };
-
-    // Step 2: Display history
-    let history = display::render_chat_history(last_exchange.as_ref(), earlier_count);
-    if !history.is_empty() {
-        nix::unistd::write(std::io::stdout(), history.as_bytes()).ok();
-    }
-
-    // Step 3: Show prompt and enter loop
-    let mut current_thread_id = thread_id;
-    let mut pending_input = initial_msg;
     let mut chat_completer = ghost_complete::GhostCompleter::new(vec![
         Box::new(ghost_complete::BuiltinProvider::new()),
     ]);
 
+    // Phase 1: Mode selection — user must choose /chat, /ask, or /resume
+    let mut current_thread_id;
+    let mut pending_input = initial_msg;
+
     loop {
-        // Use pending initial message or read new input
         let input = if let Some(msg) = pending_input.take() {
             msg
         } else {
@@ -1425,7 +1453,7 @@ async fn run_chat_loop(
 
             match read_chat_input(&mut chat_completer) {
                 Some(line) => line,
-                None => break, // ESC or Ctrl-C
+                None => return, // ESC or Ctrl-C
             }
         };
 
@@ -1434,8 +1462,88 @@ async fn run_chat_loop(
             continue;
         }
 
-        // Handle /new command
-        if trimmed == "/new" {
+        // /chat or /ask — start new thread
+        if trimmed == "/chat" || trimmed == "/ask" {
+            let req_id = Uuid::new_v4().to_string()[..8].to_string();
+            let start_msg = Message::ChatStart(ChatStart {
+                request_id: req_id.clone(),
+                session_id: session_id.to_string(),
+                new_thread: true,
+            });
+            match rpc.call(start_msg).await {
+                Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
+                    current_thread_id = ready.thread_id;
+                    let info = "\r\n\x1b[2;37m(new conversation)\x1b[0m";
+                    nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
+                    break;
+                }
+                _ => {
+                    let err = display::render_error("Failed to start chat session");
+                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                    return;
+                }
+            }
+        }
+
+        // /resume — resume latest thread
+        if trimmed == "/resume" {
+            let req_id = Uuid::new_v4().to_string()[..8].to_string();
+            let start_msg = Message::ChatStart(ChatStart {
+                request_id: req_id.clone(),
+                session_id: session_id.to_string(),
+                new_thread: false,
+            });
+            match rpc.call(start_msg).await {
+                Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
+                    current_thread_id = ready.thread_id;
+                    // Display history
+                    let history = display::render_chat_history(
+                        ready.last_exchange.as_ref(),
+                        ready.earlier_count,
+                    );
+                    if !history.is_empty() {
+                        nix::unistd::write(std::io::stdout(), history.as_bytes()).ok();
+                    }
+                    break;
+                }
+                _ => {
+                    let err = display::render_error("Failed to resume chat session");
+                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                    return;
+                }
+            }
+        }
+
+        // Handle other /commands normally
+        if trimmed.starts_with('/') {
+            if handle_slash_command(trimmed, session_id, rpc, proxy, client_debug_fn).await {
+                continue;
+            }
+            // Unknown /command — show help
+        }
+
+        // Not a mode command — show help
+        let help = "\r\n\x1b[2;37mCommands: /chat (new conversation), /resume (continue previous)\x1b[0m";
+        nix::unistd::write(std::io::stdout(), help.as_bytes()).ok();
+    }
+
+    // Phase 2: Chat loop — LLM queries
+    loop {
+        let prompt = display::render_chat_prompt();
+        nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
+
+        let input = match read_chat_input(&mut chat_completer) {
+            Some(line) => line,
+            None => break, // ESC or Ctrl-C
+        };
+
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // /new — start new thread within chat
+        if trimmed == "/new" || trimmed == "/chat" || trimmed == "/ask" {
             let req_id = Uuid::new_v4().to_string()[..8].to_string();
             let new_msg = Message::ChatStart(ChatStart {
                 request_id: req_id.clone(),
@@ -1445,7 +1553,7 @@ async fn run_chat_loop(
             match rpc.call(new_msg).await {
                 Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
                     current_thread_id = ready.thread_id;
-                    let info = "\r\n\x1b[2;37m(new thread started)\x1b[0m";
+                    let info = "\r\n\x1b[2;37m(new conversation)\x1b[0m";
                     nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
                 }
                 _ => {
@@ -1458,52 +1566,10 @@ async fn run_chat_loop(
 
         // Handle /commands that go through existing dispatch
         if trimmed.starts_with('/') {
-            match command::dispatch(trimmed) {
-                command::ChatAction::Command { result, redirect } => {
-                    if let Some(path) = redirect.as_deref() {
-                        handle_command_result(&result, Some(path), proxy);
-                    } else {
-                        let output = display::render_response(&result);
-                        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
-                    }
-                    continue;
-                }
-                command::ChatAction::DaemonQuery { query, redirect } => {
-                    // /debug client is intercepted client-side (needs local state)
-                    if query == "__cmd:client_debug" {
-                        let result = client_debug_fn();
-                        let output = display::render_response(&result);
-                        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
-                        continue;
-                    }
-                    if let Some(path) = redirect.as_deref() {
-                        send_daemon_query(&query, session_id, rpc, proxy, Some(path), false).await;
-                    } else {
-                        // Send query and display inline (no PTY cleanup)
-                        let request_id = Uuid::new_v4().to_string()[..8].to_string();
-                        let request = Message::Request(Request {
-                            request_id: request_id.clone(),
-                            session_id: session_id.to_string(),
-                            query,
-                            scope: RequestScope::AllSessions,
-                        });
-                        match rpc.call(request).await {
-                            Ok(Message::Response(resp)) if resp.request_id == request_id => {
-                                let output = display::render_response(&resp.content);
-                                nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
-                            }
-                            _ => {
-                                let err = display::render_error("Failed to receive response");
-                                nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                            }
-                        }
-                    }
-                    continue;
-                }
-                command::ChatAction::LlmQuery(_) => {
-                    // Fall through to send as chat message
-                }
+            if handle_slash_command(trimmed, session_id, rpc, proxy, client_debug_fn).await {
+                continue;
             }
+            // Unknown /command — fall through to send as chat message
         }
 
         // Show thinking indicator
