@@ -477,8 +477,10 @@ async fn main() -> Result<()> {
                             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                         }
 
-                        // Clear bash readline before restoring
-                        proxy.write_all(b"\x15\r").ok();
+                        // Clear bash readline before restoring.
+                        // Ctrl-U (kill backward) + Ctrl-K (kill forward) + Enter
+                        // to clear regardless of cursor position (issue #125).
+                        proxy.write_all(b"\x15\x0b\r").ok();
                         // Restore pre-chat input so user doesn't lose their work (issue #24)
                         if !saved_input.is_empty() {
                             proxy.write_all(saved_input.as_bytes()).ok();
@@ -1343,7 +1345,7 @@ fn handle_command_result(content: &str, redirect: Option<&str>, proxy: &PtyProxy
         nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
     }
     // Clear bash readline before Enter so pre-chat input isn't executed (issue #24).
-    proxy.write_all(b"\x15\r").ok();
+    proxy.write_all(b"\x15\x0b\r").ok();
 }
 
 /// Send a query to the daemon and display the result.
@@ -1388,7 +1390,7 @@ async fn send_daemon_query(
         _ => {
             let err = display::render_error("Failed to receive response");
             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-            proxy.write_all(b"\x15\r").ok();
+            proxy.write_all(b"\x15\x0b\r").ok();
         }
     }
 }
