@@ -1411,6 +1411,9 @@ async fn run_chat_loop(
     // Step 3: Show prompt and enter loop
     let mut current_thread_id = thread_id;
     let mut pending_input = initial_msg;
+    let mut chat_completer = ghost_complete::GhostCompleter::new(vec![
+        Box::new(ghost_complete::BuiltinProvider::new()),
+    ]);
 
     loop {
         // Use pending initial message or read new input
@@ -1420,7 +1423,7 @@ async fn run_chat_loop(
             let prompt = display::render_chat_prompt();
             nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
 
-            match read_chat_input() {
+            match read_chat_input(&mut chat_completer) {
                 Some(line) => line,
                 None => break, // ESC or Ctrl-C
             }
@@ -1537,10 +1540,11 @@ async fn run_chat_loop(
 
 /// Read a line of input in raw mode for the chat loop.
 /// Returns None on ESC or Ctrl-C (signals exit from chat mode).
-fn read_chat_input() -> Option<String> {
+fn read_chat_input(completer: &mut ghost_complete::GhostCompleter) -> Option<String> {
     let stdin_fd = std::io::stdin().as_raw_fd();
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
+    let mut has_ghost = false;
 
     loop {
         match nix::unistd::read(stdin_fd, &mut byte) {
@@ -1549,17 +1553,53 @@ fn read_chat_input() -> Option<String> {
                     0x1b => return None,  // ESC — exit chat
                     0x03 => return None,  // Ctrl-C — exit chat
                     0x0d => {             // Enter — submit line
+                        if has_ghost {
+                            // Clear ghost text before submitting
+                            nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
+                        }
+                        completer.clear();
                         return Some(String::from_utf8_lossy(&buf).to_string());
+                    }
+                    0x09 => {             // Tab — accept ghost completion
+                        if let Some(suffix) = completer.accept() {
+                            buf.extend_from_slice(suffix.as_bytes());
+                            // Clear ghost, rewrite accepted text in normal color
+                            nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
+                            nix::unistd::write(std::io::stdout(), suffix.as_bytes()).ok();
+                            has_ghost = false;
+                            // Query for next ghost after accepting
+                            let input = String::from_utf8_lossy(&buf);
+                            if let Some(ghost) = completer.update(&input) {
+                                let ghost_render = format!("\x1b[2;37m{}\x1b[0m\x1b[{}D", ghost, ghost.len());
+                                nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                                has_ghost = true;
+                            }
+                        }
                     }
                     0x7f | 0x08 => {      // Backspace
                         if !buf.is_empty() {
                             buf.pop();
-                            // Erase character on screen
-                            nix::unistd::write(std::io::stdout(), b"\x08 \x08").ok();
+                            // Erase character and any ghost text
+                            nix::unistd::write(std::io::stdout(), b"\x08\x1b[K").ok();
+                            has_ghost = false;
+                            // Update ghost for new input
+                            let input = String::from_utf8_lossy(&buf);
+                            if let Some(ghost) = completer.update(&input) {
+                                let ghost_render = format!("\x1b[2;37m{}\x1b[0m\x1b[{}D", ghost, ghost.len());
+                                nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                                has_ghost = true;
+                            } else {
+                                completer.clear();
+                            }
                         }
                     }
                     b if b >= 0x20 => {   // Printable ASCII or UTF-8 lead byte
                         buf.push(b);
+                        // Clear any existing ghost text, write char
+                        if has_ghost {
+                            nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
+                            has_ghost = false;
+                        }
                         nix::unistd::write(std::io::stdout(), &[b]).ok();
                         // Handle UTF-8 continuation bytes
                         if b >= 0xC0 {
@@ -1570,6 +1610,15 @@ fn read_chat_input() -> Option<String> {
                                     nix::unistd::write(std::io::stdout(), &byte).ok();
                                 }
                             }
+                        }
+                        // Update ghost completion
+                        let input = String::from_utf8_lossy(&buf);
+                        if let Some(ghost) = completer.update(&input) {
+                            let ghost_render = format!("\x1b[2;37m{}\x1b[0m\x1b[{}D", ghost, ghost.len());
+                            nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                            has_ghost = true;
+                        } else {
+                            completer.clear();
                         }
                     }
                     _ => {}               // Ignore other control chars
