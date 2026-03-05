@@ -59,10 +59,19 @@ impl LlmBackend for OpenAiCompatBackend {
             msgs
         };
 
-        let body = serde_json::json!({
-            "model": self.model,
-            "messages": messages
-        });
+        // Build request body
+        let mut body_map = serde_json::Map::new();
+        body_map.insert("model".to_string(), serde_json::Value::String(self.model.clone()));
+        body_map.insert("messages".to_string(), serde_json::Value::Array(messages));
+
+        // Add thinking control for models like Qwen3 via extra_body
+        if req.enable_thinking == Some(false) {
+            let mut chat_template_kwargs = serde_json::Map::new();
+            chat_template_kwargs.insert("enable_thinking".to_string(), serde_json::Value::Bool(false));
+            body_map.insert("extra_body".to_string(), serde_json::Value::Object(chat_template_kwargs));
+        }
+
+        let body = serde_json::Value::Object(body_map);
 
         let resp = client
             .post(format!("{}/chat/completions", self.base_url))
