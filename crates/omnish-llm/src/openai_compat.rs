@@ -94,13 +94,7 @@ impl LlmBackend for OpenAiCompatBackend {
 
         // Extract thinking from content, unless explicitly disabled
         let (thinking, content) = if req.enable_thinking == Some(false) {
-            // Strip thinking tags when disabled
-            let tag_start = "<think>";
-            let tag_end = "</think>";
-            let cleaned = raw_content
-                .replace(tag_start, "")
-                .replace(tag_end, "");
-            (None, cleaned)
+            (None, raw_content.clone())
         } else {
             extract_thinking(&raw_content)
         };
