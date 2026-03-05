@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 /// Extract the short process name from a potentially full path.
 /// e.g. "/opt/homebrew/.../MacOS/Vim" -> "Vim", "vim" -> "vim"
+#[allow(dead_code)]
 fn process_basename(name: &str) -> &str {
     name.rsplit('/').next().unwrap_or(name)
 }

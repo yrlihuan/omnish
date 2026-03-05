@@ -6,6 +6,7 @@ pub enum ChatAction {
         redirect: Option<String>,
     },
     /// Not a command — forward as normal LLM query.
+    #[allow(dead_code)]
     LlmQuery(String),
     /// A `/` command that needs daemon data. Contains the query to send and optional redirect.
     DaemonQuery {
