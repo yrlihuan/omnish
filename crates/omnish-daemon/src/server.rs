@@ -1,4 +1,5 @@
 use anyhow::Result;
+use omnish_daemon::conversation_mgr::ConversationManager;
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_daemon::task_mgr::TaskManager;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
@@ -12,6 +13,7 @@ pub struct DaemonServer {
     session_mgr: Arc<SessionManager>,
     llm_backend: Option<Arc<dyn LlmBackend>>,
     task_mgr: Arc<Mutex<TaskManager>>,
+    conv_mgr: Arc<ConversationManager>,
 }
 
 impl DaemonServer {
@@ -19,8 +21,9 @@ impl DaemonServer {
         session_mgr: Arc<SessionManager>,
         llm_backend: Option<Arc<dyn LlmBackend>>,
         task_mgr: Arc<Mutex<TaskManager>>,
+        conv_mgr: Arc<ConversationManager>,
     ) -> Self {
-        Self { session_mgr, llm_backend, task_mgr }
+        Self { session_mgr, llm_backend, task_mgr, conv_mgr }
     }
 
     pub async fn run(
@@ -35,6 +38,7 @@ impl DaemonServer {
         let mgr = self.session_mgr.clone();
         let llm = self.llm_backend.clone();
         let task_mgr = self.task_mgr.clone();
+        let conv_mgr = self.conv_mgr.clone();
 
         server
             .serve(
@@ -42,7 +46,8 @@ impl DaemonServer {
                     let mgr = mgr.clone();
                     let llm = llm.clone();
                     let task_mgr = task_mgr.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr).await })
+                    let conv_mgr = conv_mgr.clone();
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -56,6 +61,7 @@ async fn handle_message(
     mgr: Arc<SessionManager>,
     llm: &Option<Arc<dyn LlmBackend>>,
     task_mgr: &Arc<Mutex<TaskManager>>,
+    conv_mgr: &Arc<ConversationManager>,
 ) -> Message {
     // Shadow with reference for existing code; use mgr_arc for spawned tasks
     let mgr_arc = mgr;
@@ -185,6 +191,71 @@ async fn handle_message(
                 summary.dwell_time_ms
             );
             Message::Ack
+        }
+        Message::ChatStart(cs) => {
+            let thread_id = if cs.new_thread {
+                conv_mgr.create_thread()
+            } else {
+                conv_mgr.get_latest_thread().unwrap_or_else(|| conv_mgr.create_thread())
+            };
+            let (last_exchange, earlier_count) = conv_mgr.get_last_exchange(&thread_id);
+            Message::ChatReady(ChatReady {
+                request_id: cs.request_id,
+                thread_id,
+                last_exchange,
+                earlier_count,
+            })
+        }
+        Message::ChatMessage(cm) => {
+            let content = if let Some(ref backend) = llm {
+                let conversation = conv_mgr.load_messages(&cm.thread_id);
+                let use_case = UseCase::Chat;
+                let max_context_chars = backend.max_content_chars_for_use_case(use_case);
+
+                // Get terminal context only for the first message in a thread
+                let context = if conversation.is_empty() {
+                    let dummy_req = Request {
+                        request_id: cm.request_id.clone(),
+                        session_id: cm.session_id.clone(),
+                        query: String::new(),
+                        scope: RequestScope::AllSessions,
+                    };
+                    resolve_chat_context(&dummy_req, mgr, max_context_chars).await.unwrap_or_default()
+                } else {
+                    String::new()
+                };
+
+                let llm_req = LlmRequest {
+                    context,
+                    query: Some(cm.query.clone()),
+                    trigger: TriggerType::Manual,
+                    session_ids: vec![cm.session_id.clone()],
+                    use_case,
+                    max_content_chars: max_context_chars,
+                    conversation,
+                };
+
+                let start = std::time::Instant::now();
+                match backend.complete(&llm_req).await {
+                    Ok(response) => {
+                        tracing::info!("Chat LLM completed in {:?} (thread={})", start.elapsed(), cm.thread_id);
+                        conv_mgr.append_exchange(&cm.thread_id, &cm.query, &response.content);
+                        response.content
+                    }
+                    Err(e) => {
+                        tracing::error!("Chat LLM failed: {}", e);
+                        format!("Error: {}", e)
+                    }
+                }
+            } else {
+                "(LLM backend not configured)".to_string()
+            };
+
+            Message::ChatResponse(ChatResponse {
+                request_id: cm.request_id,
+                thread_id: cm.thread_id,
+                content,
+            })
         }
         _ => Message::Ack,
     }

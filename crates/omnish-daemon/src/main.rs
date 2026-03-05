@@ -4,6 +4,7 @@ mod server;
 
 use anyhow::Result;
 use omnish_common::config::{load_daemon_config, omnish_dir};
+use omnish_daemon::conversation_mgr::ConversationManager;
 use omnish_daemon::daily_notes::create_daily_notes_job;
 use omnish_daemon::hourly_summary::create_hourly_summary_job;
 use omnish_daemon::session_mgr::SessionManager;
@@ -136,7 +137,9 @@ async fn async_main() -> Result<()> {
         None
     };
 
-    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr);
+    let conv_mgr = Arc::new(ConversationManager::new(omnish_dir.join("threads")));
+
+    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr);
 
     tracing::info!("starting omnishd at {}", socket_path);
     server.run(&socket_path, auth_token, tls_acceptor).await
