@@ -397,6 +397,7 @@ async fn main() -> Result<()> {
                                     // Ctrl+R enters isearch mode (different keymap)
                                     // so we can't send the trigger, but still suppress
                                     // stale completions until the next prompt event.
+                                    event_log::push("ctrl+r (isearch mode)");
                                     shell_input.mark_pending_report();
                                     if shell_completer.ghost().is_some() {
                                         // Send completion summary (ignored - user pressed Ctrl+R)
@@ -783,12 +784,18 @@ async fn main() -> Result<()> {
             if !readline_triggered_for_completions {
                 readline_triggered_for_completions = true;
                 readline_trigger_time = Some(std::time::Instant::now());
+                let cur_seq = shell_input.sequence_id();
                 if osc133_hook_installed && shell_input.at_prompt()
-                    && shell_input.sequence_id() == resp_seq
+                    && cur_seq == resp_seq
                 {
                     shell_input.mark_pending_report();
                     event_log::push("readline request (completion)");
                     proxy.write_all(b"\x1b[13337~")?;
+                } else if osc133_hook_installed && shell_input.at_prompt() {
+                    event_log::push(format!(
+                        "readline trigger skipped (seq mismatch: cur={} resp={})",
+                        cur_seq, resp_seq
+                    ));
                 }
             }
         }
