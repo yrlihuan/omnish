@@ -773,13 +773,19 @@ async fn main() -> Result<()> {
 
             event_log::push(format!("completion response seq={}", resp.sequence_id));
             // Store response in pending queue for processing after readline report
+            let resp_seq = resp.sequence_id;
             pending_completion_responses.push(resp);
 
-            // Trigger readline report if not already triggered
+            // Trigger readline report if not already triggered.
+            // Only inject the trigger if the user hasn't typed since the request
+            // (sequence_id unchanged) to avoid "cannot find keymap" when bash
+            // readline is in a transient state from active typing (issue #88).
             if !readline_triggered_for_completions {
                 readline_triggered_for_completions = true;
                 readline_trigger_time = Some(std::time::Instant::now());
-                if osc133_hook_installed && shell_input.at_prompt() {
+                if osc133_hook_installed && shell_input.at_prompt()
+                    && shell_input.sequence_id() == resp_seq
+                {
                     shell_input.mark_pending_report();
                     event_log::push("readline request (completion)");
                     proxy.write_all(b"\x1b[13337~")?;
