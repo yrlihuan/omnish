@@ -1605,7 +1605,7 @@ async fn run_chat_loop(
 }
 
 /// Read a line of input in raw mode for the chat loop.
-/// Returns None on ESC or Ctrl-C (signals exit from chat mode).
+/// Returns None on ESC, Ctrl-C, Ctrl-D, or backspace on empty input.
 fn read_chat_input(completer: &mut ghost_complete::GhostCompleter) -> Option<String> {
     let stdin_fd = std::io::stdin().as_raw_fd();
     let mut buf = Vec::new();
@@ -1618,6 +1618,7 @@ fn read_chat_input(completer: &mut ghost_complete::GhostCompleter) -> Option<Str
                 match byte[0] {
                     0x1b => return None,  // ESC — exit chat
                     0x03 => return None,  // Ctrl-C — exit chat
+                    0x04 => return None,  // Ctrl-D — exit chat
                     0x0d => {             // Enter — submit line
                         if has_ghost {
                             // Clear ghost text before submitting
@@ -1643,20 +1644,21 @@ fn read_chat_input(completer: &mut ghost_complete::GhostCompleter) -> Option<Str
                         }
                     }
                     0x7f | 0x08 => {      // Backspace
-                        if !buf.is_empty() {
-                            buf.pop();
-                            // Erase character and any ghost text
-                            nix::unistd::write(std::io::stdout(), b"\x08\x1b[K").ok();
-                            has_ghost = false;
-                            // Update ghost for new input
-                            let input = String::from_utf8_lossy(&buf);
-                            if let Some(ghost) = completer.update(&input) {
-                                let ghost_render = format!("\x1b[2;37m{}\x1b[0m\x1b[{}D", ghost, ghost.len());
-                                nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
-                                has_ghost = true;
-                            } else {
-                                completer.clear();
-                            }
+                        if buf.is_empty() {
+                            return None; // Backspace on empty — exit chat
+                        }
+                        buf.pop();
+                        // Erase character and any ghost text
+                        nix::unistd::write(std::io::stdout(), b"\x08\x1b[K").ok();
+                        has_ghost = false;
+                        // Update ghost for new input
+                        let input = String::from_utf8_lossy(&buf);
+                        if let Some(ghost) = completer.update(&input) {
+                            let ghost_render = format!("\x1b[2;37m{}\x1b[0m\x1b[{}D", ghost, ghost.len());
+                            nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                            has_ghost = true;
+                        } else {
+                            completer.clear();
                         }
                     }
                     b if b >= 0x20 => {   // Printable ASCII or UTF-8 lead byte
