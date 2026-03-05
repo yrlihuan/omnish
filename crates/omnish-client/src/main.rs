@@ -461,7 +461,15 @@ async fn main() -> Result<()> {
                         // Enter chat mode loop (pass initial message if any)
                         if let Some(ref rpc) = daemon_conn {
                             let initial = if msg.trim().is_empty() { None } else { Some(msg) };
-                            run_chat_loop(rpc, &session_id, &proxy, initial).await;
+                            let dbg_fn = || debug_client_state(
+                                &shell_input,
+                                &interceptor,
+                                &shell_completer,
+                                &daemon_conn,
+                                &osc133_detector,
+                                &last_readline_content,
+                            );
+                            run_chat_loop(rpc, &session_id, &proxy, initial, &dbg_fn).await;
                         } else {
                             let err = display::render_error("Daemon not connected");
                             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
@@ -1368,7 +1376,13 @@ async fn send_daemon_query(
 }
 
 /// Run the multi-turn chat loop. Returns when user presses ESC or Ctrl-C.
-async fn run_chat_loop(rpc: &RpcClient, session_id: &str, proxy: &PtyProxy, initial_msg: Option<String>) {
+async fn run_chat_loop(
+    rpc: &RpcClient,
+    session_id: &str,
+    proxy: &PtyProxy,
+    initial_msg: Option<String>,
+    client_debug_fn: &dyn Fn() -> String,
+) {
     // Step 1: Send ChatStart to get thread info
     let request_id = Uuid::new_v4().to_string()[..8].to_string();
     let start_msg = Message::ChatStart(ChatStart {
@@ -1452,10 +1466,10 @@ async fn run_chat_loop(rpc: &RpcClient, session_id: &str, proxy: &PtyProxy, init
                     continue;
                 }
                 command::ChatAction::DaemonQuery { query, redirect } => {
-                    // /debug client needs client-side state not available in chat mode
+                    // /debug client is intercepted client-side (needs local state)
                     if query == "__cmd:client_debug" {
-                        let msg = "/debug client is not available in chat mode (requires main loop state)";
-                        let output = display::render_response(msg);
+                        let result = client_debug_fn();
+                        let output = display::render_response(&result);
                         nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
                         continue;
                     }
