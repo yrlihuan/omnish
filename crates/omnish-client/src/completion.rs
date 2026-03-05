@@ -261,7 +261,17 @@ impl ShellCompleter {
                     self.current_ghost = None;
                     return None;
                 } else {
-                    // Suggestion doesn't start with request_input - it's a suffix
+                    // Suggestion doesn't start with request_input.
+                    // Check if it shares a long common prefix (e.g. LLM corrected a typo
+                    // or the last char differs). Ghost text can only append, so discard.
+                    let common = request_input.chars().zip(best.text.chars())
+                        .take_while(|(a, b)| a == b).count();
+                    if common > request_input.len() / 2 {
+                        // Likely a variant/correction — can't show as ghost
+                        self.current_ghost = None;
+                        return None;
+                    }
+                    // Genuine suffix (e.g. LLM returned just the completion part)
                     format!("{}{}", request_input, best.text)
                 };
 
@@ -1136,6 +1146,27 @@ mod tests {
         let ghost = c.on_response(&resp, "cd work");
         // Should discard - a single space is not meaningful completion
         assert_eq!(ghost, None, "Completion that is just a suffix should be discarded");
+        assert_eq!(c.ghost(), None);
+    }
+
+    /// Issue #113: input="vim notes/2026-03-04.", LLM returns "vim notes/2026-03-04/19.md"
+    /// The suggestion shares a long common prefix but diverges (. vs /).
+    /// Ghost text can't replace chars, so this should be discarded.
+    #[test]
+    fn test_completion_variant_with_shared_prefix_discarded() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("vim notes/2026-03-04.", 1);
+        c.mark_sent(1, "vim notes/2026-03-04.");
+
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: "vim notes/2026-03-04/19.md".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        let ghost = c.on_response(&resp, "vim notes/2026-03-04.");
+        assert_eq!(ghost, None, "Suggestion that diverges from input should be discarded");
         assert_eq!(c.ghost(), None);
     }
 
