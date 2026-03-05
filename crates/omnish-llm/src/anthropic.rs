@@ -18,18 +18,36 @@ impl LlmBackend for AnthropicBackend {
     async fn complete(&self, req: &LlmRequest) -> Result<LlmResponse> {
         let client = &self.client;
 
-        let user_content = crate::template::build_user_content(
-            &req.context,
-            req.query.as_deref(),
-        );
+        let messages: Vec<serde_json::Value> = if req.conversation.is_empty() {
+            // Existing single-turn behavior
+            let user_content = crate::template::build_user_content(
+                &req.context,
+                req.query.as_deref(),
+            );
+            vec![serde_json::json!({"role": "user", "content": user_content})]
+        } else {
+            // Multi-turn: conversation history + current query
+            let mut msgs = Vec::new();
+            for (i, turn) in req.conversation.iter().enumerate() {
+                let content = if i == 0 && !req.context.is_empty() {
+                    // Prepend terminal context to first user message
+                    format!("Terminal context:\n{}\n\n{}", req.context, turn.content)
+                } else {
+                    turn.content.clone()
+                };
+                msgs.push(serde_json::json!({"role": &turn.role, "content": content}));
+            }
+            // Append current query as final user message
+            if let Some(ref q) = req.query {
+                msgs.push(serde_json::json!({"role": "user", "content": q}));
+            }
+            msgs
+        };
 
         let body = serde_json::json!({
             "model": self.model,
             "max_tokens": 1024,
-            "messages": [{
-                "role": "user",
-                "content": user_content
-            }]
+            "messages": messages
         });
 
         let resp = client
