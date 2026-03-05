@@ -419,8 +419,9 @@ impl InputInterceptor {
 
                 // Still matching prefix
                 if self.buffer.len() == self.prefix.len() {
-                    // Complete prefix match
-                    self.in_chat = true;
+                    // Complete prefix match — enter chat mode immediately
+                    self.buffer.clear();
+                    return InterceptAction::Chat(String::new());
                 }
                 // Keep buffering, don't send to PTY yet, return buffer for echo
                 let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
@@ -515,38 +516,16 @@ mod tests {
     fn test_chat_detected() {
         let mut interceptor = new_interceptor("::");
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
-        assert_eq!(interceptor.feed_byte(b'a'), InterceptAction::Buffering(vec![b':', b':', b'a']));
-        assert_eq!(interceptor.feed_byte(b's'), InterceptAction::Buffering(vec![b':', b':', b'a', b's']));
-        assert_eq!(interceptor.feed_byte(b'k'), InterceptAction::Buffering(vec![b':', b':', b'a', b's', b'k']));
-
-        if let InterceptAction::Chat(cmd) = interceptor.feed_byte(b'\n') {
-            assert_eq!(cmd, "ask");
-        } else {
-            panic!("Expected Chat action");
-        }
+        // Full prefix match returns Chat("") immediately
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Chat(String::new()));
     }
 
     #[test]
     fn test_chat_with_query() {
         let mut interceptor = new_interceptor("::");
-        let input = b"::ask why did this fail\n";
-        for (idx, &byte) in input.iter().enumerate() {
-            let action = interceptor.feed_byte(byte);
-            if byte == b'\n' {
-                if let InterceptAction::Chat(cmd) = action {
-                    assert_eq!(cmd, "ask why did this fail");
-                } else {
-                    panic!("Expected Chat action");
-                }
-            } else {
-                if let InterceptAction::Buffering(buf) = action {
-                    assert_eq!(buf, &input[..=idx]);
-                } else {
-                    panic!("Expected Buffering action");
-                }
-            }
-        }
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        // Full prefix match returns Chat("") immediately; content no longer collected
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Chat(String::new()));
     }
 
     #[test]
@@ -572,29 +551,11 @@ mod tests {
     }
 
     #[test]
-    fn test_backspace_in_chat_mode() {
+    fn test_backspace_during_prefix_buffering() {
         let mut interceptor = new_interceptor("::");
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
-        assert_eq!(interceptor.feed_byte(b'a'), InterceptAction::Buffering(vec![b':', b':', b'a']));
 
-        // Backspace should remove 'a'
-        assert_eq!(interceptor.feed_byte(0x7f), InterceptAction::Backspace(vec![b':', b':']));
-
-        // Still in chat mode
-        assert_eq!(interceptor.feed_byte(b'b'), InterceptAction::Buffering(vec![b':', b':', b'b']));
-    }
-
-    #[test]
-    fn test_backspace_out_of_chat_mode() {
-        let mut interceptor = new_interceptor("::");
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
-
-        // Backspace once
-        assert_eq!(interceptor.feed_byte(0x7f), InterceptAction::Backspace(vec![b':']));
-
-        // Backspace again - should drop out of buffering
+        // Backspace removes the partial prefix byte
         assert_eq!(interceptor.feed_byte(0x7f), InterceptAction::Backspace(vec![]));
 
         // Next char should be forwarded normally
@@ -611,43 +572,7 @@ mod tests {
         assert_eq!(interceptor.feed_byte(0x7f), InterceptAction::Forward(vec![0x7f]));
     }
 
-    #[test]
-    fn test_backspace_multibyte_chars() {
-        let mut interceptor = new_interceptor("::");
-        // Type "::ask 中文"
-        for &byte in b"::ask " {
-            interceptor.feed_byte(byte);
-        }
-
-        // Add Chinese characters "中文" (each is 3 bytes in UTF-8)
-        let chinese = "中文";
-        for &byte in chinese.as_bytes() {
-            interceptor.feed_byte(byte);
-        }
-
-        // Buffer should contain "::ask 中文"
-        let buf_before = interceptor.buffer.iter().copied().collect::<Vec<_>>();
-        let str_before = String::from_utf8_lossy(&buf_before);
-        assert_eq!(str_before, "::ask 中文");
-
-        // Backspace should remove "文" (3 bytes)
-        let action = interceptor.feed_byte(0x7f);
-        if let InterceptAction::Backspace(buf) = action {
-            let result = String::from_utf8_lossy(&buf);
-            assert_eq!(result, "::ask 中");
-        } else {
-            panic!("Expected Backspace action");
-        }
-
-        // Backspace again should remove "中" (3 bytes)
-        let action = interceptor.feed_byte(0x7f);
-        if let InterceptAction::Backspace(buf) = action {
-            let result = String::from_utf8_lossy(&buf);
-            assert_eq!(result, "::ask ");
-        } else {
-            panic!("Expected Backspace action");
-        }
-    }
+    // test_backspace_multibyte_chars: removed — chat input is now handled by read_chat_input
 
     #[test]
     fn test_suppressed_forwards_everything() {
@@ -674,19 +599,17 @@ mod tests {
 
         // Should intercept again
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Chat(String::new()));
     }
 
     #[test]
     fn test_suppressed_discards_partial_buffer() {
         let mut interceptor = new_interceptor("::");
 
-        // Start typing a chat message
+        // Start typing prefix
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
-        assert_eq!(interceptor.feed_byte(b'a'), InterceptAction::Buffering(vec![b':', b':', b'a']));
-
-        // Enter suppressed mode (e.g. vim opened) - should discard buffer
+        // Full prefix match returns Chat("") but we want to test suppression mid-prefix
+        // So suppress after partial prefix
         interceptor.set_suppressed(true);
 
         // Everything forwards
@@ -701,21 +624,7 @@ mod tests {
 
     // --- ESC / escape-sequence tests ---
 
-    #[test]
-    fn test_esc_cancels_chat_mode() {
-        let mut interceptor = new_interceptor("::");
-        interceptor.feed_byte(b':');
-        interceptor.feed_byte(b':');
-        interceptor.feed_byte(b'h');
-
-        // ESC alone enters Pending
-        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
-        // finish_batch sees bare ESC → Cancel
-        assert_eq!(interceptor.finish_batch(), Some(InterceptAction::Cancel));
-
-        // After cancel, normal input resumes
-        assert_eq!(interceptor.feed_byte(b'x'), InterceptAction::Forward(vec![b'x']));
-    }
+    // test_esc_cancels_chat_mode: removed — chat input is now handled by read_chat_input
 
     #[test]
     fn test_esc_cancels_prefix_buffering() {
@@ -754,97 +663,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_esc_then_non_bracket_cancels() {
-        let mut interceptor = new_interceptor("::");
-        interceptor.feed_byte(b':');
-        interceptor.feed_byte(b':');
-        interceptor.feed_byte(b'h');
+    // test_esc_then_non_bracket_cancels: removed — chat input is now handled by read_chat_input
 
-        // ESC then a non-'[' byte → Cancel immediately (not via finish_batch)
-        interceptor.feed_byte(0x1b);
-        assert_eq!(interceptor.feed_byte(b'x'), InterceptAction::Cancel);
-
-        // Normal input resumes
-        assert_eq!(interceptor.feed_byte(b'y'), InterceptAction::Forward(vec![b'y']));
-    }
-
-    #[test]
-    fn test_arrow_keys_ignored_in_chat() {
-        let mut interceptor = new_interceptor("::");
-        interceptor.feed_byte(b':');
-        interceptor.feed_byte(b':');
-        interceptor.feed_byte(b'h');
-
-        // Up arrow: \x1b[A
-        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
-        assert_eq!(interceptor.feed_byte(b'['), InterceptAction::Pending);
-        // Final byte 'A' completes the CSI → Ignore → Pending (no UI update)
-        assert_eq!(interceptor.feed_byte(b'A'), InterceptAction::Pending);
-
-        // Buffer is unchanged, still in chat mode
-        assert_eq!(
-            interceptor.feed_byte(b'i'),
-            InterceptAction::Buffering(vec![b':', b':', b'h', b'i'])
-        );
-    }
-
-    #[test]
-    fn test_delete_key_ignored_in_chat() {
-        let mut interceptor = new_interceptor("::");
-        interceptor.feed_byte(b':');
-        interceptor.feed_byte(b':');
-        interceptor.feed_byte(b'h');
-
-        // Delete key: \x1b[3~
-        assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
-        assert_eq!(interceptor.feed_byte(b'['), InterceptAction::Pending);
-        assert_eq!(interceptor.feed_byte(b'3'), InterceptAction::Pending);
-        assert_eq!(interceptor.feed_byte(b'~'), InterceptAction::Pending);
-    }
-
-    #[test]
-    fn test_paste_in_chat_mode() {
-        let mut interceptor = new_interceptor("::");
-        interceptor.feed_byte(b':');
-        interceptor.feed_byte(b':');
-
-        // Bracketed paste: \x1b[200~hello world\x1b[201~
-        let paste_seq = b"\x1b[200~hello world\x1b[201~";
-        let mut last_action = InterceptAction::Buffering(vec![]);
-        for &byte in paste_seq.iter() {
-            last_action = interceptor.feed_byte(byte);
-        }
-        // After paste end, buffer should contain "::hello world"
-        assert_eq!(
-            last_action,
-            InterceptAction::Buffering(vec![
-                b':', b':', b'h', b'e', b'l', b'l', b'o', b' ',
-                b'w', b'o', b'r', b'l', b'd'
-            ])
-        );
-    }
-
-    #[test]
-    fn test_paste_with_newlines() {
-        let mut interceptor = new_interceptor("::");
-        interceptor.feed_byte(b':');
-        interceptor.feed_byte(b':');
-
-        // Paste content with newlines
-        let paste_seq = b"\x1b[200~line1\nline2\x1b[201~";
-        let mut last_action = InterceptAction::Buffering(vec![]);
-        for &byte in paste_seq.iter() {
-            last_action = interceptor.feed_byte(byte);
-        }
-        assert_eq!(
-            last_action,
-            InterceptAction::Buffering(vec![
-                b':', b':', b'l', b'i', b'n', b'e', b'1', b'\n',
-                b'l', b'i', b'n', b'e', b'2'
-            ])
-        );
-    }
+    // test_arrow_keys_ignored_in_chat: removed — chat input is now handled by read_chat_input
+    // test_delete_key_ignored_in_chat: removed — chat input is now handled by read_chat_input
+    // test_paste_in_chat_mode: removed — chat input is now handled by read_chat_input
+    // test_paste_with_newlines: removed — chat input is now handled by read_chat_input
 
     #[test]
     fn test_finish_batch_no_op_when_idle() {
@@ -899,9 +723,8 @@ mod tests {
         let guard = TimeGapGuard::new(Duration::from_secs(1));
         let mut interceptor = InputInterceptor::new(":", Box::new(guard));
 
-        // ":" with no prior input → guard allows → Buffering (enters chat mode)
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        assert_eq!(interceptor.feed_byte(b'h'), InterceptAction::Buffering(vec![b':', b'h']));
+        // ":" with no prior input → guard allows → Chat("") immediately
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Chat(String::new()));
     }
 
     #[test]
@@ -966,157 +789,94 @@ mod tests {
     #[test]
     fn test_ui_type_and_submit() {
         let mut ic = new_interceptor(":");
-        let actions = simulate_main_loop(&mut ic, b":hello\n");
-        assert_eq!(
-            actions,
-            vec!["prompt", "echo:h", "echo:he", "echo:hel", "echo:hell", "echo:hello", "chat:hello"]
-        );
+        // With immediate chat mode, ":" returns Chat("") right away
+        let actions = simulate_main_loop(&mut ic, b":");
+        assert_eq!(actions, vec!["chat:"]);
     }
 
     #[test]
     fn test_ui_type_and_esc_cancel() {
+        // With immediate chat mode, ":" returns Chat("") before ESC is reached
         let mut ic = new_interceptor(":");
-        let mut input = b":hello".to_vec();
-        input.push(0x1b); // ESC at batch end
-        let actions = simulate_main_loop(&mut ic, &input);
-        // Last action must be cancel (from finish_batch detecting bare ESC)
-        assert_eq!(actions.last().unwrap(), "cancel");
-        // prompt appears exactly once
-        assert_eq!(actions.iter().filter(|a| *a == "prompt").count(), 1);
+        let actions = simulate_main_loop(&mut ic, b":");
+        assert_eq!(actions, vec!["chat:"]);
     }
 
     #[test]
     fn test_ui_paste_no_spurious_redraws() {
+        // With immediate chat mode, ":" returns Chat("") before paste is reached
         let mut ic = new_interceptor(":");
-        let mut input = vec![b':'];
-        // Bracketed paste: \x1b[200~ps aux\x1b[201~
-        input.extend_from_slice(b"\x1b[200~ps aux\x1b[201~");
-        let actions = simulate_main_loop(&mut ic, &input);
-
-        // prompt appears exactly once (at the first ':')
-        assert_eq!(actions.iter().filter(|a| *a == "prompt").count(), 1);
-        // Last action is the echo after paste insert
-        assert_eq!(actions.last().unwrap(), "echo:ps aux");
-        // Everything between prompt and last echo must be "pending"
-        for a in &actions[1..actions.len() - 1] {
-            assert_eq!(a, "pending", "expected pending during paste, got {a}");
-        }
+        let actions = simulate_main_loop(&mut ic, b":");
+        assert_eq!(actions, vec!["chat:"]);
     }
 
     #[test]
     fn test_ui_arrow_keys_no_redraws() {
-        let mut ic = new_interceptor(":");
-        // Type "::h", then Up arrow, then Down arrow, then 'i'
-        let mut input = b"::h".to_vec();
-        input.extend_from_slice(b"\x1b[A"); // Up
-        input.extend_from_slice(b"\x1b[B"); // Down
-        input.push(b'i');
-        let actions = simulate_main_loop(&mut ic, &input);
-
-        // First three: prompt, echo::, echo::h
-        assert_eq!(actions[0], "prompt");
-        assert_eq!(actions[1], "echo::");
-        assert_eq!(actions[2], "echo::h");
-        // Arrow bytes are all pending (6 bytes → 6 pending)
-        for a in &actions[3..9] {
-            assert_eq!(a, "pending", "arrow key bytes should be pending");
-        }
-        // Final 'i' produces normal echo
-        assert_eq!(actions[9], "echo::hi");
+        // With "::" prefix, first ":" buffers, second ":" triggers Chat("")
+        let mut ic = new_interceptor("::");
+        let actions = simulate_main_loop(&mut ic, b"::");
+        assert_eq!(actions, vec!["prompt", "chat:"]);
     }
 
     #[test]
     fn test_ui_esc_non_bracket_cancel() {
-        let mut ic = new_interceptor(":");
-        // Type "::h", then ESC + 'x' in same batch (non-bracket → immediate cancel)
-        let actions = simulate_main_loop(&mut ic, b"::h\x1bx");
-        assert_eq!(
-            actions,
-            vec!["prompt", "echo::", "echo::h", "pending", "cancel"]
-        );
+        // With "::" prefix, ":" buffers, second ":" triggers Chat("")
+        // ESC after Chat is irrelevant to interceptor
+        let mut ic = new_interceptor("::");
+        let actions = simulate_main_loop(&mut ic, b"::");
+        assert_eq!(actions, vec!["prompt", "chat:"]);
     }
 
     #[test]
     fn test_ui_backspace_to_empty_dismisses() {
+        // With immediate chat mode, ":" returns Chat("") before backspace
         let mut ic = new_interceptor(":");
-        let mut input = b":he".to_vec();
-        input.extend_from_slice(&[0x7f, 0x7f, 0x7f]); // 3× backspace
-        let actions = simulate_main_loop(&mut ic, &input);
-        assert_eq!(
-            actions,
-            vec!["prompt", "echo:h", "echo:he", "backspace::h", "backspace::", "dismiss"]
-        );
+        let actions = simulate_main_loop(&mut ic, b":");
+        assert_eq!(actions, vec!["chat:"]);
     }
 
     #[test]
     fn test_ui_multiple_esc_sequences() {
+        // With ":" prefix, first ":" triggers Chat("") immediately
         let mut ic = new_interceptor(":");
-        // Type "::", then Up arrow, Down arrow, then 'x'
-        let mut input = b"::".to_vec();
-        input.extend_from_slice(b"\x1b[A"); // Up
-        input.extend_from_slice(b"\x1b[B"); // Down
-        input.push(b'x');
-        let actions = simulate_main_loop(&mut ic, &input);
-
-        assert_eq!(actions[0], "prompt");
-        assert_eq!(actions[1], "echo::");
-        // 6 pending bytes from two arrow sequences
-        for a in &actions[2..8] {
-            assert_eq!(a, "pending");
-        }
-        assert_eq!(actions[8], "echo::x");
+        let actions = simulate_main_loop(&mut ic, b":");
+        assert_eq!(actions, vec!["chat:"]);
     }
 
     #[test]
     fn test_ui_paste_then_enter() {
+        // With immediate chat mode, ":" returns Chat("") before paste
         let mut ic = new_interceptor(":");
-        let mut input = vec![b':'];
-        input.extend_from_slice(b"\x1b[200~hello\x1b[201~");
-        input.push(b'\n');
-        let actions = simulate_main_loop(&mut ic, &input);
-
-        // Should end with echo of pasted text, then chat
-        let len = actions.len();
-        assert_eq!(actions[len - 2], "echo:hello");
-        assert_eq!(actions[len - 1], "chat:hello");
+        let actions = simulate_main_loop(&mut ic, b":");
+        assert_eq!(actions, vec!["chat:"]);
     }
 
     #[test]
     fn test_ui_paste_with_embedded_ansi() {
+        // With immediate chat mode, ":" returns Chat("") before paste
         let mut ic = new_interceptor(":");
-        let mut input = vec![b':'];
-        // Paste content contains ANSI color codes: \x1b[32mhi\x1b[0m
-        input.extend_from_slice(b"\x1b[200~\x1b[32mhi\x1b[0m\x1b[201~");
-        let actions = simulate_main_loop(&mut ic, &input);
-
-        // Last action should be an echo containing the full ANSI content
-        let last = actions.last().unwrap();
-        assert!(last.starts_with("echo:"), "last action should be echo, got {last}");
-        let content = &last["echo:".len()..];
-        assert!(content.contains("hi"), "pasted content should contain 'hi'");
-        assert!(content.contains("\x1b[32m"), "pasted content should preserve ANSI SGR");
-        assert!(content.contains("\x1b[0m"), "pasted content should preserve ANSI reset");
+        let actions = simulate_main_loop(&mut ic, b":");
+        assert_eq!(actions, vec!["chat:"]);
     }
 
     #[test]
     fn test_ui_prefix_mismatch_then_retry() {
         let mut ic = new_interceptor("::");
-        // First attempt ":x" mismatches prefix "::", then retry "::hi\n"
-        let actions = simulate_main_loop(&mut ic, b":x::hi\n");
+        // First attempt ":x" mismatches prefix "::", then retry "::"
+        let actions = simulate_main_loop(&mut ic, b":x::");
         assert_eq!(
             actions,
-            vec!["prompt", "forward", "prompt", "echo::", "echo::h", "echo::hi", "chat:hi"]
+            vec!["prompt", "forward", "prompt", "chat:"]
         );
     }
 
     // --- Tab tests ---
 
     #[test]
-    fn test_tab_in_chat_mode_returns_tab_action() {
+    fn test_tab_in_chat_mode_returns_chat_immediately() {
+        // With immediate chat mode, ":" returns Chat("") — no tab handling in interceptor
         let mut ic = new_interceptor(":");
-        ic.feed_byte(b':');
-        ic.feed_byte(b'h');
-        assert_eq!(ic.feed_byte(b'\t'), InterceptAction::Tab(vec![b':', b'h']));
+        assert_eq!(ic.feed_byte(b':'), InterceptAction::Chat(String::new()));
     }
 
     #[test]
@@ -1136,13 +896,13 @@ mod tests {
 
     #[test]
     fn test_inject_byte_and_current_buffer() {
+        // With immediate chat mode, inject_byte works on empty buffer after Chat
         let mut ic = new_interceptor(":");
-        ic.feed_byte(b':');
-        ic.feed_byte(b'h');
+        assert_eq!(ic.feed_byte(b':'), InterceptAction::Chat(String::new()));
+        // After Chat(""), buffer is cleared — inject_byte starts fresh
+        ic.inject_byte(b'h');
         ic.inject_byte(b'e');
-        ic.inject_byte(b'l');
-        ic.inject_byte(b'p');
-        assert_eq!(ic.current_buffer(), b":help");
+        assert_eq!(ic.current_buffer(), b"he");
     }
 
     #[test]

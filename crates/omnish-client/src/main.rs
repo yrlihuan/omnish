@@ -1622,8 +1622,8 @@ mod tests {
         let mut interceptor = InputInterceptor::new(":", Box::new(AlwaysIntercept));
         let mut detector = AltScreenDetector::new();
 
-        // Normal mode: interceptor should buffer ":"
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        // Normal mode: ":" matches prefix immediately → Chat("")
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Chat(String::new()));
 
         // Reset for clean test
         interceptor.note_output(b"reset");
@@ -1641,8 +1641,8 @@ mod tests {
             interceptor.set_suppressed(active);
         }
 
-        // Back to normal: ":" should intercept again
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        // Back to normal: ":" should intercept again → Chat("")
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Chat(String::new()));
     }
 
     // --- Message buffer tests ---
