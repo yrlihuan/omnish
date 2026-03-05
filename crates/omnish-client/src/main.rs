@@ -452,38 +452,22 @@ async fn main() -> Result<()> {
                         nix::unistd::write(std::io::stdout(), dismiss.as_bytes()).ok();
                         nix::unistd::write(std::io::stdout(), restore.as_bytes()).ok();
                     }
-                    InterceptAction::Chat(msg) => {
-                        event_log::push(format!("chat enter: {:?}", msg));
+                    InterceptAction::Chat(_msg) => {
+                        event_log::push("chat mode enter");
                         completer.clear();
                         // Save pre-chat input to restore after chat (issue #24)
                         let saved_input = shell_input.input().to_string();
-                        match command::dispatch(&msg) {
-                            command::ChatAction::Command { result, redirect } => {
-                                handle_command_result(&result, redirect.as_deref(), &proxy);
-                            }
-                            command::ChatAction::DaemonQuery { query, redirect } => {
-                                // Handle special client_debug command locally
-                                if query == "__cmd:client_debug" {
-                                    let debug_output = debug_client_state(&shell_input, &interceptor, &shell_completer, &daemon_conn, &osc133_detector, &last_readline_content);
-                                    handle_command_result(&debug_output, redirect.as_deref(), &proxy);
-                                } else if let Some(ref rpc) = daemon_conn {
-                                    send_daemon_query(&query, &session_id, rpc, &proxy, redirect.as_deref(), false).await;
-                                } else {
-                                    let err = display::render_error("Daemon not connected");
-                                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                                    proxy.write_all(b"\x15\r").ok();
-                                }
-                            }
-                            command::ChatAction::LlmQuery(query) => {
-                                if let Some(ref rpc) = daemon_conn {
-                                    send_daemon_query(&query, &session_id, rpc, &proxy, None, true).await;
-                                } else {
-                                    let err = display::render_error("Daemon not connected");
-                                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                                    proxy.write_all(b"\x15\r").ok();
-                                }
-                            }
+
+                        // Enter chat mode loop
+                        if let Some(ref rpc) = daemon_conn {
+                            run_chat_loop(rpc, &session_id, &proxy).await;
+                        } else {
+                            let err = display::render_error("Daemon not connected");
+                            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                         }
+
+                        // Clear bash readline before restoring
+                        proxy.write_all(b"\x15\r").ok();
                         // Restore pre-chat input so user doesn't lose their work (issue #24)
                         if !saved_input.is_empty() {
                             proxy.write_all(saved_input.as_bytes()).ok();
@@ -1378,6 +1362,167 @@ async fn send_daemon_query(
             let err = display::render_error("Failed to receive response");
             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
             proxy.write_all(b"\x15\r").ok();
+        }
+    }
+}
+
+/// Run the multi-turn chat loop. Returns when user presses ESC or Ctrl-C.
+async fn run_chat_loop(rpc: &RpcClient, session_id: &str, proxy: &PtyProxy) {
+    // Step 1: Send ChatStart to get thread info
+    let request_id = Uuid::new_v4().to_string()[..8].to_string();
+    let start_msg = Message::ChatStart(ChatStart {
+        request_id: request_id.clone(),
+        session_id: session_id.to_string(),
+        new_thread: false,
+    });
+
+    let (thread_id, last_exchange, earlier_count) = match rpc.call(start_msg).await {
+        Ok(Message::ChatReady(ready)) if ready.request_id == request_id => {
+            (ready.thread_id, ready.last_exchange, ready.earlier_count)
+        }
+        _ => {
+            let err = display::render_error("Failed to start chat session");
+            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+            return;
+        }
+    };
+
+    // Step 2: Display history
+    let history = display::render_chat_history(last_exchange.as_ref(), earlier_count);
+    if !history.is_empty() {
+        nix::unistd::write(std::io::stdout(), history.as_bytes()).ok();
+    }
+
+    // Step 3: Show prompt and enter loop
+    let mut current_thread_id = thread_id;
+
+    loop {
+        let prompt = display::render_chat_prompt();
+        nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
+
+        // Read a line of input in raw mode
+        let input = match read_chat_input() {
+            Some(line) => line,
+            None => break, // ESC or Ctrl-C
+        };
+
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Handle /new command
+        if trimmed == "/new" {
+            let req_id = Uuid::new_v4().to_string()[..8].to_string();
+            let new_msg = Message::ChatStart(ChatStart {
+                request_id: req_id.clone(),
+                session_id: session_id.to_string(),
+                new_thread: true,
+            });
+            match rpc.call(new_msg).await {
+                Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
+                    current_thread_id = ready.thread_id;
+                    let info = "\r\n\x1b[2;37m(new thread started)\x1b[0m";
+                    nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
+                }
+                _ => {
+                    let err = display::render_error("Failed to create new thread");
+                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                }
+            }
+            continue;
+        }
+
+        // Handle /commands that go through existing dispatch
+        if trimmed.starts_with('/') {
+            match command::dispatch(trimmed) {
+                command::ChatAction::Command { result, redirect } => {
+                    handle_command_result(&result, redirect.as_deref(), proxy);
+                    continue;
+                }
+                command::ChatAction::DaemonQuery { query, redirect } => {
+                    send_daemon_query(&query, session_id, rpc, proxy, redirect.as_deref(), false).await;
+                    continue;
+                }
+                command::ChatAction::LlmQuery(_) => {
+                    // Fall through to send as chat message
+                }
+            }
+        }
+
+        // Show thinking indicator
+        let thinking = display::render_thinking();
+        nix::unistd::write(std::io::stdout(), thinking.as_bytes()).ok();
+
+        // Send ChatMessage
+        let req_id = Uuid::new_v4().to_string()[..8].to_string();
+        let chat_msg = Message::ChatMessage(omnish_protocol::message::ChatMessage {
+            request_id: req_id.clone(),
+            session_id: session_id.to_string(),
+            thread_id: current_thread_id.clone(),
+            query: trimmed.to_string(),
+        });
+
+        match rpc.call(chat_msg).await {
+            Ok(Message::ChatResponse(resp)) if resp.request_id == req_id => {
+                let output = display::render_response(&resp.content);
+                nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+
+                // Show separator
+                let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+                let separator = display::render_separator(cols);
+                let sep_line = format!("{}\r\n", separator);
+                nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
+            }
+            _ => {
+                let err = display::render_error("Failed to receive chat response");
+                nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+            }
+        }
+    }
+}
+
+/// Read a line of input in raw mode for the chat loop.
+/// Returns None on ESC or Ctrl-C (signals exit from chat mode).
+fn read_chat_input() -> Option<String> {
+    let stdin_fd = std::io::stdin().as_raw_fd();
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+
+    loop {
+        match nix::unistd::read(stdin_fd, &mut byte) {
+            Ok(1) => {
+                match byte[0] {
+                    0x1b => return None,  // ESC — exit chat
+                    0x03 => return None,  // Ctrl-C — exit chat
+                    0x0d => {             // Enter — submit line
+                        return Some(String::from_utf8_lossy(&buf).to_string());
+                    }
+                    0x7f | 0x08 => {      // Backspace
+                        if !buf.is_empty() {
+                            buf.pop();
+                            // Erase character on screen
+                            nix::unistd::write(std::io::stdout(), b"\x08 \x08").ok();
+                        }
+                    }
+                    b if b >= 0x20 => {   // Printable ASCII or UTF-8 lead byte
+                        buf.push(b);
+                        nix::unistd::write(std::io::stdout(), &[b]).ok();
+                        // Handle UTF-8 continuation bytes
+                        if b >= 0xC0 {
+                            let expected = if b < 0xE0 { 1 } else if b < 0xF0 { 2 } else { 3 };
+                            for _ in 0..expected {
+                                if nix::unistd::read(stdin_fd, &mut byte).unwrap_or(0) == 1 {
+                                    buf.push(byte[0]);
+                                    nix::unistd::write(std::io::stdout(), &byte).ok();
+                                }
+                            }
+                        }
+                    }
+                    _ => {}               // Ignore other control chars
+                }
+            }
+            _ => return None,
         }
     }
 }
