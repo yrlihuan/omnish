@@ -130,6 +130,7 @@ async fn generate_daily_note(
             session_ids: vec![],
             use_case,
             max_content_chars,
+            conversation: vec![],
         };
         match backend.complete(&req).await {
             Ok(resp) => {

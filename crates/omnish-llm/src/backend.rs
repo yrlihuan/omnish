@@ -29,6 +29,7 @@ pub struct LlmRequest {
     pub use_case: UseCase,
     /// Maximum content characters for context (model-specific limit)
     pub max_content_chars: Option<usize>,
+    pub conversation: Vec<omnish_protocol::message::ChatTurn>,
 }
 
 #[derive(Debug, Clone)]

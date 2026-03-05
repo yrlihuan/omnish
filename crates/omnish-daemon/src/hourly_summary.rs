@@ -77,6 +77,7 @@ async fn generate_hourly_summary(
             session_ids: vec![],
             use_case,
             max_content_chars,
+            conversation: vec![],
         };
         match backend.complete(&req).await {
             Ok(resp) => Some(resp.content),

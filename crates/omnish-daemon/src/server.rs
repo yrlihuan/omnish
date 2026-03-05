@@ -219,6 +219,7 @@ async fn try_warmup_kv_cache(
         session_ids: vec![session_id.to_string()],
         use_case: UseCase::Completion,
         max_content_chars: max_chars,
+        conversation: vec![],
     };
 
     match backend.complete(&req).await {
@@ -432,6 +433,7 @@ async fn handle_llm_request(
         session_ids: vec![req.session_id.clone()],
         use_case,
         max_content_chars: max_context_chars,
+        conversation: vec![],
     };
 
     let start = std::time::Instant::now();
@@ -507,6 +509,7 @@ async fn handle_completion_request(
         session_ids: vec![req.session_id.clone()],
         use_case,
         max_content_chars: max_context_chars,
+        conversation: vec![],
     };
 
     let start = std::time::Instant::now();

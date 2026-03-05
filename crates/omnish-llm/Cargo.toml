@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 omnish-common = { path = "../omnish-common" }
+omnish-protocol = { path = "../omnish-protocol" }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = "1"
