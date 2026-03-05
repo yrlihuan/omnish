@@ -108,6 +108,10 @@ const COMMANDS: &[CommandEntry] = &[
         kind: CommandKind::Local(events_command),
         help: "Show recent client events",
     },
+    // HACK: registered as Daemon but intercepted client-side in main.rs
+    // because it needs local client state (shell_input, interceptor, etc.)
+    // that doesn't fit the Local fn(&str) -> String signature.
+    // Not available in chat mode (run_chat_loop lacks these references).
     CommandEntry {
         path: "/debug client",
         kind: CommandKind::Daemon("client_debug"),
