@@ -1665,7 +1665,7 @@ fn read_chat_input(completer: &mut ghost_complete::GhostCompleter, allow_backspa
             Ok(1) => {
                 match byte[0] {
                     0x1b => return None,  // ESC — exit chat
-                    0x04 => return None,  // Ctrl-D — exit chat
+                    0x04 if buf.is_empty() => return None,  // Ctrl-D on empty — exit chat
                     0x0d => {             // Enter — submit line
                         if has_ghost {
                             // Clear ghost text before submitting
