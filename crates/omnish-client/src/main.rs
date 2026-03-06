@@ -2124,7 +2124,7 @@ fn read_chat_input(completer: &mut ghost_complete::GhostCompleter, allow_backspa
 
 fn save_to_history(history: &mut VecDeque<String>, command: &str, capacity: usize) {
     // Don't save empty commands or duplicates of the most recent command
-    if command.trim().is_empty() || history.back().map(|s| s == command).unwrap_or(false) {
+    if command.trim().is_empty() || history.back().map_or(false, |s| s == command) {
         return;
     }
 
