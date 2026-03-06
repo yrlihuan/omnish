@@ -356,9 +356,18 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             None => "Invalid index: out of bounds".to_string(),
         };
     }
-    // Handle /resume without index (show list)
+    // Handle /resume without index (resume latest = /resume 1)
     if sub == "resume" {
-        return format_conversations_list(conv_mgr);
+        return match conv_mgr.get_thread_by_index(0) {
+            Some(thread_id) => {
+                let (last_exchange, earlier_count) = conv_mgr.get_last_exchange(&thread_id);
+                format!(
+                    "Resuming conversation [1]\n{}",
+                    format_chat_history(&last_exchange, earlier_count)
+                )
+            }
+            None => "No conversations yet. Start a chat with : then /chat or /ask".to_string(),
+        };
     }
     match sub {
         "context" => {
