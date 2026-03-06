@@ -1976,6 +1976,23 @@ fn last_utf8_char_len(buf: &[u8]) -> usize {
     cont + 1
 }
 
+/// Helper to parse escape sequences after ESC byte
+fn parse_escape_sequence(stdin_fd: i32) -> Option<[u8; 2]> {
+    let mut seq = [0u8; 2];
+    // Read first character after ESC
+    if nix::unistd::read(stdin_fd, &mut seq[0..1]) != Ok(1) {
+        return None;
+    }
+
+    // If it's '[', read the next character (A/B/C/D)
+    if seq[0] == b'[' {
+        if nix::unistd::read(stdin_fd, &mut seq[1..2]) == Ok(1) {
+            return Some(seq);
+        }
+    }
+    None
+}
+
 /// Read a line of input in raw mode for the chat loop.
 /// Returns None on ESC, Ctrl-D, or backspace on empty input (if allow_backspace_exit is true).
 fn read_chat_input(completer: &mut ghost_complete::GhostCompleter, allow_backspace_exit: bool) -> Option<String> {
@@ -1988,7 +2005,21 @@ fn read_chat_input(completer: &mut ghost_complete::GhostCompleter, allow_backspa
         match nix::unistd::read(stdin_fd, &mut byte) {
             Ok(1) => {
                 match byte[0] {
-                    0x1b => return None,  // ESC — exit chat
+                    0x1b => {
+                        // Check if this is an arrow key sequence
+                        if let Some(seq) = parse_escape_sequence(stdin_fd) {
+                            if seq[0] == b'[' {
+                                match seq[1] {
+                                    b'A' => { /* Up arrow - will be handled in Task 3 */ return Some(String::new()); },
+                                    b'B' => { /* Down arrow - will be handled in Task 3 */ return Some(String::new()); },
+                                    _ => {} // Ignore other escape sequences
+                                }
+                            }
+                        } else {
+                            // ESC without sequence - exit chat
+                            return None;
+                        }
+                    },
                     0x04 if buf.is_empty() => return None,  // Ctrl-D on empty — exit chat
                     0x0d => {             // Enter — submit line
                         if has_ghost {
