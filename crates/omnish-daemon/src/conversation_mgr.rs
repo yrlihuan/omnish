@@ -67,44 +67,83 @@ impl ConversationManager {
         }
     }
 
-    /// Get the last exchange and count of earlier messages.
+    /// Get the last exchange and count of earlier messages (after resolving interrupts).
     pub fn get_last_exchange(&self, thread_id: &str) -> (Option<(String, String)>, u32) {
         let path = self.threads_dir.join(format!("{}.jsonl", thread_id));
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => return (None, 0),
         };
-        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
-        let total_messages = lines.len() as u32;
-        if lines.len() < 2 {
+        let msgs: Vec<StoredMessage> = content
+            .lines()
+            .filter(|l| !l.is_empty())
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        let resolved = Self::resolve_interrupted(msgs);
+        let total = resolved.len() as u32;
+        if resolved.len() < 2 {
             return (None, 0);
         }
-        if let (Ok(user), Ok(asst)) = (
-            serde_json::from_str::<StoredMessage>(lines[lines.len() - 2]),
-            serde_json::from_str::<StoredMessage>(lines[lines.len() - 1]),
-        ) {
-            let earlier = total_messages.saturating_sub(2);
-            (Some((user.content, asst.content)), earlier)
-        } else {
-            (None, 0)
-        }
+        let asst = &resolved[resolved.len() - 1];
+        let user = &resolved[resolved.len() - 2];
+        let earlier = total.saturating_sub(2);
+        (Some((user.content.clone(), asst.content.clone())), earlier)
     }
 
     /// Load all messages as ChatTurn vec for LLM context.
+    /// Resolves interrupt conflicts: collects all interrupted (query, ts) pairs,
+    /// then drops any non-interrupted exchange whose query+ts is superseded by an interrupt.
     pub fn load_messages(&self, thread_id: &str) -> Vec<ChatTurn> {
         let path = self.threads_dir.join(format!("{}.jsonl", thread_id));
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => return vec![],
         };
-        content
+        let msgs: Vec<StoredMessage> = content
             .lines()
             .filter(|l| !l.is_empty())
-            .filter_map(|l| serde_json::from_str::<StoredMessage>(l).ok())
-            .map(|m| ChatTurn {
-                role: m.role,
-                content: m.content,
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        Self::resolve_interrupted(msgs)
+            .into_iter()
+            .map(|m| ChatTurn { role: m.role, content: m.content })
+            .collect()
+    }
+
+    const INTERRUPTED_MARKER: &str = "<event>user interrupted</event>";
+
+    /// Resolve interrupt conflicts in a list of stored messages.
+    ///
+    /// An interrupted exchange is a (user, assistant) pair where the assistant
+    /// content is the interrupted marker. For each such pair, any other exchange
+    /// with the same user query is dropped — the interrupt always wins.
+    fn resolve_interrupted(msgs: Vec<StoredMessage>) -> Vec<StoredMessage> {
+        // Parse into exchanges (user + assistant pairs)
+        let mut exchanges: Vec<(StoredMessage, StoredMessage)> = Vec::new();
+        let mut iter = msgs.into_iter();
+        while let Some(first) = iter.next() {
+            if let Some(second) = iter.next() {
+                exchanges.push((first, second));
+            }
+        }
+
+        // Collect all queries that have an interrupted exchange
+        let interrupted_queries: std::collections::HashSet<String> = exchanges
+            .iter()
+            .filter(|(_, a)| a.content == Self::INTERRUPTED_MARKER)
+            .map(|(u, _)| u.content.clone())
+            .collect();
+
+        // Keep exchanges that are either:
+        // - not in the interrupted set, or
+        // - the interrupted version itself
+        exchanges
+            .into_iter()
+            .filter(|(u, a)| {
+                !interrupted_queries.contains(&u.content)
+                    || a.content == Self::INTERRUPTED_MARKER
             })
+            .flat_map(|(u, a)| [u, a])
             .collect()
     }
 }
@@ -164,5 +203,64 @@ mod tests {
         let id = mgr.create_thread();
         let msgs = mgr.load_messages(&id);
         assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn test_interrupt_before_response_resolved() {
+        // Case 2: interrupt arrives first, then LLM response
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread();
+        mgr.append_exchange(&id, "q1", "a1");
+        // Interrupt arrives first
+        mgr.append_exchange(&id, "give me riddles", "<event>user interrupted</event>");
+        // LLM response arrives later
+        mgr.append_exchange(&id, "give me riddles", "here are some riddles...");
+
+        let msgs = mgr.load_messages(&id);
+        // Should have: q1/a1 + interrupted exchange only (LLM response dropped)
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[2].content, "give me riddles");
+        assert_eq!(msgs[3].content, "<event>user interrupted</event>");
+
+        let (ex, count) = mgr.get_last_exchange(&id);
+        assert_eq!(ex, Some(("give me riddles".into(), "<event>user interrupted</event>".into())));
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_interrupt_after_response_resolved() {
+        // Case 3: LLM response arrives first, then interrupt
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread();
+        mgr.append_exchange(&id, "q1", "a1");
+        // LLM response arrives first
+        mgr.append_exchange(&id, "give me riddles", "here are some riddles...");
+        // Interrupt arrives later
+        mgr.append_exchange(&id, "give me riddles", "<event>user interrupted</event>");
+
+        let msgs = mgr.load_messages(&id);
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[2].content, "give me riddles");
+        assert_eq!(msgs[3].content, "<event>user interrupted</event>");
+
+        let (ex, count) = mgr.get_last_exchange(&id);
+        assert_eq!(ex, Some(("give me riddles".into(), "<event>user interrupted</event>".into())));
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_no_interrupt_unchanged() {
+        // Normal conversation without interrupts should be unchanged
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread();
+        mgr.append_exchange(&id, "q1", "a1");
+        mgr.append_exchange(&id, "q2", "a2");
+        let msgs = mgr.load_messages(&id);
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[1].content, "a1");
+        assert_eq!(msgs[3].content, "a2");
     }
 }
