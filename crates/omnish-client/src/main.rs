@@ -1192,8 +1192,6 @@ fn debug_client_state(
     // OSC 133 detector state - we don't have a mode_active method, so skip it
     output.push_str("OSC 133 Detector:\n");
     output.push_str("  status: active (detecting OSC 133 sequences)\n");
-    output.push_str("=== End Debug State ===\n");
-
     output
 }
 
