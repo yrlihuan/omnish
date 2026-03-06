@@ -1460,26 +1460,8 @@ async fn run_chat_loop(
         Box::new(ghost_complete::BuiltinProvider::new()),
     ]);
 
-    // Auto-create a new thread on entry
-    let mut current_thread_id;
-    {
-        let req_id = Uuid::new_v4().to_string()[..8].to_string();
-        let start_msg = Message::ChatStart(ChatStart {
-            request_id: req_id.clone(),
-            session_id: session_id.to_string(),
-            new_thread: true,
-        });
-        match rpc.call(start_msg).await {
-            Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
-                current_thread_id = ready.thread_id;
-            }
-            _ => {
-                let err = display::render_error("Failed to start chat session");
-                nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                return;
-            }
-        }
-    }
+    // Lazily created on first message or explicit /new
+    let mut current_thread_id: Option<String> = None;
 
     let mut pending_input = initial_msg;
 
@@ -1512,7 +1494,7 @@ async fn run_chat_loop(
             });
             match rpc.call(new_msg).await {
                 Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
-                    current_thread_id = ready.thread_id;
+                    current_thread_id = Some(ready.thread_id);
                     let info = "\r\n\x1b[2;37m(new conversation)\x1b[0m";
                     nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
                 }
@@ -1534,7 +1516,7 @@ async fn run_chat_loop(
             });
             match rpc.call(start_msg).await {
                 Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
-                    current_thread_id = ready.thread_id;
+                    current_thread_id = Some(ready.thread_id);
                     let history = display::render_chat_history(
                         ready.last_exchange.as_ref(),
                         ready.earlier_count,
@@ -1559,6 +1541,26 @@ async fn run_chat_loop(
             // Unknown /command — fall through to send as chat message
         }
 
+        // Lazily create thread if not yet initialized
+        if current_thread_id.is_none() {
+            let req_id = Uuid::new_v4().to_string()[..8].to_string();
+            let start_msg = Message::ChatStart(ChatStart {
+                request_id: req_id.clone(),
+                session_id: session_id.to_string(),
+                new_thread: true,
+            });
+            match rpc.call(start_msg).await {
+                Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
+                    current_thread_id = Some(ready.thread_id);
+                }
+                _ => {
+                    let err = display::render_error("Failed to start chat session");
+                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                    continue;
+                }
+            }
+        }
+
         // Show thinking indicator
         let thinking = display::render_thinking();
         nix::unistd::write(std::io::stdout(), thinking.as_bytes()).ok();
@@ -1568,7 +1570,7 @@ async fn run_chat_loop(
         let chat_msg = Message::ChatMessage(omnish_protocol::message::ChatMessage {
             request_id: req_id.clone(),
             session_id: session_id.to_string(),
-            thread_id: current_thread_id.clone(),
+            thread_id: current_thread_id.clone().unwrap(),
             query: trimmed.to_string(),
         });
 
@@ -1610,7 +1612,7 @@ async fn run_chat_loop(
                 // Send interrupt to daemon to record in conversation
                 let interrupt_msg = Message::ChatInterrupt(omnish_protocol::message::ChatInterrupt {
                     session_id: session_id.to_string(),
-                    thread_id: current_thread_id.clone(),
+                    thread_id: current_thread_id.clone().unwrap(),
                     query: trimmed.to_string(),
                 });
                 // Fire and forget — don't wait for response
