@@ -1,8 +1,10 @@
 use omnish_protocol::message::ChatTurn;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct StoredMessage {
     role: String,
     content: String,
@@ -11,19 +13,51 @@ struct StoredMessage {
 
 pub struct ConversationManager {
     threads_dir: PathBuf,
+    /// In-memory store: thread_id → raw messages (before interrupt resolution).
+    threads: Mutex<HashMap<String, Vec<StoredMessage>>>,
 }
 
 impl ConversationManager {
     pub fn new(threads_dir: PathBuf) -> Self {
         std::fs::create_dir_all(&threads_dir).ok();
-        Self { threads_dir }
+
+        // Load all existing threads from disk
+        let mut threads = HashMap::new();
+        if let Ok(entries) = std::fs::read_dir(&threads_dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.extension().map_or(true, |ext| ext != "jsonl") {
+                    continue;
+                }
+                let thread_id = match path.file_stem() {
+                    Some(s) => s.to_string_lossy().to_string(),
+                    None => continue,
+                };
+                let content = match std::fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let msgs: Vec<StoredMessage> = content
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .filter_map(|l| serde_json::from_str(l).ok())
+                    .collect();
+                threads.insert(thread_id, msgs);
+            }
+        }
+        tracing::info!("Loaded {} conversation threads from disk", threads.len());
+
+        Self { threads_dir, threads: Mutex::new(threads) }
     }
 
     /// Create a new thread, return its UUID.
     pub fn create_thread(&self) -> String {
         let id = uuid::Uuid::new_v4().to_string();
+        // Create empty file on disk
         let path = self.threads_dir.join(format!("{}.jsonl", id));
         std::fs::File::create(&path).ok();
+        // Insert empty vec in memory
+        self.threads.lock().unwrap().insert(id.clone(), Vec::new());
         id
     }
 
@@ -45,38 +79,22 @@ impl ConversationManager {
     /// List all conversations, sorted by modification time (newest first).
     /// Returns vector of (thread_id, last_modified, exchange_count, last_question).
     pub fn list_conversations(&self) -> Vec<(String, std::time::SystemTime, u32, String)> {
-        let entries: Vec<_> = std::fs::read_dir(&self.threads_dir)
-            .ok()
-            .map(|e| e.filter_map(|e| e.ok()).collect())
-            .unwrap_or_default();
-
-        let mut conversations: Vec<_> = entries
-            .into_iter()
-            .filter(|e| e.path().extension().map_or(false, |ext| ext == "jsonl"))
-            .filter_map(|e| {
-                let path = e.path();
-                let thread_id = path.file_stem()?.to_string_lossy().to_string();
-                let metadata = e.metadata().ok()?;
-                let modified = metadata.modified().ok()?;
-                let content = std::fs::read_to_string(&path).ok()?;
-                let msgs: Vec<StoredMessage> = content
-                    .lines()
-                    .filter(|l| !l.is_empty())
-                    .filter_map(|l| serde_json::from_str(l).ok())
-                    .collect();
-                let resolved = Self::resolve_interrupted(msgs);
+        let threads = self.threads.lock().unwrap();
+        let mut conversations: Vec<_> = threads
+            .iter()
+            .filter_map(|(thread_id, msgs)| {
+                let path = self.threads_dir.join(format!("{}.jsonl", thread_id));
+                let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+                let resolved = Self::resolve_interrupted(msgs.clone());
                 let exchange_count = (resolved.len() / 2) as u32;
-                // Get last user question (second-to-last message, or None if no messages)
                 let last_question = if resolved.len() >= 2 {
                     resolved[resolved.len() - 2].content.clone()
                 } else {
                     String::new()
                 };
-                Some((thread_id, modified, exchange_count, last_question))
+                Some((thread_id.clone(), modified, exchange_count, last_question))
             })
             .collect();
-
-        // Sort by modification time, newest first
         conversations.sort_by(|a, b| b.1.cmp(&a.1));
         conversations
     }
@@ -88,8 +106,29 @@ impl ConversationManager {
         conversations.into_iter().nth(index).map(|(thread_id, _, _, _)| thread_id)
     }
 
-    /// Append a user+assistant exchange to a thread file.
+    /// Append a user+assistant exchange. Writes to both memory and disk (append-only).
     pub fn append_exchange(&self, thread_id: &str, query: &str, response: &str) {
+        let now = chrono::Utc::now().to_rfc3339();
+        let user_msg = StoredMessage {
+            role: "user".into(),
+            content: query.into(),
+            ts: now.clone(),
+        };
+        let asst_msg = StoredMessage {
+            role: "assistant".into(),
+            content: response.into(),
+            ts: now,
+        };
+
+        // Update memory
+        self.threads
+            .lock()
+            .unwrap()
+            .entry(thread_id.to_string())
+            .or_default()
+            .extend([user_msg.clone(), asst_msg.clone()]);
+
+        // Append to disk
         use std::io::Write;
         let path = self.threads_dir.join(format!("{}.jsonl", thread_id));
         if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -97,17 +136,6 @@ impl ConversationManager {
             .append(true)
             .open(&path)
         {
-            let now = chrono::Utc::now().to_rfc3339();
-            let user_msg = StoredMessage {
-                role: "user".into(),
-                content: query.into(),
-                ts: now.clone(),
-            };
-            let asst_msg = StoredMessage {
-                role: "assistant".into(),
-                content: response.into(),
-                ts: now,
-            };
             writeln!(file, "{}", serde_json::to_string(&user_msg).unwrap()).ok();
             writeln!(file, "{}", serde_json::to_string(&asst_msg).unwrap()).ok();
         }
@@ -115,16 +143,12 @@ impl ConversationManager {
 
     /// Get the last exchange and count of earlier messages (after resolving interrupts).
     pub fn get_last_exchange(&self, thread_id: &str) -> (Option<(String, String)>, u32) {
-        let path = self.threads_dir.join(format!("{}.jsonl", thread_id));
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => return (None, 0),
+        let threads = self.threads.lock().unwrap();
+        let msgs = match threads.get(thread_id) {
+            Some(m) => m.clone(),
+            None => return (None, 0),
         };
-        let msgs: Vec<StoredMessage> = content
-            .lines()
-            .filter(|l| !l.is_empty())
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect();
+        drop(threads);
         let resolved = Self::resolve_interrupted(msgs);
         let total = resolved.len() as u32;
         if resolved.len() < 2 {
@@ -137,19 +161,14 @@ impl ConversationManager {
     }
 
     /// Load all messages as ChatTurn vec for LLM context.
-    /// Resolves interrupt conflicts: collects all interrupted (query, ts) pairs,
-    /// then drops any non-interrupted exchange whose query+ts is superseded by an interrupt.
+    /// Resolves interrupt conflicts.
     pub fn load_messages(&self, thread_id: &str) -> Vec<ChatTurn> {
-        let path = self.threads_dir.join(format!("{}.jsonl", thread_id));
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => return vec![],
+        let threads = self.threads.lock().unwrap();
+        let msgs = match threads.get(thread_id) {
+            Some(m) => m.clone(),
+            None => return vec![],
         };
-        let msgs: Vec<StoredMessage> = content
-            .lines()
-            .filter(|l| !l.is_empty())
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect();
+        drop(threads);
         Self::resolve_interrupted(msgs)
             .into_iter()
             .map(|m| ChatTurn { role: m.role, content: m.content })
@@ -308,5 +327,22 @@ mod tests {
         assert_eq!(msgs.len(), 4);
         assert_eq!(msgs[1].content, "a1");
         assert_eq!(msgs[3].content, "a2");
+    }
+
+    #[test]
+    fn test_load_from_disk_on_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a thread and add data with first manager instance
+        let mgr1 = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr1.create_thread();
+        mgr1.append_exchange(&id, "hello", "world");
+        drop(mgr1);
+
+        // Create new manager — should load from disk
+        let mgr2 = ConversationManager::new(dir.path().to_path_buf());
+        let msgs = mgr2.load_messages(&id);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].content, "hello");
+        assert_eq!(msgs[1].content, "world");
     }
 }
