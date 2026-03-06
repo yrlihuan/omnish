@@ -1,18 +1,35 @@
 /// Result of parsing a chat message for `/` commands.
 pub enum ChatAction {
-    /// A `/` command was recognized. Contains the result text and optional redirect path.
+    /// A `/` command was recognized. Contains the result text, optional redirect path,
+    /// and optional output limit (head/tail).
     Command {
         result: String,
         redirect: Option<String>,
+        limit: Option<OutputLimit>,
     },
     /// Not a command — forward as normal LLM query.
     #[allow(dead_code)]
     LlmQuery(String),
-    /// A `/` command that needs daemon data. Contains the query to send and optional redirect.
+    /// A `/` command that needs daemon data. Contains the query to send, optional redirect,
+    /// and optional output limit.
     DaemonQuery {
         query: String,
         redirect: Option<String>,
+        limit: Option<OutputLimit>,
     },
+}
+
+/// Limit applied to command output (head or tail).
+#[derive(Clone, Debug)]
+pub struct OutputLimit {
+    pub kind: OutputLimitKind,
+    pub count: usize,
+}
+
+#[derive(Clone, Debug)]
+pub enum OutputLimitKind {
+    Head,
+    Tail,
 }
 
 // ---------------------------------------------------------------------------
@@ -175,13 +192,76 @@ fn parse_redirect(input: &str) -> (&str, Option<&str>) {
     (input, None)
 }
 
+/// Parse head/tail limit suffix: "cmd | head -n 10" -> ("cmd", Some(Head, 10))
+/// Supports: | head -n N, | head N, | tail -n N, | tail N
+fn parse_limit(input: &str) -> (&str, Option<OutputLimit>) {
+    // Find the last occurrence of | head or | tail
+    if let Some(pos) = input.find(" | ") {
+        let suffix = &input[pos + 3..];
+        let base = input[..pos].trim_end();
+
+        let parts: Vec<&str> = suffix.split_whitespace().collect();
+        if parts.is_empty() {
+            return (input, None);
+        }
+
+        let (kind, count) = match parts[0] {
+            "head" => {
+                if parts.len() >= 2 {
+                    // | head -n N or | head N
+                    let n = if parts[1] == "-n" {
+                        parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(10)
+                    } else {
+                        parts[1].parse().unwrap_or(10)
+                    };
+                    (OutputLimitKind::Head, n)
+                } else {
+                    return (input, None);
+                }
+            }
+            "tail" => {
+                if parts.len() >= 2 {
+                    // | tail -n N or | tail N
+                    let n = if parts[1] == "-n" {
+                        parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(10)
+                    } else {
+                        parts[1].parse().unwrap_or(10)
+                    };
+                    (OutputLimitKind::Tail, n)
+                } else {
+                    return (input, None);
+                }
+            }
+            _ => return (input, None),
+        };
+
+        return (base, Some(OutputLimit { kind, count }));
+    }
+    (input, None)
+}
+
+/// Apply output limit to text (head or tail).
+pub fn apply_limit(text: &str, limit: &OutputLimit) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let count = limit.count.min(lines.len());
+
+    let selected = match limit.kind {
+        OutputLimitKind::Head => &lines[..count],
+        OutputLimitKind::Tail => &lines[lines.len() - count..],
+    };
+
+    selected.join("\n")
+}
+
 /// Dispatch a chat message. Returns ChatAction describing what to do.
 pub fn dispatch(msg: &str) -> ChatAction {
     if !msg.starts_with('/') {
         return ChatAction::LlmQuery(msg.to_string());
     }
 
-    let (cmd_str, redirect) = parse_redirect(msg);
+    // Parse limit (head/tail) first, then redirect
+    let (cmd_str_without_limit, limit) = parse_limit(msg);
+    let (cmd_str, redirect) = parse_redirect(cmd_str_without_limit);
     let redirect = redirect.map(|s| s.to_string());
 
     // Find the longest matching command path.
@@ -203,6 +283,7 @@ pub fn dispatch(msg: &str) -> ChatAction {
             CommandKind::Local(f) => ChatAction::Command {
                 result: f(remainder),
                 redirect,
+                limit,
             },
             CommandKind::Daemon(key) => {
                 let query = if remainder.is_empty() {
@@ -210,7 +291,7 @@ pub fn dispatch(msg: &str) -> ChatAction {
                 } else {
                     format!("__cmd:{} {}", key, remainder)
                 };
-                ChatAction::DaemonQuery { query, redirect }
+                ChatAction::DaemonQuery { query, redirect, limit }
             }
         }
     } else {
@@ -243,9 +324,10 @@ mod tests {
     #[test]
     fn test_context_dispatches_to_daemon() {
         match dispatch("/context") {
-            ChatAction::DaemonQuery { query, redirect } => {
+            ChatAction::DaemonQuery { query, redirect, limit } => {
                 assert_eq!(query, "__cmd:context");
                 assert!(redirect.is_none());
+                assert!(limit.is_none());
             }
             _ => panic!("expected DaemonQuery"),
         }
@@ -254,9 +336,10 @@ mod tests {
     #[test]
     fn test_context_with_redirect() {
         match dispatch("/context > /tmp/ctx.txt") {
-            ChatAction::DaemonQuery { query, redirect } => {
+            ChatAction::DaemonQuery { query, redirect, limit } => {
                 assert_eq!(query, "__cmd:context");
                 assert_eq!(redirect.as_deref(), Some("/tmp/ctx.txt"));
+                assert!(limit.is_none());
             }
             _ => panic!("expected DaemonQuery"),
         }
@@ -265,12 +348,13 @@ mod tests {
     #[test]
     fn test_template_no_args_shows_usage() {
         match dispatch("/template") {
-            ChatAction::Command { result, redirect } => {
+            ChatAction::Command { result, redirect, limit } => {
                 assert!(result.contains("Usage"));
                 assert!(result.contains("chat"));
                 assert!(result.contains("auto-complete"));
                 assert!(result.contains("daily-notes"));
                 assert!(redirect.is_none());
+                assert!(limit.is_none());
             }
             _ => panic!("expected Command"),
         }
@@ -279,10 +363,11 @@ mod tests {
     #[test]
     fn test_template_chat() {
         match dispatch("/template chat") {
-            ChatAction::Command { result, redirect } => {
+            ChatAction::Command { result, redirect, limit } => {
                 assert!(result.contains("{context}"));
                 assert!(result.contains("{query}"));
                 assert!(redirect.is_none());
+                assert!(limit.is_none());
             }
             _ => panic!("expected Command"),
         }
@@ -291,9 +376,10 @@ mod tests {
     #[test]
     fn test_template_auto_complete() {
         match dispatch("/template auto-complete") {
-            ChatAction::Command { result, redirect } => {
+            ChatAction::Command { result, redirect, limit } => {
                 assert!(result.contains("completion engine"));
                 assert!(redirect.is_none());
+                assert!(limit.is_none());
             }
             _ => panic!("expected Command"),
         }
@@ -302,9 +388,10 @@ mod tests {
     #[test]
     fn test_template_daily_notes() {
         match dispatch("/template daily-notes") {
-            ChatAction::Command { result, redirect } => {
+            ChatAction::Command { result, redirect, limit } => {
                 assert!(result.contains("<commands>"));
                 assert!(redirect.is_none());
+                assert!(limit.is_none());
             }
             _ => panic!("expected Command"),
         }
@@ -333,9 +420,10 @@ mod tests {
     #[test]
     fn test_sessions_dispatches_to_daemon() {
         match dispatch("/sessions") {
-            ChatAction::DaemonQuery { query, redirect } => {
+            ChatAction::DaemonQuery { query, redirect, limit } => {
                 assert_eq!(query, "__cmd:sessions");
                 assert!(redirect.is_none());
+                assert!(limit.is_none());
             }
             _ => panic!("expected DaemonQuery"),
         }
@@ -397,7 +485,7 @@ mod tests {
     #[test]
     fn test_tasks_dispatches_to_daemon() {
         match dispatch("/tasks") {
-            ChatAction::DaemonQuery { query, redirect } => {
+            ChatAction::DaemonQuery { query, redirect, .. } => {
                 assert_eq!(query, "__cmd:tasks");
                 assert!(redirect.is_none());
             }
@@ -408,7 +496,7 @@ mod tests {
     #[test]
     fn test_tasks_disable_forwards_args() {
         match dispatch("/tasks disable eviction") {
-            ChatAction::DaemonQuery { query, redirect } => {
+            ChatAction::DaemonQuery { query, redirect, .. } => {
                 assert_eq!(query, "__cmd:tasks disable eviction");
                 assert!(redirect.is_none());
             }
@@ -419,7 +507,7 @@ mod tests {
     #[test]
     fn test_debug_client_dispatches_to_daemon() {
         match dispatch("/debug client") {
-            ChatAction::DaemonQuery { query, redirect } => {
+            ChatAction::DaemonQuery { query, redirect, .. } => {
                 assert_eq!(query, "__cmd:client_debug");
                 assert!(redirect.is_none());
             }
@@ -430,7 +518,7 @@ mod tests {
     #[test]
     fn test_debug_session_dispatches_to_daemon() {
         match dispatch("/debug session") {
-            ChatAction::DaemonQuery { query, redirect } => {
+            ChatAction::DaemonQuery { query, redirect, .. } => {
                 assert_eq!(query, "__cmd:session");
                 assert!(redirect.is_none());
             }
@@ -464,7 +552,7 @@ mod tests {
     #[test]
     fn test_help_command() {
         match dispatch("/help") {
-            ChatAction::Command { result, redirect } => {
+            ChatAction::Command { result, redirect, .. } => {
                 assert!(result.contains("Available commands"));
                 assert!(result.contains("/context"));
                 assert!(result.contains("/help"));
@@ -478,7 +566,7 @@ mod tests {
     fn test_threads_alias() {
         // /threads should be an alias for /conversations
         match dispatch("/threads") {
-            ChatAction::DaemonQuery { query, redirect } => {
+            ChatAction::DaemonQuery { query, redirect, .. } => {
                 assert_eq!(query, "__cmd:conversations");
                 assert!(redirect.is_none());
             }
@@ -489,7 +577,7 @@ mod tests {
     #[test]
     fn test_conversations_command() {
         match dispatch("/conversations") {
-            ChatAction::DaemonQuery { query, redirect } => {
+            ChatAction::DaemonQuery { query, redirect, .. } => {
                 assert_eq!(query, "__cmd:conversations");
                 assert!(redirect.is_none());
             }

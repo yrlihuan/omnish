@@ -1419,16 +1419,21 @@ async fn handle_slash_command(
     client_debug_fn: &dyn Fn() -> String,
 ) -> bool {
     match command::dispatch(trimmed) {
-        command::ChatAction::Command { result, redirect } => {
-            if let Some(path) = redirect.as_deref() {
-                handle_command_result(&result, Some(path), proxy);
+        command::ChatAction::Command { result, redirect, limit } => {
+            let display_result = if let Some(ref l) = limit {
+                command::apply_limit(&result, l)
             } else {
-                let output = display::render_response(&result);
+                result
+            };
+            if let Some(path) = redirect.as_deref() {
+                handle_command_result(&display_result, Some(path), proxy);
+            } else {
+                let output = display::render_response(&display_result);
                 nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
             }
             true
         }
-        command::ChatAction::DaemonQuery { query, redirect } => {
+        command::ChatAction::DaemonQuery { query, redirect, limit } => {
             // /debug client is intercepted client-side (needs local state)
             if query == "__cmd:client_debug" {
                 let result = client_debug_fn();
@@ -1452,6 +1457,11 @@ async fn handle_slash_command(
                             cmd_display_str(&json)
                         } else {
                             resp.content
+                        };
+                        let display = if let Some(ref l) = limit {
+                            command::apply_limit(&display, l)
+                        } else {
+                            display
                         };
                         let output = display::render_response(&display);
                         nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
