@@ -29,7 +29,13 @@ fn main() -> Result<()> {
 }
 
 async fn async_main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    // Initialize tracing with filter to suppress noisy rustls debug logs
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("rustls=off".parse().unwrap()),
+        )
+        .init();
 
     // Load configuration
     let config = load_daemon_config()?;
