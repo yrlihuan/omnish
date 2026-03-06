@@ -40,11 +40,13 @@ Verifies fix for issue #127: "backspace退出chat模式，仅当用户没有发�
 Test cases:
 1. Phase 1 (mode selection): backspace exits chat mode when no message sent
 2. Phase 2 (chat loop): backspace is ignored after first message sent
+3. Phase 3 (/resume): backspace is ignored after resuming a conversation
 
 Examples:
   $0               # Run all tests
   $0 -t 1          # Run only test 1 (phase 1)
   $0 -t 2          # Run only test 2 (phase 2)
+  $0 -t 3          # Run only test 3 (/resume)
   $0 -t all        # Run all tests (same as default)
   $0 -w -t 1       # Wait for confirmation, then run test 1
 EOF
@@ -219,8 +221,9 @@ test_phase2_backspace_ignored() {
     send_keys "$SESSION:0.0" "Hello, this is a test message" 0.3
     send_enter "$SESSION:0.0" 0.3  # Enter
 
-    # Wait for response (might be delayed, but we just need to be in chat loop)
-    sleep 1
+    # Wait for LLM response to complete before testing backspace
+    echo -e "  Waiting 20s for LLM response..."
+    sleep 20
 
     # Capture before backspace
     local before=$(capture_pane "$SESSION:0.0" -30)
@@ -235,34 +238,77 @@ test_phase2_backspace_ignored() {
     echo -e "  After backspace (last 30 lines):"
     echo "$after" | tail -15 | sed 's/^/    /'
 
-    # Check if still in chat mode (chat prompt or thinking indicator on last line)
-    local before_in_chat=false
-    local after_in_chat=false
-    # Before: should be in chat mode (prompt "> " or "(thinking...)")
-    if last_line_is_chat_prompt "$before" || echo "$before" | grep -v '^[[:space:]]*$' | tail -1 | grep -q 'thinking'; then
-        before_in_chat=true
-    fi
-    # After: should still be in chat mode
-    if last_line_is_chat_prompt "$after" || echo "$after" | grep -v '^[[:space:]]*$' | tail -1 | grep -q 'thinking'; then
-        after_in_chat=true
-    fi
-    if $before_in_chat && $after_in_chat; then
+    # Check if still in chat mode: last non-empty line should be "> "
+    if last_line_is_chat_prompt "$before" && last_line_is_chat_prompt "$after"; then
         echo -e "  ${GREEN}✓ PASS: Chat prompt still present after backspace (backspace ignored)${NC}"
+        return 0
+    elif last_line_is_shell_prompt "$after"; then
+        echo -e "  ${RED}✗ FAIL: Chat prompt disappeared (backspace caused exit)${NC}"
+        return 1
+    else
+        local last_line
+        last_line=$(echo "$after" | grep -v '^[[:space:]]*$' | tail -1)
+        echo -e "  ${RED}✗ FAIL: Expected chat prompt '> ' as last line, got: '${last_line}'${NC}"
+        return 1
+    fi
+}
 
-        # Additional check: send a message to verify still in chat mode
-        send_keys "$SESSION:0.0" "Still in chat" 0.3
-        send_enter "$SESSION:0.0" 0.3  # Enter
-        sleep 0.5
-        local final=$(capture_pane "$SESSION:0.0" -10)
-        if echo "$final" | grep -q "Still in chat"; then
-            echo -e "  ${GREEN}✓ PASS: Can still send messages after backspace${NC}"
-            return 0
-        else
-            echo -e "  ${YELLOW}⚠ WARNING: Could not verify message was sent${NC}"
+# Function to run test scenario 3: backspace ignored after /resume
+test_phase3_resume_backspace_ignored() {
+    echo -e "\n${YELLOW}=== Test 3: /resume - backspace should be ignored after resuming ===${NC}"
+
+    # Start fresh session for test 3
+    tmux -S "$SOCKET" kill-session -t "$SESSION" 2>/dev/null || true
+    tmux -S "$SOCKET" new -d -s "$SESSION" -n test "$CLIENT"
+
+    # Wait for omnish-client to be ready
+    sleep 1.5
+
+    # Send ':' to enter chat mode
+    send_keys "$SESSION:0.0" ":" 0.5
+
+    # Wait for chat prompt
+    sleep 0.5
+
+    # Send '/resume' to resume a previous conversation
+    send_keys "$SESSION:0.0" "/resume" 0.3
+    send_enter "$SESSION:0.0" 1
+
+    # Capture after /resume
+    local after_resume=$(capture_pane "$SESSION:0.0" -20)
+    echo -e "  After /resume (last 10 lines):"
+    echo "$after_resume" | tail -10 | sed 's/^/    /'
+
+    # Type 'x', then send backspace twice:
+    # - first backspace deletes 'x'
+    # - second backspace on empty buffer should be ignored
+    send_keys "$SESSION:0.0" "x" 0.3
+    echo -e "  Sending: ${YELLOW}BSpace x2${NC}"
+    tmux -S "$SOCKET" send-keys -t "$SESSION:0.0" BSpace
+    sleep 0.3
+    tmux -S "$SOCKET" send-keys -t "$SESSION:0.0" BSpace
+    sleep 0.5
+
+    # Capture after backspace
+    local after
+    after=$(tmux -S "$SOCKET" capture-pane -p -J -t "$SESSION:0.0")
+    echo -e "  After 2x backspace (last 5 lines):"
+    echo "$after" | tail -5 | sed 's/^/    /'
+
+    # Check if still in chat mode
+    if last_line_is_chat_prompt "$after"; then
+        echo -e "  ${GREEN}✓ PASS: Chat prompt still present after backspace (backspace ignored)${NC}"
+        return 0
+    elif last_line_is_shell_prompt "$after"; then
+        echo -e "  ${RED}✗ FAIL: Chat prompt disappeared (backspace caused exit)${NC}"
+        return 1
+    else
+        # Might show /resume output or error — check if NOT a shell prompt
+        if ! last_line_is_shell_prompt "$after"; then
+            echo -e "  ${GREEN}✓ PASS: Still in chat mode after backspace${NC}"
             return 0
         fi
-    else
-        echo -e "  ${RED}✗ FAIL: Chat prompt disappeared (backspace caused exit)${NC}"
+        echo -e "  ${RED}✗ FAIL: Unexpected state after backspace${NC}"
         return 1
     fi
 }
@@ -314,11 +360,11 @@ main() {
 
     # Validate TEST_CASES
     case "$TEST_CASES" in
-        all|1|2)
+        all|1|2|3)
             # Valid cases
             ;;
         *)
-            echo -e "${RED}Error: Invalid test case '$TEST_CASES'. Must be: 1, 2, or 'all'${NC}"
+            echo -e "${RED}Error: Invalid test case '$TEST_CASES'. Must be: 1, 2, 3, or 'all'${NC}"
             exit 1
             ;;
     esac
@@ -336,6 +382,15 @@ main() {
     if [[ "$TEST_CASES" == "all" || "$TEST_CASES" == "2" ]]; then
         echo -e "${YELLOW}Running test 2 (phase 2)...${NC}"
         if test_phase2_backspace_ignored; then
+            ((passed++))
+        fi
+        ((total++))
+    fi
+
+    # Run test 3 if requested
+    if [[ "$TEST_CASES" == "all" || "$TEST_CASES" == "3" ]]; then
+        echo -e "${YELLOW}Running test 3 (/resume)...${NC}"
+        if test_phase3_resume_backspace_ignored; then
             ((passed++))
         fi
         ((total++))

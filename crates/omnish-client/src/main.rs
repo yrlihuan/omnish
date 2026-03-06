@@ -1505,7 +1505,7 @@ async fn run_chat_loop(
             let prompt = display::render_chat_prompt();
             nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
 
-            match read_chat_input(&mut chat_completer, true) {
+            match read_chat_input(&mut chat_completer, current_thread_id.is_none()) {
                 Some(line) => line,
                 None => break, // ESC / Ctrl-D / backspace on empty
             }
@@ -1877,7 +1877,7 @@ fn read_chat_input(completer: &mut ghost_complete::GhostCompleter, allow_backspa
                             if allow_backspace_exit {
                                 return None; // Backspace on empty — exit chat
                             }
-                            // Otherwise, ignore the backspace (don't exit)
+                            continue; // Ignore backspace on empty — no visual effect
                         }
                         // Get the last UTF-8 character bytes BEFORE removing
                         let last_char_len = last_utf8_char_len(&buf);
