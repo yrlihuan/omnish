@@ -1804,6 +1804,31 @@ fn wait_for_ctrl_c(stop: std::sync::mpsc::Receiver<()>) -> bool {
     }
 }
 
+/// Returns the byte length of the last UTF-8 character in the buffer.
+/// Returns 1 if the buffer is empty or contains invalid UTF-8.
+fn last_utf8_char_len(buf: &[u8]) -> usize {
+    if buf.is_empty() {
+        return 1;
+    }
+    let last_byte = *buf.last().unwrap();
+    // Check if it's a UTF-8 continuation byte (10xx xxxx)
+    if last_byte & 0xC0 == 0x80 {
+        // It's a continuation byte, look for the start of the character
+        // Count consecutive continuation bytes from the end
+        let mut len = 1;
+        for &b in buf.iter().rev().skip(1) {
+            if b & 0xC0 == 0x80 {
+                len += 1;
+            } else {
+                break;
+            }
+        }
+        return len;
+    }
+    // Single byte ASCII character
+    1
+}
+
 /// Read a line of input in raw mode for the chat loop.
 /// Returns None on ESC, Ctrl-D, or backspace on empty input (if allow_backspace_exit is true).
 fn read_chat_input(completer: &mut ghost_complete::GhostCompleter, allow_backspace_exit: bool) -> Option<String> {
@@ -1849,9 +1874,20 @@ fn read_chat_input(completer: &mut ghost_complete::GhostCompleter, allow_backspa
                             }
                             // Otherwise, ignore the backspace (don't exit)
                         }
-                        buf.pop();
-                        // Erase character and any ghost text
-                        nix::unistd::write(std::io::stdout(), b"\x08\x1b[K").ok();
+                        // Get the last UTF-8 character bytes BEFORE removing
+                        let last_char_len = last_utf8_char_len(&buf);
+                        let deleted_bytes = buf[buf.len().saturating_sub(last_char_len)..].to_vec();
+                        // Remove the last UTF-8 character (not just 1 byte)
+                        for _ in 0..last_char_len {
+                            buf.pop();
+                        }
+                        // Calculate visual width of deleted character for erasing
+                        let erase_width = String::from_utf8_lossy(&deleted_bytes).chars().next()
+                            .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1))
+                            .unwrap_or(1);
+                        // Erase character: move cursor back + clear to end of line
+                        let erase_seq = format!("\x08\x1b[{}X", erase_width);
+                        nix::unistd::write(std::io::stdout(), erase_seq.as_bytes()).ok();
                         has_ghost = false;
                         // Update ghost for new input
                         let input = String::from_utf8_lossy(&buf);
