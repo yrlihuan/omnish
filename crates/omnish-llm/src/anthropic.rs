@@ -50,6 +50,11 @@ impl LlmBackend for AnthropicBackend {
         body_map.insert("max_tokens".to_string(), serde_json::Value::Number(1024.into()));
         body_map.insert("messages".to_string(), serde_json::Value::Array(messages));
 
+        // Add system prompt if provided
+        if let Some(ref system) = req.system_prompt {
+            body_map.insert("system".to_string(), serde_json::Value::String(system.clone()));
+        }
+
         // Add thinking parameter if explicitly disabled
         if req.enable_thinking == Some(false) {
             let mut thinking_map = serde_json::Map::new();

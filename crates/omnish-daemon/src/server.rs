@@ -236,6 +236,7 @@ async fn handle_message(
                     use_case,
                     max_content_chars: max_context_chars,
                     conversation,
+                    system_prompt: Some(omnish_llm::template::CHAT_SYSTEM_PROMPT.to_string()),
                     enable_thinking: None, // Use default (thinking enabled for chat)
                 };
 
@@ -300,6 +301,7 @@ async fn try_warmup_kv_cache(
         use_case: UseCase::Completion,
         max_content_chars: max_chars,
         conversation: vec![],
+        system_prompt: None,
         enable_thinking: Some(false), // Disable thinking for completion
     };
 
@@ -643,6 +645,7 @@ async fn handle_llm_request(
         use_case,
         max_content_chars: max_context_chars,
         conversation: vec![],
+        system_prompt: None,
         enable_thinking: None, // Use default (thinking enabled for chat)
     };
 
@@ -720,6 +723,7 @@ async fn handle_completion_request(
         use_case,
         max_content_chars: max_context_chars,
         conversation: vec![],
+        system_prompt: None,
         enable_thinking: Some(false), // Disable thinking for completion requests
     };
 

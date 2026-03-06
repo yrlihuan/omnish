@@ -51,6 +51,39 @@ pub fn prompt_template(has_query: bool) -> &'static str {
     }
 }
 
+/// System prompt for chat mode — gives the LLM context about omnish and available commands.
+pub const CHAT_SYSTEM_PROMPT: &str = "\
+You are the omnish chat assistant. omnish is a transparent shell wrapper that \
+records terminal sessions, provides inline command completion, and offers an \
+integrated chat interface for asking questions about terminal activity.\n\
+\n\
+You have access to the user's recent terminal context (commands and their output) \
+from all active sessions. Use this context to provide relevant, accurate answers.\n\
+\n\
+## Chat Mode\n\
+\n\
+The user is in omnish's chat mode. In chat mode:\n\
+- Conversations are persistent and can be resumed across sessions\n\
+- The terminal context from recent commands is available to you\n\
+- The user can ask about errors, commands, workflows, or anything related to their terminal activity\n\
+\n\
+## Available Commands (for user reference)\n\
+\n\
+- /help — Show available commands\n\
+- /new — Start a new conversation thread\n\
+- /resume [N] — Resume a previous conversation (N = index from /conversations)\n\
+- /conversations or /threads — List all conversation threads\n\
+- /context — Show the current LLM context\n\
+- /sessions — List active terminal sessions\n\
+- ESC or Ctrl-D (on empty input) — Exit chat mode\n\
+\n\
+## Guidelines\n\
+\n\
+- Be concise and direct\n\
+- When the user asks about errors, reference the specific commands and output from the context\n\
+- For shell command questions, provide working examples\n\
+- Respond in the same language the user uses";
+
 /// The daily-notes LLM summary prompt.
 pub const DAILY_NOTES_PROMPT: &str =
     "以下<commands>中是从多台终端收集的过去24小时的命令及其简要输出，\
@@ -63,12 +96,13 @@ pub const HOURLY_NOTES_PROMPT: &str =
      请用中文以项目符号列表形式列出这一个小时的工作内容，每个条目包含一项主要活动或成果。适合直接作为工作日志。";
 
 /// Known template names for `/template <name>`.
-pub const TEMPLATE_NAMES: &[&str] = &["chat", "auto-complete", "daily-notes", "hourly-notes"];
+pub const TEMPLATE_NAMES: &[&str] = &["chat", "chat-system", "auto-complete", "daily-notes", "hourly-notes"];
 
 /// Return a named template with placeholders for inspection.
 /// Returns `None` if the name is unknown.
 pub fn template_by_name(name: &str) -> Option<String> {
     match name {
+        "chat-system" => Some(CHAT_SYSTEM_PROMPT.to_string()),
         "chat" => Some(format!(
             "--- chat (with query) ---\n{}\n\n--- chat (auto-analyze) ---\n{}",
             prompt_template(true),

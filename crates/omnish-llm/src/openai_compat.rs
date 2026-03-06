@@ -33,7 +33,7 @@ impl LlmBackend for OpenAiCompatBackend {
     async fn complete(&self, req: &LlmRequest) -> Result<LlmResponse> {
         let client = &self.client;
 
-        let messages: Vec<serde_json::Value> = if req.conversation.is_empty() {
+        let mut messages: Vec<serde_json::Value> = if req.conversation.is_empty() {
             // Existing single-turn behavior
             let user_content = crate::template::build_user_content(
                 &req.context,
@@ -58,6 +58,11 @@ impl LlmBackend for OpenAiCompatBackend {
             }
             msgs
         };
+
+        // Prepend system message if provided
+        if let Some(ref system) = req.system_prompt {
+            messages.insert(0, serde_json::json!({"role": "system", "content": system}));
+        }
 
         // Build request body
         let mut body_map = serde_json::Map::new();
