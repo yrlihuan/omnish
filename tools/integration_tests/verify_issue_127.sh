@@ -28,17 +28,25 @@ set -uo pipefail
 # Show usage information
 show_usage() {
     cat <<EOF
-Usage: $(basename "$0") [-w]
+Usage: $(basename "$0") [-w] [-t TEST_CASE]
 
 Options:
   -w    Wait for user confirmation after showing monitor command
+  -t TEST_CASE  Run specific test case(s). Can be: 1, 2, or "all" (default: all)
   -h, --help  Show this help message
 
 Verifies fix for issue #127: "backspace退出chat模式，仅当用户没有发出首轮对话的时候有效"
 
-Tests two scenarios:
+Test cases:
 1. Phase 1 (mode selection): backspace exits chat mode when no message sent
 2. Phase 2 (chat loop): backspace is ignored after first message sent
+
+Examples:
+  $0               # Run all tests
+  $0 -t 1          # Run only test 1 (phase 1)
+  $0 -t 2          # Run only test 2 (phase 2)
+  $0 -t all        # Run all tests (same as default)
+  $0 -w -t 1       # Wait for confirmation, then run test 1
 EOF
 }
 
@@ -255,11 +263,20 @@ main() {
 
     # Parse command line arguments
     local WAIT_FOR_USER=false
+    local TEST_CASES="all"
     while [[ $# -gt 0 ]]; do
         case $1 in
             -w)
                 WAIT_FOR_USER=true
                 shift
+                ;;
+            -t)
+                if [[ $# -lt 2 ]]; then
+                    echo "Error: -t requires a test case argument"
+                    exit 1
+                fi
+                TEST_CASES="$2"
+                shift 2
                 ;;
             -h|--help)
                 show_usage
@@ -285,20 +302,42 @@ main() {
     local passed=0
     local total=0
 
-    # Run test 1
-    if test_phase1_backspace_exits; then
-        ((passed++))
-    fi
-    ((total++))
+    # Validate TEST_CASES
+    case "$TEST_CASES" in
+        all|1|2)
+            # Valid cases
+            ;;
+        *)
+            echo -e "${RED}Error: Invalid test case '$TEST_CASES'. Must be: 1, 2, or 'all'${NC}"
+            exit 1
+            ;;
+    esac
 
-    # Run test 2
-    if test_phase2_backspace_ignored; then
-        ((passed++))
+    # Run test 1 if requested
+    if [[ "$TEST_CASES" == "all" || "$TEST_CASES" == "1" ]]; then
+        echo -e "${YELLOW}Running test 1 (phase 1)...${NC}"
+        if test_phase1_backspace_exits; then
+            ((passed++))
+        fi
+        ((total++))
     fi
-    ((total++))
+
+    # Run test 2 if requested
+    if [[ "$TEST_CASES" == "all" || "$TEST_CASES" == "2" ]]; then
+        echo -e "${YELLOW}Running test 2 (phase 2)...${NC}"
+        if test_phase2_backspace_ignored; then
+            ((passed++))
+        fi
+        ((total++))
+    fi
 
     # Summary
     echo -e "\n${YELLOW}=== Test Summary ===${NC}"
+    if [[ $total -eq 0 ]]; then
+        echo -e "  ${YELLOW}No tests were run.${NC}"
+        return 0
+    fi
+
     echo -e "  Passed: ${GREEN}$passed${NC} / ${total}"
 
     if [[ $passed -eq $total ]]; then

@@ -24,14 +24,19 @@ This directory contains integration tests for omnish that require external tools
 **Usage:**
 ```bash
 # From project root
-tools/integration_tests/verify_issue_127.sh [-w]
+tools/integration_tests/verify_issue_127.sh [-w] [-t TEST_CASE]
 
-# With -w flag to wait for user confirmation after showing monitor command
-tools/integration_tests/verify_issue_127.sh -w
+# Examples:
+tools/integration_tests/verify_issue_127.sh          # Run all tests (default)
+tools/integration_tests/verify_issue_127.sh -t 1     # Run only test 1 (phase 1)
+tools/integration_tests/verify_issue_127.sh -t 2     # Run only test 2 (phase 2)
+tools/integration_tests/verify_issue_127.sh -t all   # Run all tests
+tools/integration_tests/verify_issue_127.sh -w -t 1  # Wait for confirmation, then run test 1
 ```
 
 **Options:**
 - `-w`: Wait for user confirmation after showing the monitor command. Useful for manual inspection of the tmux session before tests run.
+- `-t TEST_CASE`: Run specific test case(s). Can be: `1` (phase 1), `2` (phase 2), or `all` (default: all).
 - `-h, --help`: Show help message.
 
 **Expected output:**
