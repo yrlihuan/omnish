@@ -133,6 +133,11 @@ const COMMANDS: &[CommandEntry] = &[
         help: "List all conversations",
     },
     CommandEntry {
+        path: "/threads",
+        kind: CommandKind::Daemon("conversations"),
+        help: "List all conversations (alias for /conversations)",
+    },
+    CommandEntry {
         path: "/tasks",
         kind: CommandKind::Daemon("tasks"),
         help: "List or manage scheduled tasks",
@@ -366,6 +371,8 @@ mod tests {
         assert!(cmds.contains(&"/debug events".to_string()));
         assert!(cmds.contains(&"/debug session".to_string()));
         assert!(cmds.contains(&"/sessions".to_string()));
+        assert!(cmds.contains(&"/conversations".to_string()));
+        assert!(cmds.contains(&"/threads".to_string()));
         // Template and context subcommands are also completable.
         assert!(cmds.contains(&"/template chat".to_string()));
         assert!(cmds.contains(&"/template auto-complete".to_string()));
@@ -464,6 +471,29 @@ mod tests {
                 assert!(redirect.is_none());
             }
             _ => panic!("expected Command"),
+        }
+    }
+
+    #[test]
+    fn test_threads_alias() {
+        // /threads should be an alias for /conversations
+        match dispatch("/threads") {
+            ChatAction::DaemonQuery { query, redirect } => {
+                assert_eq!(query, "__cmd:conversations");
+                assert!(redirect.is_none());
+            }
+            _ => panic!("expected DaemonQuery"),
+        }
+    }
+
+    #[test]
+    fn test_conversations_command() {
+        match dispatch("/conversations") {
+            ChatAction::DaemonQuery { query, redirect } => {
+                assert_eq!(query, "__cmd:conversations");
+                assert!(redirect.is_none());
+            }
+            _ => panic!("expected DaemonQuery"),
         }
     }
 }
