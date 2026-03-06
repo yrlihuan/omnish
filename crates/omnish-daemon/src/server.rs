@@ -118,7 +118,7 @@ async fn handle_message(
         }
         Message::Request(req) => {
             if req.query.starts_with("__cmd:") {
-                let content = handle_builtin_command(&req, &mgr, &task_mgr, &llm).await;
+                let content = handle_builtin_command(&req, &mgr, &task_mgr, &llm, conv_mgr).await;
                 return Message::Response(Response {
                     request_id: req.request_id,
                     content,
@@ -331,7 +331,7 @@ async fn resolve_chat_context(req: &Request, mgr: &SessionManager, max_context_c
 }
 
 
-async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>) -> String {
+async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>) -> String {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
     // Handle /context <scenario> for showing context for different scenarios
     if let Some(scenario) = sub.strip_prefix("context ") {
@@ -346,6 +346,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             }
         }
         "sessions" => mgr.format_sessions_list(&req.session_id).await,
+        "conversations" => format_conversations_list(conv_mgr),
         "session" => match get_session_debug_info(&req.session_id, mgr).await {
             Ok(info) => info,
             Err(e) => format!("Error: {}", e),
@@ -355,6 +356,37 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
         }
         other => format!("Unknown command: {}", other),
     }
+}
+
+/// Format the list of conversations for display.
+fn format_conversations_list(conv_mgr: &Arc<ConversationManager>) -> String {
+    let conversations = conv_mgr.list_conversations();
+    if conversations.is_empty() {
+        return "No conversations yet. Start a chat with : then /chat or /ask".to_string();
+    }
+
+    let mut output = String::from("Conversations:\n");
+    for (_thread_id, modified, exchange_count, last_question) in conversations {
+        // Format time ago
+        let time_ago = chrono::DateTime::<chrono::Utc>::from(modified)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+
+        // Truncate last question if too long
+        let question_display = if last_question.len() > 50 {
+            format!("{}...", &last_question[..47])
+        } else {
+            last_question
+        };
+
+        output.push_str(&format!(
+            "  {} | {} turns | {}\n",
+            time_ago,
+            exchange_count,
+            question_display
+        ));
+    }
+    output
 }
 
 /// Handle /context <scenario> to show context for different use cases.

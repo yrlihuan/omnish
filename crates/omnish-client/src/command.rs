@@ -128,6 +128,11 @@ const COMMANDS: &[CommandEntry] = &[
         help: "List sessions",
     },
     CommandEntry {
+        path: "/conversations",
+        kind: CommandKind::Daemon("conversations"),
+        help: "List all conversations",
+    },
+    CommandEntry {
         path: "/tasks",
         kind: CommandKind::Daemon("tasks"),
         help: "List or manage scheduled tasks",

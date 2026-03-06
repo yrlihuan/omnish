@@ -42,6 +42,45 @@ impl ConversationManager {
         })
     }
 
+    /// List all conversations, sorted by modification time (newest first).
+    /// Returns vector of (thread_id, last_modified, exchange_count, last_question).
+    pub fn list_conversations(&self) -> Vec<(String, std::time::SystemTime, u32, String)> {
+        let entries: Vec<_> = std::fs::read_dir(&self.threads_dir)
+            .ok()
+            .map(|e| e.filter_map(|e| e.ok()).collect())
+            .unwrap_or_default();
+
+        let mut conversations: Vec<_> = entries
+            .into_iter()
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "jsonl"))
+            .filter_map(|e| {
+                let path = e.path();
+                let thread_id = path.file_stem()?.to_string_lossy().to_string();
+                let metadata = e.metadata().ok()?;
+                let modified = metadata.modified().ok()?;
+                let content = std::fs::read_to_string(&path).ok()?;
+                let msgs: Vec<StoredMessage> = content
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .filter_map(|l| serde_json::from_str(l).ok())
+                    .collect();
+                let resolved = Self::resolve_interrupted(msgs);
+                let exchange_count = (resolved.len() / 2) as u32;
+                // Get last user question (second-to-last message, or None if no messages)
+                let last_question = if resolved.len() >= 2 {
+                    resolved[resolved.len() - 2].content.clone()
+                } else {
+                    String::new()
+                };
+                Some((thread_id, modified, exchange_count, last_question))
+            })
+            .collect();
+
+        // Sort by modification time, newest first
+        conversations.sort_by(|a, b| b.1.cmp(&a.1));
+        conversations
+    }
+
     /// Append a user+assistant exchange to a thread file.
     pub fn append_exchange(&self, thread_id: &str, query: &str, response: &str) {
         use std::io::Write;
