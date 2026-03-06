@@ -1460,10 +1460,30 @@ async fn run_chat_loop(
         Box::new(ghost_complete::BuiltinProvider::new()),
     ]);
 
-    // Phase 1: Mode selection — user must choose /chat, /ask, or /resume
+    // Auto-create a new thread on entry
     let mut current_thread_id;
+    {
+        let req_id = Uuid::new_v4().to_string()[..8].to_string();
+        let start_msg = Message::ChatStart(ChatStart {
+            request_id: req_id.clone(),
+            session_id: session_id.to_string(),
+            new_thread: true,
+        });
+        match rpc.call(start_msg).await {
+            Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
+                current_thread_id = ready.thread_id;
+            }
+            _ => {
+                let err = display::render_error("Failed to start chat session");
+                nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                return;
+            }
+        }
+    }
+
     let mut pending_input = initial_msg;
 
+    // Chat loop — LLM queries
     loop {
         let input = if let Some(msg) = pending_input.take() {
             msg
@@ -1473,88 +1493,8 @@ async fn run_chat_loop(
 
             match read_chat_input(&mut chat_completer, true) {
                 Some(line) => line,
-                None => return, // ESC or Ctrl-C
+                None => break, // ESC or Ctrl-C
             }
-        };
-
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        // /chat or /ask — start new thread
-        if trimmed == "/chat" || trimmed == "/ask" {
-            let req_id = Uuid::new_v4().to_string()[..8].to_string();
-            let start_msg = Message::ChatStart(ChatStart {
-                request_id: req_id.clone(),
-                session_id: session_id.to_string(),
-                new_thread: true,
-            });
-            match rpc.call(start_msg).await {
-                Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
-                    current_thread_id = ready.thread_id;
-                    let info = "\r\n\x1b[2;37m(new conversation)\x1b[0m";
-                    nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
-                    break;
-                }
-                _ => {
-                    let err = display::render_error("Failed to start chat session");
-                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                    return;
-                }
-            }
-        }
-
-        // /resume — resume latest thread
-        if trimmed == "/resume" {
-            let req_id = Uuid::new_v4().to_string()[..8].to_string();
-            let start_msg = Message::ChatStart(ChatStart {
-                request_id: req_id.clone(),
-                session_id: session_id.to_string(),
-                new_thread: false,
-            });
-            match rpc.call(start_msg).await {
-                Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
-                    current_thread_id = ready.thread_id;
-                    // Display history
-                    let history = display::render_chat_history(
-                        ready.last_exchange.as_ref(),
-                        ready.earlier_count,
-                    );
-                    if !history.is_empty() {
-                        nix::unistd::write(std::io::stdout(), history.as_bytes()).ok();
-                    }
-                    break;
-                }
-                _ => {
-                    let err = display::render_error("Failed to resume chat session");
-                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                    return;
-                }
-            }
-        }
-
-        // Handle other /commands normally
-        if trimmed.starts_with('/') {
-            if handle_slash_command(trimmed, session_id, rpc, proxy, client_debug_fn).await {
-                continue;
-            }
-            // Unknown /command — show help
-        }
-
-        // Not a mode command — show help
-        let help = "\r\n\x1b[2;37mCommands: /chat (new conversation), /resume (continue previous)\x1b[0m";
-        nix::unistd::write(std::io::stdout(), help.as_bytes()).ok();
-    }
-
-    // Phase 2: Chat loop — LLM queries
-    loop {
-        let prompt = display::render_chat_prompt();
-        nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
-
-        let input = match read_chat_input(&mut chat_completer, false) {
-            Some(line) => line,
-            None => break, // ESC or Ctrl-C
         };
 
         let trimmed = input.trim();
@@ -1578,6 +1518,33 @@ async fn run_chat_loop(
                 }
                 _ => {
                     let err = display::render_error("Failed to create new thread");
+                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                }
+            }
+            continue;
+        }
+
+        // /resume — switch to latest existing thread
+        if trimmed == "/resume" {
+            let req_id = Uuid::new_v4().to_string()[..8].to_string();
+            let start_msg = Message::ChatStart(ChatStart {
+                request_id: req_id.clone(),
+                session_id: session_id.to_string(),
+                new_thread: false,
+            });
+            match rpc.call(start_msg).await {
+                Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
+                    current_thread_id = ready.thread_id;
+                    let history = display::render_chat_history(
+                        ready.last_exchange.as_ref(),
+                        ready.earlier_count,
+                    );
+                    if !history.is_empty() {
+                        nix::unistd::write(std::io::stdout(), history.as_bytes()).ok();
+                    }
+                }
+                _ => {
+                    let err = display::render_error("Failed to resume chat session");
                     nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                 }
             }
