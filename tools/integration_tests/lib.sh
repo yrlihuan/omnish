@@ -27,7 +27,7 @@ NC='\033[0m'
 # ── Project paths ────────────────────────────────────────────────────────
 # SCRIPT_DIR must be set by the caller before sourcing this file.
 PROJECT_ROOT="$(dirname "$(dirname "${SCRIPT_DIR:?SCRIPT_DIR must be set before sourcing lib.sh}")")"
-CLIENT="$PROJECT_ROOT/target/debug/omnish-client"
+CLIENT="$PROJECT_ROOT/target/release/omnish-client"
 
 # ── Tmux socket / session ───────────────────────────────────────────────
 SOCKET_DIR="${CLAUDE_TMUX_SOCKET_DIR:-/tmp/claude-tmux-sockets}"
