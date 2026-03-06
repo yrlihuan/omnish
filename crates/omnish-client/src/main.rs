@@ -1563,7 +1563,8 @@ async fn run_chat_loop(
 
         // /resume [N] — switch to thread by cached index or latest
         if trimmed == "/resume" || trimmed.starts_with("/resume ") {
-            let thread_id = if let Some(idx_str) = trimmed.strip_prefix("/resume ") {
+            // Resolve thread_id: from cache (if /resume N) or from daemon (if /resume)
+            let (thread_id, display_msg) = if let Some(idx_str) = trimmed.strip_prefix("/resume ") {
                 // Auto-fetch conversations if cache is empty
                 if cached_thread_ids.is_empty() {
                     let rid = Uuid::new_v4().to_string()[..8].to_string();
@@ -1587,7 +1588,23 @@ async fn run_chat_loop(
                 }
                 match idx_str.trim().parse::<usize>() {
                     Ok(i) if i >= 1 && i <= cached_thread_ids.len() => {
-                        Some(cached_thread_ids[i - 1].clone())
+                        let tid = cached_thread_ids[i - 1].clone();
+                        // Fetch last exchange display via daemon
+                        let rid = Uuid::new_v4().to_string()[..8].to_string();
+                        let req = Message::Request(Request {
+                            request_id: rid.clone(),
+                            session_id: session_id.to_string(),
+                            query: format!("__cmd:resume {}", i),
+                            scope: RequestScope::AllSessions,
+                        });
+                        let display = match rpc.call(req).await {
+                            Ok(Message::Response(resp)) if resp.request_id == rid => {
+                                parse_cmd_response(&resp.content)
+                                    .map(|j| cmd_display_str(&j))
+                            }
+                            _ => None,
+                        };
+                        (Some(tid), display)
                     }
                     Ok(i) if i >= 1 => {
                         let err = display::render_error(&format!(
@@ -1595,12 +1612,12 @@ async fn run_chat_loop(
                             i, cached_thread_ids.len()
                         ));
                         nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                        None
+                        (None, None)
                     }
                     _ => {
                         let err = display::render_error("Invalid index");
                         nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                        None
+                        (None, None)
                     }
                 }
             } else {
@@ -1615,18 +1632,25 @@ async fn run_chat_loop(
                 match rpc.call(request).await {
                     Ok(Message::Response(resp)) if resp.request_id == request_id => {
                         if let Some(json) = parse_cmd_response(&resp.content) {
-                            json.get("thread_id").and_then(|v| v.as_str()).map(String::from)
+                            let tid = json.get("thread_id").and_then(|v| v.as_str()).map(String::from);
+                            let display = Some(cmd_display_str(&json));
+                            (tid, display)
                         } else {
-                            None
+                            (None, None)
                         }
                     }
-                    _ => None,
+                    _ => (None, None),
                 }
             };
             if let Some(tid) = thread_id {
                 current_thread_id = Some(tid);
-                let info = "\r\n\x1b[2;37m(resumed conversation)\x1b[0m";
-                nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
+                if let Some(msg) = display_msg {
+                    let output = display::render_response(&msg);
+                    nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                } else {
+                    let info = "\r\n\x1b[2;37m(resumed conversation)\x1b[0m";
+                    nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
+                }
             }
             continue;
         }
