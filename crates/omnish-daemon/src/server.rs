@@ -337,6 +337,29 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
     if let Some(scenario) = sub.strip_prefix("context ") {
         return handle_context_scenario(scenario, req, mgr, llm_backend).await;
     }
+    // Handle /resume [n] for resuming a specific conversation
+    if let Some(idx_str) = sub.strip_prefix("resume ") {
+        let idx: usize = match idx_str.trim().parse::<usize>() {
+            Ok(i) if i >= 1 => i - 1, // Convert 1-based to 0-based
+            Ok(_) => return "Invalid index: must be >= 1".to_string(),
+            Err(_) => return "Invalid index: not a number".to_string(),
+        };
+        return match conv_mgr.get_thread_by_index(idx) {
+            Some(thread_id) => {
+                let (last_exchange, earlier_count) = conv_mgr.get_last_exchange(&thread_id);
+                format!(
+                    "Resuming conversation [{}]\n{}",
+                    idx + 1,
+                    format_chat_history(&last_exchange, earlier_count)
+                )
+            }
+            None => "Invalid index: out of bounds".to_string(),
+        };
+    }
+    // Handle /resume without index (show list)
+    if sub == "resume" {
+        return format_conversations_list(conv_mgr);
+    }
     match sub {
         "context" => {
             // Default to completion context (most common LLM use case)
@@ -358,6 +381,22 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
     }
 }
 
+/// Format chat history for display.
+fn format_chat_history(last_exchange: &Option<(String, String)>, earlier_count: u32) -> String {
+    match last_exchange {
+        Some((user, assistant)) => {
+            let mut output = String::new();
+            if earlier_count > 0 {
+                output.push_str(&format!("\x1b[2;37m({} earlier turns)\x1b[0m\n\n", earlier_count));
+            }
+            output.push_str(&format!("\x1b[1;32mUser:\x1b[0m {}\n", user));
+            output.push_str(&format!("\x1b[1;34mAssistant:\x1b[0m {}\n", assistant));
+            output
+        }
+        None => "\x1b[2;37m(empty conversation)\x1b[0m".to_string(),
+    }
+}
+
 /// Format the list of conversations for display.
 fn format_conversations_list(conv_mgr: &Arc<ConversationManager>) -> String {
     let conversations = conv_mgr.list_conversations();
@@ -366,7 +405,7 @@ fn format_conversations_list(conv_mgr: &Arc<ConversationManager>) -> String {
     }
 
     let mut output = String::from("Conversations:\n");
-    for (_thread_id, modified, exchange_count, last_question) in conversations {
+    for (i, (_thread_id, modified, exchange_count, last_question)) in conversations.into_iter().enumerate() {
         // Format time ago
         let time_ago = chrono::DateTime::<chrono::Utc>::from(modified)
             .format("%Y-%m-%d %H:%M")
@@ -380,7 +419,8 @@ fn format_conversations_list(conv_mgr: &Arc<ConversationManager>) -> String {
         };
 
         output.push_str(&format!(
-            "  {} | {} turns | {}\n",
+            "  [{}] {} | {} turns | {}\n",
+            i + 1,
             time_ago,
             exchange_count,
             question_display

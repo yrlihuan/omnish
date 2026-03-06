@@ -81,6 +81,13 @@ impl ConversationManager {
         conversations
     }
 
+    /// Get thread_id by index (0-based, sorted by modification time).
+    /// Returns None if index is out of bounds.
+    pub fn get_thread_by_index(&self, index: usize) -> Option<String> {
+        let conversations = self.list_conversations();
+        conversations.into_iter().nth(index).map(|(thread_id, _, _, _)| thread_id)
+    }
+
     /// Append a user+assistant exchange to a thread file.
     pub fn append_exchange(&self, thread_id: &str, query: &str, response: &str) {
         use std::io::Write;
