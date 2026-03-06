@@ -463,6 +463,7 @@ async fn main() -> Result<()> {
                         // Enter chat mode loop (pass initial message if any)
                         if let Some(ref rpc) = daemon_conn {
                             let initial = if msg.trim().is_empty() { None } else { Some(msg) };
+                            let shell_pid = proxy.child_pid() as u32;
                             let dbg_fn = || debug_client_state(
                                 &shell_input,
                                 &interceptor,
@@ -470,6 +471,7 @@ async fn main() -> Result<()> {
                                 &daemon_conn,
                                 &osc133_detector,
                                 &last_readline_content,
+                                shell_pid,
                             );
                             run_chat_loop(rpc, &session_id, &proxy, initial, &dbg_fn).await;
                         } else {
@@ -1115,11 +1117,21 @@ fn debug_client_state(
     daemon_conn: &Option<RpcClient>,
     _osc133_detector: &omnish_tracker::osc133_detector::Osc133Detector,
     last_readline: &Option<String>,
+    shell_pid: u32,
 ) -> String {
     let mut output = String::new();
 
     // Version info
     output.push_str(&format!("Version: omnish {}\n\n", omnish_common::VERSION));
+
+    // Shell cwd
+    output.push_str("Shell:\n");
+    if let Some(cwd) = get_shell_cwd(shell_pid) {
+        output.push_str(&format!("  cwd: {}\n", cwd));
+    } else {
+        output.push_str("  cwd: (unknown)\n");
+    }
+    output.push('\n');
 
     // Shell Input Tracker state
     output.push_str("Shell Input Tracker:\n");
