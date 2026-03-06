@@ -1448,7 +1448,7 @@ async fn handle_slash_command(
     }
 }
 
-/// Run the multi-turn chat loop. Returns when user presses ESC or Ctrl-C.
+/// Run the multi-turn chat loop. Returns when user exits via ESC, Ctrl-D, or backspace on empty input.
 async fn run_chat_loop(
     rpc: &RpcClient,
     session_id: &str,
@@ -1475,7 +1475,7 @@ async fn run_chat_loop(
 
             match read_chat_input(&mut chat_completer, true) {
                 Some(line) => line,
-                None => break, // ESC or Ctrl-C
+                None => break, // ESC / Ctrl-D / backspace on empty
             }
         };
 
