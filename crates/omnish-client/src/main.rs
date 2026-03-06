@@ -1507,6 +1507,10 @@ async fn run_chat_loop(
     // Cached thread_ids from last /conversations call, for stable /resume N
     let mut cached_thread_ids: Vec<String> = Vec::new();
 
+    // Chat command history for arrow key navigation
+    let mut chat_history: VecDeque<String> = VecDeque::with_capacity(100);
+    let mut history_index: Option<usize> = None; // None = new command, Some(idx) = browsing history
+
     let mut pending_input = initial_msg;
 
     // Chat loop — LLM queries
@@ -1527,6 +1531,10 @@ async fn run_chat_loop(
         if trimmed.is_empty() {
             continue;
         }
+
+        // Save to history for future navigation
+        save_to_history(&mut chat_history, trimmed, 100);
+        history_index = None; // Reset to new command mode
 
         // /new — start new thread within chat
         if trimmed == "/new" || trimmed == "/chat" || trimmed == "/ask" {
@@ -2112,6 +2120,18 @@ fn read_chat_input(completer: &mut ghost_complete::GhostCompleter, allow_backspa
             _ => return None,
         }
     }
+}
+
+fn save_to_history(history: &mut VecDeque<String>, command: &str, capacity: usize) {
+    // Don't save empty commands or duplicates of the most recent command
+    if command.trim().is_empty() || history.back().map(|s| s == command).unwrap_or(false) {
+        return;
+    }
+
+    if history.len() >= capacity {
+        history.pop_front();
+    }
+    history.push_back(command.to_string());
 }
 
 #[cfg(test)]
