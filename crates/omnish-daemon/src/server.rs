@@ -395,6 +395,24 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             None => cmd_display("No conversations yet. Start a chat with : then /chat or /ask"),
         };
     }
+    // Handle /conversations del N — delete a conversation by index
+    if let Some(idx_str) = sub.strip_prefix("conversations del ") {
+        let idx: usize = match idx_str.trim().parse::<usize>() {
+            Ok(i) if i >= 1 => i - 1,
+            Ok(_) => return cmd_display("Invalid index: must be >= 1"),
+            Err(_) => return cmd_display("Invalid index: not a number"),
+        };
+        return match conv_mgr.get_thread_by_index(idx) {
+            Some(thread_id) => {
+                conv_mgr.delete_thread(&thread_id);
+                serde_json::json!({
+                    "display": format!("Deleted conversation [{}]", idx + 1),
+                    "deleted_thread_id": thread_id,
+                })
+            }
+            None => cmd_display("Invalid index: out of bounds"),
+        };
+    }
     match sub {
         "context" => {
             // Default to completion context (most common LLM use case)

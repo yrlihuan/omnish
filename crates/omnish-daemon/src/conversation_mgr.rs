@@ -106,6 +106,17 @@ impl ConversationManager {
         conversations.into_iter().nth(index).map(|(thread_id, _, _, _)| thread_id)
     }
 
+    /// Delete a thread by ID. Removes from both memory and disk.
+    /// Returns true if the thread existed and was deleted.
+    pub fn delete_thread(&self, thread_id: &str) -> bool {
+        let removed = self.threads.lock().unwrap().remove(thread_id).is_some();
+        if removed {
+            let path = self.threads_dir.join(format!("{}.jsonl", thread_id));
+            std::fs::remove_file(&path).ok();
+        }
+        removed
+    }
+
     /// Append a user+assistant exchange. Writes to both memory and disk (append-only).
     pub fn append_exchange(&self, thread_id: &str, query: &str, response: &str) {
         let now = chrono::Utc::now().to_rfc3339();
@@ -327,6 +338,47 @@ mod tests {
         assert_eq!(msgs.len(), 4);
         assert_eq!(msgs[1].content, "a1");
         assert_eq!(msgs[3].content, "a2");
+    }
+
+    #[test]
+    fn test_delete_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id1 = mgr.create_thread();
+        let id2 = mgr.create_thread();
+        mgr.append_exchange(&id1, "q1", "a1");
+        mgr.append_exchange(&id2, "q2", "a2");
+
+        // Delete first thread
+        assert!(mgr.delete_thread(&id1));
+        assert!(mgr.load_messages(&id1).is_empty());
+        assert!(!dir.path().join(format!("{}.jsonl", id1)).exists());
+
+        // Second thread still intact
+        assert_eq!(mgr.load_messages(&id2).len(), 2);
+
+        // Deleting again returns false
+        assert!(!mgr.delete_thread(&id1));
+
+        // Deleted thread not in list
+        let convs = mgr.list_conversations();
+        assert_eq!(convs.len(), 1);
+        assert_eq!(convs[0].0, id2);
+    }
+
+    #[test]
+    fn test_delete_thread_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr1 = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr1.create_thread();
+        mgr1.append_exchange(&id, "hello", "world");
+        mgr1.delete_thread(&id);
+        drop(mgr1);
+
+        // New manager should not find the deleted thread
+        let mgr2 = ConversationManager::new(dir.path().to_path_buf());
+        assert!(mgr2.load_messages(&id).is_empty());
+        assert!(mgr2.list_conversations().is_empty());
     }
 
     #[test]
