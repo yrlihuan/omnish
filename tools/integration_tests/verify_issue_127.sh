@@ -104,10 +104,10 @@ cleanup() {
 # Trap exit
 trap cleanup EXIT
 
-# Start a fresh tmux session
+# Start a fresh tmux session running omnish-client directly
 echo -e "${YELLOW}Starting tmux session...${NC}"
 tmux -S "$SOCKET" kill-session -t "$SESSION" 2>/dev/null || true
-tmux -S "$SOCKET" new -d -s "$SESSION" -n test
+tmux -S "$SOCKET" new -d -s "$SESSION" -n test "$CLIENT"
 
 # Function to send keys and wait
 send_keys() {
@@ -141,26 +141,30 @@ capture_pane() {
     tmux -S "$SOCKET" capture-pane -p -J -t "$target" -S "$lines"
 }
 
-# Function to check if chat prompt is visible
-has_chat_prompt() {
+# Function to check if the LAST non-empty line is a chat prompt ("> ")
+last_line_is_chat_prompt() {
     local content="$1"
-    # Chat prompt is "> " with ANSI color codes
-    # Look for ">" followed by space at beginning of line after newline
-    echo "$content" | grep -q '\[36m> \[0m' || echo "$content" | grep -q '>'
+    # Get last non-empty line
+    local last_line
+    last_line=$(echo "$content" | grep -v '^[[:space:]]*$' | tail -1)
+    # Chat prompt is "> " possibly with ANSI codes, or just "> " at start
+    echo "$last_line" | grep -qE '^\s*((\[36m)?> (\[0m)?|> )$'
 }
 
-# Function to check if exited to shell (no chat prompt)
-has_no_chat_prompt() {
+# Function to check if the last line is a shell prompt (not chat)
+last_line_is_shell_prompt() {
     local content="$1"
-    ! has_chat_prompt "$content"
+    local last_line
+    last_line=$(echo "$content" | grep -v '^[[:space:]]*$' | tail -1)
+    echo "$last_line" | grep -q '\$ $\|\$$'
 }
 
 # Function to run test scenario 1: backspace exits in phase 1
 test_phase1_backspace_exits() {
     echo -e "\n${YELLOW}=== Test 1: Phase 1 - backspace should exit chat mode ===${NC}"
 
-    # Start omnish-client
-    send_keys "$SESSION:0.0" "$CLIENT" 1
+    # Wait for omnish-client to be ready (shell prompt visible)
+    sleep 1.5
 
     # Send ':' to enter chat mode
     send_keys "$SESSION:0.0" ":" 0.5
@@ -181,11 +185,11 @@ test_phase1_backspace_exits() {
     echo -e "  After backspace (last 20 lines):"
     echo "$after" | tail -10 | sed 's/^/    /'
 
-    # Check if chat prompt disappeared (exited chat mode)
-    if has_chat_prompt "$before" && has_no_chat_prompt "$after"; then
+    # Check: before should show chat prompt, after should show shell prompt
+    if last_line_is_chat_prompt "$before" && last_line_is_shell_prompt "$after"; then
         echo -e "  ${GREEN}✓ PASS: Chat prompt disappeared after backspace (exited chat mode)${NC}"
         return 0
-    elif ! has_chat_prompt "$before"; then
+    elif ! last_line_is_chat_prompt "$before"; then
         echo -e "  ${RED}✗ FAIL: Chat prompt not found before backspace${NC}"
         return 1
     else
@@ -200,19 +204,15 @@ test_phase2_backspace_ignored() {
 
     # Start fresh session for test 2
     tmux -S "$SOCKET" kill-session -t "$SESSION" 2>/dev/null || true
-    tmux -S "$SOCKET" new -d -s "$SESSION" -n test
+    tmux -S "$SOCKET" new -d -s "$SESSION" -n test "$CLIENT"
 
-    # Start omnish-client
-    send_keys "$SESSION:0.0" "$CLIENT" 1
+    # Wait for omnish-client to be ready
+    sleep 1.5
 
-    # Send ':' to enter chat mode
+    # Send ':' to enter chat mode (new default: enters chat directly)
     send_keys "$SESSION:0.0" ":" 0.5
 
-    # Send '/chat' to start chat conversation
-    send_keys "$SESSION:0.0" "/chat" 0.3
-    send_enter "$SESSION:0.0" 0.3  # Enter
-
-    # Wait for chat to be ready
+    # Wait for chat prompt to appear
     sleep 0.5
 
     # Send a test message
@@ -235,8 +235,18 @@ test_phase2_backspace_ignored() {
     echo -e "  After backspace (last 30 lines):"
     echo "$after" | tail -15 | sed 's/^/    /'
 
-    # Check if chat prompt is still present (backspace ignored)
-    if has_chat_prompt "$before" && has_chat_prompt "$after"; then
+    # Check if still in chat mode (chat prompt or thinking indicator on last line)
+    local before_in_chat=false
+    local after_in_chat=false
+    # Before: should be in chat mode (prompt "> " or "(thinking...)")
+    if last_line_is_chat_prompt "$before" || echo "$before" | grep -v '^[[:space:]]*$' | tail -1 | grep -q 'thinking'; then
+        before_in_chat=true
+    fi
+    # After: should still be in chat mode
+    if last_line_is_chat_prompt "$after" || echo "$after" | grep -v '^[[:space:]]*$' | tail -1 | grep -q 'thinking'; then
+        after_in_chat=true
+    fi
+    if $before_in_chat && $after_in_chat; then
         echo -e "  ${GREEN}✓ PASS: Chat prompt still present after backspace (backspace ignored)${NC}"
 
         # Additional check: send a message to verify still in chat mode
