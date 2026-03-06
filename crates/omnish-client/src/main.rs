@@ -1117,7 +1117,6 @@ fn debug_client_state(
     last_readline: &Option<String>,
 ) -> String {
     let mut output = String::new();
-    output.push_str("=== Client Debug State ===\n\n");
 
     // Version info
     output.push_str(&format!("Version: omnish {}\n\n", omnish_common::VERSION));
