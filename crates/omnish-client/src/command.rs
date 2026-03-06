@@ -193,7 +193,7 @@ fn parse_redirect(input: &str) -> (&str, Option<&str>) {
 }
 
 /// Parse head/tail limit suffix: "cmd | head -n 10" -> ("cmd", Some(Head, 10))
-/// Supports: | head -n N, | head N, | tail -n N, | tail N
+/// Supports: | head -n N, | head -nN, | head N, | tail -n N, | tail -nN, | tail N
 fn parse_limit(input: &str) -> (&str, Option<OutputLimit>) {
     // Find the last occurrence of | head or | tail
     if let Some(pos) = input.find(" | ") {
@@ -205,14 +205,32 @@ fn parse_limit(input: &str) -> (&str, Option<OutputLimit>) {
             return (input, None);
         }
 
+        // Helper to parse count from -nN or -n N or just N
+        let parse_count = |s: &str| -> Option<usize> {
+            if s.starts_with("-n") {
+                let n = &s[2..];
+                if n.is_empty() {
+                    // -n without number: will get next part if available
+                    None
+                } else {
+                    n.parse().ok()
+                }
+            } else {
+                s.parse().ok()
+            }
+        };
+
         let (kind, count) = match parts[0] {
             "head" => {
-                // | head or | head N or | head -n N (default to 10 if no N)
                 let n = if parts.len() >= 2 {
                     if parts[1] == "-n" {
+                        // | head -n N
                         parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(10)
+                    } else if let Some(c) = parse_count(parts[1]) {
+                        // | head -nN or | head N
+                        c
                     } else {
-                        parts[1].parse().unwrap_or(10)
+                        10
                     }
                 } else {
                     10
@@ -220,12 +238,15 @@ fn parse_limit(input: &str) -> (&str, Option<OutputLimit>) {
                 (OutputLimitKind::Head, n)
             }
             "tail" => {
-                // | tail or | tail N or | tail -n N (default to 10 if no N)
                 let n = if parts.len() >= 2 {
                     if parts[1] == "-n" {
+                        // | tail -n N
                         parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(10)
+                    } else if let Some(c) = parse_count(parts[1]) {
+                        // | tail -nN or | tail N
+                        c
                     } else {
-                        parts[1].parse().unwrap_or(10)
+                        10
                     }
                 } else {
                     10
