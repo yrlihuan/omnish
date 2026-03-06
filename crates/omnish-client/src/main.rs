@@ -1471,7 +1471,7 @@ async fn run_chat_loop(
             let prompt = display::render_chat_prompt();
             nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
 
-            match read_chat_input(&mut chat_completer) {
+            match read_chat_input(&mut chat_completer, true) {
                 Some(line) => line,
                 None => return, // ESC or Ctrl-C
             }
@@ -1552,7 +1552,7 @@ async fn run_chat_loop(
         let prompt = display::render_chat_prompt();
         nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
 
-        let input = match read_chat_input(&mut chat_completer) {
+        let input = match read_chat_input(&mut chat_completer, false) {
             Some(line) => line,
             None => break, // ESC or Ctrl-C
         };
@@ -1684,8 +1684,8 @@ fn wait_for_ctrl_c(stop: std::sync::mpsc::Receiver<()>) -> bool {
 }
 
 /// Read a line of input in raw mode for the chat loop.
-/// Returns None on ESC, Ctrl-D, or backspace on empty input.
-fn read_chat_input(completer: &mut ghost_complete::GhostCompleter) -> Option<String> {
+/// Returns None on ESC, Ctrl-D, or backspace on empty input (if allow_backspace_exit is true).
+fn read_chat_input(completer: &mut ghost_complete::GhostCompleter, allow_backspace_exit: bool) -> Option<String> {
     let stdin_fd = std::io::stdin().as_raw_fd();
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
@@ -1723,7 +1723,10 @@ fn read_chat_input(completer: &mut ghost_complete::GhostCompleter) -> Option<Str
                     }
                     0x7f | 0x08 => {      // Backspace
                         if buf.is_empty() {
-                            return None; // Backspace on empty — exit chat
+                            if allow_backspace_exit {
+                                return None; // Backspace on empty — exit chat
+                            }
+                            // Otherwise, ignore the backspace (don't exit)
                         }
                         buf.pop();
                         // Erase character and any ghost text
