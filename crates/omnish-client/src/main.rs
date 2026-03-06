@@ -1521,7 +1521,7 @@ async fn run_chat_loop(
             let prompt = display::render_chat_prompt();
             nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
 
-            match read_chat_input(&mut chat_completer, current_thread_id.is_none()) {
+            match read_chat_input(&mut chat_completer, current_thread_id.is_none(), &chat_history, &mut history_index) {
                 Some(line) => line,
                 None => break, // ESC / Ctrl-D / backspace on empty
             }
@@ -2003,7 +2003,12 @@ fn parse_escape_sequence(stdin_fd: i32) -> Option<[u8; 2]> {
 
 /// Read a line of input in raw mode for the chat loop.
 /// Returns None on ESC, Ctrl-D, or backspace on empty input (if allow_backspace_exit is true).
-fn read_chat_input(completer: &mut ghost_complete::GhostCompleter, allow_backspace_exit: bool) -> Option<String> {
+fn read_chat_input(
+    completer: &mut ghost_complete::GhostCompleter,
+    allow_backspace_exit: bool,
+    history: &VecDeque<String>,
+    history_index: &mut Option<usize>,
+) -> Option<String> {
     let stdin_fd = std::io::stdin().as_raw_fd();
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
@@ -2018,8 +2023,76 @@ fn read_chat_input(completer: &mut ghost_complete::GhostCompleter, allow_backspa
                         if let Some(seq) = parse_escape_sequence(stdin_fd) {
                             if seq[0] == b'[' {
                                 match seq[1] {
-                                    b'A' => { /* Up arrow - will be handled in Task 3 */ return Some(String::new()); },
-                                    b'B' => { /* Down arrow - will be handled in Task 3 */ return Some(String::new()); },
+                                    b'A' => { // Up arrow
+                                        if history.is_empty() {
+                                            return Some(String::new());
+                                        }
+
+                                        let idx = match *history_index {
+                                            Some(i) if i > 0 => i - 1,
+                                            Some(_) => 0, // Already at first item
+                                            None => history.len() - 1, // Start from most recent
+                                        };
+
+                                        *history_index = Some(idx);
+                                        if let Some(cmd) = history.get(idx) {
+                                            // Clear current line and show history command
+                                            let clear_seq = b"\r\x1b[K> ";
+                                            nix::unistd::write(std::io::stdout(), clear_seq).ok();
+                                            nix::unistd::write(std::io::stdout(), cmd.as_bytes()).ok();
+
+                                            // Update buffer
+                                            buf.clear();
+                                            buf.extend_from_slice(cmd.as_bytes());
+
+                                            // Update ghost completion for new input
+                                            if let Some(ghost) = completer.update(cmd) {
+                                                let ghost_render = format!("\x1b[2;37m{}\x1b[0m\x1b[{}D", ghost, ghost.len());
+                                                nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                                                has_ghost = true;
+                                            }
+                                        }
+                                        return Some(String::new());
+                                    },
+                                    b'B' => { // Down arrow
+                                        if history.is_empty() {
+                                            return Some(String::new());
+                                        }
+
+                                        let idx = match *history_index {
+                                            Some(i) if i < history.len() - 1 => i + 1,
+                                            Some(_) => {
+                                                // Going past most recent - clear input
+                                                *history_index = None;
+                                                let clear_seq = b"\r\x1b[K> ";
+                                                nix::unistd::write(std::io::stdout(), clear_seq).ok();
+                                                buf.clear();
+                                                completer.clear();
+                                                return Some(String::new());
+                                            },
+                                            None => return Some(String::new()), // Already at new command
+                                        };
+
+                                        *history_index = Some(idx);
+                                        if let Some(cmd) = history.get(idx) {
+                                            // Clear current line and show history command
+                                            let clear_seq = b"\r\x1b[K> ";
+                                            nix::unistd::write(std::io::stdout(), clear_seq).ok();
+                                            nix::unistd::write(std::io::stdout(), cmd.as_bytes()).ok();
+
+                                            // Update buffer
+                                            buf.clear();
+                                            buf.extend_from_slice(cmd.as_bytes());
+
+                                            // Update ghost completion
+                                            if let Some(ghost) = completer.update(cmd) {
+                                                let ghost_render = format!("\x1b[2;37m{}\x1b[0m\x1b[{}D", ghost, ghost.len());
+                                                nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                                                has_ghost = true;
+                                            }
+                                        }
+                                        return Some(String::new());
+                                    },
                                     _ => {} // Ignore other escape sequences
                                 }
                             }
