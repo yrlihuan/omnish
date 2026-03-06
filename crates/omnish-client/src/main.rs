@@ -1528,23 +1528,34 @@ async fn run_chat_loop(
             continue;
         }
 
-        // /resume — switch to latest existing thread
-        if trimmed == "/resume" {
-            let req_id = Uuid::new_v4().to_string()[..8].to_string();
-            let start_msg = Message::ChatStart(ChatStart {
-                request_id: req_id.clone(),
+        // /resume [N] — switch to existing thread via daemon command
+        if trimmed == "/resume" || trimmed.starts_with("/resume ") {
+            let cmd_key = if trimmed == "/resume" {
+                "__cmd:resume".to_string()
+            } else {
+                format!("__cmd:resume {}", trimmed.strip_prefix("/resume ").unwrap().trim())
+            };
+            let request_id = Uuid::new_v4().to_string()[..8].to_string();
+            let request = Message::Request(Request {
+                request_id: request_id.clone(),
                 session_id: session_id.to_string(),
-                new_thread: false,
+                query: cmd_key,
+                scope: RequestScope::AllSessions,
             });
-            match rpc.call(start_msg).await {
-                Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
-                    current_thread_id = Some(ready.thread_id);
-                    let history = display::render_chat_history(
-                        ready.last_exchange.as_ref(),
-                        ready.earlier_count,
-                    );
-                    if !history.is_empty() {
-                        nix::unistd::write(std::io::stdout(), history.as_bytes()).ok();
+            match rpc.call(request).await {
+                Ok(Message::Response(resp)) if resp.request_id == request_id => {
+                    if let Some(json) = parse_cmd_response(&resp.content) {
+                        if let Some(tid) = json.get("thread_id").and_then(|v| v.as_str()) {
+                            current_thread_id = Some(tid.to_string());
+                            let display = cmd_display_str(&json);
+                            let output = display::render_response(&display);
+                            nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                        } else {
+                            // No thread_id — show error from display
+                            let display = cmd_display_str(&json);
+                            let output = display::render_response(&display);
+                            nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                        }
                     }
                 }
                 _ => {
