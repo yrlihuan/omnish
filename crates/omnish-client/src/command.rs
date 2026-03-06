@@ -207,30 +207,30 @@ fn parse_limit(input: &str) -> (&str, Option<OutputLimit>) {
 
         let (kind, count) = match parts[0] {
             "head" => {
-                if parts.len() >= 2 {
-                    // | head -n N or | head N
-                    let n = if parts[1] == "-n" {
+                // | head or | head N or | head -n N (default to 10 if no N)
+                let n = if parts.len() >= 2 {
+                    if parts[1] == "-n" {
                         parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(10)
                     } else {
                         parts[1].parse().unwrap_or(10)
-                    };
-                    (OutputLimitKind::Head, n)
+                    }
                 } else {
-                    return (input, None);
-                }
+                    10
+                };
+                (OutputLimitKind::Head, n)
             }
             "tail" => {
-                if parts.len() >= 2 {
-                    // | tail -n N or | tail N
-                    let n = if parts[1] == "-n" {
+                // | tail or | tail N or | tail -n N (default to 10 if no N)
+                let n = if parts.len() >= 2 {
+                    if parts[1] == "-n" {
                         parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(10)
                     } else {
                         parts[1].parse().unwrap_or(10)
-                    };
-                    (OutputLimitKind::Tail, n)
+                    }
                 } else {
-                    return (input, None);
-                }
+                    10
+                };
+                (OutputLimitKind::Tail, n)
             }
             _ => return (input, None),
         };
