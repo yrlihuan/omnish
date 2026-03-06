@@ -1564,13 +1564,34 @@ async fn run_chat_loop(
         // /resume [N] — switch to thread by cached index or latest
         if trimmed == "/resume" || trimmed.starts_with("/resume ") {
             let thread_id = if let Some(idx_str) = trimmed.strip_prefix("/resume ") {
+                // Auto-fetch conversations if cache is empty
+                if cached_thread_ids.is_empty() {
+                    let rid = Uuid::new_v4().to_string()[..8].to_string();
+                    let req = Message::Request(Request {
+                        request_id: rid.clone(),
+                        session_id: session_id.to_string(),
+                        query: "__cmd:conversations".to_string(),
+                        scope: RequestScope::AllSessions,
+                    });
+                    if let Ok(Message::Response(resp)) = rpc.call(req).await {
+                        if resp.request_id == rid {
+                            if let Some(json) = parse_cmd_response(&resp.content) {
+                                if let Some(ids) = json.get("thread_ids").and_then(|v| v.as_array()) {
+                                    cached_thread_ids = ids.iter()
+                                        .filter_map(|v| v.as_str().map(String::from))
+                                        .collect();
+                                }
+                            }
+                        }
+                    }
+                }
                 match idx_str.trim().parse::<usize>() {
                     Ok(i) if i >= 1 && i <= cached_thread_ids.len() => {
                         Some(cached_thread_ids[i - 1].clone())
                     }
                     Ok(i) if i >= 1 => {
                         let err = display::render_error(&format!(
-                            "Index {} out of range. Run /conversations first (have {} cached)",
+                            "Index {} out of range ({} conversations)",
                             i, cached_thread_ids.len()
                         ));
                         nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
