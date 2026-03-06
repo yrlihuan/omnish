@@ -1484,6 +1484,8 @@ async fn run_chat_loop(
 
     // Lazily created on first message or explicit /new
     let mut current_thread_id: Option<String> = None;
+    // Cached thread_ids from last /conversations call, for stable /resume N
+    let mut cached_thread_ids: Vec<String> = Vec::new();
 
     let mut pending_input = initial_msg;
 
@@ -1528,40 +1530,82 @@ async fn run_chat_loop(
             continue;
         }
 
-        // /resume [N] — switch to existing thread via daemon command
-        if trimmed == "/resume" || trimmed.starts_with("/resume ") {
-            let cmd_key = if trimmed == "/resume" {
-                "__cmd:resume".to_string()
-            } else {
-                format!("__cmd:resume {}", trimmed.strip_prefix("/resume ").unwrap().trim())
-            };
+        // /conversations — list and cache thread_ids for stable /resume N
+        if trimmed == "/conversations" {
             let request_id = Uuid::new_v4().to_string()[..8].to_string();
             let request = Message::Request(Request {
                 request_id: request_id.clone(),
                 session_id: session_id.to_string(),
-                query: cmd_key,
+                query: "__cmd:conversations".to_string(),
                 scope: RequestScope::AllSessions,
             });
             match rpc.call(request).await {
                 Ok(Message::Response(resp)) if resp.request_id == request_id => {
                     if let Some(json) = parse_cmd_response(&resp.content) {
-                        if let Some(tid) = json.get("thread_id").and_then(|v| v.as_str()) {
-                            current_thread_id = Some(tid.to_string());
-                            let display = cmd_display_str(&json);
-                            let output = display::render_response(&display);
-                            nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
-                        } else {
-                            // No thread_id — show error from display
-                            let display = cmd_display_str(&json);
-                            let output = display::render_response(&display);
-                            nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                        // Cache thread_ids for /resume N
+                        if let Some(ids) = json.get("thread_ids").and_then(|v| v.as_array()) {
+                            cached_thread_ids = ids.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect();
                         }
+                        let display = cmd_display_str(&json);
+                        let output = display::render_response(&display);
+                        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
                     }
                 }
                 _ => {
-                    let err = display::render_error("Failed to resume chat session");
+                    let err = display::render_error("Failed to list conversations");
                     nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                 }
+            }
+            continue;
+        }
+
+        // /resume [N] — switch to thread by cached index or latest
+        if trimmed == "/resume" || trimmed.starts_with("/resume ") {
+            let thread_id = if let Some(idx_str) = trimmed.strip_prefix("/resume ") {
+                match idx_str.trim().parse::<usize>() {
+                    Ok(i) if i >= 1 && i <= cached_thread_ids.len() => {
+                        Some(cached_thread_ids[i - 1].clone())
+                    }
+                    Ok(i) if i >= 1 => {
+                        let err = display::render_error(&format!(
+                            "Index {} out of range. Run /conversations first (have {} cached)",
+                            i, cached_thread_ids.len()
+                        ));
+                        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                        None
+                    }
+                    _ => {
+                        let err = display::render_error("Invalid index");
+                        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                        None
+                    }
+                }
+            } else {
+                // /resume without index — use latest via daemon
+                let request_id = Uuid::new_v4().to_string()[..8].to_string();
+                let request = Message::Request(Request {
+                    request_id: request_id.clone(),
+                    session_id: session_id.to_string(),
+                    query: "__cmd:resume".to_string(),
+                    scope: RequestScope::AllSessions,
+                });
+                match rpc.call(request).await {
+                    Ok(Message::Response(resp)) if resp.request_id == request_id => {
+                        if let Some(json) = parse_cmd_response(&resp.content) {
+                            json.get("thread_id").and_then(|v| v.as_str()).map(String::from)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(tid) = thread_id {
+                current_thread_id = Some(tid);
+                let info = "\r\n\x1b[2;37m(resumed conversation)\x1b[0m";
+                nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
             }
             continue;
         }

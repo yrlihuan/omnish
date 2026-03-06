@@ -389,7 +389,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             }
         }
         "sessions" => cmd_display(mgr.format_sessions_list(&req.session_id).await),
-        "conversations" => cmd_display(format_conversations_list(conv_mgr)),
+        "conversations" => format_conversations_json(conv_mgr),
         "session" => match get_session_debug_info(&req.session_id, mgr).await {
             Ok(info) => cmd_display(info),
             Err(e) => cmd_display(format!("Error: {}", e)),
@@ -417,21 +417,20 @@ fn format_chat_history(last_exchange: &Option<(String, String)>, earlier_count: 
     }
 }
 
-/// Format the list of conversations for display.
-fn format_conversations_list(conv_mgr: &Arc<ConversationManager>) -> String {
+/// Format the list of conversations as JSON with display string and thread_ids.
+fn format_conversations_json(conv_mgr: &Arc<ConversationManager>) -> serde_json::Value {
     let conversations = conv_mgr.list_conversations();
     if conversations.is_empty() {
-        return "No conversations yet. Start a chat with : then /chat or /ask".to_string();
+        return cmd_display("No conversations yet. Start a chat with : then /chat or /ask");
     }
 
     let mut output = String::from("Conversations:\n");
-    for (i, (_thread_id, modified, exchange_count, last_question)) in conversations.into_iter().enumerate() {
-        // Format time ago
+    let mut thread_ids = Vec::new();
+    for (i, (thread_id, modified, exchange_count, last_question)) in conversations.into_iter().enumerate() {
         let time_ago = chrono::DateTime::<chrono::Utc>::from(modified)
             .format("%Y-%m-%d %H:%M")
             .to_string();
 
-        // Truncate last question if too long
         let question_display = if last_question.len() > 50 {
             format!("{}...", &last_question[..47])
         } else {
@@ -445,8 +444,12 @@ fn format_conversations_list(conv_mgr: &Arc<ConversationManager>) -> String {
             exchange_count,
             question_display
         ));
+        thread_ids.push(thread_id);
     }
-    output
+    serde_json::json!({
+        "display": output,
+        "thread_ids": thread_ids,
+    })
 }
 
 /// Handle /context <scenario> to show context for different use cases.
