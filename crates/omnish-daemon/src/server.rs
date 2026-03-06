@@ -440,9 +440,7 @@ fn format_conversations_json(conv_mgr: &Arc<ConversationManager>) -> serde_json:
     let mut output = String::from("Conversations:\n");
     let mut thread_ids = Vec::new();
     for (i, (thread_id, modified, exchange_count, last_question)) in conversations.into_iter().enumerate() {
-        let time_ago = chrono::DateTime::<chrono::Utc>::from(modified)
-            .format("%Y-%m-%d %H:%M")
-            .to_string();
+        let time_ago = format_relative_time(modified);
 
         let question_display = if last_question.len() > 50 {
             format!("{}...", &last_question[..47])
@@ -463,6 +461,31 @@ fn format_conversations_json(conv_mgr: &Arc<ConversationManager>) -> serde_json:
         "display": output,
         "thread_ids": thread_ids,
     })
+}
+
+/// Format a SystemTime as a relative time string (e.g., "12s ago", "1h ago", "2d ago").
+fn format_relative_time(time: std::time::SystemTime) -> String {
+    let now = std::time::SystemTime::now();
+    let duration = match now.duration_since(time) {
+        Ok(d) => d,
+        Err(_) => return "now".to_string(),
+    };
+
+    let secs = duration.as_secs();
+    if secs < 60 {
+        format!("{}s ago", secs)
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else if secs < 604800 {
+        format!("{}d ago", secs / 86400)
+    } else {
+        // For older dates, show as absolute date
+        chrono::DateTime::<chrono::Utc>::from(time)
+            .format("%Y-%m-%d")
+            .to_string()
+    }
 }
 
 /// Handle /context <scenario> to show context for different use cases.
