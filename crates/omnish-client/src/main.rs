@@ -1810,23 +1810,18 @@ fn last_utf8_char_len(buf: &[u8]) -> usize {
     if buf.is_empty() {
         return 1;
     }
-    let last_byte = *buf.last().unwrap();
-    // Check if it's a UTF-8 continuation byte (10xx xxxx)
-    if last_byte & 0xC0 == 0x80 {
-        // It's a continuation byte, look for the start of the character
-        // Count consecutive continuation bytes from the end
-        let mut len = 1;
-        for &b in buf.iter().rev().skip(1) {
-            if b & 0xC0 == 0x80 {
-                len += 1;
-            } else {
-                break;
-            }
+    // Walk backwards from the end, counting continuation bytes (10xx xxxx),
+    // then +1 for the start byte.
+    let mut cont = 0;
+    for &b in buf.iter().rev() {
+        if b & 0xC0 == 0x80 {
+            cont += 1;
+        } else {
+            break;
         }
-        return len;
     }
-    // Single byte ASCII character
-    1
+    // cont continuation bytes + 1 start byte
+    cont + 1
 }
 
 /// Read a line of input in raw mode for the chat loop.
@@ -1885,8 +1880,9 @@ fn read_chat_input(completer: &mut ghost_complete::GhostCompleter, allow_backspa
                         let erase_width = String::from_utf8_lossy(&deleted_bytes).chars().next()
                             .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1))
                             .unwrap_or(1);
-                        // Erase character: move cursor back + clear to end of line
-                        let erase_seq = format!("\x08\x1b[{}X", erase_width);
+                        // Erase character: move cursor back by visual width + clear to end of line
+                        let backspaces = "\x08".repeat(erase_width);
+                        let erase_seq = format!("{}\x1b[K", backspaces);
                         nix::unistd::write(std::io::stdout(), erase_seq.as_bytes()).ok();
                         has_ghost = false;
                         // Update ghost for new input
@@ -1938,6 +1934,35 @@ fn read_chat_input(completer: &mut ghost_complete::GhostCompleter, allow_backspa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_last_utf8_char_len_ascii() {
+        assert_eq!(last_utf8_char_len(b"hello"), 1);
+    }
+
+    #[test]
+    fn test_last_utf8_char_len_chinese() {
+        // '你' = 0xe4 0xbd 0xa0 (3 bytes)
+        assert_eq!(last_utf8_char_len("你".as_bytes()), 3);
+        assert_eq!(last_utf8_char_len("hello你".as_bytes()), 3);
+    }
+
+    #[test]
+    fn test_last_utf8_char_len_emoji() {
+        // '😀' = 0xf0 0x9f 0x98 0x80 (4 bytes)
+        assert_eq!(last_utf8_char_len("😀".as_bytes()), 4);
+    }
+
+    #[test]
+    fn test_last_utf8_char_len_two_byte() {
+        // 'é' = 0xc3 0xa9 (2 bytes)
+        assert_eq!(last_utf8_char_len("é".as_bytes()), 2);
+    }
+
+    #[test]
+    fn test_last_utf8_char_len_empty() {
+        assert_eq!(last_utf8_char_len(b""), 1);
+    }
 
     #[test]
     fn test_alt_screen_detect_1049h() {
