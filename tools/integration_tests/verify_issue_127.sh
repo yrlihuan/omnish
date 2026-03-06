@@ -5,7 +5,10 @@
 # Verifies fix for issue #127: "backspace退出chat模式，仅当用户没有发出首轮对话的时候有效"
 #
 # Usage:
-#   ./verify_issue_127.sh
+#   ./verify_issue_127.sh [-w]
+#
+# Options:
+#   -w    Wait for user confirmation after showing monitor command
 #
 # Requirements:
 #   - tmux
@@ -21,6 +24,29 @@
 #   1 - Tests failed or error occurred
 
 set -uo pipefail
+
+# Show usage information
+show_usage() {
+    cat <<EOF
+Usage: $(basename "$0") [-w]
+
+Options:
+  -w    Wait for user confirmation after showing monitor command
+  -h, --help  Show this help message
+
+Verifies fix for issue #127: "backspace退出chat模式，仅当用户没有发出首轮对话的时候有效"
+
+Tests two scenarios:
+1. Phase 1 (mode selection): backspace exits chat mode when no message sent
+2. Phase 2 (chat loop): backspace is ignored after first message sent
+EOF
+}
+
+# Check for help flag early (before creating tmux session)
+if [[ $# -gt 0 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
+    show_usage
+    exit 0
+fi
 
 # Script to verify issue #127 fix: backspace退出chat模式
 # Tests two scenarios:
@@ -227,9 +253,34 @@ test_phase2_backspace_ignored() {
 main() {
     check_deps
 
+    # Parse command line arguments
+    local WAIT_FOR_USER=false
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -w)
+                WAIT_FOR_USER=true
+                shift
+                ;;
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1"
+                exit 1
+                ;;
+        esac
+    done
+
     echo -e "${YELLOW}Testing issue #127: backspace退出chat模式${NC}"
     echo -e "${YELLOW}Using tmux socket: $SOCKET${NC}"
     echo -e "${YELLOW}To monitor manually: tmux -S '$SOCKET' attach -t $SESSION${NC}"
+
+    # Wait for user confirmation if requested
+    if [[ "$WAIT_FOR_USER" == "true" ]]; then
+        echo -e "${YELLOW}Press Enter to start tests...${NC}"
+        read -r
+    fi
 
     local passed=0
     local total=0

@@ -24,8 +24,15 @@ This directory contains integration tests for omnish that require external tools
 **Usage:**
 ```bash
 # From project root
-tools/integration_tests/verify_issue_127.sh
+tools/integration_tests/verify_issue_127.sh [-w]
+
+# With -w flag to wait for user confirmation after showing monitor command
+tools/integration_tests/verify_issue_127.sh -w
 ```
+
+**Options:**
+- `-w`: Wait for user confirmation after showing the monitor command. Useful for manual inspection of the tmux session before tests run.
+- `-h, --help`: Show help message.
 
 **Expected output:**
 - Test 1: ✓ PASS - Chat prompt disappears after backspace (exited chat mode)
