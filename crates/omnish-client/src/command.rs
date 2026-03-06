@@ -261,6 +261,11 @@ fn parse_limit(input: &str) -> (&str, Option<OutputLimit>) {
     (input, None)
 }
 
+/// Public wrapper for parse_limit (used by main.rs for /context with pipes).
+pub fn parse_limit_pub(input: &str) -> (&str, Option<OutputLimit>) {
+    parse_limit(input)
+}
+
 /// Apply output limit to text (head or tail).
 pub fn apply_limit(text: &str, limit: &OutputLimit) -> String {
     let lines: Vec<&str> = text.lines().collect();

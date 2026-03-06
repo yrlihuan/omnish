@@ -29,6 +29,15 @@ NC='\033[0m'
 PROJECT_ROOT="$(dirname "$(dirname "${SCRIPT_DIR:?SCRIPT_DIR must be set before sourcing lib.sh}")")"
 CLIENT="$PROJECT_ROOT/target/release/omnish-client"
 
+# ── Tmux config (override default shell to avoid running installed omnish) ──
+TMUX_CONF="$(mktemp /tmp/omnish-test-tmux.XXXXXX.conf)"
+echo "set -g default-shell /bin/bash" > "$TMUX_CONF"
+
+# Shorthand: all tmux calls go through this to ensure correct config + socket.
+_tmux() {
+    tmux -f "$TMUX_CONF" -S "$SOCKET" "$@"
+}
+
 # ── Tmux socket / session ───────────────────────────────────────────────
 SOCKET_DIR="${CLAUDE_TMUX_SOCKET_DIR:-/tmp/claude-tmux-sockets}"
 SOCKET=""   # set by test_init
@@ -58,7 +67,8 @@ _check_deps() {
 # ── Cleanup ──────────────────────────────────────────────────────────────
 cleanup() {
     echo -e "${YELLOW}Cleaning up tmux session...${NC}"
-    tmux -S "$SOCKET" kill-session -t "$SESSION" 2>/dev/null || true
+    _tmux kill-session -t "$SESSION" 2>/dev/null || true
+    rm -f "$TMUX_CONF"
 }
 
 # ── Initialization ───────────────────────────────────────────────────────
@@ -107,8 +117,8 @@ _show_help() {
 # Start a fresh omnish-client in the tmux session.
 # Kills any existing session first.
 start_client() {
-    tmux -S "$SOCKET" kill-session -t "$SESSION" 2>/dev/null || true
-    tmux -S "$SOCKET" new -d -s "$SESSION" -n test "$CLIENT"
+    _tmux kill-session -t "$SESSION" 2>/dev/null || true
+    _tmux new -d -s "$SESSION" -n test "$CLIENT"
 }
 
 # Alias: kill + start (useful between test cases).
@@ -124,7 +134,7 @@ send_keys() {
     local keys="$1"
     local wait="${2:-0.5}"
     echo -e "  Sending: ${YELLOW}${keys}${NC}"
-    tmux -S "$SOCKET" send-keys -t "$PANE" -- "$keys"
+    _tmux send-keys -t "$PANE" -- "$keys"
     sleep "$wait"
 }
 
@@ -132,7 +142,7 @@ send_keys() {
 send_enter() {
     local wait="${1:-0.5}"
     echo -e "  Sending: ${YELLOW}Enter${NC}"
-    tmux -S "$SOCKET" send-keys -t "$PANE" Enter
+    _tmux send-keys -t "$PANE" Enter
     sleep "$wait"
 }
 
@@ -142,7 +152,7 @@ send_special() {
     local key="$1"
     local wait="${2:-0.5}"
     echo -e "  Sending: ${YELLOW}${key}${NC}"
-    tmux -S "$SOCKET" send-keys -t "$PANE" "$key"
+    _tmux send-keys -t "$PANE" "$key"
     sleep "$wait"
 }
 
@@ -157,7 +167,7 @@ send_backspace() {
 #   Prints captured pane content to stdout.
 capture_pane() {
     local lines="${1:--100}"
-    tmux -S "$SOCKET" capture-pane -p -J -t "$PANE" -S "$lines"
+    _tmux capture-pane -p -J -t "$PANE" -S "$lines"
 }
 
 # last_nonempty_line <content>
@@ -238,7 +248,7 @@ run_tests() {
     fi
 
     echo -e "${YELLOW}Using tmux socket: $SOCKET${NC}"
-    echo -e "${YELLOW}To monitor: tmux -S '$SOCKET' attach -t $SESSION${NC}"
+    echo -e "${YELLOW}To monitor: tmux -f '$TMUX_CONF' -S '$SOCKET' attach -t $SESSION${NC}"
 
     if [[ "$_WAIT_FOR_USER" == "true" ]]; then
         echo -e "${YELLOW}Press Enter to start tests...${NC}"

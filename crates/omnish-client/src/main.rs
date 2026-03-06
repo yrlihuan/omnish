@@ -1675,8 +1675,9 @@ async fn run_chat_loop(
             continue;
         }
 
-        // /context in chat mode — show chat thread context
-        if trimmed == "/context" {
+        // /context in chat mode — show chat thread context (with optional | head/tail)
+        if trimmed == "/context" || trimmed.starts_with("/context ") {
+            let (_, limit) = command::parse_limit_pub(trimmed);
             let query = if let Some(ref tid) = current_thread_id {
                 format!("__cmd:context chat:{}", tid)
             } else {
@@ -1695,6 +1696,11 @@ async fn run_chat_loop(
                         cmd_display_str(&json)
                     } else {
                         resp.content
+                    };
+                    let display = if let Some(ref l) = limit {
+                        command::apply_limit(&display, l)
+                    } else {
+                        display
                     };
                     let output = display::render_response(&display);
                     nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
