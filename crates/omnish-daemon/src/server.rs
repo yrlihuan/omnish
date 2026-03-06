@@ -341,6 +341,19 @@ fn cmd_display(s: impl Into<String>) -> serde_json::Value {
 
 async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>) -> serde_json::Value {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
+    // Handle /context chat:<thread_id> — show conversation context for a chat thread
+    if let Some(thread_id) = sub.strip_prefix("context chat:") {
+        let msgs = conv_mgr.load_messages(thread_id);
+        if msgs.is_empty() {
+            return cmd_display("(empty conversation)");
+        }
+        let mut output = format!("Chat thread: {}\n\n", thread_id);
+        for turn in &msgs {
+            let label = if turn.role == "user" { "User" } else { "Assistant" };
+            output.push_str(&format!("[{}] {}\n\n", label, turn.content));
+        }
+        return cmd_display(output);
+    }
     // Handle /context <scenario> for showing context for different scenarios
     if let Some(scenario) = sub.strip_prefix("context ") {
         return cmd_display(handle_context_scenario(scenario, req, mgr, llm_backend).await);

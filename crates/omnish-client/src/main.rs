@@ -1655,6 +1655,38 @@ async fn run_chat_loop(
             continue;
         }
 
+        // /context in chat mode — show chat thread context
+        if trimmed == "/context" {
+            let query = if let Some(ref tid) = current_thread_id {
+                format!("__cmd:context chat:{}", tid)
+            } else {
+                "__cmd:context".to_string()
+            };
+            let request_id = Uuid::new_v4().to_string()[..8].to_string();
+            let request = Message::Request(Request {
+                request_id: request_id.clone(),
+                session_id: session_id.to_string(),
+                query,
+                scope: RequestScope::AllSessions,
+            });
+            match rpc.call(request).await {
+                Ok(Message::Response(resp)) if resp.request_id == request_id => {
+                    let display = if let Some(json) = parse_cmd_response(&resp.content) {
+                        cmd_display_str(&json)
+                    } else {
+                        resp.content
+                    };
+                    let output = display::render_response(&display);
+                    nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                }
+                _ => {
+                    let err = display::render_error("Failed to get context");
+                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                }
+            }
+            continue;
+        }
+
         // Handle /commands that go through existing dispatch
         if trimmed.starts_with('/') {
             if handle_slash_command(trimmed, session_id, rpc, proxy, client_debug_fn).await {
