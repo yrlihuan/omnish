@@ -1317,6 +1317,19 @@ impl AltScreenDetector {
     }
 }
 
+/// Parse a daemon command response as JSON. Returns None if not valid JSON.
+fn parse_cmd_response(content: &str) -> Option<serde_json::Value> {
+    serde_json::from_str(content).ok()
+}
+
+/// Get the display string from a parsed command response JSON.
+fn cmd_display_str(json: &serde_json::Value) -> String {
+    json.get("display")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 /// Display a command result or write to file if redirected.
 fn handle_command_result(content: &str, redirect: Option<&str>, proxy: &PtyProxy) {
     if let Some(path) = redirect {
@@ -1376,10 +1389,15 @@ async fn send_daemon_query(
 
     match rpc.call(request).await {
         Ok(Message::Response(resp)) if resp.request_id == request_id => {
+            let display = if let Some(json) = parse_cmd_response(&resp.content) {
+                cmd_display_str(&json)
+            } else {
+                resp.content.clone()
+            };
             if show_thinking {
-                std::fs::write("/tmp/omnish_last_response.txt", &resp.content).ok();
+                std::fs::write("/tmp/omnish_last_response.txt", &display).ok();
             }
-            handle_command_result(&resp.content, redirect, proxy);
+            handle_command_result(&display, redirect, proxy);
             if show_thinking {
                 let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
                 let separator = display::render_separator(cols);
@@ -1433,7 +1451,12 @@ async fn handle_slash_command(
                 });
                 match rpc.call(request).await {
                     Ok(Message::Response(resp)) if resp.request_id == request_id => {
-                        let output = display::render_response(&resp.content);
+                        let display = if let Some(json) = parse_cmd_response(&resp.content) {
+                            cmd_display_str(&json)
+                        } else {
+                            resp.content
+                        };
+                        let output = display::render_response(&display);
                         nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
                     }
                     _ => {

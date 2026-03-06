@@ -118,7 +118,10 @@ async fn handle_message(
         }
         Message::Request(req) => {
             if req.query.starts_with("__cmd:") {
-                let content = handle_builtin_command(&req, &mgr, &task_mgr, &llm, conv_mgr).await;
+                let result = handle_builtin_command(&req, &mgr, &task_mgr, &llm, conv_mgr).await;
+                let content = serde_json::to_string(&result).unwrap_or_else(|_| {
+                    r#"{"display":"(serialization error)"}"#.to_string()
+                });
                 return Message::Response(Response {
                     request_id: req.request_id,
                     content,
@@ -331,29 +334,35 @@ async fn resolve_chat_context(req: &Request, mgr: &SessionManager, max_context_c
 }
 
 
-async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>) -> String {
+/// Helper to create a command response with only a display string.
+fn cmd_display(s: impl Into<String>) -> serde_json::Value {
+    serde_json::json!({ "display": s.into() })
+}
+
+async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>) -> serde_json::Value {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
     // Handle /context <scenario> for showing context for different scenarios
     if let Some(scenario) = sub.strip_prefix("context ") {
-        return handle_context_scenario(scenario, req, mgr, llm_backend).await;
+        return cmd_display(handle_context_scenario(scenario, req, mgr, llm_backend).await);
     }
     // Handle /resume [n] for resuming a specific conversation
     if let Some(idx_str) = sub.strip_prefix("resume ") {
         let idx: usize = match idx_str.trim().parse::<usize>() {
             Ok(i) if i >= 1 => i - 1, // Convert 1-based to 0-based
-            Ok(_) => return "Invalid index: must be >= 1".to_string(),
-            Err(_) => return "Invalid index: not a number".to_string(),
+            Ok(_) => return cmd_display("Invalid index: must be >= 1"),
+            Err(_) => return cmd_display("Invalid index: not a number"),
         };
         return match conv_mgr.get_thread_by_index(idx) {
             Some(thread_id) => {
                 let (last_exchange, earlier_count) = conv_mgr.get_last_exchange(&thread_id);
-                format!(
-                    "Resuming conversation [{}]\n{}",
-                    idx + 1,
-                    format_chat_history(&last_exchange, earlier_count)
-                )
+                serde_json::json!({
+                    "display": format!("Resuming conversation [{}]\n{}", idx + 1, format_chat_history(&last_exchange, earlier_count)),
+                    "thread_id": thread_id,
+                    "last_exchange": last_exchange,
+                    "earlier_count": earlier_count,
+                })
             }
-            None => "Invalid index: out of bounds".to_string(),
+            None => cmd_display("Invalid index: out of bounds"),
         };
     }
     // Handle /resume without index (resume latest = /resume 1)
@@ -361,32 +370,34 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
         return match conv_mgr.get_thread_by_index(0) {
             Some(thread_id) => {
                 let (last_exchange, earlier_count) = conv_mgr.get_last_exchange(&thread_id);
-                format!(
-                    "Resuming conversation [1]\n{}",
-                    format_chat_history(&last_exchange, earlier_count)
-                )
+                serde_json::json!({
+                    "display": format!("Resuming conversation [1]\n{}", format_chat_history(&last_exchange, earlier_count)),
+                    "thread_id": thread_id,
+                    "last_exchange": last_exchange,
+                    "earlier_count": earlier_count,
+                })
             }
-            None => "No conversations yet. Start a chat with : then /chat or /ask".to_string(),
+            None => cmd_display("No conversations yet. Start a chat with : then /chat or /ask"),
         };
     }
     match sub {
         "context" => {
             // Default to completion context (most common LLM use case)
             match mgr.build_completion_context(&req.session_id, None).await {
-                Ok(ctx) => ctx,
-                Err(e) => format!("Error: {}", e),
+                Ok(ctx) => cmd_display(ctx),
+                Err(e) => cmd_display(format!("Error: {}", e)),
             }
         }
-        "sessions" => mgr.format_sessions_list(&req.session_id).await,
-        "conversations" => format_conversations_list(conv_mgr),
+        "sessions" => cmd_display(mgr.format_sessions_list(&req.session_id).await),
+        "conversations" => cmd_display(format_conversations_list(conv_mgr)),
         "session" => match get_session_debug_info(&req.session_id, mgr).await {
-            Ok(info) => info,
-            Err(e) => format!("Error: {}", e),
+            Ok(info) => cmd_display(info),
+            Err(e) => cmd_display(format!("Error: {}", e)),
         },
         sub if sub == "tasks" || sub.starts_with("tasks ") => {
-            handle_tasks_command(sub, task_mgr).await
+            cmd_display(handle_tasks_command(sub, task_mgr).await)
         }
-        other => format!("Unknown command: {}", other),
+        other => cmd_display(format!("Unknown command: {}", other)),
     }
 }
 
