@@ -127,6 +127,27 @@ mod tests {
     }
 
     #[test]
+    fn test_chat_system_prompt_mentions_all_commands() {
+        // All user-facing commands that should be documented in the system prompt.
+        // Keep in sync with COMMANDS and CHAT_ONLY_COMMANDS in omnish-client/src/command.rs.
+        let expected = &[
+            "/help",
+            "/new",
+            "/resume",
+            "/conversations",
+            "/threads",
+            "/context",
+            "/sessions",
+        ];
+        for cmd in expected {
+            assert!(
+                CHAT_SYSTEM_PROMPT.contains(cmd),
+                "CHAT_SYSTEM_PROMPT should mention {} but doesn't", cmd
+            );
+        }
+    }
+
+    #[test]
     fn test_template_by_name_unknown() {
         assert!(template_by_name("nonexistent").is_none());
     }
