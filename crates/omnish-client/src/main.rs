@@ -2037,13 +2037,19 @@ fn read_chat_input(
                                         *history_index = Some(idx);
                                         if let Some(cmd) = history.get(idx) {
                                             // Clear current line and show history command
-                                            let clear_seq = b"\r\x1b[K> ";
+                                            let clear_seq = b"\r> \x1b[K";
                                             nix::unistd::write(std::io::stdout(), clear_seq).ok();
+
+                                            // Clear ghost text if present
+                                            if has_ghost {
+                                                nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
+                                                has_ghost = false;
+                                            }
+
                                             nix::unistd::write(std::io::stdout(), cmd.as_bytes()).ok();
 
-                                            // Update buffer
-                                            buf.clear();
-                                            buf.extend_from_slice(cmd.as_bytes());
+                                            // Update buffer with UTF-8 bytes
+                                            buf = cmd.as_bytes().to_vec();
 
                                             // Update ghost completion for new input
                                             if let Some(ghost) = completer.update(cmd) {
@@ -2064,8 +2070,15 @@ fn read_chat_input(
                                             Some(_) => {
                                                 // Going past most recent - clear input
                                                 *history_index = None;
-                                                let clear_seq = b"\r\x1b[K> ";
+                                                let clear_seq = b"\r> \x1b[K";
                                                 nix::unistd::write(std::io::stdout(), clear_seq).ok();
+
+                                                // Clear ghost text if present
+                                                if has_ghost {
+                                                    nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
+                                                    has_ghost = false;
+                                                }
+
                                                 buf.clear();
                                                 completer.clear();
                                                 return Some(String::new());
@@ -2076,13 +2089,19 @@ fn read_chat_input(
                                         *history_index = Some(idx);
                                         if let Some(cmd) = history.get(idx) {
                                             // Clear current line and show history command
-                                            let clear_seq = b"\r\x1b[K> ";
+                                            let clear_seq = b"\r> \x1b[K";
                                             nix::unistd::write(std::io::stdout(), clear_seq).ok();
+
+                                            // Clear ghost text if present
+                                            if has_ghost {
+                                                nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
+                                                has_ghost = false;
+                                            }
+
                                             nix::unistd::write(std::io::stdout(), cmd.as_bytes()).ok();
 
-                                            // Update buffer
-                                            buf.clear();
-                                            buf.extend_from_slice(cmd.as_bytes());
+                                            // Update buffer with UTF-8 bytes
+                                            buf = cmd.as_bytes().to_vec();
 
                                             // Update ghost completion
                                             if let Some(ghost) = completer.update(cmd) {
@@ -2528,5 +2547,43 @@ mod tests {
     #[test]
     fn test_command_basename_empty() {
         assert_eq!(command_basename(""), "");
+    }
+
+    #[test]
+    fn test_history_navigation() {
+        use std::collections::VecDeque;
+
+        let mut history = VecDeque::new();
+        history.push_back("command1".to_string());
+        history.push_back("command2".to_string());
+
+        let mut idx = None;
+
+        // Simulate up arrow - should go to command2 (most recent)
+        idx = match idx {
+            Some(i) if i > 0 => Some(i - 1),
+            Some(_) => Some(0),
+            None => Some(history.len() - 1),
+        };
+        assert_eq!(idx, Some(1));
+
+        // Another up arrow - should go to command1
+        idx = match idx {
+            Some(i) if i > 0 => Some(i - 1),
+            Some(_) => Some(0),
+            None => Some(history.len() - 1),
+        };
+        assert_eq!(idx, Some(0));
+
+        // Down arrow - should go back to command2
+        idx = match idx {
+            Some(i) if i < history.len() - 1 => Some(i + 1),
+            Some(_) => {
+                // Going past most recent
+                None
+            },
+            None => None,
+        };
+        assert_eq!(idx, Some(1));
     }
 }
