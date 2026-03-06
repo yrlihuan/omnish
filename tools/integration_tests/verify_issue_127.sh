@@ -3,416 +3,131 @@
 # verify_issue_127.sh - Test that backspace correctly exits chat mode only in phase 1
 #
 # Verifies fix for issue #127: "backspace退出chat模式，仅当用户没有发出首轮对话的时候有效"
-#
-# Usage:
-#   ./verify_issue_127.sh [-w]
-#
-# Options:
-#   -w    Wait for user confirmation after showing monitor command
-#
-# Requirements:
-#   - tmux
-#   - omnish-client (built via 'cargo build')
-#
-# Script will:
-#   1. Start omnish-client in a tmux session
-#   2. Test phase 1: backspace exits chat mode when no message sent
-#   3. Test phase 2: backspace is ignored after first message sent
-#
-# Exit codes:
-#   0 - All tests passed
-#   1 - Tests failed or error occurred
 
-set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/lib.sh"
 
-# Show usage information
 show_usage() {
     cat <<EOF
-Usage: $(basename "$0") [-w] [-t TEST_CASE]
-
-Options:
-  -w    Wait for user confirmation after showing monitor command
-  -t TEST_CASE  Run specific test case(s). Can be: 1, 2, or "all" (default: all)
-  -h, --help  Show this help message
-
-Verifies fix for issue #127: "backspace退出chat模式，仅当用户没有发出首轮对话的时候有效"
-
 Test cases:
-1. Phase 1 (mode selection): backspace exits chat mode when no message sent
-2. Phase 2 (chat loop): backspace is ignored after first message sent
-3. Phase 3 (/resume): backspace is ignored after resuming a conversation
-
-Examples:
-  $0               # Run all tests
-  $0 -t 1          # Run only test 1 (phase 1)
-  $0 -t 2          # Run only test 2 (phase 2)
-  $0 -t 3          # Run only test 3 (/resume)
-  $0 -t all        # Run all tests (same as default)
-  $0 -w -t 1       # Wait for confirmation, then run test 1
+  1. Phase 1 (mode selection): backspace exits chat mode when no message sent
+  2. Phase 2 (chat loop): backspace is ignored after first message sent
+  3. Phase 3 (/resume): backspace is ignored after resuming a conversation
 EOF
 }
 
-# Check for help flag early (before creating tmux session)
-if [[ $# -gt 0 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
-    show_usage
-    exit 0
-fi
+test_init "127" "$@"
 
-# Script to verify issue #127 fix: backspace退出chat模式
-# Tests two scenarios:
-# 1. Phase 1 (mode selection): backspace exits chat mode
-# 2. Phase 2 (chat loop): backspace is ignored after first message sent
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-# Check dependencies
-check_deps() {
-    if ! command -v tmux &>/dev/null; then
-        echo -e "${RED}Error: tmux is not installed${NC}"
-        exit 1
-    fi
-    if ! command -v cargo &>/dev/null; then
-        echo -e "${YELLOW}Warning: cargo not found, ensure omnish-client is built${NC}"
-    fi
-}
-
-# Tmux socket setup
-SOCKET_DIR="${CLAUDE_TMUX_SOCKET_DIR:-/tmp/claude-tmux-sockets}"
-mkdir -p "$SOCKET_DIR"
-SOCKET="$SOCKET_DIR/omnish-test-127.sock"
-SESSION="omnish-test-127"
-
-# Omnish client binary (relative to project root)
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
-CLIENT="$PROJECT_ROOT/target/debug/omnish-client"
-if [[ ! -f "$CLIENT" ]]; then
-    echo -e "${RED}Error: omnish-client not found at $CLIENT${NC}"
-    echo -e "${YELLOW}Hint: Run 'cargo build' first${NC}"
-    exit 1
-fi
-
-# Cleanup function
-cleanup() {
-    echo -e "${YELLOW}Cleaning up tmux session...${NC}"
-    tmux -S "$SOCKET" kill-session -t "$SESSION" 2>/dev/null || true
-    # Don't remove socket directory as other sessions might be using it
-}
-
-# Trap exit
-trap cleanup EXIT
-
-# Start a fresh tmux session running omnish-client directly
-echo -e "${YELLOW}Starting tmux session...${NC}"
-tmux -S "$SOCKET" kill-session -t "$SESSION" 2>/dev/null || true
-tmux -S "$SOCKET" new -d -s "$SESSION" -n test "$CLIENT"
-
-# Function to send keys and wait
-send_keys() {
-    local target="$1"
-    local keys="$2"
-    local wait_seconds="${3:-0.5}"
-
-    echo -e "  Sending: ${YELLOW}$keys${NC}"
-    if [[ -z "$keys" ]]; then
-        # Send Enter key
-        tmux -S "$SOCKET" send-keys -t "$target" Enter
-    else
-        tmux -S "$SOCKET" send-keys -t "$target" -- "$keys"
-    fi
-    sleep "$wait_seconds"
-}
-
-# Function to send Enter key explicitly
-send_enter() {
-    local target="$1"
-    local wait_seconds="${2:-0.5}"
-    echo -e "  Sending: ${YELLOW}Enter${NC}"
-    tmux -S "$SOCKET" send-keys -t "$target" Enter
-    sleep "$wait_seconds"
-}
-
-# Function to capture pane content
-capture_pane() {
-    local target="$1"
-    local lines="${2:--100}"
-    tmux -S "$SOCKET" capture-pane -p -J -t "$target" -S "$lines"
-}
-
-# Function to check if the LAST non-empty line is a chat prompt ("> ")
-last_line_is_chat_prompt() {
-    local content="$1"
-    # Get last non-empty line
-    local last_line
-    last_line=$(echo "$content" | grep -v '^[[:space:]]*$' | tail -1)
-    # Chat prompt is "> " possibly with ANSI codes, or just "> " at start
-    echo "$last_line" | grep -qE '^\s*((\[36m)?> (\[0m)?|> )$'
-}
-
-# Function to check if the last line is a shell prompt (not chat)
-last_line_is_shell_prompt() {
-    local content="$1"
-    local last_line
-    last_line=$(echo "$content" | grep -v '^[[:space:]]*$' | tail -1)
-    echo "$last_line" | grep -q '\$ $\|\$$'
-}
-
-# Function to run test scenario 1: backspace exits in phase 1
-test_phase1_backspace_exits() {
+# ── Test 1: backspace exits in phase 1 ───────────────────────────────────
+test_1() {
     echo -e "\n${YELLOW}=== Test 1: Phase 1 - backspace should exit chat mode ===${NC}"
 
-    # Wait for omnish-client to be ready (shell prompt visible)
-    sleep 1.5
+    start_client
+    wait_for_client
 
-    # Send ':' to enter chat mode
-    send_keys "$SESSION:0.0" ":" 0.5
+    send_keys ":" 0.5
+    wait_for_prompt
 
-    # Wait a bit for chat prompt to appear
-    sleep 0.5
+    local before=$(capture_pane -20)
+    show_capture "Before backspace" "$before"
 
-    # Capture before backspace
-    local before=$(capture_pane "$SESSION:0.0" -20)
-    echo -e "  Before backspace (last 20 lines):"
-    echo "$before" | tail -10 | sed 's/^/    /'
+    send_keys $'\x7f' 0.5
 
-    # Send backspace
-    send_keys "$SESSION:0.0" $'\x7f' 0.5  # Backspace key
+    local after=$(capture_pane -20)
+    show_capture "After backspace" "$after"
 
-    # Capture after backspace
-    local after=$(capture_pane "$SESSION:0.0" -20)
-    echo -e "  After backspace (last 20 lines):"
-    echo "$after" | tail -10 | sed 's/^/    /'
-
-    # Check: before should show chat prompt, after should show shell prompt
-    if last_line_is_chat_prompt "$before" && last_line_is_shell_prompt "$after"; then
-        echo -e "  ${GREEN}✓ PASS: Chat prompt disappeared after backspace (exited chat mode)${NC}"
+    if is_chat_prompt "$before" && is_shell_prompt "$after"; then
+        assert_pass "Chat prompt disappeared after backspace (exited chat mode)"
         return 0
-    elif ! last_line_is_chat_prompt "$before"; then
-        echo -e "  ${RED}✗ FAIL: Chat prompt not found before backspace${NC}"
+    elif ! is_chat_prompt "$before"; then
+        assert_fail "Chat prompt not found before backspace"
         return 1
     else
-        echo -e "  ${RED}✗ FAIL: Chat prompt still present after backspace (did not exit)${NC}"
+        assert_fail "Chat prompt still present after backspace (did not exit)"
         return 1
     fi
 }
 
-# Function to run test scenario 2: backspace ignored in phase 2
-test_phase2_backspace_ignored() {
+# ── Test 2: backspace ignored in phase 2 ─────────────────────────────────
+test_2() {
     echo -e "\n${YELLOW}=== Test 2: Phase 2 - backspace should be ignored after first message ===${NC}"
 
-    # Start fresh session for test 2
-    tmux -S "$SOCKET" kill-session -t "$SESSION" 2>/dev/null || true
-    tmux -S "$SOCKET" new -d -s "$SESSION" -n test "$CLIENT"
+    restart_client
+    wait_for_client
 
-    # Wait for omnish-client to be ready
-    sleep 1.5
+    send_keys ":" 0.5
+    wait_for_prompt
 
-    # Send ':' to enter chat mode (new default: enters chat directly)
-    send_keys "$SESSION:0.0" ":" 0.5
+    send_keys "Hello, this is a test message" 0.3
+    send_enter 0.3
 
-    # Wait for chat prompt to appear
-    sleep 0.5
-
-    # Send a test message
-    send_keys "$SESSION:0.0" "Hello, this is a test message" 0.3
-    send_enter "$SESSION:0.0" 0.3  # Enter
-
-    # Wait for LLM response to complete before testing backspace
     echo -e "  Waiting 20s for LLM response..."
     sleep 20
 
-    # Capture before backspace
-    local before=$(capture_pane "$SESSION:0.0" -30)
-    echo -e "  Before backspace (last 30 lines):"
-    echo "$before" | tail -15 | sed 's/^/    /'
+    local before=$(capture_pane -30)
+    show_capture "Before backspace" "$before" 15
 
-    # Send backspace (should be ignored)
-    send_keys "$SESSION:0.0" $'\x7f' 0.5  # Backspace key
+    send_keys $'\x7f' 0.5
 
-    # Capture after backspace
-    local after=$(capture_pane "$SESSION:0.0" -30)
-    echo -e "  After backspace (last 30 lines):"
-    echo "$after" | tail -15 | sed 's/^/    /'
+    local after=$(capture_pane -30)
+    show_capture "After backspace" "$after" 15
 
-    # Check if still in chat mode: last non-empty line should be "> "
-    if last_line_is_chat_prompt "$before" && last_line_is_chat_prompt "$after"; then
-        echo -e "  ${GREEN}✓ PASS: Chat prompt still present after backspace (backspace ignored)${NC}"
+    if is_chat_prompt "$before" && is_chat_prompt "$after"; then
+        assert_pass "Chat prompt still present after backspace (backspace ignored)"
         return 0
-    elif last_line_is_shell_prompt "$after"; then
-        echo -e "  ${RED}✗ FAIL: Chat prompt disappeared (backspace caused exit)${NC}"
+    elif is_shell_prompt "$after"; then
+        assert_fail "Chat prompt disappeared (backspace caused exit)"
         return 1
     else
         local last_line
-        last_line=$(echo "$after" | grep -v '^[[:space:]]*$' | tail -1)
-        echo -e "  ${RED}✗ FAIL: Expected chat prompt '> ' as last line, got: '${last_line}'${NC}"
+        last_line=$(last_nonempty_line "$after")
+        assert_fail "Expected chat prompt '> ' as last line, got: '${last_line}'"
         return 1
     fi
 }
 
-# Function to run test scenario 3: backspace ignored after /resume
-test_phase3_resume_backspace_ignored() {
+# ── Test 3: backspace ignored after /resume ──────────────────────────────
+test_3() {
     echo -e "\n${YELLOW}=== Test 3: /resume - backspace should be ignored after resuming ===${NC}"
 
-    # Start fresh session for test 3
-    tmux -S "$SOCKET" kill-session -t "$SESSION" 2>/dev/null || true
-    tmux -S "$SOCKET" new -d -s "$SESSION" -n test "$CLIENT"
+    restart_client
+    wait_for_client
 
-    # Wait for omnish-client to be ready
-    sleep 1.5
+    send_keys ":" 0.5
+    wait_for_prompt
 
-    # Send ':' to enter chat mode
-    send_keys "$SESSION:0.0" ":" 0.5
+    send_keys "/resume" 0.3
+    send_enter 1
 
-    # Wait for chat prompt
-    sleep 0.5
+    local after_resume=$(capture_pane -20)
+    show_capture "After /resume" "$after_resume"
 
-    # Send '/resume' to resume a previous conversation
-    send_keys "$SESSION:0.0" "/resume" 0.3
-    send_enter "$SESSION:0.0" 1
-
-    # Capture after /resume
-    local after_resume=$(capture_pane "$SESSION:0.0" -20)
-    echo -e "  After /resume (last 10 lines):"
-    echo "$after_resume" | tail -10 | sed 's/^/    /'
-
-    # Type 'x', then send backspace twice:
+    # Type 'x', then backspace twice:
     # - first backspace deletes 'x'
     # - second backspace on empty buffer should be ignored
-    send_keys "$SESSION:0.0" "x" 0.3
-    echo -e "  Sending: ${YELLOW}BSpace x2${NC}"
-    tmux -S "$SOCKET" send-keys -t "$SESSION:0.0" BSpace
-    sleep 0.3
-    tmux -S "$SOCKET" send-keys -t "$SESSION:0.0" BSpace
-    sleep 0.5
+    send_keys "x" 0.3
+    send_backspace 0.3
+    send_backspace 0.5
 
-    # Capture after backspace
-    local after
-    after=$(tmux -S "$SOCKET" capture-pane -p -J -t "$SESSION:0.0")
-    echo -e "  After 2x backspace (last 5 lines):"
-    echo "$after" | tail -5 | sed 's/^/    /'
+    local after=$(capture_pane)
+    show_capture "After 2x backspace" "$after" 5
 
-    # Check if still in chat mode
-    if last_line_is_chat_prompt "$after"; then
-        echo -e "  ${GREEN}✓ PASS: Chat prompt still present after backspace (backspace ignored)${NC}"
+    if is_chat_prompt "$after"; then
+        assert_pass "Chat prompt still present after backspace (backspace ignored)"
         return 0
-    elif last_line_is_shell_prompt "$after"; then
-        echo -e "  ${RED}✗ FAIL: Chat prompt disappeared (backspace caused exit)${NC}"
+    elif is_shell_prompt "$after"; then
+        assert_fail "Chat prompt disappeared (backspace caused exit)"
         return 1
     else
-        # Might show /resume output or error — check if NOT a shell prompt
-        if ! last_line_is_shell_prompt "$after"; then
-            echo -e "  ${GREEN}✓ PASS: Still in chat mode after backspace${NC}"
+        # Might show /resume output or error — as long as NOT a shell prompt
+        if ! is_shell_prompt "$after"; then
+            assert_pass "Still in chat mode after backspace"
             return 0
         fi
-        echo -e "  ${RED}✗ FAIL: Unexpected state after backspace${NC}"
+        assert_fail "Unexpected state after backspace"
         return 1
     fi
 }
 
-# Main test execution
-main() {
-    check_deps
-
-    # Parse command line arguments
-    local WAIT_FOR_USER=false
-    local TEST_CASES="all"
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            -w)
-                WAIT_FOR_USER=true
-                shift
-                ;;
-            -t)
-                if [[ $# -lt 2 ]]; then
-                    echo "Error: -t requires a test case argument"
-                    exit 1
-                fi
-                TEST_CASES="$2"
-                shift 2
-                ;;
-            -h|--help)
-                show_usage
-                exit 0
-                ;;
-            *)
-                echo "Unknown option: $1"
-                exit 1
-                ;;
-        esac
-    done
-
-    echo -e "${YELLOW}Testing issue #127: backspace退出chat模式${NC}"
-    echo -e "${YELLOW}Using tmux socket: $SOCKET${NC}"
-    echo -e "${YELLOW}To monitor manually: tmux -S '$SOCKET' attach -t $SESSION${NC}"
-
-    # Wait for user confirmation if requested
-    if [[ "$WAIT_FOR_USER" == "true" ]]; then
-        echo -e "${YELLOW}Press Enter to start tests...${NC}"
-        read -r
-    fi
-
-    local passed=0
-    local total=0
-
-    # Validate TEST_CASES
-    case "$TEST_CASES" in
-        all|1|2|3)
-            # Valid cases
-            ;;
-        *)
-            echo -e "${RED}Error: Invalid test case '$TEST_CASES'. Must be: 1, 2, 3, or 'all'${NC}"
-            exit 1
-            ;;
-    esac
-
-    # Run test 1 if requested
-    if [[ "$TEST_CASES" == "all" || "$TEST_CASES" == "1" ]]; then
-        echo -e "${YELLOW}Running test 1 (phase 1)...${NC}"
-        if test_phase1_backspace_exits; then
-            ((passed++))
-        fi
-        ((total++))
-    fi
-
-    # Run test 2 if requested
-    if [[ "$TEST_CASES" == "all" || "$TEST_CASES" == "2" ]]; then
-        echo -e "${YELLOW}Running test 2 (phase 2)...${NC}"
-        if test_phase2_backspace_ignored; then
-            ((passed++))
-        fi
-        ((total++))
-    fi
-
-    # Run test 3 if requested
-    if [[ "$TEST_CASES" == "all" || "$TEST_CASES" == "3" ]]; then
-        echo -e "${YELLOW}Running test 3 (/resume)...${NC}"
-        if test_phase3_resume_backspace_ignored; then
-            ((passed++))
-        fi
-        ((total++))
-    fi
-
-    # Summary
-    echo -e "\n${YELLOW}=== Test Summary ===${NC}"
-    if [[ $total -eq 0 ]]; then
-        echo -e "  ${YELLOW}No tests were run.${NC}"
-        return 0
-    fi
-
-    echo -e "  Passed: ${GREEN}$passed${NC} / ${total}"
-
-    if [[ $passed -eq $total ]]; then
-        echo -e "${GREEN}✓ All tests passed! Issue #127 fix appears correct.${NC}"
-        return 0
-    else
-        echo -e "${RED}✗ Some tests failed. Issue #127 fix may be incomplete.${NC}"
-        return 1
-    fi
-}
-
-# Run main function
-main "$@"
+echo -e "${YELLOW}Testing issue #127: backspace退出chat模式${NC}"
+run_tests 3
