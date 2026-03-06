@@ -348,6 +348,8 @@ pub struct CompletionFormatter {
     tail_lines: usize,
     /// Maximum characters per command output. If exceeded, output is truncated.
     max_command_output_chars: usize,
+    /// Live shell cwd from session probe (overrides command record cwd for current_path).
+    live_cwd: Option<String>,
 }
 
 impl CompletionFormatter {
@@ -357,11 +359,17 @@ impl CompletionFormatter {
             head_lines,
             tail_lines,
             max_command_output_chars: 500, // Default limit
+            live_cwd: None,
         }
     }
 
     pub fn with_max_command_output_chars(mut self, max_chars: usize) -> Self {
         self.max_command_output_chars = max_chars;
+        self
+    }
+
+    pub fn with_live_cwd(mut self, cwd: Option<String>) -> Self {
+        self.live_cwd = cwd;
         self
     }
 }
@@ -387,12 +395,15 @@ impl ContextFormatter for CompletionFormatter {
             sections.push(history_lines.join("\n"));
         }
 
-        // Get current path first (needed for current_path section)
-        let current_path = detailed.iter()
-            .rev()
-            .find(|c| c.session_id == self.current_session_id)
-            .and_then(|c| c.cwd.as_deref())
-            .unwrap_or("");
+        // Get current path: prefer live cwd from session probe, fall back to last command's cwd
+        let current_path = self.live_cwd.as_deref()
+            .unwrap_or_else(|| {
+                detailed.iter()
+                    .rev()
+                    .find(|c| c.session_id == self.current_session_id)
+                    .and_then(|c| c.cwd.as_deref())
+                    .unwrap_or("")
+            });
 
         // Recent section: all detailed commands interleaved by time
         if !detailed.is_empty() {

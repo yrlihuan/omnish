@@ -1233,11 +1233,17 @@ impl SessionManager {
         let mut all_commands = Vec::new();
         let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
         let mut hostnames: HashMap<String, String> = HashMap::new();
+        let mut live_cwd: Option<String> = None;
         for (sid, session) in &session_entries {
             let stream_path = session.dir.join("stream.bin");
             let meta = session.meta.read().await;
             if let Some(h) = meta.attrs.get("hostname") {
                 hostnames.insert(sid.clone(), h.clone());
+            }
+            if sid == current_session_id {
+                if let Some(cwd) = meta.attrs.get("shell_cwd") {
+                    live_cwd = Some(omnish_context::shorten_home(cwd));
+                }
             }
             let commands = session.commands.read().await;
             for cmd in commands.iter() {
@@ -1339,7 +1345,7 @@ impl SessionManager {
             current_session_id,
             cc.head_lines,
             cc.tail_lines,
-        );
+        ).with_live_cwd(live_cwd);
 
         let total = selected_commands.len();
         let strategy = RecentCommands::new(total);

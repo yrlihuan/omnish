@@ -9,7 +9,7 @@ use omnish_store::command::CommandRecord;
 use omnish_store::stream::StreamEntry;
 
 /// Replace the user's home directory prefix with `~` to reduce context size.
-fn shorten_home(path: &str) -> String {
+pub fn shorten_home(path: &str) -> String {
     if let Some(home) = std::env::var_os("HOME") {
         let home = home.to_string_lossy();
         if let Some(rest) = path.strip_prefix(home.as_ref()) {

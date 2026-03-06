@@ -48,6 +48,7 @@ PANE=""     # convenience: "$SESSION:0.0"
 _TEST_PASSED=0
 _TEST_TOTAL=0
 _WAIT_FOR_USER=false
+_WAIT_CLIENT_STARTED=false  # true if -w already started the client
 _TEST_CASES="all"
 _TEST_MAX=0  # set by caller via run_tests
 
@@ -116,7 +117,12 @@ _show_help() {
 
 # Start a fresh omnish-client in the tmux session.
 # Kills any existing session first.
+# If -w already started the client, skip the first call.
 start_client() {
+    if [[ "$_WAIT_CLIENT_STARTED" == "true" ]]; then
+        _WAIT_CLIENT_STARTED=false
+        return
+    fi
     _tmux kill-session -t "$SESSION" 2>/dev/null || true
     _tmux new -d -s "$SESSION" -n test "$CLIENT"
 }
@@ -251,8 +257,14 @@ run_tests() {
     echo -e "${YELLOW}To monitor: tmux -f '$TMUX_CONF' -S '$SOCKET' attach -t $SESSION${NC}"
 
     if [[ "$_WAIT_FOR_USER" == "true" ]]; then
+        # Start client early so the user can attach and observe
+        start_client
+        wait_for_client
+        echo -e "${YELLOW}Tmux session started. Attach with:${NC}"
+        echo -e "${YELLOW}  tmux -f '$TMUX_CONF' -S '$SOCKET' attach -t $SESSION${NC}"
         echo -e "${YELLOW}Press Enter to start tests...${NC}"
         read -r
+        _WAIT_CLIENT_STARTED=true
     fi
 
     _TEST_PASSED=0
