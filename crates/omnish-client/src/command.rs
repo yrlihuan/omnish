@@ -280,10 +280,10 @@ pub fn dispatch(msg: &str) -> ChatAction {
         return ChatAction::LlmQuery(msg.to_string());
     }
 
-    // Parse limit (head/tail) first, then redirect
-    let (cmd_str_without_limit, limit) = parse_limit(msg);
-    let (cmd_str, redirect) = parse_redirect(cmd_str_without_limit);
+    // Parse redirect first, then limit
+    let (cmd_str_without_redirect, redirect) = parse_redirect(msg);
     let redirect = redirect.map(|s| s.to_string());
+    let (cmd_str, limit) = parse_limit(cmd_str_without_redirect);
 
     // Find the longest matching command path.
     let mut best: Option<&CommandEntry> = None;
@@ -361,6 +361,20 @@ mod tests {
                 assert_eq!(query, "__cmd:context");
                 assert_eq!(redirect.as_deref(), Some("/tmp/ctx.txt"));
                 assert!(limit.is_none());
+            }
+            _ => panic!("expected DaemonQuery"),
+        }
+    }
+
+    #[test]
+    fn test_context_with_limit_and_redirect() {
+        // Both | tail and > redirect
+        match dispatch("/context | tail 5 > /tmp/ctx.txt") {
+            ChatAction::DaemonQuery { query, redirect, limit } => {
+                assert_eq!(query, "__cmd:context");
+                assert_eq!(redirect.as_deref(), Some("/tmp/ctx.txt"));
+                assert!(limit.is_some());
+                assert_eq!(limit.as_ref().unwrap().count, 5);
             }
             _ => panic!("expected DaemonQuery"),
         }
