@@ -260,6 +260,7 @@ _kill_cleanup_client() {
 
 # _count_threads
 #   Start a cleanup client, enter chat, run /threads, count [N] lines, kill it.
+#   Polls up to 5s for /threads output to appear before counting.
 #   Prints the count to stdout.
 _count_threads() {
     _start_cleanup_client
@@ -267,10 +268,15 @@ _count_threads() {
     sleep 0.5
     _tmux send-keys -t "$_CLEANUP_PANE" -- "/threads" 2>/dev/null
     _tmux send-keys -t "$_CLEANUP_PANE" Enter 2>/dev/null
-    sleep 1
-    local content
-    content=$(_tmux capture-pane -p -J -t "$_CLEANUP_PANE" -S -100 2>/dev/null) || { _kill_cleanup_client; echo 0; return; }
-    local count
+    # Poll for output (either [N] lines or "No conversations") up to 5s
+    local content="" count=0
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 0.5
+        content=$(_tmux capture-pane -p -J -t "$_CLEANUP_PANE" -S -100 2>/dev/null) || continue
+        if echo "$content" | grep -qE '^\s*\[[0-9]+\]|No conversations'; then
+            break
+        fi
+    done
     count=$(echo "$content" | grep -cE '^\s*\[[0-9]+\]') || true
     _kill_cleanup_client
     echo "$count"
@@ -287,11 +293,9 @@ _snapshot_thread_count() {
 #   Delete threads created during tests (new threads appear at top = low indices).
 #   Uses a separate cleanup client window.
 _cleanup_new_threads() {
-    # Protection: if initial thread count is 0, skip deletion to avoid deleting
-    # all threads when detection might be faulty (issue #159)
+    # Skip if initial count was 0 to avoid deleting all threads on faulty detection
     if [[ $_THREADS_BEFORE -eq 0 ]]; then
-        echo -e "${YELLOW}Warning: Initial thread count is 0, skipping cleanup to prevent accidental deletion${NC}"
-        echo -e "${YELLOW}This may leave test threads behind, but avoids deleting potentially existing threads${NC}"
+        echo -e "${YELLOW}Warning: initial thread count was 0, skipping cleanup${NC}"
         return
     fi
 
