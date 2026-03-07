@@ -50,9 +50,14 @@ pub fn create_backend(
             let client = reqwest::Client::builder()
                 .pool_max_idle_per_host(10)
                 .build()?;
+            let base_url = config
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.anthropic.com".to_string());
             Ok(Arc::new(AnthropicBackend {
                 api_key,
                 model: config.model.clone(),
+                base_url,
                 client,
             }))
         }

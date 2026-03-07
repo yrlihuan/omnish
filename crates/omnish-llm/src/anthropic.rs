@@ -6,6 +6,7 @@ use async_trait::async_trait;
 pub struct AnthropicBackend {
     pub model: String,
     pub api_key: String,
+    pub base_url: String,
     pub client: reqwest::Client,
 }
 
@@ -84,9 +85,9 @@ impl LlmBackend for AnthropicBackend {
         let body = serde_json::Value::Object(body_map);
 
         let resp = client
-            .post("https://api.anthropic.com/v1/messages")
+            .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-version", "2024-04-04")
             .header("content-type", "application/json")
             .json(&body)
             .send()

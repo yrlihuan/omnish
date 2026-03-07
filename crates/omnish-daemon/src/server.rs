@@ -243,21 +243,6 @@ async fn handle_chat_message(
     let use_case = UseCase::Chat;
     let max_context_chars = backend.max_content_chars_for_use_case(use_case);
 
-    // Only build terminal context for the first message in a conversation
-    let context = if conversation.is_empty() {
-        let dummy_req = Request {
-            request_id: cm.request_id.clone(),
-            session_id: cm.session_id.clone(),
-            query: String::new(),
-            scope: RequestScope::AllSessions,
-        };
-        resolve_chat_context(&dummy_req, mgr, max_context_chars)
-            .await
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-
     // Build tools from current session data
     let (commands, stream_reader) = mgr.get_all_commands_with_reader().await;
     let command_query_tool = omnish_daemon::tools::command_query::CommandQueryTool::new(
@@ -272,7 +257,7 @@ async fn handle_chat_message(
         .collect();
 
     let mut llm_req = LlmRequest {
-        context,
+        context: String::new(),
         query: Some(cm.query.clone()),
         trigger: TriggerType::Manual,
         session_ids: vec![cm.session_id.clone()],
