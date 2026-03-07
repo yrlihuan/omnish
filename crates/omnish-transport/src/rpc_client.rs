@@ -439,7 +439,10 @@ impl RpcClient {
                         }
                     }
                     ReplyTx::Stream(tx) => {
-                        if tx.try_send(frame.payload).is_err() {
+                        if matches!(frame.payload, Message::Ack) {
+                            // End-of-stream sentinel — remove entry, dropping sender
+                            map.remove(&frame.request_id);
+                        } else if tx.try_send(frame.payload).is_err() {
                             map.remove(&frame.request_id);
                         }
                     }

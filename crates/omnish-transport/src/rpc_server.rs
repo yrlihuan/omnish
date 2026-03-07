@@ -208,11 +208,16 @@ fn spawn_connection<R, W, F>(
             let writer = writer.clone();
             tokio::spawn(async move {
                 let responses = handler(frame.payload).await;
+                let multi = responses.len() > 1;
                 for response_payload in responses {
                     if let Err(e) = write_reply(&writer, frame.request_id, response_payload).await {
                         tracing::error!("failed to write response: {}", e);
                         break;
                     }
+                }
+                // Send end-of-stream sentinel for multi-message responses
+                if multi {
+                    let _ = write_reply(&writer, frame.request_id, Message::Ack).await;
                 }
             });
         }
