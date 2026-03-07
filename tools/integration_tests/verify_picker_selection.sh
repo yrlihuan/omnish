@@ -34,12 +34,12 @@ send_up_arrow() {
     sleep "$wait"
 }
 
-# Count [N] lines from only the LATEST /threads output in a capture buffer.
-# Strips ANSI codes, then uses awk to reset count on each "> /threads" line
-# (excluding "> /threads del ..."), so only the final listing is counted.
+# Count [N] lines from only the LATEST /thread list output in a capture buffer.
+# Strips ANSI codes, then uses awk to reset count on each "> /thread list" line
+# (excluding "> /thread del ..."), so only the final listing is counted.
 _count_thread_lines() {
     echo "$1" | sed 's/\x1b\[[0-9;]*m//g' | awk '
-        /^>? *\/threads[[:space:]]*$/ { c=0; next }
+        /^>? *\/thread list[[:space:]]*$/ { c=0; next }
         /^\s*\[[0-9]+\]/ { c++ }
         END { print c }
     '
@@ -128,17 +128,18 @@ test_1() {
     send_special Escape 0.5
     sleep 1.5
 
-    # Re-enter chat mode for /threads command
+    # Re-enter chat mode for /thread list command
     send_keys ":" 0.5
     wait_for_prompt
+    sleep 0.5  # Extra wait to ensure chat prompt is ready
 
     # ── Verify we have 3 conversations ──
-    echo -e "  ${YELLOW}--- /threads check ---${NC}"
-    send_keys "/threads" 0.3
+    echo -e "  ${YELLOW}--- /thread list check ---${NC}"
+    send_keys "/thread list" 0.3
     send_enter 1
 
     local threads_output=$(capture_pane -50)
-    show_capture "/threads output" "$threads_output" 10
+    show_capture "/thread list output" "$threads_output" 10
 
     # Count thread lines (lines starting with [N])
     local thread_count
@@ -152,7 +153,8 @@ test_1() {
     # ── Trigger picker with /resume without index ──
     echo -e "  ${YELLOW}--- /resume (trigger picker) ---${NC}"
     send_keys "/resume" 0.3
-    send_enter 0.3  # Short wait for picker to render
+    send_enter 1  # Wait for picker to render (longer for observation)
+    sleep 1  # Extra pause for visual observation in attach mode
 
     local picker_output=$(capture_pane -30)
     show_capture "After /resume" "$picker_output" 15
@@ -166,8 +168,9 @@ test_1() {
 
     # ── Select second item with down arrow ──
     echo -e "  ${YELLOW}--- Selecting second item ---${NC}"
-    send_down_arrow 0.2
-    send_enter 0.5
+    send_down_arrow 0.5
+    send_enter 1
+    sleep 1  # Pause to observe the selection result
 
     local after_select=$(capture_pane -30)
     show_capture "After selecting" "$after_select" 15
@@ -182,8 +185,8 @@ test_1() {
     if echo "$after_select" | grep -qi "color\|red\|green\|blue"; then
         echo -e "  ${GREEN}Conv 2 content detected in output${NC}"
         # Still send a follow-up to confirm we're in the right conversation
-        send_keys "What was my previous question?" 0.3
-        send_enter 0.3
+        send_keys "What was my previous question?" 0.5
+        send_enter 0.5
         sleep 15
         local response=$(capture_pane -30)
         if echo "$response" | grep -qi "color\|red\|green\|blue"; then
@@ -198,8 +201,8 @@ test_1() {
     else
         # Might be showing conversation history or just prompt
         # Try sending a message to see which conversation we're in
-        send_keys "What was my previous question?" 0.3
-        send_enter 0.3
+        send_keys "What was my previous question?" 0.5
+        send_enter 0.5
         sleep 15
 
         local response=$(capture_pane -30)
