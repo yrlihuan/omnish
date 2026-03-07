@@ -1,4 +1,4 @@
-use crate::backend::{LlmBackend, LlmRequest, LlmResponse};
+use crate::backend::{ContentBlock, LlmBackend, LlmRequest, LlmResponse, StopReason};
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -114,7 +114,8 @@ impl LlmBackend for OpenAiCompatBackend {
         };
 
         Ok(LlmResponse {
-            content,
+            content: vec![ContentBlock::Text(content)],
+            stop_reason: StopReason::EndTurn,
             model: self.model.clone(),
             thinking,
         })

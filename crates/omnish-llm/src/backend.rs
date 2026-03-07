@@ -2,6 +2,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::tool::{ToolCall, ToolDef};
+
 /// Use case for LLM requests - determines which model to use
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UseCase {
@@ -17,6 +19,21 @@ impl Default for UseCase {
     fn default() -> Self {
         UseCase::Analysis
     }
+}
+
+/// A block of content in an LLM response.
+#[derive(Debug, Clone)]
+pub enum ContentBlock {
+    Text(String),
+    ToolUse(ToolCall),
+}
+
+/// Why the LLM stopped generating.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopReason {
+    EndTurn,
+    ToolUse,
+    MaxTokens,
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +52,11 @@ pub struct LlmRequest {
     /// Whether to enable extended thinking mode (e.g., Claude extended thinking, DeepSeek R1).
     /// None means use backend default. Set to false to disable, true to enable.
     pub enable_thinking: Option<bool>,
+    /// Tool definitions to provide to the LLM. Empty means no tools.
+    pub tools: Vec<ToolDef>,
+    /// Extra messages for agent loop (tool_use + tool_result exchanges).
+    /// These are raw serde_json::Value objects appended after conversation + query.
+    pub extra_messages: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,10 +68,37 @@ pub enum TriggerType {
 
 #[derive(Debug, Clone)]
 pub struct LlmResponse {
-    pub content: String,
+    pub content: Vec<ContentBlock>,
+    pub stop_reason: StopReason,
     pub model: String,
-    /// Thinking content from models that support it (e.g., o1, Claude with extended thinking)
+    /// Thinking content from models that support it
     pub thinking: Option<String>,
+}
+
+impl LlmResponse {
+    /// Extract concatenated text from all Text blocks.
+    /// Convenience method for callers that don't use tool-use.
+    pub fn text(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    /// Extract all tool calls from the response.
+    pub fn tool_calls(&self) -> Vec<&ToolCall> {
+        self.content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse(tc) => Some(tc),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -61,7 +110,6 @@ pub trait LlmBackend: Send + Sync {
         None
     }
     /// Returns the maximum content characters limit for the given use case
-    /// Default implementation returns max_content_chars() for backwards compatibility
     fn max_content_chars_for_use_case(&self, _use_case: UseCase) -> Option<usize> {
         self.max_content_chars()
     }

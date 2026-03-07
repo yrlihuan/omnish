@@ -1,4 +1,5 @@
-use crate::backend::{LlmBackend, LlmRequest, LlmResponse};
+use crate::backend::{ContentBlock, LlmBackend, LlmRequest, LlmResponse, StopReason};
+use crate::tool::ToolCall;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -18,7 +19,7 @@ impl LlmBackend for AnthropicBackend {
     async fn complete(&self, req: &LlmRequest) -> Result<LlmResponse> {
         let client = &self.client;
 
-        let messages: Vec<serde_json::Value> = if req.conversation.is_empty() {
+        let messages: Vec<serde_json::Value> = if req.conversation.is_empty() && req.extra_messages.is_empty() {
             // Existing single-turn behavior
             let user_content = crate::template::build_user_content(
                 &req.context,
@@ -26,7 +27,7 @@ impl LlmBackend for AnthropicBackend {
             );
             vec![serde_json::json!({"role": "user", "content": user_content})]
         } else {
-            // Multi-turn: conversation history + current query
+            // Multi-turn: conversation history + current query + extra (tool) messages
             let mut msgs = Vec::new();
             for (i, turn) in req.conversation.iter().enumerate() {
                 let content = if i == 0 && !req.context.is_empty() {
@@ -37,22 +38,39 @@ impl LlmBackend for AnthropicBackend {
                 };
                 msgs.push(serde_json::json!({"role": &turn.role, "content": content}));
             }
-            // Append current query as final user message
-            if let Some(ref q) = req.query {
-                msgs.push(serde_json::json!({"role": "user", "content": q}));
+            // Append current query as user message (before extra messages on first call)
+            if req.extra_messages.is_empty() {
+                if let Some(ref q) = req.query {
+                    msgs.push(serde_json::json!({"role": "user", "content": q}));
+                }
             }
+            // Append extra messages (tool_use assistant + tool_result user exchanges)
+            msgs.extend(req.extra_messages.clone());
             msgs
         };
 
-        // Build request body, conditionally disable thinking if requested
+        // Build request body
         let mut body_map = serde_json::Map::new();
         body_map.insert("model".to_string(), serde_json::Value::String(self.model.clone()));
-        body_map.insert("max_tokens".to_string(), serde_json::Value::Number(1024.into()));
+        body_map.insert("max_tokens".to_string(), serde_json::Value::Number(4096.into()));
         body_map.insert("messages".to_string(), serde_json::Value::Array(messages));
 
         // Add system prompt if provided
         if let Some(ref system) = req.system_prompt {
             body_map.insert("system".to_string(), serde_json::Value::String(system.clone()));
+        }
+
+        // Add tools if provided
+        if !req.tools.is_empty() {
+            let tools_json: Vec<serde_json::Value> = req.tools
+                .iter()
+                .map(|t| serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.input_schema,
+                }))
+                .collect();
+            body_map.insert("tools".to_string(), serde_json::Value::Array(tools_json));
         }
 
         // Add thinking parameter if explicitly disabled
@@ -93,10 +111,16 @@ impl LlmBackend for AnthropicBackend {
             ));
         }
 
-        // Extract thinking and text content from response
-        // Anthropic returns content as an array of blocks
+        // Parse stop_reason
+        let stop_reason = match json["stop_reason"].as_str() {
+            Some("tool_use") => StopReason::ToolUse,
+            Some("max_tokens") => StopReason::MaxTokens,
+            _ => StopReason::EndTurn,
+        };
+
+        // Extract content blocks
         let mut thinking: Option<String> = None;
-        let mut text_content = String::new();
+        let mut content_blocks = Vec::new();
 
         for block in json["content"].as_array().unwrap_or(&vec![]) {
             match block["type"].as_str() {
@@ -104,24 +128,28 @@ impl LlmBackend for AnthropicBackend {
                     thinking = block["thinking"].as_str().map(|s| s.to_string());
                 }
                 Some("text") => {
-                    if !text_content.is_empty() {
-                        text_content.push('\n');
+                    let text = strip_thinking(block["text"].as_str().unwrap_or(""));
+                    if !text.is_empty() {
+                        content_blocks.push(ContentBlock::Text(text));
                     }
-                    text_content.push_str(block["text"].as_str().unwrap_or(""));
+                }
+                Some("tool_use") => {
+                    let id = block["id"].as_str().unwrap_or("").to_string();
+                    let name = block["name"].as_str().unwrap_or("").to_string();
+                    let input = block["input"].clone();
+                    content_blocks.push(ContentBlock::ToolUse(ToolCall { id, name, input }));
                 }
                 _ => {}
             }
         }
 
-        if text_content.is_empty() {
-            return Err(anyhow::anyhow!("Invalid response format: no text content found"));
+        if content_blocks.is_empty() && stop_reason == StopReason::EndTurn {
+            return Err(anyhow::anyhow!("Invalid response format: no content blocks found"));
         }
 
-        // Strip thinking tags from text content (for backwards compatibility)
-        let content = strip_thinking(&text_content);
-
         Ok(LlmResponse {
-            content,
+            content: content_blocks,
+            stop_reason,
             model: self.model.clone(),
             thinking,
         })

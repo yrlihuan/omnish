@@ -12,6 +12,8 @@ fn test_llm_request_build() {
         conversation: vec![],
         system_prompt: None,
         enable_thinking: None,
+        tools: vec![],
+        extra_messages: vec![],
     };
     assert_eq!(req.session_ids.len(), 1);
     assert!(req.query.is_some());
