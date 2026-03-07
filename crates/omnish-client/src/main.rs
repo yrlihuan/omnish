@@ -8,6 +8,7 @@ mod interceptor;
 mod probe;
 mod shell_hook;
 mod shell_input;
+mod picker;
 mod throttle;
 mod util;
 
