@@ -305,13 +305,10 @@ _cleanup_new_threads() {
         return
     fi
     echo -e "${YELLOW}Cleaning up $new_count new thread(s) (before=$_THREADS_BEFORE, after=$after)...${NC}"
-    # Delete indices 1..new_count (new threads are at the top, indices are stable)
-    for ((i=1; i<=new_count; i++)); do
-        _tmux send-keys -t "$_CLEANUP_PANE" -- "/threads del $i" 2>/dev/null
-        _tmux send-keys -t "$_CLEANUP_PANE" Enter 2>/dev/null
-        sleep 0.3
-    done
-    sleep 0.3
+    # Delete indices 1..new_count in one command (new threads are at top)
+    _tmux send-keys -t "$_CLEANUP_PANE" -- "/threads del 1-$new_count" 2>/dev/null
+    _tmux send-keys -t "$_CLEANUP_PANE" Enter 2>/dev/null
+    sleep 1
     _kill_cleanup_client
     echo -e "${YELLOW}Thread cleanup done${NC}"
 }
