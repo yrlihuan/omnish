@@ -80,9 +80,11 @@ async fn generate_hourly_summary(
             conversation: vec![],
             system_prompt: None,
             enable_thinking: None, // Use default (thinking enabled for analysis)
+            tools: vec![],
+            extra_messages: vec![],
         };
         match backend.complete(&req).await {
-            Ok(resp) => Some(resp.content),
+            Ok(resp) => Some(resp.text()),
             Err(e) => {
                 tracing::warn!("hourly summary: LLM summary failed, skipping: {}", e);
                 None

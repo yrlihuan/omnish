@@ -133,11 +133,13 @@ async fn generate_daily_note(
             conversation: vec![],
             system_prompt: None,
             enable_thinking: None, // Use default (thinking enabled for analysis)
+            tools: vec![],
+            extra_messages: vec![],
         };
         match backend.complete(&req).await {
             Ok(resp) => {
                 md.push_str("\n## 工作总结\n");
-                md.push_str(&resp.content);
+                md.push_str(&resp.text());
                 md.push('\n');
             }
             Err(e) => {
@@ -221,7 +223,7 @@ mod tests {
     #[tokio::test]
     async fn test_generate_daily_note_with_mock_llm() {
         use async_trait::async_trait;
-        use omnish_llm::backend::{LlmBackend, LlmRequest, LlmResponse};
+        use omnish_llm::backend::{ContentBlock, LlmBackend, LlmRequest, LlmResponse, StopReason};
         use omnish_store::command::CommandRecord;
 
         struct MockLlm;
@@ -230,7 +232,8 @@ mod tests {
         impl LlmBackend for MockLlm {
             async fn complete(&self, _req: &LlmRequest) -> anyhow::Result<LlmResponse> {
                 Ok(LlmResponse {
-                    content: "今天主要进行了项目构建工作。".to_string(),
+                    content: vec![ContentBlock::Text("今天主要进行了项目构建工作。".to_string())],
+                    stop_reason: StopReason::EndTurn,
                     model: "mock".to_string(),
                     thinking: None,
                 })

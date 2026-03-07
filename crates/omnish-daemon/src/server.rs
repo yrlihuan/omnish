@@ -132,7 +132,7 @@ async fn handle_message(
 
             let content = if let Some(ref backend) = llm {
                 match handle_llm_request(&req, mgr, backend).await {
-                    Ok(response) => response.content,
+                    Ok(response) => response.text(),
                     Err(e) => {
                         tracing::error!("LLM request failed: {}", e);
                         format!("Error: {}", e)
@@ -238,14 +238,17 @@ async fn handle_message(
                     conversation,
                     system_prompt: Some(omnish_llm::template::CHAT_SYSTEM_PROMPT.to_string()),
                     enable_thinking: None, // Use default (thinking enabled for chat)
+                    tools: vec![],
+                    extra_messages: vec![],
                 };
 
                 let start = std::time::Instant::now();
                 match backend.complete(&llm_req).await {
                     Ok(response) => {
                         tracing::info!("Chat LLM completed in {:?} (thread={})", start.elapsed(), cm.thread_id);
-                        conv_mgr.append_exchange(&cm.thread_id, &cm.query, &response.content);
-                        response.content
+                        let text = response.text();
+                        conv_mgr.append_exchange(&cm.thread_id, &cm.query, &text);
+                        text
                     }
                     Err(e) => {
                         tracing::error!("Chat LLM failed: {}", e);
@@ -303,6 +306,8 @@ async fn try_warmup_kv_cache(
         conversation: vec![],
         system_prompt: None,
         enable_thinking: Some(false), // Disable thinking for completion
+        tools: vec![],
+        extra_messages: vec![],
     };
 
     match backend.complete(&req).await {
@@ -673,6 +678,8 @@ async fn handle_llm_request(
         conversation: vec![],
         system_prompt: None,
         enable_thinking: None, // Use default (thinking enabled for chat)
+        tools: vec![],
+        extra_messages: vec![],
     };
 
     let start = std::time::Instant::now();
@@ -751,6 +758,8 @@ async fn handle_completion_request(
         conversation: vec![],
         system_prompt: None,
         enable_thinking: Some(false), // Disable thinking for completion requests
+        tools: vec![],
+        extra_messages: vec![],
     };
 
     let start = std::time::Instant::now();
@@ -779,7 +788,7 @@ async fn handle_completion_request(
                     duration_str, req.session_id, response.model, req.sequence_id, req.input.len()
                 );
             }
-            tracing::debug!("Completion LLM raw response: {:?}", response.content);
+            tracing::debug!("Completion LLM raw response: {:?}", response.text());
 
             // Log thinking content if present
             if let Some(ref thinking) = response.thinking {
@@ -795,7 +804,7 @@ async fn handle_completion_request(
     }
 
     let response = result?;
-    let suggestions = parse_completion_suggestions(&response.content)?;
+    let suggestions = parse_completion_suggestions(&response.text())?;
 
     // Truncate suggestions at && when user input doesn't contain && (issue #107)
     let suggestions = if req.input.contains("&&") {
@@ -889,7 +898,7 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use async_trait::async_trait;
-    use omnish_llm::backend::{LlmBackend, LlmRequest, LlmResponse};
+    use omnish_llm::backend::{ContentBlock, LlmBackend, LlmRequest, LlmResponse, StopReason};
     use omnish_protocol::message::CompletionRequest as ProtoCompletionRequest;
     use std::sync::Arc;
     use std::time::Instant;
@@ -912,7 +921,8 @@ mod tests {
             // Simulate network/processing delay
             sleep(Duration::from_millis(self.delay_ms)).await;
             Ok(LlmResponse {
-                content: r#"[{"text": " status", "confidence": 0.9}]"#.to_string(),
+                content: vec![ContentBlock::Text(r#"[{"text": " status", "confidence": 0.9}]"#.to_string())],
+                stop_reason: StopReason::EndTurn,
                 model: "mock".to_string(),
                 thinking: None,
             })
