@@ -1585,27 +1585,6 @@ async fn run_chat_loop(
         save_to_history(chat_history, trimmed, 100);
         history_index = None; // Reset to new command mode
 
-        // /new — start new thread within chat
-        if trimmed == "/new" || trimmed == "/chat" || trimmed == "/ask" {
-            let req_id = Uuid::new_v4().to_string()[..8].to_string();
-            let new_msg = Message::ChatStart(ChatStart {
-                request_id: req_id.clone(),
-                session_id: session_id.to_string(),
-                new_thread: true,
-            });
-            match rpc.call(new_msg).await {
-                Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
-                    current_thread_id = Some(ready.thread_id);
-                    let info = "\r\n\x1b[2;37m(new conversation)\x1b[0m";
-                    nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
-                }
-                _ => {
-                    let err = display::render_error("Failed to create new thread");
-                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                }
-            }
-            continue;
-        }
 
         // /threads del [N] or /conversations del [N] — delete a thread
         if trimmed == "/threads del" || trimmed == "/conversations del"
@@ -1653,7 +1632,7 @@ async fn run_chat_loop(
                 // Prompt for index (supports 1,2-4,5 syntax)
                 let prompt = "\r\n\x1b[33mDelete which conversation? [N or 1,2-4,5]: \x1b[0m";
                 nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
-                match read_chat_input(&mut chat_completer, true, chat_history, &mut history_index) {
+                match read_chat_input(&mut chat_completer, true, &chat_history, &mut history_index) {
                     Some(line) => line.trim().to_string(),
                     None => continue,
                 }
