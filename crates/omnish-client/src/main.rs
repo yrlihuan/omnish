@@ -1536,6 +1536,13 @@ async fn run_chat_loop(
             continue;
         }
 
+        // Check if this is an inspection command that should auto-exit
+        // when it's the first action in the chat session (issue #148).
+        let is_inspection = trimmed.starts_with("/debug")
+            || trimmed.starts_with("/context")
+            || trimmed.starts_with("/template");
+        let auto_exit = !has_activity && is_inspection;
+
         has_activity = true;
 
         // Save to history for future navigation
@@ -1857,12 +1864,14 @@ async fn run_chat_loop(
                     nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                 }
             }
+            if auto_exit { break; }
             continue;
         }
 
         // Handle /commands that go through existing dispatch
         if trimmed.starts_with('/') {
             if handle_slash_command(trimmed, session_id, rpc, proxy, client_debug_fn).await {
+                if auto_exit { break; }
                 continue;
             }
             // Unknown /command — fall through to send as chat message

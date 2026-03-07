@@ -52,11 +52,19 @@ test_1() {
     show_capture "/debug client output" "$content" 15
 
     # Should contain version and client state info
-    if echo "$content" | grep -q "Version:" && echo "$content" | grep -q "at_prompt:"; then
-        assert_pass "/debug client shows version and client state"
+    if ! echo "$content" | grep -q "Version:" || ! echo "$content" | grep -q "at_prompt:"; then
+        assert_fail "/debug client output missing expected fields"
+        return 1
+    fi
+
+    # Auto-exit: inspection command as first action should return to shell (issue #148)
+    # Check if shell prompt (contains "$ ") appears in last few lines of output.
+    # Ghost text may follow "$ " so we can't require it at line end.
+    if echo "$content" | tail -3 | grep -q '\$ '; then
+        assert_pass "/debug client shows output and auto-exits chat"
         return 0
     else
-        assert_fail "/debug client output missing expected fields"
+        assert_fail "/debug client did not auto-exit to shell prompt"
         return 1
     fi
 }
@@ -65,18 +73,27 @@ test_1() {
 test_2() {
     echo -e "\n${YELLOW}=== Test 2: /debug session ===${NC}"
 
+    # Re-enter chat (previous test auto-exited)
+    send_keys ":" 0.5
+    wait_for_prompt
+
     send_keys "/debug session" 0.3
     send_enter 1
 
     local content=$(capture_pane -30)
     show_capture "/debug session output" "$content" 15
 
-    # Should contain session info
-    if echo "$content" | grep -qi "session"; then
-        assert_pass "/debug session shows session info"
+    # Should contain session info and auto-exit to shell
+    if ! echo "$content" | grep -qi "session"; then
+        assert_fail "/debug session output missing session info"
+        return 1
+    fi
+
+    if echo "$content" | tail -3 | grep -q '\$ '; then
+        assert_pass "/debug session shows output and auto-exits chat"
         return 0
     else
-        assert_fail "/debug session output missing session info"
+        assert_fail "/debug session did not auto-exit to shell prompt"
         return 1
     fi
 }
@@ -85,20 +102,29 @@ test_2() {
 test_3() {
     echo -e "\n${YELLOW}=== Test 3: /context | tail -n 10 ===${NC}"
 
+    # Re-enter chat (previous test auto-exited)
+    send_keys ":" 0.5
+    wait_for_prompt
+
     send_keys "/context | tail -n 10" 0.3
     send_enter 1
 
     local content=$(capture_pane -30)
     show_capture "/context | tail output" "$content" 15
 
-    # Should show some context output (non-empty response)
+    # Should show context output and auto-exit to shell
     local non_empty
     non_empty=$(echo "$content" | grep -cvE '^\s*$|^\s*> ') || true
-    if [[ $non_empty -gt 2 ]]; then
-        assert_pass "/context | tail -n 10 produces output"
+    if [[ $non_empty -le 2 ]]; then
+        assert_fail "/context output appears empty"
+        return 1
+    fi
+
+    if echo "$content" | tail -3 | grep -q '\$ '; then
+        assert_pass "/context | tail -n 10 produces output and auto-exits chat"
         return 0
     else
-        assert_fail "/context output appears empty"
+        assert_fail "/context did not auto-exit to shell prompt"
         return 1
     fi
 }
