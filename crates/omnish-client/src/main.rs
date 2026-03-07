@@ -267,6 +267,8 @@ async fn main() -> Result<()> {
     let (completion_tx, mut completion_rx) = tokio::sync::mpsc::channel::<
         omnish_protocol::message::CompletionResponse
     >(4);
+    // Chat command history persists across chat sessions within same client
+    let mut chat_history: VecDeque<String> = VecDeque::with_capacity(100);
 
     loop {
         let mut fds = [
@@ -473,7 +475,7 @@ async fn main() -> Result<()> {
                                 &last_readline_content,
                                 shell_pid,
                             );
-                            run_chat_loop(rpc, &session_id, &proxy, initial, &dbg_fn).await;
+                            run_chat_loop(rpc, &session_id, &proxy, initial, &dbg_fn, &mut chat_history).await;
                         } else {
                             let err = display::render_error("Daemon not connected");
                             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
@@ -1497,6 +1499,7 @@ async fn run_chat_loop(
     proxy: &PtyProxy,
     initial_msg: Option<String>,
     client_debug_fn: &dyn Fn() -> String,
+    chat_history: &mut VecDeque<String>,
 ) {
     let mut chat_completer = ghost_complete::GhostCompleter::new(vec![
         Box::new(ghost_complete::BuiltinProvider::new()),
@@ -1507,8 +1510,6 @@ async fn run_chat_loop(
     // Cached thread_ids from last /conversations call, for stable /resume N
     let mut cached_thread_ids: Vec<String> = Vec::new();
 
-    // Chat command history for arrow key navigation
-    let mut chat_history: VecDeque<String> = VecDeque::with_capacity(100);
     let mut history_index: Option<usize> = None; // None = new command, Some(idx) = browsing history
 
     let mut pending_input = initial_msg;
@@ -1533,7 +1534,7 @@ async fn run_chat_loop(
         }
 
         // Save to history for future navigation
-        save_to_history(&mut chat_history, trimmed, 100);
+        save_to_history(chat_history, trimmed, 100);
         history_index = None; // Reset to new command mode
 
         // /new — start new thread within chat
@@ -1604,7 +1605,7 @@ async fn run_chat_loop(
                 // Prompt for index
                 let prompt = "\r\n\x1b[33mDelete which conversation? [N]: \x1b[0m";
                 nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
-                match read_chat_input(&mut chat_completer, true) {
+                match read_chat_input(&mut chat_completer, true, chat_history, &mut history_index) {
                     Some(line) => line.trim().to_string(),
                     None => continue,
                 }
@@ -1984,10 +1985,18 @@ fn last_utf8_char_len(buf: &[u8]) -> usize {
     cont + 1
 }
 
-/// Helper to parse escape sequences after ESC byte
+/// Helper to parse escape sequences after ESC byte.
+/// Uses poll with a short timeout to avoid blocking on bare ESC
+/// and consuming the next real input byte.
 fn parse_escape_sequence(stdin_fd: i32) -> Option<[u8; 2]> {
+    // Wait up to 50ms for the next byte (arrow keys arrive within ~1ms)
+    let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
+    let ready = unsafe { libc::poll(&mut pfd, 1, 50) };
+    if ready <= 0 {
+        return None; // Bare ESC — no following byte
+    }
+
     let mut seq = [0u8; 2];
-    // Read first character after ESC
     if nix::unistd::read(stdin_fd, &mut seq[0..1]) != Ok(1) {
         return None;
     }
@@ -2025,12 +2034,12 @@ fn read_chat_input(
                                 match seq[1] {
                                     b'A' => { // Up arrow
                                         if history.is_empty() {
-                                            return Some(String::new());
+                                            continue;
                                         }
 
                                         let idx = match *history_index {
                                             Some(i) if i > 0 => i - 1,
-                                            Some(_) => 0, // Already at first item
+                                            Some(_) => continue, // Already at first item
                                             None => history.len() - 1, // Start from most recent
                                         };
 
@@ -2058,11 +2067,11 @@ fn read_chat_input(
                                                 has_ghost = true;
                                             }
                                         }
-                                        return Some(String::new());
+                                        continue;
                                     },
                                     b'B' => { // Down arrow
                                         if history.is_empty() {
-                                            return Some(String::new());
+                                            continue;
                                         }
 
                                         let idx = match *history_index {
@@ -2081,9 +2090,9 @@ fn read_chat_input(
 
                                                 buf.clear();
                                                 completer.clear();
-                                                return Some(String::new());
+                                                continue;
                                             },
-                                            None => return Some(String::new()), // Already at new command
+                                            None => continue, // Already at new command
                                         };
 
                                         *history_index = Some(idx);
@@ -2110,7 +2119,7 @@ fn read_chat_input(
                                                 has_ghost = true;
                                             }
                                         }
-                                        return Some(String::new());
+                                        continue;
                                     },
                                     _ => {} // Ignore other escape sequences
                                 }
