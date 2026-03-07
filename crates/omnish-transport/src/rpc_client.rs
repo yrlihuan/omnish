@@ -12,9 +12,14 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsConnector;
 
+enum ReplyTx {
+    Once(oneshot::Sender<Message>),
+    Stream(mpsc::Sender<Message>),
+}
+
 struct WriteRequest {
     frame: Frame,
-    reply_tx: oneshot::Sender<Message>,
+    reply_tx: ReplyTx,
 }
 
 struct Inner {
@@ -124,7 +129,7 @@ impl RpcClient {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Message>>>> =
+        let pending: Arc<Mutex<HashMap<u64, ReplyTx>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let (tx, rx) = mpsc::channel::<WriteRequest>(256);
 
@@ -344,7 +349,7 @@ impl RpcClient {
         }
         inner
             .tx
-            .send(WriteRequest { frame, reply_tx })
+            .send(WriteRequest { frame, reply_tx: ReplyTx::Once(reply_tx) })
             .await
             .map_err(|_| anyhow::anyhow!("write task closed"))?;
         drop(inner);
@@ -354,10 +359,27 @@ impl RpcClient {
             .map_err(|_| anyhow::anyhow!("read task closed before response"))
     }
 
+    /// Send a message and receive multiple responses (for streaming).
+    pub async fn call_stream(&self, msg: Message) -> Result<mpsc::Receiver<Message>> {
+        let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let frame = Frame { request_id, payload: msg };
+        let (reply_tx, reply_rx) = mpsc::channel(16);
+
+        let inner = self.inner.lock().await;
+        if !inner.connected.load(Ordering::SeqCst) {
+            return Err(anyhow::anyhow!("not connected"));
+        }
+        inner.tx.send(WriteRequest { frame, reply_tx: ReplyTx::Stream(reply_tx) }).await
+            .map_err(|_| anyhow::anyhow!("write task closed"))?;
+        drop(inner);
+
+        Ok(reply_rx)
+    }
+
     async fn write_loop<W: AsyncWrite + Unpin>(
         mut rx: mpsc::Receiver<WriteRequest>,
         mut writer: W,
-        pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Message>>>>,
+        pending: Arc<Mutex<HashMap<u64, ReplyTx>>>,
         connected: Arc<AtomicBool>,
     ) {
         while let Some(req) = rx.recv().await {
@@ -391,7 +413,7 @@ impl RpcClient {
 
     async fn read_loop<R: AsyncRead + Unpin>(
         mut reader: R,
-        pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Message>>>>,
+        pending: Arc<Mutex<HashMap<u64, ReplyTx>>>,
         connected: Arc<AtomicBool>,
         disconnect_tx: Option<oneshot::Sender<()>>,
     ) {
@@ -409,8 +431,19 @@ impl RpcClient {
                 Err(_) => continue,
             };
             let mut map = pending.lock().await;
-            if let Some(tx) = map.remove(&frame.request_id) {
-                let _ = tx.send(frame.payload);
+            if let Some(tx) = map.get(&frame.request_id) {
+                match tx {
+                    ReplyTx::Once(_) => {
+                        if let Some(ReplyTx::Once(tx)) = map.remove(&frame.request_id) {
+                            let _ = tx.send(frame.payload);
+                        }
+                    }
+                    ReplyTx::Stream(tx) => {
+                        if tx.try_send(frame.payload).is_err() {
+                            map.remove(&frame.request_id);
+                        }
+                    }
+                }
             }
         }
         connected.store(false, Ordering::SeqCst);

@@ -62,11 +62,11 @@ async fn handle_message(
     llm: &Option<Arc<dyn LlmBackend>>,
     task_mgr: &Arc<Mutex<TaskManager>>,
     conv_mgr: &Arc<ConversationManager>,
-) -> Message {
+) -> Vec<Message> {
     // Shadow with reference for existing code; use mgr_arc for spawned tasks
     let mgr_arc = mgr;
     let mgr = &*mgr_arc;
-    match msg {
+    vec![match msg {
         Message::SessionStart(s) => {
             if let Err(e) = mgr
                 .register(&s.session_id, s.parent_session_id, s.attrs)
@@ -122,12 +122,12 @@ async fn handle_message(
                 let content = serde_json::to_string(&result).unwrap_or_else(|_| {
                     r#"{"display":"(serialization error)"}"#.to_string()
                 });
-                return Message::Response(Response {
+                return vec![Message::Response(Response {
                     request_id: req.request_id,
                     content,
                     is_streaming: false,
                     is_final: true,
-                });
+                })];
             }
 
             let content = if let Some(ref backend) = llm {
@@ -271,7 +271,7 @@ async fn handle_message(
             Message::Ack
         }
         _ => Message::Ack,
-    }
+    }]
 }
 
 async fn try_warmup_kv_cache(

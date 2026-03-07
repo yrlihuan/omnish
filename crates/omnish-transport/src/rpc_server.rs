@@ -62,7 +62,7 @@ impl RpcServer {
         tls_acceptor: Option<TlsAcceptor>,
     ) -> Result<()>
     where
-        F: Fn(Message) -> Pin<Box<dyn Future<Output = Message> + Send>> + Send + Sync + 'static,
+        F: Fn(Message) -> Pin<Box<dyn Future<Output = Vec<Message>> + Send>> + Send + Sync + 'static,
     {
         let handler = Arc::new(handler);
         let auth_token = auth_token.map(|t| Arc::new(t));
@@ -147,7 +147,7 @@ fn spawn_connection<R, W, F>(
 ) where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
-    F: Fn(Message) -> Pin<Box<dyn Future<Output = Message> + Send>> + Send + Sync + 'static,
+    F: Fn(Message) -> Pin<Box<dyn Future<Output = Vec<Message>> + Send>> + Send + Sync + 'static,
 {
     tokio::spawn(async move {
         let mut reader = reader;
@@ -207,9 +207,12 @@ fn spawn_connection<R, W, F>(
             let handler = handler.clone();
             let writer = writer.clone();
             tokio::spawn(async move {
-                let response_payload = handler(frame.payload).await;
-                if let Err(e) = write_reply(&writer, frame.request_id, response_payload).await {
-                    tracing::error!("failed to write response: {}", e);
+                let responses = handler(frame.payload).await;
+                for response_payload in responses {
+                    if let Err(e) = write_reply(&writer, frame.request_id, response_payload).await {
+                        tracing::error!("failed to write response: {}", e);
+                        break;
+                    }
                 }
             });
         }
@@ -237,7 +240,7 @@ mod tests {
                 .serve(
                     |msg| {
                         Box::pin(async move {
-                            match msg {
+                            vec![match msg {
                                 Message::SessionStart(_) => Message::Ack,
                                 Message::Request(req) => Message::Response(Response {
                                     request_id: req.request_id.clone(),
@@ -246,7 +249,7 @@ mod tests {
                                     is_final: true,
                                 }),
                                 _ => Message::Ack,
-                            }
+                            }]
                         })
                     },
                     None,
@@ -306,7 +309,7 @@ mod tests {
                 .serve(
                     |msg| {
                         Box::pin(async move {
-                            match msg {
+                            vec![match msg {
                                 Message::Request(req) => {
                                     // Simulate slow handler
                                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -318,7 +321,7 @@ mod tests {
                                     })
                                 }
                                 _ => Message::Ack,
-                            }
+                            }]
                         })
                     },
                     None,
@@ -371,7 +374,7 @@ mod tests {
                 .serve(
                     |msg| {
                         Box::pin(async move {
-                            match msg {
+                            vec![match msg {
                                 Message::SessionStart(_) => Message::Ack,
                                 Message::Request(req) => Message::Response(Response {
                                     request_id: req.request_id.clone(),
@@ -380,7 +383,7 @@ mod tests {
                                     is_final: true,
                                 }),
                                 _ => Message::Ack,
-                            }
+                            }]
                         })
                     },
                     None,
@@ -437,7 +440,7 @@ mod tests {
                 .serve(
                     |msg| {
                         Box::pin(async move {
-                            match msg {
+                            vec![match msg {
                                 Message::Request(req) => Message::Response(Response {
                                     request_id: req.request_id.clone(),
                                     content: format!("echo: {}", req.query),
@@ -445,7 +448,7 @@ mod tests {
                                     is_final: true,
                                 }),
                                 _ => Message::Ack,
-                            }
+                            }]
                         })
                     },
                     None,
@@ -500,10 +503,10 @@ mod tests {
                 .serve(
                     |msg| {
                         Box::pin(async move {
-                            match msg {
+                            vec![match msg {
                                 Message::SessionStart(_) => Message::Ack,
                                 _ => Message::Ack,
-                            }
+                            }]
                         })
                     },
                     Some(server_token),
@@ -551,7 +554,7 @@ mod tests {
             let mut server = RpcServer::bind_unix(&server_addr).await.unwrap();
             server
                 .serve(
-                    |_msg| Box::pin(async move { Message::Ack }),
+                    |_msg| Box::pin(async move { vec![Message::Ack] }),
                     Some("correct-token".to_string()),
                     None,
                 )
@@ -588,7 +591,7 @@ mod tests {
             let mut server = RpcServer::bind_unix(&server_addr).await.unwrap();
             server
                 .serve(
-                    |_msg| Box::pin(async move { Message::Ack }),
+                    |_msg| Box::pin(async move { vec![Message::Ack] }),
                     Some("some-token".to_string()),
                     None,
                 )
