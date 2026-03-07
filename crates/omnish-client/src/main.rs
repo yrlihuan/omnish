@@ -1637,34 +1637,37 @@ async fn run_chat_loop(
 
             match del_index.parse::<usize>() {
                 Ok(i) if i >= 1 && i <= cached_thread_ids.len() => {
-                    let rid = Uuid::new_v4().to_string()[..8].to_string();
-                    let req = Message::Request(Request {
-                        request_id: rid.clone(),
-                        session_id: session_id.to_string(),
-                        query: format!("__cmd:conversations del {}", i),
-                        scope: RequestScope::AllSessions,
-                    });
-                    match rpc.call(req).await {
-                        Ok(Message::Response(resp)) if resp.request_id == rid => {
-                            if let Some(json) = parse_cmd_response(&resp.content) {
-                                // If the deleted thread is the current one, clear it
-                                if let Some(deleted_id) = json.get("deleted_thread_id").and_then(|v| v.as_str()) {
-                                    if current_thread_id.as_deref() == Some(deleted_id) {
-                                        current_thread_id = None;
+                    let tid = &cached_thread_ids[i - 1];
+                    if tid.is_empty() {
+                        let err = display::render_error(&format!("Conversation [{}] already deleted", i));
+                        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                    } else {
+                        let rid = Uuid::new_v4().to_string()[..8].to_string();
+                        let req = Message::Request(Request {
+                            request_id: rid.clone(),
+                            session_id: session_id.to_string(),
+                            query: format!("__cmd:conversations del {}", tid),
+                            scope: RequestScope::AllSessions,
+                        });
+                        match rpc.call(req).await {
+                            Ok(Message::Response(resp)) if resp.request_id == rid => {
+                                if let Some(json) = parse_cmd_response(&resp.content) {
+                                    if let Some(deleted_id) = json.get("deleted_thread_id").and_then(|v| v.as_str()) {
+                                        if current_thread_id.as_deref() == Some(deleted_id) {
+                                            current_thread_id = None;
+                                        }
                                     }
+                                    // Mark as deleted (keep index stable)
+                                    cached_thread_ids[i - 1] = String::new();
+                                    let display = format!("Deleted conversation [{}]", i);
+                                    let output = display::render_response(&display);
+                                    nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
                                 }
-                                // Remove from cache
-                                if i - 1 < cached_thread_ids.len() {
-                                    cached_thread_ids.remove(i - 1);
-                                }
-                                let display = cmd_display_str(&json);
-                                let output = display::render_response(&display);
-                                nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
                             }
-                        }
-                        _ => {
-                            let err = display::render_error("Failed to delete conversation");
-                            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                            _ => {
+                                let err = display::render_error("Failed to delete conversation");
+                                nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                            }
                         }
                     }
                 }
@@ -1742,22 +1745,28 @@ async fn run_chat_loop(
                 match idx_str.trim().parse::<usize>() {
                     Ok(i) if i >= 1 && i <= cached_thread_ids.len() => {
                         let tid = cached_thread_ids[i - 1].clone();
-                        // Fetch last exchange display via daemon
-                        let rid = Uuid::new_v4().to_string()[..8].to_string();
-                        let req = Message::Request(Request {
-                            request_id: rid.clone(),
-                            session_id: session_id.to_string(),
-                            query: format!("__cmd:resume {}", i),
-                            scope: RequestScope::AllSessions,
-                        });
-                        let display = match rpc.call(req).await {
-                            Ok(Message::Response(resp)) if resp.request_id == rid => {
-                                parse_cmd_response(&resp.content)
-                                    .map(|j| cmd_display_str(&j))
-                            }
-                            _ => None,
-                        };
-                        (Some(tid), display)
+                        if tid.is_empty() {
+                            let err = display::render_error(&format!("Conversation [{}] was deleted", i));
+                            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                            (None, None)
+                        } else {
+                            // Fetch last exchange display via daemon (by thread_id for stability)
+                            let rid = Uuid::new_v4().to_string()[..8].to_string();
+                            let req = Message::Request(Request {
+                                request_id: rid.clone(),
+                                session_id: session_id.to_string(),
+                                query: format!("__cmd:resume_tid {}", tid),
+                                scope: RequestScope::AllSessions,
+                            });
+                            let display = match rpc.call(req).await {
+                                Ok(Message::Response(resp)) if resp.request_id == rid => {
+                                    parse_cmd_response(&resp.content)
+                                        .map(|j| cmd_display_str(&j))
+                                }
+                                _ => None,
+                            };
+                            (Some(tid), display)
+                        }
                     }
                     Ok(i) if i >= 1 => {
                         let err = display::render_error(&format!(

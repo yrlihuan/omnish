@@ -360,7 +360,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
     if let Some(scenario) = sub.strip_prefix("context ") {
         return cmd_display(handle_context_scenario(scenario, req, mgr, llm_backend).await);
     }
-    // Handle /resume [n] for resuming a specific conversation
+    // Handle /resume [n] for resuming a specific conversation (by index)
     if let Some(idx_str) = sub.strip_prefix("resume ") {
         let idx: usize = match idx_str.trim().parse::<usize>() {
             Ok(i) if i >= 1 => i - 1, // Convert 1-based to 0-based
@@ -380,6 +380,20 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             None => cmd_display("Invalid index: out of bounds"),
         };
     }
+    // Handle /resume_tid <thread_id> for resuming by thread ID (stable across deletions)
+    if let Some(tid) = sub.strip_prefix("resume_tid ") {
+        let tid = tid.trim();
+        let (last_exchange, earlier_count) = conv_mgr.get_last_exchange(tid);
+        if last_exchange.is_none() {
+            return cmd_display("Conversation not found");
+        }
+        return serde_json::json!({
+            "display": format!("Resuming conversation\n{}", format_chat_history(&last_exchange, earlier_count)),
+            "thread_id": tid,
+            "last_exchange": last_exchange,
+            "earlier_count": earlier_count,
+        });
+    }
     // Handle /resume without index (resume latest = /resume 1)
     if sub == "resume" {
         return match conv_mgr.get_thread_by_index(0) {
@@ -395,23 +409,17 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             None => cmd_display("No conversations yet. Start a chat with : then /chat or /ask"),
         };
     }
-    // Handle /conversations del N — delete a conversation by index
-    if let Some(idx_str) = sub.strip_prefix("conversations del ") {
-        let idx: usize = match idx_str.trim().parse::<usize>() {
-            Ok(i) if i >= 1 => i - 1,
-            Ok(_) => return cmd_display("Invalid index: must be >= 1"),
-            Err(_) => return cmd_display("Invalid index: not a number"),
-        };
-        return match conv_mgr.get_thread_by_index(idx) {
-            Some(thread_id) => {
-                conv_mgr.delete_thread(&thread_id);
-                serde_json::json!({
-                    "display": format!("Deleted conversation [{}]", idx + 1),
-                    "deleted_thread_id": thread_id,
-                })
-            }
-            None => cmd_display("Invalid index: out of bounds"),
-        };
+    // Handle /conversations del <thread_id> — delete a conversation by thread ID
+    if let Some(tid) = sub.strip_prefix("conversations del ") {
+        let tid = tid.trim();
+        if conv_mgr.delete_thread(tid) {
+            return serde_json::json!({
+                "display": format!("Deleted conversation {}", &tid[..8.min(tid.len())]),
+                "deleted_thread_id": tid,
+            });
+        } else {
+            return cmd_display("Conversation not found");
+        }
     }
     match sub {
         "context" => {
