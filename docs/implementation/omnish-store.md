@@ -1,10 +1,10 @@
 # omnish-store 模块
 
-**功能:** 数据存储，命令记录和流存储
+**功能:** 数据存储，命令记录、流存储和补全采样
 
 ## 模块概述
 
-omnish-store 提供数据持久化功能，包括命令记录、会话管理和原始流存储。该模块负责将终端会话的命令历史、元数据和原始I/O流数据保存到文件系统中，以便后续分析和检索。
+omnish-store 提供数据持久化功能，包括命令记录、会话管理、原始流存储和补全采样。该模块负责将终端会话的命令历史、元数据、原始I/O流数据和LLM补全质量样本保存到文件系统中，以便后续分析和检索。
 
 ## 重要数据结构
 
@@ -133,6 +133,57 @@ pub struct StreamEntry {
 **返回:** `Result<Vec<StreamEntry>>`
 **用途:** 读取整个流文件并解析所有流条目
 
+### `PendingSample`
+补全待处理样本，在daemon会话中缓冲，等待关联下一条命令：
+
+```rust
+pub struct PendingSample {
+    pub session_id: String,         // 会话ID
+    pub input: String,              // 触发补全时的用户输入
+    pub suggestions: Vec<String>,   // LLM返回的补全建议
+    pub accepted: bool,             // 用户是否接受了补全
+    pub cwd: Option<String>,       // 当前工作目录
+    pub created_at: Instant,        // 创建时间（用于15秒过期判断）
+}
+```
+
+### `CompletionSample`
+最终补全样本记录，写入JSONL文件：
+
+```rust
+pub struct CompletionSample {
+    pub session_id: String,         // 会话ID
+    pub input: String,              // 触发补全时的输入
+    pub suggestions: Vec<String>,   // 补全建议列表
+    pub accepted: bool,             // 是否被接受
+    pub next_command: Option<String>, // 用户实际执行的下一条命令
+    pub similarity: Option<f64>,    // 建议与实际命令的相似度
+    pub cwd: Option<String>,       // 工作目录
+    pub timestamp: String,          // RFC3339时间戳
+}
+```
+
+### `levenshtein()`
+计算两个字符串的编辑距离。
+
+**参数:** `a: &str`, `b: &str`
+**返回:** `usize` - 编辑距离
+**用途:** 动态规划实现，用于计算补全建议与实际命令的差异
+
+### `similarity()`
+计算两个字符串的归一化相似度。
+
+**参数:** `a: &str`, `b: &str`
+**返回:** `f64` - 相似度（0.0到1.0，`1.0 - edit_distance / max_length`）
+**用途:** 评估补全建议的质量
+
+### `spawn_sample_writer()`
+启动后台样本写入线程。
+
+**参数:** `samples_dir: PathBuf` - 样本存储目录
+**返回:** `Sender<CompletionSample>` - 发送端，用于异步写入样本
+**用途:** 后台线程接收样本并按日期轮转写入JSONL文件（`YYYY-MM-DD.jsonl`）
+
 ## 使用示例
 
 ### 保存命令记录
@@ -208,6 +259,8 @@ let range_entries = read_range(Path::new("/path/to/stream.bin"), 0, 100)?;
 ## 依赖关系
 - **serde**: 序列化和反序列化支持
 - **serde_json**: JSON序列化实现
+- **chrono**: 时间处理（补全采样时间戳）
+- **tracing**: 日志记录
 - **anyhow**: 错误处理
 - **std::fs, std::io**: 文件系统操作和I/O处理
 
@@ -234,9 +287,11 @@ store_directory/
 ├── commands.json              # 命令记录（JSON格式）
 ├── meta.json                 # 会话元数据（JSON格式）
 ├── stream.bin                # 原始流数据（二进制格式）
-└── logs/
-    └── sessions/
-        └── session_updates.csv  # 会话更新记录（CSV格式）
+├── logs/
+│   ├── sessions/
+│   │   └── session_updates.csv  # 会话更新记录（CSV格式）
+│   └── samples/
+│       └── YYYY-MM-DD.jsonl     # 补全采样记录（按日期轮转）
 ```
 
 ### CSV格式
@@ -256,6 +311,9 @@ timestamp,session_id,host,shell_cwd,child_process,extra
 ## 设计特点
 1. **高效存储**: 流数据使用紧凑的二进制格式，减少存储空间
 2. **增量写入**: 支持追加模式，避免重复写入已有数据
+6. **异步采样写入**: 补全样本通过mpsc channel异步发送到后台写入线程，不阻塞主流程
+7. **日期轮转**: 补全样本按日期自动分文件（`YYYY-MM-DD.jsonl`），便于管理和清理
+8. **质量评估**: 通过Levenshtein编辑距离计算补全建议与用户实际命令的相似度
 3. **精确检索**: 通过偏移量和长度精确读取特定范围的流数据
 4. **结构化元数据**: 命令和会话信息使用JSON格式，便于人类阅读和工具处理
 5. **错误处理**: 使用anyhow提供统一的错误处理机制

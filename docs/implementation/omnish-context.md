@@ -91,6 +91,7 @@ pub struct CompletionFormatter {
     head_lines: usize,
     tail_lines: usize,
     max_command_output_chars: usize,  // 每个命令输出的字符上限
+    live_cwd: Option<String>,         // 来自 session probe 的实时 shell cwd
 }
 ```
 **KV 缓存优化策略:**
@@ -99,6 +100,8 @@ pub struct CompletionFormatter {
 - 不使用复杂的子 XML 标签，而是纯文本格式加 `<cmd>` 语义标签
 - 使用稳定 term 标签（stable labels，见下文），避免因当前会话变化而导致标签重排
 - 当前路径单独输出为 `<current_path>...</current_path>`
+
+**`<current_path>` 来源优先级:** 优先使用 `live_cwd`（daemon session probe 通过 `/proc/<pid>/cwd` 轮询获取的实时 shell 工作目录），回退到最后一条当前会话 CommandRecord 的 cwd。这解决了 OSC 133;B DEBUG trap 在命令执行前触发的问题——例如 `cd /tmp` 记录的是旧 cwd 而非新目录。
 
 ## 关键函数说明
 
@@ -155,6 +158,13 @@ pub async fn select_and_split<'a>(
     min_current_session_detailed: usize,
 ) -> (Vec<&'a CommandRecord>, Vec<&'a CommandRecord>)
 ```
+
+### `shorten_home()`
+将路径中的用户 home 目录前缀替换为 `~`：
+```rust
+pub fn shorten_home(path: &str) -> String
+```
+**可见性:** `pub`（公开），供 daemon 等外部 crate 使用（如 session_mgr 对 live_cwd 进行缩写）。
 
 ### `strip_ansi()`
 从原始字节中去除ANSI转义序列（CSI和OSC）：
@@ -217,7 +227,15 @@ pub fn new(current_session_id: &str, now_ms: u64, head_lines: usize, tail_lines:
 ```rust
 pub fn new(current_session_id: &str, head_lines: usize, tail_lines: usize) -> Self
 ```
-默认 `max_command_output_chars` 为 500。可通过 `with_max_command_output_chars()` 调整。
+默认 `max_command_output_chars` 为 500。可通过 `with_max_command_output_chars()` 调整。默认 `live_cwd` 为 `None`。可通过 `with_live_cwd()` 设置。
+
+### `CompletionFormatter::with_live_cwd()`
+设置实时 shell 工作目录，用于 `<current_path>` 输出：
+```rust
+pub fn with_live_cwd(mut self, cwd: Option<String>) -> Self
+```
+**参数:** `cwd` 来自 daemon session probe（`/proc/<pid>/cwd` 轮询）的实时工作目录。传入 `None` 则回退到最后一条当前会话命令的 cwd。
+**用途:** 解决 OSC 133;B DEBUG trap 在命令执行前触发导致 `cd` 等命令记录旧 cwd 的问题。
 
 ## 格式化工具函数
 
@@ -299,7 +317,8 @@ use omnish_context::{build_context_with_session, RecentCommands, recent::Complet
 let strategy = RecentCommands::new(10)
     .with_current_session("current-session-id", 3);
 let formatter = CompletionFormatter::new("current-session-id", 10, 10)
-    .with_max_command_output_chars(500);
+    .with_max_command_output_chars(500)
+    .with_live_cwd(Some("/home/user/project".to_string()));
 
 let context = build_context_with_session(
     &strategy, &formatter, &commands, &reader,
@@ -345,6 +364,7 @@ let truncated = truncate_lines("line1\nline2\n...\nline100", 20, 10, 10, Some(50
 | `detailed_count` | 显示完整输出的最近命令数 | 5 |
 | `max_line_width` | 每行最大字符宽度 | 512（已从较大值降低） |
 | `max_command_output_chars` | 单命令输出字符上限（CompletionFormatter） | 500 |
+| `live_cwd` | 实时 shell 工作目录（CompletionFormatter） | `None`（回退到命令记录 cwd） |
 
 ## 依赖关系
 - `omnish-store`: 命令记录类型 (`CommandRecord`, `StreamEntry`)
@@ -359,7 +379,7 @@ let truncated = truncate_lines("line1\nline2\n...\nline100", 20, 10, 10, Some(50
 3. **History/Detailed 分离**: 较旧命令仅显示命令行（history），最近命令显示完整输出（detailed），节省 token
 4. **异步支持**: 策略选择支持异步操作
 5. **ANSI清理**: 自动清理终端输出中的ANSI转义序列
-6. **home 目录缩写**: cwd 中的 home 目录前缀替换为 `~`，缩短上下文
+6. **home 目录缩写**: cwd 中的 home 目录前缀替换为 `~`，缩短上下文；`shorten_home()` 为 `pub` 可供外部 crate 使用
 7. **会话管理**: 支持多会话命令的分组和标签分配；hostname 与 term 标签合并显示
 8. **双射 base-26 标签**: term 标签支持任意数量会话（A, B, ..., Z, AA, AB, ...）
 9. **稳定标签**: `assign_stable_term_labels` 不依赖当前会话，保持 KV 缓存前缀稳定
@@ -368,6 +388,7 @@ let truncated = truncate_lines("line1\nline2\n...\nline100", 20, 10, 10, Some(50
 12. **20连字符分隔符**: 命令块之间使用 `--------------------` 分隔，提升可读性
 13. **时间格式化**: 相对时间显示，提高可读性
 14. **KV缓存优化**: `CompletionFormatter` 将 history 区冻结，新命令仅追加到 recent 末尾，最大化缓存命中
+15. **实时工作目录**: `CompletionFormatter` 通过 `live_cwd` 使用 daemon session probe 的实时 shell cwd，解决 DEBUG trap 在命令执行前触发导致 `cd` 记录旧路径的问题
 
 ## 测试覆盖
 

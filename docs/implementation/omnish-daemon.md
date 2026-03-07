@@ -12,6 +12,8 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 5. 提供RPC服务接口供客户端调用
 6. 认证和安全（令牌认证、TLS加密）
 7. 定时任务管理（会话驱逐、日报、小时摘要、磁盘清理）
+8. 管理多轮聊天对话（线程存储、恢复、列表、删除）
+9. 补全采样（pending sample 捕获、JSONL 持久化）
 
 守护进程以Unix domain socket方式运行，支持多个客户端同时连接。
 
@@ -21,21 +23,49 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 守护进程服务器主结构，包含：
 - `session_mgr`: `Arc<SessionManager>` - 会话管理器实例
 - `llm_backend`: `Option<Arc<dyn LlmBackend>>` - 可选的LLM后端
-- `auth_token`: `Option<String>` - 认证令牌
-- `tls_acceptor`: `Option<TlsAcceptor>` - TLS接受器（TCP连接加密）
+- `task_mgr`: `Arc<Mutex<TaskManager>>` - 定时任务管理器
+- `conv_mgr`: `Arc<ConversationManager>` - 对话管理器
 
 ### `SessionManager`
 会话管理器，负责管理所有活跃会话，包含：
 - `base_dir`: `PathBuf` - 会话数据存储的基础目录
-- `sessions`: `Mutex<HashMap<String, ActiveSession>>` - 活跃会话映射表
+- `sessions`: `RwLock<HashMap<String, Arc<Session>>>` - 活跃会话映射表（使用 `RwLock` 替代 `Mutex`，允许多个读取者并行访问，解决锁争用问题）
+- `context_config`: `ContextConfig` - 上下文构建配置
+- `completion_writer`: `mpsc::Sender<CompletionRecord>` - 补全记录写入通道
+- `session_writer`: `mpsc::Sender<SessionUpdateRecord>` - 会话更新记录写入通道
+- `history_frozen_until`: `RwLock<Option<u64>>` - 弹性窗口的历史冻结截止点
+- `last_completion_context`: `RwLock<String>` - 上一次补全上下文缓存（用于KV cache预热检测）
+- `sample_writer`: `mpsc::Sender<CompletionSample>` - 补全采样写入通道
+- `last_sample_time`: `Mutex<Option<Instant>>` - 上一次采样时间（全局速率限制）
 
-### `ActiveSession`
+### `Session`（内部结构）
 活跃会话的内部表示，包含：
-- `meta`: `SessionMeta` - 会话元数据（ID、父会话ID、属性等）
-- `stream_writer`: `StreamWriter` - 流数据写入器
-- `commands`: `Vec<CommandRecord>` - 命令记录列表
-- `dir`: `PathBuf` - 会话数据存储目录
-- `last_command_stream_pos`: `u64` - 上一个命令结束时的流位置
+- `dir`: `PathBuf` - 会话数据存储目录（创建后不可变）
+- `meta`: `RwLock<SessionMeta>` - 会话元数据（ID、父会话ID、属性等）
+- `commands`: `RwLock<Vec<CommandRecord>>` - 命令记录列表
+- `stream_writer`: `Mutex<StreamWriterState>` - 流数据写入器状态
+- `last_update`: `Mutex<Option<u64>>` - 上一次 SessionUpdate 的时间戳
+- `pending_sample`: `Mutex<Option<PendingSample>>` - 待写入的补全采样
+
+### `ConversationManager`
+多轮聊天对话管理器，负责线程的创建、存储、加载和删除，包含：
+- `threads_dir`: `PathBuf` - 线程文件存储目录（`~/.omnish/threads/`）
+- `threads`: `Mutex<HashMap<String, Vec<StoredMessage>>>` - 内存中的线程缓存（thread_id → 消息列表）
+
+**主要特点:**
+- 每个线程以 UUID 命名，存储为 JSONL 文件（每行一个 `StoredMessage`）
+- 启动时从磁盘加载所有线程到内存，后续读取直接走内存缓存
+- 写入时双写：同步更新内存缓存 + append 到磁盘 JSONL 文件
+- 内置中断冲突解决：当用户中断一个聊天请求时，`resolve_interrupted()` 确保被中断的交换覆盖后续到达的 LLM 响应
+- 支持按文件修改时间排序列出所有对话
+- 支持按索引（0-based）选取线程
+- 支持删除线程（同时移除内存缓存和磁盘文件）
+
+### `StoredMessage`（内部结构）
+对话消息的持久化格式：
+- `role`: `String` - 角色（`"user"` 或 `"assistant"`）
+- `content`: `String` - 消息内容
+- `ts`: `String` - RFC 3339 时间戳
 
 ### `EventDetector`
 事件检测器，用于检测自动触发条件，包含：
@@ -51,6 +81,122 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 
 ### `MultiSessionReader`
 多会话流读取器，实现`StreamReader` trait，用于跨多个会话读取流数据。
+
+## 对话管理
+
+### ConversationManager
+
+`ConversationManager` 管理多轮聊天线程的完整生命周期。线程以 JSONL 文件存储在 `~/.omnish/threads/` 目录下，每个文件以 UUID 命名。
+
+#### 关键函数
+
+##### `ConversationManager::new()`
+创建对话管理器并从磁盘加载已有线程到内存。
+
+**参数:**
+- `threads_dir`: `PathBuf` - 线程文件存储目录
+
+**返回:** `ConversationManager` 实例
+
+##### `ConversationManager::create_thread()`
+创建新对话线程，返回其 UUID。在磁盘创建空 JSONL 文件，并在内存插入空向量。
+
+**返回:** `String`（线程 UUID）
+
+##### `ConversationManager::get_latest_thread()`
+按文件修改时间获取最近的线程 ID。
+
+**返回:** `Option<String>`
+
+##### `ConversationManager::list_conversations()`
+列出所有对话，按修改时间降序排列。返回 `(thread_id, last_modified, exchange_count, last_question)` 元组列表。内部调用 `resolve_interrupted()` 确保交换计数和最后问题准确。
+
+**返回:** `Vec<(String, SystemTime, u32, String)>`
+
+##### `ConversationManager::get_thread_by_index()`
+按索引（0-based，按修改时间排序）获取线程 ID。
+
+**参数:**
+- `index`: `usize` - 0-based 索引
+
+**返回:** `Option<String>`
+
+##### `ConversationManager::delete_thread()`
+删除线程，同时从内存和磁盘移除。
+
+**参数:**
+- `thread_id`: `&str` - 要删除的线程 ID
+
+**返回:** `bool`（线程是否存在并已删除）
+
+##### `ConversationManager::append_exchange()`
+追加一次用户+助手交换。双写到内存缓存和磁盘 JSONL 文件。
+
+**参数:**
+- `thread_id`: `&str` - 线程 ID
+- `query`: `&str` - 用户消息
+- `response`: `&str` - 助手回复
+
+##### `ConversationManager::load_messages()`
+加载线程所有消息为 `ChatTurn` 列表（用于 LLM 上下文）。内部调用 `resolve_interrupted()` 解决中断冲突。
+
+**参数:**
+- `thread_id`: `&str` - 线程 ID
+
+**返回:** `Vec<ChatTurn>`
+
+##### `ConversationManager::get_last_exchange()`
+获取最后一次交换和更早消息的数量（中断解决后）。
+
+**参数:**
+- `thread_id`: `&str` - 线程 ID
+
+**返回:** `(Option<(String, String)>, u32)`
+
+#### 中断解决机制
+
+当用户按 Ctrl-C 中断聊天请求时，`ChatInterrupt` 消息会将 `<event>user interrupted</event>` 作为助手回复写入。`resolve_interrupted()` 函数在读取时解决冲突：
+- 如果同一用户查询有中断标记和正常 LLM 回复，中断标记始终优先
+- 正常回复被丢弃，保证对话历史的一致性
+
+### 聊天消息流程
+
+```
+客户端发送 ChatStart → 守护进程创建/恢复线程 → 返回 ChatReady（含线程ID和最近交换）
+客户端发送 ChatMessage → 守护进程构建上下文 + 加载对话历史 → 调用 LLM → 追加交换 → 返回 ChatResponse
+客户端发送 ChatInterrupt → 守护进程记录中断标记 → 返回 Ack
+```
+
+**ChatMessage 处理细节:**
+- 首条消息（对话历史为空）：构建终端上下文（最近命令 + 输出）作为 LLM 上下文
+- 后续消息：不重新构建终端上下文，仅使用对话历史
+- 使用 `CHAT_SYSTEM_PROMPT` 系统提示词
+- 对话历史通过 `LlmRequest.conversation` 字段传递给 LLM
+
+## 补全采样
+
+补全采样机制用于收集 LLM 补全建议与用户实际行为的对比数据，持久化到 JSONL 文件供离线分析。
+
+### 采样流程
+
+1. **捕获 pending sample**: 每次 `handle_completion_request()` 返回 LLM 建议后，将上下文、提示词、建议列表等保存为 `PendingSample` 到对应会话的 `pending_sample` 字段
+2. **更新 accepted 标志**: 当 `CompletionSummary` 消息到达时，更新 pending sample 的 `accepted` 字段
+3. **写入采样**: 当下一条命令到达（`receive_command`）时，检查 pending sample 并决定是否写入：
+   - 补全未被接受（`!accepted`）
+   - 下一条命令非空
+   - 距补全请求的经过时间不超过 15 秒（`SAMPLE_MAX_ELAPSED_SECS`）
+   - 建议与实际命令的编辑距离相似度低于阈值（0.3）
+   - 全局速率限制：每 5 分钟最多一条采样（`SAMPLE_RATE_LIMIT_SECS`）
+4. **会话结束 flush**: 会话结束时，未写入的 pending sample 不带 `next_command` 直接 flush
+
+### 采样数据
+
+采样通过 `mpsc` 通道发送到后台写入线程，写入 `~/.omnish/logs/samples/` 目录下的 JSONL 文件。每条 `CompletionSample` 包含：
+- 时间戳、会话 ID、上下文、提示词
+- LLM 返回的建议列表
+- 用户输入、工作目录
+- 延迟（ms）、是否接受
+- 下一条实际命令、编辑距离相似度
 
 ## 任务管理
 
@@ -246,6 +392,8 @@ max_line_width = 128
 **参数:**
 - `session_mgr`: `Arc<SessionManager>` - 会话管理器
 - `llm_backend`: `Option<Arc<dyn LlmBackend>>` - LLM后端
+- `task_mgr`: `Arc<Mutex<TaskManager>>` - 定时任务管理器
+- `conv_mgr`: `Arc<ConversationManager>` - 对话管理器
 
 **返回:** `DaemonServer` 实例
 
@@ -256,6 +404,8 @@ max_line_width = 128
 
 **参数:**
 - `addr`: `&str` - 监听地址（Unix socket路径）
+- `auth_token`: `String` - 认证令牌
+- `tls_acceptor`: `Option<TlsAcceptor>` - 可选 TLS 接受器
 
 **返回:** `Result<()>`
 
@@ -265,11 +415,12 @@ max_line_width = 128
 创建新的会话管理器。
 
 **参数:**
-- `base_dir`: `PathBuf` - 会话数据存储的基础目录
+- `omnish_dir`: `PathBuf` - omnish 数据根目录
+- `context_config`: `ContextConfig` - 上下文构建配置
 
 **返回:** `SessionManager` 实例
 
-**用途:** 初始化会话管理器，创建必要的目录结构
+**用途:** 初始化会话管理器，创建必要的目录结构，启动后台写入线程（completions、session updates、samples）
 
 ### `SessionManager::load_existing()`
 从磁盘加载已存在的会话数据。
@@ -278,7 +429,7 @@ max_line_width = 128
 
 **返回:** `Result<usize>`（加载的会话数量）
 
-**用途:** 守护进程启动时恢复之前的会话状态
+**用途:** 守护进程启动时恢复之前的会话状态。加载完成后释放写锁，再调用 `cleanup_expired_dirs()` 清理过期目录（避免死锁）
 
 ### `SessionManager::register()`
 注册新会话或更新现有会话。
@@ -314,7 +465,7 @@ max_line_width = 128
 
 **返回:** `Result<()>`
 
-**用途:** 客户端发送命令完成通知时，填充流偏移量并保存命令记录
+**用途:** 客户端发送命令完成通知时，填充流偏移量并保存命令记录。同时检查并 flush 该会话的 pending sample（补全采样）
 
 ### `SessionManager::end_session()`
 结束指定会话。
@@ -324,7 +475,7 @@ max_line_width = 128
 
 **返回:** `Result<()>`
 
-**用途:** 客户端断开连接时标记会话结束时间
+**用途:** 客户端断开连接时标记会话结束时间，并 flush 未写入的 pending sample
 
 ### `SessionManager::get_session_context()`
 获取单个会话的上下文信息。
@@ -345,6 +496,34 @@ max_line_width = 128
 **返回:** `Result<String>`（格式化后的上下文字符串）
 
 **用途:** 为LLM查询构建跨会话的完整上下文
+
+### `SessionManager::build_completion_context()`
+构建补全专用上下文，优化 KV cache 命中率。
+
+**参数:**
+- `current_session_id`: `&str` - 当前会话ID
+- `max_context_chars`: `Option<usize>` - 最大上下文字符数
+
+**返回:** `Result<String>`
+
+**用途:** 使用弹性窗口和 `CompletionFormatter` 构建前缀稳定的补全上下文。使用会话属性中的 `shell_cwd`（实时工作目录）作为 `<current_path>` 标签值，而非上一条命令记录的 cwd
+
+### `SessionManager::store_pending_sample()`
+存储一个 pending 补全采样。
+
+**参数:**
+- `sample`: `PendingSample` - 待采样数据
+
+**用途:** 在 `handle_completion_request()` 获得 LLM 建议后调用
+
+### `SessionManager::update_pending_sample_accepted()`
+更新 pending sample 的 accepted 标志。
+
+**参数:**
+- `session_id`: `&str` - 会话ID
+- `accepted`: `bool` - 补全是否被用户接受
+
+**用途:** 当 `CompletionSummary` 消息到达时调用
 
 ### `EventDetector::new()`
 创建新的事件检测器。
@@ -371,12 +550,20 @@ max_line_width = 128
 
 **参数:**
 - `msg`: `Message` - 协议消息
-- `mgr`: `&SessionManager` - 会话管理器
+- `mgr`: `Arc<SessionManager>` - 会话管理器
 - `llm`: `&Option<Arc<dyn LlmBackend>>` - LLM后端
+- `task_mgr`: `&Arc<Mutex<TaskManager>>` - 任务管理器
+- `conv_mgr`: `&Arc<ConversationManager>` - 对话管理器
 
 **返回:** `Message`（响应消息）
 
-**用途:** 分发处理不同类型的客户端消息
+**用途:** 分发处理不同类型的客户端消息，包括：
+- `SessionStart/SessionEnd/SessionUpdate` - 会话生命周期
+- `IoData` - I/O 数据记录
+- `CommandComplete` - 命令完成 + KV cache 预热
+- `Request` - LLM 查询或内部命令
+- `CompletionRequest/CompletionSummary` - 补全请求和结果汇总
+- `ChatStart/ChatMessage/ChatInterrupt` - 多轮聊天
 
 ### `handle_llm_request()`
 处理LLM查询请求。
@@ -400,7 +587,22 @@ max_line_width = 128
 
 **返回:** `Result<Vec<CompletionSuggestion>>`
 
-**用途:** 为shell命令提供智能补全建议
+**用途:** 为shell命令提供智能补全建议。处理完成后：
+- 截断建议中的 `&&`（当用户输入不含 `&&` 时）
+- 存储 pending sample 用于补全采样
+- 禁用 thinking 模式（`enable_thinking: Some(false)`）
+
+### `resolve_chat_context()`
+为聊天请求构建上下文。
+
+**参数:**
+- `req`: `&Request` - 请求
+- `mgr`: `&SessionManager` - 会话管理器
+- `max_context_chars`: `Option<usize>` - 最大上下文字符数
+
+**返回:** `Result<String>`
+
+**用途:** 仅包含最近带输出的命令（不含完整历史），根据 `RequestScope` 支持单会话、所有会话或指定会话列表
 
 ### UseCase路由
 
@@ -488,8 +690,8 @@ use std::path::PathBuf;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // 创建会话管理器
-    let store_dir = PathBuf::from("~/.omnish/sessions");
-    let session_mgr = Arc::new(SessionManager::new(store_dir));
+    let store_dir = PathBuf::from("~/.omnish");
+    let session_mgr = Arc::new(SessionManager::new(store_dir, Default::default()));
 
     // 加载现有会话
     let count = session_mgr.load_existing().await?;
@@ -518,10 +720,14 @@ async fn main() -> anyhow::Result<()> {
 ```
 客户端连接 → 发送SessionStart → 守护进程注册会话
 客户端输入 → 发送IoData(Input) → 守护进程记录到流文件
-命令执行 → 发送CommandComplete → 守护进程保存命令记录
+命令执行 → 发送CommandComplete → 守护进程保存命令记录 + flush pending sample + 触发KV cache预热
 用户查询 → 发送Request → 守护进程调用LLM后端 → 返回Response
-自动补全 → 发送CompletionRequest → 守护进程生成建议 → 返回CompletionResponse
-客户端断开 → 发送SessionEnd → 守护进程标记会话结束
+自动补全 → 发送CompletionRequest → 守护进程生成建议 + 存储pending sample → 返回CompletionResponse
+补全结果 → 发送CompletionSummary → 守护进程更新pending sample的accepted标志
+聊天开始 → 发送ChatStart → 守护进程创建/恢复线程 → 返回ChatReady
+聊天消息 → 发送ChatMessage → 守护进程构建上下文+调用LLM → 追加交换 → 返回ChatResponse
+聊天中断 → 发送ChatInterrupt → 守护进程记录中断标记
+客户端断开 → 发送SessionEnd → 守护进程标记会话结束 + flush pending sample
 ```
 
 ## 依赖关系
@@ -530,7 +736,7 @@ async fn main() -> anyhow::Result<()> {
 - `omnish-common`: 配置加载
 - `omnish-protocol`: 消息协议定义
 - `omnish-transport`: RPC传输层
-- `omnish-store`: 会话和命令存储
+- `omnish-store`: 会话和命令存储、补全采样存储
 - `omnish-context`: 上下文构建
 - `omnish-llm`: LLM后端集成
 
@@ -541,26 +747,58 @@ async fn main() -> anyhow::Result<()> {
 - `serde`: 序列化/反序列化
 - `chrono`: 时间处理
 - `tokio-cron-scheduler`: 定时任务调度
+- `uuid`: 对话线程ID生成
 
 ## 数据持久化
 
 ### 会话目录结构
 ```
-~/.omnish/sessions/
-├── 2026-02-24T10-30-00Z_session-abc123/
-│   ├── meta.json          # 会话元数据
-│   ├── commands.json      # 命令记录
-│   └── stream.bin         # 二进制I/O流数据
-└── 2026-02-24T11-15-00Z_session-def456/
-    ├── meta.json
-    ├── commands.json
-    └── stream.bin
+~/.omnish/
+├── sessions/
+│   ├── 2026-02-24T10-30-00Z_session-abc123/
+│   │   ├── meta.json          # 会话元数据
+│   │   ├── commands.json      # 命令记录
+│   │   └── stream.bin         # 二进制I/O流数据
+│   └── 2026-02-24T11-15-00Z_session-def456/
+│       ├── meta.json
+│       ├── commands.json
+│       └── stream.bin
+├── threads/
+│   ├── a1b2c3d4-...-uuid1.jsonl   # 对话线程（每行一个StoredMessage）
+│   └── e5f6g7h8-...-uuid2.jsonl
+├── logs/
+│   ├── completions/           # 补全记录（JSONL）
+│   ├── sessions/              # 会话更新记录（JSONL）
+│   └── samples/               # 补全采样数据（JSONL）
+└── notes/
+    ├── 2026-02-24.md          # 日报
+    └── hourly/
+        └── 2026-02-24/
+            └── 14.md          # 14点摘要
 ```
 
 ### 文件格式说明
 - `meta.json`: JSON格式的会话元数据（ID、时间戳、属性等）
 - `commands.json`: JSON数组格式的命令记录
 - `stream.bin`: 二进制格式的I/O流数据，包含时间戳、方向和原始字节
+- `*.jsonl`（threads/）: 每行一个JSON对象，包含 `role`、`content`、`ts` 字段
+- `*.jsonl`（logs/samples/）: 每行一个 `CompletionSample` JSON对象
+
+## 并发与锁设计
+
+### RwLock 分层
+守护进程使用 `tokio::sync::RwLock` 替代 `Mutex` 管理会话状态，允许多个客户端并行读取会话数据：
+
+- `sessions: RwLock<HashMap<...>>` - 顶层会话映射表，大多数操作仅需读锁
+- `Session.meta: RwLock<SessionMeta>` - 会话元数据，读多写少
+- `Session.commands: RwLock<Vec<CommandRecord>>` - 命令列表，读多写少
+- `Session.stream_writer: Mutex<StreamWriterState>` - 流写入器，独占写入
+- `Session.pending_sample: Mutex<Option<PendingSample>>` - 采样状态，短暂持有
+
+### 锁争用修复
+- `evict_inactive()`: 两阶段操作 — 先在读锁下扫描候选者，再切换为写锁移除，避免长时间持有写锁
+- `cleanup_expired_dirs()`: 先在短暂读锁下快照已加载的会话ID，释放后再进行磁盘I/O，避免读锁持有期间执行文件系统操作导致其他客户端阻塞
+- `load_existing()`: 加载完成后显式 `drop(sessions)` 释放写锁，再调用 `cleanup_expired_dirs()`，避免死锁
 
 ## 错误处理
 
@@ -573,17 +811,24 @@ async fn main() -> anyhow::Result<()> {
 ## 性能考虑
 
 1. **内存使用**: 活跃会话数据常驻内存，历史会话按需加载
-2. **并发控制**: 使用`tokio::sync::Mutex`保护会话状态
+2. **并发控制**: 使用`tokio::sync::RwLock`保护会话状态，允许并发读取
 3. **I/O优化**: 流数据使用二进制格式，批量写入
 4. **上下文构建**: 按需构建上下文，避免不必要的计算
+5. **对话缓存**: 对话线程启动时全量加载到内存，后续读取零磁盘I/O
+6. **日志抑制**: 过滤 rustls 的 debug 日志（`rustls=off` 指令），防止日志洪泛
 
 ## 内部命令
 
-守护进程支持`__cmd:`前缀的内部命令请求：
+守护进程支持`__cmd:`前缀的内部命令请求，所有命令响应以 JSON 格式返回（包含 `"display"` 字段用于终端展示，部分命令附加结构化数据字段）：
+
 - `__cmd:context [template]` — 获取LLM上下文（支持`completion`、`chat`、`daily-notes`、`hourly-notes`等模板名）
+- `__cmd:context chat:<thread_id>` — 获取指定聊天线程的对话上下文
 - `__cmd:sessions` — 列出所有活跃会话
 - `__cmd:session` — 显示当前会话调试信息
-- `__cmd:client_debug` — 显示客户端调试状态
+- `__cmd:conversations` — 列出所有聊天对话（含 `thread_ids` 数组），按修改时间降序排列，显示相对时间（如 "12s ago"、"1h ago"）、交换次数、最后问题
+- `__cmd:resume` — 恢复最近的对话（等同于 `__cmd:resume 1`），返回 `thread_id`、`last_exchange`、`earlier_count`
+- `__cmd:resume N` — 按索引恢复指定对话（1-based），返回相同结构化数据
+- `__cmd:conversations del N` — 按索引删除指定对话（1-based），返回 `deleted_thread_id`
 - `__cmd:tasks [disable <name>]` — 查看或管理定时任务
 
-这些命令由客户端的`/`命令转发，通过`dispatch_cmd()`函数处理。
+这些命令由客户端的`/`命令转发，通过`handle_builtin_command()`函数处理。

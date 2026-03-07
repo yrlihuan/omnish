@@ -23,11 +23,21 @@ LLM请求结构体，包含发送给LLM的完整请求信息：
 - `session_ids`: 相关会话ID列表
 - `use_case`: 请求用途（用于选择合适的模型）
 - `max_content_chars`: 模型上下文最大字符数限制（可选，用于限制上下文大小）
+- `conversation`: 多轮对话历史（`Vec<ChatTurn>`，用于chat模式）
+- `system_prompt`: 系统提示词（可选，chat模式使用`CHAT_SYSTEM_PROMPT`）
+- `enable_thinking`: 思考模式开关（可选，`Some(false)`禁用自动补全的思考模式）
 
 ### `LlmResponse`
 LLM响应结构体，包含LLM返回的结果：
 - `content`: LLM生成的文本内容
 - `model`: 使用的模型名称
+- `thinking`: 思考内容（可选，来自支持思考模式的模型）
+
+### `UseCase` 枚举
+请求用途，用于选择合适的模型后端：
+- `Completion`: 自动命令补全
+- `Analysis`: 分析任务（每日/每小时总结等）
+- `Chat`: 多轮对话
 
 ### `TriggerType` 枚举
 触发类型枚举，表示LLM请求的触发方式：
@@ -40,12 +50,25 @@ Anthropic API后端实现：
 - 支持Claude模型系列
 - 实现`LlmBackend` trait
 - 使用Anthropic Messages API (v1/messages)
+- 多轮对话支持：conversation历史映射为messages数组，上下文注入第一条user消息
+- 系统提示词支持：通过Anthropic `system` 顶层字段
+- 思考模式：`enable_thinking == Some(false)` 时发送禁用思考参数
+- `strip_thinking()` 辅助函数解析content blocks（thinking vs text）
 
 ### `OpenAiCompatBackend`
 OpenAI兼容API后端实现：
-- 支持OpenAI、Azure OpenAI、本地兼容API
+- 支持OpenAI、Azure OpenAI、本地兼容API（如vLLM）
 - 实现`LlmBackend` trait
 - 使用OpenAI兼容的Chat Completions API
+- 多轮对话支持：conversation历史映射为messages数组
+- 系统提示词支持：作为 `role: "system"` 消息前置
+- 思考模式：通过 `chat_template_kwargs` 传递 `enable_thinking: false`（适配vLLM/Qwen3）
+- `extract_thinking()` 辅助函数解析响应中的 `<think>` 标签
+
+### `MultiBackend`
+多后端路由实现：
+- 根据 `UseCase` 将请求路由到不同的后端实例
+- 支持为 Completion、Analysis、Chat 分别配置不同的模型
 
 ### `LlmBackendConfig`
 LLM后端配置结构体（来自omnish-common）：
@@ -98,19 +121,8 @@ LLM后端配置结构体（来自omnish-common）：
 **返回:** `String` - 格式化后的用户内容
 **用途:** 根据是否有查询构建不同的提示模板
 
-### `build_completion_content()`
-构建shell命令补全的提示内容（旧版，空输入和非空输入使用不同的指令前缀，最多3个建议）。
-
-**参数:**
-- `context: &str` - 终端会话上下文
-- `input: &str` - 当前输入的命令
-- `cursor_pos: usize` - 光标位置
-
-**返回:** `String` - 格式化后的补全提示
-**用途:** 为shell命令补全生成专门的提示，要求LLM返回JSON格式的补全建议
-
 ### `build_simple_completion_content()`
-构建shell命令补全的统一提示内容（新版，用于KV cache前缀稳定性）。
+构建shell命令补全的统一提示内容（用于KV cache前缀稳定性）。
 
 **参数:**
 - `context: &str` - 终端会话上下文（XML格式，`<recent>` 标签）
@@ -118,7 +130,7 @@ LLM后端配置结构体（来自omnish-common）：
 - `cursor_pos: usize` - 光标位置
 
 **返回:** `String` - 格式化后的补全提示
-**用途:** 统一空输入和非空输入的模板，指令+上下文形成稳定前缀，仅末尾的 `Current input:` 行变化。返回JSON数组格式 `["cmd1", "cmd2"]`，最多2个建议。此设计使LLM服务器可在连续请求间复用KV cache。
+**用途:** 统一空输入和非空输入的模板，指令+上下文形成稳定前缀，仅末尾的 `Current input:` 行变化。返回JSON数组格式 `["cmd1", "cmd2"]`，最多2个建议。第二个建议优先使用完整命令（issue #93）。禁止建议 `&&` 链式命令除非用户输入中已包含（issue #95）。此设计使LLM服务器可在连续请求间复用KV cache。
 
 ### `prompt_template()`
 获取提示模板。
@@ -129,16 +141,17 @@ LLM后端配置结构体（来自omnish-common）：
 
 ### 常量
 
-- `DAILY_NOTES_PROMPT` — 每日工作总结的LLM提示（中文）
-- `HOURLY_NOTES_PROMPT` — 每小时工作总结的LLM提示（中文）
-- `TEMPLATE_NAMES` — 已知模板名列表：`["chat", "auto-complete", "daily-notes", "hourly-notes"]`
+- `DAILY_NOTES_PROMPT` — 每日工作总结的LLM提示（中文），使用XML标签 `<commands>` 包裹上下文，输出bullet列表格式
+- `HOURLY_NOTES_PROMPT` — 每小时工作总结的LLM提示（中文），使用XML标签 `<commands>`、`<hourly_summaries>` 包裹上下文（issue #96）
+- `CHAT_SYSTEM_PROMPT` — 聊天模式系统提示词，列出所有用户可用命令（issue #140）
+- `TEMPLATE_NAMES` — 已知模板名列表：`["chat", "chat-system", "auto-complete", "daily-notes", "hourly-notes"]`
 
 ### `template_by_name()`
 根据名称返回模板内容（用于 `/template <name>` 命令）。
 
 **参数:** `name: &str` - 模板名称
 **返回:** `Option<String>` - 模板内容或None
-**用途:** `auto-complete` 使用 `build_simple_completion_content()` 渲染两种变体（空输入/有输入）
+**用途:** `auto-complete` 使用 `build_simple_completion_content()` 渲染两种变体（空输入/有输入）；`chat-system` 返回 `CHAT_SYSTEM_PROMPT`
 
 ## 使用示例
 
@@ -156,6 +169,11 @@ let request = LlmRequest {
     query: Some("用户查询".to_string()),
     trigger: TriggerType::Manual,
     session_ids: vec![],
+    use_case: UseCase::Chat,
+    max_content_chars: None,
+    conversation: vec![],  // 多轮对话历史
+    system_prompt: None,    // 系统提示词
+    enable_thinking: None,  // 思考模式
 };
 
 // 发送请求并获取响应
@@ -193,8 +211,8 @@ let user_content = template::build_user_content(
 );
 
 // 构建命令补全提示
-let completion_content = template::build_completion_content(
-    "$ cd /home/user/project\n$ git status",
+let completion_content = template::build_simple_completion_content(
+    "<recent>...</recent>",
     "git comm",
     8
 );
@@ -202,12 +220,14 @@ let completion_content = template::build_completion_content(
 
 ## 依赖关系
 - `omnish-common`: 配置类型定义
+- `omnish-protocol`: ChatTurn类型（用于多轮对话）
 - `reqwest`: HTTP客户端，用于API调用
 - `serde_json`: JSON序列化和反序列化
 - `anyhow`: 错误处理
 - `async-trait`: 异步trait支持
+- `tracing`: 日志记录
 - `std::process::Command`: 执行命令获取API密钥
-- `std::sync::Arc`: 线程安全的引用计数
+- `std::sync::{Arc, RwLock}`: 线程安全的引用计数和读写锁
 
 ## 配置示例
 ```toml
@@ -227,6 +247,11 @@ model = "gpt-4"
 api_key_cmd = "echo $OPENAI_API_KEY"
 base_url = "https://api.openai.com/v1"
 max_content_chars = 128000
+
+[llm.use_cases]
+completion = "local-vllm"
+analysis = "anthropic"
+chat = "anthropic"
 ```
 
 ## 错误处理
@@ -240,5 +265,7 @@ max_content_chars = 128000
 模块包含完整的单元测试，覆盖：
 - API密钥解析
 - 后端创建
-- 提示模板构建
+- 提示模板构建（前缀稳定性验证）
+- chat系统提示词与用户可见命令同步验证
+- thinking标签的提取和剥离
 - 错误处理场景
