@@ -2,7 +2,6 @@ use omnish_context::StreamReader;
 use omnish_llm::tool::{Tool, ToolDef, ToolResult};
 use omnish_store::command::CommandRecord;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// Maximum lines to return from get_output to prevent huge responses.
 const MAX_OUTPUT_LINES: usize = 500;
@@ -10,20 +9,20 @@ const MAX_OUTPUT_LINES: usize = 500;
 const MAX_OUTPUT_BYTES: usize = 50_000;
 
 pub struct CommandQueryTool {
-    commands: Arc<RwLock<Vec<CommandRecord>>>,
+    commands: Vec<CommandRecord>,
     stream_reader: Arc<dyn StreamReader>,
 }
 
 impl CommandQueryTool {
     pub fn new(
-        commands: Arc<RwLock<Vec<CommandRecord>>>,
+        commands: Vec<CommandRecord>,
         stream_reader: Arc<dyn StreamReader>,
     ) -> Self {
         Self { commands, stream_reader }
     }
 
     fn list_history(&self, count: usize) -> String {
-        let commands = self.commands.blocking_read();
+        let commands = &self.commands;
         if commands.is_empty() {
             return "No commands in history.".to_string();
         }
@@ -44,7 +43,7 @@ impl CommandQueryTool {
     }
 
     fn get_output(&self, seq: usize) -> String {
-        let commands = self.commands.blocking_read();
+        let commands = &self.commands;
         if seq == 0 || seq > commands.len() {
             return format!("Error: seq {} out of range (1-{})", seq, commands.len());
         }

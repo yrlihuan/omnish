@@ -1992,26 +1992,38 @@ async fn run_chat_loop(
         // Race RPC call against Ctrl-C on stdin
         let (stop_tx, stop_rx) = std::sync::mpsc::channel();
         let interrupt = tokio::task::spawn_blocking(move || wait_for_ctrl_c(stop_rx));
-        let rpc_result = rpc.call(chat_msg);
+        let rpc_result = rpc.call_stream(chat_msg);
 
         tokio::select! {
             result = rpc_result => {
                 // Signal the stdin reader to stop
                 let _ = stop_tx.send(());
                 match result {
-                    Ok(Message::ChatResponse(resp)) if resp.request_id == req_id => {
-                        // Clear thinking indicator
-                        nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
-                        let output = display::render_response(&resp.content);
-                        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                    Ok(mut rx) => {
+                        while let Some(msg) = rx.recv().await {
+                            match msg {
+                                Message::ChatToolStatus(cts) => {
+                                    let hint = format!("\r\x1b[2m\u{1f527} {}\x1b[0m\x1b[K\r\n", cts.status);
+                                    nix::unistd::write(std::io::stdout(), hint.as_bytes()).ok();
+                                }
+                                Message::ChatResponse(resp) if resp.request_id == req_id => {
+                                    // Clear thinking indicator
+                                    nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
+                                    let output = display::render_response(&resp.content);
+                                    nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
 
-                        // Show separator
-                        let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
-                        let separator = display::render_separator(cols);
-                        let sep_line = format!("{}\r\n", separator);
-                        nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
+                                    // Show separator
+                                    let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+                                    let separator = display::render_separator(cols);
+                                    let sep_line = format!("{}\r\n", separator);
+                                    nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
+                                    break;
+                                }
+                                _ => break,
+                            }
+                        }
                     }
-                    _ => {
+                    Err(_) => {
                         nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
                         let err = display::render_error("Failed to receive chat response");
                         nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();

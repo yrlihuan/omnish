@@ -980,6 +980,29 @@ impl SessionManager {
         .await
     }
 
+    /// Get all commands and a stream reader across all sessions (for tool-use).
+    pub async fn get_all_commands_with_reader(&self) -> (Vec<CommandRecord>, Arc<dyn StreamReader>) {
+        let session_entries: Vec<_> = {
+            let sessions = self.sessions.read().await;
+            sessions.values().cloned().collect()
+        };
+
+        let mut all_commands = Vec::new();
+        let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
+        for session in &session_entries {
+            let stream_path = session.dir.join("stream.bin");
+            let commands = session.commands.read().await;
+            for cmd in commands.iter() {
+                offset_to_path.insert((cmd.stream_offset, cmd.stream_length), stream_path.clone());
+            }
+            all_commands.extend(commands.clone());
+        }
+        all_commands.sort_by_key(|c| c.started_at);
+
+        let reader: Arc<dyn StreamReader> = Arc::new(MultiSessionReader { readers: offset_to_path });
+        (all_commands, reader)
+    }
+
     /// Get session context with explicit max_context_chars limit (overrides config)
     pub async fn get_session_context_with_limit(&self, session_id: &str, max_context_chars: Option<usize>) -> Result<String> {
         // Clone data under brief locks

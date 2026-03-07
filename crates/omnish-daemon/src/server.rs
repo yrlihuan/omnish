@@ -2,7 +2,8 @@ use anyhow::Result;
 use omnish_daemon::conversation_mgr::ConversationManager;
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_daemon::task_mgr::TaskManager;
-use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
+use omnish_llm::backend::{ContentBlock, LlmBackend, LlmRequest, StopReason, TriggerType, UseCase};
+use omnish_llm::tool::Tool;
 use omnish_protocol::message::*;
 use omnish_transport::rpc_server::RpcServer;
 use std::sync::Arc;
@@ -210,60 +211,7 @@ async fn handle_message(
             })
         }
         Message::ChatMessage(cm) => {
-            let content = if let Some(ref backend) = llm {
-                let conversation = conv_mgr.load_messages(&cm.thread_id);
-                let use_case = UseCase::Chat;
-                let max_context_chars = backend.max_content_chars_for_use_case(use_case);
-
-                // Get terminal context only for the first message in a thread
-                let context = if conversation.is_empty() {
-                    let dummy_req = Request {
-                        request_id: cm.request_id.clone(),
-                        session_id: cm.session_id.clone(),
-                        query: String::new(),
-                        scope: RequestScope::AllSessions,
-                    };
-                    resolve_chat_context(&dummy_req, mgr, max_context_chars).await.unwrap_or_default()
-                } else {
-                    String::new()
-                };
-
-                let llm_req = LlmRequest {
-                    context,
-                    query: Some(cm.query.clone()),
-                    trigger: TriggerType::Manual,
-                    session_ids: vec![cm.session_id.clone()],
-                    use_case,
-                    max_content_chars: max_context_chars,
-                    conversation,
-                    system_prompt: Some(omnish_llm::template::CHAT_SYSTEM_PROMPT.to_string()),
-                    enable_thinking: None, // Use default (thinking enabled for chat)
-                    tools: vec![],
-                    extra_messages: vec![],
-                };
-
-                let start = std::time::Instant::now();
-                match backend.complete(&llm_req).await {
-                    Ok(response) => {
-                        tracing::info!("Chat LLM completed in {:?} (thread={})", start.elapsed(), cm.thread_id);
-                        let text = response.text();
-                        conv_mgr.append_exchange(&cm.thread_id, &cm.query, &text);
-                        text
-                    }
-                    Err(e) => {
-                        tracing::error!("Chat LLM failed: {}", e);
-                        format!("Error: {}", e)
-                    }
-                }
-            } else {
-                "(LLM backend not configured)".to_string()
-            };
-
-            Message::ChatResponse(ChatResponse {
-                request_id: cm.request_id,
-                thread_id: cm.thread_id,
-                content,
-            })
+            return handle_chat_message(cm, mgr, llm, conv_mgr).await;
         }
         Message::ChatInterrupt(ci) => {
             conv_mgr.append_exchange(&ci.thread_id, &ci.query, "<event>user interrupted</event>");
@@ -272,6 +220,205 @@ async fn handle_message(
         }
         _ => Message::Ack,
     }]
+}
+
+async fn handle_chat_message(
+    cm: ChatMessage,
+    mgr: &SessionManager,
+    llm: &Option<Arc<dyn LlmBackend>>,
+    conv_mgr: &Arc<ConversationManager>,
+) -> Vec<Message> {
+    let backend = match llm {
+        Some(b) => b,
+        None => {
+            return vec![Message::ChatResponse(ChatResponse {
+                request_id: cm.request_id,
+                thread_id: cm.thread_id,
+                content: "(LLM backend not configured)".to_string(),
+            })];
+        }
+    };
+
+    let conversation = conv_mgr.load_messages(&cm.thread_id);
+    let use_case = UseCase::Chat;
+    let max_context_chars = backend.max_content_chars_for_use_case(use_case);
+
+    // Only build terminal context for the first message in a conversation
+    let context = if conversation.is_empty() {
+        let dummy_req = Request {
+            request_id: cm.request_id.clone(),
+            session_id: cm.session_id.clone(),
+            query: String::new(),
+            scope: RequestScope::AllSessions,
+        };
+        resolve_chat_context(&dummy_req, mgr, max_context_chars)
+            .await
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // Build tools from current session data
+    let (commands, stream_reader) = mgr.get_all_commands_with_reader().await;
+    let command_query_tool = omnish_daemon::tools::command_query::CommandQueryTool::new(
+        commands,
+        stream_reader,
+    );
+    let registered_tools: Vec<Box<dyn Tool>> = vec![Box::new(command_query_tool)];
+
+    let tools: Vec<omnish_llm::tool::ToolDef> = registered_tools
+        .iter()
+        .map(|t| t.definition())
+        .collect();
+
+    let mut llm_req = LlmRequest {
+        context,
+        query: Some(cm.query.clone()),
+        trigger: TriggerType::Manual,
+        session_ids: vec![cm.session_id.clone()],
+        use_case,
+        max_content_chars: max_context_chars,
+        conversation,
+        system_prompt: Some(omnish_llm::template::CHAT_SYSTEM_PROMPT.to_string()),
+        enable_thinking: None,
+        tools,
+        extra_messages: vec![],
+    };
+
+    let mut messages = Vec::new();
+    let max_iterations = 5;
+    let start = std::time::Instant::now();
+
+    for iteration in 0..max_iterations {
+        match backend.complete(&llm_req).await {
+            Ok(response) => {
+                if response.stop_reason == StopReason::ToolUse {
+                    let tool_calls = response.tool_calls();
+                    if tool_calls.is_empty() {
+                        break;
+                    }
+
+                    // Build assistant message with tool_use blocks
+                    let assistant_content: Vec<serde_json::Value> = response
+                        .content
+                        .iter()
+                        .map(|b| match b {
+                            ContentBlock::Text(t) => {
+                                serde_json::json!({"type": "text", "text": t})
+                            }
+                            ContentBlock::ToolUse(tc) => serde_json::json!({
+                                "type": "tool_use",
+                                "id": tc.id,
+                                "name": tc.name,
+                                "input": tc.input,
+                            }),
+                        })
+                        .collect();
+                    llm_req.extra_messages.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": assistant_content,
+                    }));
+
+                    // Execute each tool call
+                    let mut tool_results = Vec::new();
+                    for tc in &tool_calls {
+                        // Send status to client
+                        let status_text = match tc.name.as_str() {
+                            "command_query" => match tc.input["action"].as_str() {
+                                Some("list_history") => "查询命令历史...".to_string(),
+                                Some("get_output") => format!(
+                                    "获取命令输出 [{}]...",
+                                    tc.input["seq"].as_u64().unwrap_or(0)
+                                ),
+                                _ => format!("执行 {}...", tc.name),
+                            },
+                            _ => format!("执行 {}...", tc.name),
+                        };
+                        messages.push(Message::ChatToolStatus(ChatToolStatus {
+                            request_id: cm.request_id.clone(),
+                            thread_id: cm.thread_id.clone(),
+                            tool_name: tc.name.clone(),
+                            status: status_text,
+                        }));
+
+                        // Find and execute tool
+                        let mut result = omnish_llm::tool::ToolResult {
+                            tool_use_id: tc.id.clone(),
+                            content: format!("Unknown tool: {}", tc.name),
+                            is_error: true,
+                        };
+                        for tool in registered_tools.iter() {
+                            if tool.definition().name == tc.name {
+                                result = tool.execute(&tc.input);
+                                result.tool_use_id = tc.id.clone();
+                                break;
+                            }
+                        }
+                        tool_results.push(result);
+                    }
+
+                    // Build user message with tool_result blocks
+                    let result_content: Vec<serde_json::Value> = tool_results
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "type": "tool_result",
+                                "tool_use_id": r.tool_use_id,
+                                "content": r.content,
+                                "is_error": r.is_error,
+                            })
+                        })
+                        .collect();
+                    llm_req.extra_messages.push(serde_json::json!({
+                        "role": "user",
+                        "content": result_content,
+                    }));
+
+                    continue;
+                }
+
+                // EndTurn or MaxTokens — extract final text
+                let text = response.text();
+                tracing::info!(
+                    "Chat LLM completed in {:?} ({} tool iterations, thread={})",
+                    start.elapsed(),
+                    iteration,
+                    cm.thread_id
+                );
+                conv_mgr.append_exchange(&cm.thread_id, &cm.query, &text);
+                messages.push(Message::ChatResponse(ChatResponse {
+                    request_id: cm.request_id.clone(),
+                    thread_id: cm.thread_id.clone(),
+                    content: text,
+                }));
+                return messages;
+            }
+            Err(e) => {
+                tracing::error!("Chat LLM failed: {}", e);
+                messages.push(Message::ChatResponse(ChatResponse {
+                    request_id: cm.request_id.clone(),
+                    thread_id: cm.thread_id.clone(),
+                    content: format!("Error: {}", e),
+                }));
+                return messages;
+            }
+        }
+    }
+
+    // Exhausted iterations
+    tracing::warn!(
+        "Agent loop exhausted {} iterations (thread={})",
+        max_iterations,
+        cm.thread_id
+    );
+    let text = "(Agent reached maximum tool call limit)".to_string();
+    conv_mgr.append_exchange(&cm.thread_id, &cm.query, &text);
+    messages.push(Message::ChatResponse(ChatResponse {
+        request_id: cm.request_id,
+        thread_id: cm.thread_id,
+        content: text,
+    }));
+    messages
 }
 
 async fn try_warmup_kv_cache(
