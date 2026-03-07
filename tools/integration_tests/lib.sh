@@ -287,6 +287,14 @@ _snapshot_thread_count() {
 #   Delete threads created during tests (new threads appear at top = low indices).
 #   Uses a separate cleanup client window.
 _cleanup_new_threads() {
+    # Protection: if initial thread count is 0, skip deletion to avoid deleting
+    # all threads when detection might be faulty (issue #159)
+    if [[ $_THREADS_BEFORE -eq 0 ]]; then
+        echo -e "${YELLOW}Warning: Initial thread count is 0, skipping cleanup to prevent accidental deletion${NC}"
+        echo -e "${YELLOW}This may leave test threads behind, but avoids deleting potentially existing threads${NC}"
+        return
+    fi
+
     _start_cleanup_client
     # Enter chat, list threads
     _tmux send-keys -t "$_CLEANUP_PANE" -- ":" 2>/dev/null
