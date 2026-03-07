@@ -1686,8 +1686,8 @@ async fn run_chat_loop(
             continue;
         }
 
-        // /conversations — list and cache thread_ids for stable /resume N
-        if trimmed == "/conversations" {
+        // /conversations or /threads — list and cache thread_ids for stable /resume N
+        if trimmed == "/conversations" || trimmed == "/threads" {
             let request_id = Uuid::new_v4().to_string()[..8].to_string();
             let request = Message::Request(Request {
                 request_id: request_id.clone(),
