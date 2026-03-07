@@ -23,6 +23,7 @@ pub enum Message {
     ChatMessage(ChatMessage),
     ChatResponse(ChatResponse),
     ChatInterrupt(ChatInterrupt),
+    ChatToolStatus(ChatToolStatus),
     Ack,
     Auth(Auth),
     AuthFailed,
@@ -204,6 +205,14 @@ pub struct ChatInterrupt {
     pub query: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatToolStatus {
+    pub request_id: String,
+    pub thread_id: String,
+    pub tool_name: String,
+    pub status: String,
+}
+
 impl Message {
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         let payload = bincode::serialize(self)?;
@@ -381,6 +390,28 @@ mod tests {
         let decoded = Frame::from_bytes(&bytes).unwrap();
         assert_eq!(decoded.request_id, 30);
         assert!(matches!(decoded.payload, Message::ChatStart(_)));
+    }
+
+    #[test]
+    fn test_frame_with_chat_tool_status() {
+        let frame = Frame {
+            request_id: 40,
+            payload: Message::ChatToolStatus(ChatToolStatus {
+                request_id: "req1".to_string(),
+                thread_id: "thread1".to_string(),
+                tool_name: "command_query".to_string(),
+                status: "查询命令历史...".to_string(),
+            }),
+        };
+        let bytes = frame.to_bytes().unwrap();
+        let decoded = Frame::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.request_id, 40);
+        if let Message::ChatToolStatus(cts) = decoded.payload {
+            assert_eq!(cts.tool_name, "command_query");
+            assert_eq!(cts.status, "查询命令历史...");
+        } else {
+            panic!("expected ChatToolStatus");
+        }
     }
 
     #[test]
