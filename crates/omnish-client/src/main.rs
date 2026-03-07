@@ -1329,6 +1329,41 @@ impl AltScreenDetector {
     }
 }
 
+/// Parse a multi-index expression like "1,2,3,5" or "1,2-4,5" into sorted unique 1-based indices.
+/// Returns None if the input is empty or contains invalid syntax.
+fn parse_index_expr(s: &str) -> Option<Vec<usize>> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let mut indices = Vec::new();
+    for part in s.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            return None;
+        }
+        if let Some((start_s, end_s)) = part.split_once('-') {
+            let start: usize = start_s.trim().parse().ok()?;
+            let end: usize = end_s.trim().parse().ok()?;
+            if start == 0 || end == 0 || start > end {
+                return None;
+            }
+            for i in start..=end {
+                indices.push(i);
+            }
+        } else {
+            let i: usize = part.parse().ok()?;
+            if i == 0 {
+                return None;
+            }
+            indices.push(i);
+        }
+    }
+    indices.sort();
+    indices.dedup();
+    if indices.is_empty() { None } else { Some(indices) }
+}
+
 /// Parse a daemon command response as JSON. Returns None if not valid JSON.
 fn parse_cmd_response(content: &str) -> Option<serde_json::Value> {
     serde_json::from_str(content).ok()
@@ -1615,8 +1650,8 @@ async fn run_chat_loop(
                 if cached_thread_ids.is_empty() {
                     continue;
                 }
-                // Prompt for index
-                let prompt = "\r\n\x1b[33mDelete which conversation? [N]: \x1b[0m";
+                // Prompt for index (supports 1,2-4,5 syntax)
+                let prompt = "\r\n\x1b[33mDelete which conversation? [N or 1,2-4,5]: \x1b[0m";
                 nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
                 match read_chat_input(&mut chat_completer, true, chat_history, &mut history_index) {
                     Some(line) => line.trim().to_string(),
@@ -1648,51 +1683,65 @@ async fn run_chat_loop(
                 }
             }
 
-            match del_index.parse::<usize>() {
-                Ok(i) if i >= 1 && i <= cached_thread_ids.len() => {
-                    let tid = &cached_thread_ids[i - 1];
-                    if tid.is_empty() {
-                        let err = display::render_error(&format!("Conversation [{}] already deleted", i));
-                        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                    } else {
-                        let rid = Uuid::new_v4().to_string()[..8].to_string();
-                        let req = Message::Request(Request {
-                            request_id: rid.clone(),
-                            session_id: session_id.to_string(),
-                            query: format!("__cmd:conversations del {}", tid),
-                            scope: RequestScope::AllSessions,
-                        });
-                        match rpc.call(req).await {
-                            Ok(Message::Response(resp)) if resp.request_id == rid => {
-                                if let Some(json) = parse_cmd_response(&resp.content) {
-                                    if let Some(deleted_id) = json.get("deleted_thread_id").and_then(|v| v.as_str()) {
-                                        if current_thread_id.as_deref() == Some(deleted_id) {
-                                            current_thread_id = None;
+            match parse_index_expr(&del_index) {
+                Some(indices) => {
+                    // Validate all indices first
+                    let mut valid = true;
+                    for &i in &indices {
+                        if i > cached_thread_ids.len() {
+                            let err = display::render_error(&format!(
+                                "Index {} out of range ({} conversations)",
+                                i, cached_thread_ids.len()
+                            ));
+                            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if valid {
+                        let mut deleted = Vec::new();
+                        for &i in &indices {
+                            let tid = &cached_thread_ids[i - 1];
+                            if tid.is_empty() {
+                                let err = display::render_error(&format!("Conversation [{}] already deleted", i));
+                                nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                                continue;
+                            }
+                            let rid = Uuid::new_v4().to_string()[..8].to_string();
+                            let req = Message::Request(Request {
+                                request_id: rid.clone(),
+                                session_id: session_id.to_string(),
+                                query: format!("__cmd:conversations del {}", tid),
+                                scope: RequestScope::AllSessions,
+                            });
+                            match rpc.call(req).await {
+                                Ok(Message::Response(resp)) if resp.request_id == rid => {
+                                    if let Some(json) = parse_cmd_response(&resp.content) {
+                                        if let Some(deleted_id) = json.get("deleted_thread_id").and_then(|v| v.as_str()) {
+                                            if current_thread_id.as_deref() == Some(deleted_id) {
+                                                current_thread_id = None;
+                                            }
                                         }
+                                        cached_thread_ids[i - 1] = String::new();
+                                        deleted.push(i);
                                     }
-                                    // Mark as deleted (keep index stable)
-                                    cached_thread_ids[i - 1] = String::new();
-                                    let display = format!("Deleted conversation [{}]", i);
-                                    let output = display::render_response(&display);
-                                    nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                                }
+                                _ => {
+                                    let err = display::render_error(&format!("Failed to delete conversation [{}]", i));
+                                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                                 }
                             }
-                            _ => {
-                                let err = display::render_error("Failed to delete conversation");
-                                nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                            }
+                        }
+                        if !deleted.is_empty() {
+                            let nums: Vec<String> = deleted.iter().map(|i| format!("[{}]", i)).collect();
+                            let display = format!("Deleted conversation {}", nums.join(", "));
+                            let output = display::render_response(&display);
+                            nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
                         }
                     }
                 }
-                Ok(i) if i >= 1 => {
-                    let err = display::render_error(&format!(
-                        "Index {} out of range ({} conversations)",
-                        i, cached_thread_ids.len()
-                    ));
-                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                }
-                _ => {
-                    let err = display::render_error("Invalid index");
+                None => {
+                    let err = display::render_error("Invalid index expression (use N, 1,2,3 or 1-3,5)");
                     nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                 }
             }
@@ -2670,5 +2719,46 @@ mod tests {
             None => None,
         };
         assert_eq!(idx, Some(1));
+    }
+
+    // --- parse_index_expr tests ---
+
+    #[test]
+    fn test_parse_index_expr_single() {
+        assert_eq!(parse_index_expr("3"), Some(vec![3]));
+    }
+
+    #[test]
+    fn test_parse_index_expr_comma_separated() {
+        assert_eq!(parse_index_expr("1,2,3,5"), Some(vec![1, 2, 3, 5]));
+    }
+
+    #[test]
+    fn test_parse_index_expr_range() {
+        assert_eq!(parse_index_expr("2-4"), Some(vec![2, 3, 4]));
+    }
+
+    #[test]
+    fn test_parse_index_expr_mixed() {
+        assert_eq!(parse_index_expr("1,3-5,8"), Some(vec![1, 3, 4, 5, 8]));
+    }
+
+    #[test]
+    fn test_parse_index_expr_dedup() {
+        assert_eq!(parse_index_expr("1,2,2,3"), Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn test_parse_index_expr_spaces() {
+        assert_eq!(parse_index_expr(" 1 , 3 - 5 "), Some(vec![1, 3, 4, 5]));
+    }
+
+    #[test]
+    fn test_parse_index_expr_invalid() {
+        assert_eq!(parse_index_expr(""), None);
+        assert_eq!(parse_index_expr("abc"), None);
+        assert_eq!(parse_index_expr("0"), None);
+        assert_eq!(parse_index_expr("5-3"), None);
+        assert_eq!(parse_index_expr(","), None);
     }
 }
