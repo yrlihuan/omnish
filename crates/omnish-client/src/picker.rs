@@ -127,6 +127,9 @@ fn run_picker(title: &str, items: &[&str], multi: bool) -> Option<Vec<usize>> {
     let mut cursor: usize = 0;
     let mut checked = vec![false; items.len()];
 
+    // Hide cursor during picker interaction
+    nix::unistd::write(std::io::stdout(), b"\x1b[?25l").ok();
+
     // Initial render
     let full = render_full(title, items, cursor, &checked, multi, cols);
     nix::unistd::write(std::io::stdout(), full.as_bytes()).ok();
@@ -178,6 +181,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool) -> Option<Vec<usize>> {
                         // Bare ESC — cancel
                         let cleanup = render_cleanup(items.len());
                         nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
+                        nix::unistd::write(std::io::stdout(), b"\x1b[?25h").ok();
                         return None;
                     }
                 }
@@ -196,6 +200,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool) -> Option<Vec<usize>> {
                     // Confirm selection
                     let cleanup = render_cleanup(items.len());
                     nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
+                    nix::unistd::write(std::io::stdout(), b"\x1b[?25h").ok();
                     if multi {
                         let selected: Vec<usize> = checked.iter()
                             .enumerate()
@@ -215,6 +220,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool) -> Option<Vec<usize>> {
 
     let cleanup = render_cleanup(items.len());
     nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
+    nix::unistd::write(std::io::stdout(), b"\x1b[?25h").ok();
     None
 }
 
