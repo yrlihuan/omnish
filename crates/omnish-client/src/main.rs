@@ -1796,25 +1796,77 @@ async fn run_chat_loop(
                     }
                 }
             } else {
-                // /resume without index — use latest via daemon
-                let request_id = Uuid::new_v4().to_string()[..8].to_string();
-                let request = Message::Request(Request {
-                    request_id: request_id.clone(),
+                // /resume without index — show picker with recent threads
+                let rid = Uuid::new_v4().to_string()[..8].to_string();
+                let req = Message::Request(Request {
+                    request_id: rid.clone(),
                     session_id: session_id.to_string(),
-                    query: "__cmd:resume".to_string(),
+                    query: "__cmd:conversations".to_string(),
                     scope: RequestScope::AllSessions,
                 });
-                match rpc.call(request).await {
-                    Ok(Message::Response(resp)) if resp.request_id == request_id => {
+                match rpc.call(req).await {
+                    Ok(Message::Response(resp)) if resp.request_id == rid => {
                         if let Some(json) = parse_cmd_response(&resp.content) {
-                            let tid = json.get("thread_id").and_then(|v| v.as_str()).map(String::from);
-                            let display = Some(cmd_display_str(&json));
-                            (tid, display)
+                            if let Some(ids) = json.get("thread_ids").and_then(|v| v.as_array()) {
+                                cached_thread_ids = ids.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect();
+                            }
+                            if cached_thread_ids.is_empty() {
+                                let err = display::render_error("No conversations to resume");
+                                nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                                (None, None)
+                            } else {
+                                // Build picker items from the display string
+                                let display_str = cmd_display_str(&json);
+                                let item_strings: Vec<String> = display_str.lines()
+                                    .filter(|l| l.trim_start().starts_with('['))
+                                    .take(10)
+                                    .map(|l| l.trim_start().to_string())
+                                    .collect();
+                                let items: Vec<&str> = item_strings.iter()
+                                    .map(|s| s.as_str())
+                                    .collect();
+                                if items.is_empty() {
+                                    let err = display::render_error("No conversations to resume");
+                                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                                    (None, None)
+                                } else {
+                                    match picker::pick_one("Resume conversation:", &items) {
+                                        Some(idx) if idx < cached_thread_ids.len() => {
+                                            let tid = cached_thread_ids[idx].clone();
+                                            // Fetch last exchange display for the selected thread
+                                            let rid2 = Uuid::new_v4().to_string()[..8].to_string();
+                                            let req2 = Message::Request(Request {
+                                                request_id: rid2.clone(),
+                                                session_id: session_id.to_string(),
+                                                query: format!("__cmd:resume_tid {}", tid),
+                                                scope: RequestScope::AllSessions,
+                                            });
+                                            let display = match rpc.call(req2).await {
+                                                Ok(Message::Response(r)) if r.request_id == rid2 => {
+                                                    parse_cmd_response(&r.content)
+                                                        .map(|j| cmd_display_str(&j))
+                                                }
+                                                _ => None,
+                                            };
+                                            (Some(tid), display)
+                                        }
+                                        _ => (None, None), // ESC or out of range
+                                    }
+                                }
+                            }
                         } else {
+                            let err = display::render_error("No conversations to resume");
+                            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                             (None, None)
                         }
                     }
-                    _ => (None, None),
+                    _ => {
+                        let err = display::render_error("Failed to list conversations");
+                        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                        (None, None)
+                    }
                 }
             };
             if let Some(tid) = thread_id {
