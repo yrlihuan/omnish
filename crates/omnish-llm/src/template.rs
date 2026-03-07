@@ -70,8 +70,9 @@ The user is in omnish's chat mode. In chat mode:\n\
 ## Available Commands (for user reference)\n\
 \n\
 - /help — Show available commands\n\
-- /resume [N] — Resume a previous conversation (N = index from /threads)\n\
-- /threads — List all conversation threads\n\
+- /resume [N] — Resume a previous conversation (N = index from /thread list)\n\
+- /thread list — List all conversation threads\n\
+- /thread del [N] — Delete a conversation thread\n\
 - /context — Show the current LLM context\n\
 - /sessions — List active terminal sessions\n\
 - ESC or Ctrl-D (on empty input) — Exit chat mode\n\
@@ -132,7 +133,8 @@ mod tests {
         let expected = &[
             "/help",
             "/resume",
-            "/threads",
+            "/thread list",
+            "/thread del",
             "/context",
             "/sessions",
         ];

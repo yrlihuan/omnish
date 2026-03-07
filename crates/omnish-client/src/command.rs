@@ -145,9 +145,14 @@ const COMMANDS: &[CommandEntry] = &[
         help: "List sessions",
     },
     CommandEntry {
-        path: "/threads",
+        path: "/thread list",
         kind: CommandKind::Daemon("conversations"),
         help: "List all conversation threads",
+    },
+    CommandEntry {
+        path: "/thread del",
+        kind: CommandKind::Daemon("conversations del"),
+        help: "Delete a conversation thread",
     },
     CommandEntry {
         path: "/tasks",
@@ -494,7 +499,8 @@ mod tests {
         assert!(cmds.contains(&"/debug events".to_string()));
         assert!(cmds.contains(&"/debug session".to_string()));
         assert!(cmds.contains(&"/sessions".to_string()));
-        assert!(cmds.contains(&"/threads".to_string()));
+        assert!(cmds.contains(&"/thread list".to_string()));
+        assert!(cmds.contains(&"/thread del".to_string()));
         // Template and context subcommands are also completable.
         assert!(cmds.contains(&"/template chat".to_string()));
         assert!(cmds.contains(&"/template auto-complete".to_string()));
@@ -594,9 +600,9 @@ mod tests {
     }
 
     #[test]
-    fn test_threads_alias() {
-        // /threads should be an alias for /conversations
-        match dispatch("/threads") {
+    fn test_thread_list() {
+        // /thread list should dispatch to __cmd:conversations
+        match dispatch("/thread list") {
             ChatAction::DaemonQuery { query, redirect, .. } => {
                 assert_eq!(query, "__cmd:conversations");
                 assert!(redirect.is_none());
