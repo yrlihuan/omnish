@@ -5,3 +5,4 @@ pub mod eviction;
 pub mod hourly_summary;
 pub mod session_mgr;
 pub mod task_mgr;
+pub mod tools;
