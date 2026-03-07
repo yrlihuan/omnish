@@ -12,6 +12,7 @@
 #   - Key sending (send_keys, send_enter, send_special)
 #   - Pane capture and assertion helpers
 #   - Test runner with pass/fail tracking and summary
+#   - Thread cleanup: snapshots thread count before tests, deletes new ones after
 #   - Common CLI flags: -w (wait), -t N (test selection), -h (help)
 #
 # Test scripts define functions named test_1, test_2, etc. and call run_tests.
@@ -51,6 +52,7 @@ _WAIT_FOR_USER=false
 _WAIT_CLIENT_STARTED=false  # true if -w already started the client
 _TEST_CASES="all"
 _TEST_MAX=0  # set by caller via run_tests
+_THREADS_BEFORE=0  # thread count before tests, for cleanup
 
 # ── Dependency check ────────────────────────────────────────────────────
 _check_deps() {
@@ -236,6 +238,64 @@ show_capture() {
     echo "$content" | tail -"$lines" | sed 's/^/    /'
 }
 
+# ── Thread cleanup ───────────────────────────────────────────────────────
+
+# _count_threads
+#   Enter chat mode, run /threads, count [N] lines, exit chat.
+#   Prints the count to stdout. Requires a running client at shell prompt.
+_count_threads() {
+    _tmux send-keys -t "$PANE" -- ":" 2>/dev/null
+    sleep 0.5
+    _tmux send-keys -t "$PANE" -- "/threads" 2>/dev/null
+    _tmux send-keys -t "$PANE" Enter 2>/dev/null
+    sleep 1
+    local content
+    content=$(_tmux capture-pane -p -J -t "$PANE" -S -100 2>/dev/null) || { echo 0; return; }
+    local count
+    count=$(echo "$content" | grep -cE '^\s*\[[0-9]+\]') || true
+    # Exit chat mode
+    _tmux send-keys -t "$PANE" Escape 2>/dev/null
+    sleep 1.5  # exceed intercept gap
+    echo "$count"
+}
+
+# _snapshot_thread_count
+#   Record current thread count before tests start.
+_snapshot_thread_count() {
+    _THREADS_BEFORE=$(_count_threads)
+    echo -e "${YELLOW}Threads before tests: ${_THREADS_BEFORE}${NC}"
+}
+
+# _cleanup_new_threads
+#   Delete threads created during tests (new threads appear at top = low indices).
+_cleanup_new_threads() {
+    # Ensure we're not stuck in chat mode
+    _tmux send-keys -t "$PANE" Escape 2>/dev/null
+    sleep 1.5
+    local after
+    after=$(_count_threads)
+    local new_count=$((after - _THREADS_BEFORE))
+    if [[ $new_count -le 0 ]]; then
+        echo -e "${YELLOW}No new threads to clean up (before=$_THREADS_BEFORE, after=$after)${NC}"
+        return
+    fi
+    echo -e "${YELLOW}Cleaning up $new_count new thread(s) (before=$_THREADS_BEFORE, after=$after)...${NC}"
+    # Enter chat mode
+    _tmux send-keys -t "$PANE" -- ":" 2>/dev/null
+    sleep 0.5
+    # Delete indices 1..new_count (new threads are at the top, indices are stable)
+    for ((i=1; i<=new_count; i++)); do
+        _tmux send-keys -t "$PANE" -- "/threads del $i" 2>/dev/null
+        _tmux send-keys -t "$PANE" Enter 2>/dev/null
+        sleep 0.3
+    done
+    sleep 0.3
+    # Exit chat mode
+    _tmux send-keys -t "$PANE" Escape 2>/dev/null
+    sleep 0.5
+    echo -e "${YELLOW}Thread cleanup done${NC}"
+}
+
 # ── Test runner ──────────────────────────────────────────────────────────
 
 # run_tests <max_test_number>
@@ -267,6 +327,13 @@ run_tests() {
         _WAIT_CLIENT_STARTED=true
     fi
 
+    # Snapshot thread count before tests
+    if ! _tmux has-session -t "$SESSION" 2>/dev/null; then
+        start_client
+        wait_for_client
+    fi
+    _snapshot_thread_count
+
     _TEST_PASSED=0
     _TEST_TOTAL=0
 
@@ -278,6 +345,11 @@ run_tests() {
             fi
         fi
     done
+
+    # Clean up threads created during tests
+    if _tmux has-session -t "$SESSION" 2>/dev/null; then
+        _cleanup_new_threads
+    fi
 
     # Summary
     echo -e "\n${YELLOW}=== Test Summary ===${NC}"
