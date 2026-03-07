@@ -406,7 +406,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
                     "earlier_count": earlier_count,
                 })
             }
-            None => cmd_display("No conversations yet. Start a chat with : then /chat or /ask"),
+            None => cmd_display("No conversations yet. Start a chat with :"),
         };
     }
     // Handle /conversations del <thread_id> — delete a conversation by thread ID
@@ -462,7 +462,7 @@ fn format_chat_history(last_exchange: &Option<(String, String)>, earlier_count: 
 fn format_conversations_json(conv_mgr: &Arc<ConversationManager>) -> serde_json::Value {
     let conversations = conv_mgr.list_conversations();
     if conversations.is_empty() {
-        return cmd_display("No conversations yet. Start a chat with : then /chat or /ask");
+        return cmd_display("No conversations yet. Start a chat with :");
     }
 
     let mut output = String::from("Conversations:\n");
