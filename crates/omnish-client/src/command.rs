@@ -162,7 +162,7 @@ const COMMANDS: &[CommandEntry] = &[
 ];
 
 /// Chat-mode-only commands (not in COMMANDS registry).
-pub const CHAT_ONLY_COMMANDS: &[&str] = &["/chat", "/ask", "/resume", "/new"];
+pub const CHAT_ONLY_COMMANDS: &[&str] = &["/resume"];
 
 /// Return all command paths for ghost-text completion.
 pub fn completable_commands() -> Vec<String> {
@@ -509,11 +509,8 @@ mod tests {
         assert!(cmds.contains(&"/context auto-complete".to_string()));
         assert!(cmds.contains(&"/context daily-notes".to_string()));
         assert!(cmds.contains(&"/context hourly-notes".to_string()));
-        // Chat-mode commands
-        assert!(cmds.contains(&"/chat".to_string()));
-        assert!(cmds.contains(&"/ask".to_string()));
+        // Chat-mode command
         assert!(cmds.contains(&"/resume".to_string()));
-        assert!(cmds.contains(&"/new".to_string()));
         // COMMANDS + /template subcommands + /context subcommands + chat commands
         let template_count = omnish_llm::template::TEMPLATE_NAMES.len();
         assert_eq!(

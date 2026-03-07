@@ -70,7 +70,6 @@ The user is in omnish's chat mode. In chat mode:\n\
 ## Available Commands (for user reference)\n\
 \n\
 - /help — Show available commands\n\
-- /new — Start a new conversation thread\n\
 - /resume [N] — Resume a previous conversation (N = index from /conversations)\n\
 - /conversations or /threads — List all conversation threads\n\
 - /context — Show the current LLM context\n\
@@ -132,7 +131,6 @@ mod tests {
         // Keep in sync with COMMANDS and CHAT_ONLY_COMMANDS in omnish-client/src/command.rs.
         let expected = &[
             "/help",
-            "/new",
             "/resume",
             "/conversations",
             "/threads",
