@@ -1586,14 +1586,12 @@ async fn run_chat_loop(
         history_index = None; // Reset to new command mode
 
 
-        // /threads del [N] or /conversations del [N] — delete a thread
-        if trimmed == "/threads del" || trimmed == "/conversations del"
-            || trimmed.starts_with("/threads del ") || trimmed.starts_with("/conversations del ")
+        // /threads del [N] — delete a thread
+        if trimmed == "/threads del" || trimmed.starts_with("/threads del ")
         {
             // Extract optional index
             let idx_str = trimmed
                 .strip_prefix("/threads del")
-                .or_else(|| trimmed.strip_prefix("/conversations del"))
                 .map(|s| s.trim())
                 .unwrap_or("");
 
@@ -1727,8 +1725,8 @@ async fn run_chat_loop(
             continue;
         }
 
-        // /conversations or /threads — list and cache thread_ids for stable /resume N
-        if trimmed == "/conversations" || trimmed == "/threads" {
+        // /threads — list and cache thread_ids for stable /resume N
+        if trimmed == "/threads" {
             let request_id = Uuid::new_v4().to_string()[..8].to_string();
             let request = Message::Request(Request {
                 request_id: request_id.clone(),
