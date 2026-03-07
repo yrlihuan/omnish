@@ -65,7 +65,11 @@ test_1() {
 test_2() {
     echo -e "\n${YELLOW}=== Test 2: /context should show <current_path> containing /tmp ===${NC}"
 
-    # Run /context | tail -n 5 (still in same chat session)
+    # Re-enter chat mode (previous /debug client exited chat)
+    send_keys ":" 0.5
+    wait_for_prompt
+
+    # Run /context | tail -n 5
     send_keys "/context | tail -n 5" 0.3
     send_enter 3
 
