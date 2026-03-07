@@ -86,7 +86,7 @@ impl LlmResponse {
                 _ => None,
             })
             .collect::<Vec<_>>()
-            .join("")
+            .join("\n")
     }
 
     /// Extract all tool calls from the response.
