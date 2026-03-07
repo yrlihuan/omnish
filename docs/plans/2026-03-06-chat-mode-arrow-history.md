@@ -512,3 +512,19 @@ git commit -m "docs: update documentation for chat history feature"
 **2. Parallel Session (separate)** - Open new session with executing-plans, batch execution with checkpoints
 
 **Which approach?**
+
+## Completion Notes
+
+Implementation completed for issue #149: "支持chat模式下使用箭头切换之前执行的命令（同bash中的效果）"
+
+**Features added:**
+1. Escape sequence parsing in `read_chat_input`
+2. Chat command history storage using `VecDeque`
+3. Up/down arrow navigation through history
+4. Proper display updates when navigating
+5. Integration test for verification
+
+**Limitations:**
+- History is per chat session (not persisted across sessions)
+- Maximum 100 commands stored (configurable)
+- Arrow keys only work in chat mode input phase

@@ -43,6 +43,46 @@ tools/integration_tests/verify_issue_127.sh -w -t 1  # Wait for confirmation, th
 - Test 1: ✓ PASS - Chat prompt disappears after backspace (exited chat mode)
 - Test 2: ✓ PASS - Chat prompt still present after backspace (backspace ignored)
 
+### `test_chat_history.sh`
+
+**Purpose:** Tests arrow key navigation in chat mode (issue #149)
+
+**What it tests:**
+1. **Test 1:** Up arrow shows most recent command
+2. **Test 2:** Multiple up arrows navigate back through history
+3. **Test 3:** Down arrow navigates forward through history
+4. **Test 4:** Down arrow past most recent clears input
+
+**Requirements:**
+- `tmux` installed
+- `omnish-client` built (`cargo build`)
+
+**Usage:**
+```bash
+# From project root
+tools/integration_tests/test_chat_history.sh [-w] [-t TEST_CASE]
+
+# Examples:
+tools/integration_tests/test_chat_history.sh          # Run all tests (default)
+tools/integration_tests/test_chat_history.sh -t 1     # Run only test 1
+tools/integration_tests/test_chat_history.sh -t 2     # Run only test 2
+tools/integration_tests/test_chat_history.sh -t 3     # Run only test 3
+tools/integration_tests/test_chat_history.sh -t 4     # Run only test 4
+tools/integration_tests/test_chat_history.sh -t all   # Run all tests
+tools/integration_tests/test_chat_history.sh -w -t 1  # Wait for confirmation, then run test 1
+```
+
+**Options:**
+- `-w`: Wait for user confirmation after showing the monitor command. Useful for manual inspection of the tmux session before tests run.
+- `-t TEST_CASE`: Run specific test case(s). Can be: `1`, `2`, `3`, `4`, or `all` (default: all).
+- `-h, --help`: Show help message.
+
+**Expected output:**
+- Test 1: ✓ PASS - Up arrow shows most recent command
+- Test 2: ✓ PASS - Multiple up arrows navigate back through history
+- Test 3: ✓ PASS - Down arrow navigates forward through history
+- Test 4: ✓ PASS - Down arrow past most recent clears input
+
 ## Adding New Integration Tests
 
 When adding new integration tests:
