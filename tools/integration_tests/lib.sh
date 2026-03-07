@@ -239,23 +239,40 @@ show_capture() {
 }
 
 # ── Thread cleanup ───────────────────────────────────────────────────────
+# Uses a separate tmux window ("cleanup") with its own omnish-client
+# so thread operations don't interfere with the test pane.
+
+_CLEANUP_PANE=""  # set by _start_cleanup_client
+
+# _start_cleanup_client
+#   Create a new tmux window in the test session running omnish-client.
+_start_cleanup_client() {
+    _tmux new-window -t "$SESSION" -n cleanup "$CLIENT" 2>/dev/null
+    _CLEANUP_PANE="$SESSION:cleanup.0"
+    sleep 1.5  # wait for client to connect
+}
+
+# _kill_cleanup_client
+_kill_cleanup_client() {
+    _tmux kill-window -t "$SESSION:cleanup" 2>/dev/null || true
+    _CLEANUP_PANE=""
+}
 
 # _count_threads
-#   Enter chat mode, run /threads, count [N] lines, exit chat.
-#   Prints the count to stdout. Requires a running client at shell prompt.
+#   Start a cleanup client, enter chat, run /threads, count [N] lines, kill it.
+#   Prints the count to stdout.
 _count_threads() {
-    _tmux send-keys -t "$PANE" -- ":" 2>/dev/null
+    _start_cleanup_client
+    _tmux send-keys -t "$_CLEANUP_PANE" -- ":" 2>/dev/null
     sleep 0.5
-    _tmux send-keys -t "$PANE" -- "/threads" 2>/dev/null
-    _tmux send-keys -t "$PANE" Enter 2>/dev/null
+    _tmux send-keys -t "$_CLEANUP_PANE" -- "/threads" 2>/dev/null
+    _tmux send-keys -t "$_CLEANUP_PANE" Enter 2>/dev/null
     sleep 1
     local content
-    content=$(_tmux capture-pane -p -J -t "$PANE" -S -100 2>/dev/null) || { echo 0; return; }
+    content=$(_tmux capture-pane -p -J -t "$_CLEANUP_PANE" -S -100 2>/dev/null) || { _kill_cleanup_client; echo 0; return; }
     local count
     count=$(echo "$content" | grep -cE '^\s*\[[0-9]+\]') || true
-    # Exit chat mode
-    _tmux send-keys -t "$PANE" Escape 2>/dev/null
-    sleep 1.5  # exceed intercept gap
+    _kill_cleanup_client
     echo "$count"
 }
 
@@ -268,31 +285,34 @@ _snapshot_thread_count() {
 
 # _cleanup_new_threads
 #   Delete threads created during tests (new threads appear at top = low indices).
+#   Uses a separate cleanup client window.
 _cleanup_new_threads() {
-    # Ensure we're not stuck in chat mode
-    _tmux send-keys -t "$PANE" Escape 2>/dev/null
-    sleep 1.5
+    _start_cleanup_client
+    # Enter chat, list threads
+    _tmux send-keys -t "$_CLEANUP_PANE" -- ":" 2>/dev/null
+    sleep 0.5
+    _tmux send-keys -t "$_CLEANUP_PANE" -- "/threads" 2>/dev/null
+    _tmux send-keys -t "$_CLEANUP_PANE" Enter 2>/dev/null
+    sleep 1
+    local content
+    content=$(_tmux capture-pane -p -J -t "$_CLEANUP_PANE" -S -100 2>/dev/null) || { _kill_cleanup_client; return; }
     local after
-    after=$(_count_threads)
+    after=$(echo "$content" | grep -cE '^\s*\[[0-9]+\]') || true
     local new_count=$((after - _THREADS_BEFORE))
     if [[ $new_count -le 0 ]]; then
         echo -e "${YELLOW}No new threads to clean up (before=$_THREADS_BEFORE, after=$after)${NC}"
+        _kill_cleanup_client
         return
     fi
     echo -e "${YELLOW}Cleaning up $new_count new thread(s) (before=$_THREADS_BEFORE, after=$after)...${NC}"
-    # Enter chat mode
-    _tmux send-keys -t "$PANE" -- ":" 2>/dev/null
-    sleep 0.5
     # Delete indices 1..new_count (new threads are at the top, indices are stable)
     for ((i=1; i<=new_count; i++)); do
-        _tmux send-keys -t "$PANE" -- "/threads del $i" 2>/dev/null
-        _tmux send-keys -t "$PANE" Enter 2>/dev/null
+        _tmux send-keys -t "$_CLEANUP_PANE" -- "/threads del $i" 2>/dev/null
+        _tmux send-keys -t "$_CLEANUP_PANE" Enter 2>/dev/null
         sleep 0.3
     done
     sleep 0.3
-    # Exit chat mode
-    _tmux send-keys -t "$PANE" Escape 2>/dev/null
-    sleep 0.5
+    _kill_cleanup_client
     echo -e "${YELLOW}Thread cleanup done${NC}"
 }
 
