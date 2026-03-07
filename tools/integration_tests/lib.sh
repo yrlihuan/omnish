@@ -259,14 +259,14 @@ _kill_cleanup_client() {
 }
 
 # _count_threads
-#   Start a cleanup client, enter chat, run /threads, count [N] lines, kill it.
-#   Polls up to 5s for /threads output to appear before counting.
+#   Start a cleanup client, enter chat, run /thread list, count [N] lines, kill it.
+#   Polls up to 5s for /thread list output to appear before counting.
 #   Prints the count to stdout.
 _count_threads() {
     _start_cleanup_client
     _tmux send-keys -t "$_CLEANUP_PANE" -- ":" 2>/dev/null
     sleep 0.5
-    _tmux send-keys -t "$_CLEANUP_PANE" -- "/threads" 2>/dev/null
+    _tmux send-keys -t "$_CLEANUP_PANE" -- "/thread list" 2>/dev/null
     _tmux send-keys -t "$_CLEANUP_PANE" Enter 2>/dev/null
     # Poll for output (either [N] lines or "No conversations") up to 5s
     local content="" count=0
@@ -303,7 +303,7 @@ _cleanup_new_threads() {
     # Enter chat, list threads
     _tmux send-keys -t "$_CLEANUP_PANE" -- ":" 2>/dev/null
     sleep 0.5
-    _tmux send-keys -t "$_CLEANUP_PANE" -- "/threads" 2>/dev/null
+    _tmux send-keys -t "$_CLEANUP_PANE" -- "/thread list" 2>/dev/null
     _tmux send-keys -t "$_CLEANUP_PANE" Enter 2>/dev/null
     sleep 1
     local content
@@ -318,7 +318,7 @@ _cleanup_new_threads() {
     fi
     echo -e "${YELLOW}Cleaning up $new_count new thread(s) (before=$_THREADS_BEFORE, after=$after)...${NC}"
     # Delete indices 1..new_count in one command (new threads are at top)
-    _tmux send-keys -t "$_CLEANUP_PANE" -- "/threads del 1-$new_count" 2>/dev/null
+    _tmux send-keys -t "$_CLEANUP_PANE" -- "/thread del 1-$new_count" 2>/dev/null
     _tmux send-keys -t "$_CLEANUP_PANE" Enter 2>/dev/null
     sleep 1
     _kill_cleanup_client

@@ -7,7 +7,7 @@
 #   1. /debug client — verify client debug info is shown
 #   2. /debug session — verify session debug info is shown
 #   3. /context | tail -n 10 — verify context output with pipe
-#   4. Two conversations with 2 Q&A each, /resume first, /threads del, /threads verify
+#   4. Two conversations with 2 Q&A each, /resume first, /thread del, /thread list verify
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -18,18 +18,18 @@ Test cases:
   1. /debug client shows client debug info
   2. /debug session shows session debug info
   3. /context | tail -n 10 shows context output
-  4. Two conversations (2 Q&A each), resume first, delete second, verify /threads
+  4. Two conversations (2 Q&A each), resume first, delete second, verify /thread list
 EOF
 }
 
 test_init "basic" "$@"
 
-# Count [N] lines from only the LATEST /threads output in a capture buffer.
-# Strips ANSI codes, then uses awk to reset count on each "> /threads" line
-# (excluding "> /threads del ..."), so only the final listing is counted.
+# Count [N] lines from only the LATEST /thread list output in a capture buffer.
+# Strips ANSI codes, then uses awk to reset count on each "> /thread list" line
+# (excluding "> /thread del ..."), so only the final listing is counted.
 _count_thread_lines() {
     echo "$1" | sed 's/\x1b\[[0-9;]*m//g' | awk '
-        /^>? *\/threads[[:space:]]*$/ { c=0; next }
+        /^>? *\/thread list[[:space:]]*$/ { c=0; next }
         /^\s*\[[0-9]+\]/ { c++ }
         END { print c }
     '
@@ -201,12 +201,12 @@ test_4() {
     fi
 
     # ── List threads — expect at least 2 ──
-    echo -e "  ${YELLOW}--- /threads ---${NC}"
-    send_keys "/threads" 0.3
+    echo -e "  ${YELLOW}--- /thread list ---${NC}"
+    send_keys "/thread list" 0.3
     send_enter 1
 
     local threads_before=$(capture_pane -50)
-    show_capture "/threads listing" "$threads_before" 10
+    show_capture "/thread list listing" "$threads_before" 10
 
     local thread_count
     thread_count=$(_count_thread_lines "$threads_before")
@@ -238,8 +238,8 @@ test_4() {
     fi
 
     # ── Delete conv 2 (index 1, the most recent) ──
-    echo -e "  ${YELLOW}--- /threads del 1 ---${NC}"
-    send_keys "/threads del 1" 0.3
+    echo -e "  ${YELLOW}--- /thread del 1 ---${NC}"
+    send_keys "/thread del 1" 0.3
     send_enter 1
 
     local del_out=$(capture_pane -20)
@@ -251,13 +251,13 @@ test_4() {
         echo -e "  ${YELLOW}Warning: no delete confirmation seen${NC}"
     fi
 
-    # ── /threads again — verify count decreased ──
-    echo -e "  ${YELLOW}--- /threads (after delete) ---${NC}"
-    send_keys "/threads" 0.3
+    # ── /thread list again — verify count decreased ──
+    echo -e "  ${YELLOW}--- /thread list (after delete) ---${NC}"
+    send_keys "/thread list" 0.3
     send_enter 1
 
     local threads_after=$(capture_pane -50)
-    show_capture "/threads after delete" "$threads_after" 10
+    show_capture "/thread list after delete" "$threads_after" 10
 
     local thread_count_after
     thread_count_after=$(_count_thread_lines "$threads_after")
