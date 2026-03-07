@@ -1541,7 +1541,7 @@ async fn run_chat_loop(
         Box::new(ghost_complete::BuiltinProvider::new()),
     ]);
 
-    // Lazily created on first message or explicit /new
+    // Lazily created on first message
     let mut current_thread_id: Option<String> = None;
     // Cached thread_ids from last /conversations call, for stable /resume N
     let mut cached_thread_ids: Vec<String> = Vec::new();
