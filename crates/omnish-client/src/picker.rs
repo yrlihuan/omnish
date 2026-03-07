@@ -3,6 +3,8 @@
 // Pure rendering functions for the picker widget (single-select and multi-select).
 // All functions return a String suitable for writing to a raw-mode terminal (using \r\n).
 
+use std::os::unix::io::AsRawFd;
+
 /// Get terminal width, fallback to 80.
 fn terminal_cols() -> u16 {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
@@ -87,6 +89,143 @@ fn render_cleanup(items_len: usize) -> String {
     let total_lines = 1 + 1 + items_len + 1 + 1;
     let up = total_lines - 1;
     format!("\x1b[{}A\r\x1b[J", up)
+}
+
+/// Parse escape sequence after ESC byte.
+/// Uses poll with 50ms timeout to distinguish bare ESC from arrow keys.
+fn parse_esc_seq(stdin_fd: i32) -> Option<[u8; 2]> {
+    let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
+    let ready = unsafe { libc::poll(&mut pfd, 1, 50) };
+    if ready <= 0 {
+        return None;
+    }
+    let mut seq = [0u8; 2];
+    if nix::unistd::read(stdin_fd, &mut seq[0..1]) != Ok(1) {
+        return None;
+    }
+    if seq[0] == b'[' {
+        if nix::unistd::read(stdin_fd, &mut seq[1..2]) == Ok(1) {
+            return Some(seq);
+        }
+    }
+    None
+}
+
+/// Rewrite a single item line in-place (cursor must already be on that line).
+fn redraw_item(text: &str, selected: bool, checked: bool, multi: bool) {
+    let line = render_item(text, selected, checked, multi);
+    nix::unistd::write(std::io::stdout(), line.as_bytes()).ok();
+}
+
+/// Core picker loop. Returns selected index(es) or None on ESC.
+fn run_picker(title: &str, items: &[&str], multi: bool) -> Option<Vec<usize>> {
+    if items.is_empty() {
+        return None;
+    }
+
+    let cols = terminal_cols();
+    let mut cursor: usize = 0;
+    let mut checked = vec![false; items.len()];
+
+    // Initial render
+    let full = render_full(title, items, cursor, &checked, multi, cols);
+    nix::unistd::write(std::io::stdout(), full.as_bytes()).ok();
+
+    let stdin_fd = std::io::stdin().as_raw_fd();
+    let mut byte = [0u8; 1];
+
+    loop {
+        match nix::unistd::read(stdin_fd, &mut byte) {
+            Ok(1) => match byte[0] {
+                0x1b => {
+                    if let Some(seq) = parse_esc_seq(stdin_fd) {
+                        if seq[0] == b'[' {
+                            match seq[1] {
+                                b'A' if cursor > 0 => { // Up arrow
+                                    let old = cursor;
+                                    cursor -= 1;
+                                    // Move up from hint line to old item, redraw it
+                                    let up_to_old = (items.len() - old) + 1; // +1 for bottom separator
+                                    let s = format!("\x1b[{}A", up_to_old);
+                                    nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                                    redraw_item(items[old], false, checked[old], multi);
+                                    // Move up one more to new cursor line
+                                    nix::unistd::write(std::io::stdout(), b"\x1b[1A").ok();
+                                    redraw_item(items[cursor], true, checked[cursor], multi);
+                                    // Move back down to hint line
+                                    let down = (items.len() - cursor) + 1;
+                                    let s = format!("\x1b[{}B", down);
+                                    nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                                }
+                                b'B' if cursor < items.len() - 1 => { // Down arrow
+                                    let old = cursor;
+                                    cursor += 1;
+                                    let up_to_old = (items.len() - old) + 1;
+                                    let s = format!("\x1b[{}A", up_to_old);
+                                    nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                                    redraw_item(items[old], false, checked[old], multi);
+                                    // Move down one to new cursor line
+                                    nix::unistd::write(std::io::stdout(), b"\x1b[1B").ok();
+                                    redraw_item(items[cursor], true, checked[cursor], multi);
+                                    let down = (items.len() - cursor) + 1;
+                                    let s = format!("\x1b[{}B", down);
+                                    nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                                }
+                                _ => {} // Ignore other sequences
+                            }
+                        }
+                    } else {
+                        // Bare ESC — cancel
+                        let cleanup = render_cleanup(items.len());
+                        nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
+                        return None;
+                    }
+                }
+                b' ' if multi => {
+                    // Toggle check on current item
+                    checked[cursor] = !checked[cursor];
+                    let up = (items.len() - cursor) + 1;
+                    let s = format!("\x1b[{}A", up);
+                    nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                    redraw_item(items[cursor], true, checked[cursor], multi);
+                    let down = (items.len() - cursor) + 1;
+                    let s = format!("\x1b[{}B", down);
+                    nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                }
+                b'\r' | b'\n' => {
+                    // Confirm selection
+                    let cleanup = render_cleanup(items.len());
+                    nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
+                    if multi {
+                        let selected: Vec<usize> = checked.iter()
+                            .enumerate()
+                            .filter(|(_, &c)| c)
+                            .map(|(i, _)| i)
+                            .collect();
+                        return Some(selected);
+                    } else {
+                        return Some(vec![cursor]);
+                    }
+                }
+                _ => {} // Ignore other input
+            },
+            _ => break,
+        }
+    }
+
+    let cleanup = render_cleanup(items.len());
+    nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
+    None
+}
+
+/// Single select: returns the selected index (0-based), or None on ESC.
+pub fn pick_one(title: &str, items: &[&str]) -> Option<usize> {
+    run_picker(title, items, false).map(|v| v[0])
+}
+
+/// Multi select: returns selected indices (0-based), or None on ESC.
+pub fn pick_many(title: &str, items: &[&str]) -> Option<Vec<usize>> {
+    run_picker(title, items, true)
 }
 
 #[cfg(test)]
