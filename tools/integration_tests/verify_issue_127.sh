@@ -25,6 +25,11 @@ test_1() {
     start_client
     wait_for_client
 
+    # Clear terminal to dismiss any ghost text that could wrap and merge
+    # with the chat prompt when tmux captures with -J (join wrapped lines).
+    send_keys "clear" 0.3
+    send_enter 1
+
     send_keys ":" 0.5
     wait_for_prompt
 

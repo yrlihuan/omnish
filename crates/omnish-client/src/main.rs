@@ -1513,6 +1513,9 @@ async fn run_chat_loop(
     let mut history_index: Option<usize> = None; // None = new command, Some(idx) = browsing history
 
     let mut pending_input = initial_msg;
+    // Track whether any command/message has been submitted in this chat session.
+    // Backspace-to-exit is only allowed before the first action.
+    let mut has_activity = false;
 
     // Chat loop — LLM queries
     loop {
@@ -1522,7 +1525,7 @@ async fn run_chat_loop(
             let prompt = display::render_chat_prompt();
             nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
 
-            match read_chat_input(&mut chat_completer, current_thread_id.is_none(), &chat_history, &mut history_index) {
+            match read_chat_input(&mut chat_completer, !has_activity, &chat_history, &mut history_index) {
                 Some(line) => line,
                 None => break, // ESC / Ctrl-D / backspace on empty
             }
@@ -1532,6 +1535,8 @@ async fn run_chat_loop(
         if trimmed.is_empty() {
             continue;
         }
+
+        has_activity = true;
 
         // Save to history for future navigation
         save_to_history(chat_history, trimmed, 100);
