@@ -1629,13 +1629,13 @@ async fn run_chat_loop(
                                 continue;
                             }
                             match picker::pick_many("Select conversations to delete:", &items) {
-                                Some(indices) if !indices.is_empty() => {
+                                Some(mut indices) if !indices.is_empty() => {
                                     // Convert 0-based indices to 1-based index string (e.g., "1,3,5")
-                                    let mut index_parts: Vec<String> = indices.iter()
+                                    indices.sort();
+                                    indices.iter()
                                         .map(|&i| (i + 1).to_string())
-                                        .collect();
-                                    index_parts.sort(); // Ensure consistent order
-                                    index_parts.join(",")
+                                        .collect::<Vec<_>>()
+                                        .join(",")
                                 }
                                 _ => continue, // ESC pressed or empty selection
                             }
