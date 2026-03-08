@@ -145,7 +145,12 @@ async fn async_main() -> Result<()> {
 
     let conv_mgr = Arc::new(ConversationManager::new(omnish_dir.join("threads")));
 
-    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr);
+    // Initialize plugin manager
+    let mut plugin_mgr = omnish_daemon::plugin::PluginManager::new();
+    plugin_mgr.load_external_plugins(&config.plugins.enabled);
+    let plugin_mgr = Arc::new(plugin_mgr);
+
+    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr);
 
     tracing::info!("starting omnishd at {}", socket_path);
     server.run(&socket_path, auth_token, tls_acceptor).await

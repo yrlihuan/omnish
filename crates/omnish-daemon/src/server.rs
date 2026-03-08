@@ -1,5 +1,6 @@
 use anyhow::Result;
 use omnish_daemon::conversation_mgr::ConversationManager;
+use omnish_daemon::plugin::PluginManager;
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_daemon::task_mgr::TaskManager;
 use omnish_llm::backend::{ContentBlock, LlmBackend, LlmRequest, StopReason, TriggerType, UseCase};
@@ -15,6 +16,7 @@ pub struct DaemonServer {
     llm_backend: Option<Arc<dyn LlmBackend>>,
     task_mgr: Arc<Mutex<TaskManager>>,
     conv_mgr: Arc<ConversationManager>,
+    plugin_mgr: Arc<PluginManager>,
 }
 
 impl DaemonServer {
@@ -23,8 +25,9 @@ impl DaemonServer {
         llm_backend: Option<Arc<dyn LlmBackend>>,
         task_mgr: Arc<Mutex<TaskManager>>,
         conv_mgr: Arc<ConversationManager>,
+        plugin_mgr: Arc<PluginManager>,
     ) -> Self {
-        Self { session_mgr, llm_backend, task_mgr, conv_mgr }
+        Self { session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr }
     }
 
     pub async fn run(
@@ -40,6 +43,7 @@ impl DaemonServer {
         let llm = self.llm_backend.clone();
         let task_mgr = self.task_mgr.clone();
         let conv_mgr = self.conv_mgr.clone();
+        let plugin_mgr = self.plugin_mgr.clone();
 
         server
             .serve(
@@ -48,7 +52,8 @@ impl DaemonServer {
                     let llm = llm.clone();
                     let task_mgr = task_mgr.clone();
                     let conv_mgr = conv_mgr.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr).await })
+                    let plugin_mgr = plugin_mgr.clone();
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -63,6 +68,7 @@ async fn handle_message(
     llm: &Option<Arc<dyn LlmBackend>>,
     task_mgr: &Arc<Mutex<TaskManager>>,
     conv_mgr: &Arc<ConversationManager>,
+    plugin_mgr: &Arc<PluginManager>,
 ) -> Vec<Message> {
     // Shadow with reference for existing code; use mgr_arc for spawned tasks
     let mgr_arc = mgr;
@@ -211,7 +217,7 @@ async fn handle_message(
             })
         }
         Message::ChatMessage(cm) => {
-            return handle_chat_message(cm, mgr, llm, conv_mgr).await;
+            return handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr).await;
         }
         Message::ChatInterrupt(ci) => {
             conv_mgr.append_messages(&ci.thread_id, &[
@@ -230,6 +236,7 @@ async fn handle_chat_message(
     mgr: &SessionManager,
     llm: &Option<Arc<dyn LlmBackend>>,
     conv_mgr: &Arc<ConversationManager>,
+    plugin_mgr: &Arc<PluginManager>,
 ) -> Vec<Message> {
     let backend = match llm {
         Some(b) => b,
@@ -245,7 +252,7 @@ async fn handle_chat_message(
     let use_case = UseCase::Chat;
     let max_context_chars = backend.max_content_chars_for_use_case(use_case);
 
-    // Build tools from current session data
+    // Build per-request official tool (needs fresh command data)
     let (commands, stream_reader) = mgr.get_all_commands_with_reader().await;
     let command_query_tool = omnish_daemon::tools::command_query::CommandQueryTool::new(
         commands,
@@ -255,12 +262,9 @@ async fn handle_chat_message(
     // Include recent command list as system-reminder in user message
     let command_list = command_query_tool.list_history(20);
 
-    let registered_tools: Vec<Box<dyn Tool>> = vec![Box::new(command_query_tool)];
-
-    let tools: Vec<omnish_llm::tool::ToolDef> = registered_tools
-        .iter()
-        .map(|t| t.definition())
-        .collect();
+    // Combine official + plugin tools
+    let mut tools = vec![command_query_tool.definition()];
+    tools.extend(plugin_mgr.all_tools());
 
     // Load prior conversation history as raw JSON
     let mut extra_messages = conv_mgr.load_raw_messages(&cm.thread_id);
@@ -347,19 +351,13 @@ async fn handle_chat_message(
                             status: status_text,
                         }));
 
-                        // Find and execute tool
-                        let mut result = omnish_llm::tool::ToolResult {
-                            tool_use_id: tc.id.clone(),
-                            content: format!("Unknown tool: {}", tc.name),
-                            is_error: true,
+                        // Execute tool: try official tool first, then plugin manager
+                        let mut result = if tc.name == "command_query" {
+                            command_query_tool.execute(&tc.input)
+                        } else {
+                            plugin_mgr.call_tool(&tc.name, &tc.input)
                         };
-                        for tool in registered_tools.iter() {
-                            if tool.definition().name == tc.name {
-                                result = tool.execute(&tc.input);
-                                result.tool_use_id = tc.id.clone();
-                                break;
-                            }
-                        }
+                        result.tool_use_id = tc.id.clone();
                         tool_results.push(result);
                     }
 
