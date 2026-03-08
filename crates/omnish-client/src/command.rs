@@ -63,25 +63,6 @@ fn debug_usage(_args: &str) -> String {
     format!("Usage: /debug <{}> [> file.txt]", subs.join("|"))
 }
 
-fn template_command(args: &str) -> String {
-    use omnish_llm::template::{template_by_name, TEMPLATE_NAMES};
-
-    if args.is_empty() {
-        return format!(
-            "Usage: /template <{}> [> file.txt]",
-            TEMPLATE_NAMES.join("|")
-        );
-    }
-    match template_by_name(args) {
-        Some(t) => t,
-        None => format!(
-            "Unknown template: {}\nAvailable: {}",
-            args,
-            TEMPLATE_NAMES.join(", ")
-        ),
-    }
-}
-
 fn help_command(_args: &str) -> String {
     let mut output = String::from("Available commands:\n");
     for entry in COMMANDS {
@@ -108,7 +89,7 @@ const COMMANDS: &[CommandEntry] = &[
     },
     CommandEntry {
         path: "/template",
-        kind: CommandKind::Local(template_command),
+        kind: CommandKind::Daemon("template"),
         help: "Show prompt template",
     },
     CommandEntry {
@@ -386,64 +367,38 @@ mod tests {
     }
 
     #[test]
-    fn test_template_no_args_shows_usage() {
+    fn test_template_no_args_dispatches_to_daemon() {
         match dispatch("/template") {
-            ChatAction::Command { result, redirect, limit } => {
-                assert!(result.contains("Usage"));
-                assert!(result.contains("chat"));
-                assert!(result.contains("auto-complete"));
-                assert!(result.contains("daily-notes"));
+            ChatAction::DaemonQuery { query, redirect, limit } => {
+                assert_eq!(query, "__cmd:template");
                 assert!(redirect.is_none());
                 assert!(limit.is_none());
             }
-            _ => panic!("expected Command"),
+            _ => panic!("expected DaemonQuery"),
         }
     }
 
     #[test]
-    fn test_template_chat() {
+    fn test_template_chat_dispatches_to_daemon() {
         match dispatch("/template chat") {
-            ChatAction::Command { result, redirect, limit } => {
-                assert!(result.contains("{context}"));
-                assert!(result.contains("{query}"));
+            ChatAction::DaemonQuery { query, redirect, limit } => {
+                assert_eq!(query, "__cmd:template chat");
                 assert!(redirect.is_none());
                 assert!(limit.is_none());
             }
-            _ => panic!("expected Command"),
+            _ => panic!("expected DaemonQuery"),
         }
     }
 
     #[test]
-    fn test_template_auto_complete() {
+    fn test_template_auto_complete_dispatches_to_daemon() {
         match dispatch("/template auto-complete") {
-            ChatAction::Command { result, redirect, limit } => {
-                assert!(result.contains("completion engine"));
+            ChatAction::DaemonQuery { query, redirect, limit } => {
+                assert_eq!(query, "__cmd:template auto-complete");
                 assert!(redirect.is_none());
                 assert!(limit.is_none());
             }
-            _ => panic!("expected Command"),
-        }
-    }
-
-    #[test]
-    fn test_template_daily_notes() {
-        match dispatch("/template daily-notes") {
-            ChatAction::Command { result, redirect, limit } => {
-                assert!(result.contains("<commands>"));
-                assert!(redirect.is_none());
-                assert!(limit.is_none());
-            }
-            _ => panic!("expected Command"),
-        }
-    }
-
-    #[test]
-    fn test_template_unknown_name() {
-        match dispatch("/template bogus") {
-            ChatAction::Command { result, .. } => {
-                assert!(result.contains("Unknown template: bogus"));
-            }
-            _ => panic!("expected Command"),
+            _ => panic!("expected DaemonQuery"),
         }
     }
 

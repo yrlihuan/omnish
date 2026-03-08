@@ -558,6 +558,15 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             return cmd_display("Conversation not found");
         }
     }
+    if let Some(name) = sub.strip_prefix("template ") {
+        return cmd_display(handle_template(name, mgr).await);
+    }
+    if sub == "template" {
+        return cmd_display(format!(
+            "Usage: /template <{}> [> file.txt]",
+            omnish_llm::template::TEMPLATE_NAMES.join("|")
+        ));
+    }
     match sub {
         "context" => {
             // Default to completion context (most common LLM use case)
@@ -576,6 +585,48 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             cmd_display(handle_tasks_command(sub, task_mgr).await)
         }
         other => cmd_display(format!("Unknown command: {}", other)),
+    }
+}
+
+async fn handle_template(name: &str, mgr: &SessionManager) -> String {
+    match name {
+        "chat" => {
+            // Build actual tool definitions
+            let (commands, stream_reader) = mgr.get_all_commands_with_reader().await;
+            let tool = omnish_daemon::tools::command_query::CommandQueryTool::new(
+                commands,
+                stream_reader,
+            );
+            let tool_def = tool.definition();
+            let tools_json = serde_json::to_string_pretty(&serde_json::json!({
+                "name": tool_def.name,
+                "description": tool_def.description,
+                "input_schema": tool_def.input_schema,
+            }))
+            .unwrap_or_default();
+
+            format!(
+                "=== System Prompt ===\n{}\n\n\
+                 === Tools ===\n{}\n\n\
+                 === Message Format ===\n\
+                 [conversation history if resuming thread...]\n\
+                 User: {{query}}\n\
+                 [agent loop: tool_use → tool_result, up to 5 iterations]\n\
+                 Assistant: {{response}}",
+                omnish_llm::template::CHAT_SYSTEM_PROMPT,
+                tools_json,
+            )
+        }
+        other => {
+            match omnish_llm::template::template_by_name(other) {
+                Some(t) => t,
+                None => format!(
+                    "Unknown template: {}\nAvailable: {}",
+                    other,
+                    omnish_llm::template::TEMPLATE_NAMES.join(", ")
+                ),
+            }
+        }
     }
 }
 

@@ -103,11 +103,7 @@ pub const TEMPLATE_NAMES: &[&str] = &["chat", "chat-system", "auto-complete", "d
 pub fn template_by_name(name: &str) -> Option<String> {
     match name {
         "chat-system" => Some(CHAT_SYSTEM_PROMPT.to_string()),
-        "chat" => Some(format!(
-            "--- chat (with query) ---\n{}\n\n--- chat (auto-analyze) ---\n{}",
-            prompt_template(true),
-            prompt_template(false),
-        )),
+        "chat" => Some("(handled by daemon — use /template chat)".to_string()),
         "auto-complete" => Some(build_simple_completion_content("{context}", "{input}", 0)),
         "daily-notes" => Some(DAILY_NOTES_PROMPT.to_string()),
         "hourly-notes" => Some(HOURLY_NOTES_PROMPT.to_string()),
