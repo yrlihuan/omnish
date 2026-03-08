@@ -144,6 +144,24 @@ impl Default for TasksConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Plugins config
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PluginsConfig {
+    /// List of enabled plugin names. Each corresponds to a directory
+    /// under ~/.omnish/plugins/{name}/ containing a {name} executable.
+    #[serde(default)]
+    pub enabled: Vec<String>,
+}
+
+impl Default for PluginsConfig {
+    fn default() -> Self {
+        Self { enabled: vec![] }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Daemon config
 // ---------------------------------------------------------------------------
 
@@ -157,6 +175,8 @@ pub struct DaemonConfig {
     pub context: ContextConfig,
     #[serde(default)]
     pub tasks: TasksConfig,
+    #[serde(default)]
+    pub plugins: PluginsConfig,
 }
 
 impl Default for DaemonConfig {
@@ -166,6 +186,7 @@ impl Default for DaemonConfig {
             llm: LlmConfig::default(),
             context: ContextConfig::default(),
             tasks: TasksConfig::default(),
+            plugins: PluginsConfig::default(),
         }
     }
 }
