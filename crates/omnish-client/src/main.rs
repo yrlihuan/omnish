@@ -1613,9 +1613,34 @@ async fn run_chat_loop(
                                     .filter_map(|v| v.as_str().map(String::from))
                                     .collect();
                             }
+                            // Build picker items from the display string
                             let display = cmd_display_str(&json);
-                            let output = display::render_response(&display);
-                            nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                            if cached_thread_ids.is_empty() {
+                                continue;
+                            }
+                            let item_strings: Vec<String> = display.lines()
+                                .filter(|l| l.trim_start().starts_with('['))
+                                .map(|l| l.trim_start().to_string())
+                                .collect();
+                            let items: Vec<&str> = item_strings.iter()
+                                .map(|s| s.as_str())
+                                .collect();
+                            if items.is_empty() {
+                                continue;
+                            }
+                            match picker::pick_many("Select conversations to delete:", &items) {
+                                Some(indices) if !indices.is_empty() => {
+                                    // Convert 0-based indices to 1-based index string (e.g., "1,3,5")
+                                    let mut index_parts: Vec<String> = indices.iter()
+                                        .map(|&i| (i + 1).to_string())
+                                        .collect();
+                                    index_parts.sort(); // Ensure consistent order
+                                    index_parts.join(",")
+                                }
+                                _ => continue, // ESC pressed or empty selection
+                            }
+                        } else {
+                            continue;
                         }
                     }
                     _ => {
@@ -1623,16 +1648,6 @@ async fn run_chat_loop(
                         nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                         continue;
                     }
-                }
-                if cached_thread_ids.is_empty() {
-                    continue;
-                }
-                // Prompt for index (supports 1,2-4,5 syntax)
-                let prompt = "\r\n\x1b[33mDelete which conversation? [N or 1,2-4,5]: \x1b[0m";
-                nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
-                match read_chat_input(&mut chat_completer, true, &chat_history, &mut history_index) {
-                    Some(line) => line.trim().to_string(),
-                    None => continue,
                 }
             } else {
                 idx_str.to_string()
