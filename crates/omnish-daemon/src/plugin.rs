@@ -277,3 +277,97 @@ impl Drop for ExternalPlugin {
         self.shutdown();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockPlugin {
+        plugin_name: String,
+        tool_defs: Vec<ToolDef>,
+    }
+
+    impl MockPlugin {
+        fn new(name: &str, tools: Vec<(&str, &str)>) -> Self {
+            Self {
+                plugin_name: name.to_string(),
+                tool_defs: tools
+                    .into_iter()
+                    .map(|(n, d)| ToolDef {
+                        name: n.to_string(),
+                        description: d.to_string(),
+                        input_schema: serde_json::json!({"type": "object"}),
+                    })
+                    .collect(),
+            }
+        }
+    }
+
+    impl Plugin for MockPlugin {
+        fn name(&self) -> &str {
+            &self.plugin_name
+        }
+        fn tools(&self) -> Vec<ToolDef> {
+            self.tool_defs.clone()
+        }
+        fn call_tool(&self, tool_name: &str, _input: &serde_json::Value) -> ToolResult {
+            ToolResult {
+                tool_use_id: String::new(),
+                content: format!("mock result from {}", tool_name),
+                is_error: false,
+            }
+        }
+    }
+
+    #[test]
+    fn test_plugin_manager_empty() {
+        let mgr = PluginManager::new();
+        assert!(mgr.all_tools().is_empty());
+    }
+
+    #[test]
+    fn test_plugin_manager_register_and_list_tools() {
+        let mut mgr = PluginManager::new();
+        mgr.register(Box::new(MockPlugin::new(
+            "weather",
+            vec![("get_weather", "Get weather"), ("get_forecast", "Get forecast")],
+        )));
+        mgr.register(Box::new(MockPlugin::new(
+            "calc",
+            vec![("calculate", "Calculate expression")],
+        )));
+        let tools = mgr.all_tools();
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[0].name, "get_weather");
+        assert_eq!(tools[2].name, "calculate");
+    }
+
+    #[test]
+    fn test_plugin_manager_execute_routes_correctly() {
+        let mut mgr = PluginManager::new();
+        mgr.register(Box::new(MockPlugin::new(
+            "weather",
+            vec![("get_weather", "Get weather")],
+        )));
+        mgr.register(Box::new(MockPlugin::new(
+            "calc",
+            vec![("calculate", "Calculate")],
+        )));
+
+        let result = mgr.call_tool("get_weather", &serde_json::json!({}));
+        assert!(!result.is_error);
+        assert!(result.content.contains("get_weather"));
+
+        let result = mgr.call_tool("calculate", &serde_json::json!({}));
+        assert!(!result.is_error);
+        assert!(result.content.contains("calculate"));
+    }
+
+    #[test]
+    fn test_plugin_manager_unknown_tool() {
+        let mgr = PluginManager::new();
+        let result = mgr.call_tool("nonexistent", &serde_json::json!({}));
+        assert!(result.is_error);
+        assert!(result.content.contains("Unknown tool"));
+    }
+}
