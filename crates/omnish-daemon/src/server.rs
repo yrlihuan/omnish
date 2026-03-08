@@ -214,7 +214,10 @@ async fn handle_message(
             return handle_chat_message(cm, mgr, llm, conv_mgr).await;
         }
         Message::ChatInterrupt(ci) => {
-            conv_mgr.append_exchange(&ci.thread_id, &ci.query, "<event>user interrupted</event>");
+            conv_mgr.append_messages(&ci.thread_id, &[
+                serde_json::json!({"role": "user", "content": ci.query}),
+                serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
+            ]);
             tracing::info!("Chat interrupted by user (thread={})", ci.thread_id);
             Message::Ack
         }
@@ -239,7 +242,6 @@ async fn handle_chat_message(
         }
     };
 
-    let conversation = conv_mgr.load_messages(&cm.thread_id);
     let use_case = UseCase::Chat;
     let max_context_chars = backend.max_content_chars_for_use_case(use_case);
 
@@ -250,8 +252,8 @@ async fn handle_chat_message(
         stream_reader,
     );
 
-    // Include recent command list directly so the LLM doesn't need to call list_history
-    let context = command_query_tool.list_history(20);
+    // Include recent command list as system-reminder in user message
+    let command_list = command_query_tool.list_history(20);
 
     let registered_tools: Vec<Box<dyn Tool>> = vec![Box::new(command_query_tool)];
 
@@ -260,18 +262,30 @@ async fn handle_chat_message(
         .map(|t| t.definition())
         .collect();
 
+    // Load prior conversation history as raw JSON
+    let mut extra_messages = conv_mgr.load_raw_messages(&cm.thread_id);
+    let prior_len = extra_messages.len();
+
+    // Build user message with system-reminder containing recent commands
+    let user_content = if command_list.is_empty() {
+        cm.query.clone()
+    } else {
+        format!("{}\n\n<system-reminder>Recent commands:\n{}\n</system-reminder>", cm.query, command_list)
+    };
+    extra_messages.push(serde_json::json!({"role": "user", "content": user_content}));
+
     let mut llm_req = LlmRequest {
-        context,
-        query: Some(cm.query.clone()),
+        context: String::new(),
+        query: None,
         trigger: TriggerType::Manual,
         session_ids: vec![cm.session_id.clone()],
         use_case,
         max_content_chars: max_context_chars,
-        conversation,
+        conversation: vec![],
         system_prompt: Some(omnish_llm::template::CHAT_SYSTEM_PROMPT.to_string()),
         enable_thinking: None,
         tools,
-        extra_messages: vec![],
+        extra_messages,
     };
 
     let mut messages = Vec::new();
@@ -366,7 +380,7 @@ async fn handle_chat_message(
                     continue;
                 }
 
-                // EndTurn or MaxTokens — extract final text
+                // EndTurn or MaxTokens — extract final text and store
                 let text = response.text();
                 tracing::info!(
                     "Chat LLM completed in {:?} ({} tool iterations, thread={})",
@@ -374,7 +388,13 @@ async fn handle_chat_message(
                     iteration,
                     cm.thread_id
                 );
-                conv_mgr.append_exchange(&cm.thread_id, &cm.query, &text);
+                // Push final assistant response to extra_messages
+                llm_req.extra_messages.push(serde_json::json!({
+                    "role": "assistant",
+                    "content": text,
+                }));
+                // Store new messages (from prior_len onward: user msg + tool exchanges + assistant response)
+                conv_mgr.append_messages(&cm.thread_id, &llm_req.extra_messages[prior_len..]);
                 messages.push(Message::ChatResponse(ChatResponse {
                     request_id: cm.request_id.clone(),
                     thread_id: cm.thread_id.clone(),
@@ -394,14 +414,18 @@ async fn handle_chat_message(
         }
     }
 
-    // Exhausted iterations
+    // Exhausted iterations — store what we have
     tracing::warn!(
         "Agent loop exhausted {} iterations (thread={})",
         max_iterations,
         cm.thread_id
     );
     let text = "(Agent reached maximum tool call limit)".to_string();
-    conv_mgr.append_exchange(&cm.thread_id, &cm.query, &text);
+    llm_req.extra_messages.push(serde_json::json!({
+        "role": "assistant",
+        "content": text,
+    }));
+    conv_mgr.append_messages(&cm.thread_id, &llm_req.extra_messages[prior_len..]);
     messages.push(Message::ChatResponse(ChatResponse {
         request_id: cm.request_id,
         thread_id: cm.thread_id,
@@ -486,14 +510,18 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
     // Handle /context chat:<thread_id> — show conversation context for a chat thread
     if let Some(thread_id) = sub.strip_prefix("context chat:") {
-        let msgs = conv_mgr.load_messages(thread_id);
+        let msgs = conv_mgr.load_raw_messages(thread_id);
         if msgs.is_empty() {
             return cmd_display("(empty conversation)");
         }
         let mut output = format!("Chat thread: {}\n\n", thread_id);
-        for turn in &msgs {
-            let label = if turn.role == "user" { "User" } else { "Assistant" };
-            output.push_str(&format!("[{}] {}\n\n", label, turn.content));
+        for msg in &msgs {
+            let role = msg["role"].as_str().unwrap_or("unknown");
+            let label = if role == "user" { "User" } else { "Assistant" };
+            let text = ConversationManager::extract_text_public(msg);
+            if !text.is_empty() {
+                output.push_str(&format!("[{}] {}\n\n", label, text));
+            }
         }
         return cmd_display(output);
     }
