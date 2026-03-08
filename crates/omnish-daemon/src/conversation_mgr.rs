@@ -183,13 +183,7 @@ impl ConversationManager {
     /// Extract display text from a message, stripping <system-reminder> blocks.
     fn extract_text(msg: &serde_json::Value) -> String {
         match &msg["content"] {
-            serde_json::Value::String(s) => {
-                if let Some(pos) = s.find("\n\n<system-reminder>") {
-                    s[..pos].to_string()
-                } else {
-                    s.clone()
-                }
-            }
+            serde_json::Value::String(s) => s.clone(),
             serde_json::Value::Array(arr) => {
                 arr.iter()
                     .filter_map(|b| {
@@ -360,16 +354,13 @@ mod tests {
     }
 
     #[test]
-    fn test_system_reminder_stripped_from_display() {
+    fn test_plain_query_stored_without_system_reminder() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConversationManager::new(dir.path().to_path_buf());
         let id = mgr.create_thread();
 
-        let user = serde_json::json!({
-            "role": "user",
-            "content": "what happened?\n\n<system-reminder>Recent commands:\n[seq=1] ls\n</system-reminder>"
-        });
-        mgr.append_messages(&id, &[user, assistant_msg("Everything is fine")]);
+        // system-reminder is NOT stored — server strips it before persisting
+        mgr.append_messages(&id, &[user_msg("what happened?"), assistant_msg("Everything is fine")]);
 
         let (exchange, _) = mgr.get_last_exchange(&id);
         let (q, a) = exchange.unwrap();

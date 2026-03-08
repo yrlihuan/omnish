@@ -266,13 +266,16 @@ async fn handle_chat_message(
     let mut extra_messages = conv_mgr.load_raw_messages(&cm.thread_id);
     let prior_len = extra_messages.len();
 
-    // Build user message with system-reminder containing recent commands
-    let user_content = if command_list.is_empty() {
+    // User message for LLM: includes system-reminder with recent commands
+    let llm_user_content = if command_list.is_empty() {
         cm.query.clone()
     } else {
-        format!("{}\n\n<system-reminder>Recent commands:\n{}\n</system-reminder>", cm.query, command_list)
+        format!(
+            "{}\n\n<system-reminder>Recent commands:\n{}\n</system-reminder>",
+            cm.query, command_list
+        )
     };
-    extra_messages.push(serde_json::json!({"role": "user", "content": user_content}));
+    extra_messages.push(serde_json::json!({"role": "user", "content": llm_user_content}));
 
     let mut llm_req = LlmRequest {
         context: String::new(),
@@ -388,13 +391,15 @@ async fn handle_chat_message(
                     iteration,
                     cm.thread_id
                 );
-                // Push final assistant response to extra_messages
+                // Push final assistant response
                 llm_req.extra_messages.push(serde_json::json!({
                     "role": "assistant",
                     "content": text,
                 }));
-                // Store new messages (from prior_len onward: user msg + tool exchanges + assistant response)
-                conv_mgr.append_messages(&cm.thread_id, &llm_req.extra_messages[prior_len..]);
+                // Store new messages without system-reminder in user message
+                let mut to_store = llm_req.extra_messages[prior_len..].to_vec();
+                to_store[0] = serde_json::json!({"role": "user", "content": cm.query});
+                conv_mgr.append_messages(&cm.thread_id, &to_store);
                 messages.push(Message::ChatResponse(ChatResponse {
                     request_id: cm.request_id.clone(),
                     thread_id: cm.thread_id.clone(),
@@ -425,7 +430,9 @@ async fn handle_chat_message(
         "role": "assistant",
         "content": text,
     }));
-    conv_mgr.append_messages(&cm.thread_id, &llm_req.extra_messages[prior_len..]);
+    let mut to_store = llm_req.extra_messages[prior_len..].to_vec();
+    to_store[0] = serde_json::json!({"role": "user", "content": cm.query});
+    conv_mgr.append_messages(&cm.thread_id, &to_store);
     messages.push(Message::ChatResponse(ChatResponse {
         request_id: cm.request_id,
         thread_id: cm.thread_id,
