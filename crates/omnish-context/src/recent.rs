@@ -434,9 +434,9 @@ impl ContextFormatter for CompletionFormatter {
             sections.push(recent_lines.join("\n"));
         }
 
-        // Current path section
+        // Current path in system-reminder (models trained on this convention respond better)
         if !current_path.is_empty() {
-            sections.push(format!("<current_path>{}</current_path>", current_path));
+            sections.push(format!("<system-reminder>\n# workingDirectory\n{}\n</system-reminder>", current_path));
         }
 
         sections.join("\n\n")
@@ -1107,14 +1107,13 @@ mod tests {
         ];
         let formatter = CompletionFormatter::new("sess-a", 10, 10);
         let result = formatter.format(&[], &detailed);
-        // current_path should be outside recent section
-        assert!(result.contains("<current_path>/tmp</current_path>"),
-                "Should append current path: {}", result);
-        // Verify it's after </recent>
+        // working directory should be in <system-reminder> after </recent>
+        assert!(result.contains("<system-reminder>\n# workingDirectory\n/tmp\n</system-reminder>"),
+                "Should append working directory in system-reminder: {}", result);
         let pos_recent_close = result.find("</recent>").unwrap();
-        let pos_current = result.find("<current_path>").unwrap();
-        assert!(pos_current > pos_recent_close,
-                "current_path should be after </recent>: {}", result);
+        let pos_reminder = result.find("<system-reminder>").unwrap();
+        assert!(pos_reminder > pos_recent_close,
+                "system-reminder should be after </recent>: {}", result);
     }
 
     #[test]

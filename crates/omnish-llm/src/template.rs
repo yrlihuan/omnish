@@ -27,7 +27,7 @@ pub fn build_simple_completion_content(context: &str, input: &str, cursor_pos: u
     };
     format!(
         "You are a shell command completion engine.\n\
-         Use the terminal context in <system-reminder> to understand what the user is doing, \
+         Use <recent> and their output to understand what the user is doing, \
          then predict or complete the command.\n\n\
          Reply with a JSON array of up to 2 FULL commands:\n\
          [\"<command1>\", \"<command2>\"]\n\
@@ -36,7 +36,7 @@ pub fn build_simple_completion_content(context: &str, input: &str, cursor_pos: u
          Do NOT include `&&` unless the user input already contains `&&`.\n\
          Return [] if no good completion exists.\n\
          Do not include any other text outside the JSON array.\n\n\
-         <system-reminder>\n{}\n</system-reminder>\n\n\
+         {}\n\n\
          {}",
         context, input_line
     )
