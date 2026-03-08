@@ -77,6 +77,13 @@ The user is in omnish's chat mode. In chat mode:\n\
 - /sessions — List active terminal sessions\n\
 - ESC or Ctrl-D (on empty input) — Exit chat mode\n\
 \n\
+## Tools\n\
+\n\
+You have access to the command_query tool to inspect command output:\n\
+- Use get_output(seq) to retrieve the full output of a specific command\n\
+- The recent command list is provided at the end of the user's message in <system-reminder>\n\
+- You do NOT need to call list_history — the command list is already provided\n\
+\n\
 ## Guidelines\n\
 \n\
 - Be concise and direct\n\
