@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.5.0 (2026-03-08)
+
+### Features
+- **daemon**: Agent loop with tool execution — LLM can call `command_query` tool to inspect command output, up to 5 iterations (issue #161)
+- **daemon**: Rewrite ConversationManager to raw JSON storage format for KV cache-optimized conversation replay (issue #166)
+- **protocol**: ChatToolStatus message type for streaming tool-use status to client
+- **transport**: Streaming multi-message RPC responses with end-of-stream sentinel
+- **client**: Stream ChatToolStatus messages during agent tool execution
+- **client**: `/thread del` uses multi-select picker widget when no index given (issue #168)
+- **template**: Add Tools section to CHAT_SYSTEM_PROMPT documenting command_query usage
+- **template**: Move `/template chat` to daemon request, show actual tool definitions (issue #164)
+- **context**: Wrap workingDirectory in `<system-reminder>` tags for auto-complete (issue #167)
+- **daemon**: Include recent command list directly in chat context (issue #165)
+
+### Bug Fixes
+- **llm**: Use config `base_url` for Anthropic backend, upgrade API version to 2024-04-04
+- **transport**: Fix stream memory leak — add Ack sentinel for multi-message RPC cleanup
+- **daemon**: Don't persist `<system-reminder>` in thread JSONL files (issue #169)
+- **daemon**: Replace newlines in `/thread list` question preview
+- **client**: Sort picker indices numerically, not lexicographically
+
+### Breaking Changes
+- **storage**: Chat thread JSONL format changed from `{role, content, ts}` to raw Anthropic API JSON. Old thread files must be deleted (`rm ~/.local/share/omnish/threads/*.jsonl`).
+
+---
+
 ## v0.4.1 (2026-03-06)
 
 ### Bug Fixes
