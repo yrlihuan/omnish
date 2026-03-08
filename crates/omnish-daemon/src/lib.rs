@@ -3,6 +3,7 @@ pub mod conversation_mgr;
 pub mod daily_notes;
 pub mod eviction;
 pub mod hourly_summary;
+pub mod plugin;
 pub mod session_mgr;
 pub mod task_mgr;
 pub mod tools;
