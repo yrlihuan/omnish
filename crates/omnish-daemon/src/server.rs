@@ -697,10 +697,11 @@ fn format_conversations_json(conv_mgr: &Arc<ConversationManager>) -> serde_json:
     for (i, (thread_id, modified, exchange_count, last_question)) in conversations.into_iter().enumerate() {
         let time_ago = format_relative_time(modified);
 
-        let question_display = if last_question.len() > 50 {
-            format!("{}...", &last_question[..47])
+        let single_line = last_question.replace('\n', " ");
+        let question_display = if single_line.len() > 50 {
+            format!("{}...", &single_line[..47])
         } else {
-            last_question
+            single_line
         };
 
         output.push_str(&format!(
