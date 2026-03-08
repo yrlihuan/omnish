@@ -1,3 +1,4 @@
+use crate::plugin::Plugin;
 use omnish_context::StreamReader;
 use omnish_llm::tool::{Tool, ToolDef, ToolResult};
 use omnish_store::command::CommandRecord;
@@ -139,6 +140,20 @@ impl Tool for CommandQueryTool {
                 is_error: true,
             },
         }
+    }
+}
+
+impl Plugin for CommandQueryTool {
+    fn name(&self) -> &str {
+        "command_query"
+    }
+
+    fn tools(&self) -> Vec<ToolDef> {
+        vec![self.definition()]
+    }
+
+    fn call_tool(&self, _tool_name: &str, input: &serde_json::Value) -> ToolResult {
+        self.execute(input)
     }
 }
 
