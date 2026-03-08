@@ -21,7 +21,7 @@ impl CommandQueryTool {
         Self { commands, stream_reader }
     }
 
-    fn list_history(&self, count: usize) -> String {
+    pub fn list_history(&self, count: usize) -> String {
         let commands = &self.commands;
         if commands.is_empty() {
             return "No commands in history.".to_string();

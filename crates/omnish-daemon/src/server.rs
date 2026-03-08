@@ -249,6 +249,10 @@ async fn handle_chat_message(
         commands,
         stream_reader,
     );
+
+    // Include recent command list directly so the LLM doesn't need to call list_history
+    let context = command_query_tool.list_history(20);
+
     let registered_tools: Vec<Box<dyn Tool>> = vec![Box::new(command_query_tool)];
 
     let tools: Vec<omnish_llm::tool::ToolDef> = registered_tools
@@ -257,7 +261,7 @@ async fn handle_chat_message(
         .collect();
 
     let mut llm_req = LlmRequest {
-        context: String::new(),
+        context,
         query: Some(cm.query.clone()),
         trigger: TriggerType::Manual,
         session_ids: vec![cm.session_id.clone()],
