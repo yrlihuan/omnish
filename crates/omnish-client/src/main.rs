@@ -2181,7 +2181,8 @@ fn read_chat_input(
     let mut byte = [0u8; 1];
     let mut has_ghost = false;
     let mut ghost_text = String::new();
-    let mut pasting = false;
+    let mut bracketed_paste = false;
+    let mut last_input = std::time::Instant::now();
 
     // Enable bracketed paste mode so terminal wraps pasted content
     // with \x1b[200~ ... \x1b[201~ markers
@@ -2262,13 +2263,20 @@ fn read_chat_input(
     loop {
         match nix::unistd::read(stdin_fd, &mut byte) {
             Ok(1) => {
+                // Fast-paste detection: if bytes arrive within 1ms of each
+                // other, we're receiving pasted content, not human typing.
+                let now = std::time::Instant::now();
+                let fast_paste = now.duration_since(last_input).as_millis() < 1;
+                last_input = now;
+                let pasting = bracketed_paste || fast_paste;
+
                 match byte[0] {
                     0x1b => {
                         match parse_key_after_esc(stdin_fd) {
                             Some(KeyEvent::Esc) => { disable_paste(); return None; }
-                            Some(KeyEvent::PasteStart) => { pasting = true; }
+                            Some(KeyEvent::PasteStart) => { bracketed_paste = true; }
                             Some(KeyEvent::PasteEnd) => {
-                                pasting = false;
+                                bracketed_paste = false;
                                 has_ghost = false;
                                 ghost_text.clear();
                                 completer.clear();
@@ -2417,21 +2425,14 @@ fn read_chat_input(
                         completer.clear();
                         redraw(&editor, "", false);
                     }
-                    0x0d => { // Enter — submit or fast-paste newline
-                        // Fast-paste detection: if more data arrives within 1ms,
-                        // this CR is part of a paste, not a real Enter keypress.
-                        if !pasting {
-                            let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
-                            if unsafe { libc::poll(&mut pfd, 1, 1) } > 0 {
-                                // Data available immediately — treat as paste newline
-                                editor.newline();
-                                has_ghost = false;
-                                ghost_text.clear();
-                                completer.clear();
-                                redraw(&editor, "", false);
-                                continue;
-                            }
-                        }
+                    0x0d if pasting => { // CR during paste → newline
+                        editor.newline();
+                        has_ghost = false;
+                        ghost_text.clear();
+                        completer.clear();
+                        redraw(&editor, "", false);
+                    }
+                    0x0d => { // Enter — submit
                         // Clear ghost and move to end for clean output
                         if has_ghost {
                             redraw(&editor, "", false);
