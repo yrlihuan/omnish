@@ -17,8 +17,6 @@ cache:
 check:
   stage: check
   image: docker.nv/ubuntu_2404_runner:latest
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq clang >/dev/null
   script:
     - cargo check --workspace
     - cargo clippy --workspace
@@ -27,17 +25,12 @@ check:
 test:
   stage: test
   image: docker.nv/ubuntu_2404_runner:latest
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq clang >/dev/null
   script:
     - cargo test --workspace
 
 build-release:
   stage: build
   image: docker.nv/ubuntu_2404_runner:latest
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq clang musl-tools >/dev/null
-    - rustup target add x86_64-unknown-linux-musl
   script:
     - cargo build --release --target x86_64-unknown-linux-musl
   artifacts:
