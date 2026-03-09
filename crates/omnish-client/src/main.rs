@@ -2106,6 +2106,8 @@ enum KeyEvent {
     CtrlLeft,
     CtrlRight,
     ShiftEnter,
+    PasteStart,
+    PasteEnd,
     Esc,
 }
 
@@ -2157,6 +2159,8 @@ fn parse_key_after_esc(stdin_fd: i32) -> Option<KeyEvent> {
         ([b'1'], b'~') => Some(KeyEvent::Home),    // alternate
         ([b'4'], b'~') => Some(KeyEvent::End),      // alternate
         ([b'1', b'3', b';', b'2'], b'u') => Some(KeyEvent::ShiftEnter), // kitty protocol
+        ([b'2', b'0', b'0'], b'~') => Some(KeyEvent::PasteStart),    // bracketed paste
+        ([b'2', b'0', b'1'], b'~') => Some(KeyEvent::PasteEnd),      // bracketed paste
         _ => None,
     }
 }
@@ -2177,6 +2181,11 @@ fn read_chat_input(
     let mut byte = [0u8; 1];
     let mut has_ghost = false;
     let mut ghost_text = String::new();
+    let mut pasting = false;
+
+    // Enable bracketed paste mode so terminal wraps pasted content
+    // with \x1b[200~ ... \x1b[201~ markers
+    nix::unistd::write(std::io::stdout(), b"\x1b[?2004h").ok();
 
     // Helper: compute display width of a char slice
     let display_width = |chars: &[char]| -> usize {
@@ -2244,6 +2253,10 @@ fn read_chat_input(
         nix::unistd::write(std::io::stdout(), out.as_bytes()).ok();
     };
 
+    let disable_paste = || {
+        nix::unistd::write(std::io::stdout(), b"\x1b[?2004l").ok();
+    };
+
     // The caller already printed "> ", so we don't redraw on first iteration
 
     loop {
@@ -2252,7 +2265,15 @@ fn read_chat_input(
                 match byte[0] {
                     0x1b => {
                         match parse_key_after_esc(stdin_fd) {
-                            Some(KeyEvent::Esc) => return None,
+                            Some(KeyEvent::Esc) => { disable_paste(); return None; }
+                            Some(KeyEvent::PasteStart) => { pasting = true; }
+                            Some(KeyEvent::PasteEnd) => {
+                                pasting = false;
+                                has_ghost = false;
+                                ghost_text.clear();
+                                completer.clear();
+                                redraw(&editor, "", false);
+                            }
                             Some(KeyEvent::ShiftEnter) => {
                                 editor.newline();
                                 has_ghost = false;
@@ -2385,8 +2406,11 @@ fn read_chat_input(
                             redraw(&editor, "", false);
                         }
                     }
-                    0x04 if editor.is_empty() => return None, // Ctrl-D on empty
-                    0x0a => { // Ctrl-J — newline
+                    0x04 if editor.is_empty() => { disable_paste(); return None; } // Ctrl-D on empty
+                    0x0a | 0x0d if pasting => { // CR or LF during paste → newline
+                        editor.newline();
+                    }
+                    0x0a if !pasting => { // Ctrl-J — newline
                         editor.newline();
                         has_ghost = false;
                         ghost_text.clear();
@@ -2411,6 +2435,7 @@ fn read_chat_input(
                         let move_end = format!("\r\x1b[{}C", end_col);
                         nix::unistd::write(std::io::stdout(), move_end.as_bytes()).ok();
                         completer.clear();
+                        disable_paste();
                         return Some(editor.content());
                     }
                     0x09 => { // Tab — accept ghost completion
@@ -2435,7 +2460,7 @@ fn read_chat_input(
                     0x7f | 0x08 => { // Backspace
                         if editor.is_empty() {
                             if allow_backspace_exit {
-                                return None;
+                                disable_paste(); return None;
                             }
                             continue;
                         }
@@ -2482,7 +2507,7 @@ fn read_chat_input(
                     _ => {} // Ignore other control chars
                 }
             }
-            _ => return None,
+            _ => { disable_paste(); return None; }
         }
     }
 }
