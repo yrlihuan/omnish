@@ -99,9 +99,16 @@ pub struct CompletionFormatter {
 - Recent 部分用 `<recent>` / `</recent>` 标签包裹，新命令追加在末尾
 - 不使用复杂的子 XML 标签，而是纯文本格式加 `<cmd>` 语义标签
 - 使用稳定 term 标签（stable labels，见下文），避免因当前会话变化而导致标签重排
-- 当前路径单独输出为 `<current_path>...</current_path>`
+- 当前工作目录单独包裹在 `<system-reminder>` 标签中，格式为：
+  ```
+  <system-reminder>
+  # workingDirectory
+  /path/to/current/directory
+  </system-reminder>
+  ```
+- Claude 模型针对 `<system-reminder>` 标签有特殊训练，能更好地理解和利用工作目录上下文
 
-**`<current_path>` 来源优先级:** 优先使用 `live_cwd`（daemon session probe 通过 `/proc/<pid>/cwd` 轮询获取的实时 shell 工作目录），回退到最后一条当前会话 CommandRecord 的 cwd。这解决了 OSC 133;B DEBUG trap 在命令执行前触发的问题——例如 `cd /tmp` 记录的是旧 cwd 而非新目录。
+**工作目录来源优先级:** 优先使用 `live_cwd`（daemon session probe 通过 `/proc/<pid>/cwd` 轮询获取的实时 shell 工作目录），回退到最后一条当前会话 CommandRecord 的 cwd。这解决了 OSC 133;B DEBUG trap 在命令执行前触发的问题——例如 `cd /tmp` 记录的是旧 cwd 而非新目录。
 
 ## 关键函数说明
 
@@ -230,7 +237,7 @@ pub fn new(current_session_id: &str, head_lines: usize, tail_lines: usize) -> Se
 默认 `max_command_output_chars` 为 500。可通过 `with_max_command_output_chars()` 调整。默认 `live_cwd` 为 `None`。可通过 `with_live_cwd()` 设置。
 
 ### `CompletionFormatter::with_live_cwd()`
-设置实时 shell 工作目录，用于 `<current_path>` 输出：
+设置实时 shell 工作目录，用于 `<system-reminder>` 中的 workingDirectory 输出：
 ```rust
 pub fn with_live_cwd(mut self, cwd: Option<String>) -> Self
 ```

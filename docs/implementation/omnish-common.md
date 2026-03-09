@@ -20,6 +20,7 @@ omnish-common 包含客户端和守护进程共享的配置结构和工具函数
 - `llm`: LLM后端配置（`LlmConfig`类型）
 - `context`: 上下文构建配置（`ContextConfig`类型）
 - `tasks`: 定时任务配置（`TasksConfig`类型）
+- `plugins`: 插件系统配置（`PluginsConfig`类型）
 
 ### `ShellConfig`
 Shell相关配置，包含：
@@ -54,6 +55,13 @@ LLM配置结构，包含：
 - `eviction`: 会话淘汰配置（`inactive_hours`）
 - `daily_notes`: 日报生成配置（`schedule_hour`，默认18）
 - `disk_cleanup`: 磁盘清理配置（`cron`表达式）
+
+### `PluginsConfig`
+插件系统配置结构，包含：
+- `enabled`: 启用的插件名称列表（默认：空列表）
+  - 每个插件对应 `~/.omnish/plugins/{name}/` 目录下的 `{name}` 可执行文件
+  - 插件通过 JSON-RPC 协议与守护进程通信
+  - 插件在守护进程启动时加载并初始化
 
 ### `LlmBackendConfig`
 LLM后端具体配置，包含：
@@ -142,6 +150,9 @@ max_content_chars = 200000
 on_nonzero_exit = true
 on_stderr_patterns = ["error:", "fatal:", "not found"]
 cooldown_seconds = 10
+
+[plugins]
+enabled = ["example_plugin", "another_plugin"]
 ```
 
 ## auth 模块
