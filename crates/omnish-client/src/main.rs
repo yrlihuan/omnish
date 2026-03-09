@@ -8,7 +8,6 @@ mod interceptor;
 mod probe;
 mod shell_hook;
 mod shell_input;
-mod picker;
 mod throttle;
 mod util;
 mod widgets;
@@ -1629,7 +1628,7 @@ async fn run_chat_loop(
                             if items.is_empty() {
                                 continue;
                             }
-                            match picker::pick_many("Select conversations to delete:", &items) {
+                            match widgets::picker::pick_many("Select conversations to delete:", &items) {
                                 Some(mut indices) if !indices.is_empty() => {
                                     // Convert 0-based indices to 1-based index string (e.g., "1,3,5")
                                     indices.sort();
@@ -1874,7 +1873,7 @@ async fn run_chat_loop(
                                     nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                                     (None, None)
                                 } else {
-                                    match picker::pick_one("Resume conversation:", &items) {
+                                    match widgets::picker::pick_one("Resume conversation:", &items) {
                                         Some(idx) if idx < cached_thread_ids.len() => {
                                             let tid = cached_thread_ids[idx].clone();
                                             // Fetch last exchange display for the selected thread
