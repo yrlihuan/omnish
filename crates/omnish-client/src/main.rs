@@ -2238,6 +2238,7 @@ fn read_chat_input(
         let mut display_row = 0usize;
         let mut is_first_line = true;
         let block_count = blocks.len();
+        let mut last_marker_width = 0usize;
 
         for (bi, block) in blocks.iter().enumerate() {
             // Prefix lines (frozen text typed before this paste)
@@ -2252,6 +2253,8 @@ fn read_chat_input(
             // Paste marker
             let pfx = if is_first_line { "> " } else { "  " };
             is_first_line = false;
+            let marker_text = format!("[pasted text #{} +{} lines]", block.index, block.line_count);
+            last_marker_width = 2 + marker_text.len(); // prefix + visible text
             let is_last_block = bi == block_count - 1;
             if is_last_block && editor_merged {
                 // No \r\n — cursor stays on marker line
@@ -2281,7 +2284,6 @@ fn read_chat_input(
                     out.push_str(&format!("{}{}\x1b[K\r\n", pfx, line_str));
                 }
             }
-            if skip_first { display_row += 1; }
         }
 
         // Ghost text after last line
@@ -2306,7 +2308,11 @@ fn read_chat_input(
             out.push_str(&format!("\x1b[{}A", rows_up));
         }
         out.push('\r');
-        let cursor_display = 2 + editor.cursor_display_col();
+        let cursor_display = if editor_merged {
+            last_marker_width
+        } else {
+            2 + editor.cursor_display_col()
+        };
         if cursor_display > 0 {
             out.push_str(&format!("\x1b[{}C", cursor_display));
         }
