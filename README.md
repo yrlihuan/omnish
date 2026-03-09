@@ -60,7 +60,6 @@ Produces two binaries:
 - `target/release/omnish-daemon` — the daemon
 
 A diagnostic tool is also built:
-- `target/release/omnish-commands` — list recorded commands from stored sessions
 
 ## Configuration
 
@@ -189,15 +188,6 @@ Chat-mode commands (available only inside a chat session):
 
 Results from auto-triggers appear above the shell prompt without disrupting your workflow.
 
-### omnish-commands
-
-Inspect recorded commands across sessions:
-
-```bash
-omnish-commands              # last 20 commands
-omnish-commands -n 50        # last 50
-omnish-commands -s abc123    # filter by session ID prefix
-```
 
 ## Storage
 

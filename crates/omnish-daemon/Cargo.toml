@@ -23,9 +23,6 @@ serde_json = "1"
 tokio-cron-scheduler = "0.13"
 uuid = { workspace = true }
 
-[[bin]]
-name = "omnish-commands"
-path = "src/bin/commands.rs"
 
 [dev-dependencies]
 tempfile = "3"
