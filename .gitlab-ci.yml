@@ -32,6 +32,8 @@ test:
 build-release:
   stage: build
   image: docker.nv/ubuntu_2404_runner:latest
+  variables:
+    CC_x86_64_unknown_linux_musl: musl-gcc
   script:
     - cargo build --release --target x86_64-unknown-linux-musl
     - cp target/x86_64-unknown-linux-musl/release/omnish-client .
