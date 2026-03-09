@@ -2140,7 +2140,6 @@ fn parse_escape_sequence(stdin_fd: i32) -> Option<[u8; 2]> {
 }
 
 #[derive(Debug, PartialEq)]
-#[allow(dead_code)]
 enum KeyEvent {
     ArrowUp,
     ArrowDown,
@@ -2159,7 +2158,6 @@ enum KeyEvent {
 /// More capable replacement for parse_escape_sequence() that handles
 /// extended sequences (Home, End, Delete, Ctrl+Arrow, Alt+Enter).
 /// Returns None for unrecognized sequences.
-#[allow(dead_code)]
 fn parse_key_after_esc(stdin_fd: i32) -> Option<KeyEvent> {
     let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
     let ready = unsafe { libc::poll(&mut pfd, 1, 50) };
@@ -2208,7 +2206,7 @@ fn parse_key_after_esc(stdin_fd: i32) -> Option<KeyEvent> {
     }
 }
 
-/// Read a line of input in raw mode for the chat loop.
+/// Read input in raw mode for the chat loop, using LineEditor for multi-line editing.
 /// Returns None on ESC, Ctrl-D, or backspace on empty input (if allow_backspace_exit is true).
 fn read_chat_input(
     completer: &mut ghost_complete::GhostCompleter,
@@ -2216,204 +2214,302 @@ fn read_chat_input(
     history: &VecDeque<String>,
     history_index: &mut Option<usize>,
 ) -> Option<String> {
+    use widgets::line_editor::LineEditor;
+    use unicode_width::UnicodeWidthChar;
+
     let stdin_fd = std::io::stdin().as_raw_fd();
-    let mut buf = Vec::new();
+    let mut editor = LineEditor::new();
     let mut byte = [0u8; 1];
     let mut has_ghost = false;
+    let mut ghost_text = String::new();
+
+    // Helper: compute display width of a char slice
+    let display_width = |chars: &[char]| -> usize {
+        chars.iter().map(|c| UnicodeWidthChar::width(*c).unwrap_or(1)).sum()
+    };
+
+    // Helper: redraw the editor content from the prompt position
+    // For single-line: "\r> {content}\x1b[K" then reposition cursor
+    // For multi-line: "\r> {line1}\x1b[K\r\n  {line2}\x1b[K\r\n..." then reposition
+    let redraw = |editor: &LineEditor, ghost: &str, has_ghost: bool| {
+        let mut out = String::new();
+        let line_count = editor.line_count();
+        let (cursor_row, _cursor_col) = editor.cursor();
+
+        // Move to beginning of first line: go up (cursor_row) lines to get to line 0.
+        // Since we always leave the terminal cursor at the editor's cursor position,
+        // we need to go up (cursor_row) lines.
+        if cursor_row > 0 {
+            out.push_str(&format!("\x1b[{}A", cursor_row));
+        }
+        out.push('\r');
+
+        for i in 0..line_count {
+            let prefix = if i == 0 { "> " } else { "  " };
+            let line_str: String = editor.line(i).iter().collect();
+            if i == line_count - 1 {
+                // Last line: clear to end of screen to remove leftover lines
+                out.push_str(&format!("{}{}\x1b[J", prefix, line_str));
+            } else {
+                out.push_str(&format!("{}{}\x1b[K\r\n", prefix, line_str));
+            }
+        }
+
+        // Show ghost text after the last line's content
+        if has_ghost && !ghost.is_empty() {
+            out.push_str(&format!("\x1b[2;37m{}\x1b[0m", ghost));
+        }
+
+        // Now position cursor at the correct location
+        // Terminal cursor is currently at end of last line (after ghost if any)
+        let last_row = line_count - 1;
+
+        // Move up from last_row to cursor_row
+        let rows_up = last_row - cursor_row;
+        if rows_up > 0 {
+            out.push_str(&format!("\x1b[{}A", rows_up));
+        }
+
+        // Move to correct column: go to column 0 then forward to prefix + display col
+        out.push('\r');
+        let prefix_width = 2; // "> " or "  "
+        let cursor_display = prefix_width + editor.cursor_display_col();
+        if cursor_display > 0 {
+            out.push_str(&format!("\x1b[{}C", cursor_display));
+        }
+
+        nix::unistd::write(std::io::stdout(), out.as_bytes()).ok();
+    };
+
+    // The caller already printed "> ", so we don't redraw on first iteration
 
     loop {
         match nix::unistd::read(stdin_fd, &mut byte) {
             Ok(1) => {
                 match byte[0] {
                     0x1b => {
-                        // Check if this is an arrow key sequence
-                        if let Some(seq) = parse_escape_sequence(stdin_fd) {
-                            if seq[0] == b'[' {
-                                match seq[1] {
-                                    b'A' => { // Up arrow
-                                        if history.is_empty() {
-                                            continue;
+                        match parse_key_after_esc(stdin_fd) {
+                            Some(KeyEvent::Esc) => return None,
+                            Some(KeyEvent::AltEnter) => {
+                                editor.newline();
+                                has_ghost = false;
+                                ghost_text.clear();
+                                completer.clear();
+                                redraw(&editor, "", false);
+                            }
+                            Some(KeyEvent::ArrowUp) => {
+                                if editor.is_empty() {
+                                    // History navigation
+                                    if history.is_empty() { continue; }
+                                    let idx = match *history_index {
+                                        Some(i) if i > 0 => i - 1,
+                                        Some(_) => continue,
+                                        None => history.len() - 1,
+                                    };
+                                    *history_index = Some(idx);
+                                    if let Some(cmd) = history.get(idx) {
+                                        editor.set_content(cmd);
+                                        has_ghost = false;
+                                        ghost_text.clear();
+                                        if let Some(g) = completer.update(cmd) {
+                                            ghost_text = g.to_string();
+                                            has_ghost = true;
+                                            redraw(&editor, &g, true);
+                                        } else {
+                                            redraw(&editor, "", false);
                                         }
-
-                                        let idx = match *history_index {
-                                            Some(i) if i > 0 => i - 1,
-                                            Some(_) => continue, // Already at first item
-                                            None => history.len() - 1, // Start from most recent
-                                        };
-
-                                        *history_index = Some(idx);
-                                        if let Some(cmd) = history.get(idx) {
-                                            // Clear current line and show history command
-                                            let clear_seq = b"\r> \x1b[K";
-                                            nix::unistd::write(std::io::stdout(), clear_seq).ok();
-
-                                            // Clear ghost text if present
-                                            if has_ghost {
-                                                nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
-                                                has_ghost = false;
-                                            }
-
-                                            nix::unistd::write(std::io::stdout(), cmd.as_bytes()).ok();
-
-                                            // Update buffer with UTF-8 bytes
-                                            buf = cmd.as_bytes().to_vec();
-
-                                            // Update ghost completion for new input
-                                            if let Some(ghost) = completer.update(cmd) {
-                                                let ghost_render = format!("\x1b[2;37m{}\x1b[0m\x1b[{}D", ghost, ghost.len());
-                                                nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
-                                                has_ghost = true;
-                                            }
-                                        }
-                                        continue;
-                                    },
-                                    b'B' => { // Down arrow
-                                        if history.is_empty() {
-                                            continue;
-                                        }
-
-                                        let idx = match *history_index {
-                                            Some(i) if i < history.len() - 1 => i + 1,
-                                            Some(_) => {
-                                                // Going past most recent - clear input
-                                                *history_index = None;
-                                                let clear_seq = b"\r> \x1b[K";
-                                                nix::unistd::write(std::io::stdout(), clear_seq).ok();
-
-                                                // Clear ghost text if present
-                                                if has_ghost {
-                                                    nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
-                                                    has_ghost = false;
-                                                }
-
-                                                buf.clear();
-                                                completer.clear();
-                                                continue;
-                                            },
-                                            None => continue, // Already at new command
-                                        };
-
-                                        *history_index = Some(idx);
-                                        if let Some(cmd) = history.get(idx) {
-                                            // Clear current line and show history command
-                                            let clear_seq = b"\r> \x1b[K";
-                                            nix::unistd::write(std::io::stdout(), clear_seq).ok();
-
-                                            // Clear ghost text if present
-                                            if has_ghost {
-                                                nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
-                                                has_ghost = false;
-                                            }
-
-                                            nix::unistd::write(std::io::stdout(), cmd.as_bytes()).ok();
-
-                                            // Update buffer with UTF-8 bytes
-                                            buf = cmd.as_bytes().to_vec();
-
-                                            // Update ghost completion
-                                            if let Some(ghost) = completer.update(cmd) {
-                                                let ghost_render = format!("\x1b[2;37m{}\x1b[0m\x1b[{}D", ghost, ghost.len());
-                                                nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
-                                                has_ghost = true;
-                                            }
-                                        }
-                                        continue;
-                                    },
-                                    _ => {} // Ignore other escape sequences
+                                    }
+                                } else {
+                                    editor.move_up();
+                                    redraw(&editor, &ghost_text, has_ghost);
                                 }
                             }
-                        } else {
-                            // ESC without sequence - exit chat
-                            return None;
-                        }
-                    },
-                    0x04 if buf.is_empty() => return None,  // Ctrl-D on empty — exit chat
-                    0x0d => {             // Enter — submit line
-                        if has_ghost {
-                            // Clear ghost text before submitting
-                            nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
-                        }
-                        completer.clear();
-                        return Some(String::from_utf8_lossy(&buf).to_string());
-                    }
-                    0x09 => {             // Tab — accept ghost completion
-                        if let Some(suffix) = completer.accept() {
-                            buf.extend_from_slice(suffix.as_bytes());
-                            // Clear ghost, rewrite accepted text in normal color
-                            nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
-                            nix::unistd::write(std::io::stdout(), suffix.as_bytes()).ok();
-                            has_ghost = false;
-                            // Query for next ghost after accepting
-                            let input = String::from_utf8_lossy(&buf);
-                            if let Some(ghost) = completer.update(&input) {
-                                let ghost_render = format!("\x1b[2;37m{}\x1b[0m\x1b[{}D", ghost, ghost.len());
-                                nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
-                                has_ghost = true;
+                            Some(KeyEvent::ArrowDown) => {
+                                if editor.is_empty() {
+                                    // History navigation
+                                    if history.is_empty() { continue; }
+                                    let idx = match *history_index {
+                                        Some(i) if i < history.len() - 1 => i + 1,
+                                        Some(_) => {
+                                            *history_index = None;
+                                            editor.set_content("");
+                                            has_ghost = false;
+                                            ghost_text.clear();
+                                            completer.clear();
+                                            redraw(&editor, "", false);
+                                            continue;
+                                        },
+                                        None => continue,
+                                    };
+                                    *history_index = Some(idx);
+                                    if let Some(cmd) = history.get(idx) {
+                                        editor.set_content(cmd);
+                                        has_ghost = false;
+                                        ghost_text.clear();
+                                        if let Some(g) = completer.update(cmd) {
+                                            ghost_text = g.to_string();
+                                            has_ghost = true;
+                                            redraw(&editor, &g, true);
+                                        } else {
+                                            redraw(&editor, "", false);
+                                        }
+                                    }
+                                } else {
+                                    editor.move_down();
+                                    redraw(&editor, &ghost_text, has_ghost);
+                                }
                             }
+                            Some(KeyEvent::ArrowLeft) => {
+                                editor.move_left();
+                                redraw(&editor, &ghost_text, has_ghost);
+                            }
+                            Some(KeyEvent::ArrowRight) => {
+                                editor.move_right();
+                                redraw(&editor, &ghost_text, has_ghost);
+                            }
+                            Some(KeyEvent::Home) => {
+                                editor.move_home();
+                                redraw(&editor, &ghost_text, has_ghost);
+                            }
+                            Some(KeyEvent::End) => {
+                                editor.move_end();
+                                redraw(&editor, &ghost_text, has_ghost);
+                            }
+                            Some(KeyEvent::Delete) => {
+                                editor.delete_forward();
+                                has_ghost = false;
+                                ghost_text.clear();
+                                let content = editor.content();
+                                if let Some(g) = completer.update(&content) {
+                                    ghost_text = g.to_string();
+                                    has_ghost = true;
+                                    redraw(&editor, &g, true);
+                                } else {
+                                    completer.clear();
+                                    redraw(&editor, "", false);
+                                }
+                            }
+                            Some(KeyEvent::CtrlLeft) => {
+                                editor.move_word_left();
+                                redraw(&editor, &ghost_text, has_ghost);
+                            }
+                            Some(KeyEvent::CtrlRight) => {
+                                editor.move_word_right();
+                                redraw(&editor, &ghost_text, has_ghost);
+                            }
+                            None => {} // Unknown escape sequence, ignore
                         }
                     }
-                    0x7f | 0x08 => {      // Backspace
-                        if buf.is_empty() {
-                            if allow_backspace_exit {
-                                return None; // Backspace on empty — exit chat
-                            }
-                            continue; // Ignore backspace on empty — no visual effect
-                        }
-                        // Get the last UTF-8 character bytes BEFORE removing
-                        let last_char_len = last_utf8_char_len(&buf);
-                        let deleted_bytes = buf[buf.len().saturating_sub(last_char_len)..].to_vec();
-                        // Remove the last UTF-8 character (not just 1 byte)
-                        for _ in 0..last_char_len {
-                            buf.pop();
-                        }
-                        // Calculate visual width of deleted character for erasing
-                        let erase_width = String::from_utf8_lossy(&deleted_bytes).chars().next()
-                            .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1))
-                            .unwrap_or(1);
-                        // Erase character: move cursor back by visual width + clear to end of line
-                        let backspaces = "\x08".repeat(erase_width);
-                        let erase_seq = format!("{}\x1b[K", backspaces);
-                        nix::unistd::write(std::io::stdout(), erase_seq.as_bytes()).ok();
+                    0x01 => { // Ctrl-A — home
+                        editor.move_home();
+                        redraw(&editor, &ghost_text, has_ghost);
+                    }
+                    0x05 => { // Ctrl-E — end
+                        editor.move_end();
+                        redraw(&editor, &ghost_text, has_ghost);
+                    }
+                    0x15 => { // Ctrl-U — kill to start of line
+                        editor.kill_to_start();
                         has_ghost = false;
-                        // Update ghost for new input
-                        let input = String::from_utf8_lossy(&buf);
-                        if let Some(ghost) = completer.update(&input) {
-                            let ghost_render = format!("\x1b[2;37m{}\x1b[0m\x1b[{}D", ghost, ghost.len());
-                            nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                        ghost_text.clear();
+                        let content = editor.content();
+                        if let Some(g) = completer.update(&content) {
+                            ghost_text = g.to_string();
                             has_ghost = true;
+                            redraw(&editor, &g, true);
                         } else {
                             completer.clear();
+                            redraw(&editor, "", false);
                         }
                     }
-                    b if b >= 0x20 => {   // Printable ASCII or UTF-8 lead byte
-                        buf.push(b);
-                        // Clear any existing ghost text, write char
+                    0x04 if editor.is_empty() => return None, // Ctrl-D on empty
+                    0x0d => { // Enter — submit
+                        // Clear ghost and move to end for clean output
                         if has_ghost {
-                            nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
-                            has_ghost = false;
+                            redraw(&editor, "", false);
                         }
-                        nix::unistd::write(std::io::stdout(), &[b]).ok();
-                        // Handle UTF-8 continuation bytes
-                        if b >= 0xC0 {
+                        // Move cursor to end of content for clean newline
+                        let last_row = editor.line_count() - 1;
+                        let (cur_row, _) = editor.cursor();
+                        if cur_row < last_row {
+                            let down = last_row - cur_row;
+                            let seq = format!("\x1b[{}B", down);
+                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                        }
+                        // Move to end of last line
+                        let end_col = 2 + display_width(editor.line(last_row)); // prefix + content
+                        let move_end = format!("\r\x1b[{}C", end_col);
+                        nix::unistd::write(std::io::stdout(), move_end.as_bytes()).ok();
+                        completer.clear();
+                        return Some(editor.content());
+                    }
+                    0x09 => { // Tab — accept ghost completion
+                        if let Some(suffix) = completer.accept() {
+                            // Insert ghost suffix char by char into editor
+                            for ch in suffix.chars() {
+                                editor.insert(ch);
+                            }
+                            has_ghost = false;
+                            ghost_text.clear();
+                            // Query for next ghost
+                            let content = editor.content();
+                            if let Some(g) = completer.update(&content) {
+                                ghost_text = g.to_string();
+                                has_ghost = true;
+                                redraw(&editor, &g, true);
+                            } else {
+                                redraw(&editor, "", false);
+                            }
+                        }
+                    }
+                    0x7f | 0x08 => { // Backspace
+                        if editor.is_empty() {
+                            if allow_backspace_exit {
+                                return None;
+                            }
+                            continue;
+                        }
+                        editor.delete_back();
+                        has_ghost = false;
+                        ghost_text.clear();
+                        let content = editor.content();
+                        if let Some(g) = completer.update(&content) {
+                            ghost_text = g.to_string();
+                            has_ghost = true;
+                            redraw(&editor, &g, true);
+                        } else {
+                            completer.clear();
+                            redraw(&editor, "", false);
+                        }
+                    }
+                    b if b >= 0x20 => { // Printable ASCII or UTF-8 lead byte
+                        let ch = if b < 0x80 {
+                            b as char
+                        } else {
+                            // Read UTF-8 continuation bytes
+                            let mut utf8_buf = vec![b];
                             let expected = if b < 0xE0 { 1 } else if b < 0xF0 { 2 } else { 3 };
                             for _ in 0..expected {
                                 if nix::unistd::read(stdin_fd, &mut byte).unwrap_or(0) == 1 {
-                                    buf.push(byte[0]);
-                                    nix::unistd::write(std::io::stdout(), &byte).ok();
+                                    utf8_buf.push(byte[0]);
                                 }
                             }
-                        }
-                        // Update ghost completion
-                        let input = String::from_utf8_lossy(&buf);
-                        if let Some(ghost) = completer.update(&input) {
-                            let ghost_render = format!("\x1b[2;37m{}\x1b[0m\x1b[{}D", ghost, ghost.len());
-                            nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                            String::from_utf8_lossy(&utf8_buf).chars().next().unwrap_or('?')
+                        };
+                        editor.insert(ch);
+                        has_ghost = false;
+                        ghost_text.clear();
+                        let content = editor.content();
+                        if let Some(g) = completer.update(&content) {
+                            ghost_text = g.to_string();
                             has_ghost = true;
+                            redraw(&editor, &g, true);
                         } else {
                             completer.clear();
+                            redraw(&editor, "", false);
                         }
                     }
-                    _ => {}               // Ignore other control chars
+                    _ => {} // Ignore other control chars
                 }
             }
             _ => return None,
