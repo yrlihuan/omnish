@@ -172,6 +172,30 @@ impl LineEditor {
         self.cursor = (row + 1, 0);
     }
 
+    /// Insert a paste-block placeholder (FFFC) on its own line.
+    /// Handles three cases: cursor on empty line, at end of line, or mid-line.
+    /// Cursor ends up on a new empty line after the placeholder.
+    pub fn insert_paste_block(&mut self) {
+        let (row, col) = self.cursor;
+        if self.lines[row].is_empty() {
+            // Replace empty line with placeholder
+            self.lines[row] = vec!['\u{FFFC}'];
+            self.lines.insert(row + 1, vec![]);
+            self.cursor = (row + 1, 0);
+        } else if col == self.lines[row].len() {
+            // At end of line: add placeholder line after
+            self.lines.insert(row + 1, vec!['\u{FFFC}']);
+            self.lines.insert(row + 2, vec![]);
+            self.cursor = (row + 2, 0);
+        } else {
+            // Mid-line: split at cursor, insert placeholder between
+            let rest = self.lines[row].split_off(col);
+            self.lines.insert(row + 1, vec!['\u{FFFC}']);
+            self.lines.insert(row + 2, rest);
+            self.cursor = (row + 2, 0);
+        }
+    }
+
     pub fn set_content(&mut self, s: &str) {
         self.lines = if s.is_empty() {
             vec![vec![]]
@@ -401,5 +425,68 @@ mod tests {
         ed.insert('b');
         assert_eq!(ed.content(), "abc");
         assert_eq!(ed.cursor(), (0, 2));
+    }
+
+    #[test]
+    fn test_insert_paste_block_empty_line() {
+        let mut ed = LineEditor::new();
+        // Empty editor: placeholder replaces empty line
+        ed.insert_paste_block();
+        assert_eq!(ed.line_count(), 2);
+        assert_eq!(ed.line(0), &['\u{FFFC}']);
+        assert_eq!(ed.line(1), &[] as &[char]);
+        assert_eq!(ed.cursor(), (1, 0));
+    }
+
+    #[test]
+    fn test_insert_paste_block_end_of_line() {
+        let mut ed = LineEditor::new();
+        ed.set_content("hello");
+        // Cursor at end of "hello"
+        ed.insert_paste_block();
+        assert_eq!(ed.line_count(), 3);
+        assert_eq!(ed.line(0), &['h', 'e', 'l', 'l', 'o']);
+        assert_eq!(ed.line(1), &['\u{FFFC}']);
+        assert_eq!(ed.line(2), &[] as &[char]);
+        assert_eq!(ed.cursor(), (2, 0));
+    }
+
+    #[test]
+    fn test_insert_paste_block_mid_line() {
+        let mut ed = LineEditor::new();
+        ed.set_content("hello");
+        ed.cursor = (0, 2); // between "he" and "llo"
+        ed.insert_paste_block();
+        assert_eq!(ed.line_count(), 3);
+        assert_eq!(ed.line(0), &['h', 'e']);
+        assert_eq!(ed.line(1), &['\u{FFFC}']);
+        assert_eq!(ed.line(2), &['l', 'l', 'o']);
+        assert_eq!(ed.cursor(), (2, 0));
+    }
+
+    #[test]
+    fn test_delete_paste_block_two_step() {
+        // Simulate: paste block after "hello", then two backspaces to delete
+        let mut ed = LineEditor::new();
+        ed.set_content("hello");
+        ed.insert_paste_block();
+        // State: ["hello", FFFC, ""], cursor (2, 0)
+        assert_eq!(ed.cursor(), (2, 0));
+
+        // Step 1: backspace merges empty line into FFFC line
+        ed.delete_back();
+        assert_eq!(ed.cursor(), (1, 1)); // after FFFC
+        assert_eq!(ed.line(1), &['\u{FFFC}']);
+
+        // Step 2: backspace deletes FFFC
+        ed.delete_back();
+        assert_eq!(ed.cursor(), (1, 0)); // FFFC gone, line now empty
+        assert!(ed.line(1).is_empty());
+
+        // Cleanup: merge empty line with previous
+        ed.delete_back();
+        assert_eq!(ed.line_count(), 1);
+        assert_eq!(ed.content(), "hello");
+        assert_eq!(ed.cursor(), (0, 5));
     }
 }

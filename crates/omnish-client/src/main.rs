@@ -2187,8 +2187,9 @@ fn read_chat_input(
     let mut last_input = std::time::Instant::now();
 
     // Paste block state: collapsed display for large pastes (≥10 lines)
+    // Paste blocks are represented in the editor as \u{FFFC} placeholder chars,
+    // one per line. This vec holds the actual content for each placeholder.
     struct PasteBlock {
-        prefix: String,      // editor content before this paste (frozen)
         content: String,     // the full pasted text
         index: usize,        // paste number (#1, #2, ...)
         line_count: usize,
@@ -2203,16 +2204,13 @@ fn read_chat_input(
     // with \x1b[200~ ... \x1b[201~ markers
     nix::unistd::write(std::io::stdout(), b"\x1b[?2004h").ok();
 
-    // Helper: compute display width of a char slice
-    let display_width = |chars: &[char]| -> usize {
-        chars.iter().map(|c| UnicodeWidthChar::width(*c).unwrap_or(1)).sum()
-    };
-
     // Track where the terminal cursor was left after the previous redraw,
     // so we know how many lines to move up to reach line 0.
     let term_cursor_row = std::cell::Cell::new(0usize);
 
-    // Helper: redraw paste blocks + editor content from the prompt position
+    // Helper: redraw editor content from the prompt position.
+    // Paste blocks are represented as \u{FFFC} chars within the editor lines;
+    // they render as styled marker text.
     let redraw = |editor: &LineEditor, ghost: &str, has_ghost: bool| {
         let mut out = String::new();
         let blocks = paste_blocks.borrow();
@@ -2224,102 +2222,81 @@ fn read_chat_input(
         }
         out.push('\r');
 
-        // Precompute editor state
         let line_count = editor.line_count();
-        let (cursor_row, _) = editor.cursor();
+        let (cursor_row, cursor_col) = editor.cursor();
+        let mut fffc_idx = 0usize;
 
-        // Editor merged: empty editor (1 line, 0 chars) after paste blocks —
-        // cursor sits at end of last marker, no separate editor line.
-        let editor_merged = !blocks.is_empty() && editor.is_empty() && line_count == 1;
+        for i in 0..line_count {
+            let line = editor.line(i);
+            let pfx = if i == 0 { "> " } else { "  " };
 
-        // Skip editor line 0 if empty and there are paste blocks and more lines exist
-        let skip_first = !blocks.is_empty() && !editor_merged && line_count > 1
-            && editor.line(0).is_empty();
-
-        // Render paste blocks
-        let mut display_row = 0usize;
-        let mut is_first_line = true;
-        let block_count = blocks.len();
-        let mut last_marker_width = 0usize;
-
-        for (bi, block) in blocks.iter().enumerate() {
-            // Prefix lines (frozen text typed before this paste)
-            if !block.prefix.is_empty() {
-                for line in block.prefix.lines() {
-                    let pfx = if is_first_line { "> " } else { "  " };
-                    is_first_line = false;
-                    out.push_str(&format!("{}{}\x1b[K\r\n", pfx, line));
-                    display_row += 1;
+            // Build display string, replacing FFFC with markers
+            let has_fffc = line.iter().any(|&c| c == '\u{FFFC}');
+            if has_fffc {
+                out.push_str(pfx);
+                for &ch in line {
+                    if ch == '\u{FFFC}' {
+                        if let Some(block) = blocks.get(fffc_idx) {
+                            out.push_str(&format!(
+                                "\x1b[2;36m[pasted text #{} +{} lines]\x1b[0m",
+                                block.index, block.line_count
+                            ));
+                        }
+                        fffc_idx += 1;
+                    } else {
+                        out.push(ch);
+                    }
                 }
-            }
-            // Paste marker
-            let pfx = if is_first_line { "> " } else { "  " };
-            is_first_line = false;
-            let marker_text = format!("[pasted text #{} +{} lines]", block.index, block.line_count);
-            last_marker_width = 2 + marker_text.len(); // prefix + visible text
-            let is_last_block = bi == block_count - 1;
-            if is_last_block && editor_merged {
-                // No \r\n — cursor stays on marker line
-                out.push_str(&format!(
-                    "{}\x1b[2;36m[pasted text #{} +{} lines]\x1b[0m\x1b[J",
-                    pfx, block.index, block.line_count
-                ));
-                // display_row NOT incremented — cursor is on this line
             } else {
-                out.push_str(&format!(
-                    "{}\x1b[2;36m[pasted text #{} +{} lines]\x1b[0m\x1b[K\r\n",
-                    pfx, block.index, block.line_count
-                ));
-                display_row += 1;
+                let line_str: String = line.iter().collect();
+                out.push_str(pfx);
+                out.push_str(&line_str);
+            }
+
+            if i == line_count - 1 {
+                out.push_str("\x1b[J"); // clear to end of screen
+            } else {
+                out.push_str("\x1b[K\r\n"); // clear to end of line + newline
             }
         }
 
-        // Render editor lines (unless merged into marker)
-        if !editor_merged {
-            let start = if skip_first { 1 } else { 0 };
-            for i in start..line_count {
-                let pfx = if is_first_line && i == start { "> " } else { "  " };
-                let line_str: String = editor.line(i).iter().collect();
-                if i == line_count - 1 {
-                    out.push_str(&format!("{}{}\x1b[J", pfx, line_str));
-                } else {
-                    out.push_str(&format!("{}{}\x1b[K\r\n", pfx, line_str));
-                }
-            }
-        }
-
-        // Ghost text after last line
-        if has_ghost && !ghost.is_empty() && !editor_merged {
+        // Ghost text after last line (only if cursor is on a normal line)
+        let cursor_on_fffc = editor.line(cursor_row).iter().any(|&c| c == '\u{FFFC}');
+        if has_ghost && !ghost.is_empty() && !cursor_on_fffc {
             out.push_str(&format!("\x1b[2;37m{}\x1b[0m", ghost));
         }
 
         // Position cursor
-        let total_cursor_row;
-        let total_last_row;
-        if editor_merged {
-            total_cursor_row = display_row;
-            total_last_row = display_row;
-        } else {
-            let visible_lines = if skip_first { line_count - 1 } else { line_count };
-            let adj_cursor = if skip_first { cursor_row.saturating_sub(1) } else { cursor_row };
-            total_last_row = display_row + visible_lines - 1;
-            total_cursor_row = display_row + adj_cursor;
-        }
-        let rows_up = total_last_row - total_cursor_row;
+        let total_last_row = line_count - 1;
+        let rows_up = total_last_row - cursor_row;
         if rows_up > 0 {
             out.push_str(&format!("\x1b[{}A", rows_up));
         }
         out.push('\r');
-        let cursor_display = if editor_merged {
-            last_marker_width
-        } else {
-            2 + editor.cursor_display_col()
-        };
+
+        // Compute cursor display column, accounting for FFFC marker widths
+        let cursor_line = editor.line(cursor_row);
+        let mut cursor_display = 2usize; // prefix width
+        let mut local_fffc = 0usize;
+        let fffc_before_cursor_row: usize = (0..cursor_row)
+            .map(|r| editor.line(r).iter().filter(|&&c| c == '\u{FFFC}').count())
+            .sum();
+        for ci in 0..cursor_col {
+            if cursor_line[ci] == '\u{FFFC}' {
+                let block_idx = fffc_before_cursor_row + local_fffc;
+                if let Some(block) = blocks.get(block_idx) {
+                    cursor_display += format!("[pasted text #{} +{} lines]", block.index, block.line_count).len();
+                }
+                local_fffc += 1;
+            } else {
+                cursor_display += UnicodeWidthChar::width(cursor_line[ci]).unwrap_or(1);
+            }
+        }
         if cursor_display > 0 {
             out.push_str(&format!("\x1b[{}C", cursor_display));
         }
 
-        term_cursor_row.set(total_cursor_row);
+        term_cursor_row.set(cursor_row);
         nix::unistd::write(std::io::stdout(), out.as_bytes()).ok();
     };
 
@@ -2341,15 +2318,12 @@ fn read_chat_input(
                 let line_count = line_count.max(if paste_buf.is_empty() { 0 } else { 1 });
                 if line_count >= 10 {
                     paste_count += 1;
-                    let prefix = editor.content();
                     paste_blocks.borrow_mut().push(PasteBlock {
-                        prefix,
                         content: paste_buf.clone(),
                         index: paste_count,
                         line_count,
                     });
-                    editor = LineEditor::new();
-                    editor.newline(); // cursor on line 1; first backspace merges to line 0
+                    editor.insert_paste_block();
                 } else if !paste_buf.is_empty() {
                     for ch in paste_buf.chars() {
                         if ch == '\n' { editor.newline(); } else { editor.insert(ch); }
@@ -2390,17 +2364,13 @@ fn read_chat_input(
                     let line_count = line_count.max(if paste_buf.is_empty() { 0 } else { 1 });
                     if line_count >= 10 {
                         paste_count += 1;
-                        let prefix = editor.content();
                         paste_blocks.borrow_mut().push(PasteBlock {
-                            prefix,
                             content: paste_buf.clone(),
                             index: paste_count,
                             line_count,
                         });
-                        editor = LineEditor::new();
-                        editor.newline();
+                        editor.insert_paste_block();
                     } else if !paste_buf.is_empty() {
-                        // Short paste: replay into editor
                         for ch in paste_buf.chars() {
                             if ch == '\n' {
                                 editor.newline();
@@ -2430,15 +2400,12 @@ fn read_chat_input(
                                 let line_count = line_count.max(if paste_buf.is_empty() { 0 } else { 1 });
                                 if line_count >= 10 {
                                     paste_count += 1;
-                                    let prefix = editor.content();
                                     paste_blocks.borrow_mut().push(PasteBlock {
-                                        prefix,
                                         content: paste_buf.clone(),
                                         index: paste_count,
                                         line_count,
                                     });
-                                    editor = LineEditor::new();
-                                    editor.newline();
+                                    editor.insert_paste_block();
                                 } else if !paste_buf.is_empty() {
                                     for ch in paste_buf.chars() {
                                         if ch == '\n' { editor.newline(); } else { editor.insert(ch); }
@@ -2613,7 +2580,9 @@ fn read_chat_input(
                             redraw(&editor, "", false);
                         }
                     }
-                    0x04 if editor.is_empty() => { disable_paste(); return None; } // Ctrl-D on empty
+                    0x04 if editor.is_empty() && paste_blocks.borrow().is_empty() => {
+                        disable_paste(); return None;
+                    } // Ctrl-D on empty
                     0x0a => { // Ctrl-J — newline
                         editor.newline();
                         has_ghost = false;
@@ -2634,31 +2603,57 @@ fn read_chat_input(
                             let seq = format!("\x1b[{}B", down);
                             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
                         }
-                        // Move to end of last line
-                        let end_col = 2 + display_width(editor.line(last_row)); // prefix + content
+                        // Move to end of last line (account for FFFC marker widths)
+                        let blocks = paste_blocks.borrow();
+                        let fffc_before_last: usize = (0..last_row)
+                            .map(|r| editor.line(r).iter().filter(|&&c| c == '\u{FFFC}').count())
+                            .sum();
+                        let mut end_col = 2usize; // prefix
+                        let mut local_fi = 0usize;
+                        for &ch in editor.line(last_row) {
+                            if ch == '\u{FFFC}' {
+                                let bi = fffc_before_last + local_fi;
+                                if let Some(b) = blocks.get(bi) {
+                                    end_col += format!("[pasted text #{} +{} lines]", b.index, b.line_count).len();
+                                }
+                                local_fi += 1;
+                            } else {
+                                end_col += UnicodeWidthChar::width(ch).unwrap_or(1);
+                            }
+                        }
+                        drop(blocks);
                         let move_end = format!("\r\x1b[{}C", end_col);
                         nix::unistd::write(std::io::stdout(), move_end.as_bytes()).ok();
                         completer.clear();
                         disable_paste();
-                        // Assemble full content: paste blocks + editor
+                        // Assemble full content, replacing FFFC placeholders with paste content
                         let blocks = paste_blocks.borrow();
                         if blocks.is_empty() {
                             return Some(editor.content());
                         }
                         let mut full = String::new();
-                        for block in blocks.iter() {
-                            if !block.prefix.is_empty() {
-                                full.push_str(&block.prefix);
-                                full.push('\n');
+                        let mut block_idx = 0usize;
+                        let lc = editor.line_count();
+                        for i in 0..lc {
+                            let line = editor.line(i);
+                            let is_fffc_only = line.len() == 1 && line[0] == '\u{FFFC}';
+                            if is_fffc_only {
+                                if let Some(block) = blocks.get(block_idx) {
+                                    full.push_str(&block.content);
+                                    if !block.content.ends_with('\n') {
+                                        full.push('\n');
+                                    }
+                                    block_idx += 1;
+                                }
+                            } else {
+                                let line_str: String = line.iter()
+                                    .filter(|&&c| c != '\u{FFFC}')
+                                    .collect();
+                                full.push_str(&line_str);
+                                if i < lc - 1 {
+                                    full.push('\n');
+                                }
                             }
-                            full.push_str(&block.content);
-                            if !block.content.ends_with('\n') {
-                                full.push('\n');
-                            }
-                        }
-                        let editor_content = editor.content();
-                        if !editor_content.is_empty() {
-                            full.push_str(&editor_content);
                         }
                         return Some(full);
                     }
@@ -2682,29 +2677,39 @@ fn read_chat_input(
                         }
                     }
                     0x7f | 0x08 => { // Backspace
-                        if editor.is_empty() {
-                            let mut blocks = paste_blocks.borrow_mut();
-                            if let Some(block) = blocks.pop() {
-                                // Restore prefix to editor
-                                if !block.prefix.is_empty() {
-                                    drop(blocks); // release borrow before redraw
-                                    editor.set_content(&block.prefix);
-                                } else {
-                                    drop(blocks);
-                                }
-                                has_ghost = false;
-                                ghost_text.clear();
-                                completer.clear();
-                                redraw(&editor, "", false);
-                                continue;
+                        let (row, col) = editor.cursor();
+
+                        // Check if backspace would delete a FFFC placeholder
+                        if col > 0 && editor.line(row)[col - 1] == '\u{FFFC}' {
+                            // Find which paste block this FFFC corresponds to
+                            let fffc_idx: usize = (0..row)
+                                .map(|r| editor.line(r).iter().filter(|&&c| c == '\u{FFFC}').count())
+                                .sum();
+                            editor.delete_back();
+                            // If line is now empty, merge with previous
+                            let (nr, _) = editor.cursor();
+                            if editor.line(nr).is_empty() && nr > 0 {
+                                editor.delete_back();
                             }
-                            drop(blocks);
+                            paste_blocks.borrow_mut().remove(fffc_idx);
+                            has_ghost = false;
+                            ghost_text.clear();
+                            completer.clear();
+                            redraw(&editor, "", false);
+                            continue;
+                        }
+
+                        // Empty editor with no paste blocks: backspace exit
+                        if editor.is_empty() && paste_blocks.borrow().is_empty() {
                             if allow_backspace_exit {
                                 disable_paste(); return None;
                             }
                             continue;
                         }
-                        editor.delete_back();
+
+                        if !editor.delete_back() {
+                            continue;
+                        }
                         has_ghost = false;
                         ghost_text.clear();
                         let content = editor.content();
