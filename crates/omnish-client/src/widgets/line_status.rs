@@ -53,20 +53,28 @@ impl LineStatus {
     // Private helpers
     // -----------------------------------------------------------------------
 
-    /// Build the ANSI sequence that moves up and clears all occupied lines.
-    /// Does NOT reset `self.lines` — callers do that themselves.
+    /// Build the ANSI sequence that clears all occupied lines from bottom to
+    /// top and leaves the cursor at the original position (before the first
+    /// `show()` call).
+    ///
+    /// `render_seq()` prefixes every line with `\r\n`, so N lines of text
+    /// occupy rows R+1 … R+N (where R is the cursor row before `show()`).
+    /// After rendering the cursor sits at row R+N.  We clear each line from
+    /// bottom to top, then move up one more to return to R.
     fn erase_seq(&self) -> String {
         if self.lines == 0 {
             return String::new();
         }
         let mut out = String::new();
-        // Move up to the first status line and clear each row.
-        out.push_str(&format!("\x1b[{}A", self.lines));
-        for _ in 0..self.lines {
-            out.push_str("\r\x1b[K\r\n");
+        // Clear current line (R+N), then move up & clear until R+1.
+        for i in 0..self.lines {
+            if i > 0 {
+                out.push_str("\x1b[1A");
+            }
+            out.push_str("\r\x1b[K");
         }
-        // Move back up so the cursor is at the start of the cleared region.
-        out.push_str(&format!("\x1b[{}A", self.lines));
+        // Move up one more to return to the original row R.
+        out.push_str("\x1b[1A");
         out
     }
 
@@ -167,5 +175,81 @@ mod tests {
         assert!(s.is_visible());
         // After clear the erase part of show() should be empty (lines was 0)
         assert!(strip_ansi(&seq).contains('b'));
+    }
+
+    // -----------------------------------------------------------------------
+    // Terminal-emulation tests using vt100 parser
+    // -----------------------------------------------------------------------
+
+    fn parse_ansi(input: &str, cols: u16, rows: u16) -> vt100::Parser {
+        let mut parser = vt100::Parser::new(rows, cols, 0);
+        parser.process(input.as_bytes());
+        parser
+    }
+
+    fn get_row(screen: &vt100::Screen, row: u16, cols: u16) -> String {
+        screen.rows(0, cols).nth(row as usize).unwrap_or_default()
+    }
+
+    /// Regression: after clear(), the line that held "(thinking...)" must be
+    /// fully erased — no residual characters when the LLM response is short.
+    #[test]
+    fn clear_erases_text_completely() {
+        let cols: u16 = 40;
+        let mut out = String::new();
+        let mut s = LineStatus::new();
+        out.push_str(&s.show("(thinking...)"));
+        out.push_str(&s.clear());
+
+        let parser = parse_ansi(&out, cols, 10);
+        let screen = parser.screen();
+        // Every visible row should be blank after show+clear.
+        for row in 0..10 {
+            let text = get_row(screen, row, cols);
+            assert!(
+                text.trim().is_empty(),
+                "row {row} should be blank but got: {text:?}",
+            );
+        }
+    }
+
+    /// After clear(), a short response written to the same area must not show
+    /// any leftover "(thinking...)" characters.
+    #[test]
+    fn short_response_after_clear_has_no_residue() {
+        let cols: u16 = 40;
+        let mut out = String::new();
+        let mut s = LineStatus::new();
+        out.push_str(&s.show("(thinking...)"));
+        out.push_str(&s.clear());
+        // Simulate render_response("OK") — \r\n + text + \r\n
+        out.push_str("\r\n\x1b[37mOK\x1b[0m\r\n");
+
+        let parser = parse_ansi(&out, cols, 10);
+        let all = parser.screen().contents();
+        assert!(all.contains("OK"), "response should be visible");
+        assert!(
+            !all.contains("thinking"),
+            "no residual thinking text: {all:?}",
+        );
+    }
+
+    /// show() replacement should fully erase the previous text before
+    /// rendering the new text, even if the new text is shorter.
+    #[test]
+    fn show_replace_shorter_text_no_residue() {
+        let cols: u16 = 40;
+        let mut out = String::new();
+        let mut s = LineStatus::new();
+        out.push_str(&s.show("(thinking very long text here...)"));
+        out.push_str(&s.show("OK"));
+
+        let parser = parse_ansi(&out, cols, 10);
+        let all = parser.screen().contents();
+        assert!(all.contains("OK"), "new text should be visible");
+        assert!(
+            !all.contains("thinking"),
+            "old text should be gone: {all:?}",
+        );
     }
 }
