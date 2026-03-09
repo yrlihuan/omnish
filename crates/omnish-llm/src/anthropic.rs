@@ -83,6 +83,7 @@ impl LlmBackend for AnthropicBackend {
         }
 
         let body = serde_json::Value::Object(body_map);
+        crate::message_log::log_request(&body);
 
         let resp = client
             .post(format!("{}/v1/messages", self.base_url))
