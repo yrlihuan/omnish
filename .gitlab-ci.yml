@@ -16,7 +16,7 @@ cache:
 
 check:
   stage: check
-  image: rust:1.93
+  image: docker.nv/ubuntu_2404_runner:latest
   before_script:
     - apt-get update -qq && apt-get install -y -qq clang >/dev/null
   script:
@@ -26,7 +26,7 @@ check:
 
 test:
   stage: test
-  image: rust:1.93
+  image: docker.nv/ubuntu_2404_runner:latest
   before_script:
     - apt-get update -qq && apt-get install -y -qq clang >/dev/null
   script:
@@ -34,7 +34,7 @@ test:
 
 build-release:
   stage: build
-  image: rust:1.93
+  image: docker.nv/ubuntu_2404_runner:latest
   before_script:
     - apt-get update -qq && apt-get install -y -qq clang musl-tools >/dev/null
     - rustup target add x86_64-unknown-linux-musl
