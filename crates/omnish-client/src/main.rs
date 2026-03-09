@@ -2139,6 +2139,75 @@ fn parse_escape_sequence(stdin_fd: i32) -> Option<[u8; 2]> {
     None
 }
 
+#[derive(Debug, PartialEq)]
+#[allow(dead_code)]
+enum KeyEvent {
+    ArrowUp,
+    ArrowDown,
+    ArrowLeft,
+    ArrowRight,
+    Home,
+    End,
+    Delete,
+    CtrlLeft,
+    CtrlRight,
+    AltEnter,
+    Esc,
+}
+
+/// Parse key events after receiving ESC byte.
+/// More capable replacement for parse_escape_sequence() that handles
+/// extended sequences (Home, End, Delete, Ctrl+Arrow, Alt+Enter).
+/// Returns None for unrecognized sequences.
+#[allow(dead_code)]
+fn parse_key_after_esc(stdin_fd: i32) -> Option<KeyEvent> {
+    let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
+    let ready = unsafe { libc::poll(&mut pfd, 1, 50) };
+    if ready <= 0 {
+        return Some(KeyEvent::Esc); // Bare ESC
+    }
+
+    let mut b = [0u8; 1];
+    if nix::unistd::read(stdin_fd, &mut b) != Ok(1) {
+        return Some(KeyEvent::Esc);
+    }
+
+    match b[0] {
+        0x0d => return Some(KeyEvent::AltEnter), // ESC CR = Alt+Enter
+        b'[' => {} // CSI sequence, continue parsing below
+        _ => return None, // Unknown ESC + char
+    }
+
+    // Read CSI parameter bytes (digits, semicolons) until final byte (0x40-0x7E)
+    let mut params = Vec::new();
+    loop {
+        if nix::unistd::read(stdin_fd, &mut b) != Ok(1) {
+            return None;
+        }
+        if b[0] >= 0x40 && b[0] <= 0x7E {
+            // Final byte
+            break;
+        }
+        params.push(b[0]);
+    }
+    let final_byte = b[0];
+
+    match (params.as_slice(), final_byte) {
+        ([], b'A') => Some(KeyEvent::ArrowUp),
+        ([], b'B') => Some(KeyEvent::ArrowDown),
+        ([], b'C') => Some(KeyEvent::ArrowRight),
+        ([], b'D') => Some(KeyEvent::ArrowLeft),
+        ([], b'H') => Some(KeyEvent::Home),
+        ([], b'F') => Some(KeyEvent::End),
+        ([b'3'], b'~') => Some(KeyEvent::Delete),
+        ([b'1', b';', b'5'], b'C') => Some(KeyEvent::CtrlRight),
+        ([b'1', b';', b'5'], b'D') => Some(KeyEvent::CtrlLeft),
+        ([b'1'], b'~') => Some(KeyEvent::Home),    // alternate
+        ([b'4'], b'~') => Some(KeyEvent::End),      // alternate
+        _ => None,
+    }
+}
+
 /// Read a line of input in raw mode for the chat loop.
 /// Returns None on ESC, Ctrl-D, or backspace on empty input (if allow_backspace_exit is true).
 fn read_chat_input(
