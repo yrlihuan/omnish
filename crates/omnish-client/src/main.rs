@@ -124,6 +124,20 @@ async fn main() -> Result<()> {
 
     let config = load_client_config().unwrap_or_default();
 
+    // If stdin is not a terminal (e.g. rsync over SSH, piped commands),
+    // exec the underlying shell directly — omnish requires a PTY.
+    if !nix::unistd::isatty(0).unwrap_or(false) {
+        let shell = resolve_shell(&config.shell.command);
+        let shell_cstr = std::ffi::CString::new(shell.as_str()).expect("shell path");
+        // Pass through any arguments after argv[0]
+        let mut args: Vec<std::ffi::CString> = vec![shell_cstr.clone()];
+        for arg in std::env::args().skip(1) {
+            args.push(std::ffi::CString::new(arg).expect("arg"));
+        }
+        nix::unistd::execvp(&shell_cstr, &args)?;
+        unreachable!();
+    }
+
     let session_id = Uuid::new_v4().to_string()[..8].to_string();
     let parent_session_id = std::env::var("OMNISH_SESSION_ID").ok();
     let shell = resolve_shell(&config.shell.command);
