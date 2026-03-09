@@ -68,6 +68,7 @@ pub fn render_ghost_text(ghost: &str) -> String {
 }
 
 /// Render previous chat history in dim gray for chat mode re-entry.
+#[allow(dead_code)]
 pub fn render_chat_history(last_exchange: Option<&(String, String)>, earlier_count: u32) -> String {
     let mut output = String::new();
     if earlier_count > 0 {

@@ -5,20 +5,15 @@ use serde::{Deserialize, Serialize};
 use crate::tool::{ToolCall, ToolDef};
 
 /// Use case for LLM requests - determines which model to use
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum UseCase {
     /// Auto-completion - fast, lightweight suggestions
     Completion,
     /// Analysis - deeper context understanding
+    #[default]
     Analysis,
     /// Chat mode - conversational interaction
     Chat,
-}
-
-impl Default for UseCase {
-    fn default() -> Self {
-        UseCase::Analysis
-    }
 }
 
 /// A block of content in an LLM response.

@@ -1,7 +1,7 @@
 use crate::session_mgr::SessionManager;
 use chrono::Local;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_cron_scheduler::Job;
@@ -32,7 +32,7 @@ pub fn create_hourly_summary_job(
 async fn generate_hourly_summary(
     mgr: &SessionManager,
     llm_backend: Option<&dyn LlmBackend>,
-    summaries_dir: &PathBuf,
+    summaries_dir: &Path,
 ) -> anyhow::Result<()> {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)

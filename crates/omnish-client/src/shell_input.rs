@@ -5,7 +5,7 @@
 /// 1. OSC 133;A/D (PromptStart/CommandEnd) -> on_prompt(): at_prompt = true
 /// 2. Enter key (0x0d) in feed_forwarded -> at_prompt = false
 ///    (OSC 133;B/C are NOT used for at_prompt because the bash DEBUG trap
-///     fires during PS1 command substitution, not just on user Enter)
+///    fires during PS1 command substitution, not just on user Enter)
 /// 3. While at_prompt, forwarded printable bytes are appended to `input`
 /// 4. Backspace (0x7f / 0x08) removes the last character
 /// 5. Ctrl+C (0x03) / Ctrl+U (0x15) clears input

@@ -15,13 +15,14 @@ pub trait Plugin: Send + Sync {
 }
 
 /// Manages all registered plugins (official + external).
+#[derive(Default)]
 pub struct PluginManager {
     plugins: Vec<Box<dyn Plugin>>,
 }
 
 impl PluginManager {
     pub fn new() -> Self {
-        Self { plugins: vec![] }
+        Self::default()
     }
 
     /// Register a plugin.

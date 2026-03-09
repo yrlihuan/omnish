@@ -123,7 +123,7 @@ impl Default for DiskCleanupConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct TasksConfig {
     #[serde(default)]
     pub eviction: EvictionConfig,
@@ -133,32 +133,16 @@ pub struct TasksConfig {
     pub disk_cleanup: DiskCleanupConfig,
 }
 
-impl Default for TasksConfig {
-    fn default() -> Self {
-        Self {
-            eviction: EvictionConfig::default(),
-            daily_notes: DailyNotesConfig::default(),
-            disk_cleanup: DiskCleanupConfig::default(),
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Plugins config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct PluginsConfig {
     /// List of enabled plugin names. Each corresponds to a directory
     /// under ~/.omnish/plugins/{name}/ containing a {name} executable.
     #[serde(default)]
     pub enabled: Vec<String>,
-}
-
-impl Default for PluginsConfig {
-    fn default() -> Self {
-        Self { enabled: vec![] }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +421,7 @@ fn default_daily_max_line_width() -> usize {
     128
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct ContextConfig {
     #[serde(default)]
     pub completion: CompletionContextConfig,
@@ -445,16 +429,6 @@ pub struct ContextConfig {
     pub hourly_summary: HourlySummaryConfig,
     #[serde(default)]
     pub daily_summary: DailySummaryConfig,
-}
-
-impl Default for ContextConfig {
-    fn default() -> Self {
-        Self {
-            completion: CompletionContextConfig::default(),
-            hourly_summary: HourlySummaryConfig::default(),
-            daily_summary: DailySummaryConfig::default(),
-        }
-    }
 }
 
 fn default_detailed_commands() -> usize {

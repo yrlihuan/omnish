@@ -1,7 +1,7 @@
 use crate::session_mgr::SessionManager;
 use chrono::Local;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_cron_scheduler::Job;
@@ -62,7 +62,7 @@ pub fn build_daily_notes_context(
 }
 
 /// Read all hourly note files for the given date (YYYY-MM-DD) and concatenate them.
-fn collect_hourly_notes(notes_dir: &PathBuf, date: &str) -> String {
+fn collect_hourly_notes(notes_dir: &Path, date: &str) -> String {
     let hourly_dir = notes_dir.join("hourly").join(date);
     let mut entries: Vec<_> = match std::fs::read_dir(&hourly_dir) {
         Ok(rd) => rd
@@ -70,7 +70,7 @@ fn collect_hourly_notes(notes_dir: &PathBuf, date: &str) -> String {
             .filter(|e| {
                 e.path()
                     .extension()
-                    .map_or(false, |ext| ext == "md")
+                    .is_some_and(|ext| ext == "md")
             })
             .collect(),
         Err(_) => return String::new(),

@@ -28,7 +28,7 @@ pub fn log_request(body: &serde_json::Value) {
         let mut files: Vec<PathBuf> = entries
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| p.extension().map_or(false, |ext| ext == "json"))
+            .filter(|p| p.extension().is_some_and(|ext| ext == "json"))
             .collect();
 
         if files.len() > MAX_LOG_FILES {

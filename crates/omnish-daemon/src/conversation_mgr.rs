@@ -17,7 +17,7 @@ impl ConversationManager {
         if let Ok(entries) = std::fs::read_dir(&threads_dir) {
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
-                if path.extension().map_or(true, |ext| ext != "jsonl") {
+                if path.extension().is_none_or(|ext| ext != "jsonl") {
                     continue;
                 }
                 let thread_id = match path.file_stem() {
@@ -57,7 +57,7 @@ impl ConversationManager {
         let mut entries: Vec<_> = std::fs::read_dir(&self.threads_dir)
             .ok()?
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map_or(false, |ext| ext == "jsonl"))
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
             .collect();
         entries.sort_by_key(|e| {
             std::cmp::Reverse(e.metadata().ok().and_then(|m| m.modified().ok()))
@@ -82,7 +82,7 @@ impl ConversationManager {
                 let last_question = msgs.iter()
                     .rev()
                     .find(|m| Self::is_user_input(m))
-                    .map(|m| Self::extract_text(m))
+                    .map(Self::extract_text)
                     .unwrap_or_default();
                 Some((thread_id.clone(), modified, exchange_count, last_question))
             })
@@ -149,7 +149,7 @@ impl ConversationManager {
         }
 
         // Find last user input message
-        let last_user_idx = msgs.iter().rposition(|m| Self::is_user_input(m));
+        let last_user_idx = msgs.iter().rposition(Self::is_user_input);
         let last_user_idx = match last_user_idx {
             Some(idx) => idx,
             None => return (None, 0),
@@ -161,7 +161,7 @@ impl ConversationManager {
         let assistant_text: String = msgs[last_user_idx + 1..]
             .iter()
             .filter(|m| m["role"].as_str() == Some("assistant"))
-            .map(|m| Self::extract_text(m))
+            .map(Self::extract_text)
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
             .join("\n");

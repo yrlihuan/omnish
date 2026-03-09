@@ -65,7 +65,7 @@ impl RpcServer {
         F: Fn(Message) -> Pin<Box<dyn Future<Output = Vec<Message>> + Send>> + Send + Sync + 'static,
     {
         let handler = Arc::new(handler);
-        let auth_token = auth_token.map(|t| Arc::new(t));
+        let auth_token = auth_token.map(Arc::new);
         loop {
             match &self.listener {
                 Listener::Unix(l) => {

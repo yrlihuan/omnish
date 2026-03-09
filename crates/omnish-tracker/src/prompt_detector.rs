@@ -12,8 +12,8 @@ pub struct PromptDetector {
     line_buf: Vec<u8>,
 }
 
-impl PromptDetector {
-    pub fn new() -> Self {
+impl Default for PromptDetector {
+    fn default() -> Self {
         let patterns = DEFAULT_PATTERNS
             .iter()
             .map(|p| Regex::new(p).expect("invalid default prompt pattern"))
@@ -22,6 +22,12 @@ impl PromptDetector {
             patterns,
             line_buf: Vec::new(),
         }
+    }
+}
+
+impl PromptDetector {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn with_patterns(patterns: Vec<String>) -> Self {

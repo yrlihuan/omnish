@@ -68,15 +68,13 @@ impl CommandQueryTool {
                 };
                 // Truncate by lines and bytes
                 let mut result = String::new();
-                let mut line_count = 0;
-                for line in text.lines() {
+                for (line_count, line) in text.lines().enumerate() {
                     if line_count >= MAX_OUTPUT_LINES || result.len() + line.len() > MAX_OUTPUT_BYTES {
                         result.push_str(&format!("\n... (truncated, {} total lines)", text.lines().count()));
                         break;
                     }
                     if line_count > 0 { result.push('\n'); }
                     result.push_str(line);
-                    line_count += 1;
                 }
                 result
             }

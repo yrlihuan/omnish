@@ -35,6 +35,7 @@ impl LineEditor {
         self.cursor
     }
 
+    #[allow(dead_code)]
     pub fn cursor_display_col(&self) -> usize {
         let (row, col) = self.cursor;
         self.lines[row][..col]

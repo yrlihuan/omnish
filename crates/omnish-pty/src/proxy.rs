@@ -64,7 +64,7 @@ impl PtyProxy {
     }
 
     pub fn child_pid(&self) -> i32 {
-        self.child_pid.as_raw() as i32
+        self.child_pid.as_raw()
     }
 
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {

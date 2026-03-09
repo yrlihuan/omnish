@@ -23,6 +23,7 @@ impl LineStatus {
     }
 
     /// Returns true if something is currently shown on screen.
+    #[allow(dead_code)]
     pub fn is_visible(&self) -> bool {
         self.lines > 0
     }

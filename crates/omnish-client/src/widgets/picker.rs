@@ -103,10 +103,8 @@ fn parse_esc_seq(stdin_fd: i32) -> Option<[u8; 2]> {
     if nix::unistd::read(stdin_fd, &mut seq[0..1]) != Ok(1) {
         return None;
     }
-    if seq[0] == b'[' {
-        if nix::unistd::read(stdin_fd, &mut seq[1..2]) == Ok(1) {
-            return Some(seq);
-        }
+    if seq[0] == b'[' && nix::unistd::read(stdin_fd, &mut seq[1..2]) == Ok(1) {
+        return Some(seq);
     }
     None
 }
@@ -137,9 +135,8 @@ fn run_picker(title: &str, items: &[&str], multi: bool) -> Option<Vec<usize>> {
     let stdin_fd = std::io::stdin().as_raw_fd();
     let mut byte = [0u8; 1];
 
-    loop {
-        match nix::unistd::read(stdin_fd, &mut byte) {
-            Ok(1) => match byte[0] {
+    while let Ok(1) = nix::unistd::read(stdin_fd, &mut byte) {
+        match byte[0] {
                 0x1b => {
                     if let Some(seq) = parse_esc_seq(stdin_fd) {
                         if seq[0] == b'[' {
@@ -212,9 +209,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool) -> Option<Vec<usize>> {
                         return Some(vec![cursor]);
                     }
                 }
-                _ => {} // Ignore other input
-            },
-            _ => break,
+            _ => {} // Ignore other input
         }
     }
 

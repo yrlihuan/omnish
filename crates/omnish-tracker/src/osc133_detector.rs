@@ -23,6 +23,7 @@ pub struct Osc133Event {
 /// - `\x1b]133;B\x07` -> CommandStart
 /// - `\x1b]133;C\x07` -> OutputStart
 /// - `\x1b]133;D;{exit_code}\x07` -> CommandEnd { exit_code }
+#[derive(Default)]
 pub struct Osc133Detector {
     buf: Vec<u8>,
     in_osc: bool,
@@ -32,11 +33,7 @@ pub struct Osc133Detector {
 
 impl Osc133Detector {
     pub fn new() -> Self {
-        Self {
-            buf: Vec::new(),
-            in_osc: false,
-            carried_len: 0,
-        }
+        Self::default()
     }
 
     pub fn feed(&mut self, data: &[u8]) -> Vec<Osc133Event> {

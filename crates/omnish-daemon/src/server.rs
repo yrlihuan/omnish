@@ -125,7 +125,7 @@ async fn handle_message(
         }
         Message::Request(req) => {
             if req.query.starts_with("__cmd:") {
-                let result = handle_builtin_command(&req, &mgr, &task_mgr, &llm, conv_mgr).await;
+                let result = handle_builtin_command(&req, mgr, task_mgr, llm, conv_mgr).await;
                 let content = serde_json::to_string(&result).unwrap_or_else(|_| {
                     r#"{"display":"(serialization error)"}"#.to_string()
                 });
@@ -832,7 +832,7 @@ async fn get_session_debug_info(session_id: &str, mgr: &SessionManager) -> Resul
     if let Some(ended_at) = &meta.ended_at {
         info.push_str(&format!("Ended at: {}\n", ended_at));
     } else {
-        info.push_str(&format!("Status: Active\n"));
+        info.push_str("Status: Active\n");
         info.push_str(&format!("Last active: {}s ago\n", last_active_duration.as_secs()));
     }
 
@@ -864,7 +864,7 @@ async fn get_session_debug_info(session_id: &str, mgr: &SessionManager) -> Resul
             .filter(|c| c.command_line.is_some())
             .collect();
 
-        info.push_str(&format!("\nCommand statistics:\n"));
+        info.push_str("\nCommand statistics:\n");
         info.push_str(&format!("  Total commands: {}\n", commands.len()));
         info.push_str(&format!("  Meaningful commands: {}\n", meaningful_commands.len()));
 

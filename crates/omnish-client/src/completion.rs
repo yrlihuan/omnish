@@ -276,8 +276,7 @@ impl ShellCompleter {
                 };
 
                 // Check if current input is a prefix of the full suggestion
-                if full_suggestion.starts_with(current_input) {
-                    let suffix = &full_suggestion[current_input.len()..];
+                if let Some(suffix) = full_suggestion.strip_prefix(current_input) {
                     if suffix.is_empty() {
                         self.current_ghost = None;
                         return None;

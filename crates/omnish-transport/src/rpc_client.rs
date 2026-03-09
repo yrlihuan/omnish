@@ -44,6 +44,12 @@ type ConnectorFn = Arc<
         + Sync,
 >;
 
+type ReconnectFn = Arc<
+    dyn Fn(&RpcClient) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>
+        + Send
+        + Sync,
+>;
+
 fn make_connector(addr: &str, tls_connector: Option<TlsConnector>) -> ConnectorFn {
     let addr = addr.to_string();
     Arc::new(move || {
@@ -257,11 +263,7 @@ impl RpcClient {
         inner_ref: Arc<Mutex<Inner>>,
         next_id: Arc<AtomicU64>,
         connector: ConnectorFn,
-        on_reconnect: Arc<
-            dyn Fn(&RpcClient) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>
-                + Send
-                + Sync,
-        >,
+        on_reconnect: ReconnectFn,
         mut disc_rx: oneshot::Receiver<()>,
     ) {
         loop {
@@ -417,11 +419,8 @@ impl RpcClient {
         connected: Arc<AtomicBool>,
         disconnect_tx: Option<oneshot::Sender<()>>,
     ) {
-        loop {
-            let len = match reader.read_u32().await {
-                Ok(len) => len as usize,
-                Err(_) => break,
-            };
+        while let Ok(len) = reader.read_u32().await {
+            let len = len as usize;
             let mut buf = vec![0u8; len];
             if reader.read_exact(&mut buf).await.is_err() {
                 break;

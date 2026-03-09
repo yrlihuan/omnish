@@ -94,7 +94,7 @@ impl Probe for ChildProcessProbe {
         let child_pid: Option<i32> = children_str
             .split_whitespace()
             .filter_map(|s| s.parse().ok())
-            .last();
+            .next_back();
         match child_pid {
             Some(pid) => {
                 let name = std::fs::read_to_string(format!("/proc/{}/comm", pid))

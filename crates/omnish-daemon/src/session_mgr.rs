@@ -420,8 +420,8 @@ impl SessionManager {
                         let should_sample = {
                             let mut last = self.last_sample_time.lock().await;
                             let now = Instant::now();
-                            let ok = last.map_or(true, |t| {
-                                now.duration_since(t).as_secs() >= SAMPLE_RATE_LIMIT_SECS
+                            let ok = !last.is_some_and(|t| {
+                                now.duration_since(t).as_secs() < SAMPLE_RATE_LIMIT_SECS
                             });
                             if ok {
                                 *last = Some(now);
@@ -807,11 +807,7 @@ impl SessionManager {
             // Note: sessionid can contain underscores, so we need to split on first underscore
             let dir_name = dir.file_name().and_then(|n| n.to_str());
             let session_id = dir_name.and_then(|name| {
-                if let Some(pos) = name.find('_') {
-                    Some(&name[pos + 1..]) // Everything after first underscore
-                } else {
-                    None
-                }
+                name.find('_').map(|pos| &name[pos + 1..]) // Everything after first underscore
             });
 
             // Skip if this session is currently loaded in memory

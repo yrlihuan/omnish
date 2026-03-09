@@ -307,8 +307,7 @@ async fn main() -> Result<()> {
             }
 
             // Feed bytes to interceptor one by one
-            for i in 0..n {
-                let byte = input_buf[i];
+            for &byte in &input_buf[..n] {
                 match interceptor.feed_byte(byte) {
                     InterceptAction::Buffering(buf) => {
                         if buf == prefix_bytes {
@@ -1304,13 +1303,12 @@ impl AltScreenDetector {
                     let entering = byte == b'h';
 
                     // Check \x1b[?1049h/l
-                    if s == b"\x1b[?1049h" || s == b"\x1b[?1049l"
-                        || s == b"\x1b[?47h" || s == b"\x1b[?47l"
+                    if (s == b"\x1b[?1049h" || s == b"\x1b[?1049l"
+                        || s == b"\x1b[?47h" || s == b"\x1b[?47l")
+                        && self.active != entering
                     {
-                        if self.active != entering {
-                            self.active = entering;
-                            changed = true;
-                        }
+                        self.active = entering;
+                        changed = true;
                     }
 
                     self.seq_buf.clear();
@@ -1564,7 +1562,7 @@ async fn run_chat_loop(
             let prompt = display::render_chat_prompt();
             nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
 
-            match read_chat_input(&mut chat_completer, !has_activity, &chat_history, &mut history_index) {
+            match read_chat_input(&mut chat_completer, !has_activity, chat_history, &mut history_index) {
                 Some(line) => line,
                 None => break, // ESC / Ctrl-D / backspace on empty
             }
@@ -1965,13 +1963,12 @@ async fn run_chat_loop(
             continue;
         }
 
-        // Handle /commands that go through existing dispatch
-        if trimmed.starts_with('/') {
-            if handle_slash_command(trimmed, session_id, rpc, proxy, client_debug_fn).await {
-                if auto_exit { break; }
-                continue;
-            }
-            // Unknown /command — fall through to send as chat message
+        // Handle /commands; unknown ones fall through to send as chat message
+        if trimmed.starts_with('/')
+            && handle_slash_command(trimmed, session_id, rpc, proxy, client_debug_fn).await
+        {
+            if auto_exit { break; }
+            continue;
         }
 
         // Lazily create thread if not yet initialized
@@ -2231,7 +2228,7 @@ fn read_chat_input(
             let pfx = if i == 0 { "> " } else { "  " };
 
             // Build display string, replacing FFFC with markers
-            let has_fffc = line.iter().any(|&c| c == '\u{FFFC}');
+            let has_fffc = line.contains(&'\u{FFFC}');
             if has_fffc {
                 out.push_str(pfx);
                 for &ch in line {
@@ -2261,7 +2258,7 @@ fn read_chat_input(
         }
 
         // Ghost text after last line (only if cursor is on a normal line)
-        let cursor_on_fffc = editor.line(cursor_row).iter().any(|&c| c == '\u{FFFC}');
+        let cursor_on_fffc = editor.line(cursor_row).contains(&'\u{FFFC}');
         if has_ghost && !ghost.is_empty() && !cursor_on_fffc {
             out.push_str(&format!("\x1b[2;37m{}\x1b[0m", ghost));
         }
@@ -2281,15 +2278,15 @@ fn read_chat_input(
         let fffc_before_cursor_row: usize = (0..cursor_row)
             .map(|r| editor.line(r).iter().filter(|&&c| c == '\u{FFFC}').count())
             .sum();
-        for ci in 0..cursor_col {
-            if cursor_line[ci] == '\u{FFFC}' {
+        for &ch in &cursor_line[..cursor_col] {
+            if ch == '\u{FFFC}' {
                 let block_idx = fffc_before_cursor_row + local_fffc;
                 if let Some(block) = blocks.get(block_idx) {
                     cursor_display += format!("[pasted text #{} +{} lines]", block.index, block.line_count).len();
                 }
                 local_fffc += 1;
             } else {
-                cursor_display += UnicodeWidthChar::width(cursor_line[ci]).unwrap_or(1);
+                cursor_display += UnicodeWidthChar::width(ch).unwrap_or(1);
             }
         }
         if cursor_display > 0 {
@@ -2441,7 +2438,7 @@ fn read_chat_input(
                                         if let Some(g) = completer.update(cmd) {
                                             ghost_text = g.to_string();
                                             has_ghost = true;
-                                            redraw(&editor, &g, true);
+                                            redraw(&editor, g, true);
                                         } else {
                                             redraw(&editor, "", false);
                                         }
@@ -2476,7 +2473,7 @@ fn read_chat_input(
                                         if let Some(g) = completer.update(cmd) {
                                             ghost_text = g.to_string();
                                             has_ghost = true;
-                                            redraw(&editor, &g, true);
+                                            redraw(&editor, g, true);
                                         } else {
                                             redraw(&editor, "", false);
                                         }
@@ -2510,7 +2507,7 @@ fn read_chat_input(
                                 if let Some(g) = completer.update(&content) {
                                     ghost_text = g.to_string();
                                     has_ghost = true;
-                                    redraw(&editor, &g, true);
+                                    redraw(&editor, g, true);
                                 } else {
                                     completer.clear();
                                     redraw(&editor, "", false);
@@ -2538,7 +2535,7 @@ fn read_chat_input(
                                 if !paste_last_cr { paste_buf.push('\n'); }
                                 paste_last_cr = false;
                             }
-                            b if b >= 0x20 && b < 0x80 => {
+                            b if (0x20..0x80).contains(&b) => {
                                 paste_last_cr = false;
                                 paste_buf.push(b as char);
                             }
@@ -2574,7 +2571,7 @@ fn read_chat_input(
                         if let Some(g) = completer.update(&content) {
                             ghost_text = g.to_string();
                             has_ghost = true;
-                            redraw(&editor, &g, true);
+                            redraw(&editor, g, true);
                         } else {
                             completer.clear();
                             redraw(&editor, "", false);
@@ -2670,7 +2667,7 @@ fn read_chat_input(
                             if let Some(g) = completer.update(&content) {
                                 ghost_text = g.to_string();
                                 has_ghost = true;
-                                redraw(&editor, &g, true);
+                                redraw(&editor, g, true);
                             } else {
                                 redraw(&editor, "", false);
                             }
@@ -2716,7 +2713,7 @@ fn read_chat_input(
                         if let Some(g) = completer.update(&content) {
                             ghost_text = g.to_string();
                             has_ghost = true;
-                            redraw(&editor, &g, true);
+                            redraw(&editor, g, true);
                         } else {
                             completer.clear();
                             redraw(&editor, "", false);
@@ -2743,7 +2740,7 @@ fn read_chat_input(
                         if let Some(g) = completer.update(&content) {
                             ghost_text = g.to_string();
                             has_ghost = true;
-                            redraw(&editor, &g, true);
+                            redraw(&editor, g, true);
                         } else {
                             completer.clear();
                             redraw(&editor, "", false);
@@ -2759,7 +2756,7 @@ fn read_chat_input(
 
 fn save_to_history(history: &mut VecDeque<String>, command: &str, capacity: usize) {
     // Don't save empty commands or duplicates of the most recent command
-    if command.trim().is_empty() || history.back().map_or(false, |s| s == command) {
+    if command.trim().is_empty() || history.back().is_some_and(|s| s == command) {
         return;
     }
 

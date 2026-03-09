@@ -56,8 +56,7 @@ fn debug_usage(_args: &str) -> String {
         .iter()
         .filter(|e| e.path.starts_with("/debug "))
         .map(|e| {
-            let sub = &e.path["/debug ".len()..];
-            sub
+            &e.path["/debug ".len()..]
         })
         .collect();
     format!("Usage: /debug <{}> [> file.txt]", subs.join("|"))
@@ -188,8 +187,7 @@ fn parse_limit(input: &str) -> (&str, Option<OutputLimit>) {
 
         // Helper to parse count from -nN or -n N or just N
         let parse_count = |s: &str| -> Option<usize> {
-            if s.starts_with("-n") {
-                let n = &s[2..];
+            if let Some(n) = s.strip_prefix("-n") {
                 if n.is_empty() {
                     // -n without number: will get next part if available
                     None
@@ -207,11 +205,9 @@ fn parse_limit(input: &str) -> (&str, Option<OutputLimit>) {
                     if parts[1] == "-n" {
                         // | head -n N
                         parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(10)
-                    } else if let Some(c) = parse_count(parts[1]) {
-                        // | head -nN or | head N
-                        c
                     } else {
-                        10
+                        // | head -nN or | head N
+                        parse_count(parts[1]).unwrap_or(10)
                     }
                 } else {
                     10
@@ -223,11 +219,9 @@ fn parse_limit(input: &str) -> (&str, Option<OutputLimit>) {
                     if parts[1] == "-n" {
                         // | tail -n N
                         parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(10)
-                    } else if let Some(c) = parse_count(parts[1]) {
-                        // | tail -nN or | tail N
-                        c
                     } else {
-                        10
+                        // | tail -nN or | tail N
+                        parse_count(parts[1]).unwrap_or(10)
                     }
                 } else {
                     10
@@ -274,12 +268,11 @@ pub fn dispatch(msg: &str) -> ChatAction {
     // Find the longest matching command path.
     let mut best: Option<&CommandEntry> = None;
     for entry in COMMANDS {
-        if cmd_str == entry.path
-            || cmd_str.starts_with(&format!("{} ", entry.path))
+        if (cmd_str == entry.path
+            || cmd_str.starts_with(&format!("{} ", entry.path)))
+            && best.is_none_or(|b: &CommandEntry| entry.path.len() > b.path.len())
         {
-            if best.map_or(true, |b| entry.path.len() > b.path.len()) {
-                best = Some(entry);
-            }
+            best = Some(entry);
         }
     }
 
