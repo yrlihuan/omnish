@@ -2417,7 +2417,21 @@ fn read_chat_input(
                         completer.clear();
                         redraw(&editor, "", false);
                     }
-                    0x0d => { // Enter — submit
+                    0x0d => { // Enter — submit or fast-paste newline
+                        // Fast-paste detection: if more data arrives within 1ms,
+                        // this CR is part of a paste, not a real Enter keypress.
+                        if !pasting {
+                            let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
+                            if unsafe { libc::poll(&mut pfd, 1, 1) } > 0 {
+                                // Data available immediately — treat as paste newline
+                                editor.newline();
+                                has_ghost = false;
+                                ghost_text.clear();
+                                completer.clear();
+                                redraw(&editor, "", false);
+                                continue;
+                            }
+                        }
                         // Clear ghost and move to end for clean output
                         if has_ghost {
                             redraw(&editor, "", false);
