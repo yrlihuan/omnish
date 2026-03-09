@@ -2184,6 +2184,19 @@ fn read_chat_input(
     let mut bracketed_paste = false;
     let mut last_input = std::time::Instant::now();
 
+    // Paste block state: collapsed display for large pastes (≥10 lines)
+    struct PasteBlock {
+        prefix: String,      // editor content before this paste (frozen)
+        content: String,     // the full pasted text
+        index: usize,        // paste number (#1, #2, ...)
+        line_count: usize,
+    }
+    let paste_blocks: std::cell::RefCell<Vec<PasteBlock>> = std::cell::RefCell::new(vec![]);
+    let mut paste_count = 0usize;
+    let mut paste_buf = String::new();
+    let mut paste_buffering = false;
+    let mut paste_last_cr = false;
+
     // Enable bracketed paste mode so terminal wraps pasted content
     // with \x1b[200~ ... \x1b[201~ markers
     nix::unistd::write(std::io::stdout(), b"\x1b[?2004h").ok();
@@ -2197,60 +2210,75 @@ fn read_chat_input(
     // so we know how many lines to move up to reach line 0.
     let term_cursor_row = std::cell::Cell::new(0usize);
 
-    // Helper: redraw the editor content from the prompt position
-    // For single-line: "\r> {content}\x1b[K" then reposition cursor
-    // For multi-line: "\r> {line1}\x1b[K\r\n  {line2}\x1b[K\r\n..." then reposition
+    // Helper: redraw paste blocks + editor content from the prompt position
     let redraw = |editor: &LineEditor, ghost: &str, has_ghost: bool| {
         let mut out = String::new();
-        let line_count = editor.line_count();
-        let (cursor_row, _cursor_col) = editor.cursor();
+        let blocks = paste_blocks.borrow();
 
-        // Move to beginning of first line using the PREVIOUS terminal cursor row,
-        // not the editor's current cursor_row (which may have changed due to
-        // line merges or cursor movement).
+        // Move to beginning of first line
         let prev_row = term_cursor_row.get();
         if prev_row > 0 {
             out.push_str(&format!("\x1b[{}A", prev_row));
         }
         out.push('\r');
 
+        // Count paste block display lines (prefix lines + 1 marker per block)
+        let mut display_row = 0usize;
+        let mut is_first_line = true;
+
+        for block in blocks.iter() {
+            // Render prefix lines (frozen text typed before this paste)
+            if !block.prefix.is_empty() {
+                for line in block.prefix.lines() {
+                    let pfx = if is_first_line { "> " } else { "  " };
+                    is_first_line = false;
+                    out.push_str(&format!("{}{}\x1b[K\r\n", pfx, line));
+                    display_row += 1;
+                }
+            }
+            // Render paste marker
+            let pfx = if is_first_line { "> " } else { "  " };
+            is_first_line = false;
+            out.push_str(&format!(
+                "{}\x1b[2;36m[pasted text #{} +{} lines]\x1b[0m\x1b[K\r\n",
+                pfx, block.index, block.line_count
+            ));
+            display_row += 1;
+        }
+
+        // Render editor lines
+        let line_count = editor.line_count();
+        let (cursor_row, _) = editor.cursor();
+
         for i in 0..line_count {
-            let prefix = if i == 0 { "> " } else { "  " };
+            let pfx = if is_first_line && i == 0 { "> " } else if i == 0 && !blocks.is_empty() { "> " } else { "  " };
             let line_str: String = editor.line(i).iter().collect();
             if i == line_count - 1 {
-                // Last line: clear to end of screen to remove leftover lines
-                out.push_str(&format!("{}{}\x1b[J", prefix, line_str));
+                out.push_str(&format!("{}{}\x1b[J", pfx, line_str));
             } else {
-                out.push_str(&format!("{}{}\x1b[K\r\n", prefix, line_str));
+                out.push_str(&format!("{}{}\x1b[K\r\n", pfx, line_str));
             }
         }
 
-        // Show ghost text after the last line's content
+        // Ghost text after last line
         if has_ghost && !ghost.is_empty() {
             out.push_str(&format!("\x1b[2;37m{}\x1b[0m", ghost));
         }
 
-        // Now position cursor at the correct location
-        // Terminal cursor is currently at end of last line (after ghost if any)
-        let last_row = line_count - 1;
-
-        // Move up from last_row to cursor_row
-        let rows_up = last_row - cursor_row;
+        // Position cursor: it's in the editor section
+        let total_last_row = display_row + line_count - 1;
+        let total_cursor_row = display_row + cursor_row;
+        let rows_up = total_last_row - total_cursor_row;
         if rows_up > 0 {
             out.push_str(&format!("\x1b[{}A", rows_up));
         }
-
-        // Move to correct column: go to column 0 then forward to prefix + display col
         out.push('\r');
-        let prefix_width = 2; // "> " or "  "
-        let cursor_display = prefix_width + editor.cursor_display_col();
+        let cursor_display = 2 + editor.cursor_display_col();
         if cursor_display > 0 {
             out.push_str(&format!("\x1b[{}C", cursor_display));
         }
 
-        // Remember where we left the terminal cursor for next redraw
-        term_cursor_row.set(cursor_row);
-
+        term_cursor_row.set(total_cursor_row);
         nix::unistd::write(std::io::stdout(), out.as_bytes()).ok();
     };
 
@@ -2261,6 +2289,38 @@ fn read_chat_input(
     // The caller already printed "> ", so we don't redraw on first iteration
 
     loop {
+        // If paste buffering, check if the stream ended before blocking on read.
+        // Poll with 2ms timeout: if no data arrives, finalize the paste buffer.
+        if paste_buffering && !bracketed_paste {
+            let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
+            if unsafe { libc::poll(&mut pfd, 1, 2) } <= 0 {
+                paste_buffering = false;
+                let line_count = paste_buf.lines().count()
+                    + if paste_buf.ends_with('\n') { 1 } else { 0 };
+                let line_count = line_count.max(if paste_buf.is_empty() { 0 } else { 1 });
+                if line_count >= 10 {
+                    paste_count += 1;
+                    let prefix = editor.content();
+                    paste_blocks.borrow_mut().push(PasteBlock {
+                        prefix,
+                        content: paste_buf.clone(),
+                        index: paste_count,
+                        line_count,
+                    });
+                    editor = LineEditor::new();
+                } else if !paste_buf.is_empty() {
+                    for ch in paste_buf.chars() {
+                        if ch == '\n' { editor.newline(); } else { editor.insert(ch); }
+                    }
+                }
+                paste_buf.clear();
+                has_ghost = false;
+                ghost_text.clear();
+                completer.clear();
+                redraw(&editor, "", false);
+            }
+        }
+
         match nix::unistd::read(stdin_fd, &mut byte) {
             Ok(1) => {
                 // Fast-paste detection (two directions):
@@ -2273,6 +2333,46 @@ fn read_chat_input(
                 let forward = unsafe { libc::poll(&mut pfd, 1, 0) } > 0;
                 let pasting = bracketed_paste || backward || forward;
 
+                // Start paste buffering
+                if pasting && !paste_buffering && byte[0] != 0x1b {
+                    paste_buffering = true;
+                    paste_buf.clear();
+                    paste_last_cr = false;
+                }
+
+                // End paste buffering — finalize when paste stops
+                if !pasting && paste_buffering {
+                    paste_buffering = false;
+                    let line_count = paste_buf.lines().count()
+                        + if paste_buf.ends_with('\n') { 1 } else { 0 };
+                    let line_count = line_count.max(if paste_buf.is_empty() { 0 } else { 1 });
+                    if line_count >= 10 {
+                        paste_count += 1;
+                        let prefix = editor.content();
+                        paste_blocks.borrow_mut().push(PasteBlock {
+                            prefix,
+                            content: paste_buf.clone(),
+                            index: paste_count,
+                            line_count,
+                        });
+                        editor = LineEditor::new();
+                    } else if !paste_buf.is_empty() {
+                        // Short paste: replay into editor
+                        for ch in paste_buf.chars() {
+                            if ch == '\n' {
+                                editor.newline();
+                            } else {
+                                editor.insert(ch);
+                            }
+                        }
+                    }
+                    paste_buf.clear();
+                    has_ghost = false;
+                    ghost_text.clear();
+                    completer.clear();
+                    redraw(&editor, "", false);
+                }
+
                 match byte[0] {
                     0x1b => {
                         match parse_key_after_esc(stdin_fd) {
@@ -2280,6 +2380,27 @@ fn read_chat_input(
                             Some(KeyEvent::PasteStart) => { bracketed_paste = true; }
                             Some(KeyEvent::PasteEnd) => {
                                 bracketed_paste = false;
+                                paste_buffering = false;
+                                // Finalize paste buffer
+                                let line_count = paste_buf.lines().count()
+                                    + if paste_buf.ends_with('\n') { 1 } else { 0 };
+                                let line_count = line_count.max(if paste_buf.is_empty() { 0 } else { 1 });
+                                if line_count >= 10 {
+                                    paste_count += 1;
+                                    let prefix = editor.content();
+                                    paste_blocks.borrow_mut().push(PasteBlock {
+                                        prefix,
+                                        content: paste_buf.clone(),
+                                        index: paste_count,
+                                        line_count,
+                                    });
+                                    editor = LineEditor::new();
+                                } else if !paste_buf.is_empty() {
+                                    for ch in paste_buf.chars() {
+                                        if ch == '\n' { editor.newline(); } else { editor.insert(ch); }
+                                    }
+                                }
+                                paste_buf.clear();
                                 has_ghost = false;
                                 ghost_text.clear();
                                 completer.clear();
@@ -2395,6 +2516,37 @@ fn read_chat_input(
                             None => {} // Unknown escape sequence, ignore
                         }
                     }
+                    _ if paste_buffering => {
+                        // Buffer all non-ESC bytes during paste
+                        match byte[0] {
+                            0x0d => {
+                                paste_buf.push('\n');
+                                paste_last_cr = true;
+                            }
+                            0x0a => {
+                                if !paste_last_cr { paste_buf.push('\n'); }
+                                paste_last_cr = false;
+                            }
+                            b if b >= 0x20 && b < 0x80 => {
+                                paste_last_cr = false;
+                                paste_buf.push(b as char);
+                            }
+                            b if b >= 0x80 => {
+                                paste_last_cr = false;
+                                let mut utf8_buf = vec![b];
+                                let expected = if b < 0xE0 { 1 } else if b < 0xF0 { 2 } else { 3 };
+                                for _ in 0..expected {
+                                    if nix::unistd::read(stdin_fd, &mut byte).unwrap_or(0) == 1 {
+                                        utf8_buf.push(byte[0]);
+                                    }
+                                }
+                                let ch = String::from_utf8_lossy(&utf8_buf).chars().next().unwrap_or('?');
+                                paste_buf.push(ch);
+                            }
+                            _ => { paste_last_cr = false; }
+                        }
+                        continue;
+                    }
                     0x01 => { // Ctrl-A — home
                         editor.move_home();
                         redraw(&editor, &ghost_text, has_ghost);
@@ -2418,17 +2570,7 @@ fn read_chat_input(
                         }
                     }
                     0x04 if editor.is_empty() => { disable_paste(); return None; } // Ctrl-D on empty
-                    0x0a | 0x0d if pasting => { // CR or LF during paste → newline
-                        editor.newline();
-                    }
-                    0x0a if !pasting => { // Ctrl-J — newline
-                        editor.newline();
-                        has_ghost = false;
-                        ghost_text.clear();
-                        completer.clear();
-                        redraw(&editor, "", false);
-                    }
-                    0x0d if pasting => { // CR during paste → newline
+                    0x0a => { // Ctrl-J — newline
                         editor.newline();
                         has_ghost = false;
                         ghost_text.clear();
@@ -2454,7 +2596,27 @@ fn read_chat_input(
                         nix::unistd::write(std::io::stdout(), move_end.as_bytes()).ok();
                         completer.clear();
                         disable_paste();
-                        return Some(editor.content());
+                        // Assemble full content: paste blocks + editor
+                        let blocks = paste_blocks.borrow();
+                        if blocks.is_empty() {
+                            return Some(editor.content());
+                        }
+                        let mut full = String::new();
+                        for block in blocks.iter() {
+                            if !block.prefix.is_empty() {
+                                full.push_str(&block.prefix);
+                                full.push('\n');
+                            }
+                            full.push_str(&block.content);
+                            if !block.content.ends_with('\n') {
+                                full.push('\n');
+                            }
+                        }
+                        let editor_content = editor.content();
+                        if !editor_content.is_empty() {
+                            full.push_str(&editor_content);
+                        }
+                        return Some(full);
                     }
                     0x09 => { // Tab — accept ghost completion
                         if let Some(suffix) = completer.accept() {
@@ -2477,6 +2639,22 @@ fn read_chat_input(
                     }
                     0x7f | 0x08 => { // Backspace
                         if editor.is_empty() {
+                            let mut blocks = paste_blocks.borrow_mut();
+                            if let Some(block) = blocks.pop() {
+                                // Restore prefix to editor
+                                if !block.prefix.is_empty() {
+                                    drop(blocks); // release borrow before redraw
+                                    editor.set_content(&block.prefix);
+                                } else {
+                                    drop(blocks);
+                                }
+                                has_ghost = false;
+                                ghost_text.clear();
+                                completer.clear();
+                                redraw(&editor, "", false);
+                                continue;
+                            }
+                            drop(blocks);
                             if allow_backspace_exit {
                                 disable_paste(); return None;
                             }

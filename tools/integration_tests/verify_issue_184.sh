@@ -150,5 +150,51 @@ test_3() {
     fi
 }
 
+# ── Test 4: Large paste (≥10 lines) collapses to marker ──────────────
+test_4() {
+    echo -e "\n${YELLOW}=== Test 4: Large paste collapses to [pasted text] marker ===${NC}"
+
+    # Enter chat mode
+    send_keys ":" 0.5
+    wait_for_prompt
+
+    # Paste 12 lines via raw send (no bracketed paste markers)
+    local paste_content=""
+    for i in $(seq 1 12); do
+        paste_content="${paste_content}line${i}"$'\r'
+    done
+    echo -e "  Sending: ${YELLOW}(raw paste 12 lines)${NC}"
+    _tmux send-keys -t "$PANE" -l "$paste_content"
+    sleep 0.5
+
+    local content=$(capture_pane -10)
+    show_capture "After pasting 12 lines" "$content" 8
+
+    # Should see collapsed marker, not 12 individual lines
+    if echo "$content" | grep -q 'pasted text #1'; then
+        assert_pass "Large paste collapsed to [pasted text #1] marker"
+    else
+        assert_fail "Expected [pasted text #1] marker for 12-line paste"
+    fi
+
+    # Backspace should delete entire paste block
+    send_backspace 0.5
+
+    content=$(capture_pane -10)
+    show_capture "After backspace on paste block" "$content" 5
+
+    if echo "$content" | grep -q 'pasted text'; then
+        assert_fail "Paste block should be deleted after backspace"
+        send_special Escape 0.5
+        sleep 1.5
+        return 1
+    else
+        assert_pass "Backspace deleted entire paste block"
+        send_special Escape 0.5
+        sleep 1.5
+        return 0
+    fi
+}
+
 echo -e "${YELLOW}Issue #184: Multi-line redraw bug${NC}"
-run_tests 3
+run_tests 4
