@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.5.1 (2026-03-09)
+
+### Features
+- **widgets**: `LineEditor` — full-featured chat input with cursor movement (←/→/↑/↓, Home/End, Ctrl-A/E), word jump (Ctrl-←/→), word delete, and multi-line editing (issue #180)
+- **client**: Multi-line paste via bracketed paste mode; fast-paste detection as fallback; large pastes collapsed to `[pasted text N chars]` marker
+- **client**: Shift+Enter / Ctrl+J inserts newline in chat input
+- **widgets**: `LineStatus` — temporary single-line status display that erases itself completely on `clear()`, fixing residual `(thinking...)` and tool-status lines (issue #183)
+
+### Bug Fixes
+- **client**: Paste block backspace display and cursor positioning
+- **client**: Track terminal cursor row for correct multi-line redraw
+- **daemon**: Use char boundary for `/thread list` question truncation
+
+### Refactoring
+- **widgets**: Move picker into `widgets/` module alongside LineEditor and LineStatus
+- **client**: Integrate paste blocks into LineEditor as placeholder characters
+
+### Removals
+- **tools**: Remove `omnish-commands` diagnostic binary
+
+---
+
 ## v0.5.0 (2026-03-08)
 
 ### Features
