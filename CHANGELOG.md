@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.5.2 (2026-03-09)
+
+### Features
+- **llm**: Save full LLM request payloads to `~/.omnish/logs/messages/` with timestamp filenames, rolling to keep last 30 (issue #170)
+- **client**: Paste blocks integrated into LineEditor as FFFC placeholders — cursor can navigate around paste blocks and insert text before/after them (issue #188)
+
+### Bug Fixes
+- **client**: Exec shell directly when stdin is not a tty (issue #193)
+- **widgets**: Fix LineStatus off-by-one erase leaving residual text
+
+### Build & CI
+- **build**: Replace aws-lc-rs with ring for musl static binary support (issue #190)
+- **ci**: Add GitLab CI configuration with check, test, build-release stages (issue #192)
+- **ci**: Add release stage with downloadable static binary links on tag push
+- **refactor**: Fix clippy warnings across workspace
+
+---
+
 ## v0.5.1 (2026-03-09)
 
 ### Features
