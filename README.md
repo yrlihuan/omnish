@@ -39,6 +39,9 @@ For detailed module documentation and implementation details, see the [module do
 - **Ghost completion** — LLM-powered inline command suggestions as you type.
 - **Multi-session aggregation** — Query context from multiple terminals at once.
 - **Multi-backend LLM** — Anthropic (Claude), OpenAI, Azure, local models (Ollama/LM Studio) via OpenAI-compatible API.
+- **Agent loop with tool-use** — LLM can call tools (e.g. run shell commands, query plugins) in a multi-turn loop and stream live status to the terminal.
+- **Plugin system** — Load external tools via JSON-RPC subprocess protocol; plugins expose tools that the LLM agent can invoke.
+- **Interactive picker** — Arrow-key selection widget for thread resumption and multi-select deletion.
 - **Auto-trigger** — Optionally analyze on non-zero exit codes or stderr patterns.
 - **Scheduled tasks** — Hourly summaries, daily notes, session eviction, and disk cleanup run automatically.
 - **Security** — Token authentication, Unix socket permissions (0600) with SO_PEERCRED UID verification, TLS encryption for TCP connections.
@@ -111,6 +114,9 @@ schedule = "0 0 */6 * * *"
 [context.completion]
 max_commands = 50
 max_chars = 8000
+
+[plugins]
+enabled = []   # list plugin names; each must have ~/.omnish/plugins/{name}/{name} binary
 ```
 
 ### Other backend examples
@@ -159,18 +165,26 @@ Inside any omnish session, type `:` to enter chat mode, then you can directly in
 Built-in commands:
 
 ```bash
-/help                # show available commands
-/context              # show completion context (default)
-/context chat         # show chat/analysis context
-/context daily-notes  # show daily summary context (past 24 hours)
-/context hourly-notes # show hourly summary context (past hour)
-/template <name>     # show prompt template (chat, auto-complete, daily-notes, hourly-notes)
-/debug events [n]    # show recent client events (default: 20)
-/debug client        # show client debug state
-/debug session       # show session info and attributes
-/sessions            # list active sessions
-/tasks               # list scheduled tasks and their status
-/tasks disable <name> # disable a scheduled task
+/help                     # show available commands
+/context                  # show completion context (default)
+/context chat             # show chat/analysis context
+/context daily-notes      # show daily summary context (past 24 hours)
+/context hourly-notes     # show hourly summary context (past hour)
+/template <name>          # show prompt template (chat, auto-complete, daily-notes, hourly-notes)
+/debug events [n]         # show recent client events (default: 20)
+/debug client             # show client debug state
+/debug session            # show session info and attributes
+/sessions                 # list active sessions
+/thread list              # list conversation threads
+/thread del <n>[,<n>...]  # delete thread(s) by number (interactive multi-select if omitted)
+/tasks                    # list scheduled tasks and their status
+/tasks disable <name>     # disable a scheduled task
+```
+
+Chat-mode commands (available only inside a chat session):
+
+```bash
+/resume       # resume or start a conversation thread (interactive picker)
 ```
 
 Results from auto-triggers appear above the shell prompt without disrupting your workflow.
