@@ -2105,7 +2105,7 @@ enum KeyEvent {
     Delete,
     CtrlLeft,
     CtrlRight,
-    AltEnter,
+    ShiftEnter,
     Esc,
 }
 
@@ -2126,7 +2126,6 @@ fn parse_key_after_esc(stdin_fd: i32) -> Option<KeyEvent> {
     }
 
     match b[0] {
-        0x0d => return Some(KeyEvent::AltEnter), // ESC CR = Alt+Enter
         b'[' => {} // CSI sequence, continue parsing below
         _ => return None, // Unknown ESC + char
     }
@@ -2157,6 +2156,7 @@ fn parse_key_after_esc(stdin_fd: i32) -> Option<KeyEvent> {
         ([b'1', b';', b'5'], b'D') => Some(KeyEvent::CtrlLeft),
         ([b'1'], b'~') => Some(KeyEvent::Home),    // alternate
         ([b'4'], b'~') => Some(KeyEvent::End),      // alternate
+        ([b'1', b'3', b';', b'2'], b'u') => Some(KeyEvent::ShiftEnter), // kitty protocol
         _ => None,
     }
 }
@@ -2245,7 +2245,7 @@ fn read_chat_input(
                     0x1b => {
                         match parse_key_after_esc(stdin_fd) {
                             Some(KeyEvent::Esc) => return None,
-                            Some(KeyEvent::AltEnter) => {
+                            Some(KeyEvent::ShiftEnter) => {
                                 editor.newline();
                                 has_ghost = false;
                                 ghost_text.clear();
@@ -2378,6 +2378,13 @@ fn read_chat_input(
                         }
                     }
                     0x04 if editor.is_empty() => return None, // Ctrl-D on empty
+                    0x0a => { // Ctrl-J — newline
+                        editor.newline();
+                        has_ghost = false;
+                        ghost_text.clear();
+                        completer.clear();
+                        redraw(&editor, "", false);
+                    }
                     0x0d => { // Enter — submit
                         // Clear ghost and move to end for clean output
                         if has_ghost {
