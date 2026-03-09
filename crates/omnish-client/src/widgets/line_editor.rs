@@ -99,6 +99,79 @@ impl LineEditor {
         self.cursor.1 = self.lines[self.cursor.0].len();
     }
 
+    pub fn move_word_left(&mut self) {
+        let (row, col) = self.cursor;
+        let line = &self.lines[row];
+        if col == 0 {
+            return;
+        }
+        let mut i = col;
+        while i > 0 && line[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !line[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        self.cursor.1 = i;
+    }
+
+    pub fn move_word_right(&mut self) {
+        let (row, col) = self.cursor;
+        let line = &self.lines[row];
+        let len = line.len();
+        if col >= len {
+            return;
+        }
+        let mut i = col;
+        while i < len && !line[i].is_whitespace() {
+            i += 1;
+        }
+        while i < len && line[i].is_whitespace() {
+            i += 1;
+        }
+        self.cursor.1 = i;
+    }
+
+    pub fn delete_back(&mut self) -> bool {
+        let (row, col) = self.cursor;
+        if col > 0 {
+            self.lines[row].remove(col - 1);
+            self.cursor.1 -= 1;
+            true
+        } else if row > 0 {
+            let current_line = self.lines.remove(row);
+            let prev_len = self.lines[row - 1].len();
+            self.lines[row - 1].extend(current_line);
+            self.cursor = (row - 1, prev_len);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn delete_forward(&mut self) {
+        let (row, col) = self.cursor;
+        if col < self.lines[row].len() {
+            self.lines[row].remove(col);
+        } else if row < self.lines.len() - 1 {
+            let next_line = self.lines.remove(row + 1);
+            self.lines[row].extend(next_line);
+        }
+    }
+
+    pub fn kill_to_start(&mut self) {
+        let (row, col) = self.cursor;
+        self.lines[row].drain(..col);
+        self.cursor.1 = 0;
+    }
+
+    pub fn newline(&mut self) {
+        let (row, col) = self.cursor;
+        let rest = self.lines[row].split_off(col);
+        self.lines.insert(row + 1, rest);
+        self.cursor = (row + 1, 0);
+    }
+
     pub fn set_content(&mut self, s: &str) {
         self.lines = if s.is_empty() {
             vec![vec![]]
@@ -230,5 +303,103 @@ mod tests {
         assert_eq!(ed.cursor(), (0, 0));
         ed.move_end();
         assert_eq!(ed.cursor(), (0, 5));
+    }
+
+    #[test]
+    fn test_move_word_left() {
+        let mut ed = LineEditor::new();
+        ed.set_content("hello world");
+        ed.move_word_left();
+        assert_eq!(ed.cursor(), (0, 6)); // before "world"
+        ed.move_word_left();
+        assert_eq!(ed.cursor(), (0, 0)); // before "hello"
+    }
+
+    #[test]
+    fn test_move_word_right() {
+        let mut ed = LineEditor::new();
+        ed.set_content("hello world");
+        ed.cursor = (0, 0);
+        ed.move_word_right();
+        assert_eq!(ed.cursor(), (0, 6)); // after "hello "
+        ed.move_word_right();
+        assert_eq!(ed.cursor(), (0, 11)); // after "world"
+    }
+
+    #[test]
+    fn test_delete_back() {
+        let mut ed = LineEditor::new();
+        ed.set_content("abc");
+        ed.delete_back();
+        assert_eq!(ed.content(), "ab");
+        assert_eq!(ed.cursor(), (0, 2));
+    }
+
+    #[test]
+    fn test_delete_back_at_start_returns_false() {
+        let mut ed = LineEditor::new();
+        assert!(!ed.delete_back());
+    }
+
+    #[test]
+    fn test_delete_back_merges_lines() {
+        let mut ed = LineEditor::new();
+        ed.set_content("ab\ncd");
+        ed.cursor = (1, 0);
+        ed.delete_back();
+        assert_eq!(ed.content(), "abcd");
+        assert_eq!(ed.cursor(), (0, 2));
+        assert_eq!(ed.line_count(), 1);
+    }
+
+    #[test]
+    fn test_delete_forward() {
+        let mut ed = LineEditor::new();
+        ed.set_content("abc");
+        ed.cursor = (0, 1);
+        ed.delete_forward();
+        assert_eq!(ed.content(), "ac");
+        assert_eq!(ed.cursor(), (0, 1));
+    }
+
+    #[test]
+    fn test_delete_forward_merges_lines() {
+        let mut ed = LineEditor::new();
+        ed.set_content("ab\ncd");
+        ed.cursor = (0, 2);
+        ed.delete_forward();
+        assert_eq!(ed.content(), "abcd");
+        assert_eq!(ed.line_count(), 1);
+    }
+
+    #[test]
+    fn test_kill_to_start() {
+        let mut ed = LineEditor::new();
+        ed.set_content("hello world");
+        ed.cursor = (0, 5);
+        ed.kill_to_start();
+        assert_eq!(ed.content(), " world");
+        assert_eq!(ed.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn test_newline() {
+        let mut ed = LineEditor::new();
+        ed.set_content("abcd");
+        ed.cursor = (0, 2);
+        ed.newline();
+        assert_eq!(ed.content(), "ab\ncd");
+        assert_eq!(ed.cursor(), (1, 0));
+        assert_eq!(ed.line_count(), 2);
+    }
+
+    #[test]
+    fn test_insert_mid_line() {
+        let mut ed = LineEditor::new();
+        ed.set_content("ac");
+        ed.cursor = (0, 1);
+        ed.insert('b');
+        assert_eq!(ed.content(), "abc");
+        assert_eq!(ed.cursor(), (0, 2));
     }
 }
