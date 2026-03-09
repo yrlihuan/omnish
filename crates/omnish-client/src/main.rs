@@ -2094,51 +2094,6 @@ fn wait_for_ctrl_c(stop: std::sync::mpsc::Receiver<()>) -> bool {
     }
 }
 
-/// Returns the byte length of the last UTF-8 character in the buffer.
-/// Returns 1 if the buffer is empty or contains invalid UTF-8.
-fn last_utf8_char_len(buf: &[u8]) -> usize {
-    if buf.is_empty() {
-        return 1;
-    }
-    // Walk backwards from the end, counting continuation bytes (10xx xxxx),
-    // then +1 for the start byte.
-    let mut cont = 0;
-    for &b in buf.iter().rev() {
-        if b & 0xC0 == 0x80 {
-            cont += 1;
-        } else {
-            break;
-        }
-    }
-    // cont continuation bytes + 1 start byte
-    cont + 1
-}
-
-/// Helper to parse escape sequences after ESC byte.
-/// Uses poll with a short timeout to avoid blocking on bare ESC
-/// and consuming the next real input byte.
-fn parse_escape_sequence(stdin_fd: i32) -> Option<[u8; 2]> {
-    // Wait up to 50ms for the next byte (arrow keys arrive within ~1ms)
-    let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
-    let ready = unsafe { libc::poll(&mut pfd, 1, 50) };
-    if ready <= 0 {
-        return None; // Bare ESC — no following byte
-    }
-
-    let mut seq = [0u8; 2];
-    if nix::unistd::read(stdin_fd, &mut seq[0..1]) != Ok(1) {
-        return None;
-    }
-
-    // If it's '[', read the next character (A/B/C/D)
-    if seq[0] == b'[' {
-        if nix::unistd::read(stdin_fd, &mut seq[1..2]) == Ok(1) {
-            return Some(seq);
-        }
-    }
-    None
-}
-
 #[derive(Debug, PartialEq)]
 enum KeyEvent {
     ArrowUp,
@@ -2532,35 +2487,6 @@ fn save_to_history(history: &mut VecDeque<String>, command: &str, capacity: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_last_utf8_char_len_ascii() {
-        assert_eq!(last_utf8_char_len(b"hello"), 1);
-    }
-
-    #[test]
-    fn test_last_utf8_char_len_chinese() {
-        // '你' = 0xe4 0xbd 0xa0 (3 bytes)
-        assert_eq!(last_utf8_char_len("你".as_bytes()), 3);
-        assert_eq!(last_utf8_char_len("hello你".as_bytes()), 3);
-    }
-
-    #[test]
-    fn test_last_utf8_char_len_emoji() {
-        // '😀' = 0xf0 0x9f 0x98 0x80 (4 bytes)
-        assert_eq!(last_utf8_char_len("😀".as_bytes()), 4);
-    }
-
-    #[test]
-    fn test_last_utf8_char_len_two_byte() {
-        // 'é' = 0xc3 0xa9 (2 bytes)
-        assert_eq!(last_utf8_char_len("é".as_bytes()), 2);
-    }
-
-    #[test]
-    fn test_last_utf8_char_len_empty() {
-        assert_eq!(last_utf8_char_len(b""), 1);
-    }
 
     #[test]
     fn test_alt_screen_detect_1049h() {
