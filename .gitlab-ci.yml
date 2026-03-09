@@ -2,6 +2,7 @@ stages:
   - check
   - test
   - build
+  - release
 
 variables:
   CARGO_HOME: ${CI_PROJECT_DIR}/.cargo
@@ -33,11 +34,35 @@ build-release:
   image: docker.nv/ubuntu_2404_runner:latest
   script:
     - cargo build --release --target x86_64-unknown-linux-musl
+    - cp target/x86_64-unknown-linux-musl/release/omnish-client .
+    - cp target/x86_64-unknown-linux-musl/release/omnish-daemon .
   artifacts:
     paths:
-      - target/x86_64-unknown-linux-musl/release/omnish-client
-      - target/x86_64-unknown-linux-musl/release/omnish-daemon
+      - omnish-client
+      - omnish-daemon
     expire_in: 30 days
   only:
     - tags
-    - master
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs:
+    - job: build-release
+      artifacts: true
+  script:
+    - echo "Creating release for ${CI_COMMIT_TAG}"
+  release:
+    tag_name: ${CI_COMMIT_TAG}
+    name: "omnish ${CI_COMMIT_TAG}"
+    description: "Release ${CI_COMMIT_TAG}"
+    assets:
+      links:
+        - name: "omnish-client (linux-x86_64-static)"
+          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/omnish-client?job=build-release"
+          filepath: "/omnish-client"
+        - name: "omnish-daemon (linux-x86_64-static)"
+          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/omnish-daemon?job=build-release"
+          filepath: "/omnish-daemon"
+  only:
+    - tags
