@@ -17,6 +17,7 @@ show_usage() {
 Test cases:
   1. Type "hello", Ctrl-J (newline), Backspace → single "> hello", no duplicate
   2. Type "abc", Ctrl-J, "def", Ctrl-J, "ghi", Home, BSpace×2 → "> abcdefghi"
+  3. Non-bracketed paste with 3 leading CRs: paste "\r\r\rhello" → 3 empty lines + "hello"
 EOF
 }
 
@@ -113,5 +114,41 @@ test_2() {
     fi
 }
 
+# ── Test 3: Non-bracketed paste with leading CRs ────────────────────
+test_3() {
+    echo -e "\n${YELLOW}=== Test 3: Fast-paste detection with 3 leading CRs ===${NC}"
+
+    # Enter chat mode
+    send_keys ":" 0.5
+    wait_for_prompt
+
+    # Simulate non-bracketed paste: send raw bytes via -l (literal mode),
+    # which bypasses tmux's bracketed paste wrapping.
+    # Content: CR CR CR h e l l o — three newlines then "hello"
+    echo -e "  Sending: ${YELLOW}(raw paste) \\r\\r\\rhello${NC}"
+    _tmux send-keys -t "$PANE" -l $'\r\r\rhello'
+    sleep 0.5
+
+    local content=$(capture_pane -15)
+    show_capture "After fast-paste with 3 leading CRs" "$content" 10
+
+    # Expected: 4 editor lines — 3 empty + "hello"
+    # "> "        (line 1, empty)
+    # "  "        (line 2, empty)
+    # "  "        (line 3, empty)
+    # "  hello"   (line 4)
+    if echo "$content" | grep -qE '^\s+hello'; then
+        assert_pass "Fast-paste: 3 leading CRs + 'hello' rendered as multi-line"
+        send_special Escape 0.5
+        sleep 1.5
+        return 0
+    else
+        assert_fail "Fast-paste: expected multi-line with 'hello', got unexpected output"
+        send_special Escape 0.5
+        sleep 1.5
+        return 1
+    fi
+}
+
 echo -e "${YELLOW}Issue #184: Multi-line redraw bug${NC}"
-run_tests 2
+run_tests 3

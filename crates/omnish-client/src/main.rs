@@ -2263,12 +2263,15 @@ fn read_chat_input(
     loop {
         match nix::unistd::read(stdin_fd, &mut byte) {
             Ok(1) => {
-                // Fast-paste detection: if bytes arrive within 1ms of each
-                // other, we're receiving pasted content, not human typing.
+                // Fast-paste detection (two directions):
+                // - backward: bytes arriving within 1ms = paste (catches byte 2..N)
+                // - forward: more data already in buffer = paste (catches byte 1)
                 let now = std::time::Instant::now();
-                let fast_paste = now.duration_since(last_input).as_millis() < 1;
+                let backward = now.duration_since(last_input).as_millis() < 1;
                 last_input = now;
-                let pasting = bracketed_paste || fast_paste;
+                let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
+                let forward = unsafe { libc::poll(&mut pfd, 1, 0) } > 0;
+                let pasting = bracketed_paste || backward || forward;
 
                 match byte[0] {
                     0x1b => {
