@@ -696,8 +696,9 @@ fn format_conversations_json(conv_mgr: &Arc<ConversationManager>) -> serde_json:
         let time_ago = format_relative_time(modified);
 
         let single_line = last_question.replace('\n', " ");
-        let question_display = if single_line.len() > 50 {
-            format!("{}...", &single_line[..47])
+        let question_display = if single_line.chars().count() > 50 {
+            let end: String = single_line.chars().take(47).collect();
+            format!("{}...", end)
         } else {
             single_line
         };
