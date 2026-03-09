@@ -10,10 +10,10 @@ pub struct RawModeGuard {
 impl RawModeGuard {
     pub fn enter(fd: RawFd) -> Result<Self> {
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-        let original = termios::tcgetattr(&borrowed)?;
+        let original = termios::tcgetattr(borrowed)?;
         let mut raw = original.clone();
         termios::cfmakeraw(&mut raw);
-        termios::tcsetattr(&borrowed, SetArg::TCSANOW, &raw)?;
+        termios::tcsetattr(borrowed, SetArg::TCSANOW, &raw)?;
         Ok(Self { fd, original })
     }
 }
@@ -21,6 +21,6 @@ impl RawModeGuard {
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
         let borrowed = unsafe { BorrowedFd::borrow_raw(self.fd) };
-        let _ = termios::tcsetattr(&borrowed, SetArg::TCSANOW, &self.original);
+        let _ = termios::tcsetattr(borrowed, SetArg::TCSANOW, &self.original);
     }
 }

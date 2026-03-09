@@ -1,0 +1,50 @@
+stages:
+  - check
+  - test
+  - build
+
+variables:
+  CARGO_HOME: ${CI_PROJECT_DIR}/.cargo
+
+# Cache compiled dependencies between jobs
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - .cargo/registry
+    - .cargo/git
+    - target/
+
+check:
+  stage: check
+  image: rust:1.93
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq clang >/dev/null
+  script:
+    - cargo check --workspace
+    - cargo clippy --workspace
+  allow_failure: false
+
+test:
+  stage: test
+  image: rust:1.93
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq clang >/dev/null
+  script:
+    - cargo test --workspace
+
+build-release:
+  stage: build
+  image: rust:1.93
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq clang musl-tools >/dev/null
+    - rustup target add x86_64-unknown-linux-musl
+  script:
+    - cargo build --release --target x86_64-unknown-linux-musl
+  artifacts:
+    paths:
+      - target/x86_64-unknown-linux-musl/release/omnish-client
+      - target/x86_64-unknown-linux-musl/release/omnish-daemon
+    expire_in: 30 days
+  only:
+    - tags
+    - master
