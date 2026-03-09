@@ -171,25 +171,41 @@ test_4() {
     show_capture "After pasting 12 lines" "$content" 8
 
     # Should see collapsed marker, not 12 individual lines
-    if echo "$content" | grep -q 'pasted text #1'; then
-        assert_pass "Large paste collapsed to [pasted text #1] marker"
-    else
+    if ! echo "$content" | grep -q 'pasted text #1'; then
         assert_fail "Expected [pasted text #1] marker for 12-line paste"
+        send_special Escape 0.5
+        sleep 1.5
+        return 1
     fi
+    assert_pass "Large paste collapsed to [pasted text #1] marker"
 
-    # Backspace should delete entire paste block
+    # First backspace: should go back to marker line (not delete block)
     send_backspace 0.5
 
     content=$(capture_pane -10)
-    show_capture "After backspace on paste block" "$content" 5
+    show_capture "After first backspace (merge to marker)" "$content" 5
+
+    if ! echo "$content" | grep -q 'pasted text #1'; then
+        assert_fail "First backspace should NOT delete paste block"
+        send_special Escape 0.5
+        sleep 1.5
+        return 1
+    fi
+    assert_pass "First backspace: paste block still visible"
+
+    # Second backspace: should delete entire paste block
+    send_backspace 0.5
+
+    content=$(capture_pane -10)
+    show_capture "After second backspace (delete block)" "$content" 5
 
     if echo "$content" | grep -q 'pasted text'; then
-        assert_fail "Paste block should be deleted after backspace"
+        assert_fail "Second backspace should delete paste block"
         send_special Escape 0.5
         sleep 1.5
         return 1
     else
-        assert_pass "Backspace deleted entire paste block"
+        assert_pass "Second backspace deleted entire paste block"
         send_special Escape 0.5
         sleep 1.5
         return 0

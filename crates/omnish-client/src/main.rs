@@ -2222,12 +2222,25 @@ fn read_chat_input(
         }
         out.push('\r');
 
-        // Count paste block display lines (prefix lines + 1 marker per block)
+        // Precompute editor state
+        let line_count = editor.line_count();
+        let (cursor_row, _) = editor.cursor();
+
+        // Editor merged: empty editor (1 line, 0 chars) after paste blocks —
+        // cursor sits at end of last marker, no separate editor line.
+        let editor_merged = !blocks.is_empty() && editor.is_empty() && line_count == 1;
+
+        // Skip editor line 0 if empty and there are paste blocks and more lines exist
+        let skip_first = !blocks.is_empty() && !editor_merged && line_count > 1
+            && editor.line(0).is_empty();
+
+        // Render paste blocks
         let mut display_row = 0usize;
         let mut is_first_line = true;
+        let block_count = blocks.len();
 
-        for block in blocks.iter() {
-            // Render prefix lines (frozen text typed before this paste)
+        for (bi, block) in blocks.iter().enumerate() {
+            // Prefix lines (frozen text typed before this paste)
             if !block.prefix.is_empty() {
                 for line in block.prefix.lines() {
                     let pfx = if is_first_line { "> " } else { "  " };
@@ -2236,38 +2249,58 @@ fn read_chat_input(
                     display_row += 1;
                 }
             }
-            // Render paste marker
+            // Paste marker
             let pfx = if is_first_line { "> " } else { "  " };
             is_first_line = false;
-            out.push_str(&format!(
-                "{}\x1b[2;36m[pasted text #{} +{} lines]\x1b[0m\x1b[K\r\n",
-                pfx, block.index, block.line_count
-            ));
-            display_row += 1;
-        }
-
-        // Render editor lines
-        let line_count = editor.line_count();
-        let (cursor_row, _) = editor.cursor();
-
-        for i in 0..line_count {
-            let pfx = if is_first_line && i == 0 { "> " } else if i == 0 && !blocks.is_empty() { "> " } else { "  " };
-            let line_str: String = editor.line(i).iter().collect();
-            if i == line_count - 1 {
-                out.push_str(&format!("{}{}\x1b[J", pfx, line_str));
+            let is_last_block = bi == block_count - 1;
+            if is_last_block && editor_merged {
+                // No \r\n — cursor stays on marker line
+                out.push_str(&format!(
+                    "{}\x1b[2;36m[pasted text #{} +{} lines]\x1b[0m\x1b[J",
+                    pfx, block.index, block.line_count
+                ));
+                // display_row NOT incremented — cursor is on this line
             } else {
-                out.push_str(&format!("{}{}\x1b[K\r\n", pfx, line_str));
+                out.push_str(&format!(
+                    "{}\x1b[2;36m[pasted text #{} +{} lines]\x1b[0m\x1b[K\r\n",
+                    pfx, block.index, block.line_count
+                ));
+                display_row += 1;
             }
         }
 
+        // Render editor lines (unless merged into marker)
+        if !editor_merged {
+            let start = if skip_first { 1 } else { 0 };
+            for i in start..line_count {
+                let pfx = if is_first_line && i == start { "> " } else { "  " };
+                let line_str: String = editor.line(i).iter().collect();
+                if i == line_count - 1 {
+                    out.push_str(&format!("{}{}\x1b[J", pfx, line_str));
+                } else {
+                    out.push_str(&format!("{}{}\x1b[K\r\n", pfx, line_str));
+                }
+            }
+            if skip_first { display_row += 1; }
+        }
+
         // Ghost text after last line
-        if has_ghost && !ghost.is_empty() {
+        if has_ghost && !ghost.is_empty() && !editor_merged {
             out.push_str(&format!("\x1b[2;37m{}\x1b[0m", ghost));
         }
 
-        // Position cursor: it's in the editor section
-        let total_last_row = display_row + line_count - 1;
-        let total_cursor_row = display_row + cursor_row;
+        // Position cursor
+        let total_cursor_row;
+        let total_last_row;
+        if editor_merged {
+            total_cursor_row = display_row;
+            total_last_row = display_row;
+        } else {
+            let visible_lines = if skip_first { line_count - 1 } else { line_count };
+            let adj_cursor = if skip_first { cursor_row.saturating_sub(1) } else { cursor_row };
+            total_last_row = display_row + visible_lines - 1;
+            total_cursor_row = display_row + adj_cursor;
+        }
         let rows_up = total_last_row - total_cursor_row;
         if rows_up > 0 {
             out.push_str(&format!("\x1b[{}A", rows_up));
@@ -2308,6 +2341,7 @@ fn read_chat_input(
                         line_count,
                     });
                     editor = LineEditor::new();
+                    editor.newline(); // cursor on line 1; first backspace merges to line 0
                 } else if !paste_buf.is_empty() {
                     for ch in paste_buf.chars() {
                         if ch == '\n' { editor.newline(); } else { editor.insert(ch); }
@@ -2356,6 +2390,7 @@ fn read_chat_input(
                             line_count,
                         });
                         editor = LineEditor::new();
+                        editor.newline();
                     } else if !paste_buf.is_empty() {
                         // Short paste: replay into editor
                         for ch in paste_buf.chars() {
@@ -2395,6 +2430,7 @@ fn read_chat_input(
                                         line_count,
                                     });
                                     editor = LineEditor::new();
+                                    editor.newline();
                                 } else if !paste_buf.is_empty() {
                                     for ch in paste_buf.chars() {
                                         if ch == '\n' { editor.newline(); } else { editor.insert(ch); }
