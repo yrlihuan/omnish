@@ -5,7 +5,7 @@
 # Test cases:
 #   1. Left/Right arrow cursor movement + mid-line insertion
 #   2. Home/End (Ctrl-A/Ctrl-E) + Ctrl-U kill to start
-#   3. Multi-line editing with Alt+Enter
+#   3. Multi-line editing with Ctrl-J
 #   4. Backspace merges lines
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -16,8 +16,8 @@ show_usage() {
 Test cases:
   1. Left arrow + mid-line insert: type "hllo", Left×3, insert "e" → "hello"
   2. Ctrl-A (home) + Ctrl-U (kill): type "hello world", Ctrl-A to home, Ctrl-E to end, Ctrl-U to kill
-  3. Multi-line: type "line1", Alt+Enter, "line2", submit → content has both lines
-  4. Backspace merges lines: type "ab", Alt+Enter, "cd", Backspace×2 at start → merged
+  3. Multi-line: type "line1", Ctrl-J, "line2", submit → content has both lines
+  4. Backspace merges lines: type "ab", Ctrl-J, "cd", Backspace×2 at start → merged
 EOF
 }
 
@@ -122,18 +122,18 @@ test_2() {
     fi
 }
 
-# ── Test 3: Multi-line editing with Alt+Enter ────────────────────────────
+# ── Test 3: Multi-line editing with Ctrl-J ───────────────────────────────
 test_3() {
-    echo -e "\n${YELLOW}=== Test 3: Multi-line editing with Alt+Enter ===${NC}"
+    echo -e "\n${YELLOW}=== Test 3: Multi-line editing with Ctrl-J ===${NC}"
 
     # Enter chat mode
     send_keys ":" 0.5
     wait_for_prompt
 
-    # Type "line1", Alt+Enter (newline), "line2"
+    # Type "line1", Ctrl-J (newline), "line2"
     send_keys "line1" 0.3
-    # Alt+Enter = ESC then Enter in tmux
-    send_special M-Enter 0.3
+    # Ctrl-J = LF = 0x0a
+    send_special C-j 0.3
     send_keys "line2" 0.3
 
     local content=$(capture_pane -10)
@@ -169,9 +169,9 @@ test_4() {
     send_keys ":" 0.5
     wait_for_prompt
 
-    # Type "ab", Alt+Enter (newline), "cd"
+    # Type "ab", Ctrl-J (newline), "cd"
     send_keys "ab" 0.3
-    send_special M-Enter 0.3
+    send_special C-j 0.3
     send_keys "cd" 0.3
 
     # Verify two lines first

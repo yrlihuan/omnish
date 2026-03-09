@@ -2183,6 +2183,10 @@ fn read_chat_input(
         chars.iter().map(|c| UnicodeWidthChar::width(*c).unwrap_or(1)).sum()
     };
 
+    // Track where the terminal cursor was left after the previous redraw,
+    // so we know how many lines to move up to reach line 0.
+    let term_cursor_row = std::cell::Cell::new(0usize);
+
     // Helper: redraw the editor content from the prompt position
     // For single-line: "\r> {content}\x1b[K" then reposition cursor
     // For multi-line: "\r> {line1}\x1b[K\r\n  {line2}\x1b[K\r\n..." then reposition
@@ -2191,11 +2195,12 @@ fn read_chat_input(
         let line_count = editor.line_count();
         let (cursor_row, _cursor_col) = editor.cursor();
 
-        // Move to beginning of first line: go up (cursor_row) lines to get to line 0.
-        // Since we always leave the terminal cursor at the editor's cursor position,
-        // we need to go up (cursor_row) lines.
-        if cursor_row > 0 {
-            out.push_str(&format!("\x1b[{}A", cursor_row));
+        // Move to beginning of first line using the PREVIOUS terminal cursor row,
+        // not the editor's current cursor_row (which may have changed due to
+        // line merges or cursor movement).
+        let prev_row = term_cursor_row.get();
+        if prev_row > 0 {
+            out.push_str(&format!("\x1b[{}A", prev_row));
         }
         out.push('\r');
 
@@ -2232,6 +2237,9 @@ fn read_chat_input(
         if cursor_display > 0 {
             out.push_str(&format!("\x1b[{}C", cursor_display));
         }
+
+        // Remember where we left the terminal cursor for next redraw
+        term_cursor_row.set(cursor_row);
 
         nix::unistd::write(std::io::stdout(), out.as_bytes()).ok();
     };
