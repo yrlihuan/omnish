@@ -11,6 +11,7 @@ mod shell_input;
 mod picker;
 mod throttle;
 mod util;
+mod widgets;
 
 use anyhow::Result;
 use omnish_common::config::load_client_config;
