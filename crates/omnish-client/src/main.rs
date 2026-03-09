@@ -15,6 +15,7 @@ mod widgets;
 use anyhow::Result;
 use omnish_common::config::load_client_config;
 use interceptor::{InputInterceptor, InterceptAction, TimeGapGuard};
+use widgets::line_status::LineStatus;
 use omnish_protocol::message::*;
 use omnish_pty::proxy::PtyProxy;
 use omnish_pty::raw_mode::RawModeGuard;
@@ -1421,9 +1422,9 @@ async fn send_daemon_query(
     redirect: Option<&str>,
     show_thinking: bool,
 ) {
+    let mut status = LineStatus::new();
     if show_thinking {
-        let status = display::render_thinking();
-        nix::unistd::write(std::io::stdout(), status.as_bytes()).ok();
+        nix::unistd::write(std::io::stdout(), status.show("(thinking...)").as_bytes()).ok();
     }
 
     let request_id = Uuid::new_v4().to_string()[..8].to_string();
@@ -1443,6 +1444,7 @@ async fn send_daemon_query(
             };
             if show_thinking {
                 std::fs::write("/tmp/omnish_last_response.txt", &display).ok();
+                nix::unistd::write(std::io::stdout(), status.clear().as_bytes()).ok();
             }
             handle_command_result(&display, redirect, proxy);
             if show_thinking {
@@ -1453,6 +1455,7 @@ async fn send_daemon_query(
             }
         }
         _ => {
+            nix::unistd::write(std::io::stdout(), status.clear().as_bytes()).ok();
             let err = display::render_error("Failed to receive response");
             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
             proxy.write_all(b"\x15\x0b\r").ok();
@@ -1992,8 +1995,8 @@ async fn run_chat_loop(
         }
 
         // Show thinking indicator
-        let thinking = display::render_thinking();
-        nix::unistd::write(std::io::stdout(), thinking.as_bytes()).ok();
+        let mut line_status = LineStatus::new();
+        nix::unistd::write(std::io::stdout(), line_status.show("(thinking...)").as_bytes()).ok();
 
         // Send ChatMessage, allow Ctrl-C to interrupt
         let req_id = Uuid::new_v4().to_string()[..8].to_string();
@@ -2018,12 +2021,11 @@ async fn run_chat_loop(
                         while let Some(msg) = rx.recv().await {
                             match msg {
                                 Message::ChatToolStatus(cts) => {
-                                    let hint = format!("\r\x1b[2m\u{1f527} {}\x1b[0m\x1b[K\r\n", cts.status);
-                                    nix::unistd::write(std::io::stdout(), hint.as_bytes()).ok();
+                                    let text = format!("\u{1f527} {}", cts.status);
+                                    nix::unistd::write(std::io::stdout(), line_status.show(&text).as_bytes()).ok();
                                 }
                                 Message::ChatResponse(resp) if resp.request_id == req_id => {
-                                    // Clear thinking indicator
-                                    nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
+                                    nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
                                     let output = display::render_response(&resp.content);
                                     nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
 
@@ -2039,7 +2041,7 @@ async fn run_chat_loop(
                         }
                     }
                     Err(_) => {
-                        nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
+                        nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
                         let err = display::render_error("Failed to receive chat response");
                         nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                     }
@@ -2047,7 +2049,7 @@ async fn run_chat_loop(
             }
             _ = interrupt => {
                 // Ctrl-C pressed — record interrupt in conversation
-                nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
+                nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
                 let info = "\r\n\x1b[2;37m(interrupted)\x1b[0m";
                 nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
 

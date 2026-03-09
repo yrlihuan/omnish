@@ -39,12 +39,6 @@ pub fn render_input_echo(user_input: &[u8]) -> String {
     )
 }
 
-/// Render the "(thinking...)" status in dim text.
-/// Moves to a new line, clears it, prints status, then moves to the next line.
-pub fn render_thinking() -> String {
-    "\r\n\x1b[K\x1b[37m(thinking...)\x1b[0m\r\n".to_string()
-}
-
 /// Format an LLM response for raw-mode display.
 /// - Trims trailing whitespace from each line
 /// - Converts \n to \r\n for raw mode
@@ -182,20 +176,6 @@ mod tests {
         assert!(row1.contains("line one"), "first line should render");
         let row2 = get_row(screen, 2, 80);
         assert!(row2.contains("line two"), "second line should render on next row");
-    }
-
-    #[test]
-    fn test_thinking_status() {
-        let output = render_thinking();
-        let parser = parse_ansi(&output, 80, 24);
-        let screen = parser.screen();
-
-        // Row 1 because render_thinking starts with \r\n (moves to next line first)
-        let row = get_row(screen, 1, 80);
-        assert!(row.contains("(thinking...)"), "should display thinking status");
-
-        // Verify it moves to new line first, then clears and prints status
-        assert!(output.starts_with("\r\n\x1b[K"), "should newline then clear line before status");
     }
 
     #[test]
@@ -389,8 +369,8 @@ mod tests {
         // 2. User types "why did it fail" -> input echo
         full_output.push_str(&render_input_echo(b"why did it fail"));
 
-        // 3. User presses Enter -> thinking status
-        full_output.push_str(&render_thinking());
+        // 3. User presses Enter -> thinking status (shown then cleared before response)
+        // LineStatus is tested separately; here we just omit it to keep the flow test clean.
 
         // 4. LLM responds
         full_output.push_str(&render_response("The command failed because\nthe file was not found."));
