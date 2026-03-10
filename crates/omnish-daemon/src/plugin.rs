@@ -1,6 +1,11 @@
+use landlock::{
+    path_beneath_rules, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus,
+    ABI,
+};
 use omnish_llm::tool::{ToolDef, ToolResult};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
 
@@ -145,18 +150,61 @@ pub struct ExternalPlugin {
 }
 
 impl ExternalPlugin {
+    /// Apply Landlock filesystem sandbox: read everywhere, write only to data_dir and /tmp.
+    /// Called inside pre_exec (between fork and exec), so only affects the child process.
+    fn apply_sandbox(data_dir: &std::path::Path) -> Result<(), String> {
+        let abi = ABI::V1;
+        let status = Ruleset::default()
+            .handle_access(AccessFs::from_all(abi))
+            .map_err(|e| format!("landlock handle_access: {e}"))?
+            .create()
+            .map_err(|e| format!("landlock create: {e}"))?
+            .add_rules(path_beneath_rules(&["/"], AccessFs::from_read(abi)))
+            .map_err(|e| format!("landlock add read rules: {e}"))?
+            .add_rules(path_beneath_rules(
+                &[data_dir, std::path::Path::new("/tmp")],
+                AccessFs::from_all(abi),
+            ))
+            .map_err(|e| format!("landlock add write rules: {e}"))?
+            .restrict_self()
+            .map_err(|e| format!("landlock restrict_self: {e}"))?;
+        match status.ruleset {
+            RulesetStatus::FullyEnforced => Ok(()),
+            RulesetStatus::PartiallyEnforced => Ok(()),
+            RulesetStatus::NotEnforced => Err("Landlock not supported on this kernel".into()),
+        }
+    }
+
     /// Spawn a plugin subprocess and initialize it.
     /// Returns None if the plugin fails to start or initialize.
     pub fn spawn(name: &str, executable: &std::path::Path) -> Option<Self> {
-        let mut child = match Command::new(executable)
-            .stdin(Stdio::piped())
+        // Create data directory for the plugin
+        let data_dir = omnish_common::config::omnish_dir().join("data").join(name);
+        if let Err(e) = std::fs::create_dir_all(&data_dir) {
+            tracing::error!("Failed to create plugin data dir {}: {}", data_dir.display(), e);
+            return None;
+        }
+
+        let data_dir_clone = data_dir.clone();
+        let plugin_name = name.to_string();
+        let mut cmd = Command::new(executable);
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-        {
+            .stderr(Stdio::inherit());
+        // SAFETY: pre_exec runs between fork and exec in the child process.
+        // We only call Landlock syscalls which are async-signal-safe equivalent.
+        unsafe {
+            cmd.pre_exec(move || {
+                Self::apply_sandbox(&data_dir_clone).map_err(|e| {
+                    eprintln!("Plugin '{}' sandbox failed: {}", plugin_name, e);
+                    std::io::Error::new(std::io::ErrorKind::PermissionDenied, e)
+                })
+            });
+        }
+        let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!("Failed to spawn plugin '{}': {}", name, e);
+                tracing::error!("Failed to spawn plugin '{}': {}", name, e);
                 return None;
             }
         };
