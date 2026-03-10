@@ -1,4 +1,5 @@
 // crates/omnish-client/src/main.rs
+mod client_plugin;
 mod command;
 mod completion;
 pub mod event_log;
@@ -1558,54 +1559,6 @@ async fn handle_slash_command(
     }
 }
 
-/// Execute a client-side tool locally (e.g. bash). Returns (content, is_error).
-fn execute_client_tool(tool_name: &str, input: &serde_json::Value) -> (String, bool) {
-    match tool_name {
-        "bash" => {
-            let command = input["command"].as_str().unwrap_or("");
-            if command.is_empty() {
-                return ("Error: 'command' is required".to_string(), true);
-            }
-            match std::process::Command::new("bash")
-                .arg("-c")
-                .arg(command)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output()
-            {
-                Ok(output) => {
-                    let mut content = String::new();
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    if !stdout.is_empty() {
-                        content.push_str(&stdout);
-                    }
-                    if !stderr.is_empty() {
-                        if !content.is_empty() { content.push('\n'); }
-                        content.push_str("[stderr]\n");
-                        content.push_str(&stderr);
-                    }
-                    if content.is_empty() {
-                        content = "(no output)".to_string();
-                    }
-                    let exit_code = output.status.code().unwrap_or(-1);
-                    if exit_code != 0 {
-                        content.push_str(&format!("\n[exit code: {}]", exit_code));
-                    }
-                    // Truncate if too large
-                    if content.len() > 50_000 {
-                        content.truncate(50_000);
-                        content.push_str("\n... (truncated)");
-                    }
-                    (content, exit_code != 0)
-                }
-                Err(e) => (format!("Failed to execute: {}", e), true),
-            }
-        }
-        _ => (format!("Unknown client tool: {}", tool_name), true),
-    }
-}
-
 /// Run the multi-turn chat loop. Returns when user exits via ESC, Ctrl-D, or backspace on empty input.
 async fn run_chat_loop(
     rpc: &RpcClient,
@@ -1615,6 +1568,7 @@ async fn run_chat_loop(
     client_debug_fn: &dyn Fn() -> String,
     chat_history: &mut VecDeque<String>,
 ) {
+    let client_plugins = Arc::new(client_plugin::ClientPluginManager::new());
     let mut chat_completer = ghost_complete::GhostCompleter::new(vec![
         Box::new(ghost_complete::BuiltinProvider::new()),
     ]);
@@ -2104,11 +2058,12 @@ async fn run_chat_loop(
                                         let text = format!("\u{1f527} executing {}...", tc.tool_name);
                                         nix::unistd::write(std::io::stdout(), line_status.show(&text).as_bytes()).ok();
 
-                                        // Execute tool locally (blocking — use spawn_blocking)
+                                        // Execute tool via plugin subprocess (blocking — use spawn_blocking)
                                         let tool_name = tc.tool_name.clone();
                                         let tool_input: serde_json::Value = serde_json::from_str(&tc.input).unwrap_or_default();
+                                        let plugins = Arc::clone(&client_plugins);
                                         let (content, is_error) = tokio::task::spawn_blocking(move || {
-                                            execute_client_tool(&tool_name, &tool_input)
+                                            plugins.execute_tool(&tool_name, &tool_input)
                                         }).await.unwrap_or_else(|_| ("Tool execution panicked".to_string(), true));
 
                                         // Send result back, get continuation stream

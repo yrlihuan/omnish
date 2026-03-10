@@ -788,6 +788,7 @@ dependencies = [
  "omnish-store",
  "omnish-tracker",
  "omnish-transport",
+ "serde",
  "serde_json",
  "tokio",
  "unicode-width 0.2.2",
