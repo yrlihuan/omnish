@@ -28,7 +28,7 @@ NC='\033[0m'
 # ── Project paths ────────────────────────────────────────────────────────
 # SCRIPT_DIR must be set by the caller before sourcing this file.
 PROJECT_ROOT="$(dirname "$(dirname "${SCRIPT_DIR:?SCRIPT_DIR must be set before sourcing lib.sh}")")"
-CLIENT="$PROJECT_ROOT/target/release/omnish-client"
+CLIENT="$PROJECT_ROOT/target/release/omnish"
 
 # ── Tmux config (override default shell to avoid running installed omnish) ──
 TMUX_CONF="$(mktemp /tmp/omnish-test-tmux.XXXXXX.conf)"
@@ -61,8 +61,8 @@ _check_deps() {
         exit 1
     fi
     if [[ ! -f "$CLIENT" ]]; then
-        echo -e "${RED}Error: omnish-client not found at $CLIENT${NC}"
-        echo -e "${YELLOW}Hint: Run 'cargo build' first${NC}"
+        echo -e "${RED}Error: omnish not found at $CLIENT${NC}"
+        echo -e "${YELLOW}Hint: Run 'cargo build --release -p omnish-client' first${NC}"
         exit 1
     fi
 }
