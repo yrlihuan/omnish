@@ -72,12 +72,8 @@ test_1() {
 
     send_keys "What is 2+2? Reply with just the number." 0.3
     send_enter 0.3
-    echo -e "  Waiting 15s for LLM response..."
-    sleep 15
-
-    local conv1=$(capture_pane -30)
-    if ! is_chat_prompt "$conv1"; then
-        show_capture "After Conv1" "$conv1" 10
+    if ! wait_for_chat_response 30; then
+        show_capture "After Conv1" "$(capture_pane -30)" 10
         assert_fail "No chat prompt after Conv1"
         return 1
     fi
@@ -93,12 +89,8 @@ test_1() {
 
     send_keys "Name three primary colors. Be brief." 0.3
     send_enter 0.3
-    echo -e "  Waiting 15s for LLM response..."
-    sleep 15
-
-    local conv2=$(capture_pane -30)
-    if ! is_chat_prompt "$conv2"; then
-        show_capture "After Conv2" "$conv2" 10
+    if ! wait_for_chat_response 30; then
+        show_capture "After Conv2" "$(capture_pane -30)" 10
         assert_fail "No chat prompt after Conv2"
         return 1
     fi
@@ -114,12 +106,8 @@ test_1() {
 
     send_keys "Name three animals that can fly. Be brief." 0.3
     send_enter 0.3
-    echo -e "  Waiting 15s for LLM response..."
-    sleep 15
-
-    local conv3=$(capture_pane -30)
-    if ! is_chat_prompt "$conv3"; then
-        show_capture "After Conv3" "$conv3" 10
+    if ! wait_for_chat_response 30; then
+        show_capture "After Conv3" "$(capture_pane -30)" 10
         assert_fail "No chat prompt after Conv3"
         return 1
     fi
@@ -187,7 +175,11 @@ test_1() {
         # Still send a follow-up to confirm we're in the right conversation
         send_keys "What was my previous question?" 0.5
         send_enter 0.5
-        sleep 15
+        if ! wait_for_chat_response 30; then
+            show_capture "Follow-up timeout" "$(capture_pane -30)" 10
+            assert_fail "Follow-up response timeout"
+            return 1
+        fi
         local response=$(capture_pane -30)
         if echo "$response" | grep -qi "color\|red\|green\|blue"; then
             echo -e "  ${GREEN}Conv 2 content confirmed via follow-up${NC}"
@@ -203,8 +195,11 @@ test_1() {
         # Try sending a message to see which conversation we're in
         send_keys "What was my previous question?" 0.5
         send_enter 0.5
-        sleep 15
-
+        if ! wait_for_chat_response 30; then
+            show_capture "Follow-up timeout" "$(capture_pane -30)" 10
+            assert_fail "Follow-up response timeout"
+            return 1
+        fi
         local response=$(capture_pane -30)
         if echo "$response" | grep -qi "color\|red\|green\|blue"; then
             echo -e "  ${GREEN}Conv 2 content confirmed via follow-up${NC}"

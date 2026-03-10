@@ -66,8 +66,11 @@ test_2() {
     send_keys "Hello, this is a test message" 0.3
     send_enter 0.3
 
-    echo -e "  Waiting 20s for LLM response..."
-    sleep 20
+    if ! wait_for_chat_response 30; then
+        show_capture "Timeout waiting for response" "$(capture_pane -30)" 10
+        assert_fail "LLM response timeout"
+        return 1
+    fi
 
     local before=$(capture_pane -30)
     show_capture "Before backspace" "$before" 15

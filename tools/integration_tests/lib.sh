@@ -216,6 +216,26 @@ wait_for_prompt() {
     sleep "${1:-0.5}"
 }
 
+# wait_for_chat_response [timeout=30] [interval=2]
+#   Poll until chat prompt "> " appears in the pane or timeout.
+#   Returns 0 on success, 1 on timeout.
+wait_for_chat_response() {
+    local timeout="${1:-30}"
+    local interval="${2:-2}"
+    local elapsed=0
+    echo -e "  Waiting up to ${timeout}s for LLM response..."
+    while [[ $elapsed -lt $timeout ]]; do
+        local content
+        content=$(capture_pane -10)
+        if is_chat_prompt "$content"; then
+            return 0
+        fi
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+    return 1
+}
+
 # ── Assertions ───────────────────────────────────────────────────────────
 
 # assert_pass <message>
