@@ -225,6 +225,7 @@ impl ExternalPlugin {
 
         let data_dir_clone = data_dir.clone();
         let plugin_name = name.to_string();
+        let process_name = format!("omnish-plugin({})", name);
         let mut cmd = Command::new(executable);
         cmd.args(args)
             .stdin(Stdio::piped())
@@ -237,7 +238,12 @@ impl ExternalPlugin {
                 Self::apply_sandbox(&data_dir_clone).map_err(|e| {
                     eprintln!("Plugin '{}' sandbox failed: {}", plugin_name, e);
                     std::io::Error::new(std::io::ErrorKind::PermissionDenied, e)
-                })
+                })?;
+                // Set process name using prctl(PR_SET_NAME)
+                let name_bytes = process_name.as_bytes();
+                let name_ptr = name_bytes.as_ptr() as *const libc::c_char;
+                libc::prctl(libc::PR_SET_NAME, name_ptr, 0, 0, 0);
+                Ok(())
             });
         }
         let mut child = match cmd.spawn() {

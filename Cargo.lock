@@ -829,6 +829,7 @@ dependencies = [
  "chrono",
  "dirs",
  "landlock",
+ "libc",
  "omnish-common",
  "omnish-context",
  "omnish-llm",
@@ -859,6 +860,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
 ]
 
