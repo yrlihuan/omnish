@@ -232,7 +232,8 @@ pub struct ChatToolCall {
     pub thread_id: String,
     pub tool_name: String,
     pub tool_call_id: String,
-    pub input: serde_json::Value,
+    /// Tool input as JSON string (bincode cannot deserialize serde_json::Value)
+    pub input: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -589,7 +590,7 @@ mod tests {
                 thread_id: String::new(),
                 tool_name: String::new(),
                 tool_call_id: String::new(),
-                input: serde_json::json!({}),
+                input: String::new(),
             }),
             Message::ChatToolResult(ChatToolResult {
                 request_id: String::new(),

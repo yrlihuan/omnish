@@ -2104,8 +2104,12 @@ async fn run_chat_loop(
                                         let text = format!("\u{1f527} executing {}...", tc.tool_name);
                                         nix::unistd::write(std::io::stdout(), line_status.show(&text).as_bytes()).ok();
 
-                                        // Execute tool locally
-                                        let (content, is_error) = execute_client_tool(&tc.tool_name, &tc.input);
+                                        // Execute tool locally (blocking — use spawn_blocking)
+                                        let tool_name = tc.tool_name.clone();
+                                        let tool_input: serde_json::Value = serde_json::from_str(&tc.input).unwrap_or_default();
+                                        let (content, is_error) = tokio::task::spawn_blocking(move || {
+                                            execute_client_tool(&tool_name, &tool_input)
+                                        }).await.unwrap_or_else(|_| ("Tool execution panicked".to_string(), true));
 
                                         // Send result back, get continuation stream
                                         let result_msg = Message::ChatToolResult(ChatToolResult {
@@ -2120,9 +2124,9 @@ async fn run_chat_loop(
                                                 rx = new_rx;
                                                 continue 'stream;
                                             }
-                                            Err(_) => {
+                                            Err(e) => {
                                                 nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
-                                                let err = display::render_error("Failed to send tool result");
+                                                let err = display::render_error(&format!("Failed to send tool result: {}", e));
                                                 nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                                                 break 'stream;
                                             }

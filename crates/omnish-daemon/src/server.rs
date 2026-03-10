@@ -423,7 +423,7 @@ async fn handle_tool_result(
                 thread_id: state.cm.thread_id.clone(),
                 tool_name: tc.name.clone(),
                 tool_call_id: tc.id.clone(),
-                input: tc.input.clone(),
+                input: serde_json::to_string(&tc.input).unwrap_or_default(),
             }));
             let out_messages = std::mem::take(&mut state.messages);
             let request_id = state.cm.request_id.clone();
@@ -561,7 +561,7 @@ async fn run_agent_loop(
                                 thread_id: state.cm.thread_id.clone(),
                                 tool_name: tc.name.clone(),
                                 tool_call_id: tc.id.clone(),
-                                input: tc.input.clone(),
+                                input: serde_json::to_string(&tc.input).unwrap_or_default(),
                             }));
 
                             // Cache state for resumption
