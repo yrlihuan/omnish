@@ -192,18 +192,18 @@ impl LlmBackend for MultiBackend {
 /// Resolve Langfuse configuration, returning None if not configured or key resolution fails.
 fn resolve_langfuse_config(llm_config: &LlmConfig) -> Option<LangfuseConfig> {
     let cfg = llm_config.langfuse.as_ref()?;
-    let secret_key = match resolve_api_key(&cfg.secret_key_cmd) {
+    let secret_key = match resolve_api_key(&cfg.secret_key) {
         Ok(key) => key,
         Err(e) => {
-            tracing::warn!("langfuse secret_key_cmd failed, disabling langfuse: {}", e);
+            tracing::warn!("langfuse secret_key failed, disabling langfuse: {}", e);
             return None;
         }
     };
-    tracing::info!("langfuse enabled: {}", cfg.host);
+    tracing::info!("langfuse enabled: {}", cfg.base_url);
     Some(LangfuseConfig {
         public_key: cfg.public_key.clone(),
         secret_key,
-        host: cfg.host.clone(),
+        host: cfg.base_url.clone(),
     })
 }
 
