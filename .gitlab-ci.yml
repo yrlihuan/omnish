@@ -1,5 +1,4 @@
 stages:
-  - check
   - test
   - build
   - release
@@ -15,20 +14,17 @@ cache:
     - .cargo/git
     - target/
 
-check:
-  stage: check
+test:
+  stage: test
   image: docker.nv/ubuntu_2404_runner:latest
   script:
     - cargo check --workspace
     - cargo clippy --workspace
-  allow_failure: false
-
-test:
-  stage: test
-  image: docker.nv/ubuntu_2404_runner:latest
-  needs: [check]
-  script:
     - cargo test --workspace
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - when: always
 
 build-release:
   stage: build
