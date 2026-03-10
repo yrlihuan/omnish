@@ -76,14 +76,14 @@ test_2() {
     local content=$(capture_pane -20)
     show_capture "After /context | tail -n 5" "$content" 10
 
-    # Extract current_path value
-    CONTEXT_CWD=$(echo "$content" | grep -oP '<current_path>\K[^<]+')
+    # Extract workingDirectory value from <system-reminder>
+    CONTEXT_CWD=$(echo "$content" | awk '/<system-reminder>/{flag=1; next} /<\/system-reminder>/{flag=0} flag && /# workingDirectory/{getline; print $1}')
 
     if echo "$CONTEXT_CWD" | grep -q 'tmp'; then
-        assert_pass "/context shows current_path containing /tmp (got: $CONTEXT_CWD)"
+        assert_pass "/context shows workingDirectory containing /tmp (got: $CONTEXT_CWD)"
         return 0
     else
-        assert_fail "/context current_path does not contain /tmp (got: '$CONTEXT_CWD')"
+        assert_fail "/context workingDirectory does not contain /tmp (got: '$CONTEXT_CWD')"
         return 1
     fi
 }
@@ -97,7 +97,7 @@ test_3() {
     local norm_context=$(echo "$CONTEXT_CWD" | sed 's|~|'"$HOME"'|; s|/$||')
 
     echo -e "  /debug client cwd: ${YELLOW}${DEBUG_CWD}${NC} (normalized: ${norm_debug})"
-    echo -e "  /context cwd:      ${YELLOW}${CONTEXT_CWD}${NC} (normalized: ${norm_context})"
+    echo -e "  /context workingDirectory: ${YELLOW}${CONTEXT_CWD}${NC} (normalized: ${norm_context})"
 
     if [[ "$norm_debug" == "$norm_context" ]]; then
         assert_pass "Both cwds match: $norm_debug"

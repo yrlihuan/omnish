@@ -35,11 +35,11 @@ test_1() {
     local content=$(capture_pane -20)
     show_capture "After /context | tail -n 5" "$content" 10
 
-    if echo "$content" | grep -q '<current_path>'; then
-        assert_pass "/context output contains <current_path> tag"
+    if echo "$content" | grep -q '# workingDirectory' && echo "$content" | grep -q '<system-reminder>'; then
+        assert_pass "/context output contains <system-reminder> with # workingDirectory"
         return 0
     else
-        assert_fail "/context output does not contain <current_path> tag"
+        assert_fail "/context output does not contain <system-reminder> with # workingDirectory"
         return 1
     fi
 }
@@ -66,11 +66,11 @@ test_2() {
     local content=$(capture_pane -20)
     show_capture "After /context | tail -n 5" "$content" 10
 
-    if echo "$content" | grep -q '<current_path>'; then
-        assert_fail "/context output contains <current_path> tag but should not"
+    if echo "$content" | grep -q '# workingDirectory' && echo "$content" | grep -q '<system-reminder>'; then
+        assert_fail "/context output contains <system-reminder> with # workingDirectory but should not"
         return 1
     else
-        assert_pass "/context output does not contain <current_path> tag (as expected)"
+        assert_pass "/context output does not contain <system-reminder> with # workingDirectory (as expected)"
         return 0
     fi
 }
