@@ -174,8 +174,10 @@ impl ClientPluginManager {
     }
 
     fn spawn_plugin(bin: &std::path::Path, name: &str) -> Option<PluginProcess> {
+        // Built-in plugins use "builtin.<name>" for data directories
+        let dir_name = format!("builtin.{}", name);
         // Create data directory for the plugin
-        let data_dir = omnish_common::config::omnish_dir().join("data").join(name);
+        let data_dir = omnish_common::config::omnish_dir().join("data").join(&dir_name);
         if let Err(e) = std::fs::create_dir_all(&data_dir) {
             eprintln!("Failed to create plugin data dir {}: {e}", data_dir.display());
             return None;

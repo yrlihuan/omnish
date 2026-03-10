@@ -153,7 +153,7 @@ async fn async_main() -> Result<()> {
         .and_then(|p| p.parent().map(|d| d.join("omnish-plugin")))
         .unwrap_or_else(|| std::path::PathBuf::from("omnish-plugin"));
     if plugin_bin.exists() {
-        if let Some(p) = omnish_daemon::plugin::ExternalPlugin::spawn_with_args("bash", &plugin_bin, &["bash"]) {
+        if let Some(p) = omnish_daemon::plugin::ExternalPlugin::spawn_builtin("bash", &plugin_bin, &["bash"]) {
             plugin_mgr.register(Box::new(p));
         }
     } else {
