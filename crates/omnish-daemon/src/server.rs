@@ -342,6 +342,11 @@ async fn handle_chat_message(
                                 ),
                                 _ => format!("执行 {}...", tc.name),
                             },
+                            "bash" => {
+                                let cmd = tc.input["command"].as_str().unwrap_or("");
+                                let preview: String = cmd.chars().take(60).collect();
+                                format!("执行: {}...", preview)
+                            }
                             _ => format!("执行 {}...", tc.name),
                         };
                         messages.push(Message::ChatToolStatus(ChatToolStatus {

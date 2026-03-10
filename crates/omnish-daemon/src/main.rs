@@ -147,6 +147,7 @@ async fn async_main() -> Result<()> {
 
     // Initialize plugin manager
     let mut plugin_mgr = omnish_daemon::plugin::PluginManager::new();
+    plugin_mgr.register(Box::new(omnish_daemon::tools::bash::BashTool::new()));
     plugin_mgr.load_external_plugins(&config.plugins.enabled);
     let plugin_mgr = Arc::new(plugin_mgr);
 
