@@ -779,11 +779,11 @@ version = "0.5.5"
 dependencies = [
  "anyhow",
  "dirs",
- "landlock",
  "libc",
  "nix",
  "omnish-common",
  "omnish-llm",
+ "omnish-plugin",
  "omnish-protocol",
  "omnish-pty",
  "omnish-store",
@@ -828,11 +828,10 @@ dependencies = [
  "async-trait",
  "chrono",
  "dirs",
- "landlock",
- "libc",
  "omnish-common",
  "omnish-context",
  "omnish-llm",
+ "omnish-plugin",
  "omnish-protocol",
  "omnish-store",
  "omnish-transport",
@@ -868,8 +867,9 @@ dependencies = [
 name = "omnish-plugin"
 version = "0.5.5"
 dependencies = [
+ "landlock",
+ "libc",
  "omnish-common",
- "omnish-daemon",
  "omnish-llm",
  "serde",
  "serde_json",

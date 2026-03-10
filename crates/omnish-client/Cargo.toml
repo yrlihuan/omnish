@@ -15,12 +15,12 @@ omnish-pty = { path = "../omnish-pty" }
 omnish-tracker = { path = "../omnish-tracker" }
 omnish-store = { path = "../omnish-store" }
 omnish-llm = { path = "../omnish-llm" }
+omnish-plugin = { path = "../omnish-plugin" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 uuid = { workspace = true }
 nix = { workspace = true }
 dirs = "5"
-landlock = "0.4"
 libc = "0.2"
 unicode-width = "0.2"
 serde = { workspace = true }

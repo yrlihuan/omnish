@@ -1,27 +1,6 @@
-use omnish_daemon::plugin::{Plugin, PluginType};
-use omnish_daemon::tools::bash::BashTool;
-use serde::{Deserialize, Serialize};
+use omnish_plugin::tools::bash::BashTool;
+use omnish_plugin::{JsonRpcRequest, JsonRpcResponse, Plugin, PluginType};
 use std::io::{BufRead, BufReader, Write};
-
-#[derive(Deserialize)]
-struct JsonRpcRequest {
-    #[allow(dead_code)]
-    jsonrpc: String,
-    method: String,
-    id: u64,
-    #[serde(default)]
-    params: serde_json::Value,
-}
-
-#[derive(Serialize)]
-struct JsonRpcResponse {
-    jsonrpc: &'static str,
-    id: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<serde_json::Value>,
-}
 
 fn resolve_plugin(name: &str) -> Option<Box<dyn Plugin>> {
     match name {
@@ -49,7 +28,7 @@ fn run_plugin_mode(plugin: Box<dyn Plugin>) {
             Ok(r) => r,
             Err(e) => {
                 let resp = JsonRpcResponse {
-                    jsonrpc: "2.0",
+                    jsonrpc: "2.0".to_string(),
                     id: 0,
                     result: None,
                     error: Some(serde_json::json!({"message": format!("parse error: {e}")})),
@@ -75,7 +54,7 @@ fn run_plugin_mode(plugin: Box<dyn Plugin>) {
                     result["system_prompt"] = serde_json::Value::String(prompt);
                 }
                 JsonRpcResponse {
-                    jsonrpc: "2.0",
+                    jsonrpc: "2.0".to_string(),
                     id: req.id,
                     result: Some(result),
                     error: None,
@@ -86,7 +65,7 @@ fn run_plugin_mode(plugin: Box<dyn Plugin>) {
                 let input = &req.params["input"];
                 let text = plugin.status_text(tool_name, input);
                 JsonRpcResponse {
-                    jsonrpc: "2.0",
+                    jsonrpc: "2.0".to_string(),
                     id: req.id,
                     result: Some(serde_json::Value::String(text)),
                     error: None,
@@ -97,7 +76,7 @@ fn run_plugin_mode(plugin: Box<dyn Plugin>) {
                 let input = &req.params["input"];
                 let result = plugin.call_tool(tool_name, input);
                 JsonRpcResponse {
-                    jsonrpc: "2.0",
+                    jsonrpc: "2.0".to_string(),
                     id: req.id,
                     result: Some(serde_json::json!({
                         "content": result.content,
@@ -108,7 +87,7 @@ fn run_plugin_mode(plugin: Box<dyn Plugin>) {
             }
             "shutdown" => {
                 let resp = JsonRpcResponse {
-                    jsonrpc: "2.0",
+                    jsonrpc: "2.0".to_string(),
                     id: req.id,
                     result: Some(serde_json::json!({})),
                     error: None,
@@ -118,7 +97,7 @@ fn run_plugin_mode(plugin: Box<dyn Plugin>) {
                 break;
             }
             other => JsonRpcResponse {
-                jsonrpc: "2.0",
+                jsonrpc: "2.0".to_string(),
                 id: req.id,
                 result: None,
                 error: Some(serde_json::json!({"message": format!("unknown method: {other}")})),

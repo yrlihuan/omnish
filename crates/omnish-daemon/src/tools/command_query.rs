@@ -1,4 +1,4 @@
-use crate::plugin::Plugin;
+use omnish_plugin::Plugin;
 use omnish_context::StreamReader;
 use omnish_llm::tool::{Tool, ToolDef, ToolResult};
 use omnish_store::command::CommandRecord;
