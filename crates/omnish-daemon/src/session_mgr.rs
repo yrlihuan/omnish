@@ -813,7 +813,6 @@ impl SessionManager {
             // Skip if this session is currently loaded in memory
             if let Some(sid) = session_id {
                 if loaded_ids.contains(sid) {
-                    tracing::debug!("skipping cleanup of active session directory: {:?}", dir);
                     continue;
                 }
             }
