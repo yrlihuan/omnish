@@ -215,6 +215,72 @@ impl ExternalPlugin {
         Self::spawn_inner(name, executable, &[])
     }
 
+    /// Load customized prompts from `~/.omnish/plugins/<name>/`.
+    /// - `PROMPT.md` replaces the built-in system_prompt entirely.
+    /// - `PROMPT_<text>.md` files are appended as extra fragments.
+    fn load_custom_prompts(name: &str, builtin_prompt: Option<String>) -> Option<String> {
+        let prompt_dir = omnish_common::config::omnish_dir().join("plugins").join(name);
+        if !prompt_dir.is_dir() {
+            return builtin_prompt;
+        }
+
+        // Check for PROMPT.md (replaces builtin)
+        let main_prompt_path = prompt_dir.join("PROMPT.md");
+        let base = if main_prompt_path.is_file() {
+            match std::fs::read_to_string(&main_prompt_path) {
+                Ok(content) => {
+                    let content = content.trim().to_string();
+                    if content.is_empty() {
+                        builtin_prompt
+                    } else {
+                        tracing::info!("Plugin '{}': loaded custom PROMPT.md", name);
+                        Some(content)
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Plugin '{}': failed to read PROMPT.md: {}", name, e);
+                    builtin_prompt
+                }
+            }
+        } else {
+            builtin_prompt
+        };
+
+        // Collect PROMPT_*.md files (appended as extra fragments)
+        let mut extras = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&prompt_dir) {
+            for entry in entries.flatten() {
+                let fname = entry.file_name();
+                let fname = fname.to_string_lossy();
+                if fname.starts_with("PROMPT_") && fname.ends_with(".md") && entry.path().is_file()
+                {
+                    if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                        let content = content.trim().to_string();
+                        if !content.is_empty() {
+                            tracing::info!("Plugin '{}': loaded custom {}", name, fname);
+                            extras.push(content);
+                        }
+                    }
+                }
+            }
+        }
+        extras.sort(); // deterministic order by filename
+
+        if extras.is_empty() {
+            return base;
+        }
+
+        let combined = match base {
+            Some(b) => {
+                let mut parts = vec![b];
+                parts.extend(extras);
+                parts.join("\n\n")
+            }
+            None => extras.join("\n\n"),
+        };
+        Some(combined)
+    }
+
     fn spawn_inner(name: &str, executable: &std::path::Path, args: &[&str]) -> Option<Self> {
         // Create data directory for the plugin
         let data_dir = omnish_common::config::omnish_dir().join("data").join(name);
@@ -284,7 +350,8 @@ impl ExternalPlugin {
                     );
                     plugin.tool_defs = init.tools;
                     plugin.plugin_type = ptype;
-                    plugin.system_prompt_text = init.system_prompt;
+                    plugin.system_prompt_text =
+                        Self::load_custom_prompts(name, init.system_prompt);
                     Some(plugin)
                 }
                 Err(e) => {
