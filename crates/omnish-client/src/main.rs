@@ -1558,6 +1558,54 @@ async fn handle_slash_command(
     }
 }
 
+/// Execute a client-side tool locally (e.g. bash). Returns (content, is_error).
+fn execute_client_tool(tool_name: &str, input: &serde_json::Value) -> (String, bool) {
+    match tool_name {
+        "bash" => {
+            let command = input["command"].as_str().unwrap_or("");
+            if command.is_empty() {
+                return ("Error: 'command' is required".to_string(), true);
+            }
+            match std::process::Command::new("bash")
+                .arg("-c")
+                .arg(command)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+            {
+                Ok(output) => {
+                    let mut content = String::new();
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !stdout.is_empty() {
+                        content.push_str(&stdout);
+                    }
+                    if !stderr.is_empty() {
+                        if !content.is_empty() { content.push('\n'); }
+                        content.push_str("[stderr]\n");
+                        content.push_str(&stderr);
+                    }
+                    if content.is_empty() {
+                        content = "(no output)".to_string();
+                    }
+                    let exit_code = output.status.code().unwrap_or(-1);
+                    if exit_code != 0 {
+                        content.push_str(&format!("\n[exit code: {}]", exit_code));
+                    }
+                    // Truncate if too large
+                    if content.len() > 50_000 {
+                        content.truncate(50_000);
+                        content.push_str("\n... (truncated)");
+                    }
+                    (content, exit_code != 0)
+                }
+                Err(e) => (format!("Failed to execute: {}", e), true),
+            }
+        }
+        _ => (format!("Unknown client tool: {}", tool_name), true),
+    }
+}
+
 /// Run the multi-turn chat loop. Returns when user exits via ESC, Ctrl-D, or backspace on empty input.
 async fn run_chat_loop(
     rpc: &RpcClient,
@@ -2044,26 +2092,58 @@ async fn run_chat_loop(
                 let _ = stop_tx.send(());
                 match result {
                     Ok(mut rx) => {
-                        while let Some(msg) = rx.recv().await {
-                            match msg {
-                                Message::ChatToolStatus(cts) => {
-                                    let text = format!("\u{1f527} {}", cts.status);
-                                    nix::unistd::write(std::io::stdout(), line_status.show(&text).as_bytes()).ok();
-                                }
-                                Message::ChatResponse(resp) if resp.request_id == req_id => {
-                                    nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
-                                    let output = display::render_response(&resp.content);
-                                    nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                        'stream: loop {
+                            while let Some(msg) = rx.recv().await {
+                                match msg {
+                                    Message::ChatToolStatus(cts) => {
+                                        let text = format!("\u{1f527} {}", cts.status);
+                                        nix::unistd::write(std::io::stdout(), line_status.show(&text).as_bytes()).ok();
+                                    }
+                                    Message::ChatToolCall(tc) => {
+                                        // Show tool execution status
+                                        let text = format!("\u{1f527} executing {}...", tc.tool_name);
+                                        nix::unistd::write(std::io::stdout(), line_status.show(&text).as_bytes()).ok();
 
-                                    // Show separator
-                                    let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
-                                    let separator = display::render_separator(cols);
-                                    let sep_line = format!("{}\r\n", separator);
-                                    nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
-                                    break;
+                                        // Execute tool locally
+                                        let (content, is_error) = execute_client_tool(&tc.tool_name, &tc.input);
+
+                                        // Send result back, get continuation stream
+                                        let result_msg = Message::ChatToolResult(ChatToolResult {
+                                            request_id: tc.request_id.clone(),
+                                            thread_id: tc.thread_id.clone(),
+                                            tool_call_id: tc.tool_call_id,
+                                            content,
+                                            is_error,
+                                        });
+                                        match rpc.call_stream(result_msg).await {
+                                            Ok(new_rx) => {
+                                                rx = new_rx;
+                                                continue 'stream;
+                                            }
+                                            Err(_) => {
+                                                nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
+                                                let err = display::render_error("Failed to send tool result");
+                                                nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                                                break 'stream;
+                                            }
+                                        }
+                                    }
+                                    Message::ChatResponse(resp) if resp.request_id == req_id => {
+                                        nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
+                                        let output = display::render_response(&resp.content);
+                                        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+
+                                        // Show separator
+                                        let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+                                        let separator = display::render_separator(cols);
+                                        let sep_line = format!("{}\r\n", separator);
+                                        nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
+                                        break 'stream;
+                                    }
+                                    _ => break 'stream,
                                 }
-                                _ => break,
                             }
+                            break 'stream;
                         }
                     }
                     Err(_) => {
