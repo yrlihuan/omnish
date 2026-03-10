@@ -1,15 +1,29 @@
 use anyhow::Result;
 use omnish_daemon::conversation_mgr::ConversationManager;
-use omnish_daemon::plugin::PluginManager;
+use omnish_daemon::plugin::{PluginManager, PluginType};
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_daemon::task_mgr::TaskManager;
 use omnish_llm::backend::{ContentBlock, LlmBackend, LlmRequest, StopReason, TriggerType, UseCase};
 use omnish_llm::tool::Tool;
 use omnish_protocol::message::*;
 use omnish_transport::rpc_server::RpcServer;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_rustls::TlsAcceptor;
+
+/// Cached state for a paused agent loop awaiting a client-side tool result.
+struct AgentLoopState {
+    llm_req: LlmRequest,
+    prior_len: usize,
+    pending_tool_calls: Vec<omnish_llm::tool::ToolCall>,
+    completed_results: Vec<omnish_llm::tool::ToolResult>,
+    messages: Vec<Message>,
+    iteration: usize,
+    cm: ChatMessage,
+    start: std::time::Instant,
+    command_query_tool: omnish_daemon::tools::command_query::CommandQueryTool,
+}
 
 pub struct DaemonServer {
     session_mgr: Arc<SessionManager>,
@@ -17,6 +31,7 @@ pub struct DaemonServer {
     task_mgr: Arc<Mutex<TaskManager>>,
     conv_mgr: Arc<ConversationManager>,
     plugin_mgr: Arc<PluginManager>,
+    pending_agent_loops: Arc<Mutex<HashMap<String, AgentLoopState>>>,
 }
 
 impl DaemonServer {
@@ -27,7 +42,14 @@ impl DaemonServer {
         conv_mgr: Arc<ConversationManager>,
         plugin_mgr: Arc<PluginManager>,
     ) -> Self {
-        Self { session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr }
+        Self {
+            session_mgr,
+            llm_backend,
+            task_mgr,
+            conv_mgr,
+            plugin_mgr,
+            pending_agent_loops: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     pub async fn run(
@@ -44,6 +66,7 @@ impl DaemonServer {
         let task_mgr = self.task_mgr.clone();
         let conv_mgr = self.conv_mgr.clone();
         let plugin_mgr = self.plugin_mgr.clone();
+        let pending_loops = self.pending_agent_loops.clone();
 
         server
             .serve(
@@ -53,7 +76,8 @@ impl DaemonServer {
                     let task_mgr = task_mgr.clone();
                     let conv_mgr = conv_mgr.clone();
                     let plugin_mgr = plugin_mgr.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr).await })
+                    let pending_loops = pending_loops.clone();
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &pending_loops).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -69,6 +93,7 @@ async fn handle_message(
     task_mgr: &Arc<Mutex<TaskManager>>,
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
+    pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
 ) -> Vec<Message> {
     // Shadow with reference for existing code; use mgr_arc for spawned tasks
     let mgr_arc = mgr;
@@ -217,7 +242,10 @@ async fn handle_message(
             })
         }
         Message::ChatMessage(cm) => {
-            return handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr).await;
+            return handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, pending_loops).await;
+        }
+        Message::ChatToolResult(tr) => {
+            return handle_tool_result(tr, mgr, llm, conv_mgr, plugin_mgr, pending_loops).await;
         }
         Message::ChatInterrupt(ci) => {
             conv_mgr.append_messages(&ci.thread_id, &[
@@ -237,17 +265,16 @@ async fn handle_chat_message(
     llm: &Option<Arc<dyn LlmBackend>>,
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
+    pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
 ) -> Vec<Message> {
-    let backend = match llm {
-        Some(b) => b,
-        None => {
-            return vec![Message::ChatResponse(ChatResponse {
-                request_id: cm.request_id,
-                thread_id: cm.thread_id,
-                content: "(LLM backend not configured)".to_string(),
-            })];
-        }
-    };
+    if llm.is_none() {
+        return vec![Message::ChatResponse(ChatResponse {
+            request_id: cm.request_id,
+            thread_id: cm.thread_id,
+            content: "(LLM backend not configured)".to_string(),
+        })];
+    }
+    let backend = llm.as_ref().unwrap();
 
     let use_case = UseCase::Chat;
     let max_context_chars = backend.max_content_chars_for_use_case(use_case);
@@ -281,7 +308,7 @@ async fn handle_chat_message(
     };
     extra_messages.push(serde_json::json!({"role": "user", "content": llm_user_content}));
 
-    let mut llm_req = LlmRequest {
+    let llm_req = LlmRequest {
         context: String::new(),
         query: None,
         trigger: TriggerType::Manual,
@@ -295,12 +322,155 @@ async fn handle_chat_message(
         extra_messages,
     };
 
-    let mut messages = Vec::new();
-    let max_iterations = 5;
-    let start = std::time::Instant::now();
+    let state = AgentLoopState {
+        llm_req,
+        prior_len,
+        pending_tool_calls: vec![],
+        completed_results: vec![],
+        messages: vec![],
+        iteration: 0,
+        cm,
+        start: std::time::Instant::now(),
+        command_query_tool,
+    };
 
-    for iteration in 0..max_iterations {
-        match backend.complete(&llm_req).await {
+    run_agent_loop(state, llm, conv_mgr, plugin_mgr, pending_loops).await
+}
+
+/// Handle a ChatToolResult from the client — resume the paused agent loop.
+async fn handle_tool_result(
+    tr: ChatToolResult,
+    _mgr: &SessionManager,
+    llm: &Option<Arc<dyn LlmBackend>>,
+    conv_mgr: &Arc<ConversationManager>,
+    plugin_mgr: &Arc<PluginManager>,
+    pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
+) -> Vec<Message> {
+    let mut state = {
+        let mut map = pending_loops.lock().await;
+        match map.remove(&tr.request_id) {
+            Some(s) => s,
+            None => {
+                tracing::warn!("No pending agent loop for request_id={}", tr.request_id);
+                return vec![Message::Ack];
+            }
+        }
+    };
+
+    // Add the received client-side tool result
+    state.completed_results.push(omnish_llm::tool::ToolResult {
+        tool_use_id: tr.tool_call_id.clone(),
+        content: tr.content,
+        is_error: tr.is_error,
+    });
+
+    // Check if there are more tool calls still pending (client-side or daemon-side)
+    let completed_ids: std::collections::HashSet<String> = state
+        .completed_results
+        .iter()
+        .map(|r| r.tool_use_id.clone())
+        .collect();
+
+    // Process remaining pending tool calls
+    let remaining: Vec<omnish_llm::tool::ToolCall> = state
+        .pending_tool_calls
+        .iter()
+        .filter(|tc| !completed_ids.contains(&tc.id))
+        .cloned()
+        .collect();
+
+    for tc in &remaining {
+        let ptype = plugin_mgr.tool_plugin_type(&tc.name);
+        if ptype == Some(PluginType::ClientTool) {
+            // Another client-side tool — forward it and pause again
+            let status_text = format!("执行 {}...", tc.name);
+            state.messages.push(Message::ChatToolStatus(ChatToolStatus {
+                request_id: state.cm.request_id.clone(),
+                thread_id: state.cm.thread_id.clone(),
+                tool_name: tc.name.clone(),
+                status: status_text,
+            }));
+            state.messages.push(Message::ChatToolCall(ChatToolCall {
+                request_id: state.cm.request_id.clone(),
+                thread_id: state.cm.thread_id.clone(),
+                tool_name: tc.name.clone(),
+                tool_call_id: tc.id.clone(),
+                input: tc.input.clone(),
+            }));
+            let out_messages = std::mem::take(&mut state.messages);
+            let request_id = state.cm.request_id.clone();
+            pending_loops.lock().await.insert(request_id, state);
+            // Drain accumulated messages for the client
+            return out_messages;
+        }
+
+        // Daemon-side tool not yet executed (shouldn't happen normally, but handle it)
+        let mut result = if tc.name == "command_query" {
+            state.command_query_tool.execute(&tc.input)
+        } else {
+            plugin_mgr.call_tool(&tc.name, &tc.input)
+        };
+        result.tool_use_id = tc.id.clone();
+        state.completed_results.push(result);
+    }
+
+    // All tool calls for this LLM turn are complete — build tool_result content
+    // and continue the agent loop
+    let result_content: Vec<serde_json::Value> = state
+        .completed_results
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "type": "tool_result",
+                "tool_use_id": r.tool_use_id,
+                "content": r.content,
+                "is_error": r.is_error,
+            })
+        })
+        .collect();
+    state.llm_req.extra_messages.push(serde_json::json!({
+        "role": "user",
+        "content": result_content,
+    }));
+
+    // Clear pending state for next iteration
+    state.pending_tool_calls.clear();
+    state.completed_results.clear();
+    state.iteration += 1;
+
+    // Collect accumulated messages and prepend them to the resumed loop output
+    let accumulated = std::mem::take(&mut state.messages);
+    let mut result = run_agent_loop(state, llm, conv_mgr, plugin_mgr, pending_loops).await;
+    let mut final_messages = accumulated;
+    final_messages.append(&mut result);
+    final_messages
+}
+
+/// Core agent loop: calls LLM, executes tools, pauses on client-side tools.
+/// Used by both `handle_chat_message` (initial) and `handle_tool_result` (resumption).
+async fn run_agent_loop(
+    mut state: AgentLoopState,
+    llm: &Option<Arc<dyn LlmBackend>>,
+    conv_mgr: &Arc<ConversationManager>,
+    plugin_mgr: &Arc<PluginManager>,
+    pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
+) -> Vec<Message> {
+    let backend = match llm {
+        Some(b) => b,
+        None => {
+            return vec![Message::ChatResponse(ChatResponse {
+                request_id: state.cm.request_id,
+                thread_id: state.cm.thread_id,
+                content: "(LLM backend not configured)".to_string(),
+            })];
+        }
+    };
+
+    let max_iterations = 5;
+    let mut messages = std::mem::take(&mut state.messages);
+
+    for iteration in state.iteration..max_iterations {
+        match backend.complete(&state.llm_req).await {
             Ok(response) => {
                 if response.stop_reason == StopReason::ToolUse {
                     let tool_calls = response.tool_calls();
@@ -324,15 +494,14 @@ async fn handle_chat_message(
                             }),
                         })
                         .collect();
-                    llm_req.extra_messages.push(serde_json::json!({
+                    state.llm_req.extra_messages.push(serde_json::json!({
                         "role": "assistant",
                         "content": assistant_content,
                     }));
 
-                    // Execute each tool call
+                    // Execute each tool call, pausing on client-side tools
                     let mut tool_results = Vec::new();
                     for tc in &tool_calls {
-                        // Send status to client
                         let status_text = match tc.name.as_str() {
                             "command_query" => match tc.input["action"].as_str() {
                                 Some("list_history") => "查询命令历史...".to_string(),
@@ -349,16 +518,44 @@ async fn handle_chat_message(
                             }
                             _ => format!("执行 {}...", tc.name),
                         };
+
+                        let ptype = plugin_mgr.tool_plugin_type(&tc.name);
+                        if ptype == Some(PluginType::ClientTool) {
+                            // Client-side tool: forward to client, pause loop
+                            messages.push(Message::ChatToolStatus(ChatToolStatus {
+                                request_id: state.cm.request_id.clone(),
+                                thread_id: state.cm.thread_id.clone(),
+                                tool_name: tc.name.clone(),
+                                status: status_text,
+                            }));
+                            messages.push(Message::ChatToolCall(ChatToolCall {
+                                request_id: state.cm.request_id.clone(),
+                                thread_id: state.cm.thread_id.clone(),
+                                tool_name: tc.name.clone(),
+                                tool_call_id: tc.id.clone(),
+                                input: tc.input.clone(),
+                            }));
+
+                            // Cache state for resumption
+                            state.pending_tool_calls = tool_calls.iter().map(|tc| (*tc).clone()).collect();
+                            state.completed_results = tool_results;
+                            state.messages = vec![];
+                            state.iteration = iteration;
+                            let request_id = state.cm.request_id.clone();
+                            pending_loops.lock().await.insert(request_id, state);
+                            return messages;
+                        }
+
+                        // Daemon-side tool: execute directly
                         messages.push(Message::ChatToolStatus(ChatToolStatus {
-                            request_id: cm.request_id.clone(),
-                            thread_id: cm.thread_id.clone(),
+                            request_id: state.cm.request_id.clone(),
+                            thread_id: state.cm.thread_id.clone(),
                             tool_name: tc.name.clone(),
                             status: status_text,
                         }));
 
-                        // Execute tool: try official tool first, then plugin manager
                         let mut result = if tc.name == "command_query" {
-                            command_query_tool.execute(&tc.input)
+                            state.command_query_tool.execute(&tc.input)
                         } else {
                             plugin_mgr.call_tool(&tc.name, &tc.input)
                         };
@@ -366,7 +563,7 @@ async fn handle_chat_message(
                         tool_results.push(result);
                     }
 
-                    // Build user message with tool_result blocks
+                    // All tools were daemon-side — build tool_result and continue
                     let result_content: Vec<serde_json::Value> = tool_results
                         .iter()
                         .map(|r| {
@@ -378,7 +575,7 @@ async fn handle_chat_message(
                             })
                         })
                         .collect();
-                    llm_req.extra_messages.push(serde_json::json!({
+                    state.llm_req.extra_messages.push(serde_json::json!({
                         "role": "user",
                         "content": result_content,
                     }));
@@ -390,22 +587,22 @@ async fn handle_chat_message(
                 let text = response.text();
                 tracing::info!(
                     "Chat LLM completed in {:?} ({} tool iterations, thread={})",
-                    start.elapsed(),
+                    state.start.elapsed(),
                     iteration,
-                    cm.thread_id
+                    state.cm.thread_id
                 );
                 // Push final assistant response
-                llm_req.extra_messages.push(serde_json::json!({
+                state.llm_req.extra_messages.push(serde_json::json!({
                     "role": "assistant",
                     "content": text,
                 }));
                 // Store new messages without system-reminder in user message
-                let mut to_store = llm_req.extra_messages[prior_len..].to_vec();
-                to_store[0] = serde_json::json!({"role": "user", "content": cm.query});
-                conv_mgr.append_messages(&cm.thread_id, &to_store);
+                let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
+                to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
+                conv_mgr.append_messages(&state.cm.thread_id, &to_store);
                 messages.push(Message::ChatResponse(ChatResponse {
-                    request_id: cm.request_id.clone(),
-                    thread_id: cm.thread_id.clone(),
+                    request_id: state.cm.request_id.clone(),
+                    thread_id: state.cm.thread_id.clone(),
                     content: text,
                 }));
                 return messages;
@@ -413,8 +610,8 @@ async fn handle_chat_message(
             Err(e) => {
                 tracing::error!("Chat LLM failed: {}", e);
                 messages.push(Message::ChatResponse(ChatResponse {
-                    request_id: cm.request_id.clone(),
-                    thread_id: cm.thread_id.clone(),
+                    request_id: state.cm.request_id.clone(),
+                    thread_id: state.cm.thread_id.clone(),
                     content: format!("Error: {}", e),
                 }));
                 return messages;
@@ -426,19 +623,19 @@ async fn handle_chat_message(
     tracing::warn!(
         "Agent loop exhausted {} iterations (thread={})",
         max_iterations,
-        cm.thread_id
+        state.cm.thread_id
     );
     let text = "(Agent reached maximum tool call limit)".to_string();
-    llm_req.extra_messages.push(serde_json::json!({
+    state.llm_req.extra_messages.push(serde_json::json!({
         "role": "assistant",
         "content": text,
     }));
-    let mut to_store = llm_req.extra_messages[prior_len..].to_vec();
-    to_store[0] = serde_json::json!({"role": "user", "content": cm.query});
-    conv_mgr.append_messages(&cm.thread_id, &to_store);
+    let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
+    to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
+    conv_mgr.append_messages(&state.cm.thread_id, &to_store);
     messages.push(Message::ChatResponse(ChatResponse {
-        request_id: cm.request_id,
-        thread_id: cm.thread_id,
+        request_id: state.cm.request_id,
+        thread_id: state.cm.thread_id,
         content: text,
     }));
     messages
