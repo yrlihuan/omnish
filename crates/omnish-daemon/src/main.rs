@@ -19,7 +19,7 @@ fn main() -> Result<()> {
     }
 
     let worker_threads = std::thread::available_parallelism()
-        .map(|n| n.get().min(16))
+        .map(|n| n.get().min(30))
         .unwrap_or(4);
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads)
