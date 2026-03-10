@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
 
+use crate::backend::UseCase;
+
 const MAX_LOG_FILES: usize = 30;
 
 fn log_dir() -> Option<PathBuf> {
@@ -10,7 +12,13 @@ fn log_dir() -> Option<PathBuf> {
 
 /// Save the full LLM request body to ~/.omnish/logs/messages/{timestamp}.json.
 /// Keeps only the most recent MAX_LOG_FILES files (rolling cleanup).
-pub fn log_request(body: &serde_json::Value) {
+/// Only logs requests when use_case is Chat.
+pub fn log_request(body: &serde_json::Value, use_case: UseCase) {
+    // Only log chat messages
+    if use_case != UseCase::Chat {
+        return;
+    }
+
     let Some(dir) = log_dir() else { return };
     if fs::create_dir_all(&dir).is_err() {
         return;
