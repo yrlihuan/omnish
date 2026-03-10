@@ -2056,10 +2056,6 @@ async fn run_chat_loop(
                                         nix::unistd::write(std::io::stdout(), line_status.append(&text).as_bytes()).ok();
                                     }
                                     Message::ChatToolCall(tc) => {
-                                        // Show tool execution status
-                                        let text = format!("\u{1f527} executing {}...", tc.tool_name);
-                                        nix::unistd::write(std::io::stdout(), line_status.append(&text).as_bytes()).ok();
-
                                         // Execute tool via plugin subprocess (blocking — use spawn_blocking)
                                         let tool_name = tc.tool_name.clone();
                                         let tool_input: serde_json::Value = serde_json::from_str(&tc.input).unwrap_or_default();
