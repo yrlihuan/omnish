@@ -88,9 +88,9 @@ Inspect command history and output:\n\
 - You do NOT need to call list_history — the command list is already provided\n\
 \n\
 ### bash\n\
-Execute bash commands directly:\n\
-- Use this to run commands, inspect files, check system state, install packages, etc.\n\
-- Commands run on the server host. Prefer this over asking the user to run commands themselves.\n\
+Execute bash commands on the user's machine:\n\
+- Use this to run commands, inspect files, check system state, etc.\n\
+- Commands run in the user's current working directory.\n\
 \n\
 ## Guidelines\n\
 \n\

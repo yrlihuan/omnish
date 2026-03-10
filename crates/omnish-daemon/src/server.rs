@@ -68,6 +68,24 @@ impl DaemonServer {
         let plugin_mgr = self.plugin_mgr.clone();
         let pending_loops = self.pending_agent_loops.clone();
 
+        // Periodically sweep stale pending agent loop entries
+        let pending_cleanup = self.pending_agent_loops.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                let mut map = pending_cleanup.lock().await;
+                map.retain(|req_id, state| {
+                    if state.start.elapsed() > std::time::Duration::from_secs(120) {
+                        tracing::warn!("Cleaning up expired agent loop state: {}", req_id);
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+        });
+
         server
             .serve(
                 move |msg| {
@@ -356,6 +374,16 @@ async fn handle_tool_result(
             }
         }
     };
+
+    // Check if the agent loop has timed out
+    if state.start.elapsed() > std::time::Duration::from_secs(60) {
+        tracing::warn!("Agent loop timed out for request_id={}", tr.request_id);
+        return vec![Message::ChatResponse(ChatResponse {
+            request_id: tr.request_id,
+            thread_id: tr.thread_id,
+            content: "Error: client-side tool execution timed out".to_string(),
+        })];
+    }
 
     // Add the received client-side tool result
     state.completed_results.push(omnish_llm::tool::ToolResult {
