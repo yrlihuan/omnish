@@ -540,6 +540,20 @@ async fn run_agent_loop(
                         "content": assistant_content,
                     }));
 
+                    // Send LLM's text blocks to client (e.g., "I'll run this command")
+                    for block in &response.content {
+                        if let ContentBlock::Text(text) = block {
+                            if !text.trim().is_empty() {
+                                messages.push(Message::ChatToolStatus(ChatToolStatus {
+                                    request_id: state.cm.request_id.clone(),
+                                    thread_id: state.cm.thread_id.clone(),
+                                    tool_name: String::new(),
+                                    status: text.clone(),
+                                }));
+                            }
+                        }
+                    }
+
                     // Execute each tool call, pausing on client-side tools
                     let mut tool_results = Vec::new();
                     for tc in &tool_calls {
