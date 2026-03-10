@@ -1,9 +1,14 @@
 //! Lightweight plugin subprocess manager for client-side tool execution.
 //! Spawns `omnish-plugin <name>` and communicates via JSON-RPC stdin/stdout.
 
+use landlock::{
+    path_beneath_rules, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus,
+    ABI,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
 
@@ -146,14 +151,53 @@ impl ClientPluginManager {
         proc.execute_tool(tool_name, input)
     }
 
+    fn apply_sandbox(data_dir: &std::path::Path) -> Result<(), String> {
+        let abi = ABI::V1;
+        let status = Ruleset::default()
+            .handle_access(AccessFs::from_all(abi))
+            .map_err(|e| format!("landlock handle_access: {e}"))?
+            .create()
+            .map_err(|e| format!("landlock create: {e}"))?
+            .add_rules(path_beneath_rules(&["/"], AccessFs::from_read(abi)))
+            .map_err(|e| format!("landlock add read rules: {e}"))?
+            .add_rules(path_beneath_rules(
+                &[data_dir, std::path::Path::new("/tmp")],
+                AccessFs::from_all(abi),
+            ))
+            .map_err(|e| format!("landlock add write rules: {e}"))?
+            .restrict_self()
+            .map_err(|e| format!("landlock restrict_self: {e}"))?;
+        match status.ruleset {
+            RulesetStatus::FullyEnforced | RulesetStatus::PartiallyEnforced => Ok(()),
+            RulesetStatus::NotEnforced => Err("Landlock not supported on this kernel".into()),
+        }
+    }
+
     fn spawn_plugin(bin: &std::path::Path, name: &str) -> Option<PluginProcess> {
-        let mut child = Command::new(bin)
-            .arg(name)
+        // Create data directory for the plugin
+        let data_dir = omnish_common::config::omnish_dir().join("data").join(name);
+        if let Err(e) = std::fs::create_dir_all(&data_dir) {
+            eprintln!("Failed to create plugin data dir {}: {e}", data_dir.display());
+            return None;
+        }
+
+        let data_dir_clone = data_dir.clone();
+        let plugin_name = name.to_string();
+        let mut cmd = Command::new(bin);
+        cmd.arg(name)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .ok()?;
+            .stderr(Stdio::inherit());
+        // SAFETY: pre_exec runs between fork and exec in the child process.
+        unsafe {
+            cmd.pre_exec(move || {
+                Self::apply_sandbox(&data_dir_clone).map_err(|e| {
+                    eprintln!("Plugin '{plugin_name}' sandbox failed: {e}");
+                    std::io::Error::new(std::io::ErrorKind::PermissionDenied, e)
+                })
+            });
+        }
+        let mut child = cmd.spawn().ok()?;
 
         let stdin = child.stdin.take()?;
         let stdout = child.stdout.take()?;
