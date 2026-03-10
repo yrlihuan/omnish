@@ -1,6 +1,6 @@
 use crate::{parse_addr, TransportAddr};
 use anyhow::Result;
-use omnish_protocol::message::{Auth, Frame, Message};
+use omnish_protocol::message::{Auth, AuthOk, Frame, Message};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -171,8 +171,18 @@ fn spawn_connection<R, W, F>(
             };
 
             match frame.payload {
-                Message::Auth(Auth { ref token }) if token == expected_token.as_str() => {
-                    if write_reply(&writer, frame.request_id, Message::Ack)
+                Message::Auth(Auth { ref token, protocol_version }) if token == expected_token.as_str() => {
+                    if protocol_version != omnish_protocol::message::PROTOCOL_VERSION {
+                        tracing::warn!(
+                            "protocol version mismatch: client={}, server={}",
+                            protocol_version,
+                            omnish_protocol::message::PROTOCOL_VERSION
+                        );
+                    }
+                    let reply = Message::AuthOk(AuthOk {
+                        protocol_version: omnish_protocol::message::PROTOCOL_VERSION,
+                    });
+                    if write_reply(&writer, frame.request_id, reply)
                         .await
                         .is_err()
                     {
@@ -528,10 +538,11 @@ mod tests {
         let resp = client
             .call(Message::Auth(Auth {
                 token: token.clone(),
+                protocol_version: omnish_protocol::message::PROTOCOL_VERSION,
             }))
             .await
             .unwrap();
-        assert!(matches!(resp, Message::Ack));
+        assert!(matches!(resp, Message::AuthOk(_)));
 
         // Normal messages should work after auth
         let resp = client
@@ -573,6 +584,7 @@ mod tests {
         let resp = client
             .call(Message::Auth(Auth {
                 token: "wrong-token".into(),
+                protocol_version: omnish_protocol::message::PROTOCOL_VERSION,
             }))
             .await;
         // Should get AuthFailed or connection closed

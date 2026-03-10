@@ -5,6 +5,9 @@ use std::collections::HashMap;
 
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
+/// Protocol version — increment on incompatible wire format changes.
+pub const PROTOCOL_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
     SessionStart(SessionStart),
@@ -26,12 +29,20 @@ pub enum Message {
     ChatToolStatus(ChatToolStatus),
     Ack,
     Auth(Auth),
+    AuthOk(AuthOk),
     AuthFailed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Auth {
     pub token: String,
+    #[serde(default)]
+    pub protocol_version: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthOk {
+    pub protocol_version: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -434,5 +445,168 @@ mod tests {
         } else {
             panic!("expected ChatMessage");
         }
+    }
+
+    /// Guard test: exhaustive match with no wildcard.
+    /// Adding a new Message variant will cause a compile error here,
+    /// reminding you to bump PROTOCOL_VERSION if the wire format changed.
+    #[test]
+    fn message_variant_guard() {
+        const EXPECTED_VARIANT_COUNT: usize = 21;
+
+        let variants: Vec<Message> = vec![
+            Message::SessionStart(SessionStart {
+                session_id: String::new(),
+                parent_session_id: None,
+                timestamp_ms: 0,
+                attrs: HashMap::new(),
+            }),
+            Message::SessionEnd(SessionEnd {
+                session_id: String::new(),
+                timestamp_ms: 0,
+                exit_code: None,
+            }),
+            Message::SessionUpdate(SessionUpdate {
+                session_id: String::new(),
+                timestamp_ms: 0,
+                attrs: HashMap::new(),
+            }),
+            Message::IoData(IoData {
+                session_id: String::new(),
+                direction: IoDirection::Input,
+                timestamp_ms: 0,
+                data: vec![],
+            }),
+            Message::Event(Event {
+                session_id: String::new(),
+                timestamp_ms: 0,
+                event_type: EventType::NonZeroExit(1),
+            }),
+            Message::Request(Request {
+                request_id: String::new(),
+                session_id: String::new(),
+                query: String::new(),
+                scope: RequestScope::CurrentSession,
+            }),
+            Message::Response(Response {
+                request_id: String::new(),
+                content: String::new(),
+                is_streaming: false,
+                is_final: true,
+            }),
+            Message::CommandComplete(CommandComplete {
+                session_id: String::new(),
+                record: omnish_store::command::CommandRecord {
+                    command_id: String::new(),
+                    session_id: String::new(),
+                    command_line: None,
+                    cwd: None,
+                    started_at: 0,
+                    ended_at: None,
+                    output_summary: String::new(),
+                    stream_offset: 0,
+                    stream_length: 0,
+                    exit_code: None,
+                },
+            }),
+            Message::CompletionRequest(CompletionRequest {
+                session_id: String::new(),
+                input: String::new(),
+                cursor_pos: 0,
+                sequence_id: 0,
+                cwd: None,
+            }),
+            Message::CompletionResponse(CompletionResponse {
+                sequence_id: 0,
+                suggestions: vec![],
+            }),
+            Message::CompletionSummary(CompletionSummary {
+                session_id: String::new(),
+                sequence_id: 0,
+                prompt: String::new(),
+                completion: String::new(),
+                accepted: false,
+                latency_ms: 0,
+                dwell_time_ms: None,
+                cwd: None,
+                extra: HashMap::new(),
+            }),
+            Message::ChatStart(ChatStart {
+                request_id: String::new(),
+                session_id: String::new(),
+                new_thread: false,
+            }),
+            Message::ChatReady(ChatReady {
+                request_id: String::new(),
+                thread_id: String::new(),
+                last_exchange: None,
+                earlier_count: 0,
+            }),
+            Message::ChatMessage(ChatMessage {
+                request_id: String::new(),
+                session_id: String::new(),
+                thread_id: String::new(),
+                query: String::new(),
+            }),
+            Message::ChatResponse(ChatResponse {
+                request_id: String::new(),
+                thread_id: String::new(),
+                content: String::new(),
+            }),
+            Message::ChatInterrupt(ChatInterrupt {
+                session_id: String::new(),
+                thread_id: String::new(),
+                query: String::new(),
+            }),
+            Message::ChatToolStatus(ChatToolStatus {
+                request_id: String::new(),
+                thread_id: String::new(),
+                tool_name: String::new(),
+                status: String::new(),
+            }),
+            Message::Ack,
+            Message::Auth(Auth {
+                token: String::new(),
+                protocol_version: 0,
+            }),
+            Message::AuthOk(AuthOk {
+                protocol_version: 0,
+            }),
+            Message::AuthFailed,
+        ];
+
+        // Exhaustive match — no wildcard. Compiler will error if a variant is missing.
+        for v in &variants {
+            match v {
+                Message::SessionStart(_)
+                | Message::SessionEnd(_)
+                | Message::SessionUpdate(_)
+                | Message::IoData(_)
+                | Message::Event(_)
+                | Message::Request(_)
+                | Message::Response(_)
+                | Message::CommandComplete(_)
+                | Message::CompletionRequest(_)
+                | Message::CompletionResponse(_)
+                | Message::CompletionSummary(_)
+                | Message::ChatStart(_)
+                | Message::ChatReady(_)
+                | Message::ChatMessage(_)
+                | Message::ChatResponse(_)
+                | Message::ChatInterrupt(_)
+                | Message::ChatToolStatus(_)
+                | Message::Ack
+                | Message::Auth(_)
+                | Message::AuthOk(_)
+                | Message::AuthFailed => {}
+            }
+        }
+
+        assert_eq!(
+            variants.len(),
+            EXPECTED_VARIANT_COUNT,
+            "Message variant count changed! If you added/removed a variant, \
+             update EXPECTED_VARIANT_COUNT and consider bumping PROTOCOL_VERSION."
+        );
     }
 }

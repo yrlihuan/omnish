@@ -927,9 +927,24 @@ async fn connect_daemon(
             let token = auth_token.clone();
             Box::pin(async move {
                 // Authenticate first
-                let auth_resp = rpc.call(Message::Auth(Auth { token })).await?;
-                if matches!(auth_resp, Message::AuthFailed) {
-                    anyhow::bail!("authentication failed");
+                let auth_resp = rpc.call(Message::Auth(Auth {
+                    token,
+                    protocol_version: omnish_protocol::message::PROTOCOL_VERSION,
+                })).await?;
+                match &auth_resp {
+                    Message::AuthFailed => anyhow::bail!("authentication failed"),
+                    Message::AuthOk(ok) => {
+                        if ok.protocol_version != omnish_protocol::message::PROTOCOL_VERSION {
+                            eprintln!(
+                                "\x1b[33m[omnish]\x1b[0m Warning: protocol mismatch \
+                                 (client={}, daemon={}), please upgrade",
+                                omnish_protocol::message::PROTOCOL_VERSION,
+                                ok.protocol_version
+                            );
+                        }
+                    }
+                    // Old daemon that responds with Ack (no version info)
+                    _ => {}
                 }
 
                 // Then register session
