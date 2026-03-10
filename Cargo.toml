@@ -11,6 +11,7 @@ members = [
     "crates/omnish-tracker",
     "crates/omnish-daemon",
     "crates/omnish-client",
+    "crates/omnish-plugin",
 ]
 
 [workspace.package]

@@ -175,9 +175,18 @@ impl ExternalPlugin {
         }
     }
 
+    /// Spawn a plugin subprocess with extra arguments and initialize it.
+    pub fn spawn_with_args(name: &str, executable: &std::path::Path, args: &[&str]) -> Option<Self> {
+        Self::spawn_inner(name, executable, args)
+    }
+
     /// Spawn a plugin subprocess and initialize it.
     /// Returns None if the plugin fails to start or initialize.
     pub fn spawn(name: &str, executable: &std::path::Path) -> Option<Self> {
+        Self::spawn_inner(name, executable, &[])
+    }
+
+    fn spawn_inner(name: &str, executable: &std::path::Path, args: &[&str]) -> Option<Self> {
         // Create data directory for the plugin
         let data_dir = omnish_common::config::omnish_dir().join("data").join(name);
         if let Err(e) = std::fs::create_dir_all(&data_dir) {
@@ -188,7 +197,8 @@ impl ExternalPlugin {
         let data_dir_clone = data_dir.clone();
         let plugin_name = name.to_string();
         let mut cmd = Command::new(executable);
-        cmd.stdin(Stdio::piped())
+        cmd.args(args)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
         // SAFETY: pre_exec runs between fork and exec in the child process.

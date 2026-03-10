@@ -46,10 +46,12 @@ build-release:
     - mkdir -p dist
     - cp target/x86_64-unknown-linux-musl/release/omnish-client dist/
     - cp target/x86_64-unknown-linux-musl/release/omnish-daemon dist/
+    - cp target/x86_64-unknown-linux-musl/release/omnish-plugin dist/
   artifacts:
     paths:
       - dist/omnish-client
       - dist/omnish-daemon
+      - dist/omnish-plugin
     expire_in: 30 days
   rules:
     - if: $CI_COMMIT_TAG
@@ -74,5 +76,8 @@ release:
         - name: "omnish-daemon (linux-x86_64-static)"
           url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/dist/omnish-daemon?job=build-release"
           filepath: "/omnish-daemon"
+        - name: "omnish-plugin (linux-x86_64-static)"
+          url: "${CI_PROJECT_URL}/-/jobs/artifacts/${CI_COMMIT_TAG}/raw/dist/omnish-plugin?job=build-release"
+          filepath: "/omnish-plugin"
   rules:
     - if: $CI_COMMIT_TAG
