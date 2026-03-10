@@ -1450,7 +1450,8 @@ async fn send_daemon_query(
     redirect: Option<&str>,
     show_thinking: bool,
 ) {
-    let mut status = LineStatus::new();
+    let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+    let mut status = LineStatus::new(cols as usize, 5);
     if show_thinking {
         nix::unistd::write(std::io::stdout(), status.show("(thinking...)").as_bytes()).ok();
     }
@@ -2023,7 +2024,8 @@ async fn run_chat_loop(
         }
 
         // Show thinking indicator
-        let mut line_status = LineStatus::new();
+        let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+        let mut line_status = LineStatus::new(cols as usize, 5);
         nix::unistd::write(std::io::stdout(), line_status.show("(thinking...)").as_bytes()).ok();
 
         // Send ChatMessage, allow Ctrl-C to interrupt
@@ -2051,12 +2053,12 @@ async fn run_chat_loop(
                                 match msg {
                                     Message::ChatToolStatus(cts) => {
                                         let text = format!("\u{1f527} {}", cts.status);
-                                        nix::unistd::write(std::io::stdout(), line_status.show(&text).as_bytes()).ok();
+                                        nix::unistd::write(std::io::stdout(), line_status.append(&text).as_bytes()).ok();
                                     }
                                     Message::ChatToolCall(tc) => {
                                         // Show tool execution status
                                         let text = format!("\u{1f527} executing {}...", tc.tool_name);
-                                        nix::unistd::write(std::io::stdout(), line_status.show(&text).as_bytes()).ok();
+                                        nix::unistd::write(std::io::stdout(), line_status.append(&text).as_bytes()).ok();
 
                                         // Execute tool via plugin subprocess (blocking — use spawn_blocking)
                                         let tool_name = tc.tool_name.clone();

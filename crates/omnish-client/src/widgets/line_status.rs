@@ -1,25 +1,41 @@
-/// A temporary single-line status display.
+/// A temporary multi-line status display.
 ///
-/// Renders a status message on its own line below the current cursor position.
+/// Renders status messages below the current cursor position.
 /// Tracks how many lines it occupies so it can erase itself completely when
 /// `clear()` is called, leaving the terminal in the same state as before
 /// `show()` was first called.
 ///
+/// Features:
+/// - Lines exceeding `max_cols` are truncated with "..."
+/// - `append()` adds a new line without erasing previous content
+/// - When total lines exceed `max_lines`, older lines are hidden
+///
 /// Usage:
 /// ```
-/// let mut status = LineStatus::new();
+/// let mut status = LineStatus::new(80, 5);
 /// write!(stdout, "{}", status.show("(thinking...)"));
-/// write!(stdout, "{}", status.show("🔧 running tool A"));  // replaces previous
-/// write!(stdout, "{}", status.clear());                     // erases completely
+/// write!(stdout, "{}", status.append("🔧 running tool A"));  // adds a line
+/// write!(stdout, "{}", status.clear());                       // erases completely
 /// ```
 pub struct LineStatus {
     /// Number of lines currently occupied on screen (0 = nothing shown).
     lines: usize,
+    /// All accumulated message lines (for append mode).
+    content: Vec<String>,
+    /// Maximum display width per line (characters). 0 = unlimited.
+    max_cols: usize,
+    /// Maximum number of visible lines. 0 = unlimited.
+    max_lines: usize,
 }
 
 impl LineStatus {
-    pub fn new() -> Self {
-        Self { lines: 0 }
+    pub fn new(max_cols: usize, max_lines: usize) -> Self {
+        Self {
+            lines: 0,
+            content: Vec::new(),
+            max_cols,
+            max_lines,
+        }
     }
 
     /// Returns true if something is currently shown on screen.
@@ -30,29 +46,76 @@ impl LineStatus {
 
     /// Replace the current status with `text`.
     ///
-    /// If something is already shown, erases it first then renders the new
-    /// text.  The text may contain newlines; each line gets its own row.
+    /// Clears all accumulated content and shows only `text`.
     /// Returns an ANSI escape sequence string suitable for writing to a
     /// raw-mode terminal.
     pub fn show(&mut self, text: &str) -> String {
-        let mut out = self.erase_seq();
-        out.push_str(&Self::render_seq(text));
-        self.lines = text.lines().count().max(1);
-        out
+        self.content.clear();
+        for line in text.lines() {
+            self.content.push(line.to_string());
+        }
+        if self.content.is_empty() {
+            self.content.push(String::new());
+        }
+        self.redraw()
+    }
+
+    /// Append a new line to the status display.
+    ///
+    /// Adds `text` as new line(s) below the existing content. If the total
+    /// exceeds `max_lines`, older lines are hidden (only the most recent
+    /// `max_lines` are shown).
+    pub fn append(&mut self, text: &str) -> String {
+        for line in text.lines() {
+            self.content.push(line.to_string());
+        }
+        if text.is_empty() {
+            self.content.push(String::new());
+        }
+        self.redraw()
     }
 
     /// Erase the status completely.  After this call `is_visible()` returns
     /// false and the terminal is restored to the position it was in before
-    /// the first `show()`.
+    /// the first `show()` was called.
     pub fn clear(&mut self) -> String {
         let seq = self.erase_seq();
         self.lines = 0;
+        self.content.clear();
         seq
     }
 
     // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
+
+    /// Erase current display and re-render the visible portion of content.
+    fn redraw(&mut self) -> String {
+        let mut out = self.erase_seq();
+        let visible = self.visible_lines();
+        out.push_str(&Self::render_seq(&visible, self.max_cols));
+        self.lines = visible.len().max(if self.content.is_empty() { 0 } else { 1 });
+        out
+    }
+
+    /// Return the lines that should be visible (tail window of max_lines).
+    fn visible_lines(&self) -> Vec<&str> {
+        let all: Vec<&str> = self.content.iter().map(|s| s.as_str()).collect();
+        if self.max_lines > 0 && all.len() > self.max_lines {
+            all[all.len() - self.max_lines..].to_vec()
+        } else {
+            all
+        }
+    }
+
+    /// Truncate a line to fit within max_cols, appending "..." if needed.
+    fn truncate_line(line: &str, max_cols: usize) -> String {
+        if max_cols == 0 || line.chars().count() <= max_cols {
+            return line.to_string();
+        }
+        let truncated: String = line.chars().take(max_cols.saturating_sub(3)).collect();
+        format!("{}...", truncated)
+    }
 
     /// Build the ANSI sequence that clears all occupied lines from bottom to
     /// top and leaves the cursor at the original position (before the first
@@ -79,11 +142,12 @@ impl LineStatus {
         out
     }
 
-    /// Build the ANSI sequence that renders `text` below the current cursor.
-    fn render_seq(text: &str) -> String {
+    /// Build the ANSI sequence that renders lines below the current cursor.
+    fn render_seq(lines: &[&str], max_cols: usize) -> String {
         let mut out = String::new();
-        for line in text.lines() {
-            out.push_str(&format!("\r\n\x1b[K\x1b[2m{}\x1b[0m", line));
+        for line in lines {
+            let display = Self::truncate_line(line, max_cols);
+            out.push_str(&format!("\r\n\x1b[K\x1b[2m{}\x1b[0m", display));
         }
         out
     }
@@ -117,14 +181,14 @@ mod tests {
 
     #[test]
     fn new_is_not_visible() {
-        let s = LineStatus::new();
+        let s = LineStatus::new(80, 5);
         assert!(!s.is_visible());
         assert_eq!(s.lines, 0);
     }
 
     #[test]
     fn show_makes_visible() {
-        let mut s = LineStatus::new();
+        let mut s = LineStatus::new(80, 5);
         let seq = s.show("(thinking...)");
         assert!(s.is_visible());
         assert_eq!(s.lines, 1);
@@ -133,49 +197,160 @@ mod tests {
 
     #[test]
     fn clear_after_show_restores_invisible() {
-        let mut s = LineStatus::new();
+        let mut s = LineStatus::new(80, 5);
         s.show("hello");
         let seq = s.clear();
         assert!(!s.is_visible());
         assert_eq!(s.lines, 0);
-        // erase seq must contain cursor-up and erase-line
         assert!(seq.contains('\x1b'));
     }
 
     #[test]
     fn clear_when_empty_is_empty_string() {
-        let mut s = LineStatus::new();
+        let mut s = LineStatus::new(80, 5);
         assert_eq!(s.clear(), "");
     }
 
     #[test]
     fn show_replaces_previous() {
-        let mut s = LineStatus::new();
+        let mut s = LineStatus::new(80, 5);
         s.show("first");
         let seq = s.show("second");
         assert_eq!(s.lines, 1);
-        // The replacement sequence must erase the old line (cursor-up present)
         assert!(seq.contains('\x1b'));
         let visible = strip_ansi(&seq);
         assert!(visible.contains("second"));
+        assert!(!visible.contains("first"));
     }
 
     #[test]
     fn multiline_text_counts_correctly() {
-        let mut s = LineStatus::new();
+        let mut s = LineStatus::new(80, 5);
         s.show("line one\nline two\nline three");
         assert_eq!(s.lines, 3);
     }
 
     #[test]
     fn show_then_clear_then_show_works() {
-        let mut s = LineStatus::new();
+        let mut s = LineStatus::new(80, 5);
         s.show("a");
         s.clear();
         let seq = s.show("b");
         assert!(s.is_visible());
-        // After clear the erase part of show() should be empty (lines was 0)
         assert!(strip_ansi(&seq).contains('b'));
+    }
+
+    // -- Truncation tests --
+
+    #[test]
+    fn truncate_long_line() {
+        let mut s = LineStatus::new(20, 5);
+        let seq = s.show("this is a very long line that exceeds the limit");
+        let visible = strip_ansi(&seq);
+        assert!(visible.contains("..."));
+        // The truncated content should be at most 20 chars
+        for line in visible.lines() {
+            let line = line.trim_start_matches('\r');
+            if !line.is_empty() {
+                assert!(line.chars().count() <= 20, "line too long: {line:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn short_line_not_truncated() {
+        let mut s = LineStatus::new(80, 5);
+        let seq = s.show("short");
+        let visible = strip_ansi(&seq);
+        assert!(visible.contains("short"));
+        assert!(!visible.contains("..."));
+    }
+
+    #[test]
+    fn unlimited_cols_no_truncation() {
+        let mut s = LineStatus::new(0, 0);
+        let long = "a".repeat(200);
+        let seq = s.show(&long);
+        let visible = strip_ansi(&seq);
+        assert!(!visible.contains("..."));
+    }
+
+    // -- Append tests --
+
+    #[test]
+    fn append_adds_line() {
+        let mut s = LineStatus::new(80, 5);
+        s.show("line 1");
+        s.append("line 2");
+        assert_eq!(s.lines, 2);
+        assert_eq!(s.content.len(), 2);
+    }
+
+    #[test]
+    fn append_multiple_lines() {
+        let mut s = LineStatus::new(80, 10);
+        s.show("first");
+        s.append("second");
+        s.append("third");
+        assert_eq!(s.lines, 3);
+        assert_eq!(s.content, vec!["first", "second", "third"]);
+    }
+
+    #[test]
+    fn append_contains_all_text() {
+        let mut s = LineStatus::new(80, 5);
+        s.show("line 1");
+        let seq = s.append("line 2");
+        let visible = strip_ansi(&seq);
+        assert!(visible.contains("line 1"));
+        assert!(visible.contains("line 2"));
+    }
+
+    // -- Max lines tests --
+
+    #[test]
+    fn max_lines_hides_old_lines() {
+        let mut s = LineStatus::new(80, 3);
+        s.show("line 1");
+        s.append("line 2");
+        s.append("line 3");
+        let seq = s.append("line 4");
+        // Only 3 lines should be visible
+        assert_eq!(s.lines, 3);
+        let visible = strip_ansi(&seq);
+        assert!(!visible.contains("line 1"), "line 1 should be hidden");
+        assert!(visible.contains("line 2"));
+        assert!(visible.contains("line 3"));
+        assert!(visible.contains("line 4"));
+    }
+
+    #[test]
+    fn max_lines_unlimited() {
+        let mut s = LineStatus::new(80, 0);
+        for i in 0..20 {
+            if i == 0 {
+                s.show(&format!("line {i}"));
+            } else {
+                s.append(&format!("line {i}"));
+            }
+        }
+        assert_eq!(s.lines, 20);
+        assert_eq!(s.content.len(), 20);
+    }
+
+    #[test]
+    fn show_resets_content_after_append() {
+        let mut s = LineStatus::new(80, 5);
+        s.show("a");
+        s.append("b");
+        s.append("c");
+        let seq = s.show("fresh");
+        assert_eq!(s.lines, 1);
+        assert_eq!(s.content, vec!["fresh"]);
+        let visible = strip_ansi(&seq);
+        assert!(visible.contains("fresh"));
+        assert!(!visible.contains("a"));
+        assert!(!visible.contains("b"));
     }
 
     // -----------------------------------------------------------------------
@@ -198,13 +373,12 @@ mod tests {
     fn clear_erases_text_completely() {
         let cols: u16 = 40;
         let mut out = String::new();
-        let mut s = LineStatus::new();
+        let mut s = LineStatus::new(cols as usize, 5);
         out.push_str(&s.show("(thinking...)"));
         out.push_str(&s.clear());
 
         let parser = parse_ansi(&out, cols, 10);
         let screen = parser.screen();
-        // Every visible row should be blank after show+clear.
         for row in 0..10 {
             let text = get_row(screen, row, cols);
             assert!(
@@ -220,10 +394,9 @@ mod tests {
     fn short_response_after_clear_has_no_residue() {
         let cols: u16 = 40;
         let mut out = String::new();
-        let mut s = LineStatus::new();
+        let mut s = LineStatus::new(cols as usize, 5);
         out.push_str(&s.show("(thinking...)"));
         out.push_str(&s.clear());
-        // Simulate render_response("OK") — \r\n + text + \r\n
         out.push_str("\r\n\x1b[37mOK\x1b[0m\r\n");
 
         let parser = parse_ansi(&out, cols, 10);
@@ -241,7 +414,7 @@ mod tests {
     fn show_replace_shorter_text_no_residue() {
         let cols: u16 = 40;
         let mut out = String::new();
-        let mut s = LineStatus::new();
+        let mut s = LineStatus::new(cols as usize, 5);
         out.push_str(&s.show("(thinking very long text here...)"));
         out.push_str(&s.show("OK"));
 
@@ -252,5 +425,44 @@ mod tests {
             !all.contains("thinking"),
             "old text should be gone: {all:?}",
         );
+    }
+
+    /// vt100 test: append adds lines and clear erases all of them.
+    #[test]
+    fn vt100_append_and_clear() {
+        let cols: u16 = 40;
+        let mut out = String::new();
+        let mut s = LineStatus::new(cols as usize, 5);
+        out.push_str(&s.show("line 1"));
+        out.push_str(&s.append("line 2"));
+        out.push_str(&s.append("line 3"));
+        out.push_str(&s.clear());
+
+        let parser = parse_ansi(&out, cols, 10);
+        let screen = parser.screen();
+        for row in 0..10 {
+            let text = get_row(screen, row, cols);
+            assert!(
+                text.trim().is_empty(),
+                "row {row} should be blank but got: {text:?}",
+            );
+        }
+    }
+
+    /// vt100 test: max_lines scrolling only shows the tail.
+    #[test]
+    fn vt100_max_lines_shows_tail() {
+        let cols: u16 = 40;
+        let mut out = String::new();
+        let mut s = LineStatus::new(cols as usize, 2);
+        out.push_str(&s.show("aaa"));
+        out.push_str(&s.append("bbb"));
+        out.push_str(&s.append("ccc"));
+
+        let parser = parse_ansi(&out, cols, 10);
+        let all = parser.screen().contents();
+        assert!(!all.contains("aaa"), "aaa should be hidden: {all:?}");
+        assert!(all.contains("bbb"), "bbb should be visible: {all:?}");
+        assert!(all.contains("ccc"), "ccc should be visible: {all:?}");
     }
 }
