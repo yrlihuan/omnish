@@ -7,6 +7,7 @@
 - **plugin**: Sandbox external plugins with Landlock — restrict write access to plugin data dir and /tmp (issue #176)
 - **plugin**: Add `omnish-plugin` binary crate for official plugins via subprocess + JSON-RPC (issue #198)
 - **plugin**: Let plugins provide their own system prompt fragments (issue #199)
+- **plugin**: Support customized prompts via `PROMPT.md` / `PROMPT_*.md` files (issue #209)
 - **plugin**: Move tool status text into Plugin trait; forward via JSON-RPC `tool/status_text`
 - **plugin**: Set process name to `omnish-plugin(<tool>)` for visibility (issue #208)
 - **client**: Use `omnish-plugin` subprocess for client-side tool execution with Landlock sandbox
@@ -18,6 +19,7 @@
 ### Bug Fixes
 - **llm**: Retry on 429/529 with exponential backoff and retry-after header (issue #207)
 - **llm**: Only log chat messages to `logs/messages/` (issue #205)
+- **client**: Fix `/context > file` redirect not working in chat mode (issue #210)
 - **client**: Remove duplicate status line on ChatToolCall
 - **daemon**: Remove debug log for skipping active session cleanup (issue #206)
 - **langfuse**: Treat secret_key as direct value, not shell command
