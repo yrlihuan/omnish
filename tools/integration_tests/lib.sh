@@ -228,6 +228,7 @@ wait_for_chat_response() {
         local content
         content=$(capture_pane -10)
         if is_chat_prompt "$content"; then
+            sleep 1  # brief pause for visual observation
             return 0
         fi
         sleep "$interval"
