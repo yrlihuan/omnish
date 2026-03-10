@@ -34,9 +34,6 @@ build-release:
   image: docker.nv/ubuntu_2404_runner:latest
   variables:
     CC_x86_64_unknown_linux_musl: musl-gcc
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq musl-tools >/dev/null
-    - rustup target add x86_64-unknown-linux-musl
   script:
     - cargo build --release --target x86_64-unknown-linux-musl
     - cp target/x86_64-unknown-linux-musl/release/omnish-client .
@@ -51,7 +48,7 @@ build-release:
 
 release:
   stage: release
-  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  image: docker.nv/ubuntu_2404_runner:latest
   needs:
     - job: build-release
       artifacts: true
