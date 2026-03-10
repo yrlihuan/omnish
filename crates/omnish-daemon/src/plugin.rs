@@ -32,6 +32,10 @@ pub trait Plugin: Send + Sync {
     fn system_prompt(&self) -> Option<String> {
         None
     }
+    /// Status text shown to the user while a tool call is executing.
+    fn status_text(&self, tool_name: &str, _input: &serde_json::Value) -> String {
+        format!("执行 {}...", tool_name)
+    }
 }
 
 /// Manages all registered plugins (official + external).
@@ -58,6 +62,16 @@ impl PluginManager {
     /// Collect all tool definitions from all plugins.
     pub fn all_tools(&self) -> Vec<ToolDef> {
         self.plugins.iter().flat_map(|p| p.tools()).collect()
+    }
+
+    /// Get the status text for a tool call from the owning plugin.
+    pub fn tool_status_text(&self, tool_name: &str, input: &serde_json::Value) -> String {
+        for plugin in &self.plugins {
+            if plugin.tools().iter().any(|t| t.name == tool_name) {
+                return plugin.status_text(tool_name, input);
+            }
+        }
+        format!("执行 {}...", tool_name)
     }
 
     /// Collect system prompt fragments from all plugins.

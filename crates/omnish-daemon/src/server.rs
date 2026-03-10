@@ -423,7 +423,7 @@ async fn handle_tool_result(
         let ptype = plugin_mgr.tool_plugin_type(&tc.name);
         if ptype == Some(PluginType::ClientTool) {
             // Another client-side tool — forward it and pause again
-            let status_text = format!("执行 {}...", tc.name);
+            let status_text = plugin_mgr.tool_status_text(&tc.name, &tc.input);
             state.messages.push(Message::ChatToolStatus(ChatToolStatus {
                 request_id: state.cm.request_id.clone(),
                 thread_id: state.cm.thread_id.clone(),
@@ -542,21 +542,10 @@ async fn run_agent_loop(
                     // Execute each tool call, pausing on client-side tools
                     let mut tool_results = Vec::new();
                     for tc in &tool_calls {
-                        let status_text = match tc.name.as_str() {
-                            "command_query" => match tc.input["action"].as_str() {
-                                Some("list_history") => "查询命令历史...".to_string(),
-                                Some("get_output") => format!(
-                                    "获取命令输出 [{}]...",
-                                    tc.input["seq"].as_u64().unwrap_or(0)
-                                ),
-                                _ => format!("执行 {}...", tc.name),
-                            },
-                            "bash" => {
-                                let cmd = tc.input["command"].as_str().unwrap_or("");
-                                let preview: String = cmd.chars().take(60).collect();
-                                format!("执行: {}...", preview)
-                            }
-                            _ => format!("执行 {}...", tc.name),
+                        let status_text = if tc.name == "command_query" {
+                            state.command_query_tool.status_text(&tc.name, &tc.input)
+                        } else {
+                            plugin_mgr.tool_status_text(&tc.name, &tc.input)
                         };
 
                         let ptype = plugin_mgr.tool_plugin_type(&tc.name);

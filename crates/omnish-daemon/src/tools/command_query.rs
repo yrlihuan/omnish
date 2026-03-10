@@ -154,6 +154,17 @@ impl Plugin for CommandQueryTool {
         self.execute(input)
     }
 
+    fn status_text(&self, _tool_name: &str, input: &serde_json::Value) -> String {
+        match input["action"].as_str() {
+            Some("list_history") => "查询命令历史...".to_string(),
+            Some("get_output") => format!(
+                "获取命令输出 [{}]...",
+                input["seq"].as_u64().unwrap_or(0)
+            ),
+            _ => "查询命令...".to_string(),
+        }
+    }
+
     fn system_prompt(&self) -> Option<String> {
         Some(
             "### command_query\n\

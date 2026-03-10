@@ -181,6 +181,16 @@ impl Plugin for BashTool {
         self.execute(input)
     }
 
+    fn status_text(&self, _tool_name: &str, input: &serde_json::Value) -> String {
+        let command = input["command"].as_str().unwrap_or("");
+        let preview: String = command.chars().take(60).collect();
+        if preview.len() < command.len() {
+            format!("执行: {}...", preview)
+        } else {
+            format!("执行: {}", preview)
+        }
+    }
+
     fn system_prompt(&self) -> Option<String> {
         Some(
             "### bash\n\
