@@ -6,7 +6,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version — increment on incompatible wire format changes.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
@@ -27,6 +27,8 @@ pub enum Message {
     ChatResponse(ChatResponse),
     ChatInterrupt(ChatInterrupt),
     ChatToolStatus(ChatToolStatus),
+    ChatToolCall(ChatToolCall),
+    ChatToolResult(ChatToolResult),
     Ack,
     Auth(Auth),
     AuthOk(AuthOk),
@@ -222,6 +224,24 @@ pub struct ChatToolStatus {
     pub thread_id: String,
     pub tool_name: String,
     pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatToolCall {
+    pub request_id: String,
+    pub thread_id: String,
+    pub tool_name: String,
+    pub tool_call_id: String,
+    pub input: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatToolResult {
+    pub request_id: String,
+    pub thread_id: String,
+    pub tool_call_id: String,
+    pub content: String,
+    pub is_error: bool,
 }
 
 impl Message {
@@ -452,7 +472,7 @@ mod tests {
     /// reminding you to bump PROTOCOL_VERSION if the wire format changed.
     #[test]
     fn message_variant_guard() {
-        const EXPECTED_VARIANT_COUNT: usize = 21;
+        const EXPECTED_VARIANT_COUNT: usize = 23;
 
         let variants: Vec<Message> = vec![
             Message::SessionStart(SessionStart {
@@ -564,6 +584,20 @@ mod tests {
                 tool_name: String::new(),
                 status: String::new(),
             }),
+            Message::ChatToolCall(ChatToolCall {
+                request_id: String::new(),
+                thread_id: String::new(),
+                tool_name: String::new(),
+                tool_call_id: String::new(),
+                input: serde_json::json!({}),
+            }),
+            Message::ChatToolResult(ChatToolResult {
+                request_id: String::new(),
+                thread_id: String::new(),
+                tool_call_id: String::new(),
+                content: String::new(),
+                is_error: false,
+            }),
             Message::Ack,
             Message::Auth(Auth {
                 token: String::new(),
@@ -595,6 +629,8 @@ mod tests {
                 | Message::ChatResponse(_)
                 | Message::ChatInterrupt(_)
                 | Message::ChatToolStatus(_)
+                | Message::ChatToolCall(_)
+                | Message::ChatToolResult(_)
                 | Message::Ack
                 | Message::Auth(_)
                 | Message::AuthOk(_)
