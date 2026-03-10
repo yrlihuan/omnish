@@ -326,17 +326,18 @@ async fn handle_chat_message(
     };
     extra_messages.push(serde_json::json!({"role": "user", "content": llm_user_content}));
 
-    // Build system prompt: base + plugin-provided fragments
-    let mut system_prompt = omnish_llm::template::CHAT_SYSTEM_PROMPT.to_string();
+    // Build system prompt from PromptManager + plugin fragments
+    let mut pm = omnish_llm::prompt::PromptManager::default_chat();
     let mut tool_prompts: Vec<String> = Vec::new();
     if let Some(p) = command_query_tool.system_prompt() {
         tool_prompts.push(p);
     }
     tool_prompts.extend(plugin_mgr.all_system_prompts());
     if !tool_prompts.is_empty() {
-        system_prompt.push_str("\n\n## Tools\n\nYou have access to tools:\n\n");
-        system_prompt.push_str(&tool_prompts.join("\n\n"));
+        let tools_section = format!("## Tools\n\nYou have access to tools:\n\n{}", tool_prompts.join("\n\n"));
+        pm.add("tools", &tools_section);
     }
+    let system_prompt = pm.build();
 
     let llm_req = LlmRequest {
         context: String::new(),
@@ -881,7 +882,7 @@ async fn handle_template(name: &str, mgr: &SessionManager) -> String {
                  User: {{query}}\n\
                  [agent loop: tool_use → tool_result, up to 5 iterations]\n\
                  Assistant: {{response}}",
-                omnish_llm::template::CHAT_SYSTEM_PROMPT,
+                omnish_llm::prompt::PromptManager::default_chat().build(),
                 tools_json,
             )
         }

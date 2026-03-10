@@ -51,39 +51,6 @@ pub fn prompt_template(has_query: bool) -> &'static str {
     }
 }
 
-/// System prompt for chat mode — gives the LLM context about omnish and available commands.
-pub const CHAT_SYSTEM_PROMPT: &str = "\
-You are the omnish chat assistant. omnish is a transparent shell wrapper that \
-records terminal sessions, provides inline command completion, and offers an \
-integrated chat interface for asking questions about terminal activity.\n\
-\n\
-You have access to the user's recent terminal context (commands and their output) \
-from all active sessions. Use this context to provide relevant, accurate answers.\n\
-\n\
-## Chat Mode\n\
-\n\
-The user is in omnish's chat mode. In chat mode:\n\
-- Conversations are persistent and can be resumed across sessions\n\
-- The terminal context from recent commands is available to you\n\
-- The user can ask about errors, commands, workflows, or anything related to their terminal activity\n\
-\n\
-## Available Commands (for user reference)\n\
-\n\
-- /help — Show available commands\n\
-- /resume [N] — Resume a previous conversation (N = index from /thread list)\n\
-- /thread list — List all conversation threads\n\
-- /thread del [N] — Delete a conversation thread\n\
-- /context — Show the current LLM context\n\
-- /sessions — List active terminal sessions\n\
-- ESC or Ctrl-D (on empty input) — Exit chat mode\n\
-\n\
-## Guidelines\n\
-\n\
-- Be concise and direct\n\
-- When the user asks about errors, reference the specific commands and output from the context\n\
-- For shell command questions, provide working examples\n\
-- Respond in the same language the user uses";
-
 /// The daily-notes LLM summary prompt.
 pub const DAILY_NOTES_PROMPT: &str =
     "以下<commands>中是从多台终端收集的过去24小时的命令及其简要输出，\
@@ -102,7 +69,7 @@ pub const TEMPLATE_NAMES: &[&str] = &["chat", "chat-system", "auto-complete", "d
 /// Returns `None` if the name is unknown.
 pub fn template_by_name(name: &str) -> Option<String> {
     match name {
-        "chat-system" => Some(CHAT_SYSTEM_PROMPT.to_string()),
+        "chat-system" => Some(crate::prompt::PromptManager::default_chat().build()),
         "chat" => Some("(handled by daemon — use /template chat)".to_string()),
         "auto-complete" => Some(build_simple_completion_content("{context}", "{input}", 0)),
         "daily-notes" => Some(DAILY_NOTES_PROMPT.to_string()),
@@ -126,6 +93,7 @@ mod tests {
     fn test_chat_system_prompt_mentions_all_commands() {
         // All user-facing commands that should be documented in the system prompt.
         // Keep in sync with COMMANDS and CHAT_ONLY_COMMANDS in omnish-client/src/command.rs.
+        let prompt = crate::prompt::PromptManager::default_chat().build();
         let expected = &[
             "/help",
             "/resume",
@@ -136,8 +104,8 @@ mod tests {
         ];
         for cmd in expected {
             assert!(
-                CHAT_SYSTEM_PROMPT.contains(cmd),
-                "CHAT_SYSTEM_PROMPT should mention {} but doesn't", cmd
+                prompt.contains(cmd),
+                "Chat system prompt should mention {} but doesn't", cmd
             );
         }
     }
