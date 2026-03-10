@@ -13,4 +13,5 @@ anyhow = { workspace = true }
 async-trait = "0.1"
 tracing = { workspace = true }
 chrono = { workspace = true }
+tokio = { workspace = true }
 dirs = "5"

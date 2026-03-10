@@ -1,5 +1,6 @@
 use crate::anthropic::AnthropicBackend;
 use crate::backend::{LlmBackend, UseCase};
+use crate::langfuse::{LangfuseBackend, LangfuseConfig};
 use crate::openai_compat::OpenAiCompatBackend;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -104,7 +105,13 @@ pub struct MultiBackend {
 impl MultiBackend {
     /// Create a MultiBackend from LLM config
     pub fn new(llm_config: &LlmConfig) -> Result<Self> {
-        let default_backend = create_default_backend(llm_config)?;
+        // Resolve Langfuse config if present
+        let langfuse_config = resolve_langfuse_config(llm_config);
+
+        let default_backend = {
+            let b = create_default_backend(llm_config)?;
+            maybe_wrap_langfuse(b, &langfuse_config)
+        };
 
         let use_case_backends = RwLock::new(HashMap::new());
         let mut use_case_max_chars = HashMap::new();
@@ -113,6 +120,7 @@ impl MultiBackend {
         for (use_case_name, backend_name) in &llm_config.use_cases {
             if let Some(backend_config) = llm_config.backends.get(backend_name) {
                 let backend = create_backend(backend_name, backend_config)?;
+                let backend = maybe_wrap_langfuse(backend, &langfuse_config);
                 use_case_backends
                     .write()
                     .map_err(|_| anyhow!("failed to acquire write lock"))?
@@ -178,6 +186,35 @@ impl LlmBackend for MultiBackend {
 
     fn max_content_chars_for_use_case(&self, use_case: crate::backend::UseCase) -> Option<usize> {
         self.get_max_content_chars(use_case)
+    }
+}
+
+/// Resolve Langfuse configuration, returning None if not configured or key resolution fails.
+fn resolve_langfuse_config(llm_config: &LlmConfig) -> Option<LangfuseConfig> {
+    let cfg = llm_config.langfuse.as_ref()?;
+    let secret_key = match resolve_api_key(&cfg.secret_key_cmd) {
+        Ok(key) => key,
+        Err(e) => {
+            tracing::warn!("langfuse secret_key_cmd failed, disabling langfuse: {}", e);
+            return None;
+        }
+    };
+    tracing::info!("langfuse enabled: {}", cfg.host);
+    Some(LangfuseConfig {
+        public_key: cfg.public_key.clone(),
+        secret_key,
+        host: cfg.host.clone(),
+    })
+}
+
+/// Wrap a backend with Langfuse tracing if config is present.
+fn maybe_wrap_langfuse(
+    backend: Arc<dyn LlmBackend>,
+    langfuse_config: &Option<LangfuseConfig>,
+) -> Arc<dyn LlmBackend> {
+    match langfuse_config {
+        Some(cfg) => LangfuseBackend::wrap(backend, cfg.clone()),
+        None => backend,
     }
 }
 

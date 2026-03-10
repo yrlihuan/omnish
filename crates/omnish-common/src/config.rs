@@ -246,6 +246,9 @@ pub struct LlmConfig {
     ///   chat = "claude"
     #[serde(default)]
     pub use_cases: HashMap<String, String>,
+    /// Optional Langfuse observability integration
+    #[serde(default)]
+    pub langfuse: Option<LangfuseConfig>,
 }
 
 impl Default for LlmConfig {
@@ -255,8 +258,30 @@ impl Default for LlmConfig {
             backends: HashMap::new(),
             auto_trigger: AutoTriggerConfig::default(),
             use_cases: HashMap::new(),
+            langfuse: None,
         }
     }
+}
+
+/// Langfuse observability configuration.
+///
+/// Example:
+///   [llm.langfuse]
+///   public_key = "pk-..."
+///   secret_key_cmd = "pass show langfuse/secret"
+///   host = "https://cloud.langfuse.com"
+#[derive(Debug, Deserialize)]
+pub struct LangfuseConfig {
+    pub public_key: String,
+    /// Shell command that outputs the secret key (same pattern as api_key_cmd)
+    #[serde(default)]
+    pub secret_key_cmd: Option<String>,
+    #[serde(default = "default_langfuse_host")]
+    pub host: String,
+}
+
+fn default_langfuse_host() -> String {
+    "https://cloud.langfuse.com".to_string()
 }
 
 fn default_llm_name() -> String {
