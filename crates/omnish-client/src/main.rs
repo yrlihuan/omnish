@@ -1956,9 +1956,11 @@ async fn run_chat_loop(
             continue;
         }
 
-        // /context in chat mode — show chat thread context (with optional | head/tail)
+        // /context in chat mode — show chat thread context (with optional | head/tail and > redirect)
         if trimmed == "/context" || trimmed.starts_with("/context ") {
-            let (_, limit) = command::parse_limit_pub(trimmed);
+            // Parse redirect and limit from the command string
+            let (without_redirect, redirect) = command::parse_redirect_pub(trimmed);
+            let (_, limit) = command::parse_limit_pub(without_redirect);
             let query = if let Some(ref tid) = current_thread_id {
                 format!("__cmd:context chat:{}", tid)
             } else {
@@ -1983,8 +1985,12 @@ async fn run_chat_loop(
                     } else {
                         display
                     };
-                    let output = display::render_response(&display);
-                    nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                    if let Some(path) = redirect {
+                        handle_command_result(&display, Some(path), proxy);
+                    } else {
+                        let output = display::render_response(&display);
+                        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                    }
                 }
                 _ => {
                     let err = display::render_error("Failed to get context");

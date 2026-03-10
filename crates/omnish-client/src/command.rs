@@ -236,6 +236,11 @@ fn parse_limit(input: &str) -> (&str, Option<OutputLimit>) {
     (input, None)
 }
 
+/// Public wrapper for parse_redirect (used by main.rs for /context with redirect).
+pub fn parse_redirect_pub(input: &str) -> (&str, Option<&str>) {
+    parse_redirect(input)
+}
+
 /// Public wrapper for parse_limit (used by main.rs for /context with pipes).
 pub fn parse_limit_pub(input: &str) -> (&str, Option<OutputLimit>) {
     parse_limit(input)
