@@ -1,6 +1,6 @@
 use anyhow::Result;
 use omnish_daemon::conversation_mgr::ConversationManager;
-use omnish_daemon::plugin::{PluginManager, PluginType};
+use omnish_daemon::plugin::{Plugin, PluginManager, PluginType};
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_daemon::task_mgr::TaskManager;
 use omnish_llm::backend::{ContentBlock, LlmBackend, LlmRequest, StopReason, TriggerType, UseCase};
@@ -326,6 +326,18 @@ async fn handle_chat_message(
     };
     extra_messages.push(serde_json::json!({"role": "user", "content": llm_user_content}));
 
+    // Build system prompt: base + plugin-provided fragments
+    let mut system_prompt = omnish_llm::template::CHAT_SYSTEM_PROMPT.to_string();
+    let mut tool_prompts: Vec<String> = Vec::new();
+    if let Some(p) = command_query_tool.system_prompt() {
+        tool_prompts.push(p);
+    }
+    tool_prompts.extend(plugin_mgr.all_system_prompts());
+    if !tool_prompts.is_empty() {
+        system_prompt.push_str("\n\n## Tools\n\nYou have access to tools:\n\n");
+        system_prompt.push_str(&tool_prompts.join("\n\n"));
+    }
+
     let llm_req = LlmRequest {
         context: String::new(),
         query: None,
@@ -334,7 +346,7 @@ async fn handle_chat_message(
         use_case,
         max_content_chars: max_context_chars,
         conversation: vec![],
-        system_prompt: Some(omnish_llm::template::CHAT_SYSTEM_PROMPT.to_string()),
+        system_prompt: Some(system_prompt),
         enable_thinking: None,
         tools,
         extra_messages,

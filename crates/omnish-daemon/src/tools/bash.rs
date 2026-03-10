@@ -180,6 +180,18 @@ impl Plugin for BashTool {
     fn call_tool(&self, _tool_name: &str, input: &serde_json::Value) -> ToolResult {
         self.execute(input)
     }
+
+    fn system_prompt(&self) -> Option<String> {
+        Some(
+            "### bash\n\
+             Execute bash commands on the user's machine:\n\
+             - Use this to run commands, inspect files, check system state, etc.\n\
+             - Commands run in the user's current working directory.\n\
+             - The tool runs in a sandboxed environment with restricted write access.\n\
+             - If a command fails with a permission error, do not retry. Explain the error to the user."
+                .to_string(),
+        )
+    }
 }
 
 #[cfg(test)]

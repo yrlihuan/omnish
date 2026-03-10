@@ -28,6 +28,10 @@ pub trait Plugin: Send + Sync {
     fn tools(&self) -> Vec<ToolDef>;
     /// Execute a tool by name with the given input.
     fn call_tool(&self, tool_name: &str, input: &serde_json::Value) -> ToolResult;
+    /// System prompt fragment to be merged into the LLM system prompt.
+    fn system_prompt(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Manages all registered plugins (official + external).
@@ -54,6 +58,14 @@ impl PluginManager {
     /// Collect all tool definitions from all plugins.
     pub fn all_tools(&self) -> Vec<ToolDef> {
         self.plugins.iter().flat_map(|p| p.tools()).collect()
+    }
+
+    /// Collect system prompt fragments from all plugins.
+    pub fn all_system_prompts(&self) -> Vec<String> {
+        self.plugins
+            .iter()
+            .filter_map(|p| p.system_prompt())
+            .collect()
     }
 
     /// Find the plugin that owns the given tool name and execute it.
@@ -128,6 +140,8 @@ struct InitializeResult {
     tools: Vec<ToolDef>,
     #[serde(default)]
     plugin_type: Option<String>,
+    #[serde(default)]
+    system_prompt: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -142,6 +156,7 @@ struct ExecuteResult {
 pub struct ExternalPlugin {
     plugin_name: String,
     plugin_type: PluginType,
+    system_prompt_text: Option<String>,
     stdin: Mutex<std::io::BufWriter<ChildStdin>>,
     stdout: Mutex<BufReader<ChildStdout>>,
     child: Mutex<Child>,
@@ -225,6 +240,7 @@ impl ExternalPlugin {
         let mut plugin = Self {
             plugin_name: name.to_string(),
             plugin_type: PluginType::DaemonTool,
+            system_prompt_text: None,
             stdin: Mutex::new(std::io::BufWriter::new(stdin)),
             stdout: Mutex::new(BufReader::new(stdout)),
             child: Mutex::new(child),
@@ -248,6 +264,7 @@ impl ExternalPlugin {
                     );
                     plugin.tool_defs = init.tools;
                     plugin.plugin_type = ptype;
+                    plugin.system_prompt_text = init.system_prompt;
                     Some(plugin)
                 }
                 Err(e) => {
@@ -363,6 +380,10 @@ impl Plugin for ExternalPlugin {
                 is_error: true,
             },
         }
+    }
+
+    fn system_prompt(&self) -> Option<String> {
+        self.system_prompt_text.clone()
     }
 }
 

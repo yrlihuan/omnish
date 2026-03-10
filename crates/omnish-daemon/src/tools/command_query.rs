@@ -153,6 +153,17 @@ impl Plugin for CommandQueryTool {
     fn call_tool(&self, _tool_name: &str, input: &serde_json::Value) -> ToolResult {
         self.execute(input)
     }
+
+    fn system_prompt(&self) -> Option<String> {
+        Some(
+            "### command_query\n\
+             Inspect command history and output:\n\
+             - Use get_output(seq) to retrieve the full output of a specific command\n\
+             - The recent command list is provided at the end of the user's message in <system-reminder>\n\
+             - You do NOT need to call list_history — the command list is already provided"
+                .to_string(),
+        )
+    }
 }
 
 fn format_ago(now_ms: u64, started_at: u64) -> String {
