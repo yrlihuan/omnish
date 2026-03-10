@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.5.4 (2026-03-10)
+
+### Features
+- **protocol**: Add protocol version mismatch warning between client and daemon (issue #117)
+- **plugin**: Add PluginType classification (DaemonTool/ClientTool) for client-side tool execution (issue #195)
+- **daemon**: Built-in bash tool for chat agent — executes commands on the user's machine
+- **daemon**: Agent loop pause/resume architecture for forwarding tool calls to client
+- **protocol**: Add ChatToolCall and ChatToolResult messages for client-side tool forwarding
+
+### Bug Fixes
+- **protocol**: Use String instead of serde_json::Value in ChatToolCall for bincode compatibility
+
+---
+
 ## v0.5.2 (2026-03-09)
 
 ### Features
