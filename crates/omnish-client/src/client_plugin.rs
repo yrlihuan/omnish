@@ -185,6 +185,7 @@ impl ClientPluginManager {
 
         let data_dir_clone = data_dir.clone();
         let plugin_name = name.to_string();
+        let process_name = format!("omnish-plugin({})", name);
         let mut cmd = Command::new(bin);
         cmd.arg(name)
             .stdin(Stdio::piped())
@@ -196,7 +197,12 @@ impl ClientPluginManager {
                 Self::apply_sandbox(&data_dir_clone).map_err(|e| {
                     eprintln!("Plugin '{plugin_name}' sandbox failed: {e}");
                     std::io::Error::new(std::io::ErrorKind::PermissionDenied, e)
-                })
+                })?;
+                // Set process name for visibility in ps/top
+                let name_bytes = process_name.as_bytes();
+                let name_ptr = name_bytes.as_ptr() as *const libc::c_char;
+                libc::prctl(libc::PR_SET_NAME, name_ptr, 0, 0, 0);
+                Ok(())
             });
         }
         let mut child = cmd.spawn().ok()?;
