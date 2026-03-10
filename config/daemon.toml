@@ -37,7 +37,7 @@ api_key_cmd = "pass show anthropic/api-key"
 # Optional: Langfuse observability (LLM tracing & analytics)
 # [llm.langfuse]
 # public_key = "pk-lf-..."
-# secret_key = "pass show langfuse/secret-key"
+# secret_key = "sk-lf-..."
 # base_url = "https://cloud.langfuse.com"  # or self-hosted URL
 
 [llm.auto_trigger]

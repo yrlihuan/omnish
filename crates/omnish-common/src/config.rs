@@ -268,12 +268,11 @@ impl Default for LlmConfig {
 /// Example:
 ///   [llm.langfuse]
 ///   public_key = "pk-..."
-///   secret_key = "pass show langfuse/secret"
+///   secret_key = "sk-lf-..."
 ///   base_url = "https://cloud.langfuse.com"
 #[derive(Debug, Deserialize)]
 pub struct LangfuseConfig {
     pub public_key: String,
-    /// Shell command that outputs the secret key (same pattern as api_key_cmd)
     #[serde(default)]
     pub secret_key: Option<String>,
     #[serde(default = "default_langfuse_base_url")]
