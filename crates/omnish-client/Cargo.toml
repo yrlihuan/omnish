@@ -3,6 +3,10 @@ name = "omnish-client"
 version.workspace = true
 edition = "2021"
 
+[[bin]]
+name = "omnish"
+path = "src/main.rs"
+
 [dependencies]
 omnish-common = { path = "../omnish-common" }
 omnish-protocol = { path = "../omnish-protocol" }

@@ -100,7 +100,7 @@ base_url = "https://api.openai.com/v1"
 omnish-daemon
 
 # Start client (in another terminal)
-omnish-client
+omnish
 
 # Ask about last command
 :why did that fail
