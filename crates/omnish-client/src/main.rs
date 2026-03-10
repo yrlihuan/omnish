@@ -2451,7 +2451,7 @@ fn read_chat_input(
                                 redraw(&editor, "", false);
                             }
                             Some(KeyEvent::ArrowUp) => {
-                                if editor.is_empty() {
+                                if editor.is_empty() || history_index.is_some() {
                                     // History navigation
                                     if history.is_empty() { continue; }
                                     let idx = match *history_index {
@@ -2478,7 +2478,7 @@ fn read_chat_input(
                                 }
                             }
                             Some(KeyEvent::ArrowDown) => {
-                                if editor.is_empty() {
+                                if editor.is_empty() || history_index.is_some() {
                                     // History navigation
                                     if history.is_empty() { continue; }
                                     let idx = match *history_index {
