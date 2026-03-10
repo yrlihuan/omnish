@@ -169,6 +169,10 @@ impl Plugin for BashTool {
         "bash"
     }
 
+    fn plugin_type(&self) -> crate::plugin::PluginType {
+        crate::plugin::PluginType::ClientTool
+    }
+
     fn tools(&self) -> Vec<ToolDef> {
         vec![self.definition()]
     }

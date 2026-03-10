@@ -4,10 +4,21 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
 
+/// Classifies whether a plugin's tools run on the daemon or the client side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginType {
+    DaemonTool,
+    ClientTool,
+}
+
 /// Unified plugin interface for both official (inline) and external (subprocess) plugins.
 pub trait Plugin: Send + Sync {
     /// Plugin name (for logging and identification).
     fn name(&self) -> &str;
+    /// Where this plugin's tools execute. Defaults to `DaemonTool`.
+    fn plugin_type(&self) -> PluginType {
+        PluginType::DaemonTool
+    }
     /// Tool definitions this plugin provides (sent to LLM).
     fn tools(&self) -> Vec<ToolDef>;
     /// Execute a tool by name with the given input.
@@ -52,6 +63,16 @@ impl PluginManager {
             content: format!("Unknown tool: {}", tool_name),
             is_error: true,
         }
+    }
+
+    /// Return the plugin type that owns the given tool, if any.
+    pub fn tool_plugin_type(&self, tool_name: &str) -> Option<PluginType> {
+        for plugin in &self.plugins {
+            if plugin.tools().iter().any(|t| t.name == tool_name) {
+                return Some(plugin.plugin_type());
+            }
+        }
+        None
     }
 
     /// Load external plugins from ~/.omnish/plugins/ based on enabled list.
@@ -100,6 +121,8 @@ struct InitializeResult {
     #[allow(dead_code)]
     name: String,
     tools: Vec<ToolDef>,
+    #[serde(default)]
+    plugin_type: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -113,6 +136,7 @@ struct ExecuteResult {
 
 pub struct ExternalPlugin {
     plugin_name: String,
+    plugin_type: PluginType,
     stdin: Mutex<std::io::BufWriter<ChildStdin>>,
     stdout: Mutex<BufReader<ChildStdout>>,
     child: Mutex<Child>,
@@ -142,6 +166,7 @@ impl ExternalPlugin {
 
         let mut plugin = Self {
             plugin_name: name.to_string(),
+            plugin_type: PluginType::DaemonTool,
             stdin: Mutex::new(std::io::BufWriter::new(stdin)),
             stdout: Mutex::new(BufReader::new(stdout)),
             child: Mutex::new(child),
@@ -153,12 +178,18 @@ impl ExternalPlugin {
         match plugin.send_request("initialize", serde_json::json!({})) {
             Ok(result) => match serde_json::from_value::<InitializeResult>(result) {
                 Ok(init) => {
+                    let ptype = match init.plugin_type.as_deref() {
+                        Some("client_tool") => PluginType::ClientTool,
+                        _ => PluginType::DaemonTool,
+                    };
                     tracing::info!(
-                        "Plugin '{}' initialized with {} tools",
+                        "Plugin '{}' initialized with {} tools (type={:?})",
                         name,
-                        init.tools.len()
+                        init.tools.len(),
+                        ptype,
                     );
                     plugin.tool_defs = init.tools;
+                    plugin.plugin_type = ptype;
                     Some(plugin)
                 }
                 Err(e) => {
@@ -239,6 +270,10 @@ impl ExternalPlugin {
 impl Plugin for ExternalPlugin {
     fn name(&self) -> &str {
         &self.plugin_name
+    }
+
+    fn plugin_type(&self) -> PluginType {
+        self.plugin_type
     }
 
     fn tools(&self) -> Vec<ToolDef> {
