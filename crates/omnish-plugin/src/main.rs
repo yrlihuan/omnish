@@ -81,6 +81,17 @@ fn run_plugin_mode(plugin: Box<dyn Plugin>) {
                     error: None,
                 }
             }
+            "tool/status_text" => {
+                let tool_name = req.params["name"].as_str().unwrap_or("");
+                let input = &req.params["input"];
+                let text = plugin.status_text(tool_name, input);
+                JsonRpcResponse {
+                    jsonrpc: "2.0",
+                    id: req.id,
+                    result: Some(serde_json::Value::String(text)),
+                    error: None,
+                }
+            }
             "tool/execute" => {
                 let tool_name = req.params["name"].as_str().unwrap_or("");
                 let input = &req.params["input"];

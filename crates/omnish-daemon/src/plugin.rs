@@ -399,6 +399,17 @@ impl Plugin for ExternalPlugin {
     fn system_prompt(&self) -> Option<String> {
         self.system_prompt_text.clone()
     }
+
+    fn status_text(&self, tool_name: &str, input: &serde_json::Value) -> String {
+        let params = serde_json::json!({
+            "name": tool_name,
+            "input": input,
+        });
+        match self.send_request("tool/status_text", params) {
+            Ok(result) => result.as_str().unwrap_or("").to_string(),
+            Err(_) => format!("执行 {}...", tool_name),
+        }
+    }
 }
 
 impl Drop for ExternalPlugin {
