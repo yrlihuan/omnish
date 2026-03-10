@@ -1,6 +1,14 @@
 use crate::backend::{ContentBlock, LlmBackend, LlmRequest, LlmResponse, StopReason};
 use anyhow::Result;
 use async_trait::async_trait;
+use std::time::Duration;
+
+/// Maximum number of retries for rate-limit (429) errors.
+const MAX_RETRIES: u32 = 3;
+/// Default backoff duration when no retry-after header is present.
+const DEFAULT_BACKOFF: Duration = Duration::from_secs(5);
+/// Maximum backoff duration to cap retry-after values.
+const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 pub struct OpenAiCompatBackend {
     pub model: String,
@@ -79,47 +87,88 @@ impl LlmBackend for OpenAiCompatBackend {
         let body = serde_json::Value::Object(body_map);
         crate::message_log::log_request(&body, req.use_case);
 
-        let resp = client
-            .post(format!("{}/chat/completions", self.base_url))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-
-        let status = resp.status();
-        let json: serde_json::Value = resp.json().await?;
-
-        // Check for API errors
-        if !status.is_success() {
-            let error_msg = json["error"]["message"]
-                .as_str()
-                .unwrap_or("Unknown API error");
-            return Err(anyhow::anyhow!(
-                "OpenAI API error ({}): {}",
-                status,
-                error_msg
-            ));
+        /// Parse `retry-after` header value (seconds) from response headers.
+        fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
+            let val = resp.headers().get("retry-after")?.to_str().ok()?;
+            let secs: f64 = val.parse().ok()?;
+            Some(Duration::from_secs_f64(secs.min(MAX_BACKOFF.as_secs_f64())))
         }
 
-        let raw_content = json["choices"][0]["message"]["content"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid response format: missing choices[0].message.content"))?
-            .to_string();
+        // Retry loop for 429 (rate limit) errors
+        let mut last_error = None;
+        for attempt in 0..=MAX_RETRIES {
+            let resp = client
+                .post(format!("{}/chat/completions", self.base_url))
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await?;
 
-        // Extract thinking from content, unless explicitly disabled
-        let (thinking, content) = if req.enable_thinking == Some(false) {
-            (None, raw_content.clone())
-        } else {
-            extract_thinking(&raw_content)
-        };
+            let status = resp.status();
+            let status_code = status.as_u16();
 
-        Ok(LlmResponse {
-            content: vec![ContentBlock::Text(content)],
-            stop_reason: StopReason::EndTurn,
-            model: self.model.clone(),
-            thinking,
-        })
+            // Retry on 429 (rate limit)
+            if status_code == 429 {
+                let backoff = parse_retry_after(&resp)
+                    .unwrap_or(DEFAULT_BACKOFF * 2u32.pow(attempt));
+                let backoff = backoff.min(MAX_BACKOFF);
+
+                let json: serde_json::Value = resp.json().await.unwrap_or_default();
+                let error_msg = json["error"]["message"]
+                    .as_str()
+                    .unwrap_or("rate limited");
+                tracing::warn!(
+                    "OpenAI API 429 (attempt {}/{}): {} — retrying in {:.1}s",
+                    attempt + 1, MAX_RETRIES + 1, error_msg, backoff.as_secs_f64()
+                );
+                last_error = Some(anyhow::anyhow!(
+                    "OpenAI API error ({}): {}",
+                    status, error_msg
+                ));
+
+                if attempt < MAX_RETRIES {
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+                return Err(last_error.unwrap());
+            }
+
+            let json: serde_json::Value = resp.json().await?;
+
+            // Check for other API errors
+            if !status.is_success() {
+                let error_msg = json["error"]["message"]
+                    .as_str()
+                    .unwrap_or("Unknown API error");
+                return Err(anyhow::anyhow!(
+                    "OpenAI API error ({}): {}",
+                    status,
+                    error_msg
+                ));
+            }
+
+            let raw_content = json["choices"][0]["message"]["content"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid response format: missing choices[0].message.content"))?
+                .to_string();
+
+            // Extract thinking from content, unless explicitly disabled
+            let (thinking, content) = if req.enable_thinking == Some(false) {
+                (None, raw_content.clone())
+            } else {
+                extract_thinking(&raw_content)
+            };
+
+            return Ok(LlmResponse {
+                content: vec![ContentBlock::Text(content)],
+                stop_reason: StopReason::EndTurn,
+                model: self.model.clone(),
+                thinking,
+            });
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("OpenAI API: max retries exhausted")))
     }
 
     fn name(&self) -> &str {

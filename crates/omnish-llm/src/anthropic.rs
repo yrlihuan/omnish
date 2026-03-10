@@ -2,6 +2,14 @@ use crate::backend::{ContentBlock, LlmBackend, LlmRequest, LlmResponse, StopReas
 use crate::tool::ToolCall;
 use anyhow::Result;
 use async_trait::async_trait;
+use std::time::Duration;
+
+/// Maximum number of retries for rate-limit (429) and overloaded (529) errors.
+const MAX_RETRIES: u32 = 3;
+/// Default backoff duration when no retry-after header is present.
+const DEFAULT_BACKOFF: Duration = Duration::from_secs(5);
+/// Maximum backoff duration to cap retry-after values.
+const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 pub struct AnthropicBackend {
     pub model: String,
@@ -13,6 +21,13 @@ pub struct AnthropicBackend {
 /// Strip thinking tags from LLM response content.
 fn strip_thinking(content: &str) -> String {
     content.replace("\n<think>", "").replace("</think>", "")
+}
+
+/// Parse `retry-after` header value (seconds) from response headers.
+fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
+    let val = resp.headers().get("retry-after")?.to_str().ok()?;
+    let secs: f64 = val.parse().ok()?;
+    Some(Duration::from_secs_f64(secs.min(MAX_BACKOFF.as_secs_f64())))
 }
 
 #[async_trait]
@@ -85,76 +100,111 @@ impl LlmBackend for AnthropicBackend {
         let body = serde_json::Value::Object(body_map);
         crate::message_log::log_request(&body, req.use_case);
 
-        let resp = client
-            .post(format!("{}/v1/messages", self.base_url))
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2024-04-04")
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+        // Retry loop for 429 (rate limit) and 529 (overloaded) errors
+        let mut last_error = None;
+        for attempt in 0..=MAX_RETRIES {
+            let resp = client
+                .post(format!("{}/v1/messages", self.base_url))
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", "2024-04-04")
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
+                .await?;
 
-        let status = resp.status();
-        let json: serde_json::Value = resp.json().await?;
+            let status = resp.status();
+            let status_code = status.as_u16();
 
-        // Check for API errors
-        if !status.is_success() {
-            let error_msg = json["error"]["message"]
-                .as_str()
-                .unwrap_or("Unknown API error");
-            let error_type = json["error"]["type"]
-                .as_str()
-                .unwrap_or("unknown");
-            return Err(anyhow::anyhow!(
-                "Anthropic API error ({}): {} - {}",
-                status,
-                error_type,
-                error_msg
-            ));
-        }
+            // Retry on 429 (rate limit) or 529 (overloaded)
+            if status_code == 429 || status_code == 529 {
+                let backoff = parse_retry_after(&resp)
+                    .unwrap_or(DEFAULT_BACKOFF * 2u32.pow(attempt));
+                let backoff = backoff.min(MAX_BACKOFF);
 
-        // Parse stop_reason
-        let stop_reason = match json["stop_reason"].as_str() {
-            Some("tool_use") => StopReason::ToolUse,
-            Some("max_tokens") => StopReason::MaxTokens,
-            _ => StopReason::EndTurn,
-        };
+                let json: serde_json::Value = resp.json().await.unwrap_or_default();
+                let error_msg = json["error"]["message"]
+                    .as_str()
+                    .unwrap_or("rate limited");
+                tracing::warn!(
+                    "Anthropic API {} (attempt {}/{}): {} — retrying in {:.1}s",
+                    status_code, attempt + 1, MAX_RETRIES + 1, error_msg, backoff.as_secs_f64()
+                );
+                last_error = Some(anyhow::anyhow!(
+                    "Anthropic API error ({}): {}",
+                    status, error_msg
+                ));
 
-        // Extract content blocks
-        let mut thinking: Option<String> = None;
-        let mut content_blocks = Vec::new();
-
-        for block in json["content"].as_array().unwrap_or(&vec![]) {
-            match block["type"].as_str() {
-                Some("thinking") => {
-                    thinking = block["thinking"].as_str().map(|s| s.to_string());
+                if attempt < MAX_RETRIES {
+                    tokio::time::sleep(backoff).await;
+                    continue;
                 }
-                Some("text") => {
-                    let text = strip_thinking(block["text"].as_str().unwrap_or(""));
-                    if !text.is_empty() {
-                        content_blocks.push(ContentBlock::Text(text));
-                    }
-                }
-                Some("tool_use") => {
-                    let id = block["id"].as_str().unwrap_or("").to_string();
-                    let name = block["name"].as_str().unwrap_or("").to_string();
-                    let input = block["input"].clone();
-                    content_blocks.push(ContentBlock::ToolUse(ToolCall { id, name, input }));
-                }
-                _ => {}
+                // Final attempt exhausted — fall through to return error
+                return Err(last_error.unwrap());
             }
+
+            let json: serde_json::Value = resp.json().await?;
+
+            // Check for other API errors
+            if !status.is_success() {
+                let error_msg = json["error"]["message"]
+                    .as_str()
+                    .unwrap_or("Unknown API error");
+                let error_type = json["error"]["type"]
+                    .as_str()
+                    .unwrap_or("unknown");
+                return Err(anyhow::anyhow!(
+                    "Anthropic API error ({}): {} - {}",
+                    status,
+                    error_type,
+                    error_msg
+                ));
+            }
+
+            // Parse stop_reason
+            let stop_reason = match json["stop_reason"].as_str() {
+                Some("tool_use") => StopReason::ToolUse,
+                Some("max_tokens") => StopReason::MaxTokens,
+                _ => StopReason::EndTurn,
+            };
+
+            // Extract content blocks
+            let mut thinking: Option<String> = None;
+            let mut content_blocks = Vec::new();
+
+            for block in json["content"].as_array().unwrap_or(&vec![]) {
+                match block["type"].as_str() {
+                    Some("thinking") => {
+                        thinking = block["thinking"].as_str().map(|s| s.to_string());
+                    }
+                    Some("text") => {
+                        let text = strip_thinking(block["text"].as_str().unwrap_or(""));
+                        if !text.is_empty() {
+                            content_blocks.push(ContentBlock::Text(text));
+                        }
+                    }
+                    Some("tool_use") => {
+                        let id = block["id"].as_str().unwrap_or("").to_string();
+                        let name = block["name"].as_str().unwrap_or("").to_string();
+                        let input = block["input"].clone();
+                        content_blocks.push(ContentBlock::ToolUse(ToolCall { id, name, input }));
+                    }
+                    _ => {}
+                }
+            }
+
+            if content_blocks.is_empty() && stop_reason == StopReason::EndTurn {
+                return Err(anyhow::anyhow!("Invalid response format: no content blocks found"));
+            }
+
+            return Ok(LlmResponse {
+                content: content_blocks,
+                stop_reason,
+                model: self.model.clone(),
+                thinking,
+            });
         }
 
-        if content_blocks.is_empty() && stop_reason == StopReason::EndTurn {
-            return Err(anyhow::anyhow!("Invalid response format: no content blocks found"));
-        }
-
-        Ok(LlmResponse {
-            content: content_blocks,
-            stop_reason,
-            model: self.model.clone(),
-            thinking,
-        })
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Anthropic API: max retries exhausted")))
     }
 
     fn name(&self) -> &str {
