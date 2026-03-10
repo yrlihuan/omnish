@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.5.5 (2026-03-10)
+
+### Features
+- **client**: Rename binary from `omnish-client` to `omnish` (issue #200)
+- **plugin**: Sandbox external plugins with Landlock — restrict write access to plugin data dir and /tmp (issue #176)
+- **plugin**: Add `omnish-plugin` binary crate for official plugins via subprocess + JSON-RPC (issue #198)
+- **plugin**: Let plugins provide their own system prompt fragments (issue #199)
+- **plugin**: Move tool status text into Plugin trait; forward via JSON-RPC `tool/status_text`
+- **plugin**: Set process name to `omnish-plugin(<tool>)` for visibility (issue #208)
+- **client**: Use `omnish-plugin` subprocess for client-side tool execution with Landlock sandbox
+- **llm**: Add PromptManager for composable system prompt fragments (identity, chat_mode, commands, tool_status, guidelines)
+- **llm**: Add optional Langfuse observability integration
+- **daemon**: Forward LLM text blocks to client during tool_use as status messages
+- **widgets**: Enhance LineStatus with truncation, append, and max lines
+
+### Bug Fixes
+- **llm**: Retry on 429/529 with exponential backoff and retry-after header (issue #207)
+- **llm**: Only log chat messages to `logs/messages/` (issue #205)
+- **client**: Remove duplicate status line on ChatToolCall
+- **daemon**: Remove debug log for skipping active session cleanup (issue #206)
+- **langfuse**: Treat secret_key as direct value, not shell command
+
+### Performance
+- **daemon**: Increase worker threads from 16 to 30 (issue #204)
+
+---
+
 ## v0.5.4 (2026-03-10)
 
 ### Features
