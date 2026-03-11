@@ -141,11 +141,18 @@ fn parse_resume_args() -> Option<ResumeArgs> {
 }
 
 mod notice_queue {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
     use std::sync::Mutex;
 
     static DEFERRED: AtomicBool = AtomicBool::new(false);
     static QUEUE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// Current cursor row, updated by CursorColTracker.
+    static CURSOR_ROW: AtomicU16 = AtomicU16::new(0);
+
+    /// Update the tracked cursor row (called from CursorColTracker after feed).
+    pub fn set_cursor_row(row: u16) {
+        CURSOR_ROW.store(row, Ordering::Relaxed);
+    }
 
     /// Queue a notice. If deferred mode is on, store it; otherwise display immediately.
     pub fn push(msg: &str) {
@@ -180,22 +187,13 @@ mod notice_queue {
     fn render(msg: &str) {
         use crate::widgets::inline_notice::InlineNotice;
         let cols = super::get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
-        eprint!("{}", InlineNotice::render(msg, cols));
-    }
-
-    /// Display a notice immediately as a plain line, bypassing the queue and InlineNotice.
-    /// Used for startup messages before the shell prompt is on screen.
-    pub fn immediate(msg: &str) {
-        eprint!("\x1b[2m{}\x1b[0m\r\n", msg);
+        let at_bottom = CURSOR_ROW.load(Ordering::Relaxed) > 0;
+        eprint!("{}", InlineNotice::render_at(msg, cols, at_bottom));
     }
 }
 
 fn notice(msg: &str) {
     notice_queue::push(msg);
-}
-
-fn notice_immediate(msg: &str) {
-    notice_queue::immediate(msg);
 }
 
 fn exec_update(proxy: &PtyProxy, session_id: &str) {
@@ -809,8 +807,9 @@ async fn main() -> Result<()> {
 
                     nix::unistd::write(std::io::stdout(), display_data)?;
 
-                    // Track cursor column on display (stripped) data
+                    // Track cursor position on display (stripped) data
                     col_tracker.feed(display_data);
+                    notice_queue::set_cursor_row(col_tracker.row);
 
                     // Detect alternate screen transitions
                     if let Some(active) = alt_screen_detector.feed(display_data) {
@@ -1117,8 +1116,8 @@ async fn connect_daemon(
     let auth_token = match omnish_common::auth::load_token(&token_path) {
         Ok(t) => t,
         Err(e) => {
-            notice_immediate(&format!("[omnish] Failed to load auth token: {}", e));
-            notice_immediate("[omnish] Running in passthrough mode (no daemon)");
+            notice(&format!("[omnish] Failed to load auth token: {}", e));
+            notice("[omnish] Running in passthrough mode (no daemon)");
             return None;
         }
     };
@@ -1130,8 +1129,8 @@ async fn connect_daemon(
         match omnish_transport::tls::make_connector(&cert_path) {
             Ok(c) => Some(c),
             Err(e) => {
-                notice_immediate(&format!("[omnish] Failed to set up TLS: {}", e));
-                notice_immediate("[omnish] Running in passthrough mode (no daemon)");
+                notice(&format!("[omnish] Failed to set up TLS: {}", e));
+                notice("[omnish] Running in passthrough mode (no daemon)");
                 return None;
             }
         }
@@ -1197,20 +1196,20 @@ async fn connect_daemon(
     ).await {
         Ok(client) => {
             if client.is_connected().await {
-                notice_immediate(&format!("[omnish] Connected to daemon (session: {})", &session_id[..8]));
+                notice(&format!("[omnish] Connected to daemon (session: {})", &session_id[..8]));
             } else {
-                notice_immediate("[omnish] Daemon not available, waiting for daemon to start...");
-                notice_immediate(&format!("[omnish] Socket: {}", socket_path));
-                notice_immediate("[omnish] To start: omnish-daemon");
+                notice("[omnish] Daemon not available, waiting for daemon to start...");
+                notice(&format!("[omnish] Socket: {}", socket_path));
+                notice("[omnish] To start: omnish-daemon");
             }
             Some(client)
         }
         Err(e) => {
             // This should not happen with our updated connect_with_reconnect,
             // but keep for backward compatibility
-            notice_immediate(&format!("[omnish] Daemon not available ({}), running in passthrough mode", e));
-            notice_immediate(&format!("[omnish] Socket: {}", socket_path));
-            notice_immediate("[omnish] To start: omnish-daemon");
+            notice(&format!("[omnish] Daemon not available ({}), running in passthrough mode", e));
+            notice(&format!("[omnish] Socket: {}", socket_path));
+            notice("[omnish] To start: omnish-daemon");
             None
         }
     }
@@ -1243,7 +1242,10 @@ static mut MASTER_FD: i32 = -1;
 /// Used to save/restore cursor column when dismissing the omnish UI.
 struct CursorColTracker {
     col: u16,
+    row: u16,
     state: ColTrackState,
+    /// CSI parameter bytes buffer for parsing cursor movement sequences.
+    csi_params: Vec<u8>,
     /// Buffer for accumulating a multi-byte UTF-8 character.
     utf8_buf: [u8; 4],
     /// Number of bytes collected so far for the current UTF-8 character.
@@ -1264,7 +1266,9 @@ impl CursorColTracker {
     fn new() -> Self {
         Self {
             col: 0,
+            row: 0,
             state: ColTrackState::Normal,
+            csi_params: Vec::new(),
             utf8_buf: [0; 4],
             utf8_len: 0,
             utf8_need: 0,
@@ -1304,14 +1308,20 @@ impl CursorColTracker {
                 ColTrackState::Normal => self.process_normal(byte),
                 ColTrackState::Esc => {
                     self.state = match byte {
-                        b'[' => ColTrackState::Csi,
+                        b'[' => {
+                            self.csi_params.clear();
+                            ColTrackState::Csi
+                        }
                         b']' => ColTrackState::Osc,
                         _ => ColTrackState::Normal,
                     };
                 }
                 ColTrackState::Csi => {
                     if (0x40..=0x7e).contains(&byte) {
+                        self.finish_csi(byte);
                         self.state = ColTrackState::Normal;
+                    } else {
+                        self.csi_params.push(byte);
                     }
                 }
                 ColTrackState::Osc => {
@@ -1325,11 +1335,61 @@ impl CursorColTracker {
         }
     }
 
+    /// Parse CSI final byte and update row/col accordingly.
+    fn finish_csi(&mut self, final_byte: u8) {
+        match final_byte {
+            // CUU — Cursor Up: \x1b[nA
+            b'A' => {
+                let n = self.parse_csi_param_1().max(1);
+                self.row = self.row.saturating_sub(n);
+            }
+            // CUB — Cursor Back: \x1b[nD  (handled here for completeness)
+            // CUD — Cursor Down: \x1b[nB
+            b'B' => {
+                let n = self.parse_csi_param_1().max(1);
+                self.row = self.row.saturating_add(n);
+            }
+            // CUP / HVP — Cursor Position: \x1b[n;mH or \x1b[n;mf
+            b'H' | b'f' => {
+                let (r, c) = self.parse_csi_param_2();
+                // CSI params are 1-based, convert to 0-based
+                self.row = r.max(1) - 1;
+                self.col = c.max(1) - 1;
+            }
+            // SD — Scroll Down: \x1b[nT — content moves down, cursor row unchanged
+            // but conceptually row 0 content is now new
+            // SU — Scroll Up: \x1b[nS — content moves up
+            // IL — Insert Line: \x1b[nL — inserts lines at cursor, pushes down
+            // These don't move the cursor position itself.
+            _ => {}
+        }
+    }
+
+    /// Parse a single numeric CSI parameter (default 0).
+    fn parse_csi_param_1(&self) -> u16 {
+        if self.csi_params.is_empty() {
+            return 0;
+        }
+        std::str::from_utf8(&self.csi_params)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// Parse two semicolon-separated CSI parameters (default 1;1).
+    fn parse_csi_param_2(&self) -> (u16, u16) {
+        let s = std::str::from_utf8(&self.csi_params).unwrap_or("");
+        let mut parts = s.splitn(2, ';');
+        let a = parts.next().and_then(|p| p.parse().ok()).unwrap_or(1);
+        let b = parts.next().and_then(|p| p.parse().ok()).unwrap_or(1);
+        (a, b)
+    }
+
     fn process_normal(&mut self, byte: u8) {
         match byte {
             0x1b => self.state = ColTrackState::Esc,
             b'\r' => self.col = 0,
-            b'\n' => {}
+            b'\n' => { self.row = self.row.saturating_add(1); }
             0x08 => self.col = self.col.saturating_sub(1),
             0x20..=0x7e => self.col += 1,
             // UTF-8 start bytes — begin accumulation
@@ -3335,6 +3395,72 @@ mod tests {
         t = CursorColTracker::new();
         t.feed("🚀x".as_bytes());
         assert_eq!(t.col, 3); // 🚀 (2) + x (1)
+    }
+
+    // --- CursorRowTracker tests ---
+
+    #[test]
+    fn test_row_tracker_newline() {
+        let mut t = CursorColTracker::new();
+        assert_eq!(t.row, 0);
+        t.feed(b"hello\n");
+        assert_eq!(t.row, 1);
+        t.feed(b"line2\nline3\n");
+        assert_eq!(t.row, 3);
+    }
+
+    #[test]
+    fn test_row_tracker_cursor_home() {
+        let mut t = CursorColTracker::new();
+        t.feed(b"line1\r\nline2\r\nline3");
+        assert_eq!(t.row, 2);
+        assert_eq!(t.col, 5);
+        // \x1b[H — cursor to (0,0)
+        t.feed(b"\x1b[H");
+        assert_eq!(t.row, 0);
+        assert_eq!(t.col, 0);
+    }
+
+    #[test]
+    fn test_row_tracker_cup_with_params() {
+        let mut t = CursorColTracker::new();
+        // \x1b[5;10H — cursor to row 5, col 10 (1-based → 4, 9 zero-based)
+        t.feed(b"\x1b[5;10H");
+        assert_eq!(t.row, 4);
+        assert_eq!(t.col, 9);
+    }
+
+    #[test]
+    fn test_row_tracker_cursor_up_down() {
+        let mut t = CursorColTracker::new();
+        t.feed(b"\n\n\n\n\n"); // row = 5
+        assert_eq!(t.row, 5);
+        // \x1b[2A — cursor up 2
+        t.feed(b"\x1b[2A");
+        assert_eq!(t.row, 3);
+        // \x1b[B — cursor down 1 (no param = 1)
+        t.feed(b"\x1b[B");
+        assert_eq!(t.row, 4);
+    }
+
+    #[test]
+    fn test_row_tracker_cursor_up_saturates() {
+        let mut t = CursorColTracker::new();
+        t.feed(b"\n"); // row = 1
+        // Move up 10 — should saturate to 0
+        t.feed(b"\x1b[10A");
+        assert_eq!(t.row, 0);
+    }
+
+    #[test]
+    fn test_row_tracker_clear_screen() {
+        let mut t = CursorColTracker::new();
+        t.feed(b"line1\nline2\nline3");
+        assert_eq!(t.row, 2);
+        // clear command outputs \x1b[H\x1b[2J
+        t.feed(b"\x1b[H\x1b[2J");
+        assert_eq!(t.row, 0);
+        assert_eq!(t.col, 0);
     }
 
     // --- tmux title tests ---

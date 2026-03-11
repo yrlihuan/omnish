@@ -28,6 +28,7 @@ impl InlineNotice {
     /// 3. Write dim notice on the blank line
     /// 4. DECRC restore cursor to (R, C) — now on the notice line
     /// 5. Move down (`\x1b[1B`) — follow original content at R+1
+    #[cfg(test)]
     pub fn render(message: &str, max_cols: usize) -> String {
         Self::render_at(message, max_cols, true)
     }
