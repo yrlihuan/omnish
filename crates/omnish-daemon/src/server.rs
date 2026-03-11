@@ -519,7 +519,7 @@ async fn run_agent_loop(
         }
     };
 
-    let max_iterations = 5;
+    let max_iterations = 30;
     let mut messages = std::mem::take(&mut state.messages);
 
     for iteration in state.iteration..max_iterations {
