@@ -176,12 +176,7 @@ impl Plugin for EditTool {
              spaces + line number + →. Everything after that → is the actual file content to match. \
              Never include any part of the line number prefix in the old_string or new_string.\n\
              - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.\n\
-             - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.\n\
-             - The edit will FAIL if `old_string` is not unique in the file. Either provide a larger string \
-             with more surrounding context to make it unique or use `replace_all` to change every instance \
-             of `old_string`.\n\
-             - Use `replace_all` for replacing and renaming strings across the file. This parameter is \
-             useful if you want to rename a variable for instance."
+             - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked."
                 .to_string(),
         )
     }
