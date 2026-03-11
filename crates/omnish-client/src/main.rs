@@ -312,6 +312,8 @@ async fn main() -> Result<()> {
     }
 
     let (session_id, proxy, osc133_hook_installed) = if let Some(ref resume) = resume_args {
+        // Set cursor row early so resume notice uses correct rendering mode
+        notice_queue::set_cursor_row(resume.cursor_row);
         // Resume mode: reconstruct PtyProxy from passed fd/pid
         let proxy = unsafe { PtyProxy::from_raw_fd(resume.master_fd, resume.child_pid) };
         notice(&format!("[omnish] Resumed (pid={}, fd={})", resume.child_pid, resume.master_fd));
@@ -339,11 +341,6 @@ async fn main() -> Result<()> {
     let parent_session_id = std::env::var("OMNISH_SESSION_ID").ok();
     let daemon_addr = std::env::var("OMNISH_SOCKET")
         .unwrap_or_else(|_| config.daemon_addr.clone());
-
-    // Set cursor row early so notices during connect_daemon use correct mode
-    if let Some(ref r) = resume_args {
-        notice_queue::set_cursor_row(r.cursor_row);
-    }
 
     // Connect to daemon (graceful degradation)
     let pending_buffer: MessageBuffer = Arc::new(Mutex::new(VecDeque::new()));
