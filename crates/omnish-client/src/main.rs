@@ -141,8 +141,10 @@ fn parse_resume_args() -> Option<ResumeArgs> {
 
 fn notice(msg: &str) {
     use crate::widgets::inline_notice::InlineNotice;
-    let cols = get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
-    eprint!("{}", InlineNotice::render(msg, cols));
+    let (rows, cols) = get_terminal_size().unwrap_or((24, 80));
+    // Shell prompt is typically at the bottom of the terminal
+    let cursor_row = rows.saturating_sub(1);
+    eprint!("{}", InlineNotice::render(msg, cols as usize, cursor_row));
 }
 
 fn exec_update(proxy: &PtyProxy, session_id: &str) {

@@ -10,21 +10,36 @@ impl InlineNotice {
     /// the current cursor position, then returns the cursor to its original line.
     ///
     /// `max_cols` limits the visible message length to avoid wrapping.
+    /// `cursor_row` is the current cursor row (0-indexed). When 0, a simpler
+    /// Insert-Line-only approach is used to avoid scrolling the prompt into
+    /// scrollback.
     ///
-    /// The sequence:
-    /// 1. Save cursor position with DECSC (row R, col C)
-    /// 2. Scroll Up (`\x1b[1S`) — content shifts up, blank line at bottom,
-    ///    prompt moves from R to R-1, cursor stays at (R, C)
-    /// 3. Move up one line (`\x1b[1A`) — cursor at (R-1) on the prompt
-    /// 4. Insert Line (`\x1b[1L`) — blank at R-1, prompt pushed back to R
-    /// 5. Write the dim notice (truncated to max_cols) on the blank line
-    /// 6. Restore cursor with DECRC — back to (R, C) where the prompt is
-    pub fn render(message: &str, max_cols: usize) -> String {
+    /// ## Row > 0 (typical shell prompt at bottom):
+    /// 1. DECSC save cursor (R, C)
+    /// 2. Scroll Up — prompt moves from R to R-1
+    /// 3. Move up — cursor on the prompt at R-1
+    /// 4. Insert Line — prompt pushed back to R, blank at R-1
+    /// 5. Write dim notice on the blank line
+    /// 6. DECRC restore cursor to (R, C)
+    ///
+    /// ## Row 0 (cursor at top of screen):
+    /// 1. DECSC save cursor (0, C)
+    /// 2. Insert Line — prompt pushed to row 1, blank at row 0
+    /// 3. Write dim notice on the blank line
+    /// 4. DECRC restore to (0, C), then move down 1 to (1, C)
+    pub fn render(message: &str, max_cols: usize, cursor_row: u16) -> String {
         let truncated = truncate(message, max_cols);
-        format!(
-            "\x1b7\x1b[1S\x1b[1A\x1b[1L\r\x1b[2m{}\x1b[0m\x1b8",
-            truncated
-        )
+        if cursor_row == 0 {
+            format!(
+                "\x1b7\x1b[1L\r\x1b[2m{}\x1b[0m\x1b8\x1b[1B",
+                truncated
+            )
+        } else {
+            format!(
+                "\x1b7\x1b[1S\x1b[1A\x1b[1L\r\x1b[2m{}\x1b[0m\x1b8",
+                truncated
+            )
+        }
     }
 }
 
@@ -50,33 +65,33 @@ mod tests {
 
     #[test]
     fn test_render_contains_message() {
-        let output = InlineNotice::render("[omnish] reconnected", 80);
+        let output = InlineNotice::render("[omnish] reconnected", 80, 5);
         assert!(output.contains("[omnish] reconnected"));
     }
 
     #[test]
     fn test_render_has_dim_formatting() {
-        let output = InlineNotice::render("test", 80);
+        let output = InlineNotice::render("test", 80, 5);
         assert!(output.contains("\x1b[2m"));
         assert!(output.contains("\x1b[0m"));
     }
 
     #[test]
     fn test_render_has_insert_line() {
-        let output = InlineNotice::render("test", 80);
+        let output = InlineNotice::render("test", 80, 5);
         assert!(output.contains("\x1b[1L"));
     }
 
     #[test]
     fn test_render_preserves_cursor() {
-        let output = InlineNotice::render("test", 80);
+        let output = InlineNotice::render("test", 80, 5);
         assert!(output.contains("\x1b7"));   // DECSC save cursor
         assert!(output.contains("\x1b8"));   // DECRC restore cursor
     }
 
     #[test]
     fn test_render_no_newline() {
-        let output = InlineNotice::render("test", 80);
+        let output = InlineNotice::render("test", 80, 5);
         assert!(!output.contains('\n'));
     }
 
@@ -103,9 +118,26 @@ mod tests {
     #[test]
     fn test_render_truncates_to_max_cols() {
         let long_msg = "a".repeat(100);
-        let output = InlineNotice::render(&long_msg, 20);
+        let output = InlineNotice::render(&long_msg, 20, 5);
         assert!(output.contains("..."));
         assert!(!output.contains(&"a".repeat(100)));
+    }
+
+    #[test]
+    fn test_row0_uses_il_only() {
+        let output = InlineNotice::render("test", 80, 0);
+        // Row 0 should NOT use Scroll Up
+        assert!(!output.contains("\x1b[1S"));
+        // Should use IL + move down
+        assert!(output.contains("\x1b[1L"));
+        assert!(output.contains("\x1b[1B"));
+    }
+
+    #[test]
+    fn test_row_nonzero_uses_scroll_up() {
+        let output = InlineNotice::render("test", 80, 1);
+        assert!(output.contains("\x1b[1S"));
+        assert!(!output.contains("\x1b[1B"));
     }
 
     // -----------------------------------------------------------------------
@@ -144,8 +176,8 @@ mod tests {
         assert_eq!(screen.cursor_position(), (rows - 1, 20));
         assert!(get_row(screen, rows - 1, cols).contains("user@host:~ $ cd foo"));
 
-        // Inject the InlineNotice
-        let notice = InlineNotice::render("[omnish] reconnected", cols as usize);
+        // Inject the InlineNotice (cursor at last row)
+        let notice = InlineNotice::render("[omnish] reconnected", cols as usize, rows - 1);
         parser.process(notice.as_bytes());
 
         let screen = parser.screen();
@@ -199,7 +231,7 @@ mod tests {
 
         assert_eq!(parser.screen().cursor_position(), (rows - 1, 2));
 
-        let notice = InlineNotice::render("[omnish] reconnected to daemon", cols as usize);
+        let notice = InlineNotice::render("[omnish] reconnected to daemon", cols as usize, rows - 1);
         parser.process(notice.as_bytes());
 
         let screen = parser.screen();
@@ -235,7 +267,7 @@ mod tests {
         let screen = parser.screen();
         assert_eq!(screen.cursor_position(), (2, 12));
 
-        let notice = InlineNotice::render("[omnish] reconnected", cols as usize);
+        let notice = InlineNotice::render("[omnish] reconnected", cols as usize, 2);
         parser.process(notice.as_bytes());
 
         let screen = parser.screen();
@@ -259,6 +291,47 @@ mod tests {
         // Cursor position preserved
         let (cur_row, cur_col) = screen.cursor_position();
         assert_eq!(cur_row, 2, "cursor row should be 2, got {}", cur_row);
+        assert_eq!(cur_col, 12, "cursor col should be 12, got {}", cur_col);
+    }
+
+    /// Edge case: cursor at the very top of the screen (row 0).
+    /// Uses IL-only approach: notice at row 0, prompt pushed to row 1.
+    #[test]
+    fn vt100_cursor_at_top_row() {
+        let cols: u16 = 60;
+        let rows: u16 = 5;
+        let mut parser = make_parser(cols, rows);
+
+        // Cursor at row 0 with a prompt
+        parser.process(b"prompt $ cmd");
+
+        let screen = parser.screen();
+        assert_eq!(screen.cursor_position(), (0, 12));
+
+        let notice = InlineNotice::render("[omnish] reconnected", cols as usize, 0);
+        parser.process(notice.as_bytes());
+
+        let screen = parser.screen();
+
+        // Notice at row 0
+        let notice_row = get_row(screen, 0, cols);
+        assert!(
+            notice_row.contains("[omnish] reconnected"),
+            "notice at row 0: {:?}",
+            notice_row
+        );
+
+        // Prompt pushed to row 1
+        let prompt_row = get_row(screen, 1, cols);
+        assert!(
+            prompt_row.contains("prompt $ cmd"),
+            "prompt at row 1: {:?}",
+            prompt_row
+        );
+
+        // Cursor should be on row 1 at original column
+        let (cur_row, cur_col) = screen.cursor_position();
+        assert_eq!(cur_row, 1, "cursor row should be 1, got {}", cur_row);
         assert_eq!(cur_col, 12, "cursor col should be 12, got {}", cur_col);
     }
 }
