@@ -16,8 +16,9 @@ impl BashTool {
         Self
     }
 
-    fn run(&self, command: &str, timeout_secs: u64, cwd: Option<&str>) -> ToolResult {
-        let mut cmd = Command::new("bash");
+    fn run(&self, command: &str, timeout_secs: u64, cwd: Option<&str>, shell: Option<&str>) -> ToolResult {
+        let shell = shell.unwrap_or("bash");
+        let mut cmd = Command::new(shell);
         cmd.arg("-c")
             .arg(command)
             .stdout(std::process::Stdio::piped())
@@ -134,16 +135,28 @@ impl Tool for BashTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "bash".to_string(),
-            description: "Execute a bash command and return its output. Use this to run \
+            description: "Execute a shell command and return its output. Use this to run \
                 shell commands, inspect files, check system state, or perform any operation \
-                the user asks about. Commands run in the daemon's working directory."
+                the user asks about. Commands run in the specified shell and working directory."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "The bash command to execute"
+                        "description": "The shell command to execute"
+                    },
+                    "shell": {
+                        "type": "string",
+                        "description": "Shell to use (e.g., /bin/bash, /bin/zsh). Defaults to bash if not specified."
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Working directory for the command. Defaults to the user's current directory."
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Timeout in seconds (default: 30)"
                     }
                 },
                 "required": ["command"]
@@ -164,7 +177,8 @@ impl Tool for BashTool {
             .as_u64()
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
         let cwd = input["cwd"].as_str();
-        self.run(command, timeout, cwd)
+        let shell = input["shell"].as_str();
+        self.run(command, timeout, cwd, shell)
     }
 }
 
@@ -198,9 +212,11 @@ impl Plugin for BashTool {
     fn system_prompt(&self) -> Option<String> {
         Some(
             "### bash\n\
-             Execute bash commands on the user's machine:\n\
+             Execute shell commands on the user's machine:\n\
              - Use this to run commands, inspect files, check system state, etc.\n\
-             - Commands run in the user's current working directory.\n\
+             - Use the 'shell' parameter to specify the shell (e.g., /bin/bash, /bin/zsh). \
+               The user's default shell is typically available as the 'shell' field in the session context.\n\
+             - Commands run in the working directory specified by 'cwd', or the user's current directory if not specified.\n\
              - The tool runs in a sandboxed environment with restricted write access.\n\
              - Always quote file paths that contain spaces with double quotes in your command (e.g., cd \"path with spaces/file.txt\")\n\
              - If a command fails with a permission error, do not retry. Explain the error to the user."
@@ -257,7 +273,7 @@ mod tests {
     #[test]
     fn test_timeout() {
         let tool = BashTool::new();
-        let result = tool.run("sleep 10", 1, None);
+        let result = tool.run("sleep 10", 1, None, None);
         assert!(result.is_error);
         assert!(result.content.contains("timed out"));
     }
