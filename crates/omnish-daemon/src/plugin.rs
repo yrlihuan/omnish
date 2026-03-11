@@ -42,14 +42,6 @@ impl PluginManager {
         format!("执行 {}...", tool_name)
     }
 
-    /// Collect system prompt fragments from all plugins.
-    pub fn all_system_prompts(&self) -> Vec<String> {
-        self.plugins
-            .iter()
-            .filter_map(|p| p.system_prompt())
-            .collect()
-    }
-
     /// Find the plugin that owns the given tool name and execute it.
     pub fn call_tool(&self, tool_name: &str, input: &serde_json::Value) -> ToolResult {
         for plugin in &self.plugins {
@@ -115,7 +107,6 @@ struct InitializeResult {
 pub struct ExternalPlugin {
     plugin_name: String,
     plugin_type: PluginType,
-    system_prompt_text: Option<String>,
     process: Mutex<PluginProcess>,
     tool_defs: Vec<ToolDef>,
 }
@@ -235,14 +226,19 @@ impl ExternalPlugin {
                         init.tools.len(),
                         ptype,
                     );
-                    let system_prompt_text =
-                        Self::load_custom_prompts(&dir_name, init.system_prompt);
+                    // Merge system_prompt + PROMPT.md into each tool's description
+                    let extra = Self::load_custom_prompts(&dir_name, init.system_prompt);
+                    let mut tool_defs = init.tools;
+                    if let Some(extra) = extra {
+                        for tool in &mut tool_defs {
+                            tool.description = format!("{}\n\n{}", tool.description, extra);
+                        }
+                    }
                     Some(Self {
                         plugin_name: name.to_string(),
                         plugin_type: ptype,
-                        system_prompt_text,
                         process: Mutex::new(process),
-                        tool_defs: init.tools,
+                        tool_defs,
                     })
                 }
                 Err(e) => {
@@ -279,10 +275,6 @@ impl Plugin for ExternalPlugin {
             content,
             is_error,
         }
-    }
-
-    fn system_prompt(&self) -> Option<String> {
-        self.system_prompt_text.clone()
     }
 
     fn status_text(&self, tool_name: &str, input: &serde_json::Value) -> String {

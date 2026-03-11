@@ -16,7 +16,12 @@ impl Tool for EditTool {
             description: "Perform exact string replacements in files. The old_string must match \
                 exactly. If old_string appears more than once and replace_all is false, the edit \
                 will fail — provide more surrounding context to make it unique, or set replace_all \
-                to true."
+                to true.\n\n\
+                Guidelines:\n\
+                - When editing text from Read tool output, preserve the exact indentation \
+                (tabs/spaces) as it appears AFTER the line number prefix (\"line number→\"). \
+                Never include any part of the line number prefix in old_string or new_string.\n\
+                - ALWAYS prefer editing existing files. NEVER write new files unless explicitly required."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -166,20 +171,6 @@ impl Plugin for EditTool {
         format!("编辑: {}", path)
     }
 
-    fn system_prompt(&self) -> Option<String> {
-        Some(
-            "### edit\n\
-             Performs exact string replacements in files.\n\n\
-             Usage:\n\
-             - When editing text from Read tool output, ensure you preserve the exact indentation \
-             (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: \
-             spaces + line number + →. Everything after that → is the actual file content to match. \
-             Never include any part of the line number prefix in the old_string or new_string.\n\
-             - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.\n\
-             - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked."
-                .to_string(),
-        )
-    }
 }
 
 #[cfg(test)]

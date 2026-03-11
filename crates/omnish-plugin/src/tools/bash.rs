@@ -137,7 +137,11 @@ impl Tool for BashTool {
             name: "bash".to_string(),
             description: "Execute a shell command and return its output. Use this to run \
                 shell commands, inspect files, check system state, or perform any operation \
-                the user asks about. Commands run in the specified shell and working directory."
+                the user asks about. Commands run in the specified shell and working directory.\n\n\
+                Guidelines:\n\
+                - The tool runs in a sandboxed environment with restricted write access.\n\
+                - Always quote file paths that contain spaces with double quotes.\n\
+                - If a command fails with a permission error, do not retry. Explain the error to the user."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -209,18 +213,6 @@ impl Plugin for BashTool {
         }
     }
 
-    fn system_prompt(&self) -> Option<String> {
-        Some(
-            "### bash\n\
-             Execute bash commands on the user's machine:\n\
-             - Use this to run commands, inspect files, check system state, etc.\n\
-             - Commands run in the user's current working directory.\n\
-             - The tool runs in a sandboxed environment with restricted write access.\n\
-             - Always quote file paths that contain spaces with double quotes in your command (e.g., cd \"path with spaces/file.txt\")\n\
-             - If a command fails with a permission error, do not retry. Explain the error to the user."
-                .to_string(),
-        )
-    }
 }
 
 #[cfg(test)]

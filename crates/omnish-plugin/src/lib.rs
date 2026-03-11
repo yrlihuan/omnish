@@ -40,10 +40,6 @@ pub trait Plugin: Send + Sync {
     fn tools(&self) -> Vec<ToolDef>;
     /// Execute a tool by name with the given input.
     fn call_tool(&self, tool_name: &str, input: &serde_json::Value) -> ToolResult;
-    /// System prompt fragment to be merged into the LLM system prompt.
-    fn system_prompt(&self) -> Option<String> {
-        None
-    }
     /// Status text shown to the user while a tool call is executing.
     fn status_text(&self, tool_name: &str, _input: &serde_json::Value) -> String {
         format!("执行 {}...", tool_name)

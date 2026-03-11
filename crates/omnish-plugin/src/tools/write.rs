@@ -58,7 +58,11 @@ impl Tool for WriteTool {
             name: "write".to_string(),
             description: "Write content to a file, creating it if it doesn't exist or \
                 overwriting if it does. Parent directories are created automatically. \
-                Use this for creating new files or completely replacing file contents."
+                Use this for creating new files or completely replacing file contents.\n\n\
+                Guidelines:\n\
+                - file_path must be an absolute path.\n\
+                - Overwrites existing files. Use with care.\n\
+                - Runs in a sandboxed environment with restricted write access."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -120,17 +124,6 @@ impl Plugin for WriteTool {
         }
     }
 
-    fn system_prompt(&self) -> Option<String> {
-        Some(
-            "### write\n\
-             Write content to files on the user's machine:\n\
-             - file_path must be an absolute path.\n\
-             - Parent directories are created automatically.\n\
-             - Overwrites existing files. Use with care.\n\
-             - Runs in a sandboxed environment with restricted write access."
-                .to_string(),
-        )
-    }
 }
 
 #[cfg(test)]

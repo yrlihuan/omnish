@@ -87,7 +87,10 @@ impl Tool for CommandQueryTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "command_query".to_string(),
-            description: "Query shell command history and get full command output. Use list_history first to see available commands, then get_output with a seq number to see the full output of a specific command.".to_string(),
+            description: "Query shell command history and get full command output. \
+                Use get_output(seq) to retrieve the full output of a specific command. \
+                The recent command list is provided at the end of the user's message in <system-reminder>, \
+                so you do NOT need to call list_history — the command list is already provided.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -163,17 +166,6 @@ impl Plugin for CommandQueryTool {
             ),
             _ => "查询命令...".to_string(),
         }
-    }
-
-    fn system_prompt(&self) -> Option<String> {
-        Some(
-            "### command_query\n\
-             Inspect command history and output:\n\
-             - Use get_output(seq) to retrieve the full output of a specific command\n\
-             - The recent command list is provided at the end of the user's message in <system-reminder>\n\
-             - You do NOT need to call list_history — the command list is already provided"
-                .to_string(),
-        )
     }
 }
 

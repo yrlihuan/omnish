@@ -295,16 +295,7 @@ async fn build_chat_setup(mgr: &SessionManager, plugin_mgr: &PluginManager) -> C
     let mut tools = vec![command_query_tool.definition()];
     tools.extend(plugin_mgr.all_tools());
 
-    let mut pm = omnish_llm::prompt::PromptManager::default_chat();
-    let mut tool_prompts: Vec<String> = Vec::new();
-    if let Some(p) = command_query_tool.system_prompt() {
-        tool_prompts.push(p);
-    }
-    tool_prompts.extend(plugin_mgr.all_system_prompts());
-    if !tool_prompts.is_empty() {
-        let tools_section = format!("## Tools\n\nYou have access to tools:\n\n{}", tool_prompts.join("\n\n"));
-        pm.add("tools", &tools_section);
-    }
+    let pm = omnish_llm::prompt::PromptManager::default_chat();
     let system_prompt = pm.build();
 
     ChatSetup { command_query_tool, tools, system_prompt }

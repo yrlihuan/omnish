@@ -51,14 +51,11 @@ fn run_plugin_mode(plugin: Box<dyn Plugin>) {
                     PluginType::ClientTool => "client_tool",
                     PluginType::DaemonTool => "daemon_tool",
                 };
-                let mut result = serde_json::json!({
+                let result = serde_json::json!({
                     "name": plugin.name(),
                     "tools": plugin.tools(),
                     "plugin_type": plugin_type,
                 });
-                if let Some(prompt) = plugin.system_prompt() {
-                    result["system_prompt"] = serde_json::Value::String(prompt);
-                }
                 JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: req.id,

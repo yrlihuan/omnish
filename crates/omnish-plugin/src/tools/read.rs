@@ -22,7 +22,14 @@ impl Tool for ReadTool {
             name: "read".to_string(),
             description: "Read a file from the local filesystem and return its contents with \
                 line numbers. The file_path must be an absolute path. By default reads up to \
-                500 lines from the beginning. Use offset and limit for long files."
+                500 lines from the beginning. Use offset and limit for long files.\n\n\
+                Guidelines:\n\
+                - It is okay to read a file that does not exist; an error will be returned.\n\
+                - Any lines longer than 200 characters will be truncated.\n\
+                - This tool can only read files, not directories. To read a directory, use ls via the bash tool.\n\
+                - You can call multiple tools in a single response. It is always better to speculatively read \
+                multiple potentially useful files in parallel.\n\
+                - Returned contents are in format of \"line number→line contents\""
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -153,27 +160,6 @@ impl Plugin for ReadTool {
         format!("读取: {}", path)
     }
 
-    fn system_prompt(&self) -> Option<String> {
-        Some(
-            "### read\n\
-             Reads a file from the local filesystem. You can access any file directly by using this tool. \
-             Assume this tool is able to read all files on the machine. If the User provides a path to a file \
-             assume that path is valid. It is okay to read a file that does not exist; an error will be returned.\n\n\
-             Usage:\n\
-             - The file_path parameter must be an absolute path, not a relative path\n\
-             - By default, it reads up to 500 lines starting from the beginning of the file\n\
-             - You can optionally specify a line offset and limit (especially handy for long files), \
-             but it's recommended to read the whole file by not providing these parameters\n\
-             - Any lines longer than 200 will be truncated.\n\
-             - This tool can only read files, not directories. To read a directory, use an ls command via the bash tool.\n\
-             - You can call multiple tools in a single response. It is always better to speculatively read \
-             multiple potentially useful files in parallel.\n\
-             - If you read a file that exists but has empty contents you will receive a system reminder warning \
-             in place of file contents.\n\
-             - Returned contents are in format of \"line number→line contents\""
-                .to_string(),
-        )
-    }
 }
 
 #[cfg(test)]
