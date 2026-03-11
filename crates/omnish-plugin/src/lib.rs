@@ -8,6 +8,7 @@
 
 pub mod tools;
 
+#[cfg(target_os = "linux")]
 use landlock::{
     path_beneath_rules, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus,
     ABI,
@@ -77,10 +78,11 @@ pub struct ExecuteResult {
     pub is_error: bool,
 }
 
-// --- Landlock sandbox ---
+// --- Landlock sandbox (Linux only) ---
 
 /// Apply Landlock filesystem sandbox: read everywhere, write only to `data_dir` and `/tmp`.
 /// Called inside `pre_exec` (between fork and exec), so only affects the child process.
+#[cfg(target_os = "linux")]
 pub fn apply_sandbox(data_dir: &std::path::Path) -> Result<(), String> {
     let abi = ABI::V1;
     let status = Ruleset::default()
@@ -101,6 +103,12 @@ pub fn apply_sandbox(data_dir: &std::path::Path) -> Result<(), String> {
         RulesetStatus::FullyEnforced | RulesetStatus::PartiallyEnforced => Ok(()),
         RulesetStatus::NotEnforced => Err("Landlock not supported on this kernel".into()),
     }
+}
+
+/// No-op sandbox on non-Linux platforms.
+#[cfg(not(target_os = "linux"))]
+pub fn apply_sandbox(_data_dir: &std::path::Path) -> Result<(), String> {
+    Ok(())
 }
 
 // --- Plugin process ---
@@ -131,6 +139,7 @@ impl PluginProcess {
 
         let data_dir_clone = data_dir.to_path_buf();
         let plugin_name = name.to_string();
+        #[cfg(target_os = "linux")]
         let process_name = format!("omnish-plugin({})", name);
         let mut cmd = Command::new(executable);
         cmd.args(args)
@@ -146,9 +155,12 @@ impl PluginProcess {
                     eprintln!("Plugin '{}' sandbox failed: {}", plugin_name, e);
                     std::io::Error::new(std::io::ErrorKind::PermissionDenied, e)
                 })?;
-                let name_bytes = process_name.as_bytes();
-                let name_ptr = name_bytes.as_ptr() as *const libc::c_char;
-                libc::prctl(libc::PR_SET_NAME, name_ptr, 0, 0, 0);
+                #[cfg(target_os = "linux")]
+                {
+                    let name_bytes = process_name.as_bytes();
+                    let name_ptr = name_bytes.as_ptr() as *const libc::c_char;
+                    libc::prctl(libc::PR_SET_NAME, name_ptr, 0, 0, 0);
+                }
                 Ok(())
             });
         }
