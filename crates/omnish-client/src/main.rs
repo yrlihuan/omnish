@@ -239,7 +239,8 @@ async fn main() -> Result<()> {
     let (session_id, proxy, osc133_hook_installed) = if let Some(ref resume) = resume_args {
         // Resume mode: reconstruct PtyProxy from passed fd/pid
         let proxy = unsafe { PtyProxy::from_raw_fd(resume.master_fd, resume.child_pid) };
-        eprintln!("\x1b[32m[omnish]\x1b[0m Resumed (pid={}, fd={})", resume.child_pid, resume.master_fd);
+        // Terminal is already in raw mode (persists across exec), so use \r\n
+        eprint!("\x1b[32m[omnish]\x1b[0m Resumed (pid={}, fd={})\r\n", resume.child_pid, resume.master_fd);
         (resume.session_id.clone(), proxy, true)
     } else {
         // Normal startup: spawn a new shell
@@ -1079,11 +1080,11 @@ async fn connect_daemon(
     ).await {
         Ok(client) => {
             if client.is_connected().await {
-                eprintln!("\x1b[32m[omnish]\x1b[0m Connected to daemon (session: {})", &session_id[..8]);
+                eprint!("\x1b[32m[omnish]\x1b[0m Connected to daemon (session: {})\r\n", &session_id[..8]);
             } else {
-                eprintln!("\x1b[33m[omnish]\x1b[0m Daemon not available, waiting for daemon to start...");
-                eprintln!("\x1b[33m[omnish]\x1b[0m Socket: {}", socket_path);
-                eprintln!("\x1b[33m[omnish]\x1b[0m To start daemon: omnish-daemon or cargo run -p omnish-daemon");
+                eprint!("\x1b[33m[omnish]\x1b[0m Daemon not available, waiting for daemon to start...\r\n");
+                eprint!("\x1b[33m[omnish]\x1b[0m Socket: {}\r\n", socket_path);
+                eprint!("\x1b[33m[omnish]\x1b[0m To start daemon: omnish-daemon or cargo run -p omnish-daemon\r\n");
             }
             Some(client)
         }
