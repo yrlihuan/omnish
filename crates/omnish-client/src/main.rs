@@ -141,10 +141,8 @@ fn parse_resume_args() -> Option<ResumeArgs> {
 
 fn notice(msg: &str) {
     use crate::widgets::inline_notice::InlineNotice;
-    let (rows, cols) = get_terminal_size().unwrap_or((24, 80));
-    // Shell prompt is typically at the bottom of the terminal
-    let cursor_row = rows.saturating_sub(1);
-    eprint!("{}", InlineNotice::render(msg, cols as usize, cursor_row));
+    let cols = get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
+    eprint!("{}", InlineNotice::render(msg, cols));
 }
 
 fn exec_update(proxy: &PtyProxy, session_id: &str) {
@@ -160,13 +158,13 @@ fn exec_update(proxy: &PtyProxy, session_id: &str) {
             }
         }
         Err(e) => {
-            notice(&format!("[omnish] Failed to resolve current exe: {}", e));
+            eprintln!("\x1b[33m[omnish]\x1b[0m Failed to resolve current exe: {}", e);
             return;
         }
     };
 
     if !current_exe.exists() {
-        notice(&format!("[omnish] Binary not found: {}", current_exe.display()));
+        eprintln!("\x1b[33m[omnish]\x1b[0m Binary not found: {}", current_exe.display());
         return;
     }
 
@@ -177,18 +175,18 @@ fn exec_update(proxy: &PtyProxy, session_id: &str) {
     {
         Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
         Err(e) => {
-            notice(&format!("[omnish] Failed to check binary version: {}", e));
+            eprintln!("\x1b[33m[omnish]\x1b[0m Failed to check binary version: {}", e);
             return;
         }
     };
 
     let running_version = format!("omnish {}", omnish_common::VERSION);
     if disk_version == running_version {
-        notice(&format!("[omnish] Already up to date ({})", omnish_common::VERSION));
+        eprintln!("\x1b[2m[omnish]\x1b[0m Already up to date ({})", omnish_common::VERSION);
         return;
     }
 
-    notice(&format!("[omnish] Updating: {} -> {}", running_version, disk_version));
+    eprintln!("\x1b[33m[omnish]\x1b[0m Updating: {} -> {}", running_version, disk_version);
 
     // Clear FD_CLOEXEC on the PTY master fd so it survives exec
     let master_fd = proxy.master_raw_fd();
@@ -211,7 +209,7 @@ fn exec_update(proxy: &PtyProxy, session_id: &str) {
 
     // execvp replaces this process — only returns on error
     let _ = nix::unistd::execvp(&exe_cstr, &args);
-    notice(&format!("[omnish] exec failed: {}", std::io::Error::last_os_error()));
+    eprintln!("\x1b[31m[omnish]\x1b[0m exec failed: {}", std::io::Error::last_os_error());
 }
 
 #[tokio::main(worker_threads = 4)]
@@ -241,7 +239,7 @@ async fn main() -> Result<()> {
     let (session_id, proxy, osc133_hook_installed) = if let Some(ref resume) = resume_args {
         // Resume mode: reconstruct PtyProxy from passed fd/pid
         let proxy = unsafe { PtyProxy::from_raw_fd(resume.master_fd, resume.child_pid) };
-        notice(&format!("[omnish] Resumed (pid={}, fd={})", resume.child_pid, resume.master_fd));
+        eprintln!("\x1b[32m[omnish]\x1b[0m Resumed (pid={}, fd={})", resume.child_pid, resume.master_fd);
         (resume.session_id.clone(), proxy, true)
     } else {
         // Normal startup: spawn a new shell
