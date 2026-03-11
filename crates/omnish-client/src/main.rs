@@ -716,6 +716,7 @@ async fn main() -> Result<()> {
                                 &osc133_detector,
                                 &last_readline_content,
                                 shell_pid,
+                                &col_tracker,
                             );
                             run_chat_loop(rpc, &session_id, &proxy, initial, &dbg_fn, &mut chat_history, &auto_update_enabled, col_tracker.col, col_tracker.row).await;
                         } else {
@@ -1458,6 +1459,7 @@ fn debug_client_state(
     _osc133_detector: &omnish_tracker::osc133_detector::Osc133Detector,
     last_readline: &Option<String>,
     shell_pid: u32,
+    col_tracker: &CursorColTracker,
 ) -> String {
     let mut output = String::new();
 
@@ -1471,6 +1473,10 @@ fn debug_client_state(
     } else {
         output.push_str("  cwd: (unknown)\n");
     }
+    output.push('\n');
+
+    // Cursor position
+    output.push_str(&format!("  cursor: row={}, col={}\n", col_tracker.row, col_tracker.col));
     output.push('\n');
 
     // Shell Input Tracker state
