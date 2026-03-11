@@ -210,6 +210,17 @@ fn exec_update(proxy: &PtyProxy, session_id: &str) {
         return;
     }
 
+    // On macOS (especially Apple Silicon), all binaries must be code-signed.
+    // When the binary is copied/replaced on disk, the signature may be lost.
+    // Re-sign with ad-hoc signature before running to avoid SIGKILL ("Killed: 9").
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&current_exe)
+            .output();
+    }
+
     // Get on-disk binary version by running it with --version
     let disk_version = match std::process::Command::new(&current_exe)
         .arg("--version")
