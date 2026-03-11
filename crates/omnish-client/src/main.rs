@@ -694,6 +694,9 @@ async fn main() -> Result<()> {
                             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                         }
 
+                        // Immediately erase the chat "> " prompt for instant feedback
+                        nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
+
                         // Flush deferred notices now that we're back in command mode
                         notice_queue::flush();
 
@@ -2410,7 +2413,7 @@ enum KeyEvent {
 /// Returns None for unrecognized sequences.
 fn parse_key_after_esc(stdin_fd: i32) -> Option<KeyEvent> {
     let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
-    let ready = unsafe { libc::poll(&mut pfd, 1, 50) };
+    let ready = unsafe { libc::poll(&mut pfd, 1, 15) };
     if ready <= 0 {
         return Some(KeyEvent::Esc); // Bare ESC
     }
