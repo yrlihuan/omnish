@@ -139,10 +139,13 @@ fn parse_resume_args() -> Option<ResumeArgs> {
     Some(ResumeArgs { master_fd: fd, child_pid: pid, session_id: sid })
 }
 
-fn exec_update(proxy: &PtyProxy, session_id: &str) {
-    // Print newline so messages appear on their own line (not after the prompt)
-    nix::unistd::write(std::io::stdout(), b"\r\n").ok();
+fn notice(msg: &str) {
+    use crate::widgets::inline_notice::InlineNotice;
+    let cols = get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
+    eprint!("{}", InlineNotice::render(msg, cols));
+}
 
+fn exec_update(proxy: &PtyProxy, session_id: &str) {
     let current_exe = match std::env::current_exe() {
         Ok(p) => {
             // On Linux, /proc/self/exe appends " (deleted)" when the binary was replaced on disk.
@@ -155,13 +158,13 @@ fn exec_update(proxy: &PtyProxy, session_id: &str) {
             }
         }
         Err(e) => {
-            eprint!("\x1b[31m[omnish]\x1b[0m Failed to resolve current exe: {}\r\n", e);
+            notice(&format!("[omnish] Failed to resolve current exe: {}", e));
             return;
         }
     };
 
     if !current_exe.exists() {
-        eprint!("\x1b[31m[omnish]\x1b[0m Binary not found: {}\r\n", current_exe.display());
+        notice(&format!("[omnish] Binary not found: {}", current_exe.display()));
         return;
     }
 
@@ -172,21 +175,18 @@ fn exec_update(proxy: &PtyProxy, session_id: &str) {
     {
         Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
         Err(e) => {
-            eprint!("\x1b[31m[omnish]\x1b[0m Failed to check binary version: {}\r\n", e);
+            notice(&format!("[omnish] Failed to check binary version: {}", e));
             return;
         }
     };
 
     let running_version = format!("omnish {}", omnish_common::VERSION);
     if disk_version == running_version {
-        eprint!("\x1b[33m[omnish]\x1b[0m Already up to date ({})\r\n", omnish_common::VERSION);
+        notice(&format!("[omnish] Already up to date ({})", omnish_common::VERSION));
         return;
     }
 
-    eprint!(
-        "\x1b[32m[omnish]\x1b[0m Updating: {} -> {}\r\n",
-        running_version, disk_version
-    );
+    notice(&format!("[omnish] Updating: {} -> {}", running_version, disk_version));
 
     // Clear FD_CLOEXEC on the PTY master fd so it survives exec
     let master_fd = proxy.master_raw_fd();
@@ -209,7 +209,7 @@ fn exec_update(proxy: &PtyProxy, session_id: &str) {
 
     // execvp replaces this process — only returns on error
     let _ = nix::unistd::execvp(&exe_cstr, &args);
-    eprint!("\x1b[31m[omnish]\x1b[0m exec failed: {}\r\n", std::io::Error::last_os_error());
+    notice(&format!("[omnish] exec failed: {}", std::io::Error::last_os_error()));
 }
 
 #[tokio::main(worker_threads = 4)]
@@ -239,8 +239,7 @@ async fn main() -> Result<()> {
     let (session_id, proxy, osc133_hook_installed) = if let Some(ref resume) = resume_args {
         // Resume mode: reconstruct PtyProxy from passed fd/pid
         let proxy = unsafe { PtyProxy::from_raw_fd(resume.master_fd, resume.child_pid) };
-        // Terminal is already in raw mode (persists across exec), so use \r\n
-        eprint!("\x1b[32m[omnish]\x1b[0m Resumed (pid={}, fd={})\r\n", resume.child_pid, resume.master_fd);
+        notice(&format!("[omnish] Resumed (pid={}, fd={})", resume.child_pid, resume.master_fd));
         (resume.session_id.clone(), proxy, true)
     } else {
         // Normal startup: spawn a new shell
@@ -998,8 +997,8 @@ async fn connect_daemon(
     let auth_token = match omnish_common::auth::load_token(&token_path) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("\x1b[33m[omnish]\x1b[0m Failed to load auth token: {}", e);
-            eprintln!("\x1b[33m[omnish]\x1b[0m Running in passthrough mode (no daemon)");
+            notice(&format!("[omnish] Failed to load auth token: {}", e));
+            notice("[omnish] Running in passthrough mode (no daemon)");
             return None;
         }
     };
@@ -1011,8 +1010,8 @@ async fn connect_daemon(
         match omnish_transport::tls::make_connector(&cert_path) {
             Ok(c) => Some(c),
             Err(e) => {
-                eprintln!("\x1b[33m[omnish]\x1b[0m Failed to set up TLS: {}", e);
-                eprintln!("\x1b[33m[omnish]\x1b[0m Running in passthrough mode (no daemon)");
+                notice(&format!("[omnish] Failed to set up TLS: {}", e));
+                notice("[omnish] Running in passthrough mode (no daemon)");
                 return None;
             }
         }
@@ -1073,28 +1072,25 @@ async fn connect_daemon(
             })
         },
         Some(|| {
-            use crate::widgets::inline_notice::InlineNotice;
-            let cols = get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
-            let notice = InlineNotice::render("[omnish] reconnected to daemon", cols);
-            eprint!("{}", notice);
+            notice("[omnish] reconnected to daemon");
         }),
     ).await {
         Ok(client) => {
             if client.is_connected().await {
-                eprint!("\x1b[32m[omnish]\x1b[0m Connected to daemon (session: {})\r\n", &session_id[..8]);
+                notice(&format!("[omnish] Connected to daemon (session: {})", &session_id[..8]));
             } else {
-                eprint!("\x1b[33m[omnish]\x1b[0m Daemon not available, waiting for daemon to start...\r\n");
-                eprint!("\x1b[33m[omnish]\x1b[0m Socket: {}\r\n", socket_path);
-                eprint!("\x1b[33m[omnish]\x1b[0m To start daemon: omnish-daemon or cargo run -p omnish-daemon\r\n");
+                notice("[omnish] Daemon not available, waiting for daemon to start...");
+                notice(&format!("[omnish] Socket: {}", socket_path));
+                notice("[omnish] To start: omnish-daemon");
             }
             Some(client)
         }
         Err(e) => {
             // This should not happen with our updated connect_with_reconnect,
             // but keep for backward compatibility
-            eprintln!("\x1b[33m[omnish]\x1b[0m Daemon not available ({}), running in passthrough mode", e);
-            eprintln!("\x1b[33m[omnish]\x1b[0m Socket: {}", socket_path);
-            eprintln!("\x1b[33m[omnish]\x1b[0m To start daemon: omnish-daemon or cargo run -p omnish-daemon");
+            notice(&format!("[omnish] Daemon not available ({}), running in passthrough mode", e));
+            notice(&format!("[omnish] Socket: {}", socket_path));
+            notice("[omnish] To start: omnish-daemon");
             None
         }
     }
