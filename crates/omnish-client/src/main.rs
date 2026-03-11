@@ -1074,7 +1074,8 @@ async fn connect_daemon(
         },
         Some(|| {
             use crate::widgets::inline_notice::InlineNotice;
-            let notice = InlineNotice::render("[omnish] reconnected to daemon");
+            let cols = get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
+            let notice = InlineNotice::render("[omnish] reconnected to daemon", cols);
             eprint!("{}", notice);
         }),
     ).await {
