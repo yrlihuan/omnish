@@ -156,10 +156,10 @@ mod notice_queue {
 
     static DEFERRED: AtomicBool = AtomicBool::new(false);
     static QUEUE: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    /// Current cursor row, updated by CursorColTracker.
+    /// Current cursor row, updated by CursorTracker.
     static CURSOR_ROW: AtomicU16 = AtomicU16::new(0);
 
-    /// Update the tracked cursor row (called from CursorColTracker after feed).
+    /// Update the tracked cursor row (called from CursorTracker after feed).
     pub fn set_cursor_row(row: u16) {
         CURSOR_ROW.store(row, Ordering::Relaxed);
     }
@@ -433,11 +433,11 @@ async fn main() -> Result<()> {
     let prefix_bytes = config.shell.command_prefix.as_bytes();
     let mut alt_screen_detector = AltScreenDetector::new();
     let mut col_tracker = if let Some(ref r) = resume_args {
-        let t = CursorColTracker::with_position(r.cursor_col, r.cursor_row);
+        let t = CursorTracker::with_position(r.cursor_col, r.cursor_row);
         notice_queue::set_cursor_row(t.row);
         t
     } else {
-        CursorColTracker::new()
+        CursorTracker::new()
     };
     let mut dismiss_col: u16 = 0;
     let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string());
@@ -446,6 +446,7 @@ async fn main() -> Result<()> {
     );
     let mut throttle = throttle::OutputThrottle::new();
     let mut osc133_detector = omnish_tracker::osc133_detector::Osc133Detector::new();
+    let mut dsr_detector = DsrDetector::new();
     let mut osc133_warned = false;
     let mut no_readline_warned = false;
     let mut completer = ghost_complete::GhostCompleter::new(vec![
@@ -546,8 +547,32 @@ async fn main() -> Result<()> {
                 interceptor.set_suppressed(!shell_input.at_prompt());
             }
 
-            // Feed bytes to interceptor one by one
+            // Filter DSR responses from stdin, then feed remaining bytes to interceptor.
+            let mut filtered_input: Vec<u8> = Vec::new();
             for &byte in &input_buf[..n] {
+                match dsr_detector.feed(byte) {
+                    Some(Some((row, col))) => {
+                        // DSR response complete: update cursor tracker
+                        col_tracker.row = row.saturating_sub(1); // 1-based → 0-based
+                        col_tracker.col = col.saturating_sub(1);
+                        notice_queue::set_cursor_row(col_tracker.row);
+                    }
+                    Some(None) => {
+                        // Byte consumed, still accumulating DSR response
+                    }
+                    None => {
+                        // Not a DSR byte — check if detector aborted mid-sequence
+                        if !dsr_detector.buf.is_empty() {
+                            // Replay buffered bytes that weren't part of a DSR response
+                            let replay = dsr_detector.take_buf();
+                            filtered_input.extend_from_slice(&replay);
+                        }
+                        filtered_input.push(byte);
+                    }
+                }
+            }
+
+            for &byte in &filtered_input {
                 match interceptor.feed_byte(byte) {
                     InterceptAction::Buffering(buf) => {
                         if buf == prefix_bytes {
@@ -863,6 +888,7 @@ async fn main() -> Result<()> {
                                 shell_input.on_prompt();
                                 shell_completer.clear();
                                 last_readline_content = None;
+                                query_cursor_position();
                                 if let Some(title) = tmux_title("omnish", in_tmux) {
                                     nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
                                 }
@@ -872,6 +898,7 @@ async fn main() -> Result<()> {
                                 shell_input.on_prompt();
                                 shell_completer.clear();
                                 last_readline_content = None;
+                                query_cursor_position();
                                 if let Some(title) = tmux_title("omnish", in_tmux) {
                                     nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
                                 }
@@ -1257,7 +1284,7 @@ static mut MASTER_FD: i32 = -1;
 /// and skips ANSI escape sequences (CSI, OSC) so they don't inflate the count.
 /// CJK / fullwidth characters are counted as 2 columns using `unicode-width`.
 /// Used to save/restore cursor column when dismissing the omnish UI.
-struct CursorColTracker {
+struct CursorTracker {
     col: u16,
     row: u16,
     state: ColTrackState,
@@ -1279,7 +1306,7 @@ enum ColTrackState {
     Osc,
 }
 
-impl CursorColTracker {
+impl CursorTracker {
     fn new() -> Self {
         Self::with_position(0, 0)
     }
@@ -1434,6 +1461,94 @@ impl CursorColTracker {
     }
 }
 
+/// Detects DSR (Device Status Report) responses in stdin: `\x1b[row;colR`.
+/// Feeds bytes one at a time; returns Some((row, col)) when a complete
+/// response is recognized, None otherwise. Consumed bytes are not forwarded.
+struct DsrDetector {
+    state: DsrState,
+    buf: Vec<u8>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum DsrState {
+    Normal,
+    Esc,
+    Csi,
+}
+
+impl DsrDetector {
+    fn new() -> Self {
+        Self { state: DsrState::Normal, buf: Vec::new() }
+    }
+
+    /// Feed a byte. Returns:
+    /// - `Some(Some((row, col)))` — complete DSR response parsed, byte consumed
+    /// - `Some(None)` — byte is part of an in-progress DSR response, consumed
+    /// - `None` — byte is not part of a DSR response, should be forwarded
+    fn feed(&mut self, byte: u8) -> Option<Option<(u16, u16)>> {
+        match self.state {
+            DsrState::Normal => {
+                if byte == 0x1b {
+                    self.state = DsrState::Esc;
+                    self.buf.clear();
+                    self.buf.push(byte);
+                    Some(None) // consumed, pending
+                } else {
+                    None // not ours
+                }
+            }
+            DsrState::Esc => {
+                self.buf.push(byte);
+                if byte == b'[' {
+                    self.state = DsrState::Csi;
+                    Some(None)
+                } else {
+                    // Not a CSI — abort, bytes need to be replayed
+                    self.state = DsrState::Normal;
+                    None // signal caller to replay buf
+                }
+            }
+            DsrState::Csi => {
+                self.buf.push(byte);
+                if byte == b'R' {
+                    // Complete: parse \x1b[row;colR
+                    self.state = DsrState::Normal;
+                    let params = &self.buf[2..self.buf.len() - 1]; // between '[' and 'R'
+                    let parsed = self.parse_params(params);
+                    self.buf.clear();
+                    Some(parsed.map(|(r, c)| (r, c)))
+                } else if byte.is_ascii_digit() || byte == b';' {
+                    Some(None) // still accumulating params
+                } else {
+                    // Not a DSR response (other CSI sequence)
+                    self.state = DsrState::Normal;
+                    None // signal caller to replay buf
+                }
+            }
+        }
+    }
+
+    /// Parse "row;col" from param bytes.
+    fn parse_params(&self, params: &[u8]) -> Option<(u16, u16)> {
+        let s = std::str::from_utf8(params).ok()?;
+        let mut parts = s.splitn(2, ';');
+        let row: u16 = parts.next()?.parse().ok()?;
+        let col: u16 = parts.next()?.parse().ok()?;
+        Some((row, col))
+    }
+
+    /// Get buffered bytes (for replay when detection aborts mid-sequence).
+    fn take_buf(&mut self) -> Vec<u8> {
+        self.state = DsrState::Normal;
+        std::mem::take(&mut self.buf)
+    }
+}
+
+/// Send a DSR (Device Status Report) query to the terminal.
+fn query_cursor_position() {
+    nix::unistd::write(std::io::stderr(), b"\x1b[6n").ok();
+}
+
 /// Build a tmux window-name escape sequence: `\x1bk<name>\x1b\\`.
 /// Returns `None` when not inside tmux.
 fn tmux_title(name: &str, in_tmux: bool) -> Option<String> {
@@ -1457,7 +1572,7 @@ fn debug_client_state(
     _osc133_detector: &omnish_tracker::osc133_detector::Osc133Detector,
     last_readline: &Option<String>,
     shell_pid: u32,
-    col_tracker: &CursorColTracker,
+    col_tracker: &CursorTracker,
 ) -> String {
     let mut output = String::new();
 
@@ -3345,11 +3460,11 @@ mod tests {
         }
     }
 
-    // --- CursorColTracker tests ---
+    // --- CursorTracker tests ---
 
     #[test]
     fn test_col_tracker_ascii() {
-        let mut t = CursorColTracker::new();
+        let mut t = CursorTracker::new();
         t.feed(b"hello");
         assert_eq!(t.col, 5);
 
@@ -3364,7 +3479,7 @@ mod tests {
 
     #[test]
     fn test_col_tracker_skips_csi() {
-        let mut t = CursorColTracker::new();
+        let mut t = CursorTracker::new();
         // Color escape sequences should not advance column
         t.feed(b"\x1b[32mgreen\x1b[0m");
         assert_eq!(t.col, 5); // only "green" counted
@@ -3372,7 +3487,7 @@ mod tests {
 
     #[test]
     fn test_col_tracker_skips_osc() {
-        let mut t = CursorColTracker::new();
+        let mut t = CursorTracker::new();
         // OSC title sequence (invisible) then prompt
         t.feed(b"\x1b]0;my title\x07$ ");
         assert_eq!(t.col, 2); // only "$ " counted
@@ -3380,7 +3495,7 @@ mod tests {
 
     #[test]
     fn test_col_tracker_typical_prompt() {
-        let mut t = CursorColTracker::new();
+        let mut t = CursorTracker::new();
         // Typical colored prompt: \r\n\x1b[32muser@host\x1b[0m:\x1b[34m~\x1b[0m$
         t.feed(b"\r\n\x1b[32muser@host\x1b[0m:\x1b[34m~\x1b[0m$ ");
         // "user@host" (9) + ":" (1) + "~" (1) + "$ " (2) = 13
@@ -3389,13 +3504,13 @@ mod tests {
 
     #[test]
     fn test_col_tracker_cjk_wide_chars() {
-        let mut t = CursorColTracker::new();
+        let mut t = CursorTracker::new();
         // Chinese characters are fullwidth — each occupies 2 columns
         t.feed("你好".as_bytes());
         assert_eq!(t.col, 4); // 2 chars × 2 columns each
 
         // Mixed: CJK + ASCII
-        t = CursorColTracker::new();
+        t = CursorTracker::new();
         t.feed("用户@主机:~$ ".as_bytes());
         // "用" (2) + "户" (2) + "@" (1) + "主" (2) + "机" (2) + ":" (1) + "~" (1) + "$ " (2) = 13
         assert_eq!(t.col, 13);
@@ -3403,7 +3518,7 @@ mod tests {
 
     #[test]
     fn test_col_tracker_cjk_with_colors() {
-        let mut t = CursorColTracker::new();
+        let mut t = CursorTracker::new();
         // Colored prompt with CJK characters
         let prompt = format!(
             "\r\n\x1b[32m{}\x1b[0m:\x1b[34m~\x1b[0m$ ",
@@ -3416,13 +3531,13 @@ mod tests {
 
     #[test]
     fn test_col_tracker_emoji() {
-        let mut t = CursorColTracker::new();
+        let mut t = CursorTracker::new();
         // ❯ (U+276F) is narrow — width 1
         t.feed("❯ ".as_bytes());
         assert_eq!(t.col, 2); // ❯ (1) + space (1)
 
         // 🚀 (U+1F680) is a wide emoji — width 2
-        t = CursorColTracker::new();
+        t = CursorTracker::new();
         t.feed("🚀x".as_bytes());
         assert_eq!(t.col, 3); // 🚀 (2) + x (1)
     }
@@ -3431,7 +3546,7 @@ mod tests {
 
     #[test]
     fn test_row_tracker_newline() {
-        let mut t = CursorColTracker::new();
+        let mut t = CursorTracker::new();
         assert_eq!(t.row, 0);
         t.feed(b"hello\n");
         assert_eq!(t.row, 1);
@@ -3441,7 +3556,7 @@ mod tests {
 
     #[test]
     fn test_row_tracker_cursor_home() {
-        let mut t = CursorColTracker::new();
+        let mut t = CursorTracker::new();
         t.feed(b"line1\r\nline2\r\nline3");
         assert_eq!(t.row, 2);
         assert_eq!(t.col, 5);
@@ -3453,7 +3568,7 @@ mod tests {
 
     #[test]
     fn test_row_tracker_cup_with_params() {
-        let mut t = CursorColTracker::new();
+        let mut t = CursorTracker::new();
         // \x1b[5;10H — cursor to row 5, col 10 (1-based → 4, 9 zero-based)
         t.feed(b"\x1b[5;10H");
         assert_eq!(t.row, 4);
@@ -3462,7 +3577,7 @@ mod tests {
 
     #[test]
     fn test_row_tracker_cursor_up_down() {
-        let mut t = CursorColTracker::new();
+        let mut t = CursorTracker::new();
         t.feed(b"\n\n\n\n\n"); // row = 5
         assert_eq!(t.row, 5);
         // \x1b[2A — cursor up 2
@@ -3475,7 +3590,7 @@ mod tests {
 
     #[test]
     fn test_row_tracker_cursor_up_saturates() {
-        let mut t = CursorColTracker::new();
+        let mut t = CursorTracker::new();
         t.feed(b"\n"); // row = 1
         // Move up 10 — should saturate to 0
         t.feed(b"\x1b[10A");
@@ -3484,13 +3599,68 @@ mod tests {
 
     #[test]
     fn test_row_tracker_clear_screen() {
-        let mut t = CursorColTracker::new();
+        let mut t = CursorTracker::new();
         t.feed(b"line1\nline2\nline3");
         assert_eq!(t.row, 2);
         // clear command outputs \x1b[H\x1b[2J
         t.feed(b"\x1b[H\x1b[2J");
         assert_eq!(t.row, 0);
         assert_eq!(t.col, 0);
+    }
+
+    // --- DSR detector tests ---
+
+    #[test]
+    fn test_dsr_complete_response() {
+        let mut d = DsrDetector::new();
+        // Feed \x1b[24;13R
+        assert_eq!(d.feed(0x1b), Some(None));   // ESC consumed
+        assert_eq!(d.feed(b'['), Some(None));    // [ consumed
+        assert_eq!(d.feed(b'2'), Some(None));    // digit
+        assert_eq!(d.feed(b'4'), Some(None));    // digit
+        assert_eq!(d.feed(b';'), Some(None));    // semicolon
+        assert_eq!(d.feed(b'1'), Some(None));    // digit
+        assert_eq!(d.feed(b'3'), Some(None));    // digit
+        assert_eq!(d.feed(b'R'), Some(Some((24, 13)))); // complete
+    }
+
+    #[test]
+    fn test_dsr_row_1_col_1() {
+        let mut d = DsrDetector::new();
+        for &b in b"\x1b[1;1" {
+            assert_eq!(d.feed(b), Some(None));
+        }
+        assert_eq!(d.feed(b'R'), Some(Some((1, 1))));
+    }
+
+    #[test]
+    fn test_dsr_normal_input_passes_through() {
+        let mut d = DsrDetector::new();
+        assert_eq!(d.feed(b'a'), None);
+        assert_eq!(d.feed(b'\n'), None);
+        assert_eq!(d.feed(b':'), None);
+    }
+
+    #[test]
+    fn test_dsr_non_csi_esc_aborts() {
+        let mut d = DsrDetector::new();
+        assert_eq!(d.feed(0x1b), Some(None)); // ESC consumed
+        assert_eq!(d.feed(b'O'), None);        // not '[', abort — replay
+        assert!(!d.buf.is_empty());
+        let replay = d.take_buf();
+        assert_eq!(replay, vec![0x1b, b'O']);
+    }
+
+    #[test]
+    fn test_dsr_non_r_final_aborts() {
+        let mut d = DsrDetector::new();
+        // \x1b[2A — cursor up, not a DSR response
+        assert_eq!(d.feed(0x1b), Some(None));
+        assert_eq!(d.feed(b'['), Some(None));
+        assert_eq!(d.feed(b'2'), Some(None));
+        assert_eq!(d.feed(b'A'), None); // final byte but not 'R' — abort
+        let replay = d.take_buf();
+        assert_eq!(replay, vec![0x1b, b'[', b'2', b'A']);
     }
 
     // --- tmux title tests ---
