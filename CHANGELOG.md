@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.6.0 (2026-03-11)
+
+### Features
+- **client**: Transparent self-restart via `execvp` with `/update` command — preserves PTY connection across binary updates (issue #217)
+- **client**: Auto-update when binary changes on disk — periodic mtime check with idle detection (issue #223)
+- **client**: `/update auto` runtime toggle for auto-update (not persisted)
+- **plugin**: Add privileged mode for `write` and `edit` tools to bypass Landlock sandbox (issue #219)
+- **tools**: Add `edit` tool for exact string replacement (issue #216)
+- **tools**: Add `write` tool for file creation
+- **bash**: Set cwd to shell's current directory for bash tool execution
+- **client**: `/resume` picker shows all threads with dynamic viewport (issue #220)
+- **widgets**: `InlineNotice` widget for non-intrusive notifications above cursor
+- **widgets**: Deferred notice queue with flush-on-chat-exit for chat mode
+- **daemon**: Increase max tool call iterations from 5 to 30
+
+### Bug Fixes
+- **client**: Fix `/update` message rendering in raw terminal mode (use `\r\n` and InlineNotice)
+- **client**: Strip " (deleted)" suffix from `/proc/self/exe` on Linux
+- **client**: Prevent completion request flood after `/update`  (issue #224)
+- **update**: Codesign binary on macOS before exec to avoid SIGKILL
+- **plugin**: Gate landlock and prctl behind `cfg(target_os = "linux")` for macOS support
+- **notice**: Route all `[omnish]` messages through notice system
+
+### Refactoring
+- **plugin**: Extract shared spawn/sandbox/JSON-RPC into omnish-plugin lib
+- **daemon**: Remove re-export stubs, import tools from omnish-plugin directly
+- **plugin**: Trim edit tool system prompt
+
+### Build & CI
+- **ci**: Run tests on regular commits, build+release only on tags
+
+---
+
 ## v0.5.5 (2026-03-10)
 
 ### Features
