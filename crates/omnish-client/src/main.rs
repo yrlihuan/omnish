@@ -116,6 +116,90 @@ fn resolve_shell(config_shell: &str) -> String {
     }
 }
 
+struct ResumeArgs {
+    master_fd: i32,
+    child_pid: i32,
+    session_id: String,
+}
+
+fn parse_resume_args() -> Option<ResumeArgs> {
+    let args: Vec<String> = std::env::args().collect();
+    if !args.iter().any(|a| a == "--resume") {
+        return None;
+    }
+    let fd = args.iter()
+        .find_map(|a| a.strip_prefix("--fd="))
+        .and_then(|v| v.parse::<i32>().ok())?;
+    let pid = args.iter()
+        .find_map(|a| a.strip_prefix("--pid="))
+        .and_then(|v| v.parse::<i32>().ok())?;
+    let sid = args.iter()
+        .find_map(|a| a.strip_prefix("--session-id="))?
+        .to_string();
+    Some(ResumeArgs { master_fd: fd, child_pid: pid, session_id: sid })
+}
+
+fn exec_update(proxy: &PtyProxy, session_id: &str) {
+    let current_exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("\x1b[31m[omnish]\x1b[0m Failed to resolve current exe: {}", e);
+            return;
+        }
+    };
+
+    if !current_exe.exists() {
+        eprintln!("\x1b[31m[omnish]\x1b[0m Binary not found: {}", current_exe.display());
+        return;
+    }
+
+    // Get on-disk binary version by running it with --version
+    let disk_version = match std::process::Command::new(&current_exe)
+        .arg("--version")
+        .output()
+    {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        Err(e) => {
+            eprintln!("\x1b[31m[omnish]\x1b[0m Failed to check binary version: {}", e);
+            return;
+        }
+    };
+
+    let running_version = format!("omnish {}", omnish_common::VERSION);
+    if disk_version == running_version {
+        eprintln!("\x1b[33m[omnish]\x1b[0m Already up to date ({})", omnish_common::VERSION);
+        return;
+    }
+
+    eprintln!(
+        "\x1b[32m[omnish]\x1b[0m Updating: {} -> {}",
+        running_version, disk_version
+    );
+
+    // Clear FD_CLOEXEC on the PTY master fd so it survives exec
+    let master_fd = proxy.master_raw_fd();
+    unsafe {
+        let flags = libc::fcntl(master_fd, libc::F_GETFD);
+        if flags >= 0 {
+            libc::fcntl(master_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+        }
+    }
+
+    // Build args for the new process
+    let exe_cstr = std::ffi::CString::new(current_exe.to_string_lossy().as_bytes()).unwrap();
+    let args = [
+        exe_cstr.clone(),
+        std::ffi::CString::new("--resume").unwrap(),
+        std::ffi::CString::new(format!("--fd={}", master_fd)).unwrap(),
+        std::ffi::CString::new(format!("--pid={}", proxy.child_pid())).unwrap(),
+        std::ffi::CString::new(format!("--session-id={}", session_id)).unwrap(),
+    ];
+
+    // execvp replaces this process — only returns on error
+    let _ = nix::unistd::execvp(&exe_cstr, &args);
+    eprintln!("\x1b[31m[omnish]\x1b[0m exec failed: {}", std::io::Error::last_os_error());
+}
+
 #[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
@@ -124,10 +208,11 @@ async fn main() -> Result<()> {
     }
 
     let config = load_client_config().unwrap_or_default();
+    let resume_args = parse_resume_args();
 
     // If stdin is not a terminal (e.g. rsync over SSH, piped commands),
     // exec the underlying shell directly — omnish requires a PTY.
-    if !nix::unistd::isatty(0).unwrap_or(false) {
+    if resume_args.is_none() && !nix::unistd::isatty(0).unwrap_or(false) {
         let shell = resolve_shell(&config.shell.command);
         let shell_cstr = std::ffi::CString::new(shell.as_str()).expect("shell path");
         // Pass through any arguments after argv[0]
@@ -139,29 +224,34 @@ async fn main() -> Result<()> {
         unreachable!();
     }
 
-    let session_id = Uuid::new_v4().to_string()[..8].to_string();
+    let (session_id, proxy, osc133_hook_installed) = if let Some(ref resume) = resume_args {
+        // Resume mode: reconstruct PtyProxy from passed fd/pid
+        let proxy = unsafe { PtyProxy::from_raw_fd(resume.master_fd, resume.child_pid) };
+        eprintln!("\x1b[32m[omnish]\x1b[0m Resumed (pid={}, fd={})", resume.child_pid, resume.master_fd);
+        (resume.session_id.clone(), proxy, true)
+    } else {
+        // Normal startup: spawn a new shell
+        let session_id = Uuid::new_v4().to_string()[..8].to_string();
+        let shell = resolve_shell(&config.shell.command);
+
+        let mut child_env = HashMap::new();
+        child_env.insert("OMNISH_SESSION_ID".to_string(), session_id.clone());
+        child_env.insert("SHELL".to_string(), shell.clone());
+
+        let osc133_rcfile = shell_hook::install_bash_hook(&shell);
+        let osc133_hook_installed = osc133_rcfile.is_some();
+        let shell_args: Vec<String> = if let Some(ref rcfile) = osc133_rcfile {
+            vec!["--rcfile".to_string(), rcfile.to_string_lossy().to_string()]
+        } else {
+            vec![]
+        };
+        let shell_args_ref: Vec<&str> = shell_args.iter().map(|s| s.as_str()).collect();
+        let proxy = PtyProxy::spawn_with_env(&shell, &shell_args_ref, child_env)?;
+        (session_id, proxy, osc133_hook_installed)
+    };
     let parent_session_id = std::env::var("OMNISH_SESSION_ID").ok();
-    let shell = resolve_shell(&config.shell.command);
     let daemon_addr = std::env::var("OMNISH_SOCKET")
         .unwrap_or_else(|_| config.daemon_addr.clone());
-
-    // Spawn PTY with shell, passing our session_id so nested omnish can detect parent.
-    // Override $SHELL in child so programs that read it (e.g. tmux) don't re-launch omnish.
-    let mut child_env = HashMap::new();
-    child_env.insert("OMNISH_SESSION_ID".to_string(), session_id.clone());
-    child_env.insert("SHELL".to_string(), shell.clone());
-
-    // Install shell hooks for OSC 133 support
-    let osc133_rcfile = shell_hook::install_bash_hook(&shell);
-    let osc133_hook_installed = osc133_rcfile.is_some();
-
-    let shell_args: Vec<String> = if let Some(ref rcfile) = osc133_rcfile {
-        vec!["--rcfile".to_string(), rcfile.to_string_lossy().to_string()]
-    } else {
-        vec![]
-    };
-    let shell_args_ref: Vec<&str> = shell_args.iter().map(|s| s.as_str()).collect();
-    let proxy = PtyProxy::spawn_with_env(&shell, &shell_args_ref, child_env)?;
 
     // Connect to daemon (graceful degradation)
     let pending_buffer: MessageBuffer = Arc::new(Mutex::new(VecDeque::new()));
@@ -1500,6 +1590,12 @@ async fn handle_slash_command(
     proxy: &PtyProxy,
     client_debug_fn: &dyn Fn() -> String,
 ) -> bool {
+    // Intercept /update client-side (needs process state: proxy fd/pid)
+    if trimmed == "/update" {
+        exec_update(proxy, session_id);
+        return true; // Only reached if exec failed
+    }
+
     match command::dispatch(trimmed) {
         command::ChatAction::Command { result, redirect, limit } => {
             let display_result = if let Some(ref l) = limit {

@@ -139,6 +139,13 @@ const COMMANDS: &[CommandEntry] = &[
         kind: CommandKind::Daemon("tasks"),
         help: "List or manage scheduled tasks",
     },
+    // Registered as Daemon but intercepted client-side in main.rs
+    // because it needs process state (proxy fd/pid) for exec.
+    CommandEntry {
+        path: "/update",
+        kind: CommandKind::Daemon("__cmd:update"),
+        help: "Re-exec client from updated binary on disk",
+    },
 ];
 
 /// Chat-mode-only commands (not in COMMANDS registry).

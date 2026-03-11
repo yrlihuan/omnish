@@ -4,7 +4,7 @@ use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::{dup2, execvp, fork, read, write, setsid, ForkResult, Pid};
 use std::collections::HashMap;
 use std::ffi::CString;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 pub struct PtyProxy {
     master_fd: OwnedFd,
@@ -56,6 +56,19 @@ impl PtyProxy {
                     child_pid: child,
                 })
             }
+        }
+    }
+
+    /// Reconstruct a PtyProxy from an existing master fd and child pid.
+    /// Used for resuming after exec (the fd and child survive the exec boundary).
+    ///
+    /// # Safety
+    /// The caller must ensure `fd` is a valid open PTY master file descriptor
+    /// and `pid` is a valid child process ID.
+    pub unsafe fn from_raw_fd(fd: RawFd, pid: i32) -> Self {
+        PtyProxy {
+            master_fd: OwnedFd::from_raw_fd(fd),
+            child_pid: Pid::from_raw(pid),
         }
     }
 
