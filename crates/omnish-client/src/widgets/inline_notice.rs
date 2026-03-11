@@ -10,14 +10,14 @@ impl InlineNotice {
     /// the current cursor position, then returns the cursor to its original line.
     ///
     /// The sequence:
-    /// 1. Save cursor position
-    /// 2. Move up one line
-    /// 3. Insert a blank line (pushes content down)
-    /// 4. Write the dim message
-    /// 5. Restore cursor position
+    /// 1. Move up one line
+    /// 2. Insert a blank line (pushes content down)
+    /// 3. Write the dim message
+    /// 4. Move down one line (back to original content)
+    /// 5. Return to start of line
     pub fn render(message: &str) -> String {
         format!(
-            "\x1b[s\x1b[1A\x1b[1L\r\x1b[2m{}\x1b[0m\x1b[u",
+            "\x1b[1A\x1b[1L\r\x1b[2m{}\x1b[0m\x1b[1B\r",
             message
         )
     }
@@ -49,9 +49,9 @@ mod tests {
     }
 
     #[test]
-    fn test_render_saves_and_restores_cursor() {
+    fn test_render_moves_cursor_back() {
         let output = InlineNotice::render("test");
-        assert!(output.contains("\x1b[s")); // save
-        assert!(output.contains("\x1b[u")); // restore
+        assert!(output.contains("\x1b[1A")); // move up
+        assert!(output.contains("\x1b[1B")); // move down
     }
 }
