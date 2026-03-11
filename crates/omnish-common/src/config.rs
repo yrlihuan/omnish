@@ -29,6 +29,8 @@ pub struct ClientConfig {
     pub daemon_addr: String,
     #[serde(default = "default_true")]
     pub completion_enabled: bool,
+    #[serde(default)]
+    pub auto_update: bool,
 }
 
 fn default_true() -> bool {
@@ -41,6 +43,7 @@ impl Default for ClientConfig {
             shell: ShellConfig::default(),
             daemon_addr: default_socket_path(),
             completion_enabled: true,
+            auto_update: false,
         }
     }
 }

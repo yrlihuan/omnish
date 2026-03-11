@@ -24,6 +24,7 @@ use omnish_transport::rpc_client::RpcClient;
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -442,6 +443,20 @@ async fn main() -> Result<()> {
     // Chat command history persists across chat sessions within same client
     let mut chat_history: VecDeque<String> = VecDeque::with_capacity(100);
 
+    // Auto-update state
+    let auto_update_enabled = Arc::new(AtomicBool::new(config.auto_update));
+    let exe_mtime = std::env::current_exe()
+        .ok()
+        .and_then(|p| {
+            let s = p.to_string_lossy().to_string();
+            let clean = s.strip_suffix(" (deleted)").map(std::path::PathBuf::from).unwrap_or(p);
+            std::fs::metadata(&clean).ok()?.modified().ok()
+        });
+    let mut last_keystroke = std::time::Instant::now();
+    let mut last_update_check = std::time::Instant::now();
+    const AUTO_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+    const AUTO_UPDATE_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+
     loop {
         let mut fds = [
             libc::pollfd {
@@ -462,12 +477,38 @@ async fn main() -> Result<()> {
             continue;
         }
 
+        // Auto-update check (every 60s, only when idle at prompt for 60s+)
+        if auto_update_enabled.load(Ordering::Relaxed)
+            && last_update_check.elapsed() >= AUTO_UPDATE_INTERVAL
+            && shell_input.at_prompt()
+            && last_keystroke.elapsed() >= AUTO_UPDATE_IDLE
+            && !interceptor.is_in_chat()
+        {
+            last_update_check = std::time::Instant::now();
+            if let Some(ref startup_mtime) = exe_mtime {
+                let current_mtime = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| {
+                        let s = p.to_string_lossy().to_string();
+                        let clean = s.strip_suffix(" (deleted)").map(std::path::PathBuf::from).unwrap_or(p);
+                        std::fs::metadata(&clean).ok()?.modified().ok()
+                    });
+                if let Some(current) = current_mtime {
+                    if current != *startup_mtime {
+                        exec_update(&proxy, &session_id);
+                        // exec_update only returns on error — reset timer
+                    }
+                }
+            }
+        }
+
         // Stdin -> PTY master
         if fds[0].revents & libc::POLLIN != 0 {
             let n = nix::unistd::read(0, &mut input_buf)?;
             if n == 0 {
                 break;
             }
+            last_keystroke = std::time::Instant::now();
 
             // Suppress interceptor when not at prompt (child process running:
             // ssh, python REPL, etc.) so ':' is forwarded to the child.
@@ -647,7 +688,7 @@ async fn main() -> Result<()> {
                                 &last_readline_content,
                                 shell_pid,
                             );
-                            run_chat_loop(rpc, &session_id, &proxy, initial, &dbg_fn, &mut chat_history).await;
+                            run_chat_loop(rpc, &session_id, &proxy, initial, &dbg_fn, &mut chat_history, &auto_update_enabled).await;
                         } else {
                             let err = display::render_error("Daemon not connected");
                             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
@@ -1667,6 +1708,7 @@ async fn handle_slash_command(
         exec_update(proxy, session_id);
         return true; // Only reached if exec failed
     }
+    // /update auto is intercepted at the call site (needs mutable auto_update_enabled)
 
     match command::dispatch(trimmed) {
         command::ChatAction::Command { result, redirect, limit } => {
@@ -1736,6 +1778,7 @@ async fn run_chat_loop(
     initial_msg: Option<String>,
     client_debug_fn: &dyn Fn() -> String,
     chat_history: &mut VecDeque<String>,
+    auto_update_enabled: &AtomicBool,
 ) {
     let client_plugins = Arc::new(client_plugin::ClientPluginManager::new());
     let mut chat_completer = ghost_complete::GhostCompleter::new(vec![
@@ -2164,6 +2207,17 @@ async fn run_chat_loop(
                     nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                 }
             }
+            if auto_exit { break; }
+            continue;
+        }
+
+        // /update auto — toggle runtime auto-update (not persisted)
+        if trimmed == "/update auto" {
+            let prev = auto_update_enabled.load(Ordering::Relaxed);
+            auto_update_enabled.store(!prev, Ordering::Relaxed);
+            let status = if !prev { "enabled" } else { "disabled" };
+            let output = display::render_response(&format!("Auto-update {}", status));
+            nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
             if auto_exit { break; }
             continue;
         }
