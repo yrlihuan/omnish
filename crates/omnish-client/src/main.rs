@@ -340,6 +340,11 @@ async fn main() -> Result<()> {
     let daemon_addr = std::env::var("OMNISH_SOCKET")
         .unwrap_or_else(|_| config.daemon_addr.clone());
 
+    // Set cursor row early so notices during connect_daemon use correct mode
+    if let Some(ref r) = resume_args {
+        notice_queue::set_cursor_row(r.cursor_row);
+    }
+
     // Connect to daemon (graceful degradation)
     let pending_buffer: MessageBuffer = Arc::new(Mutex::new(VecDeque::new()));
     let daemon_conn = connect_daemon(&daemon_addr, &session_id, parent_session_id, proxy.child_pid() as u32, pending_buffer.clone()).await;
