@@ -28,8 +28,8 @@ pub struct ShellCompleter {
     last_change: Option<Instant>,
     /// Sequence ID of the last input change.
     pending_seq: u64,
-    /// Sequence ID of the last sent request.
-    sent_seq: u64,
+    /// Sequence ID of the last sent request (None = never sent).
+    sent_seq: Option<u64>,
     /// Current ghost text suggestion (if any).
     current_ghost: Option<String>,
     /// Active completion requests (sequence_id -> request state)
@@ -59,7 +59,7 @@ impl ShellCompleter {
         Self {
             last_change: None,
             pending_seq: 0,
-            sent_seq: 0,
+            sent_seq: None,
             current_ghost: None,
             active_requests: HashMap::new(),
             ghost_input: String::new(),
@@ -137,7 +137,10 @@ impl ShellCompleter {
         }
 
         // Only send if there's been new input (first request or sequence advanced).
-        self.sent_seq == 0 || current_sequence_id > self.sent_seq
+        match self.sent_seq {
+            None => true,
+            Some(seq) => current_sequence_id > seq,
+        }
     }
 
     /// Mark that a request was sent.
@@ -151,7 +154,7 @@ impl ShellCompleter {
             response_at: None,
         });
 
-        self.sent_seq = sequence_id;
+        self.sent_seq = Some(sequence_id);
         self.sent_input = input.to_string();
     }
 
@@ -386,7 +389,7 @@ impl ShellCompleter {
     }
 
     /// Get debug state for troubleshooting concurrent requests
-    pub fn get_debug_state(&self) -> (usize, u64, u64, Vec<u64>) {
+    pub fn get_debug_state(&self) -> (usize, Option<u64>, u64, Vec<u64>) {
         let active_request_ids: Vec<u64> = self.active_requests.keys().copied().collect();
         (self.active_requests.len(), self.sent_seq, self.pending_seq, active_request_ids)
     }
@@ -1039,7 +1042,7 @@ mod tests {
 
         let (active_count, sent_seq, pending_seq, active_ids) = c.get_debug_state();
         assert_eq!(active_count, 2);
-        assert_eq!(sent_seq, 2);
+        assert_eq!(sent_seq, Some(2));
         assert_eq!(pending_seq, 2);
         assert_eq!(active_ids.len(), 2);
         assert!(active_ids.contains(&1));
@@ -1192,7 +1195,7 @@ mod tests {
 
         // No new input, same sequence
         assert_eq!(c.pending_seq, 24);
-        assert_eq!(c.sent_seq, 24);
+        assert_eq!(c.sent_seq, Some(24));
 
         // should_request should return false - no new input means no new requests
         assert!(!c.should_request(24, "git"), "Should not allow new requests when there's no new input, even with timed-out requests");
