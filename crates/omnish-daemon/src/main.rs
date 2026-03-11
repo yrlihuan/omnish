@@ -160,8 +160,8 @@ async fn async_main() -> Result<()> {
         }
     } else {
         tracing::warn!("omnish-plugin binary not found at {}, registering built-in tools in-process", plugin_bin.display());
-        plugin_mgr.register(Box::new(omnish_daemon::tools::bash::BashTool::new()));
-        plugin_mgr.register(Box::new(omnish_daemon::tools::read::ReadTool::new()));
+        plugin_mgr.register(Box::new(omnish_plugin::tools::bash::BashTool::new()));
+        plugin_mgr.register(Box::new(omnish_plugin::tools::read::ReadTool::new()));
         plugin_mgr.register(Box::new(omnish_plugin::tools::write::WriteTool::new()));
     }
     plugin_mgr.load_external_plugins(&config.plugins.enabled);
