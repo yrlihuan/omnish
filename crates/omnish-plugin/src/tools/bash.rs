@@ -198,6 +198,7 @@ impl Plugin for BashTool {
              - Use this to run commands, inspect files, check system state, etc.\n\
              - Commands run in the user's current working directory.\n\
              - The tool runs in a sandboxed environment with restricted write access.\n\
+             - Always quote file paths that contain spaces with double quotes in your command (e.g., cd \"path with spaces/file.txt\")\n\
              - If a command fails with a permission error, do not retry. Explain the error to the user."
                 .to_string(),
         )
