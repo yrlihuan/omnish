@@ -155,13 +155,13 @@ fn exec_update(proxy: &PtyProxy, session_id: &str) {
             }
         }
         Err(e) => {
-            eprintln!("\x1b[31m[omnish]\x1b[0m Failed to resolve current exe: {}", e);
+            eprint!("\x1b[31m[omnish]\x1b[0m Failed to resolve current exe: {}\r\n", e);
             return;
         }
     };
 
     if !current_exe.exists() {
-        eprintln!("\x1b[31m[omnish]\x1b[0m Binary not found: {}", current_exe.display());
+        eprint!("\x1b[31m[omnish]\x1b[0m Binary not found: {}\r\n", current_exe.display());
         return;
     }
 
@@ -172,19 +172,19 @@ fn exec_update(proxy: &PtyProxy, session_id: &str) {
     {
         Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
         Err(e) => {
-            eprintln!("\x1b[31m[omnish]\x1b[0m Failed to check binary version: {}", e);
+            eprint!("\x1b[31m[omnish]\x1b[0m Failed to check binary version: {}\r\n", e);
             return;
         }
     };
 
     let running_version = format!("omnish {}", omnish_common::VERSION);
     if disk_version == running_version {
-        eprintln!("\x1b[33m[omnish]\x1b[0m Already up to date ({})", omnish_common::VERSION);
+        eprint!("\x1b[33m[omnish]\x1b[0m Already up to date ({})\r\n", omnish_common::VERSION);
         return;
     }
 
-    eprintln!(
-        "\x1b[32m[omnish]\x1b[0m Updating: {} -> {}",
+    eprint!(
+        "\x1b[32m[omnish]\x1b[0m Updating: {} -> {}\r\n",
         running_version, disk_version
     );
 
@@ -209,7 +209,7 @@ fn exec_update(proxy: &PtyProxy, session_id: &str) {
 
     // execvp replaces this process — only returns on error
     let _ = nix::unistd::execvp(&exe_cstr, &args);
-    eprintln!("\x1b[31m[omnish]\x1b[0m exec failed: {}", std::io::Error::last_os_error());
+    eprint!("\x1b[31m[omnish]\x1b[0m exec failed: {}\r\n", std::io::Error::last_os_error());
 }
 
 #[tokio::main(worker_threads = 4)]
