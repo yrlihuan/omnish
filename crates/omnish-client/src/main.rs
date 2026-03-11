@@ -2052,7 +2052,6 @@ async fn run_chat_loop(
                                 let display_str = cmd_display_str(&json);
                                 let item_strings: Vec<String> = display_str.lines()
                                     .filter(|l| l.trim_start().starts_with('['))
-                                    .take(10)
                                     .map(|l| l.trim_start().to_string())
                                     .collect();
                                 let items: Vec<&str> = item_strings.iter()

@@ -6,36 +6,14 @@
 
 use std::os::unix::io::AsRawFd;
 
-/// Minimum number of items to show in picker.
-const MIN_VISIBLE: usize = 5;
-
 /// Maximum number of items visible in the picker viewport.
-/// This is calculated based on terminal height, but capped at 20 for usability.
-const MAX_VISIBLE_CAP: usize = 20;
+const MAX_VISIBLE: usize = 10;
 
 /// Get terminal width, fallback to 80.
 fn terminal_cols() -> u16 {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
     let ret = unsafe { libc::ioctl(0, libc::TIOCGWINSZ, &mut ws) };
     if ret == 0 && ws.ws_col > 0 { ws.ws_col } else { 80 }
-}
-
-/// Get terminal height (rows), fallback to 24.
-fn terminal_rows() -> u16 {
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    let ret = unsafe { libc::ioctl(0, libc::TIOCGWINSZ, &mut ws) };
-    if ret == 0 && ws.ws_row > 0 { ws.ws_row } else { 24 }
-}
-
-/// Calculate maximum visible items based on terminal height.
-/// Reserves space for: title (1) + top sep (1) + items (N) + bottom sep (1) + hint (1) + margin (2)
-fn calc_max_visible() -> usize {
-    let rows = terminal_rows() as usize;
-    // Total lines = title + top_sep + items + bottom_sep + hint + margin
-    // So items = rows - 6 (minimum reserved lines)
-    let reserved = 6; // title + 2 separators + hint + 2 lines margin for shell prompt
-    let visible = rows.saturating_sub(reserved);
-    visible.clamp(MIN_VISIBLE, MAX_VISIBLE_CAP)
 }
 
 /// Separator line spanning `cols` columns (dim horizontal-rule characters).
@@ -73,7 +51,7 @@ fn render_hint(multi: bool) -> String {
 
 /// Number of items visible in the viewport.
 fn visible_count(total: usize) -> usize {
-    total.min(calc_max_visible())
+    total.min(MAX_VISIBLE)
 }
 
 /// Render the full picker widget (initial draw or full redraw after scroll).
@@ -476,11 +454,8 @@ mod tests {
 
     #[test]
     fn test_visible_count_large_list() {
-        // In test environment without a real terminal, calc_max_visible() returns MIN_VISIBLE
-        // With a real terminal, it would be clamped between MIN_VISIBLE and MAX_VISIBLE_CAP
-        let max_visible = calc_max_visible();
-        assert!(visible_count(15) <= max_visible);
-        assert!(visible_count(100) <= MAX_VISIBLE_CAP);
+        assert_eq!(visible_count(15), MAX_VISIBLE);
+        assert_eq!(visible_count(100), MAX_VISIBLE);
     }
 
     #[test]
@@ -501,16 +476,12 @@ mod tests {
         let parser = parse_ansi(&output, cols, rows);
         let all_text = parser.screen().contents();
 
-        // Should show first items (up to calc_max_visible), not items beyond viewport
-        let max_visible = calc_max_visible();
+        // Should show items 0-9, not 10-14
         assert!(all_text.contains("Item-00"), "should show first item");
-        // The last visible item depends on terminal height in test environment
-        if max_visible < 15 {
-            // Should have a "more" indicator showing remaining items
-            let remaining = 15 - max_visible;
-            assert!(all_text.contains(&format!("{} more", remaining)),
-                "should show remaining count below");
-        }
+        assert!(all_text.contains("Item-09"), "should show last visible item");
+        assert!(!all_text.contains("Item-10"), "should NOT show items beyond viewport");
+        // Should show "more" indicator at bottom
+        assert!(all_text.contains("5 more"), "should show remaining count below");
     }
 
     #[test]
