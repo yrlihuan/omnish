@@ -41,7 +41,13 @@ impl ClientPluginManager {
             let data_dir = omnish_common::config::omnish_dir()
                 .join("data")
                 .join(&dir_name);
-            match PluginProcess::spawn(&self.plugin_bin, &[plugin_name], plugin_name, &data_dir) {
+            let privileged = matches!(plugin_name, "edit" | "write");
+            let spawn_result = if privileged {
+                PluginProcess::spawn_privileged(&self.plugin_bin, &[plugin_name], plugin_name, &data_dir)
+            } else {
+                PluginProcess::spawn(&self.plugin_bin, &[plugin_name], plugin_name, &data_dir)
+            };
+            match spawn_result {
                 Ok(mut p) => {
                     // Send initialize to verify it works
                     match p.send_request("initialize", serde_json::json!({})) {

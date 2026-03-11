@@ -207,7 +207,13 @@ impl ExternalPlugin {
         };
         let data_dir = omnish_common::config::omnish_dir().join("data").join(&dir_name);
 
-        let mut process = match PluginProcess::spawn(executable, args, name, &data_dir) {
+        let privileged = matches!(name, "edit" | "write");
+        let spawn_result = if privileged {
+            PluginProcess::spawn_privileged(executable, args, name, &data_dir)
+        } else {
+            PluginProcess::spawn(executable, args, name, &data_dir)
+        };
+        let mut process = match spawn_result {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!("Failed to spawn plugin '{}': {}", name, e);

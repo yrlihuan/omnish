@@ -122,7 +122,7 @@ pub struct PluginProcess {
 }
 
 impl PluginProcess {
-    /// Spawn a plugin subprocess with Landlock sandbox and `prctl(PR_SET_NAME)`.
+    /// Spawn a plugin subprocess with optional Landlock sandbox and `prctl(PR_SET_NAME)`.
     ///
     /// - `executable`: path to the plugin binary
     /// - `args`: extra command-line arguments
@@ -133,6 +133,27 @@ impl PluginProcess {
         args: &[&str],
         name: &str,
         data_dir: &std::path::Path,
+    ) -> Result<Self, String> {
+        Self::spawn_inner(executable, args, name, data_dir, true)
+    }
+
+    /// Spawn a plugin subprocess without Landlock sandbox (privileged mode).
+    /// Used for tools like `write` and `edit` that need full filesystem write access.
+    pub fn spawn_privileged(
+        executable: &std::path::Path,
+        args: &[&str],
+        name: &str,
+        data_dir: &std::path::Path,
+    ) -> Result<Self, String> {
+        Self::spawn_inner(executable, args, name, data_dir, false)
+    }
+
+    fn spawn_inner(
+        executable: &std::path::Path,
+        args: &[&str],
+        name: &str,
+        data_dir: &std::path::Path,
+        sandboxed: bool,
     ) -> Result<Self, String> {
         std::fs::create_dir_all(data_dir)
             .map_err(|e| format!("create plugin data dir {}: {e}", data_dir.display()))?;
@@ -151,10 +172,12 @@ impl PluginProcess {
         // We only call Landlock syscalls and prctl which are async-signal-safe equivalent.
         unsafe {
             cmd.pre_exec(move || {
-                apply_sandbox(&data_dir_clone).map_err(|e| {
-                    eprintln!("Plugin '{}' sandbox failed: {}", plugin_name, e);
-                    std::io::Error::new(std::io::ErrorKind::PermissionDenied, e)
-                })?;
+                if sandboxed {
+                    apply_sandbox(&data_dir_clone).map_err(|e| {
+                        eprintln!("Plugin '{}' sandbox failed: {}", plugin_name, e);
+                        std::io::Error::new(std::io::ErrorKind::PermissionDenied, e)
+                    })?;
+                }
                 #[cfg(target_os = "linux")]
                 {
                     let name_bytes = process_name.as_bytes();
