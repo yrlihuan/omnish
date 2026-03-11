@@ -456,7 +456,7 @@ async fn main() -> Result<()> {
 
     // Auto-update state
     let auto_update_enabled = Arc::new(AtomicBool::new(config.auto_update));
-    let exe_mtime = std::env::current_exe()
+    let mut exe_mtime = std::env::current_exe()
         .ok()
         .and_then(|p| {
             let s = p.to_string_lossy().to_string();
@@ -509,6 +509,8 @@ async fn main() -> Result<()> {
                         exec_update(&proxy, &session_id);
                         // exec_update only returns on error — reset timer
                     }
+                    // Update mtime after check to avoid repeated unnecessary checks
+                    exe_mtime = current_mtime;
                 }
             }
         }
