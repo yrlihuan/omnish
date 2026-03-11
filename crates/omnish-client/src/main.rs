@@ -144,7 +144,16 @@ fn exec_update(proxy: &PtyProxy, session_id: &str) {
     nix::unistd::write(std::io::stdout(), b"\r\n").ok();
 
     let current_exe = match std::env::current_exe() {
-        Ok(p) => p,
+        Ok(p) => {
+            // On Linux, /proc/self/exe appends " (deleted)" when the binary was replaced on disk.
+            // Strip the suffix to get the actual install path where the new binary lives.
+            let s = p.to_string_lossy().to_string();
+            if let Some(stripped) = s.strip_suffix(" (deleted)") {
+                std::path::PathBuf::from(stripped)
+            } else {
+                p
+            }
+        }
         Err(e) => {
             eprintln!("\x1b[31m[omnish]\x1b[0m Failed to resolve current exe: {}", e);
             return;
