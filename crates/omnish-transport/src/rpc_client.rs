@@ -50,6 +50,8 @@ type ReconnectFn = Arc<
         + Sync,
 >;
 
+type NotifyFn = Arc<dyn Fn() + Send + Sync>;
+
 fn make_connector(addr: &str, tls_connector: Option<TlsConnector>) -> ConnectorFn {
     let addr = addr.to_string();
     Arc::new(move || {
@@ -181,6 +183,19 @@ impl RpcClient {
             + Sync
             + 'static,
     ) -> Result<Self> {
+        Self::connect_with_reconnect_notify(addr, tls_connector, on_reconnect, None::<fn()>).await
+    }
+
+    pub async fn connect_with_reconnect_notify(
+        addr: &str,
+        tls_connector: Option<TlsConnector>,
+        on_reconnect: impl Fn(&RpcClient) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>
+            + Send
+            + Sync
+            + 'static,
+        on_reconnect_notify: Option<impl Fn() + Send + Sync + 'static>,
+    ) -> Result<Self> {
+        let notify_fn: Option<NotifyFn> = on_reconnect_notify.map(|f| Arc::new(f) as NotifyFn);
         let connector = make_connector(addr, tls_connector);
 
         // Try initial connection
@@ -210,6 +225,7 @@ impl RpcClient {
                     next_id_ref,
                     connector,
                     on_reconnect,
+                    notify_fn.clone(),
                     disc_rx,
                 ));
 
@@ -251,6 +267,7 @@ impl RpcClient {
                     next_id_ref,
                     connector,
                     on_reconnect,
+                    notify_fn,
                     disc_rx,
                 ));
 
@@ -264,6 +281,7 @@ impl RpcClient {
         next_id: Arc<AtomicU64>,
         connector: ConnectorFn,
         on_reconnect: ReconnectFn,
+        on_notify: Option<NotifyFn>,
         mut disc_rx: oneshot::Receiver<()>,
     ) {
         loop {
@@ -324,6 +342,11 @@ impl RpcClient {
                 {
                     let mut guard = inner_ref.lock().await;
                     *guard = new_inner;
+                }
+
+                // Notify caller of successful reconnection
+                if let Some(ref notify) = on_notify {
+                    notify();
                 }
 
                 // Update disc_rx for next iteration

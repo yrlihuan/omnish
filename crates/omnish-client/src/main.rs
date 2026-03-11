@@ -1019,7 +1019,7 @@ async fn connect_daemon(
         None
     };
 
-    match RpcClient::connect_with_reconnect(
+    match RpcClient::connect_with_reconnect_notify(
         &socket_path,
         tls_connector,
         move |rpc| {
@@ -1071,6 +1071,11 @@ async fn connect_daemon(
                 Ok(())
             })
         },
+        Some(|| {
+            use crate::widgets::inline_notice::InlineNotice;
+            let notice = InlineNotice::render("[omnish] reconnected to daemon");
+            eprint!("{}", notice);
+        }),
     ).await {
         Ok(client) => {
             if client.is_connected().await {
