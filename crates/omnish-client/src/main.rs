@@ -730,12 +730,10 @@ async fn main() -> Result<()> {
                         // Flush deferred notices now that we're back in command mode
                         notice_queue::flush();
 
-                        // Clear bash readline before restoring.
-                        // Ctrl-U (kill backward) + Ctrl-K (kill forward) + Enter
-                        // to clear regardless of cursor position (issue #125).
-                        proxy.write_all(b"\x15\x0b\r").ok();
-                        // Restore pre-chat input so user doesn't lose their work (issue #24)
+                        // Clear bash readline and restore pre-chat input only if there's saved input.
+                        // (handle_command_result already clears when redirect is used.)
                         if !saved_input.is_empty() {
+                            proxy.write_all(b"\x15\x0b\r").ok();
                             proxy.write_all(saved_input.as_bytes()).ok();
                         }
                     }
