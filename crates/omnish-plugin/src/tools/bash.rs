@@ -16,13 +16,16 @@ impl BashTool {
         Self
     }
 
-    fn run(&self, command: &str, timeout_secs: u64) -> ToolResult {
-        let mut child = match Command::new("bash")
-            .arg("-c")
+    fn run(&self, command: &str, timeout_secs: u64, cwd: Option<&str>) -> ToolResult {
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c")
             .arg(command)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+            .stderr(std::process::Stdio::piped());
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
+        let mut child = match cmd.spawn()
         {
             Ok(c) => c,
             Err(e) => {
@@ -160,7 +163,8 @@ impl Tool for BashTool {
         let timeout = input["timeout"]
             .as_u64()
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
-        self.run(command, timeout)
+        let cwd = input["cwd"].as_str();
+        self.run(command, timeout, cwd)
     }
 }
 
@@ -253,7 +257,7 @@ mod tests {
     #[test]
     fn test_timeout() {
         let tool = BashTool::new();
-        let result = tool.run("sleep 10", 1);
+        let result = tool.run("sleep 10", 1, None);
         assert!(result.is_error);
         assert!(result.content.contains("timed out"));
     }

@@ -25,7 +25,8 @@ impl ClientPluginManager {
     }
 
     /// Execute a tool via the plugin subprocess. Spawns the process on first call.
-    pub fn execute_tool(&self, tool_name: &str, input: &serde_json::Value) -> (String, bool) {
+    /// If `cwd` is provided, it is injected into the tool input as `"cwd"`.
+    pub fn execute_tool(&self, tool_name: &str, input: &serde_json::Value, cwd: Option<&str>) -> (String, bool) {
         // Map tool name to plugin name (for now, all known tools → their plugin)
         let plugin_name = match tool_name {
             "bash" => "bash",
@@ -58,6 +59,16 @@ impl ClientPluginManager {
                 Err(e) => panic!("Failed to spawn omnish-plugin {plugin_name}: {e}"),
             }
         });
-        proc.execute_tool(tool_name, input)
+        // Inject cwd into tool input if available
+        let effective_input = if let Some(cwd) = cwd {
+            let mut patched = input.clone();
+            if let Some(obj) = patched.as_object_mut() {
+                obj.insert("cwd".to_string(), serde_json::Value::String(cwd.to_string()));
+            }
+            patched
+        } else {
+            input.clone()
+        };
+        proc.execute_tool(tool_name, &effective_input)
     }
 }
