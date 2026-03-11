@@ -219,6 +219,44 @@ impl InterceptGuard for TimeGapGuard {
     }
 }
 
+/// Return the expected byte length of a UTF-8 character from its leading byte.
+/// Returns 1 for ASCII / invalid lead bytes (safe default: flush immediately).
+fn utf8_char_len(first: u8) -> usize {
+    if first < 0x80 { 1 }
+    else if first < 0xC0 { 1 } // continuation byte (shouldn't be a lead)
+    else if first < 0xE0 { 2 }
+    else if first < 0xF0 { 3 }
+    else { 4 }
+}
+
+/// Check if a byte buffer ends with an incomplete UTF-8 character.
+/// Returns true if the trailing bytes form a partial multi-byte sequence.
+fn has_incomplete_utf8_tail(buf: &[u8]) -> bool {
+    if buf.is_empty() {
+        return false;
+    }
+    // Scan backwards for the last UTF-8 lead byte
+    for i in (0..buf.len()).rev() {
+        let b = buf[i];
+        if b < 0x80 {
+            // ASCII — complete
+            return false;
+        }
+        if b >= 0xC0 {
+            // Lead byte found — check if we have enough continuation bytes
+            let expected = utf8_char_len(b);
+            let available = buf.len() - i;
+            return available < expected;
+        }
+        // continuation byte (0x80..0xBF) — keep scanning back
+        if i == 0 {
+            // All continuation bytes with no lead — malformed, flush it
+            return false;
+        }
+    }
+    false
+}
+
 pub struct InputInterceptor {
     prefix: Vec<u8>,
     buffer: VecDeque<u8>,
@@ -429,6 +467,11 @@ impl InputInterceptor {
             } else {
                 // Prefix mismatch, flush buffer to PTY
                 let flushed: Vec<u8> = self.buffer.iter().copied().collect();
+                if has_incomplete_utf8_tail(&flushed) {
+                    // Buffer ends with an incomplete multi-byte UTF-8 char;
+                    // wait for remaining continuation bytes before flushing.
+                    return InterceptAction::Pending;
+                }
                 self.buffer.clear();
                 return self.forward(flushed);
             }
@@ -442,6 +485,11 @@ impl InputInterceptor {
 
         // Not in chat mode and buffer exceeded prefix length - flush and reset
         let flushed: Vec<u8> = self.buffer.iter().copied().collect();
+        if has_incomplete_utf8_tail(&flushed) {
+            // Buffer ends with an incomplete multi-byte UTF-8 char;
+            // wait for remaining continuation bytes before flushing.
+            return InterceptAction::Pending;
+        }
         self.buffer.clear();
         self.forward(flushed)
     }
@@ -940,6 +988,62 @@ mod tests {
         assert_eq!(
             interceptor.feed_byte(b'D'),
             InterceptAction::Forward(vec![0x1b, b'[', b'D'])
+        );
+    }
+
+    // --- UTF-8 multi-byte buffering tests ---
+
+    #[test]
+    fn test_utf8_char_len_helper() {
+        assert_eq!(utf8_char_len(b'a'), 1);       // ASCII
+        assert_eq!(utf8_char_len(0x80), 1);        // continuation (invalid lead)
+        assert_eq!(utf8_char_len(0xC3), 2);        // 2-byte (e.g. ü)
+        assert_eq!(utf8_char_len(0xE4), 3);        // 3-byte (e.g. CJK)
+        assert_eq!(utf8_char_len(0xF0), 4);        // 4-byte (e.g. emoji)
+    }
+
+    #[test]
+    fn test_incomplete_utf8_tail() {
+        // Complete ASCII
+        assert!(!has_incomplete_utf8_tail(b"hello"));
+        // Complete 3-byte CJK: 一 = E4 B8 80
+        assert!(!has_incomplete_utf8_tail(&[0xE4, 0xB8, 0x80]));
+        // Incomplete 3-byte: only lead + 1 continuation
+        assert!(has_incomplete_utf8_tail(&[0xE4, 0xB8]));
+        // Incomplete 3-byte: only lead byte
+        assert!(has_incomplete_utf8_tail(&[0xE4]));
+        // ASCII then incomplete 3-byte
+        assert!(has_incomplete_utf8_tail(&[b'a', 0xE4, 0xB8]));
+        // Empty
+        assert!(!has_incomplete_utf8_tail(b""));
+    }
+
+    #[test]
+    fn test_cjk_char_buffered_before_flush() {
+        // "一" = E4 B8 80 (3 bytes). With prefix "::", the first byte E4
+        // mismatches ':', so it enters the mismatch branch. Without UTF-8
+        // buffering it would flush the single byte; with it, it should
+        // return Pending until the full character is received.
+        let mut ic = new_interceptor("::");
+
+        // First byte of "一" — should be Pending (incomplete UTF-8)
+        assert_eq!(ic.feed_byte(0xE4), InterceptAction::Pending);
+        // Second byte — still incomplete
+        assert_eq!(ic.feed_byte(0xB8), InterceptAction::Pending);
+        // Third byte — now complete, should flush all 3 bytes
+        assert_eq!(
+            ic.feed_byte(0x80),
+            InterceptAction::Forward(vec![0xE4, 0xB8, 0x80])
+        );
+    }
+
+    #[test]
+    fn test_ascii_not_delayed_by_utf8_check() {
+        // ASCII byte that mismatches prefix should flush immediately
+        let mut ic = new_interceptor("::");
+        assert_eq!(
+            ic.feed_byte(b'a'),
+            InterceptAction::Forward(vec![b'a'])
         );
     }
 }
