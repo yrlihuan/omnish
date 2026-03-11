@@ -29,7 +29,9 @@ impl ClientPluginManager {
         // Map tool name to plugin name (for now, all known tools → their plugin)
         let plugin_name = match tool_name {
             "bash" => "bash",
+            "edit" => "edit",
             "read" => "read",
+            "write" => "write",
             _ => return (format!("Unknown client tool: {tool_name}"), true),
         };
 

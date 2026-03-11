@@ -1,4 +1,5 @@
 use omnish_plugin::tools::bash::BashTool;
+use omnish_plugin::tools::edit::EditTool;
 use omnish_plugin::tools::read::ReadTool;
 use omnish_plugin::tools::write::WriteTool;
 use omnish_plugin::{JsonRpcRequest, JsonRpcResponse, Plugin, PluginType};
@@ -7,6 +8,7 @@ use std::io::{BufRead, BufReader, Write};
 fn resolve_plugin(name: &str) -> Option<Box<dyn Plugin>> {
     match name {
         "bash" => Some(Box::new(BashTool::new())),
+        "edit" => Some(Box::new(EditTool::new())),
         "read" => Some(Box::new(ReadTool::new())),
         "write" => Some(Box::new(WriteTool::new())),
         _ => None,
@@ -118,7 +120,7 @@ fn main() {
 
     if args.len() < 2 {
         eprintln!("Usage: omnish-plugin <plugin-name>");
-        eprintln!("Available plugins: bash, read, write");
+        eprintln!("Available plugins: bash, edit, read, write");
         std::process::exit(1);
     }
 
@@ -133,7 +135,7 @@ fn main() {
         Some(p) => p,
         None => {
             eprintln!("Unknown plugin: {name}");
-            eprintln!("Available plugins: bash, read, write");
+            eprintln!("Available plugins: bash, edit, read, write");
             std::process::exit(1);
         }
     };
