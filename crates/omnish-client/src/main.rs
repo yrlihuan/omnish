@@ -139,10 +139,52 @@ fn parse_resume_args() -> Option<ResumeArgs> {
     Some(ResumeArgs { master_fd: fd, child_pid: pid, session_id: sid })
 }
 
+mod notice_queue {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    static DEFERRED: AtomicBool = AtomicBool::new(false);
+    static QUEUE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    /// Queue a notice. If deferred mode is on, store it; otherwise display immediately.
+    pub fn push(msg: &str) {
+        if DEFERRED.load(Ordering::Relaxed) {
+            if let Ok(mut q) = QUEUE.lock() {
+                q.push(msg.to_string());
+            }
+        } else {
+            render(msg);
+        }
+    }
+
+    /// Enable deferred mode (e.g. when entering chat).
+    pub fn defer() {
+        DEFERRED.store(true, Ordering::Relaxed);
+    }
+
+    /// Disable deferred mode and flush all queued notices.
+    pub fn flush() {
+        DEFERRED.store(false, Ordering::Relaxed);
+        let msgs: Vec<String> = {
+            match QUEUE.lock() {
+                Ok(mut q) => q.drain(..).collect(),
+                Err(_) => return,
+            }
+        };
+        for msg in msgs {
+            render(&msg);
+        }
+    }
+
+    fn render(msg: &str) {
+        use crate::widgets::inline_notice::InlineNotice;
+        let cols = super::get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
+        eprint!("{}", InlineNotice::render(msg, cols));
+    }
+}
+
 fn notice(msg: &str) {
-    use crate::widgets::inline_notice::InlineNotice;
-    let cols = get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
-    eprint!("{}", InlineNotice::render(msg, cols));
+    notice_queue::push(msg);
 }
 
 fn exec_update(proxy: &PtyProxy, session_id: &str) {
@@ -576,6 +618,7 @@ async fn main() -> Result<()> {
                     }
                     InterceptAction::Chat(msg) => {
                         event_log::push("chat mode enter");
+                        notice_queue::defer();
                         completer.clear();
                         // Save pre-chat input to restore after chat (issue #24)
                         let saved_input = shell_input.input().to_string();
@@ -598,6 +641,9 @@ async fn main() -> Result<()> {
                             let err = display::render_error("Daemon not connected");
                             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                         }
+
+                        // Flush deferred notices now that we're back in command mode
+                        notice_queue::flush();
 
                         // Clear bash readline before restoring.
                         // Ctrl-U (kill backward) + Ctrl-K (kill forward) + Enter
