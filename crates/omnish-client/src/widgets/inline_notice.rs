@@ -12,14 +12,14 @@ impl InlineNotice {
     /// `max_cols` limits the visible message length to avoid wrapping.
     ///
     /// The sequence:
-    /// 1. Insert a blank line at cursor (pushes current line down)
-    /// 2. Write the dim message (truncated to max_cols)
-    /// 3. Move down one line back to the original content
-    /// 4. Return to start of line
+    /// 1. Save cursor position (row R, col C)
+    /// 2. Insert a blank line at cursor (pushes current line to R+1)
+    /// 3. Write the dim message (truncated to max_cols)
+    /// 4. Restore cursor to (R, C), then move down 1 to (R+1, C)
     pub fn render(message: &str, max_cols: usize) -> String {
         let truncated = truncate(message, max_cols);
         format!(
-            "\x1b[1L\r\x1b[2m{}\x1b[0m\x1b[1B\r",
+            "\x1b[s\x1b[1L\r\x1b[2m{}\x1b[0m\x1b[u\x1b[1B",
             truncated
         )
     }
@@ -65,10 +65,12 @@ mod tests {
     }
 
     #[test]
-    fn test_render_moves_cursor_back() {
+    fn test_render_preserves_cursor_column() {
         let output = InlineNotice::render("test", 80);
-        assert!(!output.contains("\x1b[1A")); // no move up
-        assert!(output.contains("\x1b[1B"));  // move down
+        assert!(output.contains("\x1b[s"));  // save cursor
+        assert!(output.contains("\x1b[u"));  // restore cursor
+        assert!(output.contains("\x1b[1B")); // +1 row to compensate insert
+        assert!(!output.ends_with('\r'));     // no \r clobbering column
     }
 
     #[test]
