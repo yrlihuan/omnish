@@ -182,10 +182,20 @@ mod notice_queue {
         let cols = super::get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
         eprint!("{}", InlineNotice::render(msg, cols));
     }
+
+    /// Display a notice immediately as a plain line, bypassing the queue and InlineNotice.
+    /// Used for startup messages before the shell prompt is on screen.
+    pub fn immediate(msg: &str) {
+        eprint!("\x1b[2m{}\x1b[0m\r\n", msg);
+    }
 }
 
 fn notice(msg: &str) {
     notice_queue::push(msg);
+}
+
+fn notice_immediate(msg: &str) {
+    notice_queue::immediate(msg);
 }
 
 fn exec_update(proxy: &PtyProxy, session_id: &str) {
@@ -1098,8 +1108,8 @@ async fn connect_daemon(
     let auth_token = match omnish_common::auth::load_token(&token_path) {
         Ok(t) => t,
         Err(e) => {
-            notice(&format!("[omnish] Failed to load auth token: {}", e));
-            notice("[omnish] Running in passthrough mode (no daemon)");
+            notice_immediate(&format!("[omnish] Failed to load auth token: {}", e));
+            notice_immediate("[omnish] Running in passthrough mode (no daemon)");
             return None;
         }
     };
@@ -1111,8 +1121,8 @@ async fn connect_daemon(
         match omnish_transport::tls::make_connector(&cert_path) {
             Ok(c) => Some(c),
             Err(e) => {
-                notice(&format!("[omnish] Failed to set up TLS: {}", e));
-                notice("[omnish] Running in passthrough mode (no daemon)");
+                notice_immediate(&format!("[omnish] Failed to set up TLS: {}", e));
+                notice_immediate("[omnish] Running in passthrough mode (no daemon)");
                 return None;
             }
         }
@@ -1178,20 +1188,20 @@ async fn connect_daemon(
     ).await {
         Ok(client) => {
             if client.is_connected().await {
-                notice(&format!("[omnish] Connected to daemon (session: {})", &session_id[..8]));
+                notice_immediate(&format!("[omnish] Connected to daemon (session: {})", &session_id[..8]));
             } else {
-                notice("[omnish] Daemon not available, waiting for daemon to start...");
-                notice(&format!("[omnish] Socket: {}", socket_path));
-                notice("[omnish] To start: omnish-daemon");
+                notice_immediate("[omnish] Daemon not available, waiting for daemon to start...");
+                notice_immediate(&format!("[omnish] Socket: {}", socket_path));
+                notice_immediate("[omnish] To start: omnish-daemon");
             }
             Some(client)
         }
         Err(e) => {
             // This should not happen with our updated connect_with_reconnect,
             // but keep for backward compatibility
-            notice(&format!("[omnish] Daemon not available ({}), running in passthrough mode", e));
-            notice(&format!("[omnish] Socket: {}", socket_path));
-            notice("[omnish] To start: omnish-daemon");
+            notice_immediate(&format!("[omnish] Daemon not available ({}), running in passthrough mode", e));
+            notice_immediate(&format!("[omnish] Socket: {}", socket_path));
+            notice_immediate("[omnish] To start: omnish-daemon");
             None
         }
     }
