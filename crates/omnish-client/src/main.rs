@@ -198,7 +198,8 @@ mod notice_queue {
         use crate::widgets::inline_notice::InlineNotice;
         let cols = super::get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
         let at_bottom = CURSOR_ROW.load(Ordering::Relaxed) > 0;
-        eprint!("{}", InlineNotice::render_at(msg, cols, at_bottom));
+        let debug_msg = format!("[{}] {}", at_bottom as u8, msg);
+        eprint!("{}", InlineNotice::render_at(&debug_msg, cols, at_bottom));
     }
 }
 
