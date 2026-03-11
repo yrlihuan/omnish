@@ -873,6 +873,7 @@ dependencies = [
  "omnish-llm",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
