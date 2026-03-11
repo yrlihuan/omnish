@@ -212,11 +212,9 @@ impl Plugin for BashTool {
     fn system_prompt(&self) -> Option<String> {
         Some(
             "### bash\n\
-             Execute shell commands on the user's machine:\n\
+             Execute bash commands on the user's machine:\n\
              - Use this to run commands, inspect files, check system state, etc.\n\
-             - Use the 'shell' parameter to specify the shell (e.g., /bin/bash, /bin/zsh). \
-               The user's default shell is typically available as the 'shell' field in the session context.\n\
-             - Commands run in the working directory specified by 'cwd', or the user's current directory if not specified.\n\
+             - Commands run in the user's current working directory.\n\
              - The tool runs in a sandboxed environment with restricted write access.\n\
              - Always quote file paths that contain spaces with double quotes in your command (e.g., cd \"path with spaces/file.txt\")\n\
              - If a command fails with a permission error, do not retry. Explain the error to the user."
