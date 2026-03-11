@@ -153,7 +153,7 @@ async fn async_main() -> Result<()> {
         .and_then(|p| p.parent().map(|d| d.join("omnish-plugin")))
         .unwrap_or_else(|| std::path::PathBuf::from("omnish-plugin"));
     if plugin_bin.exists() {
-        for name in &["bash", "read"] {
+        for name in &["bash", "read", "write"] {
             if let Some(p) = omnish_daemon::plugin::ExternalPlugin::spawn_builtin(name, &plugin_bin, &[name]) {
                 plugin_mgr.register(Box::new(p));
             }
@@ -162,6 +162,7 @@ async fn async_main() -> Result<()> {
         tracing::warn!("omnish-plugin binary not found at {}, registering built-in tools in-process", plugin_bin.display());
         plugin_mgr.register(Box::new(omnish_daemon::tools::bash::BashTool::new()));
         plugin_mgr.register(Box::new(omnish_daemon::tools::read::ReadTool::new()));
+        plugin_mgr.register(Box::new(omnish_plugin::tools::write::WriteTool::new()));
     }
     plugin_mgr.load_external_plugins(&config.plugins.enabled);
     let plugin_mgr = Arc::new(plugin_mgr);
