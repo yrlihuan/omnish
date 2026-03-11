@@ -5,6 +5,7 @@ pub enum Osc133EventKind {
     OutputStart,
     CommandEnd { exit_code: i32 },
     ReadlineLine { content: String, point: Option<usize> },
+    NoReadline,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +115,7 @@ impl Osc133Detector {
             b"A" => Some(Osc133EventKind::PromptStart),
             b"B" => Some(Osc133EventKind::CommandStart { command: None, cwd: None, original: None }),
             b"C" => Some(Osc133EventKind::OutputStart),
+            b"NO_READLINE" => Some(Osc133EventKind::NoReadline),
             _ => {
                 // RL;... — readline line report
                 if payload.len() >= 3 && payload[0] == b'R' && payload[1] == b'L' && payload[2] == b';' {
@@ -421,5 +423,13 @@ mod tests {
         let input = b"hello\x1b]133;RL;git status\x07world";
         let result = strip_osc133(input);
         assert_eq!(result, b"helloworld");
+    }
+
+    #[test]
+    fn test_no_readline() {
+        let mut detector = Osc133Detector::new();
+        let events = detector.feed(b"\x1b]133;NO_READLINE\x07");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, Osc133EventKind::NoReadline);
     }
 }

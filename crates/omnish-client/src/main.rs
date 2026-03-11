@@ -431,6 +431,7 @@ async fn main() -> Result<()> {
     let mut throttle = throttle::OutputThrottle::new();
     let mut osc133_detector = omnish_tracker::osc133_detector::Osc133Detector::new();
     let mut osc133_warned = false;
+    let mut no_readline_warned = false;
     let mut completer = ghost_complete::GhostCompleter::new(vec![
         Box::new(ghost_complete::BuiltinProvider::new()),
     ]);
@@ -925,6 +926,12 @@ async fn main() -> Result<()> {
                                     if shell_completer.on_input_changed(input, seq) {
                                         nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
                                     }
+                                }
+                            }
+                            Osc133EventKind::NoReadline => {
+                                if !no_readline_warned {
+                                    notice("[omnish] bash readline not available (bind -x unsupported). Completions disabled.");
+                                    no_readline_warned = true;
                                 }
                             }
                         }

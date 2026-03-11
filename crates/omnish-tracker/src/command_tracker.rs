@@ -204,7 +204,7 @@ impl CommandTracker {
                     completed.push(self.finalize_command(pending, timestamp_ms, stream_pos, Some(exit_code)));
                 }
             }
-            Osc133EventKind::ReadlineLine { .. } => {
+            Osc133EventKind::ReadlineLine { .. } | Osc133EventKind::NoReadline => {
                 // Handled by shell_input in omnish-client, not relevant to command tracking
             }
         }
