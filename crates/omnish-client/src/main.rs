@@ -564,11 +564,13 @@ async fn main() -> Result<()> {
                     None => {
                         // Not a DSR byte — check if detector aborted mid-sequence
                         if !dsr_detector.buf.is_empty() {
-                            // Replay buffered bytes that weren't part of a DSR response
+                            // Replay buffered bytes (includes current byte already)
                             let replay = dsr_detector.take_buf();
                             filtered_input.extend_from_slice(&replay);
+                        } else {
+                            // Normal byte, not part of any DSR sequence
+                            filtered_input.push(byte);
                         }
-                        filtered_input.push(byte);
                     }
                 }
             }

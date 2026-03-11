@@ -8,6 +8,7 @@
 #   2. /debug session — verify session debug info is shown
 #   3. /context | tail -n 10 — verify context output with pipe
 #   4. Two conversations with 2 Q&A each, /resume first, /thread del, /thread list verify
+#   5. Arrow Up/Down history navigation — echo 1, echo 2, Up recalls echo 2, Down clears
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -19,6 +20,7 @@ Test cases:
   2. /debug session shows session debug info
   3. /context | tail -n 10 shows context output
   4. Two conversations (2 Q&A each), resume first, delete second, verify /thread list
+  5. Arrow Up/Down history navigation
 EOF
 }
 
@@ -255,5 +257,52 @@ test_4() {
     fi
 }
 
-echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete${NC}"
-run_tests 4
+# ── Test 5: Arrow Up/Down history navigation ─────────────────────────────
+test_5() {
+    echo -e "\n${YELLOW}=== Test 5: Arrow Up/Down history navigation ===${NC}"
+
+    restart_client
+    wait_for_client
+
+    # Run echo 1
+    send_keys "echo 1" 0.3
+    send_enter 1
+
+    # Run echo 2
+    send_keys "echo 2" 0.3
+    send_enter 1
+
+    # Press Arrow Up — should recall "echo 2"
+    send_special Up 0.5
+
+    local content=$(capture_pane -10)
+    show_capture "After Arrow Up" "$content" 5
+
+    local last_line
+    last_line=$(last_nonempty_line "$content")
+    if echo "$last_line" | grep -q "echo 2"; then
+        echo -e "  ${GREEN}Arrow Up recalled 'echo 2'${NC}"
+    else
+        assert_fail "Arrow Up did not recall 'echo 2', got: $last_line"
+        return 1
+    fi
+
+    # Press Arrow Down — should return to empty prompt
+    send_special Down 0.5
+
+    content=$(capture_pane -10)
+    show_capture "After Arrow Down" "$content" 5
+
+    last_line=$(last_nonempty_line "$content")
+    # After Down, the command line should be empty (just the prompt ending with $)
+    if echo "$last_line" | grep -qE '\$ $'; then
+        assert_pass "Arrow Up/Down history navigation works correctly"
+        return 0
+    else
+        assert_fail "Arrow Down did not return to empty prompt, got: $last_line"
+        return 1
+    fi
+}
+
+echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history${NC}"
+run_tests 5
