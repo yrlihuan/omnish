@@ -121,6 +121,8 @@ struct ResumeArgs {
     master_fd: i32,
     child_pid: i32,
     session_id: String,
+    cursor_col: u16,
+    cursor_row: u16,
 }
 
 fn parse_resume_args() -> Option<ResumeArgs> {
@@ -137,7 +139,15 @@ fn parse_resume_args() -> Option<ResumeArgs> {
     let sid = args.iter()
         .find_map(|a| a.strip_prefix("--session-id="))?
         .to_string();
-    Some(ResumeArgs { master_fd: fd, child_pid: pid, session_id: sid })
+    let cursor_col = args.iter()
+        .find_map(|a| a.strip_prefix("--cursor-col="))
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(0);
+    let cursor_row = args.iter()
+        .find_map(|a| a.strip_prefix("--cursor-row="))
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(0);
+    Some(ResumeArgs { master_fd: fd, child_pid: pid, session_id: sid, cursor_col, cursor_row })
 }
 
 mod notice_queue {
@@ -196,7 +206,7 @@ fn notice(msg: &str) {
     notice_queue::push(msg);
 }
 
-fn exec_update(proxy: &PtyProxy, session_id: &str) {
+fn exec_update(proxy: &PtyProxy, session_id: &str, cursor_col: u16, cursor_row: u16) {
     let current_exe = match std::env::current_exe() {
         Ok(p) => {
             // On Linux, /proc/self/exe appends " (deleted)" when the binary was replaced on disk.
@@ -267,6 +277,8 @@ fn exec_update(proxy: &PtyProxy, session_id: &str) {
         std::ffi::CString::new(format!("--fd={}", master_fd)).unwrap(),
         std::ffi::CString::new(format!("--pid={}", proxy.child_pid())).unwrap(),
         std::ffi::CString::new(format!("--session-id={}", session_id)).unwrap(),
+        std::ffi::CString::new(format!("--cursor-col={}", cursor_col)).unwrap(),
+        std::ffi::CString::new(format!("--cursor-row={}", cursor_row)).unwrap(),
     ];
 
     // execvp replaces this process — only returns on error
@@ -420,7 +432,13 @@ async fn main() -> Result<()> {
     let mut interceptor = InputInterceptor::new(&config.shell.command_prefix, Box::new(guard));
     let prefix_bytes = config.shell.command_prefix.as_bytes();
     let mut alt_screen_detector = AltScreenDetector::new();
-    let mut col_tracker = CursorColTracker::new();
+    let mut col_tracker = if let Some(ref r) = resume_args {
+        let t = CursorColTracker::with_position(r.cursor_col, r.cursor_row);
+        notice_queue::set_cursor_row(t.row);
+        t
+    } else {
+        CursorColTracker::new()
+    };
     let mut dismiss_col: u16 = 0;
     let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string());
     let mut command_tracker = omnish_tracker::command_tracker::CommandTracker::new(
@@ -504,7 +522,7 @@ async fn main() -> Result<()> {
                     });
                 if let Some(current) = current_mtime {
                     if current != *startup_mtime {
-                        exec_update(&proxy, &session_id);
+                        exec_update(&proxy, &session_id, col_tracker.col, col_tracker.row);
                         // exec_update only returns on error — reset timer
                     }
                     // Update mtime after check to avoid repeated unnecessary checks
@@ -699,7 +717,7 @@ async fn main() -> Result<()> {
                                 &last_readline_content,
                                 shell_pid,
                             );
-                            run_chat_loop(rpc, &session_id, &proxy, initial, &dbg_fn, &mut chat_history, &auto_update_enabled).await;
+                            run_chat_loop(rpc, &session_id, &proxy, initial, &dbg_fn, &mut chat_history, &auto_update_enabled, col_tracker.col, col_tracker.row).await;
                         } else {
                             let err = display::render_error("Daemon not connected");
                             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
@@ -1264,9 +1282,13 @@ enum ColTrackState {
 
 impl CursorColTracker {
     fn new() -> Self {
+        Self::with_position(0, 0)
+    }
+
+    fn with_position(col: u16, row: u16) -> Self {
         Self {
-            col: 0,
-            row: 0,
+            col,
+            row,
             state: ColTrackState::Normal,
             csi_params: Vec::new(),
             utf8_buf: [0; 4],
@@ -1784,10 +1806,12 @@ async fn handle_slash_command(
     rpc: &RpcClient,
     proxy: &PtyProxy,
     client_debug_fn: &dyn Fn() -> String,
+    cursor_col: u16,
+    cursor_row: u16,
 ) -> bool {
     // Intercept /update client-side (needs process state: proxy fd/pid)
     if trimmed == "/update" {
-        exec_update(proxy, session_id);
+        exec_update(proxy, session_id, cursor_col, cursor_row);
         return true; // Only reached if exec failed
     }
     // /update auto is intercepted at the call site (needs mutable auto_update_enabled)
@@ -1861,6 +1885,8 @@ async fn run_chat_loop(
     client_debug_fn: &dyn Fn() -> String,
     chat_history: &mut VecDeque<String>,
     auto_update_enabled: &AtomicBool,
+    cursor_col: u16,
+    cursor_row: u16,
 ) {
     let client_plugins = Arc::new(client_plugin::ClientPluginManager::new());
     let mut chat_completer = ghost_complete::GhostCompleter::new(vec![
@@ -2306,7 +2332,7 @@ async fn run_chat_loop(
 
         // Handle /commands; unknown ones fall through to send as chat message
         if trimmed.starts_with('/')
-            && handle_slash_command(trimmed, session_id, rpc, proxy, client_debug_fn).await
+            && handle_slash_command(trimmed, session_id, rpc, proxy, client_debug_fn, cursor_col, cursor_row).await
         {
             if auto_exit { break; }
             continue;
