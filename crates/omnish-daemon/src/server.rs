@@ -168,7 +168,7 @@ async fn handle_message(
         }
         Message::Request(req) => {
             if req.query.starts_with("__cmd:") {
-                let result = handle_builtin_command(&req, mgr, task_mgr, llm, conv_mgr).await;
+                let result = handle_builtin_command(&req, mgr, task_mgr, llm, conv_mgr, plugin_mgr).await;
                 let content = serde_json::to_string(&result).unwrap_or_else(|_| {
                     r#"{"display":"(serialization error)"}"#.to_string()
                 });
@@ -277,6 +277,39 @@ async fn handle_message(
     }]
 }
 
+/// Shared chat setup: builds tools list and system prompt from plugins.
+/// Used by both the actual chat handler and `/template chat`.
+struct ChatSetup {
+    command_query_tool: omnish_daemon::tools::command_query::CommandQueryTool,
+    tools: Vec<omnish_llm::tool::ToolDef>,
+    system_prompt: String,
+}
+
+async fn build_chat_setup(mgr: &SessionManager, plugin_mgr: &PluginManager) -> ChatSetup {
+    let (commands, stream_reader) = mgr.get_all_commands_with_reader().await;
+    let command_query_tool = omnish_daemon::tools::command_query::CommandQueryTool::new(
+        commands,
+        stream_reader,
+    );
+
+    let mut tools = vec![command_query_tool.definition()];
+    tools.extend(plugin_mgr.all_tools());
+
+    let mut pm = omnish_llm::prompt::PromptManager::default_chat();
+    let mut tool_prompts: Vec<String> = Vec::new();
+    if let Some(p) = command_query_tool.system_prompt() {
+        tool_prompts.push(p);
+    }
+    tool_prompts.extend(plugin_mgr.all_system_prompts());
+    if !tool_prompts.is_empty() {
+        let tools_section = format!("## Tools\n\nYou have access to tools:\n\n{}", tool_prompts.join("\n\n"));
+        pm.add("tools", &tools_section);
+    }
+    let system_prompt = pm.build();
+
+    ChatSetup { command_query_tool, tools, system_prompt }
+}
+
 async fn handle_chat_message(
     cm: ChatMessage,
     mgr: &SessionManager,
@@ -297,19 +330,11 @@ async fn handle_chat_message(
     let use_case = UseCase::Chat;
     let max_context_chars = backend.max_content_chars_for_use_case(use_case);
 
-    // Build per-request official tool (needs fresh command data)
-    let (commands, stream_reader) = mgr.get_all_commands_with_reader().await;
-    let command_query_tool = omnish_daemon::tools::command_query::CommandQueryTool::new(
-        commands,
-        stream_reader,
-    );
+    let ChatSetup { command_query_tool, tools, system_prompt } =
+        build_chat_setup(mgr, plugin_mgr).await;
 
     // Include recent command list as system-reminder in user message
     let command_list = command_query_tool.list_history(20);
-
-    // Combine official + plugin tools
-    let mut tools = vec![command_query_tool.definition()];
-    tools.extend(plugin_mgr.all_tools());
 
     // Load prior conversation history as raw JSON
     let mut extra_messages = conv_mgr.load_raw_messages(&cm.thread_id);
@@ -325,19 +350,6 @@ async fn handle_chat_message(
         )
     };
     extra_messages.push(serde_json::json!({"role": "user", "content": llm_user_content}));
-
-    // Build system prompt from PromptManager + plugin fragments
-    let mut pm = omnish_llm::prompt::PromptManager::default_chat();
-    let mut tool_prompts: Vec<String> = Vec::new();
-    if let Some(p) = command_query_tool.system_prompt() {
-        tool_prompts.push(p);
-    }
-    tool_prompts.extend(plugin_mgr.all_system_prompts());
-    if !tool_prompts.is_empty() {
-        let tools_section = format!("## Tools\n\nYou have access to tools:\n\n{}", tool_prompts.join("\n\n"));
-        pm.add("tools", &tools_section);
-    }
-    let system_prompt = pm.build();
 
     let llm_req = LlmRequest {
         context: String::new(),
@@ -757,7 +769,7 @@ fn cmd_display(s: impl Into<String>) -> serde_json::Value {
     serde_json::json!({ "display": s.into() })
 }
 
-async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>) -> serde_json::Value {
+async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>, plugin_mgr: &PluginManager) -> serde_json::Value {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
     // Handle /context chat:<thread_id> — show conversation context for a chat thread
     if let Some(thread_id) = sub.strip_prefix("context chat:") {
@@ -842,7 +854,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
         }
     }
     if let Some(name) = sub.strip_prefix("template ") {
-        return cmd_display(handle_template(name, mgr).await);
+        return cmd_display(handle_template(name, mgr, plugin_mgr).await);
     }
     if sub == "template" {
         return cmd_display(format!(
@@ -871,22 +883,23 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
     }
 }
 
-async fn handle_template(name: &str, mgr: &SessionManager) -> String {
+async fn handle_template(name: &str, mgr: &SessionManager, plugin_mgr: &PluginManager) -> String {
     match name {
         "chat" => {
-            // Build actual tool definitions
-            let (commands, stream_reader) = mgr.get_all_commands_with_reader().await;
-            let tool = omnish_daemon::tools::command_query::CommandQueryTool::new(
-                commands,
-                stream_reader,
-            );
-            let tool_def = tool.definition();
-            let tools_json = serde_json::to_string_pretty(&serde_json::json!({
-                "name": tool_def.name,
-                "description": tool_def.description,
-                "input_schema": tool_def.input_schema,
-            }))
-            .unwrap_or_default();
+            let ChatSetup { tools, system_prompt, .. } =
+                build_chat_setup(mgr, plugin_mgr).await;
+
+            let tools_json: Vec<String> = tools
+                .iter()
+                .map(|t| {
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.input_schema,
+                    }))
+                    .unwrap_or_default()
+                })
+                .collect();
 
             format!(
                 "=== System Prompt ===\n{}\n\n\
@@ -896,8 +909,8 @@ async fn handle_template(name: &str, mgr: &SessionManager) -> String {
                  User: {{query}}\n\
                  [agent loop: tool_use → tool_result, up to 5 iterations]\n\
                  Assistant: {{response}}",
-                omnish_llm::prompt::PromptManager::default_chat().build(),
-                tools_json,
+                system_prompt,
+                tools_json.join("\n"),
             )
         }
         other => {
