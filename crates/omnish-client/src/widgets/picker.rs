@@ -2,8 +2,12 @@
 //
 // Pure rendering functions for the picker widget (single-select and multi-select).
 // All functions return a String suitable for writing to a raw-mode terminal (using \r\n).
+// Supports scrolling viewport when items exceed MAX_VISIBLE.
 
 use std::os::unix::io::AsRawFd;
+
+/// Maximum number of items visible in the picker viewport.
+const MAX_VISIBLE: usize = 10;
 
 /// Get terminal width, fallback to 80.
 fn terminal_cols() -> u16 {
@@ -45,9 +49,23 @@ fn render_hint(multi: bool) -> String {
     format!("\r\x1b[2m{}\x1b[0m\x1b[K", hint)
 }
 
-/// Render the full picker widget (initial draw).
-fn render_full(title: &str, items: &[&str], cursor: usize, checked: &[bool], multi: bool, cols: u16) -> String {
-    let total_lines = 1 + 1 + items.len() + 1 + 1; // title + sep + items + sep + hint
+/// Number of items visible in the viewport.
+fn visible_count(total: usize) -> usize {
+    total.min(MAX_VISIBLE)
+}
+
+/// Render the full picker widget (initial draw or full redraw after scroll).
+fn render_full(
+    title: &str,
+    items: &[&str],
+    cursor: usize,
+    checked: &[bool],
+    multi: bool,
+    cols: u16,
+    scroll_offset: usize,
+) -> String {
+    let vis = visible_count(items.len());
+    let total_lines = 1 + 1 + vis + 1 + 1; // title + sep + visible items + sep + hint
     let mut out = String::new();
 
     // Push screen content up by printing N blank lines
@@ -57,25 +75,42 @@ fn render_full(title: &str, items: &[&str], cursor: usize, checked: &[bool], mul
     // Move cursor back up
     out.push_str(&format!("\x1b[{}A", total_lines));
 
-    // Title
-    out.push_str(&format!("\r\x1b[1m{}\x1b[0m\x1b[K", title));
+    // Title (with scroll indicator if applicable)
+    if scroll_offset > 0 {
+        out.push_str(&format!(
+            "\r\x1b[1m{}\x1b[0m \x1b[2m(\u{25b2} {} more)\x1b[0m\x1b[K",
+            title, scroll_offset
+        ));
+    } else {
+        out.push_str(&format!("\r\x1b[1m{}\x1b[0m\x1b[K", title));
+    }
     out.push_str("\r\n");
 
     // Top separator
     out.push_str(&render_separator(cols));
     out.push_str("\r\n");
 
-    // Items
-    for (i, item) in items.iter().enumerate() {
-        out.push_str(&render_item(item, i == cursor, checked[i], multi));
-        if i < items.len() - 1 {
+    // Visible items
+    let end = (scroll_offset + vis).min(items.len());
+    for i in scroll_offset..end {
+        out.push_str(&render_item(items[i], i == cursor, checked[i], multi));
+        if i < end - 1 {
             out.push_str("\r\n");
         }
     }
     out.push_str("\r\n");
 
-    // Bottom separator
-    out.push_str(&render_separator(cols));
+    // Bottom separator (with scroll indicator if applicable)
+    let remaining_below = items.len().saturating_sub(end);
+    if remaining_below > 0 {
+        out.push_str(&format!(
+            "\r\x1b[2m{} (\u{25bc} {} more)\x1b[0m\x1b[K",
+            "\u{2500}".repeat((cols as usize).saturating_sub(12)),
+            remaining_below
+        ));
+    } else {
+        out.push_str(&render_separator(cols));
+    }
     out.push_str("\r\n");
 
     // Hint
@@ -85,8 +120,9 @@ fn render_full(title: &str, items: &[&str], cursor: usize, checked: &[bool], mul
 }
 
 /// Render cleanup: move cursor to title line and erase everything below.
-fn render_cleanup(items_len: usize) -> String {
-    let total_lines = 1 + 1 + items_len + 1 + 1;
+fn render_cleanup(total_items: usize) -> String {
+    let vis = visible_count(total_items);
+    let total_lines = 1 + 1 + vis + 1 + 1;
     let up = total_lines - 1;
     format!("\x1b[{}A\r\x1b[J", up)
 }
@@ -123,13 +159,15 @@ fn run_picker(title: &str, items: &[&str], multi: bool) -> Option<Vec<usize>> {
 
     let cols = terminal_cols();
     let mut cursor: usize = 0;
+    let mut scroll_offset: usize = 0;
     let mut checked = vec![false; items.len()];
+    let vis = visible_count(items.len());
 
     // Hide cursor during picker interaction
     nix::unistd::write(std::io::stdout(), b"\x1b[?25l").ok();
 
     // Initial render
-    let full = render_full(title, items, cursor, &checked, multi, cols);
+    let full = render_full(title, items, cursor, &checked, multi, cols, scroll_offset);
     nix::unistd::write(std::io::stdout(), full.as_bytes()).ok();
 
     let stdin_fd = std::io::stdin().as_raw_fd();
@@ -144,32 +182,59 @@ fn run_picker(title: &str, items: &[&str], multi: bool) -> Option<Vec<usize>> {
                                 b'A' if cursor > 0 => { // Up arrow
                                     let old = cursor;
                                     cursor -= 1;
-                                    // Move up from hint line to old item, redraw it
-                                    let up_to_old = (items.len() - old) + 1; // +1 for bottom separator
-                                    let s = format!("\x1b[{}A", up_to_old);
-                                    nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
-                                    redraw_item(items[old], false, checked[old], multi);
-                                    // Move up one more to new cursor line
-                                    nix::unistd::write(std::io::stdout(), b"\x1b[1A").ok();
-                                    redraw_item(items[cursor], true, checked[cursor], multi);
-                                    // Move back down to hint line
-                                    let down = (items.len() - cursor) + 1;
-                                    let s = format!("\x1b[{}B", down);
-                                    nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+
+                                    if cursor < scroll_offset {
+                                        // Need to scroll up — full redraw
+                                        scroll_offset = cursor;
+                                        let full = render_full(title, items, cursor, &checked, multi, cols, scroll_offset);
+                                        // Move up to title line first
+                                        let total_lines = 1 + 1 + vis + 1 + 1;
+                                        let s = format!("\x1b[{}A", total_lines - 1);
+                                        nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                                        nix::unistd::write(std::io::stdout(), b"\r\x1b[J").ok();
+                                        nix::unistd::write(std::io::stdout(), full.as_bytes()).ok();
+                                    } else {
+                                        // Incremental: redraw old and new within viewport
+                                        let old_vis_pos = old - scroll_offset; // 0-based position in viewport
+                                        let up_to_old = (vis - old_vis_pos) + 1; // +1 for bottom separator
+                                        let s = format!("\x1b[{}A", up_to_old);
+                                        nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                                        redraw_item(items[old], false, checked[old], multi);
+                                        nix::unistd::write(std::io::stdout(), b"\x1b[1A").ok();
+                                        redraw_item(items[cursor], true, checked[cursor], multi);
+                                        let new_vis_pos = cursor - scroll_offset;
+                                        let down = (vis - new_vis_pos) + 1;
+                                        let s = format!("\x1b[{}B", down);
+                                        nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                                    }
                                 }
                                 b'B' if cursor < items.len() - 1 => { // Down arrow
                                     let old = cursor;
                                     cursor += 1;
-                                    let up_to_old = (items.len() - old) + 1;
-                                    let s = format!("\x1b[{}A", up_to_old);
-                                    nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
-                                    redraw_item(items[old], false, checked[old], multi);
-                                    // Move down one to new cursor line
-                                    nix::unistd::write(std::io::stdout(), b"\x1b[1B").ok();
-                                    redraw_item(items[cursor], true, checked[cursor], multi);
-                                    let down = (items.len() - cursor) + 1;
-                                    let s = format!("\x1b[{}B", down);
-                                    nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+
+                                    if cursor >= scroll_offset + vis {
+                                        // Need to scroll down — full redraw
+                                        scroll_offset = cursor - vis + 1;
+                                        let full = render_full(title, items, cursor, &checked, multi, cols, scroll_offset);
+                                        let total_lines = 1 + 1 + vis + 1 + 1;
+                                        let s = format!("\x1b[{}A", total_lines - 1);
+                                        nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                                        nix::unistd::write(std::io::stdout(), b"\r\x1b[J").ok();
+                                        nix::unistd::write(std::io::stdout(), full.as_bytes()).ok();
+                                    } else {
+                                        // Incremental: redraw old and new within viewport
+                                        let old_vis_pos = old - scroll_offset;
+                                        let up_to_old = (vis - old_vis_pos) + 1;
+                                        let s = format!("\x1b[{}A", up_to_old);
+                                        nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                                        redraw_item(items[old], false, checked[old], multi);
+                                        nix::unistd::write(std::io::stdout(), b"\x1b[1B").ok();
+                                        redraw_item(items[cursor], true, checked[cursor], multi);
+                                        let new_vis_pos = cursor - scroll_offset;
+                                        let down = (vis - new_vis_pos) + 1;
+                                        let s = format!("\x1b[{}B", down);
+                                        nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                                    }
                                 }
                                 _ => {} // Ignore other sequences
                             }
@@ -185,11 +250,12 @@ fn run_picker(title: &str, items: &[&str], multi: bool) -> Option<Vec<usize>> {
                 b' ' if multi => {
                     // Toggle check on current item
                     checked[cursor] = !checked[cursor];
-                    let up = (items.len() - cursor) + 1;
+                    let vis_pos = cursor - scroll_offset;
+                    let up = (vis - vis_pos) + 1;
                     let s = format!("\x1b[{}A", up);
                     nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
                     redraw_item(items[cursor], true, checked[cursor], multi);
-                    let down = (items.len() - cursor) + 1;
+                    let down = (vis - vis_pos) + 1;
                     let s = format!("\x1b[{}B", down);
                     nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
                 }
@@ -297,7 +363,7 @@ mod tests {
         let cols: u16 = 60;
         let items = vec!["Alpha", "Beta", "Gamma"];
         let checked = vec![false, false, false];
-        let output = render_full("Pick one:", &items, 1, &checked, false, cols);
+        let output = render_full("Pick one:", &items, 1, &checked, false, cols, 0);
 
         // Use a tall terminal to accommodate the blank lines pushed by render_full
         let total_lines = 1 + 1 + items.len() + 1 + 1; // 7
@@ -341,7 +407,7 @@ mod tests {
         let cols: u16 = 60;
         let items = vec!["First", "Second"];
         let checked = vec![true, false];
-        let output = render_full("Select items:", &items, 0, &checked, true, cols);
+        let output = render_full("Select items:", &items, 0, &checked, true, cols, 0);
 
         let rows = 20u16;
         let parser = parse_ansi(&output, cols, rows);
@@ -362,7 +428,7 @@ mod tests {
         let checked = vec![false, false, false];
 
         // Render the full picker, then clean it up
-        let mut output = render_full("Title:", &items, 0, &checked, false, cols);
+        let mut output = render_full("Title:", &items, 0, &checked, false, cols, 0);
         output.push_str(&render_cleanup(items.len()));
 
         let rows = 20u16;
@@ -376,5 +442,89 @@ mod tests {
         assert!(!all_text.contains("Two"), "items should be erased after cleanup");
         assert!(!all_text.contains("Three"), "items should be erased after cleanup");
         assert!(!all_text.contains("confirm"), "hint should be erased after cleanup");
+    }
+
+    // -- Scrolling viewport tests --
+
+    #[test]
+    fn test_visible_count_small_list() {
+        assert_eq!(visible_count(3), 3);
+        assert_eq!(visible_count(10), 10);
+    }
+
+    #[test]
+    fn test_visible_count_large_list() {
+        assert_eq!(visible_count(15), MAX_VISIBLE);
+        assert_eq!(visible_count(100), MAX_VISIBLE);
+    }
+
+    #[test]
+    fn test_render_full_with_scroll_shows_viewport() {
+        let cols: u16 = 60;
+        let items: Vec<&str> = (0..15).map(|i| match i {
+            0 => "Item-00", 1 => "Item-01", 2 => "Item-02", 3 => "Item-03",
+            4 => "Item-04", 5 => "Item-05", 6 => "Item-06", 7 => "Item-07",
+            8 => "Item-08", 9 => "Item-09", 10 => "Item-10", 11 => "Item-11",
+            12 => "Item-12", 13 => "Item-13", 14 => "Item-14",
+            _ => unreachable!(),
+        }).collect();
+        let checked = vec![false; 15];
+
+        // Render with scroll_offset=0, cursor=0
+        let output = render_full("Pick:", &items, 0, &checked, false, cols, 0);
+        let rows = 30u16;
+        let parser = parse_ansi(&output, cols, rows);
+        let all_text = parser.screen().contents();
+
+        // Should show items 0-9, not 10-14
+        assert!(all_text.contains("Item-00"), "should show first item");
+        assert!(all_text.contains("Item-09"), "should show last visible item");
+        assert!(!all_text.contains("Item-10"), "should NOT show items beyond viewport");
+        // Should show "more" indicator at bottom
+        assert!(all_text.contains("5 more"), "should show remaining count below");
+    }
+
+    #[test]
+    fn test_render_full_scrolled_down() {
+        let cols: u16 = 60;
+        let items: Vec<&str> = (0..15).map(|i| match i {
+            0 => "Item-00", 1 => "Item-01", 2 => "Item-02", 3 => "Item-03",
+            4 => "Item-04", 5 => "Item-05", 6 => "Item-06", 7 => "Item-07",
+            8 => "Item-08", 9 => "Item-09", 10 => "Item-10", 11 => "Item-11",
+            12 => "Item-12", 13 => "Item-13", 14 => "Item-14",
+            _ => unreachable!(),
+        }).collect();
+        let checked = vec![false; 15];
+
+        // Render with scroll_offset=5, cursor=10
+        let output = render_full("Pick:", &items, 10, &checked, false, cols, 5);
+        let rows = 30u16;
+        let parser = parse_ansi(&output, cols, rows);
+        let all_text = parser.screen().contents();
+
+        // Should show items 5-14
+        assert!(!all_text.contains("Item-04"), "should NOT show items above viewport");
+        assert!(all_text.contains("Item-05"), "should show first visible item");
+        assert!(all_text.contains("Item-14"), "should show last item");
+        // Should show "more" indicator at top
+        assert!(all_text.contains("5 more"), "should show count above");
+    }
+
+    #[test]
+    fn test_render_cleanup_scrolled_list() {
+        let cols: u16 = 60;
+        let items: Vec<&str> = (0..15).map(|_| "item").collect();
+        let checked = vec![false; 15];
+
+        let mut output = render_full("Title:", &items, 0, &checked, false, cols, 0);
+        output.push_str(&render_cleanup(items.len()));
+
+        let rows = 30u16;
+        let parser = parse_ansi(&output, cols, rows);
+        let all_text = parser.screen().contents();
+
+        assert!(!all_text.contains("Title:"), "title should be erased");
+        assert!(!all_text.contains("item"), "items should be erased");
+        assert!(!all_text.contains("confirm"), "hint should be erased");
     }
 }
