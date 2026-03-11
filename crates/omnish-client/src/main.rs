@@ -1843,11 +1843,11 @@ fn cmd_display_str(json: &serde_json::Value) -> String {
 }
 
 /// Display a command result or write to file if redirected.
-fn handle_command_result(content: &str, redirect: Option<&str>, proxy: &PtyProxy) {
+fn handle_command_result(content: &str, redirect: Option<&str>, shell_pid: u32) {
     if let Some(path) = redirect {
         // Resolve relative paths against shell's current working directory
         let resolved_path = if std::path::Path::new(path).is_relative() {
-            match get_shell_cwd(proxy.child_pid() as u32) {
+            match get_shell_cwd(shell_pid) {
                 Some(shell_cwd) => std::path::Path::new(&shell_cwd).join(path),
                 None => std::path::Path::new(path).to_path_buf(), // Fallback to relative to session cwd
             }
@@ -1869,8 +1869,6 @@ fn handle_command_result(content: &str, redirect: Option<&str>, proxy: &PtyProxy
         let output = display::render_response(content);
         nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
     }
-    // Clear bash readline before Enter so pre-chat input isn't executed (issue #24).
-    proxy.write_all(b"\x15\x0b\r").ok();
 }
 
 /// Send a query to the daemon and display the result.
@@ -1882,9 +1880,9 @@ async fn send_daemon_query(
     query: &str,
     session_id: &str,
     rpc: &RpcClient,
-    proxy: &PtyProxy,
     redirect: Option<&str>,
     show_thinking: bool,
+    shell_pid: u32,
 ) {
     let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
     let mut status = LineStatus::new(cols as usize, 5);
@@ -1911,7 +1909,7 @@ async fn send_daemon_query(
                 std::fs::write("/tmp/omnish_last_response.txt", &display).ok();
                 nix::unistd::write(std::io::stdout(), status.clear().as_bytes()).ok();
             }
-            handle_command_result(&display, redirect, proxy);
+            handle_command_result(&display, redirect, shell_pid);
             if show_thinking {
                 let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
                 let separator = display::render_separator(cols);
@@ -1923,7 +1921,6 @@ async fn send_daemon_query(
             nix::unistd::write(std::io::stdout(), status.clear().as_bytes()).ok();
             let err = display::render_error("Failed to receive response");
             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-            proxy.write_all(b"\x15\x0b\r").ok();
         }
     }
 }
@@ -1953,7 +1950,7 @@ async fn handle_slash_command(
                 result
             };
             if let Some(path) = redirect.as_deref() {
-                handle_command_result(&display_result, Some(path), proxy);
+                handle_command_result(&display_result, Some(path), proxy.child_pid() as u32);
             } else {
                 let output = display::render_response(&display_result);
                 nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
@@ -1969,7 +1966,7 @@ async fn handle_slash_command(
                 return true;
             }
             if let Some(path) = redirect.as_deref() {
-                send_daemon_query(&query, session_id, rpc, proxy, Some(path), false).await;
+                send_daemon_query(&query, session_id, rpc, Some(path), false, proxy.child_pid() as u32).await;
             } else {
                 let request_id = Uuid::new_v4().to_string()[..8].to_string();
                 let request = Message::Request(Request {
@@ -2433,7 +2430,7 @@ async fn run_chat_loop(
                         display
                     };
                     if let Some(path) = redirect {
-                        handle_command_result(&display, Some(path), proxy);
+                        handle_command_result(&display, Some(path), proxy.child_pid() as u32);
                     } else {
                         let output = display::render_response(&display);
                         nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
