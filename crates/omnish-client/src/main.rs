@@ -140,6 +140,9 @@ fn parse_resume_args() -> Option<ResumeArgs> {
 }
 
 fn exec_update(proxy: &PtyProxy, session_id: &str) {
+    // Print newline so messages appear on their own line (not after the prompt)
+    nix::unistd::write(std::io::stdout(), b"\r\n").ok();
+
     let current_exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
