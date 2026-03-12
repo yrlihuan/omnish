@@ -391,8 +391,8 @@ async fn handle_tool_result(
         }
     };
 
-    // Check if the agent loop has timed out
-    if state.start.elapsed() > std::time::Duration::from_secs(60) {
+    // Check if the agent loop has timed out (10 minutes — bash commands like builds can be slow)
+    if state.start.elapsed() > std::time::Duration::from_secs(600) {
         tracing::warn!("Agent loop timed out for request_id={}", tr.request_id);
         return vec![Message::ChatResponse(ChatResponse {
             request_id: tr.request_id,
