@@ -1932,11 +1932,8 @@ async fn handle_slash_command(
     cursor_col: u16,
     cursor_row: u16,
 ) -> bool {
-    // Intercept /update client-side (needs process state: proxy fd/pid)
-    if trimmed == "/update" {
-        exec_update(proxy, session_id, cursor_col, cursor_row);
-        return true; // Only reached if exec failed
-    }
+    // /update and /update auto are intercepted in DaemonQuery handling below
+    // (they need process state: proxy fd/pid, and mutable auto_update_enabled)
     // /update auto is intercepted at the call site (needs mutable auto_update_enabled)
 
     match command::dispatch(trimmed) {
@@ -1958,9 +1955,21 @@ async fn handle_slash_command(
             // /debug client is intercepted client-side (needs local state)
             if query == "__cmd:client_debug" {
                 let result = client_debug_fn();
-                let output = display::render_response(&result);
-                nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                let display_result = if let Some(ref l) = limit {
+                    command::apply_limit(&result, l)
+                } else {
+                    result
+                };
+                if let Some(path) = redirect.as_deref() {
+                    handle_command_result(&display_result, Some(path), proxy.child_pid() as u32);
+                } else {
+                    let output = display::render_response(&display_result);
+                    nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                }
                 return true;
+            } else if query == "__cmd:update" {
+                exec_update(proxy, session_id, cursor_col, cursor_row);
+                return true; // Only reached if exec failed
             }
             if let Some(path) = redirect.as_deref() {
                 send_daemon_query(&query, session_id, rpc, Some(path), false, proxy.child_pid() as u32).await;
@@ -2443,12 +2452,25 @@ async fn run_chat_loop(
         }
 
         // /update auto — toggle runtime auto-update (not persisted)
-        if trimmed == "/update auto" {
+        // Parse redirect and limit first
+        let (without_redirect, redirect) = command::parse_redirect_pub(trimmed);
+        let (base_cmd, limit) = command::parse_limit_pub(without_redirect);
+        if base_cmd == "/update auto" {
             let prev = auto_update_enabled.load(Ordering::Relaxed);
             auto_update_enabled.store(!prev, Ordering::Relaxed);
             let status = if !prev { "enabled" } else { "disabled" };
-            let output = display::render_response(&format!("Auto-update {}", status));
-            nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+            let result = format!("Auto-update {}", status);
+            let display_result = if let Some(ref l) = limit {
+                command::apply_limit(&result, l)
+            } else {
+                result
+            };
+            if let Some(path) = redirect.as_deref() {
+                handle_command_result(&display_result, Some(path), proxy.child_pid() as u32);
+            } else {
+                let output = display::render_response(&display_result);
+                nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+            }
             if auto_exit { break; }
             continue;
         }
