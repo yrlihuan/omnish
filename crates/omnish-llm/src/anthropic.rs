@@ -68,7 +68,7 @@ impl LlmBackend for AnthropicBackend {
         // Build request body
         let mut body_map = serde_json::Map::new();
         body_map.insert("model".to_string(), serde_json::Value::String(self.model.clone()));
-        body_map.insert("max_tokens".to_string(), serde_json::Value::Number(4096.into()));
+        body_map.insert("max_tokens".to_string(), serde_json::Value::Number(8192.into()));
         body_map.insert("messages".to_string(), serde_json::Value::Array(messages));
 
         // Add system prompt if provided
