@@ -2580,7 +2580,6 @@ async fn run_chat_loop(
                                             tool_calls.push(tc);
                                         }
                                         Some(Message::ChatResponse(resp)) if resp.request_id == req_id => {
-                                            nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
                                             let output = display::render_response(&resp.content);
                                             nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
 
@@ -2655,7 +2654,6 @@ async fn run_chat_loop(
                             if i < total - 1 {
                                 // Intermediate result — daemon returns Ack
                                 if let Err(e) = rpc.call(result_msg).await {
-                                    nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
                                     let err = display::render_error(&format!("Failed to send tool result: {}", e));
                                     nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                                     send_failed = true;
@@ -2669,7 +2667,6 @@ async fn run_chat_loop(
                                         continue 'stream;
                                     }
                                     Err(e) => {
-                                        nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
                                         let err = display::render_error(&format!("Failed to send tool result: {}", e));
                                         nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                                         send_failed = true;
@@ -2684,7 +2681,6 @@ async fn run_chat_loop(
                     }
                 }
                 Err(_) => {
-                    nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
                     let err = display::render_error("Failed to receive chat response");
                     nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                 }
@@ -2695,7 +2691,6 @@ async fn run_chat_loop(
         let _ = stop_tx.send(());
 
         if interrupted {
-            nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
             let info = "\r\n\x1b[2;37m(interrupted)\x1b[0m";
             nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
 
