@@ -42,6 +42,46 @@ impl CommandQueryTool {
         lines.join("\n")
     }
 
+    /// Build a system-reminder string for the chat user message.
+    /// Includes current time, working directory, and last N commands.
+    /// `live_cwd` overrides the command-record cwd (from session probe).
+    pub fn build_system_reminder(&self, count: usize, live_cwd: Option<&str>) -> String {
+        let commands = &self.commands;
+
+        // Current time with timezone
+        let now = chrono::Local::now();
+        let time_str = now.format("%Y-%m-%d %H:%M:%S %z").to_string();
+
+        // Current directory: prefer live cwd from session probe, fall back to last command's cwd
+        let cwd = live_cwd
+            .or_else(|| commands.last().and_then(|c| c.cwd.as_deref()))
+            .unwrap_or("(unknown)");
+
+        // Last N commands
+        let start = commands.len().saturating_sub(count);
+        let mut cmd_lines = Vec::new();
+        for (i, cmd) in commands[start..].iter().enumerate() {
+            let seq = start + i + 1;
+            let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
+            let failed = match cmd.exit_code {
+                Some(code) if code != 0 => " [FAILED]",
+                _ => "",
+            };
+            cmd_lines.push(format!("[seq={}] {}{}", seq, cmd_line, failed));
+        }
+
+        let cmds = if cmd_lines.is_empty() {
+            "(none)".to_string()
+        } else {
+            cmd_lines.join("\n")
+        };
+
+        format!(
+            "<system-reminder>\nTIME: {}\n\nWORKING DIR: {}\n\nLAST {} COMMANDS:\n{}\n</system-reminder>",
+            time_str, cwd, count, cmds
+        )
+    }
+
     fn get_output(&self, seq: usize) -> String {
         let commands = &self.commands;
         if seq == 0 || seq > commands.len() {
@@ -86,8 +126,8 @@ impl CommandQueryTool {
             name: "command_query".to_string(),
             description: "Query shell command history and get full command output. \
                 Use get_output(seq) to retrieve the full output of a specific command. \
-                The recent command list is provided at the end of the user's message in <system-reminder>, \
-                so you do NOT need to call list_history — the command list is already provided.".to_string(),
+                The last 5 commands are provided in <system-reminder> at the end of each user message, \
+                so you do NOT need to call list_history unless you need older commands.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -158,4 +198,107 @@ fn format_ago(now_ms: u64, started_at: u64) -> String {
     else if diff_s < 3600 { format!("{}m ago", diff_s / 60) }
     else if diff_s < 86400 { format!("{}h ago", diff_s / 3600) }
     else { format!("{}d ago", diff_s / 86400) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omnish_store::stream::StreamEntry;
+
+    struct DummyReader;
+    impl StreamReader for DummyReader {
+        fn read_command_output(&self, _offset: u64, _length: u64) -> anyhow::Result<Vec<StreamEntry>> {
+            Ok(vec![])
+        }
+    }
+
+    fn make_cmd(cmd_line: &str, cwd: Option<&str>, exit_code: Option<i32>) -> CommandRecord {
+        CommandRecord {
+            command_id: String::new(),
+            session_id: String::new(),
+            command_line: Some(cmd_line.to_string()),
+            cwd: cwd.map(|s| s.to_string()),
+            started_at: 0,
+            ended_at: None,
+            output_summary: String::new(),
+            stream_offset: 0,
+            stream_length: 0,
+            exit_code,
+        }
+    }
+
+    fn make_tool(commands: Vec<CommandRecord>) -> CommandQueryTool {
+        CommandQueryTool::new(commands, Arc::new(DummyReader))
+    }
+
+    #[test]
+    fn test_cwd_prefers_live_cwd_over_command_record() {
+        let tool = make_tool(vec![
+            make_cmd("ls", Some("/home/user/old"), Some(0)),
+        ]);
+        let reminder = tool.build_system_reminder(5, Some("/home/user/live"));
+        assert!(reminder.contains("WORKING DIR: /home/user/live"));
+        assert!(!reminder.contains("/home/user/old"));
+    }
+
+    #[test]
+    fn test_cwd_falls_back_to_last_command_cwd() {
+        let tool = make_tool(vec![
+            make_cmd("cd /tmp", Some("/tmp"), Some(0)),
+            make_cmd("ls", Some("/home/user/proj"), Some(0)),
+        ]);
+        let reminder = tool.build_system_reminder(5, None);
+        assert!(reminder.contains("WORKING DIR: /home/user/proj"));
+    }
+
+    #[test]
+    fn test_cwd_unknown_when_no_source() {
+        let tool = make_tool(vec![
+            make_cmd("ls", None, Some(0)),
+        ]);
+        let reminder = tool.build_system_reminder(5, None);
+        assert!(reminder.contains("WORKING DIR: (unknown)"));
+    }
+
+    #[test]
+    fn test_cwd_unknown_when_no_commands_and_no_live() {
+        let tool = make_tool(vec![]);
+        let reminder = tool.build_system_reminder(5, None);
+        assert!(reminder.contains("WORKING DIR: (unknown)"));
+    }
+
+    #[test]
+    fn test_failed_command_shows_failed_marker() {
+        let tool = make_tool(vec![
+            make_cmd("cargo build", None, Some(0)),
+            make_cmd("cargo test", None, Some(1)),
+        ]);
+        let reminder = tool.build_system_reminder(5, None);
+        assert!(reminder.contains("[seq=1] cargo build\n"));
+        assert!(reminder.contains("[seq=2] cargo test [FAILED]"));
+    }
+
+    #[test]
+    fn test_reminder_limits_to_last_n_commands() {
+        let commands: Vec<_> = (1..=10)
+            .map(|i| make_cmd(&format!("cmd{}", i), None, Some(0)))
+            .collect();
+        let tool = make_tool(commands);
+        let reminder = tool.build_system_reminder(3, None);
+        assert!(!reminder.contains("cmd7"));
+        assert!(reminder.contains("[seq=8] cmd8"));
+        assert!(reminder.contains("[seq=9] cmd9"));
+        assert!(reminder.contains("[seq=10] cmd10"));
+    }
+
+    #[test]
+    fn test_reminder_contains_time_and_structure() {
+        let tool = make_tool(vec![make_cmd("ls", Some("/tmp"), Some(0))]);
+        let reminder = tool.build_system_reminder(5, None);
+        assert!(reminder.starts_with("<system-reminder>"));
+        assert!(reminder.ends_with("</system-reminder>"));
+        assert!(reminder.contains("TIME: "));
+        assert!(reminder.contains("WORKING DIR: /tmp"));
+        assert!(reminder.contains("LAST 5 COMMANDS:"));
+    }
 }

@@ -535,6 +535,20 @@ impl SessionManager {
         }
     }
 
+    /// Get a single session attribute value by key.
+    pub async fn get_session_attr(&self, session_id: &str, key: &str) -> Option<String> {
+        let session = {
+            let sessions = self.sessions.read().await;
+            sessions.get(session_id).cloned()
+        };
+        if let Some(session) = session {
+            let meta = session.meta.read().await;
+            meta.attrs.get(key).cloned()
+        } else {
+            None
+        }
+    }
+
     /// Get session debug information including metadata, commands count, last active time, and last update timestamp
     pub async fn get_session_debug_info(&self, session_id: &str) -> Result<(SessionMeta, usize, Duration, Option<u64>)> {
         let session = {

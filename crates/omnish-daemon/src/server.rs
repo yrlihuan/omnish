@@ -326,22 +326,18 @@ async fn handle_chat_message(
     let ChatSetup { command_query_tool, tools, system_prompt } =
         build_chat_setup(mgr, plugin_mgr).await;
 
-    // Include recent command list as system-reminder in user message
-    let command_list = command_query_tool.list_history(20);
+    // Get live cwd from session probe (if available)
+    let live_cwd = mgr.get_session_attr(&cm.session_id, "shell_cwd").await;
+
+    // Build system-reminder with time, cwd, and last 5 commands
+    let reminder = command_query_tool.build_system_reminder(5, live_cwd.as_deref());
 
     // Load prior conversation history as raw JSON
     let mut extra_messages = conv_mgr.load_raw_messages(&cm.thread_id);
     let prior_len = extra_messages.len();
 
-    // User message for LLM: includes system-reminder with recent commands
-    let llm_user_content = if command_list.is_empty() {
-        cm.query.clone()
-    } else {
-        format!(
-            "{}\n\n<system-reminder>Recent commands:\n{}\n</system-reminder>",
-            cm.query, command_list
-        )
-    };
+    // User message for LLM: includes system-reminder
+    let llm_user_content = format!("{}\n\n{}", cm.query, reminder);
     extra_messages.push(serde_json::json!({"role": "user", "content": llm_user_content}));
 
     let llm_req = LlmRequest {
