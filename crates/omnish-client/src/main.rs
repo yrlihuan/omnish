@@ -2410,8 +2410,15 @@ async fn run_chat_loop(
         if trimmed == "/context" || trimmed.starts_with("/context ") {
             // Parse redirect and limit from the command string
             let (without_redirect, redirect) = command::parse_redirect_pub(trimmed);
-            let (_, limit) = command::parse_limit_pub(without_redirect);
-            let query = if let Some(ref tid) = current_thread_id {
+            let (base_cmd, limit) = command::parse_limit_pub(without_redirect);
+            // Handle /context chat: if in chat mode, show current conversation; otherwise show system-reminder
+            let query = if base_cmd == "/context chat" {
+                if let Some(ref tid) = current_thread_id {
+                    format!("__cmd:context chat:{}", tid)
+                } else {
+                    "__cmd:context chat".to_string()
+                }
+            } else if let Some(ref tid) = current_thread_id {
                 format!("__cmd:context chat:{}", tid)
             } else {
                 "__cmd:context".to_string()

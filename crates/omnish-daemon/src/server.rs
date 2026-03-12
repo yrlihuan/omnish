@@ -1007,7 +1007,7 @@ fn format_relative_time(time: std::time::SystemTime) -> String {
 async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionManager, llm_backend: &Option<Arc<dyn LlmBackend>>) -> String {
     match scenario {
         "chat" | "analysis" => {
-            // Chat/analysis context - only recent commands with output (no history)
+            // Return system-reminder (terminal context) when not in a specific chat thread
             match resolve_chat_context(req, mgr, None).await {
                 Ok(ctx) => ctx,
                 Err(e) => format!("Error: {}", e),
