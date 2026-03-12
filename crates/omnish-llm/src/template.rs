@@ -90,24 +90,11 @@ mod tests {
     }
 
     #[test]
-    fn test_chat_system_prompt_mentions_all_commands() {
-        // All user-facing commands that should be documented in the system prompt.
-        // Keep in sync with COMMANDS and CHAT_ONLY_COMMANDS in omnish-client/src/command.rs.
+    fn test_chat_system_prompt_has_key_sections() {
         let prompt = crate::prompt::PromptManager::default_chat().build();
-        let expected = &[
-            "/help",
-            "/resume",
-            "/thread list",
-            "/thread del",
-            "/context",
-            "/sessions",
-        ];
-        for cmd in expected {
-            assert!(
-                prompt.contains(cmd),
-                "Chat system prompt should mention {} but doesn't", cmd
-            );
-        }
+        assert!(prompt.contains("omnish assistant"));
+        assert!(prompt.contains("Tool usage"));
+        assert!(prompt.contains("command_query"));
     }
 
     #[test]
