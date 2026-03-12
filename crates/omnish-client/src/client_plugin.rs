@@ -79,9 +79,11 @@ impl ClientPluginManager {
         // Apply sandbox via pre_exec if requested
         if sandboxed {
             let data_dir_clone = data_dir.clone();
+            let cwd_owned: Option<std::path::PathBuf> = cwd.map(|s| std::path::PathBuf::from(s));
             unsafe {
                 cmd.pre_exec(move || {
-                    omnish_plugin::apply_sandbox(&data_dir_clone).map_err(|e| {
+                    let cwd_path: Option<&std::path::Path> = cwd_owned.as_deref();
+                    omnish_plugin::apply_sandbox(&data_dir_clone, cwd_path).map_err(|e| {
                         std::io::Error::new(std::io::ErrorKind::PermissionDenied, e)
                     })
                 });
