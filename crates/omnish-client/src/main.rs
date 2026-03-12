@@ -2536,13 +2536,15 @@ async fn run_chat_loop(
                                         nix::unistd::write(std::io::stdout(), line_status.append(&text).as_bytes()).ok();
                                     }
                                     Message::ChatToolCall(tc) => {
-                                        // Execute tool via plugin subprocess (blocking — use spawn_blocking)
+                                        // Execute tool via short-lived plugin process (blocking — use spawn_blocking)
                                         let tool_name = tc.tool_name.clone();
+                                        let plugin_name = tc.plugin_name.clone();
+                                        let sandboxed = tc.sandboxed;
                                         let tool_input: serde_json::Value = serde_json::from_str(&tc.input).unwrap_or_default();
                                         let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
                                         let plugins = Arc::clone(&client_plugins);
                                         let (content, is_error) = tokio::task::spawn_blocking(move || {
-                                            plugins.execute_tool(&tool_name, &tool_input, shell_cwd.as_deref())
+                                            plugins.execute_tool(&plugin_name, &tool_name, &tool_input, shell_cwd.as_deref(), sandboxed)
                                         }).await.unwrap_or_else(|_| ("Tool execution panicked".to_string(), true));
 
                                         // Send result back, get continuation stream

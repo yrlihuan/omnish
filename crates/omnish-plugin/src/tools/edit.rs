@@ -1,5 +1,4 @@
-use crate::{Plugin, PluginType};
-use omnish_llm::tool::{Tool, ToolDef, ToolResult};
+use omnish_llm::tool::ToolResult;
 
 pub struct EditTool;
 
@@ -7,48 +6,8 @@ impl EditTool {
     pub fn new() -> Self {
         Self
     }
-}
 
-impl Tool for EditTool {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "edit".to_string(),
-            description: "Perform exact string replacements in files. The old_string must match \
-                exactly. If old_string appears more than once and replace_all is false, the edit \
-                will fail — provide more surrounding context to make it unique, or set replace_all \
-                to true.\n\n\
-                Guidelines:\n\
-                - When editing text from Read tool output, preserve the exact indentation \
-                (tabs/spaces) as it appears AFTER the line number prefix (\"line number→\"). \
-                Never include any part of the line number prefix in old_string or new_string.\n\
-                - ALWAYS prefer editing existing files. NEVER write new files unless explicitly required."
-                .to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "Absolute path to the file to edit"
-                    },
-                    "old_string": {
-                        "type": "string",
-                        "description": "The exact text to find and replace"
-                    },
-                    "new_string": {
-                        "type": "string",
-                        "description": "The replacement text"
-                    },
-                    "replace_all": {
-                        "type": "boolean",
-                        "description": "Replace all occurrences (default: false)"
-                    }
-                },
-                "required": ["file_path", "old_string", "new_string"]
-            }),
-        }
-    }
-
-    fn execute(&self, input: &serde_json::Value) -> ToolResult {
+    pub fn execute(&self, input: &serde_json::Value) -> ToolResult {
         let file_path = input["file_path"].as_str().unwrap_or("");
         let old_string = input["old_string"].as_str().unwrap_or("");
         let new_string = input["new_string"].as_str().unwrap_or("");
@@ -147,30 +106,6 @@ impl Tool for EditTool {
             is_error: false,
         }
     }
-}
-
-impl Plugin for EditTool {
-    fn name(&self) -> &str {
-        "edit"
-    }
-
-    fn plugin_type(&self) -> PluginType {
-        PluginType::ClientTool
-    }
-
-    fn tools(&self) -> Vec<ToolDef> {
-        vec![self.definition()]
-    }
-
-    fn call_tool(&self, _tool_name: &str, input: &serde_json::Value) -> ToolResult {
-        self.execute(input)
-    }
-
-    fn status_text(&self, _tool_name: &str, input: &serde_json::Value) -> String {
-        let path = input["file_path"].as_str().unwrap_or("");
-        format!("编辑: {}", path)
-    }
-
 }
 
 #[cfg(test)]

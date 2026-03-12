@@ -1,4 +1,3 @@
-use omnish_llm::tool::Tool;
 use omnish_plugin::tools::bash::BashTool;
 use omnish_plugin::tools::edit::EditTool;
 use omnish_plugin::tools::read::ReadTool;

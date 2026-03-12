@@ -1,5 +1,4 @@
-use crate::{Plugin, PluginType};
-use omnish_llm::tool::{Tool, ToolDef, ToolResult};
+use omnish_llm::tool::ToolResult;
 
 /// Maximum bytes to return.
 const MAX_OUTPUT_BYTES: usize = 50_000;
@@ -14,45 +13,8 @@ impl ReadTool {
     pub fn new() -> Self {
         Self
     }
-}
 
-impl Tool for ReadTool {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "read".to_string(),
-            description: "Read a file from the local filesystem and return its contents with \
-                line numbers. The file_path must be an absolute path. By default reads up to \
-                500 lines from the beginning. Use offset and limit for long files.\n\n\
-                Guidelines:\n\
-                - It is okay to read a file that does not exist; an error will be returned.\n\
-                - Any lines longer than 200 characters will be truncated.\n\
-                - This tool can only read files, not directories. To read a directory, use ls via the bash tool.\n\
-                - You can call multiple tools in a single response. It is always better to speculatively read \
-                multiple potentially useful files in parallel.\n\
-                - Returned contents are in format of \"line number→line contents\""
-                .to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "The absolute path to the file to read"
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "description": "Line number to start reading from (1-based, default: 1)"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of lines to read (default: 500)"
-                    }
-                },
-                "required": ["file_path"]
-            }),
-        }
-    }
-
-    fn execute(&self, input: &serde_json::Value) -> ToolResult {
+    pub fn execute(&self, input: &serde_json::Value) -> ToolResult {
         let file_path = input["file_path"].as_str().unwrap_or("");
         if file_path.is_empty() {
             return ToolResult {
@@ -136,30 +98,6 @@ impl Tool for ReadTool {
             is_error: false,
         }
     }
-}
-
-impl Plugin for ReadTool {
-    fn name(&self) -> &str {
-        "read"
-    }
-
-    fn plugin_type(&self) -> PluginType {
-        PluginType::ClientTool
-    }
-
-    fn tools(&self) -> Vec<ToolDef> {
-        vec![self.definition()]
-    }
-
-    fn call_tool(&self, _tool_name: &str, input: &serde_json::Value) -> ToolResult {
-        self.execute(input)
-    }
-
-    fn status_text(&self, _tool_name: &str, input: &serde_json::Value) -> String {
-        let path = input["file_path"].as_str().unwrap_or("");
-        format!("读取: {}", path)
-    }
-
 }
 
 #[cfg(test)]

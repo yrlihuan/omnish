@@ -1,15 +1,20 @@
-//! Lightweight plugin subprocess manager for client-side tool execution.
-//! Spawns `omnish-plugin <name>` and communicates via JSON-RPC stdin/stdout.
+//! Client-side tool execution via short-lived plugin processes.
+//! Spawns a fresh process per tool call: writes JSON to stdin, reads JSON from stdout.
 
-use omnish_plugin::PluginProcess;
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::process::CommandExt;
+use std::process::{Command, Stdio};
 
-/// Manages client-side plugin subprocesses.
-/// Spawns `omnish-plugin <name>` on first use and reuses the long-running process.
+/// Executes client-side tools by spawning short-lived plugin processes.
 pub struct ClientPluginManager {
     plugin_bin: std::path::PathBuf,
-    processes: Mutex<HashMap<String, PluginProcess>>,
+}
+
+#[derive(serde::Deserialize)]
+struct PluginResponse {
+    content: String,
+    #[serde(default)]
+    is_error: bool,
 }
 
 impl ClientPluginManager {
@@ -18,48 +23,34 @@ impl ClientPluginManager {
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("omnish-plugin")))
             .unwrap_or_else(|| std::path::PathBuf::from("omnish-plugin"));
-        Self {
-            plugin_bin,
-            processes: Mutex::new(HashMap::new()),
-        }
+        Self { plugin_bin }
     }
 
-    /// Execute a tool via the plugin subprocess. Spawns the process on first call.
-    /// If `cwd` is provided, it is injected into the tool input as `"cwd"`.
-    pub fn execute_tool(&self, tool_name: &str, input: &serde_json::Value, cwd: Option<&str>) -> (String, bool) {
-        // Map tool name to plugin name (for now, all known tools → their plugin)
-        let plugin_name = match tool_name {
-            "bash" => "bash",
-            "edit" => "edit",
-            "read" => "read",
-            "write" => "write",
-            _ => return (format!("Unknown client tool: {tool_name}"), true),
+    /// Execute a tool via a short-lived plugin process.
+    ///
+    /// - `plugin_name`: "builtin" or external plugin directory name
+    /// - `tool_name`: the specific tool within the plugin
+    /// - `input`: tool input JSON
+    /// - `cwd`: optional working directory to inject into input
+    /// - `sandboxed`: whether to apply Landlock sandbox
+    pub fn execute_tool(
+        &self,
+        plugin_name: &str,
+        tool_name: &str,
+        input: &serde_json::Value,
+        cwd: Option<&str>,
+        sandboxed: bool,
+    ) -> (String, bool) {
+        let executable = if plugin_name == "builtin" {
+            self.plugin_bin.clone()
+        } else {
+            omnish_common::config::omnish_dir()
+                .join("plugins")
+                .join(plugin_name)
+                .join(plugin_name)
         };
 
-        let mut processes = self.processes.lock().unwrap();
-        let proc = processes.entry(plugin_name.to_string()).or_insert_with(|| {
-            let dir_name = format!("builtin.{}", plugin_name);
-            let data_dir = omnish_common::config::omnish_dir()
-                .join("data")
-                .join(&dir_name);
-            let privileged = matches!(plugin_name, "edit" | "write");
-            let spawn_result = if privileged {
-                PluginProcess::spawn_privileged(&self.plugin_bin, &[plugin_name], plugin_name, &data_dir)
-            } else {
-                PluginProcess::spawn(&self.plugin_bin, &[plugin_name], plugin_name, &data_dir)
-            };
-            match spawn_result {
-                Ok(mut p) => {
-                    // Send initialize to verify it works
-                    match p.send_request("initialize", serde_json::json!({})) {
-                        Ok(_) => p,
-                        Err(e) => panic!("Failed to initialize plugin '{plugin_name}': {e}"),
-                    }
-                }
-                Err(e) => panic!("Failed to spawn omnish-plugin {plugin_name}: {e}"),
-            }
-        });
-        // Inject cwd into tool input if available
+        // Inject cwd into input if available
         let effective_input = if let Some(cwd) = cwd {
             let mut patched = input.clone();
             if let Some(obj) = patched.as_object_mut() {
@@ -69,6 +60,62 @@ impl ClientPluginManager {
         } else {
             input.clone()
         };
-        proc.execute_tool(tool_name, &effective_input)
+
+        let request = serde_json::json!({
+            "name": tool_name,
+            "input": effective_input,
+        });
+
+        let data_dir = omnish_common::config::omnish_dir()
+            .join("data")
+            .join(plugin_name);
+        let _ = std::fs::create_dir_all(&data_dir);
+
+        let mut cmd = Command::new(&executable);
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+
+        // Apply sandbox via pre_exec if requested
+        if sandboxed {
+            let data_dir_clone = data_dir.clone();
+            unsafe {
+                cmd.pre_exec(move || {
+                    omnish_plugin::apply_sandbox(&data_dir_clone).map_err(|e| {
+                        std::io::Error::new(std::io::ErrorKind::PermissionDenied, e)
+                    })
+                });
+            }
+        }
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => return (format!("Failed to spawn plugin '{}': {}", plugin_name, e), true),
+        };
+
+        // Write request to stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = writeln!(stdin, "{}", serde_json::to_string(&request).unwrap());
+            // stdin dropped here, closing it
+        }
+
+        // Read response from stdout
+        let result = if let Some(stdout) = child.stdout.take() {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => ("Plugin produced no output".to_string(), true),
+                Ok(_) => match serde_json::from_str::<PluginResponse>(&line) {
+                    Ok(resp) => (resp.content, resp.is_error),
+                    Err(e) => (format!("Invalid plugin response: {e}"), true),
+                },
+                Err(e) => (format!("Failed to read plugin output: {e}"), true),
+            }
+        } else {
+            ("No stdout from plugin".to_string(), true)
+        };
+
+        let _ = child.wait();
+        result
     }
 }

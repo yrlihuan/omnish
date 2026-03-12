@@ -1,6 +1,5 @@
-use omnish_plugin::Plugin;
 use omnish_context::StreamReader;
-use omnish_llm::tool::{Tool, ToolDef, ToolResult};
+use omnish_llm::tool::{ToolDef, ToolResult};
 use omnish_store::command::CommandRecord;
 use std::sync::Arc;
 
@@ -81,10 +80,8 @@ impl CommandQueryTool {
             Err(e) => format!("Error reading output: {}", e),
         }
     }
-}
 
-impl Tool for CommandQueryTool {
-    fn definition(&self) -> ToolDef {
+    pub fn definition(&self) -> ToolDef {
         ToolDef {
             name: "command_query".to_string(),
             description: "Query shell command history and get full command output. \
@@ -113,7 +110,7 @@ impl Tool for CommandQueryTool {
         }
     }
 
-    fn execute(&self, input: &serde_json::Value) -> ToolResult {
+    pub fn execute(&self, input: &serde_json::Value) -> ToolResult {
         let action = input["action"].as_str().unwrap_or("");
         let tool_use_id = String::new(); // Filled by caller
 
@@ -142,22 +139,8 @@ impl Tool for CommandQueryTool {
             },
         }
     }
-}
 
-impl Plugin for CommandQueryTool {
-    fn name(&self) -> &str {
-        "command_query"
-    }
-
-    fn tools(&self) -> Vec<ToolDef> {
-        vec![self.definition()]
-    }
-
-    fn call_tool(&self, _tool_name: &str, input: &serde_json::Value) -> ToolResult {
-        self.execute(input)
-    }
-
-    fn status_text(&self, _tool_name: &str, input: &serde_json::Value) -> String {
+    pub fn status_text(&self, _tool_name: &str, input: &serde_json::Value) -> String {
         match input["action"].as_str() {
             Some("list_history") => "查询命令历史...".to_string(),
             Some("get_output") => format!(

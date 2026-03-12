@@ -1,5 +1,4 @@
-use crate::{Plugin, PluginType};
-use omnish_llm::tool::{Tool, ToolDef, ToolResult};
+use omnish_llm::tool::ToolResult;
 
 pub struct WriteTool;
 
@@ -50,38 +49,8 @@ impl WriteTool {
             },
         }
     }
-}
 
-impl Tool for WriteTool {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "write".to_string(),
-            description: "Write content to a file, creating it if it doesn't exist or \
-                overwriting if it does. Parent directories are created automatically. \
-                Use this for creating new files or completely replacing file contents.\n\n\
-                Guidelines:\n\
-                - file_path must be an absolute path.\n\
-                - Overwrites existing files. Use with care.\n\
-                - Runs in a sandboxed environment with restricted write access."
-                .to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "Absolute path to the file to write"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "The content to write to the file"
-                    }
-                },
-                "required": ["file_path", "content"]
-            }),
-        }
-    }
-
-    fn execute(&self, input: &serde_json::Value) -> ToolResult {
+    pub fn execute(&self, input: &serde_json::Value) -> ToolResult {
         let file_path = input["file_path"].as_str().unwrap_or("");
         let content = input["content"].as_str().unwrap_or("");
 
@@ -95,35 +64,6 @@ impl Tool for WriteTool {
 
         self.write_file(file_path, content)
     }
-}
-
-impl Plugin for WriteTool {
-    fn name(&self) -> &str {
-        "write"
-    }
-
-    fn plugin_type(&self) -> PluginType {
-        PluginType::ClientTool
-    }
-
-    fn tools(&self) -> Vec<ToolDef> {
-        vec![self.definition()]
-    }
-
-    fn call_tool(&self, _tool_name: &str, input: &serde_json::Value) -> ToolResult {
-        self.execute(input)
-    }
-
-    fn status_text(&self, _tool_name: &str, input: &serde_json::Value) -> String {
-        let path = input["file_path"].as_str().unwrap_or("");
-        let preview: String = path.chars().rev().take(50).collect::<String>().chars().rev().collect();
-        if preview.len() < path.len() {
-            format!("写入: ...{}", preview)
-        } else {
-            format!("写入: {}", preview)
-        }
-    }
-
 }
 
 #[cfg(test)]

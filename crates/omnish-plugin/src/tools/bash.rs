@@ -1,5 +1,4 @@
-use crate::{Plugin, PluginType};
-use omnish_llm::tool::{Tool, ToolDef, ToolResult};
+use omnish_llm::tool::ToolResult;
 use std::process::Command;
 
 /// Maximum output bytes to return from a bash command.
@@ -111,6 +110,23 @@ impl BashTool {
             is_error: exit_code != 0,
         }
     }
+
+    pub fn execute(&self, input: &serde_json::Value) -> ToolResult {
+        let command = input["command"].as_str().unwrap_or("");
+        if command.is_empty() {
+            return ToolResult {
+                tool_use_id: String::new(),
+                content: "Error: 'command' is required".to_string(),
+                is_error: true,
+            };
+        }
+        let timeout = input["timeout"]
+            .as_u64()
+            .unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let cwd = input["cwd"].as_str();
+        let shell = input["shell"].as_str();
+        self.run(command, timeout, cwd, shell)
+    }
 }
 
 fn truncate_output(text: &str) -> String {
@@ -129,90 +145,6 @@ fn truncate_output(text: &str) -> String {
         result.push_str(line);
     }
     result
-}
-
-impl Tool for BashTool {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "bash".to_string(),
-            description: "Execute a shell command and return its output. Use this to run \
-                shell commands, inspect files, check system state, or perform any operation \
-                the user asks about. Commands run in the specified shell and working directory.\n\n\
-                Guidelines:\n\
-                - The tool runs in a sandboxed environment with restricted write access.\n\
-                - Always quote file paths that contain spaces with double quotes.\n\
-                - If a command fails with a permission error, do not retry. Explain the error to the user."
-                .to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "The shell command to execute"
-                    },
-                    "shell": {
-                        "type": "string",
-                        "description": "Shell to use (e.g., /bin/bash, /bin/zsh). Defaults to bash if not specified."
-                    },
-                    "cwd": {
-                        "type": "string",
-                        "description": "Working directory for the command. Defaults to the user's current directory."
-                    },
-                    "timeout": {
-                        "type": "number",
-                        "description": "Timeout in seconds (default: 30)"
-                    }
-                },
-                "required": ["command"]
-            }),
-        }
-    }
-
-    fn execute(&self, input: &serde_json::Value) -> ToolResult {
-        let command = input["command"].as_str().unwrap_or("");
-        if command.is_empty() {
-            return ToolResult {
-                tool_use_id: String::new(),
-                content: "Error: 'command' is required".to_string(),
-                is_error: true,
-            };
-        }
-        let timeout = input["timeout"]
-            .as_u64()
-            .unwrap_or(DEFAULT_TIMEOUT_SECS);
-        let cwd = input["cwd"].as_str();
-        let shell = input["shell"].as_str();
-        self.run(command, timeout, cwd, shell)
-    }
-}
-
-impl Plugin for BashTool {
-    fn name(&self) -> &str {
-        "bash"
-    }
-
-    fn plugin_type(&self) -> PluginType {
-        PluginType::ClientTool
-    }
-
-    fn tools(&self) -> Vec<ToolDef> {
-        vec![self.definition()]
-    }
-
-    fn call_tool(&self, _tool_name: &str, input: &serde_json::Value) -> ToolResult {
-        self.execute(input)
-    }
-
-    fn status_text(&self, _tool_name: &str, input: &serde_json::Value) -> String {
-        let command = input["command"].as_str().unwrap_or("");
-        let preview: String = command.chars().take(60).collect();
-        if preview.len() < command.len() {
-            format!("执行: {}...", preview)
-        } else {
-            format!("执行: {}", preview)
-        }
-    }
-
 }
 
 #[cfg(test)]

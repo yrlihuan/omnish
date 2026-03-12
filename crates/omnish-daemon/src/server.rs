@@ -4,8 +4,6 @@ use omnish_daemon::plugin::{PluginManager, PluginType};
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_daemon::task_mgr::TaskManager;
 use omnish_llm::backend::{ContentBlock, LlmBackend, LlmRequest, StopReason, TriggerType, UseCase};
-use omnish_llm::tool::Tool;
-use omnish_plugin::Plugin;
 use omnish_protocol::message::*;
 use omnish_transport::rpc_server::RpcServer;
 use std::collections::HashMap;

@@ -25,10 +25,7 @@ pub struct ToolResult {
 }
 
 /// Trait for implementing tools that the LLM can call.
-/// New tools are added by implementing this trait and registering at startup.
 pub trait Tool: Send + Sync {
-    /// Returns the tool definition (name, description, JSON schema) for the LLM.
-    fn definition(&self) -> ToolDef;
     /// Executes the tool with the given input and returns the result.
     fn execute(&self, input: &serde_json::Value) -> ToolResult;
 }
