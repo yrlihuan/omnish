@@ -158,6 +158,10 @@ async fn async_main() -> Result<()> {
     }
     let plugin_mgr = Arc::new(omnish_daemon::plugin::PluginManager::load(&plugins_dir));
 
+    // Watch prompt.json files for hot-reload
+    let plugin_mgr_watcher = Arc::clone(&plugin_mgr);
+    tokio::spawn(async move { plugin_mgr_watcher.watch_prompts().await });
+
     let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr);
 
     tracing::info!("starting omnishd at {}", socket_path);

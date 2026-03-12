@@ -1,7 +1,8 @@
 use omnish_llm::tool::ToolDef;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 /// Classifies whether a plugin's tools run on the daemon or the client side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,7 +11,7 @@ pub enum PluginType {
     ClientTool,
 }
 
-/// A single tool entry parsed from tool.json.
+/// A single tool entry parsed from tool.json (base definition, immutable).
 #[derive(Debug, Clone)]
 struct ToolEntry {
     def: ToolDef,
@@ -26,14 +27,22 @@ struct PluginInfo {
     tools: Vec<ToolEntry>,
 }
 
+/// Cached prompt.json overrides, updated on file changes.
+struct PromptCache {
+    /// tool_name → effective description (base with override/append applied)
+    descriptions: HashMap<String, String>,
+    system_prompts: Vec<String>,
+}
+
 /// Metadata-only plugin manager. Loads tool definitions from JSON files.
-/// Does not spawn or manage any processes.
+/// Watches prompt.json files for changes via inotify.
 pub struct PluginManager {
+    plugins_dir: PathBuf,
     plugins: Vec<PluginInfo>,
     /// Maps tool_name → (plugin_index, tool_index) for fast lookup.
     tool_index: HashMap<String, (usize, usize)>,
-    /// Extra system prompt fragments from prompt.json files.
-    system_prompts: Vec<String>,
+    /// Prompt overrides, updated on file changes.
+    prompt_cache: RwLock<PromptCache>,
 }
 
 #[derive(Deserialize)]
@@ -100,7 +109,6 @@ impl PluginManager {
     pub fn load(plugins_dir: &Path) -> Self {
         let mut plugins = Vec::new();
         let mut tool_index = HashMap::new();
-        let mut system_prompts = Vec::new();
 
         let mut entries: Vec<_> = match std::fs::read_dir(plugins_dir) {
             Ok(rd) => rd.filter_map(|e| e.ok()).collect(),
@@ -133,38 +141,6 @@ impl PluginManager {
                 }
             };
 
-            // Load prompt.json overrides (optional)
-            let prompt_overrides = {
-                let prompt_json = path.join("prompt.json");
-                if prompt_json.is_file() {
-                    match std::fs::read_to_string(&prompt_json) {
-                        Ok(c) => match serde_json::from_str::<PromptJsonFile>(&c) {
-                            Ok(p) => {
-                                tracing::info!("Loaded prompt.json for plugin '{}'", dir_name);
-                                Some(p)
-                            }
-                            Err(e) => {
-                                tracing::warn!("Malformed {}: {}", prompt_json.display(), e);
-                                None
-                            }
-                        },
-                        Err(e) => {
-                            tracing::warn!("Failed to read {}: {}", prompt_json.display(), e);
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            };
-
-            // Collect system_prompt from prompt.json
-            if let Some(ref pf) = prompt_overrides {
-                if let Some(ref sp) = pf.system_prompt {
-                    system_prompts.push(sp.clone().into_string());
-                }
-            }
-
             let plugin_type = match parsed.plugin_type.as_str() {
                 "client_tool" => PluginType::ClientTool,
                 _ => PluginType::DaemonTool,
@@ -181,26 +157,12 @@ impl PluginManager {
                     );
                     continue;
                 }
-
-                // Apply prompt.json overrides to description
-                let mut description = te.description.into_string();
-                if let Some(ref pf) = prompt_overrides {
-                    if let Some(ovr) = pf.tools.get(&te.name) {
-                        if let Some(ref desc) = ovr.description {
-                            description = desc.clone().into_string();
-                        } else if let Some(ref append) = ovr.append {
-                            description.push('\n');
-                            description.push_str(&append.clone().into_string());
-                        }
-                    }
-                }
-
                 let tool_idx = tools.len();
                 tool_index.insert(te.name.clone(), (plugin_idx, tool_idx));
                 tools.push(ToolEntry {
                     def: ToolDef {
                         name: te.name,
-                        description,
+                        description: te.description.into_string(),
                         input_schema: te.input_schema,
                     },
                     status_template: te.status_template,
@@ -220,18 +182,86 @@ impl PluginManager {
             });
         }
 
-        Self {
+        let mgr = Self {
+            plugins_dir: plugins_dir.to_path_buf(),
             plugins,
             tool_index,
-            system_prompts,
-        }
+            prompt_cache: RwLock::new(PromptCache {
+                descriptions: HashMap::new(),
+                system_prompts: Vec::new(),
+            }),
+        };
+        mgr.reload_prompts();
+        mgr
     }
 
-    /// Collect all tool definitions from all plugins.
+    /// Re-read all prompt.json files and update the prompt cache.
+    pub fn reload_prompts(&self) {
+        let mut descriptions = HashMap::new();
+        let mut system_prompts = Vec::new();
+
+        for plugin in &self.plugins {
+            let prompt_json = self.plugins_dir.join(&plugin.dir_name).join("prompt.json");
+            let prompt_overrides = if prompt_json.is_file() {
+                match std::fs::read_to_string(&prompt_json) {
+                    Ok(c) => match serde_json::from_str::<PromptJsonFile>(&c) {
+                        Ok(p) => Some(p),
+                        Err(e) => {
+                            tracing::warn!("Malformed {}: {}", prompt_json.display(), e);
+                            None
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!("Failed to read {}: {}", prompt_json.display(), e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            if let Some(ref pf) = prompt_overrides {
+                if let Some(ref sp) = pf.system_prompt {
+                    system_prompts.push(sp.clone().into_string());
+                }
+            }
+
+            for te in &plugin.tools {
+                let mut desc = te.def.description.clone();
+                if let Some(ref pf) = prompt_overrides {
+                    if let Some(ovr) = pf.tools.get(&te.def.name) {
+                        if let Some(ref d) = ovr.description {
+                            desc = d.clone().into_string();
+                        } else if let Some(ref a) = ovr.append {
+                            desc.push('\n');
+                            desc.push_str(&a.clone().into_string());
+                        }
+                    }
+                }
+                descriptions.insert(te.def.name.clone(), desc);
+            }
+        }
+
+        tracing::info!("Reloaded prompt overrides ({} tools, {} system prompts)",
+            descriptions.len(), system_prompts.len());
+
+        let mut cache = self.prompt_cache.write().unwrap();
+        cache.descriptions = descriptions;
+        cache.system_prompts = system_prompts;
+    }
+
+    /// Collect all tool definitions from all plugins (with prompt overrides applied).
     pub fn all_tools(&self) -> Vec<ToolDef> {
+        let cache = self.prompt_cache.read().unwrap();
         self.plugins
             .iter()
-            .flat_map(|p| p.tools.iter().map(|t| t.def.clone()))
+            .flat_map(|p| p.tools.iter().map(|t| {
+                let mut def = t.def.clone();
+                if let Some(desc) = cache.descriptions.get(&def.name) {
+                    def.description = desc.clone();
+                }
+                def
+            }))
             .collect()
     }
 
@@ -260,8 +290,8 @@ impl PluginManager {
     }
 
     /// Return extra system prompt fragments from prompt.json files.
-    pub fn extra_system_prompts(&self) -> &[String] {
-        &self.system_prompts
+    pub fn extra_system_prompts(&self) -> Vec<String> {
+        self.prompt_cache.read().unwrap().system_prompts.clone()
     }
 
     /// Return whether the tool should be sandboxed.
@@ -269,6 +299,111 @@ impl PluginManager {
         self.tool_index
             .get(tool_name)
             .map(|&(pi, ti)| self.plugins[pi].tools[ti].sandboxed)
+    }
+
+    /// Spawn an async task that watches prompt.json files via inotify.
+    /// Calls `reload_prompts()` when any prompt.json is created or modified.
+    pub async fn watch_prompts(self: &std::sync::Arc<Self>) {
+        use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
+        use std::os::fd::AsFd;
+        use tokio::io::unix::AsyncFd;
+        use tokio::io::Interest;
+
+        let inotify = match Inotify::init(InitFlags::IN_NONBLOCK) {
+            Ok(i) => i,
+            Err(e) => {
+                tracing::warn!("Failed to init inotify: {}", e);
+                return;
+            }
+        };
+
+        let watch_flags = AddWatchFlags::IN_CREATE
+            | AddWatchFlags::IN_CLOSE_WRITE
+            | AddWatchFlags::IN_MOVED_TO;
+
+        // Watch the plugins root directory for new subdirectories
+        if let Err(e) = inotify.add_watch(&self.plugins_dir, watch_flags) {
+            tracing::warn!("Failed to watch {}: {}", self.plugins_dir.display(), e);
+            return;
+        }
+
+        // Watch each existing plugin subdirectory
+        if let Ok(rd) = std::fs::read_dir(&self.plugins_dir) {
+            for entry in rd.filter_map(|e| e.ok()) {
+                if entry.path().is_dir() {
+                    let _ = inotify.add_watch(&entry.path(), watch_flags);
+                }
+            }
+        }
+
+        let async_fd = match AsyncFd::with_interest(inotify.as_fd().try_clone_to_owned().unwrap(), Interest::READABLE) {
+            Ok(fd) => fd,
+            Err(e) => {
+                tracing::warn!("Failed to create AsyncFd for inotify: {}", e);
+                return;
+            }
+        };
+
+        // Keep inotify alive for the lifetime of this task
+        let _inotify = inotify;
+
+        tracing::info!("Watching prompt.json files for changes in {}", self.plugins_dir.display());
+
+        loop {
+            let mut guard = match async_fd.readable().await {
+                Ok(g) => g,
+                Err(e) => {
+                    tracing::warn!("inotify readable error: {}", e);
+                    break;
+                }
+            };
+
+            // Read and consume all inotify events
+            let mut should_reload = false;
+            loop {
+                match _inotify.read_events() {
+                    Ok(events) => {
+                        for event in &events {
+                            let name = event.name
+                                .as_ref()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default();
+
+                            // New subdirectory in plugins dir — add watch
+                            if event.mask.contains(AddWatchFlags::IN_CREATE)
+                                || event.mask.contains(AddWatchFlags::IN_MOVED_TO)
+                            {
+                                let new_path = self.plugins_dir.join(&name);
+                                if new_path.is_dir() {
+                                    let _ = _inotify.add_watch(&new_path, watch_flags);
+                                    tracing::info!("Watching new plugin dir: {}", name);
+                                }
+                            }
+
+                            // prompt.json created or modified
+                            if name == "prompt.json" {
+                                should_reload = true;
+                            }
+                        }
+                        if events.is_empty() {
+                            break;
+                        }
+                    }
+                    Err(nix::errno::Errno::EAGAIN) => break,
+                    Err(e) => {
+                        tracing::warn!("inotify read error: {}", e);
+                        break;
+                    }
+                }
+            }
+
+            guard.clear_ready();
+
+            if should_reload {
+                tracing::info!("prompt.json changed, reloading...");
+                self.reload_prompts();
+            }
+        }
     }
 }
 
@@ -598,5 +733,34 @@ mod tests {
         let mgr = PluginManager::load(tmp.path());
         assert_eq!(mgr.tool_sandboxed("bash"), Some(true));
         assert_eq!(mgr.tool_sandboxed("edit"), Some(false));
+    }
+
+    #[test]
+    fn test_reload_prompts_picks_up_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tool_json(tmp.path(), "builtin", r#"{
+            "plugin_type": "client_tool",
+            "tools": [{
+                "name": "bash",
+                "description": "Original",
+                "input_schema": {"type": "object"},
+                "status_template": "",
+                "sandboxed": true
+            }]
+        }"#);
+        let mgr = PluginManager::load(tmp.path());
+        assert_eq!(mgr.all_tools()[0].description, "Original");
+
+        // Write prompt.json and reload
+        write_prompt_json(tmp.path(), "builtin", r#"{
+            "tools": { "bash": { "description": "Updated" } }
+        }"#);
+        mgr.reload_prompts();
+        assert_eq!(mgr.all_tools()[0].description, "Updated");
+
+        // Remove prompt.json override by writing empty overrides
+        write_prompt_json(tmp.path(), "builtin", r#"{ "tools": {} }"#);
+        mgr.reload_prompts();
+        assert_eq!(mgr.all_tools()[0].description, "Original");
     }
 }

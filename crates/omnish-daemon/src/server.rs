@@ -296,7 +296,7 @@ async fn build_chat_setup(mgr: &SessionManager, plugin_mgr: &PluginManager) -> C
 
     let mut pm = omnish_llm::prompt::PromptManager::default_chat();
     for sp in plugin_mgr.extra_system_prompts() {
-        pm.add("plugin_prompt", sp);
+        pm.add("plugin_prompt", &sp);
     }
     let system_prompt = pm.build();
 
