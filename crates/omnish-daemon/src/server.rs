@@ -795,23 +795,37 @@ fn cmd_display(s: impl Into<String>) -> serde_json::Value {
 
 async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>, plugin_mgr: &PluginManager) -> serde_json::Value {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
-    // Handle /context chat:<thread_id> — show conversation context for a chat thread
+
+    // Build system-reminder for context display
+    let (commands, stream_reader) = mgr.get_all_commands_with_reader().await;
+    let command_query_tool = omnish_daemon::tools::command_query::CommandQueryTool::new(commands, stream_reader);
+    let reminder = command_query_tool.build_system_reminder(5, None);
+
+    // Handle /context chat:<thread_id> — show conversation context + system-reminder
     if let Some(thread_id) = sub.strip_prefix("context chat:") {
         let msgs = conv_mgr.load_raw_messages(thread_id);
-        if msgs.is_empty() {
-            return cmd_display("(empty conversation)");
-        }
         let mut output = format!("Chat thread: {}\n\n", thread_id);
-        for msg in &msgs {
-            let role = msg["role"].as_str().unwrap_or("unknown");
-            let label = if role == "user" { "User" } else { "Assistant" };
-            let text = ConversationManager::extract_text_public(msg);
-            if !text.is_empty() {
-                output.push_str(&format!("[{}] {}\n\n", label, text));
+        if msgs.is_empty() {
+            output.push_str("(empty conversation)\n\n");
+        } else {
+            for msg in &msgs {
+                let role = msg["role"].as_str().unwrap_or("unknown");
+                let label = if role == "user" { "User" } else { "Assistant" };
+                let text = ConversationManager::extract_text_public(msg);
+                if !text.is_empty() {
+                    output.push_str(&format!("[{}] {}\n\n", label, text));
+                }
             }
         }
+        output.push_str(&reminder);
         return cmd_display(output);
     }
+
+    // Handle /context chat (without thread_id) — show only system-reminder
+    if sub == "context chat" {
+        return cmd_display(reminder);
+    }
+
     // Handle /context <scenario> for showing context for different scenarios
     if let Some(scenario) = sub.strip_prefix("context ") {
         return cmd_display(handle_context_scenario(scenario, req, mgr, llm_backend).await);
