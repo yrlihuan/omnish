@@ -147,6 +147,15 @@ async fn async_main() -> Result<()> {
 
     // Initialize plugin manager — loads tool definitions from JSON files
     let plugins_dir = omnish_dir.join("plugins");
+    // Ensure builtin tool.json exists (auto-install on first run)
+    let builtin_dir = plugins_dir.join("builtin");
+    let builtin_tool_json = builtin_dir.join("tool.json");
+    if !builtin_tool_json.exists() {
+        let _ = std::fs::create_dir_all(&builtin_dir);
+        let default_json = include_str!("../../omnish-plugin/plugins/builtin/tool.json");
+        let _ = std::fs::write(&builtin_tool_json, default_json);
+        tracing::info!("Installed default builtin/tool.json");
+    }
     let plugin_mgr = Arc::new(omnish_daemon::plugin::PluginManager::load(&plugins_dir));
 
     let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr);
