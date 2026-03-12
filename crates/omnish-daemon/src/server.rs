@@ -421,7 +421,7 @@ async fn handle_chat_message(
     run_agent_loop(state, llm, conv_mgr, plugin_mgr, pending_loops).await
 }
 
-/// Handle a ChatToolResult from the client — resume the paused agent loop.
+/// Handle a ChatToolResult from the client — accumulate results, resume when all are received.
 async fn handle_tool_result(
     tr: ChatToolResult,
     _mgr: &SessionManager,
@@ -430,19 +430,19 @@ async fn handle_tool_result(
     plugin_mgr: &Arc<PluginManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
 ) -> Vec<Message> {
-    let mut state = {
-        let mut map = pending_loops.lock().await;
-        match map.remove(&tr.request_id) {
-            Some(s) => s,
-            None => {
-                tracing::warn!("No pending agent loop for request_id={}", tr.request_id);
-                return vec![Message::Ack];
-            }
+    let mut map = pending_loops.lock().await;
+    let state = match map.get_mut(&tr.request_id) {
+        Some(s) => s,
+        None => {
+            tracing::warn!("No pending agent loop for request_id={}", tr.request_id);
+            return vec![Message::Ack];
         }
     };
 
     // Check if the agent loop has timed out (10 minutes — bash commands like builds can be slow)
     if state.start.elapsed() > std::time::Duration::from_secs(600) {
+        map.remove(&tr.request_id);
+        drop(map);
         tracing::warn!("Agent loop timed out for request_id={}", tr.request_id);
         return vec![Message::ChatResponse(ChatResponse {
             request_id: tr.request_id,
@@ -458,64 +458,24 @@ async fn handle_tool_result(
         is_error: tr.is_error,
     });
 
-    // Check if there are more tool calls still pending (client-side or daemon-side)
+    // Check if all tool calls are now completed
     let completed_ids: std::collections::HashSet<String> = state
         .completed_results
         .iter()
         .map(|r| r.tool_use_id.clone())
         .collect();
+    let all_complete = state.pending_tool_calls.iter().all(|tc| completed_ids.contains(&tc.id));
 
-    // Process remaining pending tool calls
-    let remaining: Vec<omnish_llm::tool::ToolCall> = state
-        .pending_tool_calls
-        .iter()
-        .filter(|tc| !completed_ids.contains(&tc.id))
-        .cloned()
-        .collect();
-
-    for tc in &remaining {
-        let ptype = plugin_mgr.tool_plugin_type(&tc.name);
-        if ptype == Some(PluginType::ClientTool) {
-            // Another client-side tool — forward it and pause again
-            let status_text = plugin_mgr.tool_status_text(&tc.name, &tc.input);
-            state.messages.push(Message::ChatToolStatus(ChatToolStatus {
-                request_id: state.cm.request_id.clone(),
-                thread_id: state.cm.thread_id.clone(),
-                tool_name: tc.name.clone(),
-                status: status_text,
-            }));
-            state.messages.push(Message::ChatToolCall(ChatToolCall {
-                request_id: state.cm.request_id.clone(),
-                thread_id: state.cm.thread_id.clone(),
-                tool_name: tc.name.clone(),
-                tool_call_id: tc.id.clone(),
-                input: serde_json::to_string(&tc.input).unwrap_or_default(),
-                plugin_name: plugin_mgr.tool_plugin_name(&tc.name).unwrap_or("builtin").to_string(),
-                sandboxed: plugin_mgr.tool_sandboxed(&tc.name).unwrap_or(true),
-            }));
-            let out_messages = std::mem::take(&mut state.messages);
-            let request_id = state.cm.request_id.clone();
-            pending_loops.lock().await.insert(request_id, state);
-            // Drain accumulated messages for the client
-            return out_messages;
-        }
-
-        // Daemon-side tool not yet executed (shouldn't happen normally, but handle it)
-        let mut result = if tc.name == "command_query" {
-            state.command_query_tool.execute(&tc.input)
-        } else {
-            omnish_llm::tool::ToolResult {
-                tool_use_id: String::new(),
-                content: format!("Unknown daemon tool: {}", tc.name),
-                is_error: true,
-            }
-        };
-        result.tool_use_id = tc.id.clone();
-        state.completed_results.push(result);
+    if !all_complete {
+        // More results expected from client — acknowledge and wait
+        drop(map);
+        return vec![Message::Ack];
     }
 
-    // All tool calls for this LLM turn are complete — build tool_result content
-    // and continue the agent loop
+    // All tool calls complete — remove state and continue agent loop
+    let mut state = map.remove(&tr.request_id).unwrap();
+    drop(map);
+
     let result_content: Vec<serde_json::Value> = state
         .completed_results
         .iter()
@@ -538,12 +498,7 @@ async fn handle_tool_result(
     state.completed_results.clear();
     state.iteration += 1;
 
-    // Collect accumulated messages and prepend them to the resumed loop output
-    let accumulated = std::mem::take(&mut state.messages);
-    let mut result = run_agent_loop(state, llm, conv_mgr, plugin_mgr, pending_loops).await;
-    let mut final_messages = accumulated;
-    final_messages.append(&mut result);
-    final_messages
+    run_agent_loop(state, llm, conv_mgr, plugin_mgr, pending_loops).await
 }
 
 /// Core agent loop: calls LLM, executes tools, pauses on client-side tools.
@@ -613,8 +568,9 @@ async fn run_agent_loop(
                         }
                     }
 
-                    // Execute each tool call, pausing on client-side tools
+                    // Execute daemon-side tools immediately, forward all client-side tools
                     let mut tool_results = Vec::new();
+                    let mut has_client_tools = false;
                     for tc in &tool_calls {
                         let status_text = if tc.name == "command_query" {
                             state.command_query_tool.status_text(&tc.name, &tc.input)
@@ -622,15 +578,16 @@ async fn run_agent_loop(
                             plugin_mgr.tool_status_text(&tc.name, &tc.input)
                         };
 
+                        messages.push(Message::ChatToolStatus(ChatToolStatus {
+                            request_id: state.cm.request_id.clone(),
+                            thread_id: state.cm.thread_id.clone(),
+                            tool_name: tc.name.clone(),
+                            status: status_text,
+                        }));
+
                         let ptype = plugin_mgr.tool_plugin_type(&tc.name);
                         if ptype == Some(PluginType::ClientTool) {
-                            // Client-side tool: forward to client, pause loop
-                            messages.push(Message::ChatToolStatus(ChatToolStatus {
-                                request_id: state.cm.request_id.clone(),
-                                thread_id: state.cm.thread_id.clone(),
-                                tool_name: tc.name.clone(),
-                                status: status_text,
-                            }));
+                            // Client-side tool: forward to client for parallel execution
                             messages.push(Message::ChatToolCall(ChatToolCall {
                                 request_id: state.cm.request_id.clone(),
                                 thread_id: state.cm.thread_id.clone(),
@@ -640,36 +597,32 @@ async fn run_agent_loop(
                                 plugin_name: plugin_mgr.tool_plugin_name(&tc.name).unwrap_or("builtin").to_string(),
                                 sandboxed: plugin_mgr.tool_sandboxed(&tc.name).unwrap_or(true),
                             }));
-
-                            // Cache state for resumption
-                            state.pending_tool_calls = tool_calls.iter().map(|tc| (*tc).clone()).collect();
-                            state.completed_results = tool_results;
-                            state.messages = vec![];
-                            state.iteration = iteration;
-                            let request_id = state.cm.request_id.clone();
-                            pending_loops.lock().await.insert(request_id, state);
-                            return messages;
-                        }
-
-                        // Daemon-side tool: execute directly
-                        messages.push(Message::ChatToolStatus(ChatToolStatus {
-                            request_id: state.cm.request_id.clone(),
-                            thread_id: state.cm.thread_id.clone(),
-                            tool_name: tc.name.clone(),
-                            status: status_text,
-                        }));
-
-                        let mut result = if tc.name == "command_query" {
-                            state.command_query_tool.execute(&tc.input)
+                            has_client_tools = true;
                         } else {
-                            omnish_llm::tool::ToolResult {
-                                tool_use_id: String::new(),
-                                content: format!("Unknown daemon tool: {}", tc.name),
-                                is_error: true,
-                            }
-                        };
-                        result.tool_use_id = tc.id.clone();
-                        tool_results.push(result);
+                            // Daemon-side tool: execute directly
+                            let mut result = if tc.name == "command_query" {
+                                state.command_query_tool.execute(&tc.input)
+                            } else {
+                                omnish_llm::tool::ToolResult {
+                                    tool_use_id: String::new(),
+                                    content: format!("Unknown daemon tool: {}", tc.name),
+                                    is_error: true,
+                                }
+                            };
+                            result.tool_use_id = tc.id.clone();
+                            tool_results.push(result);
+                        }
+                    }
+
+                    if has_client_tools {
+                        // Pause loop — client will execute tools in parallel and send results back
+                        state.pending_tool_calls = tool_calls.iter().map(|tc| (*tc).clone()).collect();
+                        state.completed_results = tool_results;
+                        state.messages = vec![];
+                        state.iteration = iteration;
+                        let request_id = state.cm.request_id.clone();
+                        pending_loops.lock().await.insert(request_id, state);
+                        return messages;
                     }
 
                     // All tools were daemon-side — build tool_result and continue

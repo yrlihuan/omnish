@@ -2564,76 +2564,122 @@ async fn run_chat_loop(
             match result {
                 Ok(mut rx) => {
                     'stream: loop {
-                        let mut crx = cancel_rx.clone();
-                        tokio::select! {
-                            msg = rx.recv() => {
-                                match msg {
-                                    Some(Message::ChatToolStatus(cts)) => {
-                                        let text = format!("\u{1f527} {}", cts.status);
-                                        nix::unistd::write(std::io::stdout(), line_status.append(&text).as_bytes()).ok();
-                                    }
-                                    Some(Message::ChatToolCall(tc)) => {
-                                        // Execute tool, racing against Ctrl-C
-                                        let tool_name = tc.tool_name.clone();
-                                        let plugin_name = tc.plugin_name.clone();
-                                        let sandboxed = tc.sandboxed;
-                                        let tool_input: serde_json::Value = serde_json::from_str(&tc.input).unwrap_or_default();
-                                        let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
-                                        let plugins = Arc::clone(&client_plugins);
-                                        let tool_fut = tokio::task::spawn_blocking(move || {
-                                            plugins.execute_tool(&plugin_name, &tool_name, &tool_input, shell_cwd.as_deref(), sandboxed)
-                                        });
-
-                                        let mut crx2 = cancel_rx.clone();
-                                        tokio::select! {
-                                            tool_result = tool_fut => {
-                                                let (content, is_error) = tool_result
-                                                    .unwrap_or_else(|_| ("Tool execution panicked".to_string(), true));
-                                                let result_msg = Message::ChatToolResult(ChatToolResult {
-                                                    request_id: tc.request_id.clone(),
-                                                    thread_id: tc.thread_id.clone(),
-                                                    tool_call_id: tc.tool_call_id,
-                                                    content,
-                                                    is_error,
-                                                });
-                                                match rpc.call_stream(result_msg).await {
-                                                    Ok(new_rx) => {
-                                                        rx = new_rx;
-                                                        continue 'stream;
-                                                    }
-                                                    Err(e) => {
-                                                        nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
-                                                        let err = display::render_error(&format!("Failed to send tool result: {}", e));
-                                                        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                                                        break 'stream;
-                                                    }
-                                                }
-                                            }
-                                            _ = wait_cancel(&mut crx2) => {
-                                                interrupted = true;
-                                                break 'stream;
-                                            }
+                        // Phase 1: Collect messages from stream, batching tool calls
+                        let mut tool_calls: Vec<ChatToolCall> = Vec::new();
+                        let mut got_response = false;
+                        loop {
+                            let mut crx = cancel_rx.clone();
+                            tokio::select! {
+                                msg = rx.recv() => {
+                                    match msg {
+                                        Some(Message::ChatToolStatus(cts)) => {
+                                            let text = format!("\u{1f527} {}", cts.status);
+                                            nix::unistd::write(std::io::stdout(), line_status.append(&text).as_bytes()).ok();
                                         }
-                                    }
-                                    Some(Message::ChatResponse(resp)) if resp.request_id == req_id => {
-                                        nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
-                                        let output = display::render_response(&resp.content);
-                                        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                                        Some(Message::ChatToolCall(tc)) => {
+                                            tool_calls.push(tc);
+                                        }
+                                        Some(Message::ChatResponse(resp)) if resp.request_id == req_id => {
+                                            nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
+                                            let output = display::render_response(&resp.content);
+                                            nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
 
-                                        // Show separator
-                                        let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
-                                        let separator = display::render_separator(cols);
-                                        let sep_line = format!("{}\r\n", separator);
-                                        nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
-                                        break 'stream;
+                                            let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+                                            let separator = display::render_separator(cols);
+                                            let sep_line = format!("{}\r\n", separator);
+                                            nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
+                                            got_response = true;
+                                            break;
+                                        }
+                                        None => break, // Stream ended — process collected tool calls
+                                        _ => { got_response = true; break; }
                                     }
-                                    _ => break 'stream,
+                                }
+                                _ = wait_cancel(&mut crx) => {
+                                    interrupted = true;
+                                    break 'stream;
                                 }
                             }
-                            _ = wait_cancel(&mut crx) => {
-                                interrupted = true;
-                                break 'stream;
+                        }
+
+                        if got_response || tool_calls.is_empty() {
+                            break 'stream;
+                        }
+
+                        // Phase 2: Execute all tool calls in parallel
+                        let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
+                        let mut handles = Vec::with_capacity(tool_calls.len());
+                        for tc in &tool_calls {
+                            let plugins = Arc::clone(&client_plugins);
+                            let tool_name = tc.tool_name.clone();
+                            let plugin_name = tc.plugin_name.clone();
+                            let sandboxed = tc.sandboxed;
+                            let tool_input: serde_json::Value = serde_json::from_str(&tc.input).unwrap_or_default();
+                            let cwd = shell_cwd.clone();
+                            handles.push(tokio::task::spawn_blocking(move || {
+                                plugins.execute_tool(&plugin_name, &tool_name, &tool_input, cwd.as_deref(), sandboxed)
+                            }));
+                        }
+
+                        // Wait for all tools to complete, racing against Ctrl-C
+                        let results;
+                        {
+                            let mut crx2 = cancel_rx.clone();
+                            tokio::select! {
+                                all = async {
+                                    let mut out = Vec::with_capacity(handles.len());
+                                    for h in handles { out.push(h.await); }
+                                    out
+                                } => { results = all; }
+                                _ = wait_cancel(&mut crx2) => {
+                                    interrupted = true;
+                                    break 'stream;
+                                }
                             }
+                        }
+
+                        // Phase 3: Send results back — intermediate via call(), last via call_stream()
+                        let total = results.len();
+                        let mut send_failed = false;
+                        for (i, (tc, result)) in tool_calls.iter().zip(results).enumerate() {
+                            let (content, is_error) = result
+                                .unwrap_or_else(|_| ("Tool execution panicked".to_string(), true));
+                            let result_msg = Message::ChatToolResult(ChatToolResult {
+                                request_id: tc.request_id.clone(),
+                                thread_id: tc.thread_id.clone(),
+                                tool_call_id: tc.tool_call_id.clone(),
+                                content,
+                                is_error,
+                            });
+
+                            if i < total - 1 {
+                                // Intermediate result — daemon returns Ack
+                                if let Err(e) = rpc.call(result_msg).await {
+                                    nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
+                                    let err = display::render_error(&format!("Failed to send tool result: {}", e));
+                                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                                    send_failed = true;
+                                    break;
+                                }
+                            } else {
+                                // Last result — daemon resumes agent loop, returns stream
+                                match rpc.call_stream(result_msg).await {
+                                    Ok(new_rx) => {
+                                        rx = new_rx;
+                                        continue 'stream;
+                                    }
+                                    Err(e) => {
+                                        nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
+                                        let err = display::render_error(&format!("Failed to send tool result: {}", e));
+                                        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                                        send_failed = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if send_failed {
+                            break 'stream;
                         }
                     }
                 }
