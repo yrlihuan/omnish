@@ -2524,57 +2524,99 @@ async fn run_chat_loop(
             query: trimmed.to_string(),
         });
 
-        // Race RPC call against Ctrl-C on stdin
+        // Ctrl-C cancellation: watch channel lets us detect interrupt at any point
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-        let interrupt = tokio::task::spawn_blocking(move || wait_for_ctrl_c(stop_rx));
-        let rpc_result = rpc.call_stream(chat_msg);
+        tokio::task::spawn_blocking(move || {
+            if wait_for_ctrl_c(stop_rx) {
+                let _ = cancel_tx.send(true);
+            }
+        });
 
-        tokio::select! {
-            result = rpc_result => {
-                // Signal the stdin reader to stop
-                let _ = stop_tx.send(());
-                match result {
-                    Ok(mut rx) => {
-                        'stream: loop {
-                            while let Some(msg) = rx.recv().await {
+        let rpc_result = rpc.call_stream(chat_msg);
+        let mut interrupted = false;
+
+        // Helper: resolves when cancel_rx sees true
+        async fn wait_cancel(rx: &mut tokio::sync::watch::Receiver<bool>) {
+            loop {
+                if *rx.borrow() { return; }
+                if rx.changed().await.is_err() {
+                    // Sender dropped — will never cancel
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+
+        // Race initial RPC call against Ctrl-C
+        let stream_result;
+        {
+            let mut crx = cancel_rx.clone();
+            tokio::select! {
+                result = rpc_result => { stream_result = Some(result); }
+                _ = wait_cancel(&mut crx) => {
+                    interrupted = true;
+                    stream_result = None;
+                }
+            }
+        }
+
+        if let Some(result) = stream_result {
+            match result {
+                Ok(mut rx) => {
+                    'stream: loop {
+                        let mut crx = cancel_rx.clone();
+                        tokio::select! {
+                            msg = rx.recv() => {
                                 match msg {
-                                    Message::ChatToolStatus(cts) => {
+                                    Some(Message::ChatToolStatus(cts)) => {
                                         let text = format!("\u{1f527} {}", cts.status);
                                         nix::unistd::write(std::io::stdout(), line_status.append(&text).as_bytes()).ok();
                                     }
-                                    Message::ChatToolCall(tc) => {
-                                        // Execute tool via short-lived plugin process (blocking — use spawn_blocking)
+                                    Some(Message::ChatToolCall(tc)) => {
+                                        // Execute tool, racing against Ctrl-C
                                         let tool_name = tc.tool_name.clone();
                                         let plugin_name = tc.plugin_name.clone();
                                         let sandboxed = tc.sandboxed;
                                         let tool_input: serde_json::Value = serde_json::from_str(&tc.input).unwrap_or_default();
                                         let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
                                         let plugins = Arc::clone(&client_plugins);
-                                        let (content, is_error) = tokio::task::spawn_blocking(move || {
+                                        let tool_fut = tokio::task::spawn_blocking(move || {
                                             plugins.execute_tool(&plugin_name, &tool_name, &tool_input, shell_cwd.as_deref(), sandboxed)
-                                        }).await.unwrap_or_else(|_| ("Tool execution panicked".to_string(), true));
-
-                                        // Send result back, get continuation stream
-                                        let result_msg = Message::ChatToolResult(ChatToolResult {
-                                            request_id: tc.request_id.clone(),
-                                            thread_id: tc.thread_id.clone(),
-                                            tool_call_id: tc.tool_call_id,
-                                            content,
-                                            is_error,
                                         });
-                                        match rpc.call_stream(result_msg).await {
-                                            Ok(new_rx) => {
-                                                rx = new_rx;
-                                                continue 'stream;
+
+                                        let mut crx2 = cancel_rx.clone();
+                                        tokio::select! {
+                                            tool_result = tool_fut => {
+                                                let (content, is_error) = tool_result
+                                                    .unwrap_or_else(|_| ("Tool execution panicked".to_string(), true));
+                                                let result_msg = Message::ChatToolResult(ChatToolResult {
+                                                    request_id: tc.request_id.clone(),
+                                                    thread_id: tc.thread_id.clone(),
+                                                    tool_call_id: tc.tool_call_id,
+                                                    content,
+                                                    is_error,
+                                                });
+                                                match rpc.call_stream(result_msg).await {
+                                                    Ok(new_rx) => {
+                                                        rx = new_rx;
+                                                        continue 'stream;
+                                                    }
+                                                    Err(e) => {
+                                                        nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
+                                                        let err = display::render_error(&format!("Failed to send tool result: {}", e));
+                                                        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                                                        break 'stream;
+                                                    }
+                                                }
                                             }
-                                            Err(e) => {
-                                                let err = display::render_error(&format!("Failed to send tool result: {}", e));
-                                                nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                                            _ = wait_cancel(&mut crx2) => {
+                                                interrupted = true;
                                                 break 'stream;
                                             }
                                         }
                                     }
-                                    Message::ChatResponse(resp) if resp.request_id == req_id => {
+                                    Some(Message::ChatResponse(resp)) if resp.request_id == req_id => {
+                                        nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
                                         let output = display::render_response(&resp.content);
                                         nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
 
@@ -2588,32 +2630,40 @@ async fn run_chat_loop(
                                     _ => break 'stream,
                                 }
                             }
-                            break 'stream;
+                            _ = wait_cancel(&mut crx) => {
+                                interrupted = true;
+                                break 'stream;
+                            }
                         }
                     }
-                    Err(_) => {
-                        let err = display::render_error("Failed to receive chat response");
-                        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                    }
+                }
+                Err(_) => {
+                    nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
+                    let err = display::render_error("Failed to receive chat response");
+                    nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                 }
             }
-            _ = interrupt => {
-                // Ctrl-C pressed — record interrupt in conversation
-                let info = "\r\n\x1b[2;37m(interrupted)\x1b[0m";
-                nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
+        }
 
-                // Send interrupt to daemon to record in conversation
-                let interrupt_msg = Message::ChatInterrupt(omnish_protocol::message::ChatInterrupt {
-                    session_id: session_id.to_string(),
-                    thread_id: current_thread_id.clone().unwrap(),
-                    query: trimmed.to_string(),
-                });
-                // Fire and forget — don't wait for response
-                let rpc_clone = rpc.clone();
-                tokio::spawn(async move {
-                    let _ = rpc_clone.call(interrupt_msg).await;
-                });
-            }
+        // Stop Ctrl-C listener thread
+        let _ = stop_tx.send(());
+
+        if interrupted {
+            nix::unistd::write(std::io::stdout(), line_status.clear().as_bytes()).ok();
+            let info = "\r\n\x1b[2;37m(interrupted)\x1b[0m";
+            nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
+
+            // Send interrupt to daemon to record in conversation and clean up pending loop
+            let interrupt_msg = Message::ChatInterrupt(omnish_protocol::message::ChatInterrupt {
+                request_id: req_id.clone(),
+                session_id: session_id.to_string(),
+                thread_id: current_thread_id.clone().unwrap(),
+                query: trimmed.to_string(),
+            });
+            let rpc_clone = rpc.clone();
+            tokio::spawn(async move {
+                let _ = rpc_clone.call(interrupt_msg).await;
+            });
         }
     }
 }

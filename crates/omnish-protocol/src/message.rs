@@ -213,6 +213,7 @@ pub struct ChatResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatInterrupt {
+    pub request_id: String,
     pub session_id: String,
     pub thread_id: String,
     pub query: String,
@@ -579,6 +580,7 @@ mod tests {
                 content: String::new(),
             }),
             Message::ChatInterrupt(ChatInterrupt {
+                request_id: String::new(),
                 session_id: String::new(),
                 thread_id: String::new(),
                 query: String::new(),

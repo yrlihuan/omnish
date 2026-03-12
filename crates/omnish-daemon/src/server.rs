@@ -265,11 +265,63 @@ async fn handle_message(
             return handle_tool_result(tr, mgr, llm, conv_mgr, plugin_mgr, pending_loops).await;
         }
         Message::ChatInterrupt(ci) => {
-            conv_mgr.append_messages(&ci.thread_id, &[
-                serde_json::json!({"role": "user", "content": ci.query}),
-                serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
-            ]);
-            tracing::info!("Chat interrupted by user (thread={})", ci.thread_id);
+            // Clean up pending agent loop and store partial results
+            let state = if !ci.request_id.is_empty() {
+                pending_loops.lock().await.remove(&ci.request_id)
+            } else {
+                None
+            };
+
+            if let Some(state) = state {
+                // Build tool_result content: completed results + "user interrupted" for the rest
+                let completed_ids: std::collections::HashSet<String> = state
+                    .completed_results
+                    .iter()
+                    .map(|r| r.tool_use_id.clone())
+                    .collect();
+
+                let mut result_content: Vec<serde_json::Value> = state
+                    .completed_results
+                    .iter()
+                    .map(|r| serde_json::json!({
+                        "type": "tool_result",
+                        "tool_use_id": r.tool_use_id,
+                        "content": r.content,
+                        "is_error": r.is_error,
+                    }))
+                    .collect();
+
+                // Fill in "user interrupted" for tools not yet completed
+                for tc in &state.pending_tool_calls {
+                    if !completed_ids.contains(&tc.id) {
+                        result_content.push(serde_json::json!({
+                            "type": "tool_result",
+                            "tool_use_id": tc.id,
+                            "content": "user interrupted",
+                            "is_error": true,
+                        }));
+                    }
+                }
+
+                // Store: prior messages + assistant tool_use + tool_results
+                let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
+                // Replace first message (user+system-reminder) with clean user query
+                to_store[0] = serde_json::json!({"role": "user", "content": ci.query});
+                // Append tool results
+                to_store.push(serde_json::json!({
+                    "role": "user",
+                    "content": result_content,
+                }));
+                conv_mgr.append_messages(&ci.thread_id, &to_store);
+            } else {
+                // No pending loop — just record the interrupt
+                conv_mgr.append_messages(&ci.thread_id, &[
+                    serde_json::json!({"role": "user", "content": ci.query}),
+                    serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
+                ]);
+            }
+
+            tracing::info!("Chat interrupted by user (thread={}, request={})", ci.thread_id, ci.request_id);
             Message::Ack
         }
         _ => Message::Ack,
