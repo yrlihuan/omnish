@@ -43,12 +43,30 @@ struct ToolJsonFile {
 #[derive(Deserialize)]
 struct ToolJsonEntry {
     name: String,
-    description: String,
+    /// Accepts either a single string or an array of strings (joined with "\n").
+    description: DescriptionValue,
     input_schema: serde_json::Value,
     #[serde(default)]
     status_template: String,
     #[serde(default = "default_sandboxed")]
     sandboxed: bool,
+}
+
+/// Description can be a plain string or an array of lines for readability.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DescriptionValue {
+    Single(String),
+    Lines(Vec<String>),
+}
+
+impl DescriptionValue {
+    fn into_string(self) -> String {
+        match self {
+            Self::Single(s) => s,
+            Self::Lines(lines) => lines.join("\n"),
+        }
+    }
 }
 
 fn default_sandboxed() -> bool {
@@ -114,7 +132,7 @@ impl PluginManager {
                 tools.push(ToolEntry {
                     def: ToolDef {
                         name: te.name,
-                        description: te.description,
+                        description: te.description.into_string(),
                         input_schema: te.input_schema,
                     },
                     status_template: te.status_template,
