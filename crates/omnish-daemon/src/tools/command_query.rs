@@ -43,7 +43,7 @@ impl CommandQueryTool {
     }
 
     /// Build a system-reminder string for the chat user message.
-    /// Includes current time, working directory, and last N commands.
+    /// Includes current time, working directory, git status, platform info, and last N commands.
     /// `live_cwd` overrides the command-record cwd (from session probe).
     pub fn build_system_reminder(&self, count: usize, live_cwd: Option<&str>) -> String {
         let commands = &self.commands;
@@ -51,11 +51,29 @@ impl CommandQueryTool {
         // Current time with timezone
         let now = chrono::Local::now();
         let time_str = now.format("%Y-%m-%d %H:%M:%S %z").to_string();
+        let today = now.format("%Y-%m-%d").to_string();
 
         // Current directory: prefer live cwd from session probe, fall back to last command's cwd
         let cwd = live_cwd
             .or_else(|| commands.last().and_then(|c| c.cwd.as_deref()))
             .unwrap_or("(unknown)");
+
+        // Check if cwd is a git repo
+        let is_git_repo = std::process::Command::new("git")
+            .args(["rev-parse", "--is-inside-work-tree"])
+            .current_dir(cwd)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        let is_git_repo_str = if is_git_repo { "Yes" } else { "No" };
+
+        // Platform info
+        let platform = std::env::consts::OS;
+        let os_version = std::process::Command::new("uname")
+            .arg("-r")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
 
         // Last N commands
         let start = commands.len().saturating_sub(count);
@@ -77,8 +95,8 @@ impl CommandQueryTool {
         };
 
         format!(
-            "<system-reminder>\nTIME: {}\n\nWORKING DIR: {}\n\nLAST {} COMMANDS:\n{}\n</system-reminder>",
-            time_str, cwd, count, cmds
+            "<system-reminder>\nTIME: {}\n\nWORKING DIR: {}\n\nIs directory a git repo: {}\n\nPlatform: {}\n\nOS Version: {}\n\nToday's date: {}\n\nLAST {} COMMANDS:\n{}\n</system-reminder>",
+            time_str, cwd, is_git_repo_str, platform, os_version, today, count, cmds
         )
     }
 
