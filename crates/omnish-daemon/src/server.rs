@@ -11,6 +11,26 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_rustls::TlsAcceptor;
 
+/// Load chat system prompt: base from embedded JSON, with optional user overrides
+/// from ~/.omnish/prompts/chat.override.json (same fragment format — matching names replace).
+fn load_chat_prompt() -> omnish_llm::prompt::PromptManager {
+    let base = omnish_llm::prompt::PromptManager::default_chat();
+    let override_path = omnish_common::config::omnish_dir().join("prompts/chat.override.json");
+    match std::fs::read_to_string(&override_path) {
+        Ok(content) => match omnish_llm::prompt::PromptManager::from_json(&content) {
+            Ok(overrides) => {
+                tracing::info!("Loaded chat prompt overrides from {}", override_path.display());
+                base.merge(overrides)
+            }
+            Err(e) => {
+                tracing::warn!("Malformed {}: {}", override_path.display(), e);
+                base
+            }
+        },
+        Err(_) => base,
+    }
+}
+
 /// Cached state for a paused agent loop awaiting a client-side tool result.
 struct AgentLoopState {
     llm_req: LlmRequest,
@@ -346,10 +366,8 @@ async fn build_chat_setup(mgr: &SessionManager, plugin_mgr: &PluginManager) -> C
     let mut tools = vec![command_query_tool.definition()];
     tools.extend(plugin_mgr.all_tools());
 
-    let mut pm = omnish_llm::prompt::PromptManager::default_chat();
-    for sp in plugin_mgr.extra_system_prompts() {
-        pm.add("plugin_prompt", &sp);
-    }
+    // Load base chat prompt, then apply user overrides from chat.override.json
+    let pm = load_chat_prompt();
     let system_prompt = pm.build();
 
     ChatSetup { command_query_tool, tools, system_prompt }

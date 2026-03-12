@@ -29,9 +29,10 @@ fn main() -> Result<()> {
 }
 
 /// Write embedded assets (builtin plugin config, chat prompt) to ~/.omnish/.
-/// Overwrites on every startup so users always have the latest defaults.
+/// Defaults (chat.json, tool.json) are overwritten on every startup.
+/// Templates (*.override.json) are only written if not already present.
 fn install_embedded_assets(omnish_dir: &std::path::Path) {
-    // Builtin plugin tool.json
+    // Builtin plugin tool.json (always overwrite)
     let builtin_dir = omnish_dir.join("plugins/builtin");
     let _ = std::fs::create_dir_all(&builtin_dir);
     let _ = std::fs::write(
@@ -39,13 +40,28 @@ fn install_embedded_assets(omnish_dir: &std::path::Path) {
         include_str!("../../omnish-plugin/plugins/builtin/tool.json"),
     );
 
-    // Chat system prompt
+    // tool.override.json.example (only if not present)
+    let tool_override_example = builtin_dir.join("tool.override.json.example");
+    if !tool_override_example.exists() {
+        let _ = std::fs::write(
+            &tool_override_example,
+            include_str!("../../omnish-plugin/plugins/builtin/tool.override.json.example"),
+        );
+    }
+
+    // Chat system prompt (always overwrite)
     let prompts_dir = omnish_dir.join("prompts");
     let _ = std::fs::create_dir_all(&prompts_dir);
     let _ = std::fs::write(
         prompts_dir.join("chat.json"),
         omnish_llm::prompt::CHAT_PROMPT_JSON,
     );
+
+    // chat.override.json.example (only if not present)
+    let chat_override_example = prompts_dir.join("chat.override.json.example");
+    if !chat_override_example.exists() {
+        let _ = std::fs::write(&chat_override_example, omnish_llm::prompt::CHAT_OVERRIDE_EXAMPLE);
+    }
 }
 
 async fn async_main() -> Result<()> {
@@ -172,9 +188,9 @@ async fn async_main() -> Result<()> {
     let plugins_dir = omnish_dir.join("plugins");
     let plugin_mgr = Arc::new(omnish_daemon::plugin::PluginManager::load(&plugins_dir));
 
-    // Watch prompt.json files for hot-reload
+    // Watch tool.override.json files for hot-reload
     let plugin_mgr_watcher = Arc::clone(&plugin_mgr);
-    tokio::spawn(async move { plugin_mgr_watcher.watch_prompts().await });
+    tokio::spawn(async move { plugin_mgr_watcher.watch_overrides().await });
 
     let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr);
 

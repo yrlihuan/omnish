@@ -1,6 +1,9 @@
 /// Embedded chat prompt JSON, compiled into the binary.
 pub const CHAT_PROMPT_JSON: &str = include_str!("../assets/chat.json");
 
+/// Example template for chat.override.json (written to ~/.omnish/ if not present).
+pub const CHAT_OVERRIDE_EXAMPLE: &str = include_str!("../assets/chat.override.json.example");
+
 /// Manages system prompt as composable named fragments.
 pub struct PromptManager {
     fragments: Vec<(String, String)>,
@@ -58,6 +61,19 @@ impl PromptManager {
             pm.add(&f.name, &f.content.into_string());
         }
         Ok(pm)
+    }
+
+    /// Merge overrides into this manager. Fragments with matching names are
+    /// replaced; unmatched override fragments are appended.
+    pub fn merge(mut self, overrides: Self) -> Self {
+        for (name, content) in overrides.fragments {
+            if let Some(existing) = self.fragments.iter_mut().find(|(n, _)| n == &name) {
+                existing.1 = content;
+            } else {
+                self.fragments.push((name, content));
+            }
+        }
+        self
     }
 
     /// Create a PromptManager with default chat fragments from the embedded JSON.
@@ -120,5 +136,30 @@ mod tests {
     fn test_empty_build() {
         let pm = PromptManager::new();
         assert_eq!(pm.build(), "");
+    }
+
+    #[test]
+    fn test_merge_replaces_matching() {
+        let mut base = PromptManager::new();
+        base.add("a", "original_a");
+        base.add("b", "original_b");
+
+        let mut overrides = PromptManager::new();
+        overrides.add("a", "replaced_a");
+
+        let merged = base.merge(overrides);
+        assert_eq!(merged.build(), "replaced_a\n\noriginal_b");
+    }
+
+    #[test]
+    fn test_merge_appends_new() {
+        let mut base = PromptManager::new();
+        base.add("a", "content_a");
+
+        let mut overrides = PromptManager::new();
+        overrides.add("b", "content_b");
+
+        let merged = base.merge(overrides);
+        assert_eq!(merged.build(), "content_a\n\ncontent_b");
     }
 }

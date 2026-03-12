@@ -1,0 +1,15 @@
+[
+  {
+    "name": "tone",
+    "content": [
+      "# Tone and style",
+      "",
+      "Matching an existing fragment name REPLACES it.",
+      "This overrides the default 'tone' fragment entirely."
+    ]
+  },
+  {
+    "name": "custom_rules",
+    "content": "New fragment names are APPENDED after all base fragments."
+  }
+]

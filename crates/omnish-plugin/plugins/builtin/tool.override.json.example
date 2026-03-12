@@ -1,0 +1,14 @@
+{
+  "tools": {
+    "bash": {
+      "description": [
+        "Execute a shell command. This REPLACES the original description entirely.",
+        "Use \"description\" (string or array of strings) to replace.",
+        "Use \"append\" to add to the original. If both are set, \"description\" wins."
+      ]
+    },
+    "read": {
+      "append": "Additional guideline appended after the original description."
+    }
+  }
+}

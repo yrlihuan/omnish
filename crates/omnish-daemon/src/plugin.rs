@@ -27,15 +27,14 @@ struct PluginInfo {
     tools: Vec<ToolEntry>,
 }
 
-/// Cached prompt.json overrides, updated on file changes.
+/// Cached tool.override.json overrides, updated on file changes.
 struct PromptCache {
     /// tool_name → effective description (base with override/append applied)
     descriptions: HashMap<String, String>,
-    system_prompts: Vec<String>,
 }
 
 /// Metadata-only plugin manager. Loads tool definitions from JSON files.
-/// Watches prompt.json files for changes via inotify.
+/// Watches tool.override.json files for changes via inotify/polling.
 pub struct PluginManager {
     plugins_dir: PathBuf,
     plugins: Vec<PluginInfo>,
@@ -84,17 +83,15 @@ fn default_sandboxed() -> bool {
     true
 }
 
-/// prompt.json: user-specified overrides for tool descriptions and system prompt.
+/// tool.override.json: user-specified overrides for tool descriptions.
 #[derive(Deserialize)]
-struct PromptJsonFile {
+struct ToolOverrideFile {
     #[serde(default)]
-    system_prompt: Option<DescriptionValue>,
-    #[serde(default)]
-    tools: HashMap<String, PromptToolOverride>,
+    tools: HashMap<String, ToolOverrideEntry>,
 }
 
 #[derive(Deserialize)]
-struct PromptToolOverride {
+struct ToolOverrideEntry {
     /// Replaces the tool description entirely.
     #[serde(default)]
     description: Option<DescriptionValue>,
@@ -188,31 +185,29 @@ impl PluginManager {
             tool_index,
             prompt_cache: RwLock::new(PromptCache {
                 descriptions: HashMap::new(),
-                system_prompts: Vec::new(),
             }),
         };
-        mgr.reload_prompts();
+        mgr.reload_overrides();
         mgr
     }
 
-    /// Re-read all prompt.json files and update the prompt cache.
-    pub fn reload_prompts(&self) {
+    /// Re-read all tool.override.json files and update the prompt cache.
+    pub fn reload_overrides(&self) {
         let mut descriptions = HashMap::new();
-        let mut system_prompts = Vec::new();
 
         for plugin in &self.plugins {
-            let prompt_json = self.plugins_dir.join(&plugin.dir_name).join("prompt.json");
-            let prompt_overrides = if prompt_json.is_file() {
-                match std::fs::read_to_string(&prompt_json) {
-                    Ok(c) => match serde_json::from_str::<PromptJsonFile>(&c) {
+            let override_path = self.plugins_dir.join(&plugin.dir_name).join("tool.override.json");
+            let overrides = if override_path.is_file() {
+                match std::fs::read_to_string(&override_path) {
+                    Ok(c) => match serde_json::from_str::<ToolOverrideFile>(&c) {
                         Ok(p) => Some(p),
                         Err(e) => {
-                            tracing::warn!("Malformed {}: {}", prompt_json.display(), e);
+                            tracing::warn!("Malformed {}: {}", override_path.display(), e);
                             None
                         }
                     },
                     Err(e) => {
-                        tracing::warn!("Failed to read {}: {}", prompt_json.display(), e);
+                        tracing::warn!("Failed to read {}: {}", override_path.display(), e);
                         None
                     }
                 }
@@ -220,16 +215,10 @@ impl PluginManager {
                 None
             };
 
-            if let Some(ref pf) = prompt_overrides {
-                if let Some(ref sp) = pf.system_prompt {
-                    system_prompts.push(sp.clone().into_string());
-                }
-            }
-
             for te in &plugin.tools {
                 let mut desc = te.def.description.clone();
-                if let Some(ref pf) = prompt_overrides {
-                    if let Some(ovr) = pf.tools.get(&te.def.name) {
+                if let Some(ref of_) = overrides {
+                    if let Some(ovr) = of_.tools.get(&te.def.name) {
                         if let Some(ref d) = ovr.description {
                             desc = d.clone().into_string();
                         } else if let Some(ref a) = ovr.append {
@@ -242,12 +231,10 @@ impl PluginManager {
             }
         }
 
-        tracing::info!("Reloaded prompt overrides ({} tools, {} system prompts)",
-            descriptions.len(), system_prompts.len());
+        tracing::info!("Reloaded tool overrides ({} tools)", descriptions.len());
 
         let mut cache = self.prompt_cache.write().unwrap();
         cache.descriptions = descriptions;
-        cache.system_prompts = system_prompts;
     }
 
     /// Collect all tool definitions from all plugins (with prompt overrides applied).
@@ -289,11 +276,6 @@ impl PluginManager {
             .map(|&(pi, _)| self.plugins[pi].dir_name.as_str())
     }
 
-    /// Return extra system prompt fragments from prompt.json files.
-    pub fn extra_system_prompts(&self) -> Vec<String> {
-        self.prompt_cache.read().unwrap().system_prompts.clone()
-    }
-
     /// Return whether the tool should be sandboxed.
     pub fn tool_sandboxed(&self, tool_name: &str) -> Option<bool> {
         self.tool_index
@@ -301,11 +283,11 @@ impl PluginManager {
             .map(|&(pi, ti)| self.plugins[pi].tools[ti].sandboxed)
     }
 
-    /// Spawn an async task that watches prompt.json files for changes.
+    /// Spawn an async task that watches tool.override.json files for changes.
     /// Uses inotify on Linux; polling fallback on other platforms.
-    /// Calls `reload_prompts()` when any prompt.json is created or modified.
+    /// Calls `reload_overrides()` when any tool.override.json is created or modified.
     #[cfg(target_os = "linux")]
-    pub async fn watch_prompts(self: &std::sync::Arc<Self>) {
+    pub async fn watch_overrides(self: &std::sync::Arc<Self>) {
         use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
         use std::os::fd::AsFd;
         use tokio::io::unix::AsyncFd;
@@ -349,7 +331,7 @@ impl PluginManager {
         // Keep inotify alive for the lifetime of this task
         let _inotify = inotify;
 
-        tracing::info!("Watching prompt.json files for changes in {}", self.plugins_dir.display());
+        tracing::info!("Watching tool.override.json files for changes in {}", self.plugins_dir.display());
 
         loop {
             let mut guard = match async_fd.readable().await {
@@ -382,8 +364,8 @@ impl PluginManager {
                                 }
                             }
 
-                            // prompt.json created or modified
-                            if name == "prompt.json" {
+                            // tool.override.json created or modified
+                            if name == "tool.override.json" {
                                 should_reload = true;
                             }
                         }
@@ -402,24 +384,24 @@ impl PluginManager {
             guard.clear_ready();
 
             if should_reload {
-                tracing::info!("prompt.json changed, reloading...");
-                self.reload_prompts();
+                tracing::info!("tool.override.json changed, reloading...");
+                self.reload_overrides();
             }
         }
     }
 
-    /// Fallback: poll prompt.json files for changes every 5 seconds.
+    /// Fallback: poll tool.override.json files for changes every 5 seconds.
     #[cfg(not(target_os = "linux"))]
-    pub async fn watch_prompts(self: &std::sync::Arc<Self>) {
+    pub async fn watch_overrides(self: &std::sync::Arc<Self>) {
         use std::collections::HashMap;
 
-        tracing::info!("Polling prompt.json files for changes in {}", self.plugins_dir.display());
+        tracing::info!("Polling tool.override.json files for changes in {}", self.plugins_dir.display());
 
         let mut mtimes: HashMap<PathBuf, std::time::SystemTime> = HashMap::new();
 
         // Seed initial modification times
         for plugin in &self.plugins {
-            let path = self.plugins_dir.join(&plugin.dir_name).join("prompt.json");
+            let path = self.plugins_dir.join(&plugin.dir_name).join("tool.override.json");
             if let Ok(meta) = std::fs::metadata(&path) {
                 if let Ok(mtime) = meta.modified() {
                     mtimes.insert(path, mtime);
@@ -432,7 +414,7 @@ impl PluginManager {
 
             let mut changed = false;
             for plugin in &self.plugins {
-                let path = self.plugins_dir.join(&plugin.dir_name).join("prompt.json");
+                let path = self.plugins_dir.join(&plugin.dir_name).join("tool.override.json");
                 if let Ok(meta) = std::fs::metadata(&path) {
                     if let Ok(mtime) = meta.modified() {
                         match mtimes.get(&path) {
@@ -452,8 +434,8 @@ impl PluginManager {
             }
 
             if changed {
-                tracing::info!("prompt.json changed, reloading...");
-                self.reload_prompts();
+                tracing::info!("tool.override.json changed, reloading...");
+                self.reload_overrides();
             }
         }
     }
@@ -487,10 +469,10 @@ mod tests {
         f.write_all(content.as_bytes()).unwrap();
     }
 
-    fn write_prompt_json(dir: &std::path::Path, name: &str, content: &str) {
+    fn write_tool_override(dir: &std::path::Path, name: &str, content: &str) {
         let plugin_dir = dir.join(name);
         std::fs::create_dir_all(&plugin_dir).unwrap();
-        let mut f = std::fs::File::create(plugin_dir.join("prompt.json")).unwrap();
+        let mut f = std::fs::File::create(plugin_dir.join("tool.override.json")).unwrap();
         f.write_all(content.as_bytes()).unwrap();
     }
 
@@ -648,7 +630,7 @@ mod tests {
                 "sandboxed": true
             }]
         }"#);
-        write_prompt_json(tmp.path(), "builtin", r#"{
+        write_tool_override(tmp.path(), "builtin", r#"{
             "tools": {
                 "bash": {
                     "description": "Custom description"
@@ -672,7 +654,7 @@ mod tests {
                 "sandboxed": true
             }]
         }"#);
-        write_prompt_json(tmp.path(), "builtin", r#"{
+        write_tool_override(tmp.path(), "builtin", r#"{
             "tools": {
                 "bash": {
                     "append": "Extra guideline"
@@ -696,7 +678,7 @@ mod tests {
                 "sandboxed": true
             }]
         }"#);
-        write_prompt_json(tmp.path(), "builtin", r#"{
+        write_tool_override(tmp.path(), "builtin", r#"{
             "tools": {
                 "bash": {
                     "description": "Replaced",
@@ -706,28 +688,6 @@ mod tests {
         }"#);
         let mgr = PluginManager::load(tmp.path());
         assert_eq!(mgr.all_tools()[0].description, "Replaced");
-    }
-
-    #[test]
-    fn test_prompt_json_system_prompt() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_tool_json(tmp.path(), "builtin", r#"{
-            "plugin_type": "client_tool",
-            "tools": [{
-                "name": "bash",
-                "description": "Run",
-                "input_schema": {"type": "object"},
-                "status_template": "",
-                "sandboxed": true
-            }]
-        }"#);
-        write_prompt_json(tmp.path(), "builtin", r#"{
-            "system_prompt": ["You are a DevOps expert.", "Use kubectl when possible."],
-            "tools": {}
-        }"#);
-        let mgr = PluginManager::load(tmp.path());
-        assert_eq!(mgr.extra_system_prompts().len(), 1);
-        assert_eq!(mgr.extra_system_prompts()[0], "You are a DevOps expert.\nUse kubectl when possible.");
     }
 
     #[test]
@@ -743,7 +703,7 @@ mod tests {
                 "sandboxed": true
             }]
         }"#);
-        write_prompt_json(tmp.path(), "builtin", r#"{
+        write_tool_override(tmp.path(), "builtin", r#"{
             "tools": {
                 "bash": {
                     "description": ["Line 1", "Line 2", "", "Line 4"]
@@ -769,7 +729,6 @@ mod tests {
         }"#);
         let mgr = PluginManager::load(tmp.path());
         assert_eq!(mgr.all_tools()[0].description, "Original description");
-        assert!(mgr.extra_system_prompts().is_empty());
     }
 
     #[test]
@@ -788,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reload_prompts_picks_up_changes() {
+    fn test_reload_overrides_picks_up_changes() {
         let tmp = tempfile::tempdir().unwrap();
         write_tool_json(tmp.path(), "builtin", r#"{
             "plugin_type": "client_tool",
@@ -803,16 +762,16 @@ mod tests {
         let mgr = PluginManager::load(tmp.path());
         assert_eq!(mgr.all_tools()[0].description, "Original");
 
-        // Write prompt.json and reload
-        write_prompt_json(tmp.path(), "builtin", r#"{
+        // Write tool.override.json and reload
+        write_tool_override(tmp.path(), "builtin", r#"{
             "tools": { "bash": { "description": "Updated" } }
         }"#);
-        mgr.reload_prompts();
+        mgr.reload_overrides();
         assert_eq!(mgr.all_tools()[0].description, "Updated");
 
-        // Remove prompt.json override by writing empty overrides
-        write_prompt_json(tmp.path(), "builtin", r#"{ "tools": {} }"#);
-        mgr.reload_prompts();
+        // Remove tool.override.json override by writing empty overrides
+        write_tool_override(tmp.path(), "builtin", r#"{ "tools": {} }"#);
+        mgr.reload_overrides();
         assert_eq!(mgr.all_tools()[0].description, "Original");
     }
 }
