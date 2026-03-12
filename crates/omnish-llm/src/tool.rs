@@ -24,8 +24,3 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
-/// Trait for implementing tools that the LLM can call.
-pub trait Tool: Send + Sync {
-    /// Executes the tool with the given input and returns the result.
-    fn execute(&self, input: &serde_json::Value) -> ToolResult;
-}

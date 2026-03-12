@@ -868,7 +868,6 @@ name = "omnish-plugin"
 version = "0.6.1"
 dependencies = [
  "landlock",
- "libc",
  "omnish-common",
  "omnish-llm",
  "serde",
