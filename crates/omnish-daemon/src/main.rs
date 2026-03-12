@@ -28,6 +28,26 @@ fn main() -> Result<()> {
         .block_on(async_main())
 }
 
+/// Write embedded assets (builtin plugin config, chat prompt) to ~/.omnish/.
+/// Overwrites on every startup so users always have the latest defaults.
+fn install_embedded_assets(omnish_dir: &std::path::Path) {
+    // Builtin plugin tool.json
+    let builtin_dir = omnish_dir.join("plugins/builtin");
+    let _ = std::fs::create_dir_all(&builtin_dir);
+    let _ = std::fs::write(
+        builtin_dir.join("tool.json"),
+        include_str!("../../omnish-plugin/plugins/builtin/tool.json"),
+    );
+
+    // Chat system prompt
+    let prompts_dir = omnish_dir.join("prompts");
+    let _ = std::fs::create_dir_all(&prompts_dir);
+    let _ = std::fs::write(
+        prompts_dir.join("chat.json"),
+        omnish_llm::prompt::CHAT_PROMPT_JSON,
+    );
+}
+
 async fn async_main() -> Result<()> {
     // Initialize tracing with filter to suppress noisy rustls debug logs
     tracing_subscriber::fmt()
@@ -145,17 +165,11 @@ async fn async_main() -> Result<()> {
 
     let conv_mgr = Arc::new(ConversationManager::new(omnish_dir.join("threads")));
 
+    // Write embedded assets to ~/.omnish/ (overwritten on every startup)
+    install_embedded_assets(&omnish_dir);
+
     // Initialize plugin manager — loads tool definitions from JSON files
     let plugins_dir = omnish_dir.join("plugins");
-    // Ensure builtin tool.json exists (auto-install on first run)
-    let builtin_dir = plugins_dir.join("builtin");
-    let builtin_tool_json = builtin_dir.join("tool.json");
-    if !builtin_tool_json.exists() {
-        let _ = std::fs::create_dir_all(&builtin_dir);
-        let default_json = include_str!("../../omnish-plugin/plugins/builtin/tool.json");
-        let _ = std::fs::write(&builtin_tool_json, default_json);
-        tracing::info!("Installed default builtin/tool.json");
-    }
     let plugin_mgr = Arc::new(omnish_daemon::plugin::PluginManager::load(&plugins_dir));
 
     // Watch prompt.json files for hot-reload

@@ -1,6 +1,31 @@
+/// Embedded chat prompt JSON, compiled into the binary.
+pub const CHAT_PROMPT_JSON: &str = include_str!("../assets/chat.json");
+
 /// Manages system prompt as composable named fragments.
 pub struct PromptManager {
     fragments: Vec<(String, String)>,
+}
+
+#[derive(serde::Deserialize)]
+struct Fragment {
+    name: String,
+    content: FragmentContent,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum FragmentContent {
+    Single(String),
+    Lines(Vec<String>),
+}
+
+impl FragmentContent {
+    fn into_string(self) -> String {
+        match self {
+            Self::Single(s) => s,
+            Self::Lines(lines) => lines.join("\n"),
+        }
+    }
 }
 
 impl PromptManager {
@@ -24,68 +49,22 @@ impl PromptManager {
             .join("\n\n")
     }
 
-    /// Create a PromptManager with default chat fragments.
-    pub fn default_chat() -> Self {
+    /// Load fragments from JSON (array of {name, content} objects).
+    pub fn from_json(json: &str) -> Result<Self, String> {
+        let fragments: Vec<Fragment> =
+            serde_json::from_str(json).map_err(|e| format!("invalid prompt JSON: {}", e))?;
         let mut pm = Self::new();
-        pm.add("identity", IDENTITY);
-        pm.add("tone", TONE);
-        pm.add("tools", TOOLS);
-        pm.add("tasks", TASKS);
-        pm
+        for f in fragments {
+            pm.add(&f.name, &f.content.into_string());
+        }
+        Ok(pm)
+    }
+
+    /// Create a PromptManager with default chat fragments from the embedded JSON.
+    pub fn default_chat() -> Self {
+        Self::from_json(CHAT_PROMPT_JSON).expect("embedded chat.json is valid")
     }
 }
-
-const IDENTITY: &str = "\
-You are the omnish assistant, an integrated chat interface within a transparent shell wrapper \
-that records terminal sessions, provides inline command completion, and aggregates I/O from \
-multiple terminal sessions. Use the instructions below and the tools available to you to \
-assist the user.\n\
-\n\
-You have access to the user's recent terminal context (commands and their output) from all \
-active sessions. Use this context to provide relevant, accurate answers.";
-
-const TONE: &str = "\
-# Tone and style\n\
-\n\
-- Only use emojis if the user explicitly requests it.\n\
-- Your output will be displayed on a command line interface. Your responses should be short \
-and concise. You can use Github-flavored markdown for formatting.\n\
-- Before using any tool, provide a brief sentence explaining what action you are about to take.\n\
-- Respond in the same language the user uses.\n\
-\n\
-# Professional objectivity\n\
-\n\
-Prioritize technical accuracy and truthfulness over validating the user's beliefs. Focus on \
-facts and problem-solving, providing direct, objective technical info without any unnecessary \
-superlatives, praise, or emotional validation. Honest guidance and respectful correction are \
-more valuable than false agreement. Whenever there is uncertainty, investigate to find the truth \
-first rather than instinctively confirming the user's beliefs.\n\
-\n\
-Never give time estimates or predictions for how long tasks will take. Focus on what needs to \
-be done, not how long it might take.";
-
-const TOOLS: &str = "\
-# Tool usage\n\
-\n\
-- Use the command_query tool to look up terminal history and command output when the user asks \
-about recent activity, errors, or workflows. Prefer querying context before answering questions \
-about what happened in the terminal.\n\
-- When executing commands via tools, be careful not to run destructive operations \
-(rm -rf, force push, drop tables, kill processes, etc.) without the user's explicit intent.\n\
-- You can call multiple tools in a single response. If you intend to call multiple tools and \
-there are no dependencies between them, make all independent calls in parallel.\n\
-- Tool results and user messages may include <system-reminder> tags. These contain useful \
-context (time, working directory, recent commands) added automatically by the system.";
-
-const TASKS: &str = "\
-# Working with terminal context\n\
-\n\
-- When the user asks about errors, reference the specific commands and their output from \
-the context. Include the command that failed, the exit code, and relevant error messages.\n\
-- For shell command questions, provide working examples.\n\
-- Do not fabricate terminal history or command output. If the context is insufficient, use \
-command_query to retrieve more, or tell the user what's missing.\n\
-- Avoid over-engineering. Keep answers simple and focused on what was asked.";
 
 #[cfg(test)]
 mod tests {
@@ -100,7 +79,33 @@ mod tests {
         assert!(prompt.contains("Professional objectivity"));
         assert!(prompt.contains("Tool usage"));
         assert!(prompt.contains("command_query"));
-        assert!(prompt.contains("Working with terminal context"));
+        assert!(prompt.contains("Doing tasks"));
+    }
+
+    #[test]
+    fn test_from_json_single_string() {
+        let json = r#"[{"name": "a", "content": "hello world"}]"#;
+        let pm = PromptManager::from_json(json).unwrap();
+        assert_eq!(pm.build(), "hello world");
+    }
+
+    #[test]
+    fn test_from_json_lines_array() {
+        let json = r#"[{"name": "a", "content": ["line1", "line2"]}]"#;
+        let pm = PromptManager::from_json(json).unwrap();
+        assert_eq!(pm.build(), "line1\nline2");
+    }
+
+    #[test]
+    fn test_from_json_preserves_order() {
+        let json = r#"[{"name": "b", "content": "second"}, {"name": "a", "content": "first"}]"#;
+        let pm = PromptManager::from_json(json).unwrap();
+        assert_eq!(pm.build(), "second\n\nfirst");
+    }
+
+    #[test]
+    fn test_from_json_invalid() {
+        assert!(PromptManager::from_json("not json").is_err());
     }
 
     #[test]
