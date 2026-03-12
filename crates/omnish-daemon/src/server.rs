@@ -294,7 +294,10 @@ async fn build_chat_setup(mgr: &SessionManager, plugin_mgr: &PluginManager) -> C
     let mut tools = vec![command_query_tool.definition()];
     tools.extend(plugin_mgr.all_tools());
 
-    let pm = omnish_llm::prompt::PromptManager::default_chat();
+    let mut pm = omnish_llm::prompt::PromptManager::default_chat();
+    for sp in plugin_mgr.extra_system_prompts() {
+        pm.add("plugin_prompt", sp);
+    }
     let system_prompt = pm.build();
 
     ChatSetup { command_query_tool, tools, system_prompt }

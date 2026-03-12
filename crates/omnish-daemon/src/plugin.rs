@@ -32,6 +32,8 @@ pub struct PluginManager {
     plugins: Vec<PluginInfo>,
     /// Maps tool_name → (plugin_index, tool_index) for fast lookup.
     tool_index: HashMap<String, (usize, usize)>,
+    /// Extra system prompt fragments from prompt.json files.
+    system_prompts: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -53,7 +55,7 @@ struct ToolJsonEntry {
 }
 
 /// Description can be a plain string or an array of lines for readability.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(untagged)]
 enum DescriptionValue {
     Single(String),
@@ -73,12 +75,32 @@ fn default_sandboxed() -> bool {
     true
 }
 
+/// prompt.json: user-specified overrides for tool descriptions and system prompt.
+#[derive(Deserialize)]
+struct PromptJsonFile {
+    #[serde(default)]
+    system_prompt: Option<DescriptionValue>,
+    #[serde(default)]
+    tools: HashMap<String, PromptToolOverride>,
+}
+
+#[derive(Deserialize)]
+struct PromptToolOverride {
+    /// Replaces the tool description entirely.
+    #[serde(default)]
+    description: Option<DescriptionValue>,
+    /// Appended to the tool description (ignored if `description` is set).
+    #[serde(default)]
+    append: Option<DescriptionValue>,
+}
+
 impl PluginManager {
     /// Load all plugins from the given directory.
     /// Each subdirectory containing a `tool.json` is treated as a plugin.
     pub fn load(plugins_dir: &Path) -> Self {
         let mut plugins = Vec::new();
         let mut tool_index = HashMap::new();
+        let mut system_prompts = Vec::new();
 
         let mut entries: Vec<_> = match std::fs::read_dir(plugins_dir) {
             Ok(rd) => rd.filter_map(|e| e.ok()).collect(),
@@ -111,6 +133,38 @@ impl PluginManager {
                 }
             };
 
+            // Load prompt.json overrides (optional)
+            let prompt_overrides = {
+                let prompt_json = path.join("prompt.json");
+                if prompt_json.is_file() {
+                    match std::fs::read_to_string(&prompt_json) {
+                        Ok(c) => match serde_json::from_str::<PromptJsonFile>(&c) {
+                            Ok(p) => {
+                                tracing::info!("Loaded prompt.json for plugin '{}'", dir_name);
+                                Some(p)
+                            }
+                            Err(e) => {
+                                tracing::warn!("Malformed {}: {}", prompt_json.display(), e);
+                                None
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!("Failed to read {}: {}", prompt_json.display(), e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            };
+
+            // Collect system_prompt from prompt.json
+            if let Some(ref pf) = prompt_overrides {
+                if let Some(ref sp) = pf.system_prompt {
+                    system_prompts.push(sp.clone().into_string());
+                }
+            }
+
             let plugin_type = match parsed.plugin_type.as_str() {
                 "client_tool" => PluginType::ClientTool,
                 _ => PluginType::DaemonTool,
@@ -127,12 +181,26 @@ impl PluginManager {
                     );
                     continue;
                 }
+
+                // Apply prompt.json overrides to description
+                let mut description = te.description.into_string();
+                if let Some(ref pf) = prompt_overrides {
+                    if let Some(ovr) = pf.tools.get(&te.name) {
+                        if let Some(ref desc) = ovr.description {
+                            description = desc.clone().into_string();
+                        } else if let Some(ref append) = ovr.append {
+                            description.push('\n');
+                            description.push_str(&append.clone().into_string());
+                        }
+                    }
+                }
+
                 let tool_idx = tools.len();
                 tool_index.insert(te.name.clone(), (plugin_idx, tool_idx));
                 tools.push(ToolEntry {
                     def: ToolDef {
                         name: te.name,
-                        description: te.description.into_string(),
+                        description,
                         input_schema: te.input_schema,
                     },
                     status_template: te.status_template,
@@ -155,6 +223,7 @@ impl PluginManager {
         Self {
             plugins,
             tool_index,
+            system_prompts,
         }
     }
 
@@ -190,6 +259,11 @@ impl PluginManager {
             .map(|&(pi, _)| self.plugins[pi].dir_name.as_str())
     }
 
+    /// Return extra system prompt fragments from prompt.json files.
+    pub fn extra_system_prompts(&self) -> &[String] {
+        &self.system_prompts
+    }
+
     /// Return whether the tool should be sandboxed.
     pub fn tool_sandboxed(&self, tool_name: &str) -> Option<bool> {
         self.tool_index
@@ -223,6 +297,13 @@ mod tests {
         let plugin_dir = dir.join(name);
         std::fs::create_dir_all(&plugin_dir).unwrap();
         let mut f = std::fs::File::create(plugin_dir.join("tool.json")).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+    }
+
+    fn write_prompt_json(dir: &std::path::Path, name: &str, content: &str) {
+        let plugin_dir = dir.join(name);
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        let mut f = std::fs::File::create(plugin_dir.join("prompt.json")).unwrap();
         f.write_all(content.as_bytes()).unwrap();
     }
 
@@ -365,6 +446,143 @@ mod tests {
         }"#);
         let mgr = PluginManager::load(tmp.path());
         assert_eq!(mgr.all_tools().len(), 1);
+    }
+
+    #[test]
+    fn test_prompt_json_replace_description() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tool_json(tmp.path(), "builtin", r#"{
+            "plugin_type": "client_tool",
+            "tools": [{
+                "name": "bash",
+                "description": "Original description",
+                "input_schema": {"type": "object"},
+                "status_template": "",
+                "sandboxed": true
+            }]
+        }"#);
+        write_prompt_json(tmp.path(), "builtin", r#"{
+            "tools": {
+                "bash": {
+                    "description": "Custom description"
+                }
+            }
+        }"#);
+        let mgr = PluginManager::load(tmp.path());
+        assert_eq!(mgr.all_tools()[0].description, "Custom description");
+    }
+
+    #[test]
+    fn test_prompt_json_append_description() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tool_json(tmp.path(), "builtin", r#"{
+            "plugin_type": "client_tool",
+            "tools": [{
+                "name": "bash",
+                "description": "Original",
+                "input_schema": {"type": "object"},
+                "status_template": "",
+                "sandboxed": true
+            }]
+        }"#);
+        write_prompt_json(tmp.path(), "builtin", r#"{
+            "tools": {
+                "bash": {
+                    "append": "Extra guideline"
+                }
+            }
+        }"#);
+        let mgr = PluginManager::load(tmp.path());
+        assert_eq!(mgr.all_tools()[0].description, "Original\nExtra guideline");
+    }
+
+    #[test]
+    fn test_prompt_json_description_takes_priority_over_append() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tool_json(tmp.path(), "builtin", r#"{
+            "plugin_type": "client_tool",
+            "tools": [{
+                "name": "bash",
+                "description": "Original",
+                "input_schema": {"type": "object"},
+                "status_template": "",
+                "sandboxed": true
+            }]
+        }"#);
+        write_prompt_json(tmp.path(), "builtin", r#"{
+            "tools": {
+                "bash": {
+                    "description": "Replaced",
+                    "append": "Should be ignored"
+                }
+            }
+        }"#);
+        let mgr = PluginManager::load(tmp.path());
+        assert_eq!(mgr.all_tools()[0].description, "Replaced");
+    }
+
+    #[test]
+    fn test_prompt_json_system_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tool_json(tmp.path(), "builtin", r#"{
+            "plugin_type": "client_tool",
+            "tools": [{
+                "name": "bash",
+                "description": "Run",
+                "input_schema": {"type": "object"},
+                "status_template": "",
+                "sandboxed": true
+            }]
+        }"#);
+        write_prompt_json(tmp.path(), "builtin", r#"{
+            "system_prompt": ["You are a DevOps expert.", "Use kubectl when possible."],
+            "tools": {}
+        }"#);
+        let mgr = PluginManager::load(tmp.path());
+        assert_eq!(mgr.extra_system_prompts().len(), 1);
+        assert_eq!(mgr.extra_system_prompts()[0], "You are a DevOps expert.\nUse kubectl when possible.");
+    }
+
+    #[test]
+    fn test_prompt_json_multiline_description() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tool_json(tmp.path(), "builtin", r#"{
+            "plugin_type": "client_tool",
+            "tools": [{
+                "name": "bash",
+                "description": "Original",
+                "input_schema": {"type": "object"},
+                "status_template": "",
+                "sandboxed": true
+            }]
+        }"#);
+        write_prompt_json(tmp.path(), "builtin", r#"{
+            "tools": {
+                "bash": {
+                    "description": ["Line 1", "Line 2", "", "Line 4"]
+                }
+            }
+        }"#);
+        let mgr = PluginManager::load(tmp.path());
+        assert_eq!(mgr.all_tools()[0].description, "Line 1\nLine 2\n\nLine 4");
+    }
+
+    #[test]
+    fn test_no_prompt_json_keeps_original() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tool_json(tmp.path(), "builtin", r#"{
+            "plugin_type": "client_tool",
+            "tools": [{
+                "name": "bash",
+                "description": "Original description",
+                "input_schema": {"type": "object"},
+                "status_template": "",
+                "sandboxed": true
+            }]
+        }"#);
+        let mgr = PluginManager::load(tmp.path());
+        assert_eq!(mgr.all_tools()[0].description, "Original description");
+        assert!(mgr.extra_system_prompts().is_empty());
     }
 
     #[test]
