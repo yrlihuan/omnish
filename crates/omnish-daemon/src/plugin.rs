@@ -301,8 +301,10 @@ impl PluginManager {
             .map(|&(pi, ti)| self.plugins[pi].tools[ti].sandboxed)
     }
 
-    /// Spawn an async task that watches prompt.json files via inotify.
+    /// Spawn an async task that watches prompt.json files for changes.
+    /// Uses inotify on Linux; polling fallback on other platforms.
     /// Calls `reload_prompts()` when any prompt.json is created or modified.
+    #[cfg(target_os = "linux")]
     pub async fn watch_prompts(self: &std::sync::Arc<Self>) {
         use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
         use std::os::fd::AsFd;
@@ -400,6 +402,56 @@ impl PluginManager {
             guard.clear_ready();
 
             if should_reload {
+                tracing::info!("prompt.json changed, reloading...");
+                self.reload_prompts();
+            }
+        }
+    }
+
+    /// Fallback: poll prompt.json files for changes every 5 seconds.
+    #[cfg(not(target_os = "linux"))]
+    pub async fn watch_prompts(self: &std::sync::Arc<Self>) {
+        use std::collections::HashMap;
+
+        tracing::info!("Polling prompt.json files for changes in {}", self.plugins_dir.display());
+
+        let mut mtimes: HashMap<PathBuf, std::time::SystemTime> = HashMap::new();
+
+        // Seed initial modification times
+        for plugin in &self.plugins {
+            let path = self.plugins_dir.join(&plugin.dir_name).join("prompt.json");
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if let Ok(mtime) = meta.modified() {
+                    mtimes.insert(path, mtime);
+                }
+            }
+        }
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+            let mut changed = false;
+            for plugin in &self.plugins {
+                let path = self.plugins_dir.join(&plugin.dir_name).join("prompt.json");
+                if let Ok(meta) = std::fs::metadata(&path) {
+                    if let Ok(mtime) = meta.modified() {
+                        match mtimes.get(&path) {
+                            Some(prev) if *prev == mtime => {}
+                            _ => {
+                                mtimes.insert(path, mtime);
+                                changed = true;
+                            }
+                        }
+                    }
+                } else {
+                    // File removed — if we had it before, that's a change
+                    if mtimes.remove(&path).is_some() {
+                        changed = true;
+                    }
+                }
+            }
+
+            if changed {
                 tracing::info!("prompt.json changed, reloading...");
                 self.reload_prompts();
             }
