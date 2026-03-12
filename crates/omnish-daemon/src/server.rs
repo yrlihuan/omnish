@@ -1,10 +1,11 @@
 use anyhow::Result;
 use omnish_daemon::conversation_mgr::ConversationManager;
-use omnish_daemon::plugin::{Plugin, PluginManager, PluginType};
+use omnish_daemon::plugin::{PluginManager, PluginType};
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_daemon::task_mgr::TaskManager;
 use omnish_llm::backend::{ContentBlock, LlmBackend, LlmRequest, StopReason, TriggerType, UseCase};
 use omnish_llm::tool::Tool;
+use omnish_plugin::Plugin;
 use omnish_protocol::message::*;
 use omnish_transport::rpc_server::RpcServer;
 use std::collections::HashMap;
@@ -440,6 +441,8 @@ async fn handle_tool_result(
                 tool_name: tc.name.clone(),
                 tool_call_id: tc.id.clone(),
                 input: serde_json::to_string(&tc.input).unwrap_or_default(),
+                plugin_name: plugin_mgr.tool_plugin_name(&tc.name).unwrap_or("builtin").to_string(),
+                sandboxed: plugin_mgr.tool_sandboxed(&tc.name).unwrap_or(true),
             }));
             let out_messages = std::mem::take(&mut state.messages);
             let request_id = state.cm.request_id.clone();
@@ -452,7 +455,11 @@ async fn handle_tool_result(
         let mut result = if tc.name == "command_query" {
             state.command_query_tool.execute(&tc.input)
         } else {
-            plugin_mgr.call_tool(&tc.name, &tc.input)
+            omnish_llm::tool::ToolResult {
+                tool_use_id: String::new(),
+                content: format!("Unknown daemon tool: {}", tc.name),
+                is_error: true,
+            }
         };
         result.tool_use_id = tc.id.clone();
         state.completed_results.push(result);
@@ -581,6 +588,8 @@ async fn run_agent_loop(
                                 tool_name: tc.name.clone(),
                                 tool_call_id: tc.id.clone(),
                                 input: serde_json::to_string(&tc.input).unwrap_or_default(),
+                                plugin_name: plugin_mgr.tool_plugin_name(&tc.name).unwrap_or("builtin").to_string(),
+                                sandboxed: plugin_mgr.tool_sandboxed(&tc.name).unwrap_or(true),
                             }));
 
                             // Cache state for resumption
@@ -604,7 +613,11 @@ async fn run_agent_loop(
                         let mut result = if tc.name == "command_query" {
                             state.command_query_tool.execute(&tc.input)
                         } else {
-                            plugin_mgr.call_tool(&tc.name, &tc.input)
+                            omnish_llm::tool::ToolResult {
+                                tool_use_id: String::new(),
+                                content: format!("Unknown daemon tool: {}", tc.name),
+                                is_error: true,
+                            }
                         };
                         result.tool_use_id = tc.id.clone();
                         tool_results.push(result);

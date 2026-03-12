@@ -145,28 +145,9 @@ async fn async_main() -> Result<()> {
 
     let conv_mgr = Arc::new(ConversationManager::new(omnish_dir.join("threads")));
 
-    // Initialize plugin manager
-    let mut plugin_mgr = omnish_daemon::plugin::PluginManager::new();
-    // Register built-in plugins via omnish-plugin binary (same path as external plugins)
-    let plugin_bin = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("omnish-plugin")))
-        .unwrap_or_else(|| std::path::PathBuf::from("omnish-plugin"));
-    if plugin_bin.exists() {
-        for name in &["bash", "edit", "read", "write"] {
-            if let Some(p) = omnish_daemon::plugin::ExternalPlugin::spawn_builtin(name, &plugin_bin, &[name]) {
-                plugin_mgr.register(Box::new(p));
-            }
-        }
-    } else {
-        tracing::warn!("omnish-plugin binary not found at {}, registering built-in tools in-process", plugin_bin.display());
-        plugin_mgr.register(Box::new(omnish_plugin::tools::bash::BashTool::new()));
-        plugin_mgr.register(Box::new(omnish_plugin::tools::edit::EditTool::new()));
-        plugin_mgr.register(Box::new(omnish_plugin::tools::read::ReadTool::new()));
-        plugin_mgr.register(Box::new(omnish_plugin::tools::write::WriteTool::new()));
-    }
-    plugin_mgr.load_external_plugins(&config.plugins.enabled);
-    let plugin_mgr = Arc::new(plugin_mgr);
+    // Initialize plugin manager — loads tool definitions from JSON files
+    let plugins_dir = omnish_dir.join("plugins");
+    let plugin_mgr = Arc::new(omnish_daemon::plugin::PluginManager::load(&plugins_dir));
 
     let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr);
 

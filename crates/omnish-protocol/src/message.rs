@@ -6,7 +6,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version — increment on incompatible wire format changes.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
@@ -234,6 +234,10 @@ pub struct ChatToolCall {
     pub tool_call_id: String,
     /// Tool input as JSON string (bincode cannot deserialize serde_json::Value)
     pub input: String,
+    /// Plugin directory name ("builtin" or external plugin name)
+    pub plugin_name: String,
+    /// Whether to apply Landlock sandbox when spawning the plugin process
+    pub sandboxed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -591,6 +595,8 @@ mod tests {
                 tool_name: String::new(),
                 tool_call_id: String::new(),
                 input: String::new(),
+                plugin_name: String::new(),
+                sandboxed: true,
             }),
             Message::ChatToolResult(ChatToolResult {
                 request_id: String::new(),
