@@ -1,12 +1,12 @@
 use omnish_llm::tool::ToolResult;
 use std::process::Command;
 
-/// Maximum output bytes to return from a bash command.
-const MAX_OUTPUT_BYTES: usize = 50_000;
-/// Maximum lines to return.
-const MAX_OUTPUT_LINES: usize = 500;
+/// Maximum output characters to return from a bash command.
+const MAX_OUTPUT_CHARS: usize = 30_000;
 /// Default command timeout in seconds.
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_TIMEOUT_SECS: u64 = 120;
+/// Maximum command timeout in seconds.
+const MAX_TIMEOUT_SECS: u64 = 600;
 
 pub struct BashTool;
 
@@ -122,6 +122,7 @@ impl BashTool {
         }
         let timeout = input["timeout"]
             .as_u64()
+            .map(|ms| (ms / 1000).min(MAX_TIMEOUT_SECS))
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
         let cwd = input["cwd"].as_str();
         let shell = input["shell"].as_str();
@@ -130,21 +131,16 @@ impl BashTool {
 }
 
 fn truncate_output(text: &str) -> String {
-    let mut result = String::new();
-    for (line_count, line) in text.lines().enumerate() {
-        if line_count >= MAX_OUTPUT_LINES || result.len() + line.len() > MAX_OUTPUT_BYTES {
-            result.push_str(&format!(
-                "\n... (truncated, {} total lines)",
-                text.lines().count()
-            ));
-            break;
-        }
-        if line_count > 0 {
-            result.push('\n');
-        }
-        result.push_str(line);
+    if text.chars().count() <= MAX_OUTPUT_CHARS {
+        return text.to_string();
     }
-    result
+    let truncated: String = text.chars().take(MAX_OUTPUT_CHARS).collect();
+    format!(
+        "{}\n... (truncated at {} characters, {} total)",
+        truncated,
+        MAX_OUTPUT_CHARS,
+        text.chars().count()
+    )
 }
 
 #[cfg(test)]
@@ -186,10 +182,10 @@ mod tests {
 
     #[test]
     fn test_truncate_output() {
-        let long = "x\n".repeat(600);
+        let long = "x".repeat(35_000);
         let truncated = truncate_output(&long);
         assert!(truncated.contains("truncated"));
-        assert!(truncated.lines().count() <= MAX_OUTPUT_LINES + 1);
+        assert!(truncated.contains("30000 characters"));
     }
 
     #[test]

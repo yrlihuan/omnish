@@ -4,15 +4,23 @@
     {
       "name": "bash",
       "description": [
-        "Execute a shell command and return its output.",
-        "Use this to run shell commands, inspect files, check system state,",
-        "or perform any operation the user asks about.",
-        "Commands run in the specified shell and working directory.",
+        "Executes a given bash command with optional timeout.",
+        "Working directory persists between commands; shell state (everything else) does not.",
+        "The shell environment is initialized from the user's profile (bash or zsh).",
         "",
-        "Guidelines:",
-        "- The tool runs in a sandboxed environment with restricted write access.",
-        "- Always quote file paths that contain spaces with double quotes.",
-        "- If a command fails with a permission error, do not retry. Explain the error to the user."
+        "IMPORTANT: This tool is for terminal operations like git, npm, docker, etc.",
+        "DO NOT use it for file operations (reading, writing, editing, searching, finding files) - use the specialized tools for this instead.",
+        "",
+        "Before executing the command, please follow these steps:",
+        "1. Directory Verification: If the command will create new directories or files, first use `ls` to verify the parent directory exists.",
+        "2. Command Execution: Always quote file paths that contain spaces with double quotes.",
+        "",
+        "Usage notes:",
+        "- You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). Default: 120000ms (2 minutes).",
+        "- If the output exceeds 30000 characters, output will be truncated.",
+        "- Avoid using Bash with find, grep, cat, head, tail, sed, awk, or echo commands. Use the dedicated tools (Glob, Grep, Read, Edit, Write) instead.",
+        "- When issuing multiple commands: use '&&' to chain dependent commands, use ';' if you don't care about failures.",
+        "- Try to maintain your current working directory by using absolute paths and avoiding cd."
       ],
       "input_schema": {
         "type": "object",
@@ -20,6 +28,10 @@
           "command": {
             "type": "string",
             "description": "The shell command to execute"
+          },
+          "description": {
+            "type": "string",
+            "description": "Clear, concise description of what this command does (5-10 words for simple commands, more for complex ones)"
           },
           "shell": {
             "type": "string",
@@ -31,7 +43,7 @@
           },
           "timeout": {
             "type": "number",
-            "description": "Timeout in seconds (default: 30)"
+            "description": "Timeout in milliseconds (default: 120000, max: 600000)"
           }
         },
         "required": ["command"]
