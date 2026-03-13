@@ -488,6 +488,11 @@ async fn main() -> Result<()> {
     const AUTO_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
     const AUTO_UPDATE_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
 
+    // Tracks when prefix was matched, for timing-based detection of
+    // double-prefix (e.g. "::") vs single prefix (":").
+    let mut prefix_match_time: Option<std::time::Instant> = None;
+    const PREFIX_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(150);
+
     loop {
         let mut fds = [
             libc::pollfd {
@@ -531,6 +536,39 @@ async fn main() -> Result<()> {
                     }
                     // Update mtime after check to avoid repeated unnecessary checks
                     exe_mtime = current_mtime;
+                }
+            }
+        }
+
+        // Check if prefix-match timeout expired (": " waited long enough → enter new chat)
+        if let Some(t) = prefix_match_time {
+            if t.elapsed() >= PREFIX_TIMEOUT {
+                prefix_match_time = None;
+                if let Some(action) = interceptor.expire_prefix() {
+                    if matches!(action, InterceptAction::Chat(_)) {
+                        event_log::push("chat mode enter");
+                        notice_queue::defer();
+                        completer.clear();
+                        let saved_input = shell_input.input().to_string();
+                        if let Some(ref rpc) = daemon_conn {
+                            let shell_pid = proxy.child_pid() as u32;
+                            let dbg_fn = || debug_client_state(
+                                &shell_input, &interceptor, &shell_completer,
+                                &daemon_conn, &osc133_detector, &last_readline_content,
+                                shell_pid, &col_tracker,
+                            );
+                            run_chat_loop(rpc, &session_id, &proxy, None, &dbg_fn, &mut chat_history, &auto_update_enabled, col_tracker.col, col_tracker.row).await;
+                        } else {
+                            let err = display::render_error("Daemon not connected");
+                            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                        }
+                        nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
+                        notice_queue::flush();
+                        proxy.write_all(b"\x15\x0b\r").ok();
+                        if !saved_input.is_empty() {
+                            proxy.write_all(saved_input.as_bytes()).ok();
+                        }
+                    }
                 }
             }
         }
@@ -587,7 +625,11 @@ async fn main() -> Result<()> {
                             let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
                             let prompt = display::render_prompt(cols);
                             nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
+                            // Start timer for double-prefix detection
+                            prefix_match_time = Some(std::time::Instant::now());
                         } else if buf.len() > prefix_bytes.len() && buf.starts_with(prefix_bytes) {
+                            // Additional input after prefix — cancel timer
+                            prefix_match_time = None;
                             // Echo the user's input after the prompt
                             let user_input = &buf[prefix_bytes.len()..];
                             let echo = display::render_input_echo(user_input);
@@ -728,6 +770,7 @@ async fn main() -> Result<()> {
                         nix::unistd::write(std::io::stdout(), restore.as_bytes()).ok();
                     }
                     InterceptAction::Chat(msg) => {
+                        prefix_match_time = None;
                         event_log::push("chat mode enter");
                         notice_queue::defer();
                         completer.clear();
@@ -748,7 +791,7 @@ async fn main() -> Result<()> {
                                 shell_pid,
                                 &col_tracker,
                             );
-                            run_chat_loop(rpc, &session_id, &proxy, initial, &dbg_fn, &mut chat_history, &auto_update_enabled, col_tracker.col, col_tracker.row, &config.shortcuts.resume_key).await;
+                            run_chat_loop(rpc, &session_id, &proxy, initial, &dbg_fn, &mut chat_history, &auto_update_enabled, col_tracker.col, col_tracker.row).await;
                         } else {
                             let err = display::render_error("Daemon not connected");
                             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
@@ -765,6 +808,38 @@ async fn main() -> Result<()> {
                         // to clear regardless of cursor position (issue #125).
                         proxy.write_all(b"\x15\x0b\r").ok();
                         // Restore pre-chat input so user doesn't lose their work (issue #24)
+                        if !saved_input.is_empty() {
+                            proxy.write_all(saved_input.as_bytes()).ok();
+                        }
+                    }
+                    InterceptAction::ResumeChat => {
+                        prefix_match_time = None;
+                        event_log::push("chat mode resume (double-prefix)");
+                        notice_queue::defer();
+                        completer.clear();
+                        let saved_input = shell_input.input().to_string();
+
+                        if let Some(ref rpc) = daemon_conn {
+                            let shell_pid = proxy.child_pid() as u32;
+                            let dbg_fn = || debug_client_state(
+                                &shell_input,
+                                &interceptor,
+                                &shell_completer,
+                                &daemon_conn,
+                                &osc133_detector,
+                                &last_readline_content,
+                                shell_pid,
+                                &col_tracker,
+                            );
+                            run_chat_loop(rpc, &session_id, &proxy, Some("/resume 1".to_string()), &dbg_fn, &mut chat_history, &auto_update_enabled, col_tracker.col, col_tracker.row).await;
+                        } else {
+                            let err = display::render_error("Daemon not connected");
+                            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                        }
+
+                        nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
+                        notice_queue::flush();
+                        proxy.write_all(b"\x15\x0b\r").ok();
                         if !saved_input.is_empty() {
                             proxy.write_all(saved_input.as_bytes()).ok();
                         }
@@ -2019,7 +2094,6 @@ async fn run_chat_loop(
     auto_update_enabled: &AtomicBool,
     cursor_col: u16,
     cursor_row: u16,
-    resume_key: &str,
 ) {
     let client_plugins = Arc::new(client_plugin::ClientPluginManager::new());
     let mut chat_completer = ghost_complete::GhostCompleter::new(vec![
@@ -2054,12 +2128,6 @@ async fn run_chat_loop(
 
         let trimmed = input.trim();
         if trimmed.is_empty() {
-            continue;
-        }
-
-        // Shortcut to resume the last conversation (default: "::")
-        if !resume_key.is_empty() && trimmed == resume_key {
-            pending_input = Some("/resume 1".to_string());
             continue;
         }
 
@@ -3479,8 +3547,9 @@ mod tests {
         let mut interceptor = InputInterceptor::new(":", Box::new(AlwaysIntercept));
         let mut detector = AltScreenDetector::new();
 
-        // Normal mode: ":" matches prefix immediately → Chat("")
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Chat(String::new()));
+        // Normal mode: ":" matches prefix → Buffering (awaiting timeout)
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        assert_eq!(interceptor.expire_prefix(), Some(InterceptAction::Chat(String::new())));
 
         // Reset for clean test
         interceptor.note_output(b"reset");
@@ -3498,8 +3567,9 @@ mod tests {
             interceptor.set_suppressed(active);
         }
 
-        // Back to normal: ":" should intercept again → Chat("")
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Chat(String::new()));
+        // Back to normal: ":" should intercept again → Buffering
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        assert_eq!(interceptor.expire_prefix(), Some(InterceptAction::Chat(String::new())));
     }
 
     // --- Message buffer tests ---

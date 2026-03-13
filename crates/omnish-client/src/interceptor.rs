@@ -158,6 +158,8 @@ pub enum InterceptAction {
     Forward(Vec<u8>),
     /// Chat mode message completed (user pressed Enter after prefix)
     Chat(String),
+    /// Resume last chat session (prefix typed twice, e.g. "::")
+    ResumeChat,
     /// Backspace in buffering mode - erased one char
     /// Contains updated buffer for echo display
     Backspace(Vec<u8>),
@@ -457,9 +459,12 @@ impl InputInterceptor {
 
                 // Still matching prefix
                 if self.buffer.len() == self.prefix.len() {
-                    // Complete prefix match — enter chat mode immediately
-                    self.buffer.clear();
-                    return InterceptAction::Chat(String::new());
+                    // Complete prefix match — transition to chat buffering.
+                    // Don't return Chat yet; wait for next byte to detect
+                    // double-prefix (e.g. "::") for resume, or timeout for new chat.
+                    self.in_chat = true;
+                    let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
+                    return InterceptAction::Buffering(current_buf);
                 }
                 // Keep buffering, don't send to PTY yet, return buffer for echo
                 let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
@@ -479,6 +484,17 @@ impl InputInterceptor {
 
         // In chat mode, keep buffering and return for echo
         if self.in_chat {
+            // Detect double-prefix (e.g. "::") for resume
+            if self.buffer.len() == self.prefix.len() * 2 {
+                let buf: Vec<u8> = self.buffer.iter().copied().collect();
+                let mut double = self.prefix.clone();
+                double.extend_from_slice(&self.prefix);
+                if buf == double {
+                    self.buffer.clear();
+                    self.in_chat = false;
+                    return InterceptAction::ResumeChat;
+                }
+            }
             let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
             return InterceptAction::Buffering(current_buf);
         }
@@ -511,15 +527,34 @@ impl InputInterceptor {
 
         // Extract chat message after prefix
         self.in_chat = false;
-        if buffered.len() > self.prefix.len() {
-            let cmd_bytes = &buffered[self.prefix.len()..buffered.len() - 1]; // exclude final \n
+
+        // Content after prefix, excluding trailing newline
+        let content_start = self.prefix.len();
+        let content_end = buffered.len().saturating_sub(1); // exclude \n or \r
+        if content_start < content_end {
+            let cmd_bytes = &buffered[content_start..content_end];
             if let Ok(cmd_str) = std::str::from_utf8(cmd_bytes) {
                 return InterceptAction::Chat(cmd_str.to_string());
             }
         }
 
-        // Empty message or decode error, forward to PTY
-        self.forward(buffered)
+        // Just prefix + Enter → new chat (empty message)
+        InterceptAction::Chat(String::new())
+    }
+
+    /// Called by the main loop when the prefix-match timeout expires.
+    /// If the buffer contains only the prefix (no additional input), transition
+    /// to new chat mode. Returns `Some(Chat(""))` if expired, `None` otherwise.
+    pub fn expire_prefix(&mut self) -> Option<InterceptAction> {
+        if self.in_chat {
+            let buf: Vec<u8> = self.buffer.iter().copied().collect();
+            if buf == self.prefix {
+                self.buffer.clear();
+                self.in_chat = false;
+                return Some(InterceptAction::Chat(String::new()));
+            }
+        }
+        None
     }
 
     /// Inject bytes directly into the buffer (for accepting completions).
@@ -564,16 +599,22 @@ mod tests {
     fn test_chat_detected() {
         let mut interceptor = new_interceptor("::");
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        // Full prefix match returns Chat("") immediately
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Chat(String::new()));
+        // Full prefix match → Buffering (awaiting timeout or double-prefix)
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+        // Timeout → Chat("")
+        assert_eq!(interceptor.expire_prefix(), Some(InterceptAction::Chat(String::new())));
     }
 
     #[test]
     fn test_chat_with_query() {
         let mut interceptor = new_interceptor("::");
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        // Full prefix match returns Chat("") immediately; content no longer collected
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Chat(String::new()));
+        // Full prefix match → Buffering
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+        // Type content after prefix, then Enter → Chat with content
+        assert_eq!(interceptor.feed_byte(b'h'), InterceptAction::Buffering(vec![b':', b':', b'h']));
+        assert_eq!(interceptor.feed_byte(b'i'), InterceptAction::Buffering(vec![b':', b':', b'h', b'i']));
+        assert_eq!(interceptor.feed_byte(b'\r'), InterceptAction::Chat("hi".to_string()));
     }
 
     #[test]
@@ -647,7 +688,8 @@ mod tests {
 
         // Should intercept again
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Chat(String::new()));
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+        assert_eq!(interceptor.expire_prefix(), Some(InterceptAction::Chat(String::new())));
     }
 
     #[test]
@@ -771,8 +813,10 @@ mod tests {
         let guard = TimeGapGuard::new(Duration::from_secs(1));
         let mut interceptor = InputInterceptor::new(":", Box::new(guard));
 
-        // ":" with no prior input → guard allows → Chat("") immediately
-        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Chat(String::new()));
+        // ":" with no prior input → guard allows → Buffering (awaiting timeout)
+        assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        // Timeout → Chat("")
+        assert_eq!(interceptor.expire_prefix(), Some(InterceptAction::Chat(String::new())));
     }
 
     #[test]
@@ -821,6 +865,7 @@ mod tests {
                     ))
                 }
                 InterceptAction::Tab(_) => actions.push("tab".into()),
+                InterceptAction::ResumeChat => actions.push("resume_chat".into()),
                 InterceptAction::Pending => actions.push("pending".into()),
             }
         }
@@ -837,74 +882,77 @@ mod tests {
     #[test]
     fn test_ui_type_and_submit() {
         let mut ic = new_interceptor(":");
-        // With immediate chat mode, ":" returns Chat("") right away
+        // Prefix match → Buffering (prompt shown), awaiting timeout or more input
         let actions = simulate_main_loop(&mut ic, b":");
-        assert_eq!(actions, vec!["chat:"]);
+        assert_eq!(actions, vec!["prompt"]);
+        // Timeout would call expire_prefix → Chat("")
+        assert_eq!(ic.expire_prefix(), Some(InterceptAction::Chat(String::new())));
     }
 
     #[test]
     fn test_ui_type_and_esc_cancel() {
-        // With immediate chat mode, ":" returns Chat("") before ESC is reached
         let mut ic = new_interceptor(":");
-        let actions = simulate_main_loop(&mut ic, b":");
-        assert_eq!(actions, vec!["chat:"]);
+        // Prefix match then ESC cancels
+        let actions = simulate_main_loop(&mut ic, b":\x1b");
+        assert_eq!(actions, vec!["prompt", "pending", "cancel"]);
     }
 
     #[test]
     fn test_ui_paste_no_spurious_redraws() {
-        // With immediate chat mode, ":" returns Chat("") before paste is reached
         let mut ic = new_interceptor(":");
-        let actions = simulate_main_loop(&mut ic, b":");
-        assert_eq!(actions, vec!["chat:"]);
+        // Prefix match → prompt, then typing more buffers
+        let actions = simulate_main_loop(&mut ic, b":hello\r");
+        assert_eq!(actions, vec!["prompt", "echo:h", "echo:he", "echo:hel", "echo:hell", "echo:hello", "chat:hello"]);
     }
 
     #[test]
     fn test_ui_arrow_keys_no_redraws() {
-        // With "::" prefix, first ":" buffers, second ":" triggers Chat("")
+        // With "::" prefix, both ":" buffer (prefix match + full prefix)
         let mut ic = new_interceptor("::");
         let actions = simulate_main_loop(&mut ic, b"::");
-        assert_eq!(actions, vec!["prompt", "chat:"]);
+        assert_eq!(actions, vec!["prompt", "echo::"]);
+        // Timeout → Chat("")
+        assert_eq!(ic.expire_prefix(), Some(InterceptAction::Chat(String::new())));
     }
 
     #[test]
     fn test_ui_esc_non_bracket_cancel() {
-        // With "::" prefix, ":" buffers, second ":" triggers Chat("")
-        // ESC after Chat is irrelevant to interceptor
+        // With "::" prefix, prefix match then ESC cancels
         let mut ic = new_interceptor("::");
-        let actions = simulate_main_loop(&mut ic, b"::");
-        assert_eq!(actions, vec!["prompt", "chat:"]);
+        let actions = simulate_main_loop(&mut ic, b"::\x1b");
+        assert_eq!(actions, vec!["prompt", "echo::", "pending", "cancel"]);
     }
 
     #[test]
     fn test_ui_backspace_to_empty_dismisses() {
-        // With immediate chat mode, ":" returns Chat("") before backspace
         let mut ic = new_interceptor(":");
-        let actions = simulate_main_loop(&mut ic, b":");
-        assert_eq!(actions, vec!["chat:"]);
+        // Prefix match → prompt, then backspace dismisses
+        let actions = simulate_main_loop(&mut ic, b":\x7f");
+        assert_eq!(actions, vec!["prompt", "dismiss"]);
     }
 
     #[test]
     fn test_ui_multiple_esc_sequences() {
-        // With ":" prefix, first ":" triggers Chat("") immediately
         let mut ic = new_interceptor(":");
-        let actions = simulate_main_loop(&mut ic, b":");
-        assert_eq!(actions, vec!["chat:"]);
+        // Prefix match → prompt, then Enter submits empty chat
+        let actions = simulate_main_loop(&mut ic, b":\r");
+        assert_eq!(actions, vec!["prompt", "chat:"]);
     }
 
     #[test]
     fn test_ui_paste_then_enter() {
-        // With immediate chat mode, ":" returns Chat("") before paste
         let mut ic = new_interceptor(":");
-        let actions = simulate_main_loop(&mut ic, b":");
-        assert_eq!(actions, vec!["chat:"]);
+        // Prefix match, type content, Enter
+        let actions = simulate_main_loop(&mut ic, b":hi\r");
+        assert_eq!(actions, vec!["prompt", "echo:h", "echo:hi", "chat:hi"]);
     }
 
     #[test]
     fn test_ui_paste_with_embedded_ansi() {
-        // With immediate chat mode, ":" returns Chat("") before paste
         let mut ic = new_interceptor(":");
-        let actions = simulate_main_loop(&mut ic, b":");
-        assert_eq!(actions, vec!["chat:"]);
+        // Double-prefix → ResumeChat
+        let actions = simulate_main_loop(&mut ic, b"::");
+        assert_eq!(actions, vec!["prompt", "resume_chat"]);
     }
 
     #[test]
@@ -914,17 +962,20 @@ mod tests {
         let actions = simulate_main_loop(&mut ic, b":x::");
         assert_eq!(
             actions,
-            vec!["prompt", "forward", "prompt", "chat:"]
+            vec!["prompt", "forward", "prompt", "echo::"]
         );
+        assert_eq!(ic.expire_prefix(), Some(InterceptAction::Chat(String::new())));
     }
 
     // --- Tab tests ---
 
     #[test]
-    fn test_tab_in_chat_mode_returns_chat_immediately() {
-        // With immediate chat mode, ":" returns Chat("") — no tab handling in interceptor
+    fn test_tab_in_chat_mode() {
         let mut ic = new_interceptor(":");
-        assert_eq!(ic.feed_byte(b':'), InterceptAction::Chat(String::new()));
+        // Prefix match → Buffering
+        assert_eq!(ic.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        // Tab while in chat mode → Tab with current buffer
+        assert_eq!(ic.feed_byte(b'\t'), InterceptAction::Tab(vec![b':']));
     }
 
     #[test]
@@ -944,13 +995,60 @@ mod tests {
 
     #[test]
     fn test_inject_byte_and_current_buffer() {
-        // With immediate chat mode, inject_byte works on empty buffer after Chat
         let mut ic = new_interceptor(":");
-        assert_eq!(ic.feed_byte(b':'), InterceptAction::Chat(String::new()));
-        // After Chat(""), buffer is cleared — inject_byte starts fresh
+        // Prefix match → Buffering
+        assert_eq!(ic.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        // inject_byte adds to existing buffer
         ic.inject_byte(b'h');
         ic.inject_byte(b'e');
-        assert_eq!(ic.current_buffer(), b"he");
+        assert_eq!(ic.current_buffer(), b":he");
+    }
+
+    // --- Double-prefix resume and expire_prefix tests ---
+
+    #[test]
+    fn test_double_prefix_resume_single_char() {
+        let mut ic = new_interceptor(":");
+        // First ":" → Buffering (prefix match)
+        assert_eq!(ic.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        // Second ":" → ResumeChat (double-prefix detected)
+        assert_eq!(ic.feed_byte(b':'), InterceptAction::ResumeChat);
+    }
+
+    #[test]
+    fn test_double_prefix_resume_two_char() {
+        let mut ic = new_interceptor("::");
+        // Feed full prefix "::" → Buffering
+        assert_eq!(ic.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        assert_eq!(ic.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':']));
+        // Feed another "::" → ResumeChat
+        assert_eq!(ic.feed_byte(b':'), InterceptAction::Buffering(vec![b':', b':', b':']));
+        assert_eq!(ic.feed_byte(b':'), InterceptAction::ResumeChat);
+    }
+
+    #[test]
+    fn test_expire_prefix_no_effect_when_not_in_chat() {
+        let mut ic = new_interceptor(":");
+        // No input → expire_prefix returns None
+        assert_eq!(ic.expire_prefix(), None);
+    }
+
+    #[test]
+    fn test_expire_prefix_no_effect_with_extra_content() {
+        let mut ic = new_interceptor(":");
+        assert_eq!(ic.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        // Type more content after prefix
+        assert_eq!(ic.feed_byte(b'h'), InterceptAction::Buffering(vec![b':', b'h']));
+        // expire_prefix returns None (buffer != prefix, has extra content)
+        assert_eq!(ic.expire_prefix(), None);
+    }
+
+    #[test]
+    fn test_prefix_then_enter_new_chat() {
+        let mut ic = new_interceptor(":");
+        assert_eq!(ic.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
+        // Enter after prefix → Chat("")
+        assert_eq!(ic.feed_byte(b'\r'), InterceptAction::Chat(String::new()));
     }
 
     #[test]
@@ -1045,5 +1143,316 @@ mod tests {
             ic.feed_byte(b'a'),
             InterceptAction::Forward(vec![b'a'])
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration test: simulates the main loop's timing-based prefix
+    // detection logic (prefix_match_time + PREFIX_TIMEOUT + expire_prefix)
+    // -----------------------------------------------------------------------
+
+    /// Outcome of a simulated main-loop iteration.
+    #[derive(Debug, PartialEq)]
+    enum LoopOutcome {
+        /// Forwarded bytes to PTY
+        Forward,
+        /// Showed the `:` prompt (prefix matched, timer started)
+        Prompt,
+        /// Echoed chat content after prefix
+        Echo(String),
+        /// Entered new chat with message
+        NewChat(String),
+        /// Resumed last chat session
+        ResumeChat,
+        /// Cancelled prefix/chat
+        Cancel,
+        /// Backspaced (with remaining buffer)
+        Backspace(Vec<u8>),
+        /// Nothing visible happened
+        Pending,
+        /// Prefix timeout expired → new chat
+        Timeout,
+        /// Tab
+        Tab,
+    }
+
+    /// Simulates the main loop's complete handling of input bytes + timing.
+    /// Mirrors the real logic in main.rs: Buffering with prefix → start timer,
+    /// additional input → cancel timer, ResumeChat → immediate resume,
+    /// timer expiry → expire_prefix() → Chat("").
+    struct MainLoopSim {
+        ic: InputInterceptor,
+        prefix: Vec<u8>,
+        timer_active: bool,
+    }
+
+    impl MainLoopSim {
+        fn new(prefix: &str) -> Self {
+            Self {
+                ic: new_interceptor(prefix),
+                prefix: prefix.as_bytes().to_vec(),
+                timer_active: false,
+            }
+        }
+
+        /// Feed one byte, return the outcome.
+        fn feed(&mut self, byte: u8) -> LoopOutcome {
+            match self.ic.feed_byte(byte) {
+                InterceptAction::Buffering(ref buf) if *buf == self.prefix => {
+                    self.timer_active = true;
+                    LoopOutcome::Prompt
+                }
+                InterceptAction::Buffering(ref buf)
+                    if buf.len() > self.prefix.len() && buf.starts_with(&self.prefix) =>
+                {
+                    self.timer_active = false;
+                    let content = String::from_utf8_lossy(&buf[self.prefix.len()..]).to_string();
+                    LoopOutcome::Echo(content)
+                }
+                InterceptAction::Buffering(_) => {
+                    // Partial prefix match (multi-char prefix, not yet complete)
+                    LoopOutcome::Pending
+                }
+                InterceptAction::Forward(_) => {
+                    self.timer_active = false;
+                    LoopOutcome::Forward
+                }
+                InterceptAction::Chat(msg) => {
+                    self.timer_active = false;
+                    LoopOutcome::NewChat(msg)
+                }
+                InterceptAction::ResumeChat => {
+                    self.timer_active = false;
+                    LoopOutcome::ResumeChat
+                }
+                InterceptAction::Cancel => {
+                    self.timer_active = false;
+                    LoopOutcome::Cancel
+                }
+                InterceptAction::Backspace(buf) => {
+                    LoopOutcome::Backspace(buf)
+                }
+                InterceptAction::Tab(_) => LoopOutcome::Tab,
+                InterceptAction::Pending => LoopOutcome::Pending,
+            }
+        }
+
+        /// Simulate the prefix timeout expiring (150ms elapsed with no input).
+        fn timeout(&mut self) -> LoopOutcome {
+            if !self.timer_active {
+                return LoopOutcome::Pending;
+            }
+            self.timer_active = false;
+            match self.ic.expire_prefix() {
+                Some(InterceptAction::Chat(_)) => LoopOutcome::Timeout,
+                _ => LoopOutcome::Pending,
+            }
+        }
+
+        /// Feed a batch of bytes, collecting outcomes. Calls finish_batch at end.
+        fn feed_batch(&mut self, bytes: &[u8]) -> Vec<LoopOutcome> {
+            let mut out = Vec::new();
+            for &b in bytes {
+                let o = self.feed(b);
+                if !matches!(o, LoopOutcome::Pending) {
+                    out.push(o);
+                }
+            }
+            if let Some(action) = self.ic.finish_batch() {
+                match action {
+                    InterceptAction::Cancel => {
+                        self.timer_active = false;
+                        out.push(LoopOutcome::Cancel);
+                    }
+                    InterceptAction::Forward(_) => out.push(LoopOutcome::Forward),
+                    _ => {}
+                }
+            }
+            out
+        }
+    }
+
+    #[test]
+    fn test_integration_single_prefix_timeout_enters_new_chat() {
+        // Scenario: user types ":" at shell prompt, waits → enters new chat
+        let mut sim = MainLoopSim::new(":");
+        assert_eq!(sim.feed(b':'), LoopOutcome::Prompt);
+        assert!(sim.timer_active);
+        // 150ms passes with no more input
+        assert_eq!(sim.timeout(), LoopOutcome::Timeout);
+        assert!(!sim.timer_active);
+    }
+
+    #[test]
+    fn test_integration_double_prefix_resumes_chat() {
+        // Scenario: user types "::" quickly → resumes last chat
+        let mut sim = MainLoopSim::new(":");
+        assert_eq!(sim.feed(b':'), LoopOutcome::Prompt);
+        assert!(sim.timer_active);
+        // Second ":" arrives within 150ms → ResumeChat
+        assert_eq!(sim.feed(b':'), LoopOutcome::ResumeChat);
+        assert!(!sim.timer_active);
+    }
+
+    #[test]
+    fn test_integration_prefix_then_content_then_enter() {
+        // Scenario: user types ":hello" then Enter → chat with content
+        let mut sim = MainLoopSim::new(":");
+        assert_eq!(sim.feed(b':'), LoopOutcome::Prompt);
+        assert!(sim.timer_active);
+        // Typing content cancels the timer
+        assert_eq!(sim.feed(b'h'), LoopOutcome::Echo("h".into()));
+        assert!(!sim.timer_active);
+        assert_eq!(sim.feed(b'i'), LoopOutcome::Echo("hi".into()));
+        assert_eq!(sim.feed(b'\r'), LoopOutcome::NewChat("hi".into()));
+    }
+
+    #[test]
+    fn test_integration_prefix_then_enter_new_chat() {
+        // Scenario: user types ":" then immediately presses Enter → new chat
+        let mut sim = MainLoopSim::new(":");
+        assert_eq!(sim.feed(b':'), LoopOutcome::Prompt);
+        assert_eq!(sim.feed(b'\r'), LoopOutcome::NewChat(String::new()));
+    }
+
+    #[test]
+    fn test_integration_prefix_then_esc_cancels() {
+        // Scenario: user types ":" then presses ESC → cancel
+        let mut sim = MainLoopSim::new(":");
+        assert_eq!(sim.feed(b':'), LoopOutcome::Prompt);
+        assert!(sim.timer_active);
+        // ESC → Pending (filter starts), finish_batch → Cancel
+        let outcomes = sim.feed_batch(b"\x1b");
+        assert_eq!(outcomes, vec![LoopOutcome::Cancel]);
+        assert!(!sim.timer_active);
+    }
+
+    #[test]
+    fn test_integration_prefix_then_backspace_dismisses() {
+        // Scenario: user types ":" then backspace → dismiss prompt
+        let mut sim = MainLoopSim::new(":");
+        assert_eq!(sim.feed(b':'), LoopOutcome::Prompt);
+        assert_eq!(sim.feed(0x7f), LoopOutcome::Backspace(vec![]));
+        // Timer should still be technically active but expire_prefix
+        // won't fire because buffer is empty and in_chat is false
+        assert_eq!(sim.timeout(), LoopOutcome::Pending);
+    }
+
+    #[test]
+    fn test_integration_two_char_prefix_timeout() {
+        // Scenario: prefix is "::", user types "::" and waits → new chat
+        let mut sim = MainLoopSim::new("::");
+        // First ":" — partial prefix match, no prompt yet
+        let outcomes = sim.feed_batch(b":");
+        assert_eq!(outcomes, vec![]); // Pending (partial prefix)
+        assert!(!sim.timer_active);
+        // Second ":" — full prefix match → Prompt
+        assert_eq!(sim.feed(b':'), LoopOutcome::Prompt);
+        assert!(sim.timer_active);
+        // Timeout → new chat
+        assert_eq!(sim.timeout(), LoopOutcome::Timeout);
+    }
+
+    #[test]
+    fn test_integration_two_char_prefix_resume() {
+        // Scenario: prefix is "::", user types "::::" → resume
+        let mut sim = MainLoopSim::new("::");
+        let outcomes = sim.feed_batch(b"::");
+        // First ":" is Pending, second ":" is Prompt
+        assert_eq!(outcomes, vec![LoopOutcome::Prompt]);
+        assert!(sim.timer_active);
+        // Third ":" — Echo (additional content after prefix)
+        // Actually with prefix "::", buffer becomes [:::]
+        // which is > prefix.len() and starts_with prefix → Echo(":")
+        assert_eq!(sim.feed(b':'), LoopOutcome::Echo(":".into()));
+        assert!(!sim.timer_active); // timer cancelled by extra input
+        // Fourth ":" — double-prefix detected → ResumeChat
+        assert_eq!(sim.feed(b':'), LoopOutcome::ResumeChat);
+    }
+
+    #[test]
+    fn test_integration_normal_input_not_intercepted() {
+        // Scenario: user types "ls" → forwarded to PTY, no interception
+        let mut sim = MainLoopSim::new(":");
+        assert_eq!(sim.feed(b'l'), LoopOutcome::Forward);
+        assert_eq!(sim.feed(b's'), LoopOutcome::Forward);
+        assert_eq!(sim.feed(b'\n'), LoopOutcome::Forward);
+        assert!(!sim.timer_active);
+    }
+
+    #[test]
+    fn test_integration_guard_blocks_during_typing() {
+        // Scenario: user is mid-command, ":" should forward not intercept
+        let mut guard = TimeGapGuard::new(Duration::from_secs(1));
+        guard.note_input(); // just typed something
+        let mut sim = MainLoopSim {
+            ic: InputInterceptor::new(":", Box::new(guard)),
+            prefix: b":".to_vec(),
+            timer_active: false,
+        };
+        assert_eq!(sim.feed(b':'), LoopOutcome::Forward);
+        assert!(!sim.timer_active);
+    }
+
+    #[test]
+    fn test_integration_suppressed_then_unsuppressed() {
+        // Scenario: enter vim (suppressed), exit vim, then use prefix
+        let mut sim = MainLoopSim::new(":");
+        sim.ic.set_suppressed(true);
+        assert_eq!(sim.feed(b':'), LoopOutcome::Forward);
+        sim.ic.set_suppressed(false);
+        assert_eq!(sim.feed(b':'), LoopOutcome::Prompt);
+        assert!(sim.timer_active);
+        assert_eq!(sim.feed(b':'), LoopOutcome::ResumeChat);
+    }
+
+    #[test]
+    fn test_integration_timeout_no_effect_after_content() {
+        // Scenario: user types ":hi", timeout should NOT trigger new chat
+        // because buffer has content beyond prefix
+        let mut sim = MainLoopSim::new(":");
+        assert_eq!(sim.feed(b':'), LoopOutcome::Prompt);
+        assert!(sim.timer_active);
+        assert_eq!(sim.feed(b'h'), LoopOutcome::Echo("h".into()));
+        assert!(!sim.timer_active); // timer cancelled
+        // Even if we call timeout, nothing happens
+        assert_eq!(sim.timeout(), LoopOutcome::Pending);
+    }
+
+    #[test]
+    fn test_integration_multiple_sessions() {
+        // Scenario: new chat → run command → resume chat → run command → new chat
+        let mut sim = MainLoopSim::new(":");
+
+        // 1. ":" + timeout → new chat
+        assert_eq!(sim.feed(b':'), LoopOutcome::Prompt);
+        assert_eq!(sim.timeout(), LoopOutcome::Timeout);
+
+        // Simulate shell output after chat exits (resets state)
+        sim.ic.note_output(b"$ ");
+
+        // 2. Run a normal command
+        assert_eq!(sim.feed(b'l'), LoopOutcome::Forward);
+        assert_eq!(sim.feed(b's'), LoopOutcome::Forward);
+        assert_eq!(sim.feed(b'\n'), LoopOutcome::Forward);
+
+        // 3. "::" → resume chat
+        assert_eq!(sim.feed(b':'), LoopOutcome::Prompt);
+        assert_eq!(sim.feed(b':'), LoopOutcome::ResumeChat);
+
+        // Simulate shell output after chat exits
+        sim.ic.note_output(b"$ ");
+
+        // 4. Another normal command
+        assert_eq!(sim.feed(b'p'), LoopOutcome::Forward);
+        assert_eq!(sim.feed(b'w'), LoopOutcome::Forward);
+        assert_eq!(sim.feed(b'd'), LoopOutcome::Forward);
+        assert_eq!(sim.feed(b'\n'), LoopOutcome::Forward);
+
+        // 5. ":ask something" + Enter → new chat with content
+        assert_eq!(sim.feed(b':'), LoopOutcome::Prompt);
+        assert_eq!(sim.feed(b'a'), LoopOutcome::Echo("a".into()));
+        assert_eq!(sim.feed(b's'), LoopOutcome::Echo("as".into()));
+        assert_eq!(sim.feed(b'k'), LoopOutcome::Echo("ask".into()));
+        assert_eq!(sim.feed(b'\r'), LoopOutcome::NewChat("ask".into()));
     }
 }
