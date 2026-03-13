@@ -1444,6 +1444,7 @@ mod tests {
                 stop_reason: StopReason::EndTurn,
                 model: "mock".to_string(),
                 thinking: None,
+                usage: None,
             })
         }
 
