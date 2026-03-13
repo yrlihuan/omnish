@@ -1,4 +1,4 @@
-use crate::backend::{ContentBlock, LlmBackend, LlmRequest, LlmResponse, StopReason};
+use crate::backend::{ContentBlock, LlmBackend, LlmRequest, LlmResponse, StopReason, Usage};
 use crate::tool::ToolCall;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -205,11 +205,19 @@ impl LlmBackend for AnthropicBackend {
                 return Err(anyhow::anyhow!("Invalid response format: no content blocks found"));
             }
 
+            let usage = json["usage"].as_object().map(|u| Usage {
+                input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                cache_read_input_tokens: u.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                cache_creation_input_tokens: u.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            });
+
             return Ok(LlmResponse {
                 content: content_blocks,
                 stop_reason,
                 model: self.model.clone(),
                 thinking,
+                usage,
             });
         }
 

@@ -1,4 +1,4 @@
-use crate::backend::{ContentBlock, LlmBackend, LlmRequest, LlmResponse, StopReason};
+use crate::backend::{ContentBlock, LlmBackend, LlmRequest, LlmResponse, StopReason, Usage};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::time::Duration;
@@ -160,11 +160,19 @@ impl LlmBackend for OpenAiCompatBackend {
                 extract_thinking(&raw_content)
             };
 
+            let usage = json["usage"].as_object().map(|u| Usage {
+                input_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                output_tokens: u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                cache_read_input_tokens: u.get("cached_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                cache_creation_input_tokens: 0,
+            });
+
             return Ok(LlmResponse {
                 content: vec![ContentBlock::Text(content)],
                 stop_reason: StopReason::EndTurn,
                 model: self.model.clone(),
                 thinking,
+                usage,
             });
         }
 

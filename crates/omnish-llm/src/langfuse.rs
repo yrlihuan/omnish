@@ -53,13 +53,14 @@ impl LlmBackend for LangfuseBackend {
         let use_case = format!("{:?}", req.use_case);
         let input = build_langfuse_input(req);
         let session_id = req.session_ids.first().cloned();
-        let (output_text, is_error, tool_count) = match &result {
+        let (output_text, is_error, tool_count, usage) = match &result {
             Ok(resp) => {
                 let text = resp.text();
                 let tools = resp.tool_calls().len();
-                (text, false, tools)
+                let usage = resp.usage.clone();
+                (text, false, tools, usage)
             }
-            Err(e) => (e.to_string(), true, 0),
+            Err(e) => (e.to_string(), true, 0, None),
         };
         let duration_ms = duration.as_millis() as u64;
 
@@ -77,6 +78,7 @@ impl LlmBackend for LangfuseBackend {
                 session_id.as_deref(),
                 start_time,
                 end_time,
+                usage,
             )
             .await
             {
@@ -114,6 +116,7 @@ async fn send_langfuse_event(
     session_id: Option<&str>,
     start_time: chrono::DateTime<chrono::Utc>,
     end_time: chrono::DateTime<chrono::Utc>,
+    usage: Option<crate::backend::Usage>,
 ) -> Result<()> {
     let trace_id = uuid_v4();
     let generation_id = uuid_v4();
@@ -156,6 +159,15 @@ async fn send_langfuse_event(
     });
     if !status_msg.is_empty() {
         gen_body["statusMessage"] = json!(status_msg);
+    }
+    if let Some(ref u) = usage {
+        gen_body["usage"] = json!({
+            "input": u.input_tokens,
+            "output": u.output_tokens,
+            "total": u.input_tokens + u.output_tokens,
+        });
+        gen_body["metadata"]["cache_read_input_tokens"] = json!(u.cache_read_input_tokens);
+        gen_body["metadata"]["cache_creation_input_tokens"] = json!(u.cache_creation_input_tokens);
     }
 
     let payload = json!({

@@ -61,6 +61,17 @@ pub enum TriggerType {
     AutoPattern,
 }
 
+/// Token usage statistics from an LLM API response.
+#[derive(Debug, Clone, Default)]
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    /// Tokens read from KV cache (Anthropic: cache_read_input_tokens, OpenAI: cached_tokens)
+    pub cache_read_input_tokens: u64,
+    /// Tokens written to KV cache (Anthropic-specific)
+    pub cache_creation_input_tokens: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct LlmResponse {
     pub content: Vec<ContentBlock>,
@@ -68,6 +79,8 @@ pub struct LlmResponse {
     pub model: String,
     /// Thinking content from models that support it
     pub thinking: Option<String>,
+    /// Token usage statistics from the API response
+    pub usage: Option<Usage>,
 }
 
 impl LlmResponse {
