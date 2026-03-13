@@ -490,7 +490,7 @@ async fn main() -> Result<()> {
     // Tracks when prefix was matched, for timing-based detection of
     // double-prefix (e.g. "::") vs single prefix (":").
     let mut prefix_match_time: Option<std::time::Instant> = None;
-    const PREFIX_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(150);
+    const PREFIX_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
     loop {
         let mut fds = [
@@ -545,7 +545,8 @@ async fn main() -> Result<()> {
                 prefix_match_time = None;
                 if let Some(action) = interceptor.expire_prefix() {
                     if matches!(action, InterceptAction::Chat(_)) {
-                        event_log::push("chat mode enter");
+                        // notice_queue::push(&format!(": timeout ({}ms)", t.elapsed().as_millis()));
+                        event_log::push("chat mode enter (timeout)");
                         notice_queue::defer();
                         completer.clear();
                         let saved_input = shell_input.input().to_string();
@@ -776,8 +777,10 @@ async fn main() -> Result<()> {
                         }
                     }
                     InterceptAction::ResumeChat => {
+                        let gap_ms = prefix_match_time.map(|t| t.elapsed().as_millis()).unwrap_or(0);
                         prefix_match_time = None;
-                        event_log::push("chat mode resume (double-prefix)");
+                        // notice_queue::push(&format!(":: detected (gap {}ms)", gap_ms));
+                        event_log::push(format!("chat mode resume (double-prefix, gap {}ms)", gap_ms));
                         notice_queue::defer();
                         completer.clear();
                         let saved_input = shell_input.input().to_string();
