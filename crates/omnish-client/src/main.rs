@@ -748,7 +748,7 @@ async fn main() -> Result<()> {
                                 shell_pid,
                                 &col_tracker,
                             );
-                            run_chat_loop(rpc, &session_id, &proxy, initial, &dbg_fn, &mut chat_history, &auto_update_enabled, col_tracker.col, col_tracker.row).await;
+                            run_chat_loop(rpc, &session_id, &proxy, initial, &dbg_fn, &mut chat_history, &auto_update_enabled, col_tracker.col, col_tracker.row, &config.shortcuts.resume_key).await;
                         } else {
                             let err = display::render_error("Daemon not connected");
                             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
@@ -2019,6 +2019,7 @@ async fn run_chat_loop(
     auto_update_enabled: &AtomicBool,
     cursor_col: u16,
     cursor_row: u16,
+    resume_key: &str,
 ) {
     let client_plugins = Arc::new(client_plugin::ClientPluginManager::new());
     let mut chat_completer = ghost_complete::GhostCompleter::new(vec![
@@ -2053,6 +2054,12 @@ async fn run_chat_loop(
 
         let trimmed = input.trim();
         if trimmed.is_empty() {
+            continue;
+        }
+
+        // Shortcut to resume the last conversation (default: "::")
+        if !resume_key.is_empty() && trimmed == resume_key {
+            pending_input = Some("/resume 1".to_string());
             continue;
         }
 

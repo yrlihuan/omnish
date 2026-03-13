@@ -31,6 +31,8 @@ pub struct ClientConfig {
     pub completion_enabled: bool,
     #[serde(default)]
     pub auto_update: bool,
+    #[serde(default)]
+    pub shortcuts: ShortcutConfig,
 }
 
 fn default_true() -> bool {
@@ -44,6 +46,7 @@ impl Default for ClientConfig {
             daemon_addr: default_socket_path(),
             completion_enabled: true,
             auto_update: false,
+            shortcuts: ShortcutConfig::default(),
         }
     }
 }
@@ -231,6 +234,29 @@ fn default_intercept_gap_ms() -> u64 {
 
 fn default_ghost_timeout_ms() -> u64 {
     10_000
+}
+
+// ---------------------------------------------------------------------------
+// Shortcut config
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct ShortcutConfig {
+    /// Shortcut key to resume the last conversation (default: "::")
+    #[serde(default = "default_resume_key")]
+    pub resume_key: String,
+}
+
+impl Default for ShortcutConfig {
+    fn default() -> Self {
+        Self {
+            resume_key: default_resume_key(),
+        }
+    }
+}
+
+fn default_resume_key() -> String {
+    "::".to_string()
 }
 
 #[derive(Debug, Deserialize)]
