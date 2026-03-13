@@ -1,5 +1,6 @@
 use omnish_plugin::tools::bash::BashTool;
 use omnish_plugin::tools::edit::EditTool;
+use omnish_plugin::tools::glob::GlobTool;
 use omnish_plugin::tools::read::ReadTool;
 use omnish_plugin::tools::write::WriteTool;
 use std::io::{BufRead, Write};
@@ -47,6 +48,7 @@ fn main() {
         "bash" => BashTool::new().execute(&req.input),
         "read" => ReadTool::new().execute(&req.input),
         "edit" => EditTool::new().execute(&req.input),
+        "glob" => GlobTool::new().execute(&req.input),
         "write" => WriteTool::new().execute(&req.input),
         other => omnish_llm::tool::ToolResult {
             tool_use_id: String::new(),
