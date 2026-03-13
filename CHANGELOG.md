@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.6.3 (2026-03-13)
+
+### Features
+- **plugin**: Add grep tool with regex search, glob/type filters, context lines, multiline mode, and pagination (#271)
+- **plugin**: Add glob tool for file pattern matching (#265)
+- **plugin**: Update bash tool description and timeout handling — timeout now in milliseconds, 30000 char truncation (#268)
+- **plugin**: Update read tool limits to 2000 lines / 2000 chars per line (#267)
+- **plugin**: Update edit tool description with usage guidelines (#269)
+- **plugin**: Update write tool description (#270)
+- **client**: Timing-based `::` resume shortcut for chat (#261)
+
+### Bug Fixes
+- **plugin**: Fix read tool panic on multi-byte UTF-8 character truncation (#266)
+- **tls**: Use native root certs for TLS proxy compatibility (rustls-tls-native-roots)
+- **client**: Remove redundant prompt from prefix buffering phase, tune prefix timeout to 250ms (#261)
+- **llm**: Add missing usage field in mock LlmResponse constructors
+
+### Refactoring
+- **plugin**: Replace hand-rolled grep with ripgrep crates (grep-regex, grep-searcher, ignore)
+- **plugin**: Move plugin assets from `plugins/builtin/` to `assets/`
+
+---
+
 ## v0.6.2 (2026-03-13)
 
 ### Features
