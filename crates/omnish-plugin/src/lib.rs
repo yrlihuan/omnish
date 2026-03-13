@@ -17,8 +17,13 @@ use landlock::{
 pub fn apply_sandbox(data_dir: &std::path::Path, cwd: Option<&std::path::Path>) -> Result<(), String> {
     let abi = ABI::V1;
 
-    // Build writable paths: data_dir, /tmp, and optionally cwd
-    let mut writable_paths = vec![data_dir, std::path::Path::new("/tmp")];
+    // Build writable paths: data_dir, /tmp, /dev/null, and optionally cwd
+    // /dev/null is needed by many programs (e.g. git) for output redirection
+    let mut writable_paths: Vec<&std::path::Path> = vec![
+        data_dir,
+        std::path::Path::new("/tmp"),
+        std::path::Path::new("/dev/null"),
+    ];
     if let Some(cwd) = cwd {
         writable_paths.push(cwd);
     }
