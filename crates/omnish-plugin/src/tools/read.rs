@@ -3,9 +3,9 @@ use omnish_llm::tool::ToolResult;
 /// Maximum bytes to return.
 const MAX_OUTPUT_BYTES: usize = 50_000;
 /// Default and maximum lines to return.
-const DEFAULT_LIMIT: usize = 500;
+const DEFAULT_LIMIT: usize = 2000;
 /// Maximum characters per line before truncation.
-const MAX_LINE_CHARS: usize = 200;
+const MAX_LINE_CHARS: usize = 2000;
 
 pub struct ReadTool;
 
@@ -65,8 +65,9 @@ impl ReadTool {
 
         for (i, &line) in lines[start..end].iter().enumerate() {
             let line_no = start + i + 1;
-            let display_line = if line.len() > MAX_LINE_CHARS {
-                format!("{}...", &line[..MAX_LINE_CHARS])
+            let display_line = if line.chars().count() > MAX_LINE_CHARS {
+                let truncated: String = line.chars().take(MAX_LINE_CHARS).collect();
+                format!("{truncated}...")
             } else {
                 line.to_string()
             };
@@ -177,13 +178,26 @@ mod tests {
     #[test]
     fn test_long_line_truncation() {
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        let long_line = "x".repeat(300);
+        let long_line = "x".repeat(2500);
         write!(tmp, "{}", long_line).unwrap();
         let tool = ReadTool::new();
         let result = tool.execute(&serde_json::json!({"file_path": tmp.path().to_str().unwrap()}));
         assert!(!result.is_error);
         assert!(result.content.contains("..."));
-        // Should contain exactly 200 x's + "..."
-        assert!(!result.content.contains(&"x".repeat(201)));
+        // Should contain exactly 2000 x's + "..."
+        assert!(!result.content.contains(&"x".repeat(2001)));
+    }
+
+    #[test]
+    fn test_long_line_truncation_multibyte() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        // 2001 CJK characters (3 bytes each) — must not panic
+        let long_line = "操".repeat(2001);
+        write!(tmp, "{}", long_line).unwrap();
+        let tool = ReadTool::new();
+        let result = tool.execute(&serde_json::json!({"file_path": tmp.path().to_str().unwrap()}));
+        assert!(!result.is_error);
+        assert!(result.content.contains("..."));
+        assert!(!result.content.contains(&"操".repeat(2001)));
     }
 }
