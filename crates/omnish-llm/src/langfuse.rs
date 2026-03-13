@@ -51,7 +51,7 @@ impl LlmBackend for LangfuseBackend {
         let client = self.client.clone();
         let model = self.inner.name().to_string();
         let use_case = format!("{:?}", req.use_case);
-        let input_len = req.context.len() + req.query.as_deref().map_or(0, |q| q.len());
+        let input = build_langfuse_input(req);
         let session_id = req.session_ids.first().cloned();
         let (output_text, is_error, tool_count) = match &result {
             Ok(resp) => {
@@ -69,7 +69,7 @@ impl LlmBackend for LangfuseBackend {
                 &config,
                 &model,
                 &use_case,
-                input_len,
+                input,
                 &output_text,
                 is_error,
                 tool_count,
@@ -106,7 +106,7 @@ async fn send_langfuse_event(
     config: &LangfuseConfig,
     model: &str,
     use_case: &str,
-    input_len: usize,
+    input: serde_json::Value,
     output_text: &str,
     is_error: bool,
     tool_count: usize,
@@ -145,7 +145,7 @@ async fn send_langfuse_event(
         "startTime": start_time.to_rfc3339(),
         "endTime": end_time.to_rfc3339(),
         "model": model,
-        "input": format!("[{} chars]", input_len),
+        "input": input,
         "output": truncate(output_text, 1000),
         "metadata": {
             "use_case": use_case,
@@ -191,6 +191,41 @@ async fn send_langfuse_event(
     }
 
     Ok(())
+}
+
+/// Build a structured JSON representation of the LLM input for Langfuse.
+fn build_langfuse_input(req: &LlmRequest) -> serde_json::Value {
+    let mut input = serde_json::Map::new();
+
+    if let Some(ref sp) = req.system_prompt {
+        input.insert("system".into(), json!(truncate(sp, 2000)));
+    }
+
+    if !req.conversation.is_empty() {
+        let turns: Vec<serde_json::Value> = req.conversation.iter().map(|t| {
+            json!({"role": &t.role, "content": truncate(&t.content, 2000)})
+        }).collect();
+        input.insert("messages".into(), json!(turns));
+    }
+
+    if !req.context.is_empty() {
+        input.insert("context".into(), json!(truncate(&req.context, 2000)));
+    }
+
+    if let Some(ref q) = req.query {
+        input.insert("query".into(), json!(truncate(q, 2000)));
+    }
+
+    if !req.tools.is_empty() {
+        let names: Vec<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
+        input.insert("tools".into(), json!(names));
+    }
+
+    if !req.extra_messages.is_empty() {
+        input.insert("extra_messages_count".into(), json!(req.extra_messages.len()));
+    }
+
+    serde_json::Value::Object(input)
 }
 
 fn uuid_v4() -> String {
