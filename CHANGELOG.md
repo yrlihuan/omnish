@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.6.2 (2026-03-13)
+
+### Features
+- **llm**: Parse usage from LLM API responses — input/output tokens, cache read/creation tokens from both Anthropic and OpenAI-compat backends (issue #263)
+- **llm**: Enable thinking mode for chat (issue #262)
+- **client**: Add configurable shortcut to resume last conversation (issue #261)
+- **daemon**: Add system-reminder to `/context chat` display
+- **daemon**: Embed chat prompt JSON in binary, install to `~/.omnish/` on startup (issue #257)
+- **daemon**: Parallel tool execution when LLM requests multiple tools (issue #248)
+- **client**: Allow Ctrl-C to interrupt agent tool-calling loop (issue #241)
+- **client**: Adjust `/template chat` and `/context chat` behavior (issue #250)
+- **daemon**: Redesign chat system-reminder with time, cwd, and last 5 commands (issue #249)
+- **daemon**: Keep line status visible after operation completes
+- **plugin**: Allow plugins to write to current working directory
+- **plugin**: Hot-reload prompt.json / tool.override.json via inotify
+- **plugin**: Support prompt.json for user-specified tool descriptions
+- **plugin**: Support multi-line description arrays in tool.json
+- **plugin**: Auto-install builtin tool.json on first daemon startup
+- **llm**: Add environment info to chat system-reminder
+
+### Refactoring
+- **daemon**: Rename prompt.json to tool.override.json, add chat.override.json support (issue #254)
+- **daemon**: Redesign chat system prompt based on Claude Code patterns
+- **plugin**: Remove Plugin trait, simplify to inherent methods and tool.json definitions
+- **plugin**: Rewrite PluginManager to load from tool.json files
+
+### Bug Fixes
+- **llm**: Record actual input content in Langfuse instead of char count (issue #260)
+- **build**: Make inotify usage conditional for cross-platform compilation
+- **daemon**: Increase agent loop timeout from 60s to 600s (issue #237)
+- **client**: Support redirect and limit for `/debug client` and `/update auto` (issue #239)
+
+---
+
 ## v0.6.0 (2026-03-11)
 
 ### Features
