@@ -442,7 +442,6 @@ async fn main() -> Result<()> {
     } else {
         CursorTracker::new()
     };
-    let mut dismiss_col: u16 = 0;
     let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string());
     let mut command_tracker = omnish_tracker::command_tracker::CommandTracker::new(
         session_id.clone(), cwd,
@@ -619,50 +618,17 @@ async fn main() -> Result<()> {
                 match interceptor.feed_byte(byte) {
                     InterceptAction::Buffering(buf) => {
                         if buf == prefix_bytes {
-                            // Save cursor column before drawing omnish UI
-                            dismiss_col = col_tracker.col;
+                            // Full prefix matched — start timer for double-prefix detection.
+                            // No visual feedback yet; chat prompt appears on timeout or Enter.
                             shell_completer.clear();
-                            let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
-                            let prompt = display::render_prompt(cols);
-                            nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
-                            // Start timer for double-prefix detection
                             prefix_match_time = Some(std::time::Instant::now());
                         } else if buf.len() > prefix_bytes.len() && buf.starts_with(prefix_bytes) {
                             // Additional input after prefix — cancel timer
                             prefix_match_time = None;
-                            // Echo the user's input after the prompt
-                            let user_input = &buf[prefix_bytes.len()..];
-                            let echo = display::render_input_echo(user_input);
-                            nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
-
-                            // Query completer for ghost text
-                            if let Ok(input_str) = std::str::from_utf8(user_input) {
-                                if let Some(ghost) = completer.update(input_str) {
-                                    let ghost_render = display::render_ghost_text(ghost);
-                                    nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
-                                }
-                            }
                         }
                     }
-                    InterceptAction::Backspace(buf) => {
-                        if buf.is_empty() {
-                            // Backspaced past the prefix — clear omnish UI, restore cursor column
-                            let dismiss = display::render_dismiss();
-                            let restore = format!("\x1b[{}G", dismiss_col + 1);
-                            nix::unistd::write(std::io::stdout(), dismiss.as_bytes()).ok();
-                            nix::unistd::write(std::io::stdout(), restore.as_bytes()).ok();
-                        } else if buf.starts_with(prefix_bytes) {
-                            if buf.len() == prefix_bytes.len() {
-                                // Only prefix left — redraw ❯ with no input text
-                                let echo = display::render_input_echo(b"");
-                                nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
-                            } else {
-                                // Show the user's input after the prompt
-                                let user_input = &buf[prefix_bytes.len()..];
-                                let echo = display::render_input_echo(user_input);
-                                nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
-                            }
-                        }
+                    InterceptAction::Backspace(_buf) => {
+                        // No visual prompt to update — prefix buffering is invisible
                     }
                     InterceptAction::Forward(bytes) => {
                         // Check if Tab should be intercepted for shell completion
@@ -762,12 +728,9 @@ async fn main() -> Result<()> {
                         }
                     }
                     InterceptAction::Cancel => {
-                        // ESC pressed — clear omnish UI, restore cursor column
+                        // ESC pressed — reset state, no UI to dismiss
+                        prefix_match_time = None;
                         completer.clear();
-                        let dismiss = display::render_dismiss();
-                        let restore = format!("\x1b[{}G", dismiss_col + 1); // CHA is 1-indexed
-                        nix::unistd::write(std::io::stdout(), dismiss.as_bytes()).ok();
-                        nix::unistd::write(std::io::stdout(), restore.as_bytes()).ok();
                     }
                     InterceptAction::Chat(msg) => {
                         prefix_match_time = None;
@@ -847,24 +810,8 @@ async fn main() -> Result<()> {
                     InterceptAction::Tab(_buf) => {
                         // Check if completer has a suggestion to accept
                         if let Some(suffix) = completer.accept() {
-                            // Append suffix bytes to interceptor buffer
                             for &b in suffix.as_bytes() {
                                 interceptor.inject_byte(b);
-                            }
-                            // Re-render with updated buffer
-                            let new_buf = interceptor.current_buffer();
-                            if new_buf.len() > prefix_bytes.len() && new_buf.starts_with(prefix_bytes) {
-                                let user_input = &new_buf[prefix_bytes.len()..];
-                                let echo = display::render_input_echo(user_input);
-                                nix::unistd::write(std::io::stdout(), echo.as_bytes()).ok();
-
-                                // Query for next ghost after accepting
-                                if let Ok(input_str) = std::str::from_utf8(user_input) {
-                                    if let Some(ghost) = completer.update(input_str) {
-                                        let ghost_render = display::render_ghost_text(ghost);
-                                        nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
-                                    }
-                                }
                             }
                         }
                     }
@@ -878,10 +825,8 @@ async fn main() -> Result<()> {
             if let Some(action) = interceptor.finish_batch() {
                 match action {
                     InterceptAction::Cancel => {
-                        let dismiss = display::render_dismiss();
-                        let restore = format!("\x1b[{}G", dismiss_col + 1);
-                        nix::unistd::write(std::io::stdout(), dismiss.as_bytes()).ok();
-                        nix::unistd::write(std::io::stdout(), restore.as_bytes()).ok();
+                        prefix_match_time = None;
+                        completer.clear();
                     }
                     InterceptAction::Forward(bytes) => {
                         // Bare ESC forwarded when not in chat mode

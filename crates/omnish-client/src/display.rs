@@ -11,6 +11,7 @@ pub fn render_separator(cols: u16) -> String {
 /// Render the initial prompt: newline, separator, newline, ❯ cursor.
 /// The omnish UI occupies exactly 2 lines below the original cursor position
 /// (separator line + ❯ input line). `render_dismiss()` relies on this count.
+#[cfg(test)]
 pub fn render_prompt(cols: u16) -> String {
     let separator = render_separator(cols);
     format!("\r\n{}\r\n\x1b[36m❯\x1b[0m ", separator)
@@ -18,20 +19,14 @@ pub fn render_prompt(cols: u16) -> String {
 
 /// Dismiss the omnish UI by clearing only the separator and ❯ lines below
 /// the shell prompt, then moving the cursor back to the prompt line.
-///
-/// Steps: up 1 (to separator), clear from there to end of screen, up 1
-/// (to prompt line). The shell prompt text is preserved.
-///
-/// After dismiss the caller should send SIGWINCH to make the shell redraw
-/// its prompt in place (repositioning the cursor correctly). Do NOT send
-/// `\r` to the PTY — the shell would echo `\r\n` which adds a blank line
-/// on every dismiss cycle, gradually pushing screen content upward.
+#[cfg(test)]
 pub fn render_dismiss() -> String {
     "\x1b[1A\r\x1b[J\x1b[1A".to_string()
 }
 
 /// Render the input echo line: moves cursor to column 0, prints ❯ followed by user text,
 /// then clears to end of line (to handle backspace correctly).
+#[cfg(test)]
 pub fn render_input_echo(user_input: &[u8]) -> String {
     format!(
         "\r\x1b[36m❯\x1b[0m {}\x1b[K",

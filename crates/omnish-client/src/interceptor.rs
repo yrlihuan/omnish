@@ -563,6 +563,7 @@ impl InputInterceptor {
     }
 
     /// Get a copy of the current buffer contents.
+    #[cfg(test)]
     pub fn current_buffer(&self) -> Vec<u8> {
         self.buffer.iter().copied().collect()
     }
