@@ -37,7 +37,7 @@ fn install_embedded_assets(omnish_dir: &std::path::Path) {
     let _ = std::fs::create_dir_all(&builtin_dir);
     let _ = std::fs::write(
         builtin_dir.join("tool.json"),
-        include_str!("../../omnish-plugin/plugins/builtin/tool.json"),
+        include_str!("../../omnish-plugin/assets/tool.json"),
     );
 
     // tool.override.json.example (only if not present)
@@ -45,7 +45,7 @@ fn install_embedded_assets(omnish_dir: &std::path::Path) {
     if !tool_override_example.exists() {
         let _ = std::fs::write(
             &tool_override_example,
-            include_str!("../../omnish-plugin/plugins/builtin/tool.override.json.example"),
+            include_str!("../../omnish-plugin/assets/tool.override.json.example"),
         );
     }
 

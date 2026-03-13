@@ -79,6 +79,85 @@
       "sandboxed": true
     },
     {
+      "name": "grep",
+      "description": [
+        "A powerful search tool built on ripgrep",
+        "",
+        "Usage:",
+        "- ALWAYS use Grep for search tasks. NEVER invoke `grep` or `rg` as a Bash command. The Grep tool has been optimized for correct permissions and access.",
+        "- Supports full regex syntax (e.g., \"log.*Error\", \"function\\\\s+\\\\w+\")",
+        "- Filter files with glob parameter (e.g., \"*.js\", \"**/*.tsx\") or type parameter (e.g., \"js\", \"py\", \"rust\")",
+        "- Output modes: \"content\" shows matching lines, \"files_with_matches\" shows only file paths (default), \"count\" shows match counts",
+        "- Use Task tool for open-ended searches requiring multiple rounds",
+        "- Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping (use `interface\\\\{\\\\}` to find `interface{}` in Go code)",
+        "- Multiline matching: By default patterns match within single lines only. For cross-line patterns like `struct \\\\{[\\\\s\\\\S]*?field`, use `multiline: true`"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "The regular expression pattern to search for in file contents"
+          },
+          "path": {
+            "type": "string",
+            "description": "File or directory to search in. Defaults to current working directory."
+          },
+          "glob": {
+            "type": "string",
+            "description": "Glob pattern to filter files (e.g., \"*.js\", \"*.{ts,tsx}\")"
+          },
+          "type": {
+            "type": "string",
+            "description": "File type to search (e.g., \"js\", \"py\", \"rust\"). More efficient than glob for standard file types."
+          },
+          "output_mode": {
+            "type": "string",
+            "description": "Output mode: \"content\" shows matching lines, \"files_with_matches\" shows file paths (default), \"count\" shows match counts."
+          },
+          "multiline": {
+            "type": "boolean",
+            "description": "Enable multiline mode where . matches newlines and patterns can span lines. Default: false."
+          },
+          "-i": {
+            "type": "boolean",
+            "description": "Case insensitive search"
+          },
+          "-n": {
+            "type": "boolean",
+            "description": "Show line numbers in output (default: true). Only applies to content output mode."
+          },
+          "-A": {
+            "type": "number",
+            "description": "Number of lines to show after each match. Only applies to content output mode."
+          },
+          "-B": {
+            "type": "number",
+            "description": "Number of lines to show before each match. Only applies to content output mode."
+          },
+          "-C": {
+            "type": "number",
+            "description": "Number of lines to show before and after each match (context). Only applies to content output mode."
+          },
+          "context": {
+            "type": "number",
+            "description": "Alias for -C."
+          },
+          "head_limit": {
+            "type": "number",
+            "description": "Limit output to first N lines/entries. Works across all output modes. Default: 0 (unlimited)."
+          },
+          "offset": {
+            "type": "number",
+            "description": "Skip first N lines/entries before applying head_limit. Default: 0."
+          }
+        },
+        "required": ["pattern"]
+      },
+      "status_template": "搜索: {pattern}",
+      "sandboxed": true
+    },
+    {
       "name": "read",
       "description": [
         "Reads a file from the local filesystem. You can access any file directly by using this tool.",
