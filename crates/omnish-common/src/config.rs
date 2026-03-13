@@ -252,6 +252,12 @@ pub struct LlmConfig {
     /// Optional Langfuse observability integration
     #[serde(default)]
     pub langfuse: Option<LangfuseConfig>,
+    /// Optional proxy CA certificate path for TLS verification
+    #[serde(default)]
+    pub proxy_ca_cert_path: Option<String>,
+    /// Dangerously accept invalid TLS certificates (insecure, use with caution)
+    #[serde(default)]
+    pub danger_accept_invalid_certs: bool,
 }
 
 impl Default for LlmConfig {
@@ -262,6 +268,8 @@ impl Default for LlmConfig {
             auto_trigger: AutoTriggerConfig::default(),
             use_cases: HashMap::new(),
             langfuse: None,
+            proxy_ca_cert_path: None,
+            danger_accept_invalid_certs: false,
         }
     }
 }

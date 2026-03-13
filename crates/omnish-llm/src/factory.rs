@@ -43,14 +43,27 @@ fn resolve_api_key(api_key_cmd: &Option<String>) -> Result<String> {
 pub fn create_backend(
     _name: &str,
     config: &LlmBackendConfig,
+    llm_config: &LlmConfig,
 ) -> Result<Arc<dyn LlmBackend>> {
     let api_key = resolve_api_key(&config.api_key_cmd)?;
 
     match config.backend_type.as_str() {
         "anthropic" => {
-            let client = reqwest::Client::builder()
-                .pool_max_idle_per_host(10)
-                .build()?;
+            let mut client_builder = reqwest::Client::builder().pool_max_idle_per_host(10);
+
+            if let Some(ca_cert_path) = llm_config.proxy_ca_cert_path.as_deref() {
+                let cert_data = std::fs::read(ca_cert_path)
+                    .map_err(|e| anyhow!("failed to read CA certificate from {}: {}", ca_cert_path, e))?;
+                let cert = reqwest::Certificate::from_pem(&cert_data)
+                    .map_err(|e| anyhow!("failed to parse CA certificate from {}: {}", ca_cert_path, e))?;
+                client_builder = client_builder.add_root_certificate(cert);
+            }
+
+            if llm_config.danger_accept_invalid_certs {
+                client_builder = client_builder.danger_accept_invalid_certs(true);
+            }
+
+            let client = client_builder.build()?;
             let base_url = config
                 .base_url
                 .clone()
@@ -67,9 +80,21 @@ pub fn create_backend(
                 .base_url
                 .clone()
                 .ok_or_else(|| anyhow!("openai-compat requires base_url"))?;
-            let client = reqwest::Client::builder()
-                .pool_max_idle_per_host(10)
-                .build()?;
+            let mut client_builder = reqwest::Client::builder().pool_max_idle_per_host(10);
+
+            if let Some(ca_cert_path) = llm_config.proxy_ca_cert_path.as_deref() {
+                let cert_data = std::fs::read(ca_cert_path)
+                    .map_err(|e| anyhow!("failed to read CA certificate from {}: {}", ca_cert_path, e))?;
+                let cert = reqwest::Certificate::from_pem(&cert_data)
+                    .map_err(|e| anyhow!("failed to parse CA certificate from {}: {}", ca_cert_path, e))?;
+                client_builder = client_builder.add_root_certificate(cert);
+            }
+
+            if llm_config.danger_accept_invalid_certs {
+                client_builder = client_builder.danger_accept_invalid_certs(true);
+            }
+
+            let client = client_builder.build()?;
             Ok(Arc::new(OpenAiCompatBackend {
                 api_key,
                 model: config.model.clone(),
@@ -89,7 +114,7 @@ pub fn create_default_backend(llm_config: &LlmConfig) -> Result<Arc<dyn LlmBacke
         .get(backend_name)
         .ok_or_else(|| anyhow!("default backend '{}' not found in config", backend_name))?;
 
-    create_backend(backend_name, backend_config)
+    create_backend(backend_name, backend_config, llm_config)
 }
 
 /// MultiBackend routes LLM requests to different backends based on use case
@@ -119,7 +144,7 @@ impl MultiBackend {
         // Create backends for each use case
         for (use_case_name, backend_name) in &llm_config.use_cases {
             if let Some(backend_config) = llm_config.backends.get(backend_name) {
-                let backend = create_backend(backend_name, backend_config)?;
+                let backend = create_backend(backend_name, backend_config, llm_config)?;
                 let backend = maybe_wrap_langfuse(backend, &langfuse_config);
                 use_case_backends
                     .write()
@@ -221,7 +246,7 @@ fn maybe_wrap_langfuse(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omnish_common::config::LlmBackendConfig;
+    use omnish_common::config::{LlmBackendConfig, LlmConfig};
 
     #[test]
     fn test_resolve_api_key_with_echo() {
@@ -245,8 +270,9 @@ mod tests {
             base_url: None,
             max_content_chars: None,
         };
+        let llm_config = LlmConfig::default();
 
-        let backend = create_backend("test", &config).unwrap();
+        let backend = create_backend("test", &config, &llm_config).unwrap();
         assert_eq!(backend.name(), "anthropic");
     }
 
@@ -259,8 +285,9 @@ mod tests {
             base_url: Some("https://api.openai.com/v1".to_string()),
             max_content_chars: None,
         };
+        let llm_config = LlmConfig::default();
 
-        let backend = create_backend("test", &config).unwrap();
+        let backend = create_backend("test", &config, &llm_config).unwrap();
         assert_eq!(backend.name(), "openai_compat");
     }
 
@@ -273,8 +300,9 @@ mod tests {
             base_url: None,
             max_content_chars: None,
         };
+        let llm_config = LlmConfig::default();
 
-        let result = create_backend("test", &config);
+        let result = create_backend("test", &config, &llm_config);
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("base_url"));
@@ -289,8 +317,9 @@ mod tests {
             base_url: None,
             max_content_chars: None,
         };
+        let llm_config = LlmConfig::default();
 
-        let result = create_backend("test", &config);
+        let result = create_backend("test", &config, &llm_config);
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("unknown backend"));
