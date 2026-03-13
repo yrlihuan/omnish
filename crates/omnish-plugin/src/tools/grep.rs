@@ -1,6 +1,62 @@
+use grep::matcher::Matcher;
+use grep::regex::RegexMatcherBuilder;
+use grep::searcher::sinks::Lossy;
+use grep::searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use ignore::types::TypesBuilder;
 use ignore::WalkBuilder;
 use omnish_llm::tool::ToolResult;
+
+/// A Sink implementation that collects both matching and context lines.
+struct ContentSink<'a> {
+    rel_path: &'a str,
+    show_line_numbers: bool,
+    output_lines: &'a mut Vec<String>,
+}
+
+impl Sink for ContentSink<'_> {
+    type Error = std::io::Error;
+
+    fn matched(&mut self, _searcher: &Searcher, mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
+        let line = String::from_utf8_lossy(mat.bytes());
+        let line = line.trim_end_matches('\n').trim_end_matches('\r');
+        if self.show_line_numbers {
+            if let Some(line_num) = mat.line_number() {
+                self.output_lines
+                    .push(format!("{}:{}:{}", self.rel_path, line_num, line));
+            } else {
+                self.output_lines
+                    .push(format!("{}:{}", self.rel_path, line));
+            }
+        } else {
+            self.output_lines
+                .push(format!("{}:{}", self.rel_path, line));
+        }
+        Ok(true)
+    }
+
+    fn context(
+        &mut self,
+        _searcher: &Searcher,
+        ctx: &SinkContext<'_>,
+    ) -> Result<bool, Self::Error> {
+        let line = String::from_utf8_lossy(ctx.bytes());
+        let line = line.trim_end_matches('\n').trim_end_matches('\r');
+        if self.show_line_numbers {
+            if let Some(line_num) = ctx.line_number() {
+                self.output_lines
+                    .push(format!("{}:{}:{}", self.rel_path, line_num, line));
+            } else {
+                self.output_lines
+                    .push(format!("{}:{}", self.rel_path, line));
+            }
+        } else {
+            self.output_lines
+                .push(format!("{}:{}", self.rel_path, line));
+        }
+        Ok(true)
+    }
+}
+
 pub struct GrepTool;
 
 impl GrepTool {
@@ -38,15 +94,15 @@ impl GrepTool {
         let case_insensitive = input["-i"].as_bool().unwrap_or(false);
         let multiline = input["multiline"].as_bool().unwrap_or(false);
 
-        // Build regex
-        let re = {
-            let mut builder = regex::RegexBuilder::new(pattern);
+        // Build matcher using grep-regex (from ripgrep)
+        let matcher = {
+            let mut builder = RegexMatcherBuilder::new();
             builder.case_insensitive(case_insensitive);
             if multiline {
                 builder.multi_line(true).dot_matches_new_line(true);
             }
-            match builder.build() {
-                Ok(r) => r,
+            match builder.build(pattern) {
+                Ok(m) => m,
                 Err(e) => {
                     return ToolResult {
                         tool_use_id: String::new(),
@@ -78,10 +134,19 @@ impl GrepTool {
         let ctx_after = if context > 0 { context } else { context_after };
         let show_line_numbers = input["-n"].as_bool().unwrap_or(true);
 
+        // Build searcher using grep-searcher (from ripgrep)
+        let mut searcher = SearcherBuilder::new()
+            .binary_detection(BinaryDetection::quit(0))
+            .multi_line(multiline)
+            .before_context(ctx_before)
+            .after_context(ctx_after)
+            .line_number(show_line_numbers)
+            .build();
+
         // Check if searching a single file
         let is_single_file = search_path.is_file();
 
-        // Collect matching files
+        // Collect files to search
         let files: Vec<std::path::PathBuf> = if is_single_file {
             vec![search_path.clone()]
         } else {
@@ -91,7 +156,6 @@ impl GrepTool {
             let mut walk = WalkBuilder::new(&search_path);
             walk.hidden(false);
 
-            // Apply type filter
             if !type_filter.is_empty() {
                 let mut types = TypesBuilder::new();
                 types.add_defaults();
@@ -101,7 +165,6 @@ impl GrepTool {
                 }
             }
 
-            // Apply glob filter
             if !glob_pattern.is_empty() {
                 let mut overrides = ignore::overrides::OverrideBuilder::new(&search_path);
                 let _ = overrides.add(glob_pattern);
@@ -123,120 +186,59 @@ impl GrepTool {
             search_path.clone()
         };
 
-        // Search through files
+        // Search through files using grep-searcher
         let mut output_lines: Vec<String> = Vec::new();
 
         for file_path in &files {
-            let content = match std::fs::read_to_string(file_path) {
-                Ok(c) => c,
-                Err(_) => continue, // skip binary/unreadable files
-            };
-
             let rel_path = file_path
                 .strip_prefix(&base_path)
                 .unwrap_or(file_path)
-                .to_string_lossy();
+                .to_string_lossy()
+                .to_string();
 
-            if multiline {
-                // Multiline mode — search across the entire file content
-                if re.is_match(&content) {
-                    match output_mode {
-                        "files_with_matches" => {
-                            output_lines.push(rel_path.to_string());
-                        }
-                        "count" => {
-                            let count = re.find_iter(&content).count();
-                            output_lines.push(format!("{}:{}", rel_path, count));
-                        }
-                        "content" => {
-                            // Show matched regions with context
-                            let lines: Vec<&str> = content.lines().collect();
-                            let mut matched_line_ranges = std::collections::BTreeSet::new();
-                            for m in re.find_iter(&content) {
-                                let start_line = content[..m.start()].matches('\n').count();
-                                let end_line = content[..m.end()].matches('\n').count();
-                                let from = start_line.saturating_sub(ctx_before);
-                                let to = (end_line + ctx_after).min(lines.len().saturating_sub(1));
-                                for l in from..=to {
-                                    matched_line_ranges.insert(l);
-                                }
-                            }
-                            if !matched_line_ranges.is_empty() {
-                                for &line_idx in &matched_line_ranges {
-                                    if line_idx < lines.len() {
-                                        if show_line_numbers {
-                                            output_lines.push(format!(
-                                                "{}:{}:{}",
-                                                rel_path,
-                                                line_idx + 1,
-                                                lines[line_idx]
-                                            ));
-                                        } else {
-                                            output_lines.push(format!(
-                                                "{}:{}",
-                                                rel_path,
-                                                lines[line_idx]
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
+            match output_mode {
+                "files_with_matches" => {
+                    // Just check if file has any match
+                    let mut found = false;
+                    let _ = searcher.search_path(
+                        &matcher,
+                        file_path,
+                        Lossy(|_line_num, _line| {
+                            found = true;
+                            Ok(false) // stop after first match
+                        }),
+                    );
+                    if found {
+                        output_lines.push(rel_path);
                     }
                 }
-            } else {
-                // Line-by-line mode
-                let lines: Vec<&str> = content.lines().collect();
-                let matching_lines: Vec<usize> = lines
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, line)| re.is_match(line))
-                    .map(|(i, _)| i)
-                    .collect();
-
-                if matching_lines.is_empty() {
-                    continue;
+                "count" => {
+                    let mut count = 0usize;
+                    let _ = searcher.search_path(
+                        &matcher,
+                        file_path,
+                        Lossy(|_line_num, line| {
+                            // Count all pattern occurrences within each reported line
+                            let _ = matcher.find_iter(line.as_bytes(), |_m| {
+                                count += 1;
+                                true
+                            });
+                            Ok(true)
+                        }),
+                    );
+                    if count > 0 {
+                        output_lines.push(format!("{}:{}", rel_path, count));
+                    }
                 }
-
-                match output_mode {
-                    "files_with_matches" => {
-                        output_lines.push(rel_path.to_string());
-                    }
-                    "count" => {
-                        output_lines.push(format!("{}:{}", rel_path, matching_lines.len()));
-                    }
-                    "content" => {
-                        // Collect line indices to show (with context)
-                        let mut visible = std::collections::BTreeSet::new();
-                        for &m in &matching_lines {
-                            let from = m.saturating_sub(ctx_before);
-                            let to = (m + ctx_after).min(lines.len().saturating_sub(1));
-                            for l in from..=to {
-                                visible.insert(l);
-                            }
-                        }
-                        for &line_idx in &visible {
-                            if line_idx < lines.len() {
-                                if show_line_numbers {
-                                    output_lines.push(format!(
-                                        "{}:{}:{}",
-                                        rel_path,
-                                        line_idx + 1,
-                                        lines[line_idx]
-                                    ));
-                                } else {
-                                    output_lines.push(format!(
-                                        "{}:{}",
-                                        rel_path,
-                                        lines[line_idx]
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
+                "content" => {
+                    let mut sink = ContentSink {
+                        rel_path: &rel_path,
+                        show_line_numbers,
+                        output_lines: &mut output_lines,
+                    };
+                    let _ = searcher.search_path(&matcher, file_path, &mut sink);
                 }
+                _ => {}
             }
         }
 
@@ -351,7 +353,6 @@ mod tests {
             "output_mode": "count"
         }));
         assert!(!result.is_error);
-        // Count mode shows file:count pairs
         assert!(result.content.contains(":"));
     }
 
@@ -441,7 +442,6 @@ mod tests {
             "head_limit": 1
         }));
         assert!(!result.is_error);
-        // Should show 1 file + truncation notice
         let lines: Vec<&str> = result.content.lines().collect();
         assert!(lines.len() <= 2);
         assert!(result.content.contains("more lines"));
@@ -452,7 +452,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         make_search_tree(tmp.path());
         let tool = GrepTool::new();
-        // First get all matches
         let all = tool.execute(&serde_json::json!({
             "pattern": "hello",
             "path": tmp.path().to_str().unwrap(),
@@ -461,7 +460,6 @@ mod tests {
         let all_lines: Vec<&str> = all.content.lines().collect();
         let total = all_lines.len();
 
-        // Now get with offset=1
         let result = tool.execute(&serde_json::json!({
             "pattern": "hello",
             "path": tmp.path().to_str().unwrap(),
@@ -547,13 +545,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         make_search_tree(tmp.path());
         let tool = GrepTool::new();
-        // No output_mode specified — should default to files_with_matches
         let result = tool.execute(&serde_json::json!({
             "pattern": "hello",
             "path": tmp.path().to_str().unwrap()
         }));
         assert!(!result.is_error);
-        // Should contain file paths, not line content with line numbers
         assert!(result.content.contains("main.rs"));
         assert!(!result.content.contains("println"));
     }
