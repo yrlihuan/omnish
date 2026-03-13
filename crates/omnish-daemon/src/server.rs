@@ -419,7 +419,7 @@ async fn handle_chat_message(
         max_content_chars: max_context_chars,
         conversation: vec![],
         system_prompt: Some(system_prompt),
-        enable_thinking: None,
+        enable_thinking: Some(true), // Enable thinking mode for chat
         tools,
         extra_messages,
     };
@@ -1196,7 +1196,7 @@ async fn handle_llm_request(
         max_content_chars: max_context_chars,
         conversation: vec![],
         system_prompt: None,
-        enable_thinking: None, // Use default (thinking enabled for chat)
+        enable_thinking: Some(true), // Enable thinking mode for chat
         tools: vec![],
         extra_messages: vec![],
     };
