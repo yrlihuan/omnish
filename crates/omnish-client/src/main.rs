@@ -2421,8 +2421,8 @@ async fn run_chat_loop(
             if let Some(tid) = thread_id {
                 current_thread_id = Some(tid);
                 if let Some(msg) = display_msg {
-                    let output = display::render_response(&msg);
-                    nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                    let rendered = markdown::render(&msg);
+                    render_with_scroll_view(&rendered);
                 } else {
                     let info = "\r\n\x1b[2;37m(resumed conversation)\x1b[0m";
                     nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
@@ -2605,31 +2605,10 @@ async fn run_chat_loop(
                                             tool_calls.push(tc);
                                         }
                                         Some(Message::ChatResponse(resp)) if resp.request_id == req_id => {
-                                            let (rows, cols) = get_terminal_size().unwrap_or((24, 80));
                                             let rendered = markdown::render(&resp.content);
-                                            let lines: Vec<&str> = rendered.split("\r\n").collect();
-                                            let compact_h = (rows as usize / 3).max(3);
+                                            render_with_scroll_view(&rendered);
 
-                                            if lines.len() <= rows as usize - 2 {
-                                                // Fits on screen — direct output
-                                                let output = format!("\r\n{}\r\n", rendered);
-                                                nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
-                                            } else {
-                                                // Long content — use ScrollView
-                                                let expanded_h = (rows as usize).saturating_sub(3);
-                                                let mut sv = ScrollView::new(compact_h, expanded_h, cols as usize);
-                                                for line in &lines {
-                                                    let seq = sv.push_line(line);
-                                                    nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
-                                                }
-                                                // Let user browse before continuing
-                                                browse_scroll_view(&mut sv);
-                                                // Clear ScrollView and print full response
-                                                nix::unistd::write(std::io::stdout(), sv.clear().as_bytes()).ok();
-                                                let output = format!("\r\n{}\r\n", rendered);
-                                                nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
-                                            }
-
+                                            let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
                                             let separator = display::render_separator(cols);
                                             let sep_line = format!("{}\r\n", separator);
                                             nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
@@ -2752,6 +2731,30 @@ async fn run_chat_loop(
                 let _ = rpc_clone.call(interrupt_msg).await;
             });
         }
+    }
+}
+
+/// Render pre-formatted content (already using \r\n line endings) with ScrollView
+/// for long output. Short content is displayed directly.
+fn render_with_scroll_view(rendered: &str) {
+    let (rows, cols) = get_terminal_size().unwrap_or((24, 80));
+    let lines: Vec<&str> = rendered.split("\r\n").collect();
+    let compact_h = (rows as usize / 3).max(3);
+
+    if lines.len() <= rows as usize - 2 {
+        let output = format!("\r\n{}\r\n", rendered);
+        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+    } else {
+        let expanded_h = (rows as usize).saturating_sub(3);
+        let mut sv = ScrollView::new(compact_h, expanded_h, cols as usize);
+        for line in &lines {
+            let seq = sv.push_line(line);
+            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+        }
+        browse_scroll_view(&mut sv);
+        nix::unistd::write(std::io::stdout(), sv.clear().as_bytes()).ok();
+        let output = format!("\r\n{}\r\n", rendered);
+        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
     }
 }
 
