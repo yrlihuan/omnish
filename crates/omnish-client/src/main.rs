@@ -18,6 +18,7 @@ use anyhow::Result;
 use omnish_common::config::load_client_config;
 use interceptor::{InputInterceptor, InterceptAction, TimeGapGuard};
 use widgets::line_status::LineStatus;
+use widgets::scroll_view::{ScrollView, ViewMode};
 use omnish_protocol::message::*;
 use omnish_pty::proxy::PtyProxy;
 use omnish_pty::raw_mode::RawModeGuard;
@@ -2604,10 +2605,31 @@ async fn run_chat_loop(
                                             tool_calls.push(tc);
                                         }
                                         Some(Message::ChatResponse(resp)) if resp.request_id == req_id => {
-                                            let output = display::render_response(&resp.content);
-                                            nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                                            let (rows, cols) = get_terminal_size().unwrap_or((24, 80));
+                                            let rendered = markdown::render(&resp.content);
+                                            let lines: Vec<&str> = rendered.split("\r\n").collect();
+                                            let compact_h = (rows as usize / 3).max(3);
 
-                                            let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+                                            if lines.len() <= rows as usize - 2 {
+                                                // Fits on screen — direct output
+                                                let output = format!("\r\n{}\r\n", rendered);
+                                                nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                                            } else {
+                                                // Long content — use ScrollView
+                                                let expanded_h = (rows as usize).saturating_sub(3);
+                                                let mut sv = ScrollView::new(compact_h, expanded_h, cols as usize);
+                                                for line in &lines {
+                                                    let seq = sv.push_line(line);
+                                                    nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                                                }
+                                                // Let user browse before continuing
+                                                browse_scroll_view(&mut sv);
+                                                // Clear ScrollView and print full response
+                                                nix::unistd::write(std::io::stdout(), sv.clear().as_bytes()).ok();
+                                                let output = format!("\r\n{}\r\n", rendered);
+                                                nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                                            }
+
                                             let separator = display::render_separator(cols);
                                             let sep_line = format!("{}\r\n", separator);
                                             nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
@@ -2729,6 +2751,81 @@ async fn run_chat_loop(
             tokio::spawn(async move {
                 let _ = rpc_clone.call(interrupt_msg).await;
             });
+        }
+    }
+}
+
+/// Interactive browse loop for a ScrollView.
+/// Reads raw stdin keys: v enters browse, ↑/k scroll up, ↓/j scroll down,
+/// q/Esc exits browse, Enter skips to next prompt.
+fn browse_scroll_view(sv: &mut ScrollView) {
+    let stdin_fd = std::io::stdin().as_raw_fd();
+    let hint = "\r\n\x1b[2m[v] browse  [Enter] continue\x1b[0m";
+    let erase_hint = "\x1b[1A\r\x1b[K";
+
+    nix::unistd::write(std::io::stdout(), hint.as_bytes()).ok();
+
+    loop {
+        let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
+        if unsafe { libc::poll(&mut pfd, 1, -1) } <= 0 { continue; }
+
+        let mut byte = [0u8; 1];
+        if nix::unistd::read(stdin_fd, &mut byte) != Ok(1) { break; }
+
+        if byte[0] == 0x1b {
+            // Escape sequence — check for arrow keys
+            let mut pfd2 = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
+            if unsafe { libc::poll(&mut pfd2, 1, 15) } > 0 {
+                let mut buf = [0u8; 8];
+                if let Ok(n) = nix::unistd::read(stdin_fd, &mut buf) {
+                    if n >= 2 && buf[0] == b'[' {
+                        if buf[1] == b'A' && sv.mode() == ViewMode::Expanded {
+                            let seq = sv.scroll_up(1);
+                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                        } else if buf[1] == b'B' && sv.mode() == ViewMode::Expanded {
+                            let seq = sv.scroll_down(1);
+                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                        }
+                        continue;
+                    }
+                }
+            }
+            // Bare ESC
+            if sv.mode() == ViewMode::Expanded {
+                let seq = sv.exit_browse();
+                nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                nix::unistd::write(std::io::stdout(), hint.as_bytes()).ok();
+            } else {
+                nix::unistd::write(std::io::stdout(), erase_hint.as_bytes()).ok();
+                break;
+            }
+            continue;
+        }
+
+        match (sv.mode(), byte[0]) {
+            (ViewMode::Compact, b'v') => {
+                nix::unistd::write(std::io::stdout(), erase_hint.as_bytes()).ok();
+                let seq = sv.enter_browse();
+                nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+            }
+            (ViewMode::Compact, b'\r' | b'\n' | 0x03) => {
+                nix::unistd::write(std::io::stdout(), erase_hint.as_bytes()).ok();
+                break;
+            }
+            (ViewMode::Expanded, b'j' | b'J') => {
+                let seq = sv.scroll_down(1);
+                nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+            }
+            (ViewMode::Expanded, b'k' | b'K') => {
+                let seq = sv.scroll_up(1);
+                nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+            }
+            (ViewMode::Expanded, b'q' | b'Q' | 0x03) => {
+                let seq = sv.exit_browse();
+                nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                nix::unistd::write(std::io::stdout(), hint.as_bytes()).ok();
+            }
+            _ => {}
         }
     }
 }
