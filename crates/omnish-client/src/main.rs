@@ -2762,56 +2762,6 @@ fn render_with_scroll_view(rendered: &str) -> Option<ScrollView> {
     }
 }
 
-/// Interactive browse loop for an expanded ScrollView.
-/// Handles ↑↓/j/k scrolling, q/Esc to exit. Returns when user exits browse mode.
-fn browse_scroll_view(sv: &mut ScrollView) {
-    let stdin_fd = std::io::stdin().as_raw_fd();
-
-    loop {
-        let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
-        if unsafe { libc::poll(&mut pfd, 1, -1) } <= 0 { continue; }
-
-        let mut byte = [0u8; 1];
-        if nix::unistd::read(stdin_fd, &mut byte) != Ok(1) { break; }
-
-        if byte[0] == 0x1b {
-            let mut pfd2 = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
-            if unsafe { libc::poll(&mut pfd2, 1, 15) } > 0 {
-                let mut buf = [0u8; 8];
-                if let Ok(n) = nix::unistd::read(stdin_fd, &mut buf) {
-                    if n >= 2 && buf[0] == b'[' {
-                        if buf[1] == b'A' {
-                            let seq = sv.scroll_up(1);
-                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
-                        } else if buf[1] == b'B' {
-                            let seq = sv.scroll_down(1);
-                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
-                        }
-                        continue;
-                    }
-                }
-            }
-            // Bare ESC — exit browse
-            break;
-        }
-
-        match byte[0] {
-            b'j' | b'J' => {
-                let seq = sv.scroll_down(1);
-                nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
-            }
-            b'k' | b'K' => {
-                let seq = sv.scroll_up(1);
-                nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
-            }
-            b'q' | b'Q' | 0x03 | 0x0f => { // q, Ctrl-C, Ctrl-O
-                break;
-            }
-            _ => {}
-        }
-    }
-}
-
 /// Block until Ctrl-C (0x03) is read from stdin. Uses poll with 100ms timeout
 /// so the thread exits promptly when `stop` is signalled.
 fn wait_for_ctrl_c(stop: std::sync::mpsc::Receiver<()>) -> bool {
@@ -3306,15 +3256,10 @@ fn read_chat_input(
                         if let Some(ref mut sv) = scroll_view {
                             // Erase hint line, then editor line(s)
                             let editor_rows = editor.line_count();
-                            // Move up past editor rows + hint line, clear each
                             for _ in 0..editor_rows + 1 {
                                 nix::unistd::write(std::io::stdout(), b"\x1b[1A\r\x1b[K").ok();
                             }
-                            let seq = sv.enter_browse();
-                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
-                            browse_scroll_view(sv);
-                            let seq = sv.exit_browse();
-                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                            sv.run_browse();
                             // Redraw hint + prompt + editor
                             let hidden = sv.line_count().saturating_sub(
                                 (get_terminal_size().unwrap_or((24, 80)).0 as usize / 3).max(3)
