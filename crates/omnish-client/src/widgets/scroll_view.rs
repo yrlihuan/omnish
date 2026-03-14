@@ -144,15 +144,16 @@ impl ScrollView {
         // Compute scrollbar
         let scrollbar = Self::compute_scrollbar(total, viewport, start);
 
-        // Render viewport lines with scrollbar
+        // Render viewport lines with scrollbar at column max_cols-2
+        let bar_col = self.max_cols.saturating_sub(2);
         for (vi, i) in (start..end).enumerate() {
             let bar = if vi < scrollbar.len() {
                 &scrollbar[vi]
             } else {
                 " "
             };
-            let line = Self::truncate_line(&self.lines[i], self.max_cols.saturating_sub(1));
-            out.push_str(&format!("\r\n\x1b[K{}{}", line, bar));
+            let line = Self::truncate_line(&self.lines[i], bar_col.saturating_sub(1));
+            out.push_str(&format!("\r\n\x1b[K{}\x1b[{}G{}", line, bar_col, bar));
         }
 
         // Hint line
