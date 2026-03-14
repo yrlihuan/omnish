@@ -18,7 +18,7 @@ use anyhow::Result;
 use omnish_common::config::load_client_config;
 use interceptor::{InputInterceptor, InterceptAction, TimeGapGuard};
 use widgets::line_status::LineStatus;
-use widgets::scroll_view::{ScrollView, ViewMode};
+use widgets::scroll_view::ScrollView;
 use omnish_protocol::message::*;
 use omnish_pty::proxy::PtyProxy;
 use omnish_pty::raw_mode::RawModeGuard;
@@ -2061,6 +2061,8 @@ async fn run_chat_loop(
     // Track whether any command/message has been submitted in this chat session.
     // Backspace-to-exit is only allowed before the first action.
     let mut has_activity = false;
+    // ScrollView from last response — passed to read_chat_input for Ctrl+O browsing
+    let mut last_scroll_view: Option<ScrollView> = None;
 
     // Chat loop — LLM queries
     loop {
@@ -2070,7 +2072,7 @@ async fn run_chat_loop(
             let prompt = display::render_chat_prompt();
             nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
 
-            match read_chat_input(&mut chat_completer, !has_activity, chat_history, &mut history_index) {
+            match read_chat_input(&mut chat_completer, !has_activity, chat_history, &mut history_index, &mut last_scroll_view) {
                 Some(line) => line,
                 None => break, // ESC / Ctrl-D / backspace on empty
             }
@@ -2422,7 +2424,7 @@ async fn run_chat_loop(
                 current_thread_id = Some(tid);
                 if let Some(msg) = display_msg {
                     let rendered = markdown::render(&msg);
-                    render_with_scroll_view(&rendered);
+                    last_scroll_view = render_with_scroll_view(&rendered);
                 } else {
                     let info = "\r\n\x1b[2;37m(resumed conversation)\x1b[0m";
                     nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
@@ -2606,7 +2608,7 @@ async fn run_chat_loop(
                                         }
                                         Some(Message::ChatResponse(resp)) if resp.request_id == req_id => {
                                             let rendered = markdown::render(&resp.content);
-                                            render_with_scroll_view(&rendered);
+                                            last_scroll_view = render_with_scroll_view(&rendered);
 
                                             let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
                                             let separator = display::render_separator(cols);
@@ -2736,7 +2738,8 @@ async fn run_chat_loop(
 
 /// Render pre-formatted content (already using \r\n line endings) with ScrollView
 /// for long output. Short content is displayed directly.
-fn render_with_scroll_view(rendered: &str) {
+/// Returns a ScrollView if the content was long enough to need one.
+fn render_with_scroll_view(rendered: &str) -> Option<ScrollView> {
     let (rows, cols) = get_terminal_size().unwrap_or((24, 80));
     let lines: Vec<&str> = rendered.split("\r\n").collect();
     let compact_h = (rows as usize / 3).max(3);
@@ -2744,6 +2747,7 @@ fn render_with_scroll_view(rendered: &str) {
     if lines.len() <= rows as usize - 2 {
         let output = format!("\r\n{}\r\n", rendered);
         nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+        None
     } else {
         let expanded_h = (rows as usize).saturating_sub(3);
         let mut sv = ScrollView::new(compact_h, expanded_h, cols as usize);
@@ -2751,19 +2755,17 @@ fn render_with_scroll_view(rendered: &str) {
             let seq = sv.push_line(line);
             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
         }
-        browse_scroll_view(&mut sv);
+        let hidden = lines.len().saturating_sub(compact_h);
+        let hint = format!("\r\n\x1b[2m… +{} lines (ctrl+o to view)\x1b[0m", hidden);
+        nix::unistd::write(std::io::stdout(), hint.as_bytes()).ok();
+        Some(sv)
     }
 }
 
-/// Interactive browse loop for a ScrollView.
-/// Reads raw stdin keys: v enters browse, ↑/k scroll up, ↓/j scroll down,
-/// q/Esc exits browse, Enter skips to next prompt.
+/// Interactive browse loop for an expanded ScrollView.
+/// Handles ↑↓/j/k scrolling, q/Esc to exit. Returns when user exits browse mode.
 fn browse_scroll_view(sv: &mut ScrollView) {
     let stdin_fd = std::io::stdin().as_raw_fd();
-    let hint = "\r\n\x1b[2m[Ctrl+O] browse  [Enter] continue\x1b[0m";
-    let erase_hint = "\x1b[1A\r\x1b[K";
-
-    nix::unistd::write(std::io::stdout(), hint.as_bytes()).ok();
 
     loop {
         let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
@@ -2773,16 +2775,15 @@ fn browse_scroll_view(sv: &mut ScrollView) {
         if nix::unistd::read(stdin_fd, &mut byte) != Ok(1) { break; }
 
         if byte[0] == 0x1b {
-            // Escape sequence — check for arrow keys
             let mut pfd2 = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
             if unsafe { libc::poll(&mut pfd2, 1, 15) } > 0 {
                 let mut buf = [0u8; 8];
                 if let Ok(n) = nix::unistd::read(stdin_fd, &mut buf) {
                     if n >= 2 && buf[0] == b'[' {
-                        if buf[1] == b'A' && sv.mode() == ViewMode::Expanded {
+                        if buf[1] == b'A' {
                             let seq = sv.scroll_up(1);
                             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
-                        } else if buf[1] == b'B' && sv.mode() == ViewMode::Expanded {
+                        } else if buf[1] == b'B' {
                             let seq = sv.scroll_down(1);
                             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
                         }
@@ -2790,40 +2791,21 @@ fn browse_scroll_view(sv: &mut ScrollView) {
                     }
                 }
             }
-            // Bare ESC
-            if sv.mode() == ViewMode::Expanded {
-                let seq = sv.exit_browse();
-                nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
-                nix::unistd::write(std::io::stdout(), hint.as_bytes()).ok();
-            } else {
-                nix::unistd::write(std::io::stdout(), erase_hint.as_bytes()).ok();
-                break;
-            }
-            continue;
+            // Bare ESC — exit browse
+            break;
         }
 
-        match (sv.mode(), byte[0]) {
-            (ViewMode::Compact, 0x0f) => { // Ctrl+O
-                nix::unistd::write(std::io::stdout(), erase_hint.as_bytes()).ok();
-                let seq = sv.enter_browse();
-                nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
-            }
-            (ViewMode::Compact, b'\r' | b'\n' | 0x03) => {
-                nix::unistd::write(std::io::stdout(), erase_hint.as_bytes()).ok();
-                break;
-            }
-            (ViewMode::Expanded, b'j' | b'J') => {
+        match byte[0] {
+            b'j' | b'J' => {
                 let seq = sv.scroll_down(1);
                 nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
             }
-            (ViewMode::Expanded, b'k' | b'K') => {
+            b'k' | b'K' => {
                 let seq = sv.scroll_up(1);
                 nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
             }
-            (ViewMode::Expanded, b'q' | b'Q' | 0x03) => {
-                let seq = sv.exit_browse();
-                nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
-                nix::unistd::write(std::io::stdout(), hint.as_bytes()).ok();
+            b'q' | b'Q' | 0x03 | 0x0f => { // q, Ctrl-C, Ctrl-O
+                break;
             }
             _ => {}
         }
@@ -2935,6 +2917,7 @@ fn read_chat_input(
     allow_backspace_exit: bool,
     history: &VecDeque<String>,
     history_index: &mut Option<usize>,
+    scroll_view: &mut Option<ScrollView>,
 ) -> Option<String> {
     use widgets::line_editor::LineEditor;
     use unicode_width::UnicodeWidthChar;
@@ -3318,6 +3301,30 @@ fn read_chat_input(
                             _ => { paste_last_cr = false; }
                         }
                         continue;
+                    }
+                    0x0f => { // Ctrl-O — browse scroll view
+                        if let Some(ref mut sv) = scroll_view {
+                            // Erase hint line, then editor line(s)
+                            let editor_rows = editor.line_count();
+                            // Move up past editor rows + hint line, clear each
+                            for _ in 0..editor_rows + 1 {
+                                nix::unistd::write(std::io::stdout(), b"\x1b[1A\r\x1b[K").ok();
+                            }
+                            let seq = sv.enter_browse();
+                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                            browse_scroll_view(sv);
+                            let seq = sv.exit_browse();
+                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                            // Redraw hint + prompt + editor
+                            let hidden = sv.line_count().saturating_sub(
+                                (get_terminal_size().unwrap_or((24, 80)).0 as usize / 3).max(3)
+                            );
+                            let hint = format!("\r\n\x1b[2m\u{2026} +{} lines (ctrl+o to view)\x1b[0m", hidden);
+                            nix::unistd::write(std::io::stdout(), hint.as_bytes()).ok();
+                            let prompt = display::render_chat_prompt();
+                            nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
+                            redraw(&editor, &ghost_text, has_ghost);
+                        }
                     }
                     0x01 => { // Ctrl-A — home
                         editor.move_home();
