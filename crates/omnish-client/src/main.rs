@@ -2752,7 +2752,6 @@ fn render_with_scroll_view(rendered: &str) {
             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
         }
         browse_scroll_view(&mut sv);
-        nix::unistd::write(std::io::stdout(), sv.clear().as_bytes()).ok();
     }
 }
 
@@ -2761,7 +2760,7 @@ fn render_with_scroll_view(rendered: &str) {
 /// q/Esc exits browse, Enter skips to next prompt.
 fn browse_scroll_view(sv: &mut ScrollView) {
     let stdin_fd = std::io::stdin().as_raw_fd();
-    let hint = "\r\n\x1b[2m[v] browse  [Enter] continue\x1b[0m";
+    let hint = "\r\n\x1b[2m[Ctrl+O] browse  [Enter] continue\x1b[0m";
     let erase_hint = "\x1b[1A\r\x1b[K";
 
     nix::unistd::write(std::io::stdout(), hint.as_bytes()).ok();
@@ -2804,7 +2803,7 @@ fn browse_scroll_view(sv: &mut ScrollView) {
         }
 
         match (sv.mode(), byte[0]) {
-            (ViewMode::Compact, b'v') => {
+            (ViewMode::Compact, 0x0f) => { // Ctrl+O
                 nix::unistd::write(std::io::stdout(), erase_hint.as_bytes()).ok();
                 let seq = sv.enter_browse();
                 nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
