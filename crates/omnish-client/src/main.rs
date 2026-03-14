@@ -2753,8 +2753,6 @@ fn render_with_scroll_view(rendered: &str) {
         }
         browse_scroll_view(&mut sv);
         nix::unistd::write(std::io::stdout(), sv.clear().as_bytes()).ok();
-        let output = format!("\r\n{}\r\n", rendered);
-        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
     }
 }
 
