@@ -270,12 +270,11 @@ async fn handle_message(
             } else {
                 conv_mgr.get_latest_thread().unwrap_or_else(|| conv_mgr.create_thread())
             };
-            let (last_exchange, earlier_count) = conv_mgr.get_last_exchange(&thread_id);
             Message::ChatReady(ChatReady {
                 request_id: cs.request_id,
                 thread_id,
-                last_exchange,
-                earlier_count,
+                last_exchange: None,
+                earlier_count: 0,
             })
         }
         Message::ChatMessage(cm) => {
@@ -839,12 +838,10 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
         };
         return match conv_mgr.get_thread_by_index(idx) {
             Some(thread_id) => {
-                let (last_exchange, earlier_count) = conv_mgr.get_last_exchange(&thread_id);
+                let exchanges = conv_mgr.get_all_exchanges(&thread_id);
                 serde_json::json!({
-                    "display": format!("Resuming conversation [{}]\n{}", idx + 1, format_chat_history(&last_exchange, earlier_count)),
+                    "display": format!("Resuming conversation [{}] ({} turns)\n{}", idx + 1, exchanges.len(), format_all_exchanges(&exchanges)),
                     "thread_id": thread_id,
-                    "last_exchange": last_exchange,
-                    "earlier_count": earlier_count,
                 })
             }
             None => cmd_display("Invalid index: out of bounds"),
@@ -853,27 +850,23 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
     // Handle /resume_tid <thread_id> for resuming by thread ID (stable across deletions)
     if let Some(tid) = sub.strip_prefix("resume_tid ") {
         let tid = tid.trim();
-        let (last_exchange, earlier_count) = conv_mgr.get_last_exchange(tid);
-        if last_exchange.is_none() {
+        let exchanges = conv_mgr.get_all_exchanges(tid);
+        if exchanges.is_empty() {
             return cmd_display("Conversation not found");
         }
         return serde_json::json!({
-            "display": format!("Resuming conversation\n{}", format_chat_history(&last_exchange, earlier_count)),
+            "display": format!("Resuming conversation ({} turns)\n{}", exchanges.len(), format_all_exchanges(&exchanges)),
             "thread_id": tid,
-            "last_exchange": last_exchange,
-            "earlier_count": earlier_count,
         });
     }
     // Handle /resume without index (resume latest = /resume 1)
     if sub == "resume" {
         return match conv_mgr.get_thread_by_index(0) {
             Some(thread_id) => {
-                let (last_exchange, earlier_count) = conv_mgr.get_last_exchange(&thread_id);
+                let exchanges = conv_mgr.get_all_exchanges(&thread_id);
                 serde_json::json!({
-                    "display": format!("Resuming conversation [1]\n{}", format_chat_history(&last_exchange, earlier_count)),
+                    "display": format!("Resuming conversation [1] ({} turns)\n{}", exchanges.len(), format_all_exchanges(&exchanges)),
                     "thread_id": thread_id,
-                    "last_exchange": last_exchange,
-                    "earlier_count": earlier_count,
                 })
             }
             None => cmd_display("No conversations yet. Start a chat with :"),
@@ -965,19 +958,19 @@ async fn handle_template(name: &str, mgr: &SessionManager, plugin_mgr: &PluginMa
 }
 
 /// Format chat history for display.
-fn format_chat_history(last_exchange: &Option<(String, String)>, earlier_count: u32) -> String {
-    match last_exchange {
-        Some((user, assistant)) => {
-            let mut output = String::new();
-            if earlier_count > 0 {
-                output.push_str(&format!("\x1b[2;37m({} earlier turns)\x1b[0m\n\n", earlier_count));
-            }
-            output.push_str(&format!("\x1b[1;32mUser:\x1b[0m {}\n", user));
-            output.push_str(&format!("\x1b[1;34mAssistant:\x1b[0m {}\n", assistant));
-            output
+/// Format all exchanges in a conversation for display.
+fn format_all_exchanges(exchanges: &[(String, String)]) -> String {
+    let mut output = String::new();
+    for (i, (user, assistant)) in exchanges.iter().enumerate() {
+        if i > 0 {
+            output.push_str("\n---\n\n");
         }
-        None => "\x1b[2;37m(empty conversation)\x1b[0m".to_string(),
+        output.push_str(&format!("\x1b[1;32mUser:\x1b[0m {}\n", user));
+        if !assistant.is_empty() {
+            output.push_str(&format!("\x1b[1;34mAssistant:\x1b[0m {}\n", assistant));
+        }
     }
+    output
 }
 
 /// Format the list of conversations as JSON with display string and thread_ids.

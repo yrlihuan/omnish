@@ -133,46 +133,40 @@ impl ConversationManager {
         threads.get(thread_id).cloned().unwrap_or_default()
     }
 
-    /// Get the last exchange and count of earlier user input messages.
-    pub fn get_last_exchange(&self, thread_id: &str) -> (Option<(String, String)>, u32) {
+    /// Get all user-assistant exchanges in a thread, ordered chronologically.
+    /// Returns Vec of (user_text, assistant_text) pairs.
+    pub fn get_all_exchanges(&self, thread_id: &str) -> Vec<(String, String)> {
         let threads = self.threads.lock().unwrap();
         let msgs = match threads.get(thread_id) {
             Some(m) => m.clone(),
-            None => return (None, 0),
+            None => return Vec::new(),
         };
         drop(threads);
 
-        // Count user input messages (where content is String, not Array of tool_result)
-        let user_input_count = msgs.iter().filter(|m| Self::is_user_input(m)).count() as u32;
-        if user_input_count == 0 {
-            return (None, 0);
+        let mut exchanges = Vec::new();
+        let mut i = 0;
+        while i < msgs.len() {
+            if Self::is_user_input(&msgs[i]) {
+                let user_text = Self::extract_text(&msgs[i]);
+                // Collect assistant text after this user message until next user input
+                let mut assistant_parts = Vec::new();
+                let mut j = i + 1;
+                while j < msgs.len() && !Self::is_user_input(&msgs[j]) {
+                    if msgs[j]["role"].as_str() == Some("assistant") {
+                        let text = Self::extract_text(&msgs[j]);
+                        if !text.is_empty() {
+                            assistant_parts.push(text);
+                        }
+                    }
+                    j += 1;
+                }
+                exchanges.push((user_text, assistant_parts.join("\n")));
+                i = j;
+            } else {
+                i += 1;
+            }
         }
-
-        // Find last user input message
-        let last_user_idx = msgs.iter().rposition(Self::is_user_input);
-        let last_user_idx = match last_user_idx {
-            Some(idx) => idx,
-            None => return (None, 0),
-        };
-
-        let user_text = Self::extract_text(&msgs[last_user_idx]);
-
-        // Collect assistant text after the last user input
-        let assistant_text: String = msgs[last_user_idx + 1..]
-            .iter()
-            .filter(|m| m["role"].as_str() == Some("assistant"))
-            .map(Self::extract_text)
-            .filter(|t| !t.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let earlier = user_input_count.saturating_sub(1);
-        if assistant_text.is_empty() {
-            // User message with no assistant response yet
-            (Some((user_text, String::new())), earlier)
-        } else {
-            (Some((user_text, assistant_text)), earlier)
-        }
+        exchanges
     }
 
     /// Check if a message is a user input message (content is a string, not tool_result array).
@@ -270,31 +264,30 @@ mod tests {
     }
 
     #[test]
-    fn test_get_last_exchange() {
+    fn test_get_all_exchanges() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConversationManager::new(dir.path().to_path_buf());
         let id = mgr.create_thread();
 
         // Empty thread
-        let (exchange, count) = mgr.get_last_exchange(&id);
-        assert!(exchange.is_none());
-        assert_eq!(count, 0);
+        let exchanges = mgr.get_all_exchanges(&id);
+        assert!(exchanges.is_empty());
 
         // After first exchange
         mgr.append_messages(&id, &[user_msg("first question"), assistant_msg("first answer")]);
-        let (exchange, count) = mgr.get_last_exchange(&id);
-        let (q, a) = exchange.unwrap();
-        assert_eq!(q, "first question");
-        assert_eq!(a, "first answer");
-        assert_eq!(count, 0); // no earlier exchanges
+        let exchanges = mgr.get_all_exchanges(&id);
+        assert_eq!(exchanges.len(), 1);
+        assert_eq!(exchanges[0].0, "first question");
+        assert_eq!(exchanges[0].1, "first answer");
 
         // After second exchange
         mgr.append_messages(&id, &[user_msg("second question"), assistant_msg("second answer")]);
-        let (exchange, count) = mgr.get_last_exchange(&id);
-        let (q, a) = exchange.unwrap();
-        assert_eq!(q, "second question");
-        assert_eq!(a, "second answer");
-        assert_eq!(count, 1); // 1 earlier exchange
+        let exchanges = mgr.get_all_exchanges(&id);
+        assert_eq!(exchanges.len(), 2);
+        assert_eq!(exchanges[0].0, "first question");
+        assert_eq!(exchanges[0].1, "first answer");
+        assert_eq!(exchanges[1].0, "second question");
+        assert_eq!(exchanges[1].1, "second answer");
     }
 
     #[test]
@@ -331,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_last_exchange_with_tool_use() {
+    fn test_get_all_exchanges_with_tool_use() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConversationManager::new(dir.path().to_path_buf());
         let id = mgr.create_thread();
@@ -344,13 +337,11 @@ mod tests {
         ];
         mgr.append_messages(&id, &messages);
 
-        let (exchange, count) = mgr.get_last_exchange(&id);
-        let (q, a) = exchange.unwrap();
-        assert_eq!(q, "what did ls output?");
+        let exchanges = mgr.get_all_exchanges(&id);
+        assert_eq!(exchanges.len(), 1);
+        assert_eq!(exchanges[0].0, "what did ls output?");
         // Both assistant messages' text concatenated
-        assert_eq!(a, "Let me check...\nHere's what I found");
-        // Only 1 user input, so 0 earlier
-        assert_eq!(count, 0);
+        assert_eq!(exchanges[0].1, "Let me check...\nHere's what I found");
     }
 
     #[test]
@@ -362,10 +353,10 @@ mod tests {
         // system-reminder is NOT stored — server strips it before persisting
         mgr.append_messages(&id, &[user_msg("what happened?"), assistant_msg("Everything is fine")]);
 
-        let (exchange, _) = mgr.get_last_exchange(&id);
-        let (q, a) = exchange.unwrap();
-        assert_eq!(q, "what happened?");
-        assert_eq!(a, "Everything is fine");
+        let exchanges = mgr.get_all_exchanges(&id);
+        assert_eq!(exchanges.len(), 1);
+        assert_eq!(exchanges[0].0, "what happened?");
+        assert_eq!(exchanges[0].1, "Everything is fine");
     }
 
     #[test]
