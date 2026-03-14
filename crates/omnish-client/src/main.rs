@@ -6,6 +6,7 @@ pub mod event_log;
 mod ghost_complete;
 mod display;
 mod interceptor;
+mod markdown;
 mod probe;
 mod shell_hook;
 mod shell_input;

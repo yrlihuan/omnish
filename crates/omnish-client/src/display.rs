@@ -35,16 +35,10 @@ pub fn render_input_echo(user_input: &[u8]) -> String {
 }
 
 /// Format an LLM response for raw-mode display.
-/// - Trims trailing whitespace from each line
-/// - Converts \n to \r\n for raw mode
-/// - Wraps in dim gray color
+/// Renders markdown to ANSI-styled terminal output with \r\n line endings.
 pub fn render_response(content: &str) -> String {
-    let formatted: String = content
-        .lines()
-        .map(|line| line.trim_end())
-        .collect::<Vec<_>>()
-        .join("\r\n");
-    format!("\r\n\x1b[37m{}\x1b[0m\r\n", formatted)
+    let rendered = super::markdown::render(content);
+    format!("\r\n{}\r\n", rendered)
 }
 
 /// Format an error message in red.
