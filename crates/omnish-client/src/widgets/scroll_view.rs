@@ -153,7 +153,7 @@ impl ScrollView {
                 " "
             };
             let line = Self::truncate_line(&self.lines[i], bar_col.saturating_sub(1));
-            out.push_str(&format!("\r\n\x1b[K{}\x1b[{}G{}", line, bar_col, bar));
+            out.push_str(&format!("\r\n\x1b[K{}\x1b[0m\x1b[{}G{}", line, bar_col, bar));
         }
 
         // Hint line
