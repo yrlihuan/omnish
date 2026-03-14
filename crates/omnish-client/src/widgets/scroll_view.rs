@@ -10,8 +10,8 @@
 /// — no alternate screen.
 
 /// Scrollbar block characters.
-const THUMB: &str = "\x1b[2m\u{2588}\x1b[0m"; // █ (dim)
-const TRACK: &str = "\x1b[2m\u{2591}\x1b[0m"; // ░ (dim)
+const THUMB: &str = "\x1b[2m\u{2590}\x1b[0m"; // ▐ (dim)
+const TRACK: &str = "\x1b[2m\u{2502}\x1b[0m"; // │ (dim)
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ViewMode {
@@ -386,7 +386,7 @@ mod tests {
         }
         let seq = sv.enter_browse();
         // Should contain scrollbar characters
-        assert!(seq.contains('\u{2588}') || seq.contains('\u{2591}'),
+        assert!(seq.contains('\u{2590}') || seq.contains('\u{2502}'),
             "expanded view should have scrollbar");
     }
 
