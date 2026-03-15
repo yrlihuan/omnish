@@ -2072,6 +2072,9 @@ async fn run_chat_loop(
     layout.push_region("editor");
     layout.push_region("status");
 
+    // Move past shell prompt to a new line for chat layout
+    nix::unistd::write(std::io::stdout(), b"\r\n").ok();
+
     // Chat loop — LLM queries
     loop {
         let input = if let Some(msg) = pending_input.take() {

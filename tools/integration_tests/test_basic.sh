@@ -11,6 +11,7 @@
 #   5. Arrow Up/Down history navigation — echo 1, echo 2, Up recalls echo 2, Down clears
 #   6. Chat cursor position — cursor at column 2 after "> " when entering chat mode
 #   7. Typing in chat after output — no ghost lines from cursor mispositioning (#278)
+#   8. Shell prompt preserved when entering chat mode (#279)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -25,6 +26,7 @@ Test cases:
   5. Arrow Up/Down history navigation
   6. Chat cursor at column 2 after "> "
   7. Typing in chat after output — no ghost lines (#278)
+  8. Shell prompt preserved when entering chat (#279)
 EOF
 }
 
@@ -378,5 +380,33 @@ test_7() {
     fi
 }
 
+# ── Test 8: Shell prompt preserved when entering chat mode (#279) ─────────
+test_8() {
+    echo -e "\n${YELLOW}=== Test 8: Shell prompt preserved when entering chat ===${NC}"
+
+    restart_client
+    wait_for_client
+
+    send_keys ":" 0.5
+    wait_for_prompt
+
+    local content
+    content=$(capture_pane -10)
+    show_capture "After entering chat" "$content" 5
+
+    # The shell prompt (ending with "$ ") should still be visible above "> "
+    if echo "$content" | grep -q '\$ ' && echo "$content" | grep -qE '^\s*> \s*$'; then
+        assert_pass "Shell prompt preserved above chat prompt"
+        send_special Escape 0.5
+        sleep 1.5
+        return 0
+    else
+        assert_fail "Shell prompt not found above chat prompt"
+        send_special Escape 0.5
+        sleep 1.5
+        return 1
+    fi
+}
+
 echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history, cursor${NC}"
-run_tests 7
+run_tests 8
