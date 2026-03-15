@@ -2927,16 +2927,28 @@ fn read_chat_input(
     // with \x1b[200~ ... \x1b[201~ markers
     nix::unistd::write(std::io::stdout(), b"\x1b[?2004h").ok();
 
-    // Helper: redraw editor content via ChatLayout.
-    // Builds content lines (with FFFC paste block markers), updates the editor
-    // region, then positions the cursor at the correct row/column.
+    // Track which editor row the terminal cursor is on (relative to editor top).
+    // Enables purely relative cursor movement — no absolute position assumptions.
+    let term_cursor_row = std::cell::Cell::new(0usize);
+
+    // Helper: redraw editor content using relative cursor movement.
+    // Moves up to editor top, rewrites all lines, clears below with \x1b[J,
+    // then repositions cursor. Syncs layout state via set_content.
     let redraw = |editor: &LineEditor, ghost: &str, has_ghost: bool, layout: &mut ChatLayout| {
         let blocks = paste_blocks.borrow();
         let line_count = editor.line_count();
         let (cursor_row, cursor_col) = editor.cursor();
         let mut fffc_idx = 0usize;
+        let mut out = String::new();
 
-        // Build content lines for layout
+        // Move to top of editor from current cursor position
+        let prev_row = term_cursor_row.get();
+        if prev_row > 0 {
+            out.push_str(&format!("\x1b[{}A", prev_row));
+        }
+        out.push('\r');
+
+        // Build and write content lines
         let mut lines = Vec::with_capacity(line_count);
         for i in 0..line_count {
             let line = editor.line(i);
@@ -2969,23 +2981,26 @@ fn read_chat_input(
             if i == line_count - 1 && has_ghost && !ghost.is_empty() && !cursor_on_fffc {
                 s.push_str(&format!("\x1b[2;37m{}\x1b[0m", ghost));
             }
+
+            if i == line_count - 1 {
+                out.push_str(&s);
+                out.push_str("\x1b[J"); // clear to end of screen (handles height changes)
+            } else {
+                out.push_str(&s);
+                out.push_str("\x1b[K\r\n"); // clear to end of line + newline
+            }
             lines.push(s);
         }
 
-        // Update editor region via layout (handles cursor movement + clearing)
-        let seq = layout.update("editor", lines);
-        nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+        // Sync layout state (content + height) without producing ANSI
+        layout.set_content("editor", lines);
 
-        // Position cursor at the correct row within editor
-        let mut cursor_out = String::new();
-        let cursor_seq = layout.cursor_to("editor");
-        cursor_out.push_str(&cursor_seq);
-        // cursor_to positions at last row of editor; move up to cursor_row
+        // Position cursor at (cursor_row, cursor_col) within editor
         let rows_up = (line_count - 1) - cursor_row;
         if rows_up > 0 {
-            cursor_out.push_str(&format!("\x1b[{}A", rows_up));
+            out.push_str(&format!("\x1b[{}A", rows_up));
         }
-        cursor_out.push('\r');
+        out.push('\r');
 
         // Compute cursor display column, accounting for FFFC marker widths
         let cursor_line = editor.line(cursor_row);
@@ -3006,10 +3021,11 @@ fn read_chat_input(
             }
         }
         if cursor_display > 0 {
-            cursor_out.push_str(&format!("\x1b[{}C", cursor_display));
+            out.push_str(&format!("\x1b[{}C", cursor_display));
         }
 
-        nix::unistd::write(std::io::stdout(), cursor_out.as_bytes()).ok();
+        term_cursor_row.set(cursor_row);
+        nix::unistd::write(std::io::stdout(), out.as_bytes()).ok();
     };
 
     let disable_paste = || {
@@ -3272,14 +3288,14 @@ fn read_chat_input(
                     }
                     0x0f => { // Ctrl-O — browse scroll view
                         if let Some(ref mut sv) = scroll_view {
-                            // Erase layout area before browse
-                            let total = layout.total_height();
-                            for _ in 0..total {
-                                nix::unistd::write(std::io::stdout(), b"\x1b[1A\r\x1b[K").ok();
+                            // Erase layout area: move to top of layout, clear to end of screen
+                            let up_to_top = layout.region_offset("editor") + term_cursor_row.get();
+                            if up_to_top > 0 {
+                                nix::unistd::write(std::io::stdout(), format!("\x1b[{}A", up_to_top).as_bytes()).ok();
                             }
-                            nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
+                            nix::unistd::write(std::io::stdout(), b"\r\x1b[J").ok();
                             sv.run_browse();
-                            // After browse: update scroll_view content and redraw all
+                            // After browse: redraw all regions from top
                             let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
                             let separator = display::render_separator(cols);
                             let mut sv_lines = sv.compact_lines();
@@ -3287,9 +3303,9 @@ fn read_chat_input(
                             layout.set_content("scroll_view", sv_lines);
                             let seq = layout.redraw_all();
                             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
-                            // Move cursor past last content row to total_height
-                            nix::unistd::write(std::io::stdout(), b"\r\n").ok();
-                            // Redraw editor (positions cursor correctly)
+                            // After redraw_all, cursor is at last editor row
+                            term_cursor_row.set(editor.line_count() - 1);
+                            // Redraw editor (repositions cursor correctly)
                             redraw(&editor, &ghost_text, has_ghost, layout);
                         }
                     }

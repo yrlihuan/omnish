@@ -407,6 +407,50 @@ mod tests {
         assert!(!screen.contains("second"));
     }
 
+    /// Issue #278: editor redraws use relative cursor movement (term_cursor_row)
+    /// instead of layout.update(), so cursor_to() + typing works correctly.
+    /// This test simulates the relative movement approach used in main.rs.
+    #[test]
+    fn test_vt100_relative_editor_redraw() {
+        let mut layout = ChatLayout::new(80);
+        layout.push_region("sv");
+        layout.push_region("ed");
+
+        let mut p = vt100::Parser::new(24, 80, 0);
+
+        // Initial state: scroll_view has content, editor prompt via layout.update
+        p.process(layout.update("sv", vec![
+            "line 1".into(), "line 2".into(), "line 3".into(),
+        ]).as_bytes());
+        p.process(layout.update("ed", vec!["> ".into()]).as_bytes());
+
+        // cursor_to positions cursor at editor row for typing
+        let ct = layout.cursor_to("ed");
+        p.process(ct.as_bytes());
+        p.process(b"\x1b[2C"); // move past "> "
+
+        // Simulate typing "h" using relative movement (like the redraw closure):
+        // term_cursor_row=0 → no up-movement needed, \r to column 0,
+        // write content, \x1b[J to clear, position cursor
+        let mut out = String::new();
+        out.push('\r');            // to column 0
+        out.push_str("> h\x1b[J"); // write + clear to end of screen
+        out.push('\r');            // back to column 0
+        out.push_str("\x1b[3C");   // cursor after "> h"
+        p.process(out.as_bytes());
+        layout.set_content("ed", vec!["> h".into()]);
+
+        let screen = p.screen().contents();
+        assert!(screen.contains("line 1"), "line 1 missing\n{}", screen);
+        assert!(screen.contains("line 2"), "line 2 missing\n{}", screen);
+        assert!(screen.contains("line 3"), "line 3 missing\n{}", screen);
+        assert!(screen.contains("> h"), "editor content missing\n{}", screen);
+
+        // No ghost lines
+        let prompt_count = screen.lines().filter(|l| l.trim_end().starts_with(">")).count();
+        assert_eq!(prompt_count, 1, "expected 1 editor line, got {}\n{}", prompt_count, screen);
+    }
+
     #[test]
     fn test_update_with_empty_lines_hides() {
         let mut layout = ChatLayout::new(80);

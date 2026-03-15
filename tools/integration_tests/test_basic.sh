@@ -10,6 +10,7 @@
 #   4. Two conversations with 2 Q&A each, /resume first, /thread del, /thread list verify
 #   5. Arrow Up/Down history navigation — echo 1, echo 2, Up recalls echo 2, Down clears
 #   6. Chat cursor position — cursor at column 2 after "> " when entering chat mode
+#   7. Typing in chat after output — no ghost lines from cursor mispositioning (#278)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -23,6 +24,7 @@ Test cases:
   4. Two conversations (2 Q&A each), resume first, delete second, verify /thread list
   5. Arrow Up/Down history navigation
   6. Chat cursor at column 2 after "> "
+  7. Typing in chat after output — no ghost lines (#278)
 EOF
 }
 
@@ -333,5 +335,48 @@ test_6() {
     fi
 }
 
+# ── Test 7: Typing in chat doesn't leave ghost lines (#278) ──────────────
+test_7() {
+    echo -e "\n${YELLOW}=== Test 7: Typing in chat after output doesn't leave ghost lines ===${NC}"
+
+    restart_client
+    wait_for_client
+
+    # Fill screen with output
+    send_keys "for i in {1..10}; do echo \$i; done" 0.3
+    send_enter 1.5
+
+    # Enter chat mode
+    send_keys ":" 0.5
+    wait_for_prompt
+
+    # Type "hello" character by character
+    for c in h e l l o; do
+        send_keys "$c" 0.15
+    done
+    sleep 0.5
+
+    local content
+    content=$(capture_pane -20)
+    show_capture "After typing hello" "$content" 10
+
+    # "> hello" should appear exactly once; partial prompts like "> hell", "> hel" must NOT
+    local full_count partial_count
+    full_count=$(echo "$content" | grep -c '> hello' || true)
+    partial_count=$(echo "$content" | grep -cE '> (h|he|hel|hell)$' || true)
+
+    if [[ $full_count -eq 1 && $partial_count -eq 0 ]]; then
+        assert_pass "Typing in chat renders correctly without ghost lines"
+        send_special Escape 0.5
+        sleep 1.5
+        return 0
+    else
+        assert_fail "Ghost lines detected: '> hello' count=$full_count, partial prompts=$partial_count"
+        send_special Escape 0.5
+        sleep 1.5
+        return 1
+    fi
+}
+
 echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history, cursor${NC}"
-run_tests 6
+run_tests 7
