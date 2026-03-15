@@ -2695,15 +2695,19 @@ async fn run_chat_loop(
                             let (content, is_error) = result
                                 .unwrap_or_else(|_| ("Tool execution panicked".to_string(), true));
 
-                            // Build truncated output lines
+                            // Build output lines (tail window, like LineStatus)
                             let output_lines: Vec<&str> = content.lines().collect();
                             let max_output = 5;
                             let mut out_lines = Vec::new();
-                            for line in output_lines.iter().take(max_output) {
-                                out_lines.push(format!("  \x1b[2m{}\x1b[0m", line));
-                            }
                             if output_lines.len() > max_output {
                                 out_lines.push(format!("  \x1b[2m... +{} lines\x1b[0m", output_lines.len() - max_output));
+                                for line in output_lines.iter().skip(output_lines.len() - max_output) {
+                                    out_lines.push(format!("  \x1b[2m{}\x1b[0m", line));
+                                }
+                            } else {
+                                for line in &output_lines {
+                                    out_lines.push(format!("  \x1b[2m{}\x1b[0m", line));
+                                }
                             }
 
                             // Insert output right after corresponding tool status line
