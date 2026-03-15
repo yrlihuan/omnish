@@ -2554,8 +2554,12 @@ async fn run_chat_loop(
             }
         }
 
-        // Show thinking indicator in scroll_view
-        let mut status_lines: Vec<String> = vec!["\x1b[2m(thinking...)\x1b[0m".to_string()];
+        // Show user input + thinking indicator in scroll_view
+        let mut status_lines: Vec<String> = vec![
+            format!("\x1b[2;37m> {}\x1b[0m", trimmed),
+            String::new(),
+            "\x1b[2m(thinking...)\x1b[0m".to_string(),
+        ];
         let seq = layout.update("scroll_view", status_lines.clone());
         nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
 
@@ -2617,7 +2621,7 @@ async fn run_chat_loop(
                                 msg = rx.recv() => {
                                     match msg {
                                         Some(Message::ChatToolStatus(cts)) => {
-                                            let text = format!("\x1b[2m\u{1f527} {}\x1b[0m", cts.status);
+                                            let text = format!("\x1b[38;5;114m●\x1b[0m \x1b[2m{}({})\x1b[0m", cts.tool_name, cts.status);
                                             status_lines.push(text);
                                             let seq = layout.update("scroll_view", status_lines.clone());
                                             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
@@ -2627,7 +2631,9 @@ async fn run_chat_loop(
                                         }
                                         Some(Message::ChatResponse(resp)) if resp.request_id == req_id => {
                                             // Append response after status lines in scroll_view
+                                            status_lines.push(String::new());
                                             let rendered = markdown::render(&resp.content);
+                                            let rendered = format!("\x1b[97m●\x1b[0m {}", rendered);
                                             last_scroll_view = render_with_scroll_view_layout(&status_lines, &rendered, &mut layout);
                                             got_response = true;
                                             break;
@@ -2679,12 +2685,25 @@ async fn run_chat_loop(
                             }
                         }
 
-                        // Phase 3: Send results back — intermediate via call(), last via call_stream()
+                        // Phase 3: Display tool output, then send results back
                         let total = results.len();
                         let mut send_failed = false;
                         for (i, (tc, result)) in tool_calls.iter().zip(results).enumerate() {
                             let (content, is_error) = result
                                 .unwrap_or_else(|_| ("Tool execution panicked".to_string(), true));
+
+                            // Show truncated tool output in scroll_view
+                            let output_lines: Vec<&str> = content.lines().collect();
+                            let max_output = 5;
+                            for line in output_lines.iter().take(max_output) {
+                                status_lines.push(format!("  \x1b[2m{}\x1b[0m", line));
+                            }
+                            if output_lines.len() > max_output {
+                                status_lines.push(format!("  \x1b[2m... +{} lines\x1b[0m", output_lines.len() - max_output));
+                            }
+                            let seq = layout.update("scroll_view", status_lines.clone());
+                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+
                             let result_msg = Message::ChatToolResult(ChatToolResult {
                                 request_id: tc.request_id.clone(),
                                 thread_id: tc.thread_id.clone(),
