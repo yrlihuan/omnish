@@ -112,6 +112,11 @@ impl ScrollView {
         use std::os::fd::AsRawFd;
         let stdin_fd = std::io::stdin().as_raw_fd();
 
+        // Enter alternate screen — main screen is preserved automatically
+        nix::unistd::write(std::io::stdout(), b"\x1b[?1049h\x1b[H").ok();
+        let saved_rendered = self.rendered_lines;
+        self.rendered_lines = 0;
+
         let seq = self.enter_browse();
         nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
 
@@ -157,8 +162,10 @@ impl ScrollView {
             }
         }
 
-        let seq = self.exit_browse();
-        nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+        // Leave alternate screen — main screen restored automatically
+        self.mode = ViewMode::Compact;
+        self.rendered_lines = saved_rendered;
+        nix::unistd::write(std::io::stdout(), b"\x1b[?1049l").ok();
     }
 
     /// Erase everything from screen.  Returns ANSI sequence.

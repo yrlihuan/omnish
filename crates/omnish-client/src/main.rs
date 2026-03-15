@@ -3278,27 +3278,9 @@ fn read_chat_input(
                         }
                         continue;
                     }
-                    0x0f => { // Ctrl-O — browse scroll view
+                    0x0f => { // Ctrl-O — browse scroll view (alternate screen)
                         if let Some(ref mut sv) = scroll_view {
-                            // Erase layout area: move to top of layout, clear to end of screen
-                            let up_to_top = layout.region_offset("editor") + term_cursor_row.get();
-                            if up_to_top > 0 {
-                                nix::unistd::write(std::io::stdout(), format!("\x1b[{}A", up_to_top).as_bytes()).ok();
-                            }
-                            nix::unistd::write(std::io::stdout(), b"\r\x1b[J").ok();
                             sv.run_browse();
-                            // After browse: redraw all regions from top
-                            let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
-                            let separator = display::render_separator(cols);
-                            let mut sv_lines = sv.compact_lines();
-                            sv_lines.push(separator);
-                            layout.set_content("scroll_view", sv_lines);
-                            let seq = layout.redraw_all();
-                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
-                            // After redraw_all, cursor is at last editor row
-                            term_cursor_row.set(editor.line_count() - 1);
-                            // Redraw editor (repositions cursor correctly)
-                            redraw(&editor, &ghost_text, has_ghost, layout);
                         }
                     }
                     0x01 => { // Ctrl-A — home
