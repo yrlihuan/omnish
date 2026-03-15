@@ -17,6 +17,7 @@ mod widgets;
 use anyhow::Result;
 use omnish_common::config::load_client_config;
 use interceptor::{InputInterceptor, InterceptAction, TimeGapGuard};
+use widgets::chat_layout::ChatLayout;
 use widgets::line_status::LineStatus;
 use widgets::scroll_view::ScrollView;
 use omnish_protocol::message::*;
@@ -2064,16 +2065,30 @@ async fn run_chat_loop(
     // ScrollView from last response — passed to read_chat_input for Ctrl+O browsing
     let mut last_scroll_view: Option<ScrollView> = None;
 
+    // Layout manager for coordinated widget rendering
+    let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+    let mut layout = ChatLayout::new(cols as usize);
+    layout.push_region("scroll_view");
+    layout.push_region("editor");
+    layout.push_region("status");
+
     // Chat loop — LLM queries
     loop {
         let input = if let Some(msg) = pending_input.take() {
             msg
         } else {
-            let prompt = display::render_chat_prompt();
-            nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
+            // Render editor prompt via layout
+            let seq = layout.update("editor", vec!["\x1b[36m> \x1b[0m".to_string()]);
+            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+            let cursor_seq = layout.cursor_to("editor");
+            nix::unistd::write(std::io::stdout(), cursor_seq.as_bytes()).ok();
 
-            match read_chat_input(&mut chat_completer, !has_activity, chat_history, &mut history_index, &mut last_scroll_view) {
-                Some(line) => line,
+            match read_chat_input(&mut chat_completer, !has_activity, chat_history, &mut history_index, &mut last_scroll_view, &mut layout) {
+                Some(line) => {
+                    // Move cursor from editor to layout bottom for subsequent layout ops
+                    nix::unistd::write(std::io::stdout(), b"\r\n").ok();
+                    line
+                }
                 None => break, // ESC / Ctrl-D / backspace on empty
             }
         };
@@ -2424,7 +2439,7 @@ async fn run_chat_loop(
                 current_thread_id = Some(tid);
                 if let Some(msg) = display_msg {
                     let rendered = markdown::render(&msg);
-                    last_scroll_view = render_with_scroll_view(&rendered);
+                    last_scroll_view = render_with_scroll_view_layout(&rendered, &mut layout);
                 } else {
                     let info = "\r\n\x1b[2;37m(resumed conversation)\x1b[0m";
                     nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
@@ -2537,10 +2552,12 @@ async fn run_chat_loop(
             }
         }
 
-        // Show thinking indicator
+        // Show thinking indicator via layout
         let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
         let mut line_status = LineStatus::new(cols as usize, 5);
-        nix::unistd::write(std::io::stdout(), line_status.show("(thinking...)").as_bytes()).ok();
+        line_status.show("(thinking...)");
+        let seq = layout.update("status", line_status.lines_content());
+        nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
 
         // Send ChatMessage, allow Ctrl-C to interrupt
         let req_id = Uuid::new_v4().to_string()[..8].to_string();
@@ -2601,19 +2618,21 @@ async fn run_chat_loop(
                                     match msg {
                                         Some(Message::ChatToolStatus(cts)) => {
                                             let text = format!("\u{1f527} {}", cts.status);
-                                            nix::unistd::write(std::io::stdout(), line_status.append(&text).as_bytes()).ok();
+                                            line_status.append(&text);
+                                            let seq = layout.update("status", line_status.lines_content());
+                                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
                                         }
                                         Some(Message::ChatToolCall(tc)) => {
                                             tool_calls.push(tc);
                                         }
                                         Some(Message::ChatResponse(resp)) if resp.request_id == req_id => {
-                                            let rendered = markdown::render(&resp.content);
-                                            last_scroll_view = render_with_scroll_view(&rendered);
+                                            // Clear status before showing response
+                                            line_status.clear();
+                                            let seq = layout.hide("status");
+                                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
 
-                                            let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
-                                            let separator = display::render_separator(cols);
-                                            let sep_line = format!("{}\r\n", separator);
-                                            nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
+                                            let rendered = markdown::render(&resp.content);
+                                            last_scroll_view = render_with_scroll_view_layout(&rendered, &mut layout);
                                             got_response = true;
                                             break;
                                         }
@@ -2718,8 +2737,12 @@ async fn run_chat_loop(
         let _ = stop_tx.send(());
 
         if interrupted {
-            let info = "\r\n\x1b[2;37m(interrupted)\x1b[0m";
-            nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
+            // Clear status and show interrupted message
+            line_status.clear();
+            let seq = layout.hide("status");
+            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+            let seq = layout.update("scroll_view", vec!["\x1b[2;37m(interrupted)\x1b[0m".to_string()]);
+            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
 
             // Send interrupt to daemon to record in conversation and clean up pending loop
             let interrupt_msg = Message::ChatInterrupt(omnish_protocol::message::ChatInterrupt {
@@ -2736,28 +2759,33 @@ async fn run_chat_loop(
     }
 }
 
-/// Render pre-formatted content (already using \r\n line endings) with ScrollView
-/// for long output. Short content is displayed directly.
-/// Returns a ScrollView if the content was long enough to need one.
-fn render_with_scroll_view(rendered: &str) -> Option<ScrollView> {
+/// Render pre-formatted content via ChatLayout's scroll_view region.
+/// Creates a ScrollView for long content (enabling Ctrl+O browsing).
+/// Returns the ScrollView if content was long enough.
+fn render_with_scroll_view_layout(rendered: &str, layout: &mut ChatLayout) -> Option<ScrollView> {
     let (rows, cols) = get_terminal_size().unwrap_or((24, 80));
     let lines: Vec<&str> = rendered.split("\r\n").collect();
     let compact_h = (rows as usize / 3).max(3);
+    let separator = display::render_separator(cols);
 
     if lines.len() <= rows as usize - 2 {
-        let output = format!("\r\n{}\r\n", rendered);
-        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+        // Short content: display directly in scroll_view region
+        let mut content_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        content_lines.push(separator);
+        let seq = layout.update("scroll_view", content_lines);
+        nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
         None
     } else {
+        // Long content: use ScrollView for compact tail + hint
         let expanded_h = (rows as usize).saturating_sub(3);
         let mut sv = ScrollView::new(compact_h, expanded_h, cols as usize);
         for line in &lines {
-            let seq = sv.push_line(line);
-            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+            sv.push_line(line); // buffer content, ignore rendering output
         }
-        let hidden = lines.len().saturating_sub(compact_h);
-        let hint = format!("\r\n\x1b[2m… +{} lines (ctrl+o to view)\x1b[0m", hidden);
-        nix::unistd::write(std::io::stdout(), hint.as_bytes()).ok();
+        let mut sv_lines = sv.compact_lines();
+        sv_lines.push(separator);
+        let seq = layout.update("scroll_view", sv_lines);
+        nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
         Some(sv)
     }
 }
@@ -2868,6 +2896,7 @@ fn read_chat_input(
     history: &VecDeque<String>,
     history_index: &mut Option<usize>,
     scroll_view: &mut Option<ScrollView>,
+    layout: &mut ChatLayout,
 ) -> Option<String> {
     use widgets::line_editor::LineEditor;
     use unicode_width::UnicodeWidthChar;
@@ -2898,79 +2927,69 @@ fn read_chat_input(
     // with \x1b[200~ ... \x1b[201~ markers
     nix::unistd::write(std::io::stdout(), b"\x1b[?2004h").ok();
 
-    // Track where the terminal cursor was left after the previous redraw,
-    // so we know how many lines to move up to reach line 0.
-    let term_cursor_row = std::cell::Cell::new(0usize);
-
-    // Helper: redraw editor content from the prompt position.
-    // Paste blocks are represented as \u{FFFC} chars within the editor lines;
-    // they render as styled marker text.
-    let redraw = |editor: &LineEditor, ghost: &str, has_ghost: bool| {
-        let mut out = String::new();
+    // Helper: redraw editor content via ChatLayout.
+    // Builds content lines (with FFFC paste block markers), updates the editor
+    // region, then positions the cursor at the correct row/column.
+    let redraw = |editor: &LineEditor, ghost: &str, has_ghost: bool, layout: &mut ChatLayout| {
         let blocks = paste_blocks.borrow();
-
-        // Move to beginning of first line
-        let prev_row = term_cursor_row.get();
-        if prev_row > 0 {
-            out.push_str(&format!("\x1b[{}A", prev_row));
-        }
-        out.push('\r');
-
         let line_count = editor.line_count();
         let (cursor_row, cursor_col) = editor.cursor();
         let mut fffc_idx = 0usize;
 
+        // Build content lines for layout
+        let mut lines = Vec::with_capacity(line_count);
         for i in 0..line_count {
             let line = editor.line(i);
-            let pfx = if i == 0 { "> " } else { "  " };
+            let pfx = if i == 0 { "\x1b[36m> \x1b[0m" } else { "  " };
+            let mut s = String::new();
+            s.push_str(pfx);
 
-            // Build display string, replacing FFFC with markers
             let has_fffc = line.contains(&'\u{FFFC}');
             if has_fffc {
-                out.push_str(pfx);
                 for &ch in line {
                     if ch == '\u{FFFC}' {
                         if let Some(block) = blocks.get(fffc_idx) {
-                            out.push_str(&format!(
+                            s.push_str(&format!(
                                 "\x1b[2;36m[pasted text #{} +{} lines]\x1b[0m",
                                 block.index, block.line_count
                             ));
                         }
                         fffc_idx += 1;
                     } else {
-                        out.push(ch);
+                        s.push(ch);
                     }
                 }
             } else {
                 let line_str: String = line.iter().collect();
-                out.push_str(pfx);
-                out.push_str(&line_str);
+                s.push_str(&line_str);
             }
 
-            if i == line_count - 1 {
-                out.push_str("\x1b[J"); // clear to end of screen
-            } else {
-                out.push_str("\x1b[K\r\n"); // clear to end of line + newline
+            // Ghost text on last line
+            let cursor_on_fffc = line.contains(&'\u{FFFC}');
+            if i == line_count - 1 && has_ghost && !ghost.is_empty() && !cursor_on_fffc {
+                s.push_str(&format!("\x1b[2;37m{}\x1b[0m", ghost));
             }
+            lines.push(s);
         }
 
-        // Ghost text after last line (only if cursor is on a normal line)
-        let cursor_on_fffc = editor.line(cursor_row).contains(&'\u{FFFC}');
-        if has_ghost && !ghost.is_empty() && !cursor_on_fffc {
-            out.push_str(&format!("\x1b[2;37m{}\x1b[0m", ghost));
-        }
+        // Update editor region via layout (handles cursor movement + clearing)
+        let seq = layout.update("editor", lines);
+        nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
 
-        // Position cursor
-        let total_last_row = line_count - 1;
-        let rows_up = total_last_row - cursor_row;
+        // Position cursor at the correct row within editor
+        let mut cursor_out = String::new();
+        let cursor_seq = layout.cursor_to("editor");
+        cursor_out.push_str(&cursor_seq);
+        // cursor_to positions at last row of editor; move up to cursor_row
+        let rows_up = (line_count - 1) - cursor_row;
         if rows_up > 0 {
-            out.push_str(&format!("\x1b[{}A", rows_up));
+            cursor_out.push_str(&format!("\x1b[{}A", rows_up));
         }
-        out.push('\r');
+        cursor_out.push('\r');
 
         // Compute cursor display column, accounting for FFFC marker widths
         let cursor_line = editor.line(cursor_row);
-        let mut cursor_display = 2usize; // prefix width
+        let mut cursor_display = 2usize; // prefix "> " display width
         let mut local_fffc = 0usize;
         let fffc_before_cursor_row: usize = (0..cursor_row)
             .map(|r| editor.line(r).iter().filter(|&&c| c == '\u{FFFC}').count())
@@ -2987,11 +3006,10 @@ fn read_chat_input(
             }
         }
         if cursor_display > 0 {
-            out.push_str(&format!("\x1b[{}C", cursor_display));
+            cursor_out.push_str(&format!("\x1b[{}C", cursor_display));
         }
 
-        term_cursor_row.set(cursor_row);
-        nix::unistd::write(std::io::stdout(), out.as_bytes()).ok();
+        nix::unistd::write(std::io::stdout(), cursor_out.as_bytes()).ok();
     };
 
     let disable_paste = || {
@@ -3027,7 +3045,7 @@ fn read_chat_input(
                 has_ghost = false;
                 ghost_text.clear();
                 completer.clear();
-                redraw(&editor, "", false);
+                redraw(&editor, "", false, layout);
             }
         }
 
@@ -3077,7 +3095,7 @@ fn read_chat_input(
                     has_ghost = false;
                     ghost_text.clear();
                     completer.clear();
-                    redraw(&editor, "", false);
+                    redraw(&editor, "", false, layout);
                 }
 
                 match byte[0] {
@@ -3109,14 +3127,14 @@ fn read_chat_input(
                                 has_ghost = false;
                                 ghost_text.clear();
                                 completer.clear();
-                                redraw(&editor, "", false);
+                                redraw(&editor, "", false, layout);
                             }
                             Some(KeyEvent::ShiftEnter) => {
                                 editor.newline();
                                 has_ghost = false;
                                 ghost_text.clear();
                                 completer.clear();
-                                redraw(&editor, "", false);
+                                redraw(&editor, "", false, layout);
                             }
                             Some(KeyEvent::ArrowUp) => {
                                 if editor.is_empty() || history_index.is_some() {
@@ -3135,14 +3153,14 @@ fn read_chat_input(
                                         if let Some(g) = completer.update(cmd) {
                                             ghost_text = g.to_string();
                                             has_ghost = true;
-                                            redraw(&editor, g, true);
+                                            redraw(&editor, g, true, layout);
                                         } else {
-                                            redraw(&editor, "", false);
+                                            redraw(&editor, "", false, layout);
                                         }
                                     }
                                 } else {
                                     editor.move_up();
-                                    redraw(&editor, &ghost_text, has_ghost);
+                                    redraw(&editor, &ghost_text, has_ghost, layout);
                                 }
                             }
                             Some(KeyEvent::ArrowDown) => {
@@ -3157,7 +3175,7 @@ fn read_chat_input(
                                             has_ghost = false;
                                             ghost_text.clear();
                                             completer.clear();
-                                            redraw(&editor, "", false);
+                                            redraw(&editor, "", false, layout);
                                             continue;
                                         },
                                         None => continue,
@@ -3170,31 +3188,31 @@ fn read_chat_input(
                                         if let Some(g) = completer.update(cmd) {
                                             ghost_text = g.to_string();
                                             has_ghost = true;
-                                            redraw(&editor, g, true);
+                                            redraw(&editor, g, true, layout);
                                         } else {
-                                            redraw(&editor, "", false);
+                                            redraw(&editor, "", false, layout);
                                         }
                                     }
                                 } else {
                                     editor.move_down();
-                                    redraw(&editor, &ghost_text, has_ghost);
+                                    redraw(&editor, &ghost_text, has_ghost, layout);
                                 }
                             }
                             Some(KeyEvent::ArrowLeft) => {
                                 editor.move_left();
-                                redraw(&editor, &ghost_text, has_ghost);
+                                redraw(&editor, &ghost_text, has_ghost, layout);
                             }
                             Some(KeyEvent::ArrowRight) => {
                                 editor.move_right();
-                                redraw(&editor, &ghost_text, has_ghost);
+                                redraw(&editor, &ghost_text, has_ghost, layout);
                             }
                             Some(KeyEvent::Home) => {
                                 editor.move_home();
-                                redraw(&editor, &ghost_text, has_ghost);
+                                redraw(&editor, &ghost_text, has_ghost, layout);
                             }
                             Some(KeyEvent::End) => {
                                 editor.move_end();
-                                redraw(&editor, &ghost_text, has_ghost);
+                                redraw(&editor, &ghost_text, has_ghost, layout);
                             }
                             Some(KeyEvent::Delete) => {
                                 editor.delete_forward();
@@ -3204,19 +3222,19 @@ fn read_chat_input(
                                 if let Some(g) = completer.update(&content) {
                                     ghost_text = g.to_string();
                                     has_ghost = true;
-                                    redraw(&editor, g, true);
+                                    redraw(&editor, g, true, layout);
                                 } else {
                                     completer.clear();
-                                    redraw(&editor, "", false);
+                                    redraw(&editor, "", false, layout);
                                 }
                             }
                             Some(KeyEvent::CtrlLeft) => {
                                 editor.move_word_left();
-                                redraw(&editor, &ghost_text, has_ghost);
+                                redraw(&editor, &ghost_text, has_ghost, layout);
                             }
                             Some(KeyEvent::CtrlRight) => {
                                 editor.move_word_right();
-                                redraw(&editor, &ghost_text, has_ghost);
+                                redraw(&editor, &ghost_text, has_ghost, layout);
                             }
                             None => {} // Unknown escape sequence, ignore
                         }
@@ -3254,30 +3272,34 @@ fn read_chat_input(
                     }
                     0x0f => { // Ctrl-O — browse scroll view
                         if let Some(ref mut sv) = scroll_view {
-                            // Erase hint line, then editor line(s)
-                            let editor_rows = editor.line_count();
-                            for _ in 0..editor_rows + 1 {
+                            // Erase layout area before browse
+                            let total = layout.total_height();
+                            for _ in 0..total {
                                 nix::unistd::write(std::io::stdout(), b"\x1b[1A\r\x1b[K").ok();
                             }
+                            nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
                             sv.run_browse();
-                            // Redraw hint + prompt + editor
-                            let hidden = sv.line_count().saturating_sub(
-                                (get_terminal_size().unwrap_or((24, 80)).0 as usize / 3).max(3)
-                            );
-                            let hint = format!("\r\n\x1b[2m\u{2026} +{} lines (ctrl+o to view)\x1b[0m", hidden);
-                            nix::unistd::write(std::io::stdout(), hint.as_bytes()).ok();
-                            let prompt = display::render_chat_prompt();
-                            nix::unistd::write(std::io::stdout(), prompt.as_bytes()).ok();
-                            redraw(&editor, &ghost_text, has_ghost);
+                            // After browse: update scroll_view content and redraw all
+                            let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
+                            let separator = display::render_separator(cols);
+                            let mut sv_lines = sv.compact_lines();
+                            sv_lines.push(separator);
+                            layout.set_content("scroll_view", sv_lines);
+                            let seq = layout.redraw_all();
+                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                            // Move cursor past last content row to total_height
+                            nix::unistd::write(std::io::stdout(), b"\r\n").ok();
+                            // Redraw editor (positions cursor correctly)
+                            redraw(&editor, &ghost_text, has_ghost, layout);
                         }
                     }
                     0x01 => { // Ctrl-A — home
                         editor.move_home();
-                        redraw(&editor, &ghost_text, has_ghost);
+                        redraw(&editor, &ghost_text, has_ghost, layout);
                     }
                     0x05 => { // Ctrl-E — end
                         editor.move_end();
-                        redraw(&editor, &ghost_text, has_ghost);
+                        redraw(&editor, &ghost_text, has_ghost, layout);
                     }
                     0x15 => { // Ctrl-U — kill to start of line
                         editor.kill_to_start();
@@ -3287,10 +3309,10 @@ fn read_chat_input(
                         if let Some(g) = completer.update(&content) {
                             ghost_text = g.to_string();
                             has_ghost = true;
-                            redraw(&editor, g, true);
+                            redraw(&editor, g, true, layout);
                         } else {
                             completer.clear();
-                            redraw(&editor, "", false);
+                            redraw(&editor, "", false, layout);
                         }
                     }
                     0x04 if editor.is_empty() && paste_blocks.borrow().is_empty() => {
@@ -3301,12 +3323,12 @@ fn read_chat_input(
                         has_ghost = false;
                         ghost_text.clear();
                         completer.clear();
-                        redraw(&editor, "", false);
+                        redraw(&editor, "", false, layout);
                     }
                     0x0d => { // Enter — submit
                         // Clear ghost and move to end for clean output
                         if has_ghost {
-                            redraw(&editor, "", false);
+                            redraw(&editor, "", false, layout);
                         }
                         // Move cursor to end of content for clean newline
                         let last_row = editor.line_count() - 1;
@@ -3383,9 +3405,9 @@ fn read_chat_input(
                             if let Some(g) = completer.update(&content) {
                                 ghost_text = g.to_string();
                                 has_ghost = true;
-                                redraw(&editor, g, true);
+                                redraw(&editor, g, true, layout);
                             } else {
-                                redraw(&editor, "", false);
+                                redraw(&editor, "", false, layout);
                             }
                         }
                     }
@@ -3408,7 +3430,7 @@ fn read_chat_input(
                             has_ghost = false;
                             ghost_text.clear();
                             completer.clear();
-                            redraw(&editor, "", false);
+                            redraw(&editor, "", false, layout);
                             continue;
                         }
 
@@ -3429,10 +3451,10 @@ fn read_chat_input(
                         if let Some(g) = completer.update(&content) {
                             ghost_text = g.to_string();
                             has_ghost = true;
-                            redraw(&editor, g, true);
+                            redraw(&editor, g, true, layout);
                         } else {
                             completer.clear();
-                            redraw(&editor, "", false);
+                            redraw(&editor, "", false, layout);
                         }
                     }
                     b if b >= 0x20 => { // Printable ASCII or UTF-8 lead byte
@@ -3456,10 +3478,10 @@ fn read_chat_input(
                         if let Some(g) = completer.update(&content) {
                             ghost_text = g.to_string();
                             has_ghost = true;
-                            redraw(&editor, g, true);
+                            redraw(&editor, g, true, layout);
                         } else {
                             completer.clear();
-                            redraw(&editor, "", false);
+                            redraw(&editor, "", false, layout);
                         }
                     }
                     _ => {} // Ignore other control chars

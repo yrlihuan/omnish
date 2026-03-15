@@ -1,13 +1,16 @@
 /// Trivial widget that stores pre-styled lines for display.
+#[allow(dead_code)]
 pub struct TextView {
     content: Vec<String>,
 }
 
 impl TextView {
+    #[allow(dead_code)]
     pub fn new(lines: Vec<String>) -> Self {
         Self { content: lines }
     }
 
+    #[allow(dead_code)]
     pub fn lines(&self) -> &[String] {
         &self.content
     }

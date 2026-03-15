@@ -1,6 +1,7 @@
 use unicode_width::UnicodeWidthChar;
 
 /// Strip ANSI escape sequences from a string (for display width measurement).
+#[allow(dead_code)]
 fn strip_ansi_escapes(s: &str) -> String {
     let mut out = String::new();
     let mut chars = s.chars();
@@ -220,6 +221,7 @@ impl LineEditor {
     /// Render editor content with prefix and optional ghost text.
     /// Returns one styled line per editor row. No cursor movement sequences.
     /// Ghost text appears dim after cursor on the last line.
+    #[allow(dead_code)]
     pub fn render(&self, prefix: &str, ghost: &str) -> Vec<String> {
         let mut result = Vec::new();
         for (i, line_chars) in self.lines.iter().enumerate() {

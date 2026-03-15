@@ -72,11 +72,6 @@ pub fn render_chat_history(last_exchange: Option<&(String, String)>, earlier_cou
     output
 }
 
-/// Render the chat mode prompt: "> " in cyan.
-pub fn render_chat_prompt() -> String {
-    "\r\n\x1b[36m> \x1b[0m".to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

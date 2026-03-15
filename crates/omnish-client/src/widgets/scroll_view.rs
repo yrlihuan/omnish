@@ -49,10 +49,12 @@ impl ScrollView {
         }
     }
 
+    #[allow(dead_code)]
     pub fn mode(&self) -> ViewMode {
         self.mode
     }
 
+    #[allow(dead_code)]
     pub fn line_count(&self) -> usize {
         self.lines.len()
     }
@@ -160,6 +162,7 @@ impl ScrollView {
     }
 
     /// Erase everything from screen.  Returns ANSI sequence.
+    #[allow(dead_code)]
     pub fn clear(&mut self) -> String {
         let seq = self.erase_seq();
         self.rendered_lines = 0;

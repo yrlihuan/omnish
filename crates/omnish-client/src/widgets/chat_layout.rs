@@ -6,6 +6,7 @@ pub struct Region {
 
 pub struct ChatLayout {
     pub(crate) regions: Vec<Region>,
+    #[allow(dead_code)]
     cols: usize,
 }
 
@@ -14,6 +15,7 @@ impl ChatLayout {
         Self { regions: Vec::new(), cols }
     }
 
+    #[allow(dead_code)]
     pub fn cols(&self) -> usize {
         self.cols
     }
