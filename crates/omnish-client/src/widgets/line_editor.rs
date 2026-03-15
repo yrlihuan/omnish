@@ -1,5 +1,25 @@
 use unicode_width::UnicodeWidthChar;
 
+/// Strip ANSI escape sequences from a string (for display width measurement).
+fn strip_ansi_escapes(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if let Some(next) = chars.next() {
+                if next == '[' {
+                    for c2 in chars.by_ref() {
+                        if c2.is_ascii_alphabetic() { break; }
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub struct LineEditor {
     lines: Vec<Vec<char>>,
     pub(crate) cursor: (usize, usize), // (row, col) in char indices
@@ -195,6 +215,38 @@ impl LineEditor {
             self.lines.insert(row + 2, rest);
             self.cursor = (row + 2, 0);
         }
+    }
+
+    /// Render editor content with prefix and optional ghost text.
+    /// Returns one styled line per editor row. No cursor movement sequences.
+    /// Ghost text appears dim after cursor on the last line.
+    pub fn render(&self, prefix: &str, ghost: &str) -> Vec<String> {
+        let mut result = Vec::new();
+        for (i, line_chars) in self.lines.iter().enumerate() {
+            let mut s = String::new();
+            if i == 0 {
+                s.push_str(prefix);
+            } else {
+                let stripped = strip_ansi_escapes(prefix);
+                let prefix_width: usize = stripped.chars()
+                    .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+                    .sum();
+                for _ in 0..prefix_width {
+                    s.push(' ');
+                }
+            }
+            let text: String = line_chars.iter().collect();
+            s.push_str(&text);
+
+            if i == self.lines.len() - 1 && !ghost.is_empty() {
+                s.push_str(&format!("\x1b[2;37m{}\x1b[0m", ghost));
+            }
+            result.push(s);
+        }
+        if result.is_empty() {
+            result.push(prefix.to_string());
+        }
+        result
     }
 
     pub fn set_content(&mut self, s: &str) {
@@ -463,6 +515,52 @@ mod tests {
         assert_eq!(ed.line(1), &['\u{FFFC}']);
         assert_eq!(ed.line(2), &['l', 'l', 'o']);
         assert_eq!(ed.cursor(), (2, 0));
+    }
+
+    #[test]
+    fn test_render_single_line() {
+        let mut editor = LineEditor::new();
+        editor.insert('h');
+        editor.insert('i');
+
+        let lines = editor.render("\x1b[36m> \x1b[0m", "");
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("\x1b[36m> \x1b[0m"));
+        assert!(lines[0].contains("hi"));
+    }
+
+    #[test]
+    fn test_render_with_ghost() {
+        let mut editor = LineEditor::new();
+        editor.insert('h');
+
+        let lines = editor.render("> ", "ello");
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("h"));
+        assert!(lines[0].contains("\x1b[2;37mello\x1b[0m"));
+    }
+
+    #[test]
+    fn test_render_empty() {
+        let editor = LineEditor::new();
+        let lines = editor.render("> ", "");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], "> ");
+    }
+
+    #[test]
+    fn test_render_multiline() {
+        let mut editor = LineEditor::new();
+        editor.insert('a');
+        editor.newline();
+        editor.insert('b');
+
+        let lines = editor.render("> ", "");
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("> "));
+        assert!(lines[0].contains("a"));
+        assert!(lines[1].starts_with("  ")); // continuation indent
+        assert!(lines[1].contains("b"));
     }
 
     #[test]

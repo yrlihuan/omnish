@@ -85,6 +85,19 @@ impl LineStatus {
         seq
     }
 
+    /// Returns current styled content lines for ChatLayout integration.
+    /// Each line has dim styling applied.
+    pub fn lines_content(&self) -> Vec<String> {
+        if self.content.is_empty() {
+            return Vec::new();
+        }
+        let visible = self.visible_lines();
+        visible.iter().map(|l| {
+            let truncated = Self::truncate_line(l, self.max_cols);
+            format!("\x1b[2m{}\x1b[0m", truncated)
+        }).collect()
+    }
+
     // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
@@ -447,6 +460,24 @@ mod tests {
                 "row {row} should be blank but got: {text:?}",
             );
         }
+    }
+
+    #[test]
+    fn test_lines_accessor() {
+        let mut status = LineStatus::new(80, 5);
+        assert!(status.lines_content().is_empty());
+
+        status.show("thinking...");
+        let lines = status.lines_content();
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("thinking..."));
+
+        status.append("tool call 1");
+        let lines = status.lines_content();
+        assert_eq!(lines.len(), 2);
+
+        status.clear();
+        assert!(status.lines_content().is_empty());
     }
 
     /// vt100 test: max_lines scrolling only shows the tail.

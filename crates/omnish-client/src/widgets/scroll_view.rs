@@ -248,6 +248,28 @@ impl ScrollView {
             .collect()
     }
 
+    /// Returns compact view lines for ChatLayout.
+    /// Content lines contain ANSI styling but no cursor movement.
+    /// Lines are truncated to max_cols. If content exceeds compact_height,
+    /// returns the tail + a hint line.
+    pub fn compact_lines(&self) -> Vec<String> {
+        if self.lines.len() <= self.compact_height {
+            return self.lines.iter()
+                .map(|l| Self::truncate_line(l, self.max_cols))
+                .collect();
+        }
+        let start = self.lines.len().saturating_sub(self.compact_height);
+        let mut result: Vec<String> = self.lines[start..].iter()
+            .map(|l| Self::truncate_line(l, self.max_cols))
+            .collect();
+        let hidden = self.lines.len().saturating_sub(self.compact_height);
+        result.push(format!(
+            "\x1b[2m\u{2026} +{} lines (ctrl+o to view)\x1b[0m",
+            hidden
+        ));
+        result
+    }
+
     /// Erase currently rendered lines (move up + clear each line).
     fn erase_seq(&self) -> String {
         if self.rendered_lines == 0 {
@@ -494,6 +516,35 @@ mod tests {
         let mut sv = ScrollView::new(3, 10, 80);
         let seq = sv.clear();
         assert!(seq.is_empty());
+    }
+
+    #[test]
+    fn test_compact_lines() {
+        let mut sv = ScrollView::new(3, 10, 80);
+        for i in 1..=10 {
+            sv.push_line(&format!("line {}", i));
+        }
+
+        let lines = sv.compact_lines();
+        // compact_height=3, so last 3 content lines + 1 hint line
+        assert_eq!(lines.len(), 4);
+        // Last 3 content lines
+        assert!(lines[0].contains("line 8"));
+        assert!(lines[1].contains("line 9"));
+        assert!(lines[2].contains("line 10"));
+        // Hint line
+        assert!(lines[3].contains("ctrl+o to view"));
+    }
+
+    #[test]
+    fn test_compact_lines_fewer_than_height() {
+        let mut sv = ScrollView::new(5, 10, 80);
+        sv.push_line("only line");
+
+        let lines = sv.compact_lines();
+        // Only 1 line, no scrolling needed, no hint
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("only line"));
     }
 
     // -----------------------------------------------------------------------
