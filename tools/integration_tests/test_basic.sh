@@ -9,6 +9,7 @@
 #   3. /context | tail -n 10 — verify context output with pipe
 #   4. Two conversations with 2 Q&A each, /resume first, /thread del, /thread list verify
 #   5. Arrow Up/Down history navigation — echo 1, echo 2, Up recalls echo 2, Down clears
+#   6. Chat cursor position — cursor at column 2 after "> " when entering chat mode
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -21,6 +22,7 @@ Test cases:
   3. /context | tail -n 10 shows context output
   4. Two conversations (2 Q&A each), resume first, delete second, verify /thread list
   5. Arrow Up/Down history navigation
+  6. Chat cursor at column 2 after "> "
 EOF
 }
 
@@ -304,5 +306,32 @@ test_5() {
     fi
 }
 
-echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history${NC}"
-run_tests 5
+# ── Test 6: Chat cursor position after entering chat mode ────────────────
+test_6() {
+    echo -e "\n${YELLOW}=== Test 6: Chat cursor at column 2 after \"> \" ===${NC}"
+
+    restart_client
+    wait_for_client
+
+    send_keys ":" 0.5
+    wait_for_prompt
+
+    # Get cursor X position via tmux
+    local cursor_x
+    cursor_x=$(_tmux display-message -p -t "$PANE" '#{cursor_x}')
+
+    if [[ "$cursor_x" == "2" ]]; then
+        assert_pass "Cursor at column 2 (after \"> \") when entering chat mode"
+        send_special Escape 0.5
+        sleep 1.5
+        return 0
+    else
+        assert_fail "Cursor at column $cursor_x, expected 2 (after \"> \")"
+        send_special Escape 0.5
+        sleep 1.5
+        return 1
+    fi
+}
+
+echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history, cursor${NC}"
+run_tests 6

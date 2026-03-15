@@ -2080,7 +2080,7 @@ async fn run_chat_loop(
             // Render editor prompt via layout
             let seq = layout.update("editor", vec!["\x1b[36m> \x1b[0m".to_string()]);
             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
-            let cursor_seq = layout.cursor_to("editor");
+            let cursor_seq = format!("{}\x1b[2C", layout.cursor_to("editor"));
             nix::unistd::write(std::io::stdout(), cursor_seq.as_bytes()).ok();
 
             match read_chat_input(&mut chat_completer, !has_activity, chat_history, &mut history_index, &mut last_scroll_view, &mut layout) {
