@@ -2070,7 +2070,6 @@ async fn run_chat_loop(
     let mut layout = ChatLayout::new(cols as usize);
     layout.push_region("scroll_view");
     layout.push_region("editor");
-    layout.push_region("status");
 
     // Move past shell prompt to a new line for chat layout
     nix::unistd::write(std::io::stdout(), b"\r\n").ok();
@@ -2555,11 +2554,9 @@ async fn run_chat_loop(
             }
         }
 
-        // Show thinking indicator via layout
-        let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
-        let mut line_status = LineStatus::new(cols as usize, 5);
-        line_status.show("(thinking...)");
-        let seq = layout.update("status", line_status.lines_content());
+        // Show thinking indicator in scroll_view
+        let mut status_lines: Vec<String> = vec!["\x1b[2m(thinking...)\x1b[0m".to_string()];
+        let seq = layout.update("scroll_view", status_lines.clone());
         nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
 
         // Send ChatMessage, allow Ctrl-C to interrupt
@@ -2620,20 +2617,16 @@ async fn run_chat_loop(
                                 msg = rx.recv() => {
                                     match msg {
                                         Some(Message::ChatToolStatus(cts)) => {
-                                            let text = format!("\u{1f527} {}", cts.status);
-                                            line_status.append(&text);
-                                            let seq = layout.update("status", line_status.lines_content());
+                                            let text = format!("\x1b[2m\u{1f527} {}\x1b[0m", cts.status);
+                                            status_lines.push(text);
+                                            let seq = layout.update("scroll_view", status_lines.clone());
                                             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
                                         }
                                         Some(Message::ChatToolCall(tc)) => {
                                             tool_calls.push(tc);
                                         }
                                         Some(Message::ChatResponse(resp)) if resp.request_id == req_id => {
-                                            // Clear status before showing response
-                                            line_status.clear();
-                                            let seq = layout.hide("status");
-                                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
-
+                                            // Response replaces status lines in scroll_view
                                             let rendered = markdown::render(&resp.content);
                                             last_scroll_view = render_with_scroll_view_layout(&rendered, &mut layout);
                                             got_response = true;
@@ -2740,10 +2733,6 @@ async fn run_chat_loop(
         let _ = stop_tx.send(());
 
         if interrupted {
-            // Clear status and show interrupted message
-            line_status.clear();
-            let seq = layout.hide("status");
-            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
             let seq = layout.update("scroll_view", vec!["\x1b[2;37m(interrupted)\x1b[0m".to_string()]);
             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
 
