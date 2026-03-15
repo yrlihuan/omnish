@@ -2441,7 +2441,7 @@ async fn run_chat_loop(
                 current_thread_id = Some(tid);
                 if let Some(msg) = display_msg {
                     let rendered = markdown::render(&msg);
-                    last_scroll_view = render_with_scroll_view_layout(&rendered, &mut layout);
+                    last_scroll_view = render_with_scroll_view_layout(&[], &rendered, &mut layout);
                 } else {
                     let info = "\r\n\x1b[2;37m(resumed conversation)\x1b[0m";
                     nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
@@ -2626,9 +2626,9 @@ async fn run_chat_loop(
                                             tool_calls.push(tc);
                                         }
                                         Some(Message::ChatResponse(resp)) if resp.request_id == req_id => {
-                                            // Response replaces status lines in scroll_view
+                                            // Append response after status lines in scroll_view
                                             let rendered = markdown::render(&resp.content);
-                                            last_scroll_view = render_with_scroll_view_layout(&rendered, &mut layout);
+                                            last_scroll_view = render_with_scroll_view_layout(&status_lines, &rendered, &mut layout);
                                             got_response = true;
                                             break;
                                         }
@@ -2754,15 +2754,17 @@ async fn run_chat_loop(
 /// Render pre-formatted content via ChatLayout's scroll_view region.
 /// Creates a ScrollView for long content (enabling Ctrl+O browsing).
 /// Returns the ScrollView if content was long enough.
-fn render_with_scroll_view_layout(rendered: &str, layout: &mut ChatLayout) -> Option<ScrollView> {
+fn render_with_scroll_view_layout(prefix: &[String], rendered: &str, layout: &mut ChatLayout) -> Option<ScrollView> {
     let (rows, cols) = get_terminal_size().unwrap_or((24, 80));
-    let lines: Vec<&str> = rendered.split("\r\n").collect();
+    let resp_lines: Vec<&str> = rendered.split("\r\n").collect();
+    let total_len = prefix.len() + resp_lines.len();
     let compact_h = (rows as usize / 3).max(3);
     let separator = display::render_separator(cols);
 
-    if lines.len() <= rows as usize - 2 {
+    if total_len <= rows as usize - 2 {
         // Short content: display directly in scroll_view region
-        let mut content_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        let mut content_lines: Vec<String> = prefix.to_vec();
+        content_lines.extend(resp_lines.iter().map(|l| l.to_string()));
         content_lines.push(separator);
         let seq = layout.update("scroll_view", content_lines);
         nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
@@ -2771,8 +2773,11 @@ fn render_with_scroll_view_layout(rendered: &str, layout: &mut ChatLayout) -> Op
         // Long content: use ScrollView for compact tail + hint
         let expanded_h = (rows as usize).saturating_sub(3);
         let mut sv = ScrollView::new(compact_h, expanded_h, cols as usize);
-        for line in &lines {
-            sv.push_line(line); // buffer content, ignore rendering output
+        for line in prefix {
+            sv.push_line(line);
+        }
+        for line in &resp_lines {
+            sv.push_line(line);
         }
         let mut sv_lines = sv.compact_lines();
         sv_lines.push(separator);
