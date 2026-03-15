@@ -2940,30 +2940,37 @@ fn read_chat_input(
         }
         out.push('\r');
 
-        // Build and write content lines
+        let cols = layout.cols().max(1);
+
+        // Build and write content lines, tracking display width for visual row math
         let mut lines = Vec::with_capacity(line_count);
+        let mut display_widths = Vec::with_capacity(line_count);
         for i in 0..line_count {
             let line = editor.line(i);
             let pfx = if i == 0 { "\x1b[36m> \x1b[0m" } else { "  " };
             let mut s = String::new();
             s.push_str(pfx);
+            let mut dw = 2usize; // prefix display width
 
             let has_fffc = line.contains(&'\u{FFFC}');
             if has_fffc {
                 for &ch in line {
                     if ch == '\u{FFFC}' {
                         if let Some(block) = blocks.get(fffc_idx) {
-                            s.push_str(&format!(
-                                "\x1b[2;36m[pasted text #{} +{} lines]\x1b[0m",
-                                block.index, block.line_count
-                            ));
+                            let marker = format!("[pasted text #{} +{} lines]", block.index, block.line_count);
+                            dw += marker.len();
+                            s.push_str(&format!("\x1b[2;36m{}\x1b[0m", marker));
                         }
                         fffc_idx += 1;
                     } else {
+                        dw += UnicodeWidthChar::width(ch).unwrap_or(1);
                         s.push(ch);
                     }
                 }
             } else {
+                for &ch in line {
+                    dw += UnicodeWidthChar::width(ch).unwrap_or(1);
+                }
                 let line_str: String = line.iter().collect();
                 s.push_str(&line_str);
             }
@@ -2971,6 +2978,9 @@ fn read_chat_input(
             // Ghost text on last line
             let cursor_on_fffc = line.contains(&'\u{FFFC}');
             if i == line_count - 1 && has_ghost && !ghost.is_empty() && !cursor_on_fffc {
+                for ch in ghost.chars() {
+                    dw += UnicodeWidthChar::width(ch).unwrap_or(1);
+                }
                 s.push_str(&format!("\x1b[2;37m{}\x1b[0m", ghost));
             }
 
@@ -2982,17 +2992,11 @@ fn read_chat_input(
                 out.push_str("\x1b[K\r\n"); // clear to end of line + newline
             }
             lines.push(s);
+            display_widths.push(dw);
         }
 
         // Sync layout state (content + height) without producing ANSI
         layout.set_content("editor", lines);
-
-        // Position cursor at (cursor_row, cursor_col) within editor
-        let rows_up = (line_count - 1) - cursor_row;
-        if rows_up > 0 {
-            out.push_str(&format!("\x1b[{}A", rows_up));
-        }
-        out.push('\r');
 
         // Compute cursor display column, accounting for FFFC marker widths
         let cursor_line = editor.line(cursor_row);
@@ -3012,11 +3016,40 @@ fn read_chat_input(
                 cursor_display += UnicodeWidthChar::width(ch).unwrap_or(1);
             }
         }
-        if cursor_display > 0 {
-            out.push_str(&format!("\x1b[{}C", cursor_display));
+
+        // Position cursor using visual (wrapped) row/column (#283).
+        // After writing all lines, the terminal cursor is at the end of the last
+        // line's content. For each non-last line, the cursor advanced
+        // display_width/cols + 1 visual rows (\r\n after content). For the last
+        // line, cursor is at display_width/cols visual rows from that line's start.
+        let cursor_after_visual_row: usize = {
+            let mut r = 0;
+            for i in 0..line_count.saturating_sub(1) {
+                r += display_widths[i] / cols + 1;
+            }
+            r += display_widths[line_count - 1] / cols;
+            r
+        };
+        let target_visual_row: usize = {
+            let mut r = 0;
+            for i in 0..cursor_row {
+                r += display_widths[i] / cols + 1;
+            }
+            r += cursor_display / cols;
+            r
+        };
+        let target_visual_col = cursor_display % cols;
+
+        let rows_up = cursor_after_visual_row.saturating_sub(target_visual_row);
+        if rows_up > 0 {
+            out.push_str(&format!("\x1b[{}A", rows_up));
+        }
+        out.push('\r');
+        if target_visual_col > 0 {
+            out.push_str(&format!("\x1b[{}C", target_visual_col));
         }
 
-        term_cursor_row.set(cursor_row);
+        term_cursor_row.set(target_visual_row);
         nix::unistd::write(std::io::stdout(), out.as_bytes()).ok();
     };
 

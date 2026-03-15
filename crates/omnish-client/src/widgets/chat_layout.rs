@@ -451,6 +451,165 @@ mod tests {
         assert_eq!(prompt_count, 1, "expected 1 editor line, got {}\n{}", prompt_count, screen);
     }
 
+    /// Issue #283: When editor content wraps past terminal width, the redraw
+    /// must account for visual (wrapped) rows in cursor movement.
+    ///
+    /// Bug: term_cursor_row stored the logical editor row (always 0 for single-line),
+    /// so on the next redraw `\r` started from a wrapped row instead of the top.
+    /// `\x1b[nC` (CUF) also can't wrap past the right margin, so cursor_display >= cols
+    /// positioned the cursor incorrectly.
+    ///
+    /// Fix: use display_width / cols for visual cursor row, display_width % cols for column.
+    #[test]
+    fn test_vt100_editor_wrap_redraw_283() {
+        let cols: usize = 20;
+        let mut layout = ChatLayout::new(cols);
+        layout.push_region("sv");
+        layout.push_region("ed");
+
+        let mut p = vt100::Parser::new(24, cols as u16, 0);
+
+        // Setup: scroll_view + initial editor prompt
+        p.process(layout.update("sv", vec!["hello".into()]).as_bytes());
+        p.process(layout.update("ed", vec!["> ".into()]).as_bytes());
+        let ct = layout.cursor_to("ed");
+        p.process(ct.as_bytes());
+        p.process(b"\x1b[2C");
+
+        // Helper: simulate a correctly-wrapping redraw.
+        // Returns the new term_cursor_row (visual row of cursor).
+        let simulate_redraw = |p: &mut vt100::Parser,
+                                layout: &mut ChatLayout,
+                                content: &str,
+                                display_width: usize,
+                                cursor_display: usize,
+                                term_cursor_row: usize| -> usize {
+            let mut out = String::new();
+            // Move up to editor visual row 0
+            if term_cursor_row > 0 {
+                out.push_str(&format!("\x1b[{}A", term_cursor_row));
+            }
+            out.push('\r');
+            // Write content (terminal wraps naturally)
+            out.push_str(content);
+            out.push_str("\x1b[J");
+            // After writing, cursor at (display_width / cols, display_width % cols)
+            let write_end_row = display_width / cols;
+            let target_row = cursor_display / cols;
+            let target_col = cursor_display % cols;
+            let up = write_end_row.saturating_sub(target_row);
+            if up > 0 {
+                out.push_str(&format!("\x1b[{}A", up));
+            }
+            out.push('\r');
+            if target_col > 0 {
+                out.push_str(&format!("\x1b[{}C", target_col));
+            }
+            p.process(out.as_bytes());
+            layout.set_content("ed", vec![content.to_string()]);
+            target_row
+        };
+
+        // First redraw: "> " + 24 chars = 26 display chars, wraps on 20-col terminal
+        // Visual row 0: "> abcdefghijklmnopqr"
+        // Visual row 1: "stuvwx"
+        let tcr = simulate_redraw(
+            &mut p, &mut layout,
+            "> abcdefghijklmnopqrstuvwx", 26, 26, 0,
+        );
+        assert_eq!(tcr, 1, "cursor should be on visual row 1");
+
+        // Second redraw: type one more char 'y'
+        let tcr = simulate_redraw(
+            &mut p, &mut layout,
+            "> abcdefghijklmnopqrstuvwxy", 27, 27, tcr,
+        );
+        assert_eq!(tcr, 1, "cursor should still be on visual row 1");
+
+        let screen = p.screen().contents();
+        // scroll_view content preserved
+        assert!(screen.contains("hello"), "scroll_view missing\n{}", screen);
+        // Editor prompt appears exactly once
+        let prompt_count = screen.lines()
+            .filter(|l| l.trim_end().starts_with(">"))
+            .count();
+        assert_eq!(prompt_count, 1, "expected 1 '>' line, got {}\n{}", prompt_count, screen);
+        // Wrapped content present
+        assert!(screen.contains("stuvwxy"), "wrapped content missing\n{}", screen);
+    }
+
+    /// Issue #283: verify exact-multiple wrapping (display_width == cols).
+    /// When content exactly fills one row, cursor auto-wraps to the next row.
+    #[test]
+    fn test_vt100_editor_wrap_exact_boundary() {
+        let cols: usize = 20;
+        let mut layout = ChatLayout::new(cols);
+        layout.push_region("ed");
+
+        let mut p = vt100::Parser::new(24, cols as u16, 0);
+        p.process(layout.update("ed", vec!["> ".into()]).as_bytes());
+        let ct = layout.cursor_to("ed");
+        p.process(ct.as_bytes());
+        p.process(b"\x1b[2C");
+
+        // "> " + 18 chars = exactly 20 display chars
+        let content = "> abcdefghijklmnopqr";
+        let display_width = 20;
+        let cursor_display = 20;
+
+        let mut out = String::new();
+        out.push('\r');
+        out.push_str(content);
+        out.push_str("\x1b[J");
+        // After writing 20 chars: cursor at (1, 0) — auto-wrapped
+        let write_end_row = display_width / cols; // = 1
+        let target_row = cursor_display / cols; // = 1
+        let target_col = cursor_display % cols; // = 0
+        let up = write_end_row.saturating_sub(target_row);
+        if up > 0 {
+            out.push_str(&format!("\x1b[{}A", up));
+        }
+        out.push('\r');
+        if target_col > 0 {
+            out.push_str(&format!("\x1b[{}C", target_col));
+        }
+        p.process(out.as_bytes());
+        layout.set_content("ed", vec![content.to_string()]);
+        let tcr = target_row; // = 1
+
+        // Second redraw: type one more char, now wraps
+        let content2 = "> abcdefghijklmnopqrs";
+        let display_width2 = 21;
+        let cursor_display2 = 21;
+
+        let mut out2 = String::new();
+        if tcr > 0 {
+            out2.push_str(&format!("\x1b[{}A", tcr));
+        }
+        out2.push('\r');
+        out2.push_str(content2);
+        out2.push_str("\x1b[J");
+        let write_end_row2 = display_width2 / cols; // = 1
+        let target_row2 = cursor_display2 / cols; // = 1
+        let target_col2 = cursor_display2 % cols; // = 1
+        let up2 = write_end_row2.saturating_sub(target_row2);
+        if up2 > 0 {
+            out2.push_str(&format!("\x1b[{}A", up2));
+        }
+        out2.push('\r');
+        if target_col2 > 0 {
+            out2.push_str(&format!("\x1b[{}C", target_col2));
+        }
+        p.process(out2.as_bytes());
+
+        let screen = p.screen().contents();
+        let prompt_count = screen.lines()
+            .filter(|l| l.trim_end().starts_with(">"))
+            .count();
+        assert_eq!(prompt_count, 1, "expected 1 '>' line, got {}\n{}", prompt_count, screen);
+        assert!(screen.contains("s"), "wrapped char missing\n{}", screen);
+    }
+
     #[test]
     fn test_update_with_empty_lines_hides() {
         let mut layout = ChatLayout::new(80);
