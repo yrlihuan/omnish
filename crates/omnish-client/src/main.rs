@@ -2614,6 +2614,7 @@ async fn run_chat_loop(
                     'stream: loop {
                         // Phase 1: Collect messages from stream, batching tool calls
                         let mut tool_calls: Vec<ChatToolCall> = Vec::new();
+                        let mut tool_status_indices: Vec<usize> = Vec::new();
                         let mut got_response = false;
                         loop {
                             let mut crx = cancel_rx.clone();
@@ -2622,6 +2623,7 @@ async fn run_chat_loop(
                                     match msg {
                                         Some(Message::ChatToolStatus(cts)) => {
                                             let text = format!("\x1b[38;5;114m●\x1b[0m \x1b[2m{}({})\x1b[0m", cts.tool_name, cts.status);
+                                            tool_status_indices.push(status_lines.len());
                                             status_lines.push(text);
                                             let seq = layout.update("scroll_view", status_lines.clone());
                                             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
@@ -2685,21 +2687,34 @@ async fn run_chat_loop(
                             }
                         }
 
-                        // Phase 3: Display tool output, then send results back
+                        // Phase 3: Display tool output (inserted after matching status line), then send results
                         let total = results.len();
                         let mut send_failed = false;
+                        let mut insert_offset = 0usize;
                         for (i, (tc, result)) in tool_calls.iter().zip(results).enumerate() {
                             let (content, is_error) = result
                                 .unwrap_or_else(|_| ("Tool execution panicked".to_string(), true));
 
-                            // Show truncated tool output in scroll_view
+                            // Build truncated output lines
                             let output_lines: Vec<&str> = content.lines().collect();
                             let max_output = 5;
+                            let mut out_lines = Vec::new();
                             for line in output_lines.iter().take(max_output) {
-                                status_lines.push(format!("  \x1b[2m{}\x1b[0m", line));
+                                out_lines.push(format!("  \x1b[2m{}\x1b[0m", line));
                             }
                             if output_lines.len() > max_output {
-                                status_lines.push(format!("  \x1b[2m... +{} lines\x1b[0m", output_lines.len() - max_output));
+                                out_lines.push(format!("  \x1b[2m... +{} lines\x1b[0m", output_lines.len() - max_output));
+                            }
+
+                            // Insert output right after corresponding tool status line
+                            if let Some(&idx) = tool_status_indices.get(i) {
+                                let pos = idx + 1 + insert_offset;
+                                for (j, line) in out_lines.iter().enumerate() {
+                                    status_lines.insert(pos + j, line.clone());
+                                }
+                                insert_offset += out_lines.len();
+                            } else {
+                                status_lines.extend(out_lines.iter().cloned());
                             }
                             let seq = layout.update("scroll_view", status_lines.clone());
                             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
