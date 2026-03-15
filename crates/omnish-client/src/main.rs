@@ -2074,6 +2074,9 @@ async fn run_chat_loop(
     // Move past shell prompt to a new line for chat layout
     nix::unistd::write(std::io::stdout(), b"\r\n").ok();
 
+    // Accumulated scroll_view content across queries (persists between rounds)
+    let mut scroll_history: Vec<String> = Vec::new();
+
     // Chat loop — LLM queries
     loop {
         let input = if let Some(msg) = pending_input.take() {
@@ -2441,7 +2444,11 @@ async fn run_chat_loop(
                 current_thread_id = Some(tid);
                 if let Some(msg) = display_msg {
                     let rendered = markdown::render(&msg);
-                    last_scroll_view = render_with_scroll_view_layout(&[], &rendered, &mut layout);
+                    let resp_lines: Vec<&str> = rendered.split("\r\n").collect();
+                    scroll_history.extend(resp_lines.iter().map(|l| l.to_string()));
+                    let separator = display::render_separator(get_terminal_size().unwrap_or((24, 80)).1);
+                    scroll_history.push(separator);
+                    last_scroll_view = render_scroll_view(&scroll_history, &mut layout);
                 } else {
                     let info = "\r\n\x1b[2;37m(resumed conversation)\x1b[0m";
                     nix::unistd::write(std::io::stdout(), info.as_bytes()).ok();
@@ -2554,13 +2561,11 @@ async fn run_chat_loop(
             }
         }
 
-        // Show user input + thinking indicator in scroll_view
-        let mut status_lines: Vec<String> = vec![
-            format!("\x1b[2;37m> {}\x1b[0m", trimmed),
-            String::new(),
-            "\x1b[2m(thinking...)\x1b[0m".to_string(),
-        ];
-        let seq = layout.update("scroll_view", status_lines.clone());
+        // Append user input + thinking indicator to scroll history
+        scroll_history.push(format!("\x1b[2;37m> {}\x1b[0m", trimmed));
+        scroll_history.push(String::new());
+        scroll_history.push("\x1b[2m(thinking...)\x1b[0m".to_string());
+        let seq = layout.update("scroll_view", scroll_history.clone());
         nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
 
         // Send ChatMessage, allow Ctrl-C to interrupt
@@ -2623,20 +2628,24 @@ async fn run_chat_loop(
                                     match msg {
                                         Some(Message::ChatToolStatus(cts)) => {
                                             let text = format!("\x1b[38;5;114m●\x1b[0m \x1b[2m{}({})\x1b[0m", cts.tool_name, cts.status);
-                                            tool_status_indices.push(status_lines.len());
-                                            status_lines.push(text);
-                                            let seq = layout.update("scroll_view", status_lines.clone());
+                                            tool_status_indices.push(scroll_history.len());
+                                            scroll_history.push(text);
+                                            let seq = layout.update("scroll_view", scroll_history.clone());
                                             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
                                         }
                                         Some(Message::ChatToolCall(tc)) => {
                                             tool_calls.push(tc);
                                         }
                                         Some(Message::ChatResponse(resp)) if resp.request_id == req_id => {
-                                            // Append response after status lines in scroll_view
-                                            status_lines.push(String::new());
+                                            // Append response to scroll history
+                                            scroll_history.push(String::new());
                                             let rendered = markdown::render(&resp.content);
                                             let rendered = format!("\x1b[97m●\x1b[0m {}", rendered);
-                                            last_scroll_view = render_with_scroll_view_layout(&status_lines, &rendered, &mut layout);
+                                            let resp_lines: Vec<&str> = rendered.split("\r\n").collect();
+                                            scroll_history.extend(resp_lines.iter().map(|l| l.to_string()));
+                                            let separator = display::render_separator(get_terminal_size().unwrap_or((24, 80)).1);
+                                            scroll_history.push(separator);
+                                            last_scroll_view = render_scroll_view(&scroll_history, &mut layout);
                                             got_response = true;
                                             break;
                                         }
@@ -2714,13 +2723,13 @@ async fn run_chat_loop(
                             if let Some(&idx) = tool_status_indices.get(i) {
                                 let pos = idx + 1 + insert_offset;
                                 for (j, line) in out_lines.iter().enumerate() {
-                                    status_lines.insert(pos + j, line.clone());
+                                    scroll_history.insert(pos + j, line.clone());
                                 }
                                 insert_offset += out_lines.len();
                             } else {
-                                status_lines.extend(out_lines.iter().cloned());
+                                scroll_history.extend(out_lines.iter().cloned());
                             }
-                            let seq = layout.update("scroll_view", status_lines.clone());
+                            let seq = layout.update("scroll_view", scroll_history.clone());
                             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
 
                             let result_msg = Message::ChatToolResult(ChatToolResult {
@@ -2771,7 +2780,8 @@ async fn run_chat_loop(
         let _ = stop_tx.send(());
 
         if interrupted {
-            let seq = layout.update("scroll_view", vec!["\x1b[2;37m(interrupted)\x1b[0m".to_string()]);
+            scroll_history.push("\x1b[2;37m(interrupted)\x1b[0m".to_string());
+            let seq = layout.update("scroll_view", scroll_history.clone());
             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
 
             // Send interrupt to daemon to record in conversation and clean up pending loop
@@ -2789,36 +2799,26 @@ async fn run_chat_loop(
     }
 }
 
-/// Render pre-formatted content via ChatLayout's scroll_view region.
+/// Render accumulated scroll history via ChatLayout's scroll_view region.
 /// Creates a ScrollView for long content (enabling Ctrl+O browsing).
 /// Returns the ScrollView if content was long enough.
-fn render_with_scroll_view_layout(prefix: &[String], rendered: &str, layout: &mut ChatLayout) -> Option<ScrollView> {
+fn render_scroll_view(lines: &[String], layout: &mut ChatLayout) -> Option<ScrollView> {
     let (rows, cols) = get_terminal_size().unwrap_or((24, 80));
-    let resp_lines: Vec<&str> = rendered.split("\r\n").collect();
-    let total_len = prefix.len() + resp_lines.len();
     let compact_h = (rows as usize / 3).max(3);
-    let separator = display::render_separator(cols);
 
-    if total_len <= rows as usize - 2 {
+    if lines.len() <= rows as usize - 2 {
         // Short content: display directly in scroll_view region
-        let mut content_lines: Vec<String> = prefix.to_vec();
-        content_lines.extend(resp_lines.iter().map(|l| l.to_string()));
-        content_lines.push(separator);
-        let seq = layout.update("scroll_view", content_lines);
+        let seq = layout.update("scroll_view", lines.to_vec());
         nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
         None
     } else {
         // Long content: use ScrollView for compact tail + hint
         let expanded_h = (rows as usize).saturating_sub(3);
         let mut sv = ScrollView::new(compact_h, expanded_h, cols as usize);
-        for line in prefix {
+        for line in lines {
             sv.push_line(line);
         }
-        for line in &resp_lines {
-            sv.push_line(line);
-        }
-        let mut sv_lines = sv.compact_lines();
-        sv_lines.push(separator);
+        let sv_lines = sv.compact_lines();
         let seq = layout.update("scroll_view", sv_lines);
         nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
         Some(sv)
