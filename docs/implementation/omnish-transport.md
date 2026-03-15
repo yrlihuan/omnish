@@ -11,6 +11,7 @@ omnish-transport 提供客户端和守护进程之间的RPC通信层，支持Uni
 - 并发请求处理
 - 连接状态监控
 - 认证和访问控制
+- 协议版本协商
 - TLS加密（TCP连接）
 
 模块包含两个主要组件：
@@ -105,7 +106,19 @@ pub struct Frame {
 - `on_reconnect: Fn(&RpcClient) -> Future<Output = Result<()>>`: 重连回调函数
 
 **返回:** `Result<RpcClient>`
-**用途:** 建立连接并设置自动重连机制，支持指数退避重试
+**用途:** 建立连接并设置自动重连机制，支持指数退避重试。内部委托给`connect_with_reconnect_notify`，通知回调设为`None`。
+
+### `RpcClient::connect_with_reconnect_notify()`
+建立支持自动重连的连接，并在重连成功后发送通知。
+
+**参数:**
+- `addr: &str`: 服务器地址
+- `tls_connector: Option<TlsConnector>`: TLS连接器（可选）
+- `on_reconnect: Fn(&RpcClient) -> Future<Output = Result<()>>`: 重连回调函数
+- `on_reconnect_notify: Option<impl Fn() + Send + Sync + 'static>`: 重连成功通知回调（可选）
+
+**返回:** `Result<RpcClient>`
+**用途:** 在`connect_with_reconnect`基础上增加重连成功通知机制。当重连成功并完成`on_reconnect`回调后，调用`on_reconnect_notify`通知调用方。典型用途是在UI层显示重连成功提示（如InlineNotice小部件）。
 
 ### `RpcClient::call()`
 发送消息到服务器并等待单个响应。
@@ -160,7 +173,7 @@ pub struct Frame {
 **安全机制:**
 - **Unix socket**: 绑定时设置权限0600，接受连接时验证peer UID必须与服务器进程相同
 - **TCP + TLS**: 使用`tls_acceptor`对TCP连接进行TLS握手，握手失败则拒绝连接
-- **认证**: 启用`auth_token`时，客户端必须在连接后5秒内发送`Auth`消息，令牌匹配返回`Ack`，不匹配返回`AuthFailed`并关闭连接
+- **认证**: 启用`auth_token`时，客户端必须在连接后5秒内发送`Auth`消息（携带`protocol_version`），令牌匹配返回`AuthOk`（携带服务器协议版本），不匹配返回`AuthFailed`并关闭连接
 
 ### `RpcServer::local_tcp_addr()`
 获取TCP监听器的本地地址。
@@ -191,6 +204,22 @@ let client = RpcClient::connect_with_reconnect("/tmp/omnish.sock", |rpc| {
         Ok(())
     })
 }).await?;
+
+// 带自动重连和重连通知的连接
+let client = RpcClient::connect_with_reconnect_notify(
+    "/tmp/omnish.sock",
+    None, // tls_connector
+    |rpc| {
+        Box::pin(async move {
+            rpc.call(session_start_message).await?;
+            Ok(())
+        })
+    },
+    Some(|| {
+        // 重连成功后的通知，例如触发UI提示
+        println!("Reconnected to server");
+    }),
+).await?;
 
 // 发送消息并等待单个响应
 let response = client.call(message).await?;
@@ -288,7 +317,7 @@ let addr4 = parse_addr("./local.sock");          // 相对路径Unix socket
    - `write_loop`: 处理发送队列，序列化并发送消息
    - `read_loop`: 接收响应，根据请求ID分发到对应的oneshot或mpsc通道
 4. **请求ID管理**: 使用原子计数器生成唯一请求ID
-5. **重连机制**: 使用指数退避算法自动重连，支持重连回调
+5. **重连机制**: 使用指数退避算法自动重连，支持重连回调和重连成功通知
 6. **响应分发**: 使用`ReplyTx`枚举支持单响应（oneshot）和多响应流（mpsc）两种模式
 
 ### 服务器内部结构
@@ -359,6 +388,47 @@ let addr4 = parse_addr("./local.sock");          // 相对路径Unix socket
 - 长时间操作的进度更新：先发送进度消息，最后发送完成消息
 - 批量数据传输：分多次发送大量数据
 
+### 协议版本协商
+
+omnish-transport在认证握手阶段进行协议版本协商，用于检测客户端和服务器之间的协议版本不一致。
+
+**机制:**
+- 协议版本号由`omnish_protocol::message::PROTOCOL_VERSION`常量定义
+- 客户端在发送`Auth`消息时携带自身的`protocol_version`字段
+- 服务器认证成功后返回`AuthOk`消息（替代原来的`Ack`），其中包含服务器的`protocol_version`
+- 若客户端和服务器版本不一致，服务器记录warning日志，但不拒绝连接（允许兼容运行）
+
+**相关数据结构:**
+```rust
+pub struct Auth {
+    pub token: String,
+    #[serde(default)]
+    pub protocol_version: u32,
+}
+
+pub struct AuthOk {
+    pub protocol_version: u32,
+}
+```
+
+**设计考虑:**
+- `Auth.protocol_version`使用`#[serde(default)]`标注，确保旧版本客户端（不发送版本号）仍能正常连接
+- 版本不匹配仅产生warning而非拒绝连接，支持渐进式升级场景
+- 客户端可以根据`AuthOk`中返回的服务器版本号决定后续行为
+
+### 重连成功通知机制
+
+`connect_with_reconnect_notify`方法在`connect_with_reconnect`基础上增加了可选的重连成功通知回调`on_reconnect_notify`。
+
+**工作流程:**
+1. 连接断开，`reconnect_loop`开始指数退避重试
+2. 重连成功后，先执行`on_reconnect`回调（如重新注册会话）
+3. 将新的连接内部状态替换到客户端
+4. 调用`on_reconnect_notify`回调通知调用方重连已完成
+
+**用途:**
+该回调用于通知UI层显示重连成功提示。`on_reconnect`回调负责重建连接状态（如重新发送认证和会话注册），而`on_reconnect_notify`回调用于触发用户可见的通知（如显示InlineNotice小部件）。两者职责分离：前者处理传输层恢复，后者处理用户通知。
+
 ## 安全模型
 
 ### Unix Socket安全
@@ -373,8 +443,8 @@ let addr4 = parse_addr("./local.sock");          // 相对路径Unix socket
 
 ### 认证流程
 1. 守护进程启动时加载或创建认证令牌（`~/.omnish/auth_token`）
-2. 客户端连接后必须在5秒内发送`Auth`消息
-3. 令牌匹配: 服务器返回`Ack`，进入正常消息循环
+2. 客户端连接后必须在5秒内发送`Auth`消息（携带`token`和`protocol_version`）
+3. 令牌匹配: 服务器返回`AuthOk`（携带服务器协议版本），进入正常消息循环；若协议版本不一致，记录warning日志
 4. 令牌不匹配: 服务器返回`AuthFailed`并关闭连接
 5. 超时: 服务器关闭连接
 

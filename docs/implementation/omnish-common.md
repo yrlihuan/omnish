@@ -13,6 +13,7 @@ omnish-common 包含客户端和守护进程共享的配置结构和工具函数
 - `shell`: Shell配置（`ShellConfig`类型）
 - `daemon_addr`: 守护进程地址（默认：`~/.omnish/omnish.sock`）
 - `completion_enabled`: 是否启用自动补全（默认：`true`）
+- `auto_update`: 是否启用自动更新，当二进制文件变化时自动重启（默认：`false`）
 
 ### `DaemonConfig`
 守护进程配置结构，包含：
@@ -35,6 +36,13 @@ LLM配置结构，包含：
 - `backends`: LLM后端配置映射表（`HashMap<String, LlmBackendConfig>`）
 - `auto_trigger`: 自动触发配置（`AutoTriggerConfig`类型）
 - `use_cases`: UseCase到后端名的映射（`HashMap<String, String>`）
+- `langfuse`: Langfuse可观测性集成配置（`Option<LangfuseConfig>`，可选）
+
+### `LangfuseConfig`
+Langfuse可观测性集成配置，包含：
+- `public_key`: Langfuse公钥
+- `secret_key`: Langfuse密钥（`Option<String>`，直接值，非shell命令）
+- `base_url`: Langfuse服务URL（默认：`https://cloud.langfuse.com`）
 
 ### `ContextConfig`
 上下文构建配置，包含：
@@ -130,6 +138,7 @@ command_prefix = ":"
 intercept_gap_ms = 500
 
 daemon_addr = "/tmp/omnish.sock"
+auto_update = true
 ```
 
 ### 配置文件示例 (daemon.toml)
@@ -150,6 +159,11 @@ max_content_chars = 200000
 on_nonzero_exit = true
 on_stderr_patterns = ["error:", "fatal:", "not found"]
 cooldown_seconds = 10
+
+[llm.langfuse]
+public_key = "pk-lf-..."
+secret_key = "sk-lf-..."
+base_url = "https://cloud.langfuse.com"
 
 [plugins]
 enabled = ["example_plugin", "another_plugin"]
@@ -204,3 +218,5 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 - Ghost-text超时: 10000ms
 - 自动触发冷却时间: 5秒
 - 认证令牌路径: `~/.omnish/auth_token`
+- 自动更新: `false`
+- Langfuse base_url: `https://cloud.langfuse.com`

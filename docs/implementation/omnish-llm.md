@@ -4,22 +4,19 @@
 
 ## 模块概述
 
-omnish-llm 提供LLM后端抽象，支持多种LLM提供商，包括Anthropic、OpenAI兼容API。模块通过统一的接口封装不同LLM提供商的API调用，提供一致的LLM交互体验。从v0.5.0开始，支持工具调用（tool-use）功能，使LLM能够主动调用外部工具完成任务。
+omnish-llm 提供LLM后端抽象，支持多种LLM提供商，包括Anthropic、OpenAI兼容API。模块通过统一的接口封装不同LLM提供商的API调用，提供一致的LLM交互体验。从v0.5.0开始，支持工具调用（tool-use）功能，使LLM能够主动调用外部工具完成任务。v0.6.0新增了Langfuse可观测性集成、可组合的系统提示词管理（PromptManager）、请求日志记录、429/529重试机制等功能。
 
 ## 重要数据结构
 
 ### 工具调用相关类型（Tool-use）
-
-#### `Tool` trait
-定义工具接口（来自`tool.rs`）：
-- `definition()`: 返回工具定义（`ToolDef`），包含名称、描述和JSON schema
-- `execute()`: 执行工具并返回结果（`ToolResult`）
 
 #### `ToolDef`
 工具定义结构体，描述一个可供LLM调用的工具：
 - `name`: 工具名称
 - `description`: 工具描述
 - `input_schema`: JSON schema定义（`serde_json::Value`），描述工具输入参数
+
+> 注：v0.5.0中的`Tool` trait已在v0.6.0中移除，工具简化为固有方法（inherent methods）实现。
 
 #### `ToolCall`
 LLM请求的工具调用：
@@ -51,8 +48,8 @@ LLM请求结构体，包含发送给LLM的完整请求信息：
 - `use_case`: 请求用途（用于选择合适的模型）
 - `max_content_chars`: 模型上下文最大字符数限制（可选，用于限制上下文大小）
 - `conversation`: 多轮对话历史（`Vec<ChatTurn>`，用于chat模式）
-- `system_prompt`: 系统提示词（可选，chat模式使用`CHAT_SYSTEM_PROMPT`）
-- `enable_thinking`: 思考模式开关（可选，`Some(false)`禁用自动补全的思考模式）
+- `system_prompt`: 系统提示词（可选，chat模式使用`PromptManager`构建）
+- `enable_thinking`: 思考模式开关（可选，`Some(true)`启用思考模式，`Some(false)`禁用，`None`使用后端默认）
 - `tools`: 工具定义列表（`Vec<ToolDef>`），提供给LLM的可用工具
 - `extra_messages`: 额外消息（`Vec<serde_json::Value>`），用于agent循环中的tool_use和tool_result交换
 
@@ -62,10 +59,18 @@ LLM响应结构体，包含LLM返回的结果：
 - `stop_reason`: 停止原因（`StopReason`枚举）
 - `model`: 使用的模型名称
 - `thinking`: 思考内容（可选，来自支持思考模式的模型）
+- `usage`: token使用统计（可选，`Usage`结构体）
 
 辅助方法：
 - `text()`: 提取所有文本块并用换行符连接，方便不使用tool-use的调用者
 - `tool_calls()`: 提取所有工具调用（`Vec<&ToolCall>`）
+
+#### `Usage`
+token使用统计结构体，从API响应中解析：
+- `input_tokens`: 输入token数
+- `output_tokens`: 输出token数
+- `cache_read_input_tokens`: KV cache读取的token数（Anthropic: `cache_read_input_tokens`，OpenAI: `cached_tokens`）
+- `cache_creation_input_tokens`: KV cache写入的token数（Anthropic特有）
 
 #### `ContentBlock` 枚举
 响应内容块类型：
@@ -90,6 +95,34 @@ LLM停止生成的原因：
 - `AutoError`: 自动错误检测触发
 - `AutoPattern`: 自动模式检测触发
 
+### PromptManager（系统提示词管理）
+
+可组合的系统提示词片段管理器，将系统提示词拆分为具名片段（fragment），支持插入顺序拼接和覆盖合并。
+
+**核心方法：**
+- `new()`: 创建空的PromptManager
+- `add(name, content)`: 添加具名片段，按插入顺序排列
+- `build()`: 将所有片段用 `\n\n` 连接，生成最终系统提示词
+- `from_json(json)`: 从JSON数组加载片段（`[{name, content}]`，content支持字符串或字符串数组）
+- `merge(overrides)`: 合并覆盖片段——同名片段替换，新片段追加
+- `default_chat()`: 从编译内嵌的`chat.json`创建默认chat提示词管理器
+
+**提示词片段格式：**
+```json
+[
+  {"name": "identity", "content": ["行1", "行2"]},
+  {"name": "tone", "content": "单行内容"}
+]
+```
+
+**chat提示词覆盖机制：**
+- 基础提示词：`assets/chat.json`编译内嵌到二进制文件中，启动时安装到`~/.omnish/chat.json`
+- 用户覆盖：`~/.omnish/chat.override.json`，同名片段替换基础片段，新名片段追加
+- 工具覆盖：`~/.omnish/tool.override.json`（原`prompt.json`重命名）
+
+**插件提示词片段：**
+插件可通过系统提供自己的提示词片段，这些片段会被合并到PromptManager中。
+
 ### LLM后端实现
 
 #### `AnthropicBackend`
@@ -98,11 +131,15 @@ Anthropic API后端实现：
 - 实现`LlmBackend` trait
 - 使用Anthropic Messages API (v1/messages，API版本2024-04-04）
 - 支持`base_url`配置（默认api.anthropic.com），可用于代理或自托管
+- `max_tokens`固定为8192
 - 多轮对话支持：conversation历史映射为messages数组，上下文注入第一条user消息
 - 系统提示词支持：通过Anthropic `system` 顶层字段
-- 思考模式：`enable_thinking == Some(false)` 时发送禁用思考参数
+- 思考模式：`enable_thinking == Some(true)` 时启用（budget_tokens: 4096），`Some(false)` 时发送禁用参数
 - 工具调用支持：通过`tools`字段提供工具定义，解析响应中的`tool_use` content blocks
 - `strip_thinking()` 辅助函数解析content blocks（thinking vs text vs tool_use）
+- 429/529自动重试：最多3次重试，指数退避（默认5s起步，最大60s），支持解析`retry-after`响应头
+- Usage解析：从API响应中提取`input_tokens`、`output_tokens`、`cache_read_input_tokens`、`cache_creation_input_tokens`
+- 请求日志：Chat请求的完整payload记录到`~/.omnish/logs/messages/`
 
 #### `OpenAiCompatBackend`
 OpenAI兼容API后端实现：
@@ -114,11 +151,33 @@ OpenAI兼容API后端实现：
 - 思考模式：通过 `chat_template_kwargs` 传递 `enable_thinking: false`（适配vLLM/Qwen3）
 - 工具调用支持：通过`tools`字段提供工具定义，解析响应中的`tool_calls`
 - `extract_thinking()` 辅助函数解析响应中的 `<think>` 标签
+- 429自动重试：最多3次重试，指数退避，支持解析`retry-after`响应头
+- Usage解析：从API响应中提取`prompt_tokens`→`input_tokens`、`completion_tokens`→`output_tokens`、`cached_tokens`→`cache_read_input_tokens`
+- 请求日志：Chat请求的完整payload记录到`~/.omnish/logs/messages/`
 
 #### `MultiBackend`
 多后端路由实现：
 - 根据 `UseCase` 将请求路由到不同的后端实例
 - 支持为 Completion、Analysis、Chat 分别配置不同的模型
+- 创建时自动解析Langfuse配置并包装各后端
+
+#### `LangfuseBackend`（可观测性）
+Langfuse可观测性包装器，透明地为LLM调用添加追踪：
+- 以装饰器模式包装任意`LlmBackend`实现
+- 每次`complete()`调用后异步发送trace和generation事件到Langfuse `/api/public/ingestion` API
+- 记录信息包括：模型名称、use_case、请求输入摘要、输出文本、工具调用数、延迟、错误状态
+- 当有`Usage`数据时，上报input/output token数和cache统计
+- 使用Basic Auth认证（public_key + secret_key）
+- fire-and-forget模式：发送失败不影响LLM调用结果
+- 配置可选，未配置时不包装后端
+
+### 请求日志（message_log）
+
+LLM请求payload本地日志记录：
+- 仅记录`UseCase::Chat`类型的请求
+- 保存完整JSON请求体到 `~/.omnish/logs/messages/{timestamp}.json`
+- 滚动清理：最多保留30个日志文件
+- 用途：调试和审计LLM请求内容
 
 ### 配置结构
 
@@ -130,6 +189,12 @@ LLM后端配置结构体（来自omnish-common）：
 - `base_url`: API基础URL（anthropic支持自定义，openai-compat必需）
 - `max_content_chars`: 该模型的上下文最大字符数（可选，用于限制上下文大小）
 
+#### `LangfuseConfig`（omnish-common）
+Langfuse可观测性配置结构体：
+- `public_key`: Langfuse公钥
+- `secret_key`: Langfuse密钥（直接值，非命令）（可选，未设置时禁用Langfuse）
+- `base_url`: Langfuse服务地址（默认`https://cloud.langfuse.com`）
+
 ## 关键函数说明
 
 ### `LlmBackend::complete()`
@@ -137,7 +202,7 @@ LLM后端配置结构体（来自omnish-common）：
 
 **参数:** `req: &LlmRequest` - LLM请求结构体
 **返回:** `Result<LlmResponse>` - LLM响应或错误
-**用途:** 主要的LLM交互接口，处理API调用、错误处理和响应解析
+**用途:** 主要的LLM交互接口，处理API调用、重试、错误处理和响应解析
 
 ### `create_backend()`
 根据配置创建LLM后端实例。
@@ -189,6 +254,15 @@ LLM后端配置结构体（来自omnish-common）：
 - 当前工作目录单独包裹在`<system-reminder>`标签中（commit 458db9f），格式为：`<system-reminder>\n# workingDirectory\n{path}\n</system-reminder>`
 - Claude等模型对`<system-reminder>`标签有特殊训练，可提升理解效果
 
+### `message_log::log_request()`
+保存LLM请求payload到本地日志文件。
+
+**参数:**
+- `body: &serde_json::Value` - 完整的请求JSON体
+- `use_case: UseCase` - 请求用途（仅Chat类型会被记录）
+
+**用途:** 将Chat请求的完整payload以pretty JSON格式写入`~/.omnish/logs/messages/{timestamp}.json`，滚动保留最近30个文件。
+
 ### `prompt_template()`
 获取提示模板。
 
@@ -200,11 +274,8 @@ LLM后端配置结构体（来自omnish-common）：
 
 - `DAILY_NOTES_PROMPT` — 每日工作总结的LLM提示（中文），使用XML标签 `<commands>` 包裹上下文，输出bullet列表格式
 - `HOURLY_NOTES_PROMPT` — 每小时工作总结的LLM提示（中文），使用XML标签 `<commands>`、`<hourly_summaries>` 包裹上下文（issue #96）
-- `CHAT_SYSTEM_PROMPT` — 聊天模式系统提示词，包含以下内容：
-  - omnish chat模式介绍
-  - 可用命令列表（/help, /resume, /thread list, /thread del, /context, /sessions等）
-  - 工具使用说明（command_query工具可查询命令输出）
-  - 更新记录：移除了/new、/chat、/ask命令（issue #152），更改/threads为/thread list和/thread del（issue #163），移除/conversations别名（commit b2f5a6f）
+- `CHAT_PROMPT_JSON` — 编译内嵌的chat提示词JSON（来自`assets/chat.json`），通过`include_str!`编译到二进制
+- `CHAT_OVERRIDE_EXAMPLE` — `chat.override.json`示例文件内容（来自`assets/chat.override.json.example`）
 - `TEMPLATE_NAMES` — 已知模板名列表：`["chat", "chat-system", "auto-complete", "daily-notes", "hourly-notes"]`
 
 ### `template_by_name()`
@@ -214,7 +285,7 @@ LLM后端配置结构体（来自omnish-common）：
 **返回:** `Option<String>` - 模板内容或None
 **用途:**
 - `auto-complete`: 使用 `build_simple_completion_content()` 渲染两种变体（空输入/有输入）
-- `chat-system`: 返回 `CHAT_SYSTEM_PROMPT`
+- `chat-system`: 使用 `PromptManager::default_chat().build()` 返回完整chat系统提示词
 - `chat`: 由daemon处理，返回提示信息让用户使用 `/template chat` daemon请求（可显示实际工具定义）
 
 ## 使用示例
@@ -245,42 +316,32 @@ let request = LlmRequest {
 // 发送请求并获取响应
 let response = backend.complete(&request).await?;
 println!("LLM响应: {}", response.text());
+
+// 检查token使用情况
+if let Some(usage) = &response.usage {
+    println!("输入tokens: {}, 输出tokens: {}", usage.input_tokens, usage.output_tokens);
+}
 ```
 
 ### 工具调用示例
 ```rust
-use omnish_llm::tool::{Tool, ToolDef, ToolResult};
+use omnish_llm::tool::{ToolDef, ToolResult};
 use serde_json::json;
 
-// 1. 实现Tool trait
-struct MyTool;
-
-impl Tool for MyTool {
-    fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "my_tool".to_string(),
-            description: "执行某个操作".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "param": {"type": "string"}
-                },
-                "required": ["param"]
-            }),
-        }
-    }
-
-    fn execute(&self, input: &serde_json::Value) -> ToolResult {
-        ToolResult {
-            tool_use_id: String::new(),
-            content: format!("结果: {:?}", input),
-            is_error: false,
-        }
-    }
-}
+// 1. 定义工具（使用ToolDef，无需实现trait）
+let tool_def = ToolDef {
+    name: "my_tool".to_string(),
+    description: "执行某个操作".to_string(),
+    input_schema: json!({
+        "type": "object",
+        "properties": {
+            "param": {"type": "string"}
+        },
+        "required": ["param"]
+    }),
+};
 
 // 2. 构建带工具的LLM请求
-let tool = MyTool;
 let request = LlmRequest {
     context: "上下文".to_string(),
     query: Some("请使用工具".to_string()),
@@ -291,7 +352,7 @@ let request = LlmRequest {
     conversation: vec![],
     system_prompt: None,
     enable_thinking: None,
-    tools: vec![tool.definition()],  // 提供工具定义
+    tools: vec![tool_def],  // 提供工具定义
     extra_messages: vec![],
 };
 
@@ -302,13 +363,38 @@ let response = backend.complete(&request).await?;
 if response.stop_reason == StopReason::ToolUse {
     for tool_call in response.tool_calls() {
         println!("LLM请求调用工具: {}", tool_call.name);
-        let result = tool.execute(&tool_call.input);
-        println!("工具执行结果: {}", result.content);
+        // 执行工具并构造结果
+        let result = ToolResult {
+            tool_use_id: tool_call.id.clone(),
+            content: "执行结果".to_string(),
+            is_error: false,
+        };
         // 通常需要将结果返回给LLM继续agent循环
     }
 } else {
     println!("LLM文本响应: {}", response.text());
 }
+```
+
+### 使用PromptManager构建系统提示词
+```rust
+use omnish_llm::prompt::PromptManager;
+
+// 从内嵌JSON加载默认chat提示词
+let mut pm = PromptManager::default_chat();
+
+// 加载用户覆盖（如有）
+if let Ok(override_json) = std::fs::read_to_string("~/.omnish/chat.override.json") {
+    if let Ok(overrides) = PromptManager::from_json(&override_json) {
+        pm = pm.merge(overrides);
+    }
+}
+
+// 添加插件提供的片段
+pm.add("my_plugin", "插件特定的提示词内容");
+
+// 生成最终系统提示词
+let system_prompt = pm.build();
 ```
 
 ### 创建特定后端
@@ -350,24 +436,32 @@ let completion_content = template::build_simple_completion_content(
 ```
 
 ## 依赖关系
-- `omnish-common`: 配置类型定义
+- `omnish-common`: 配置类型定义（含`LangfuseConfig`）
 - `omnish-protocol`: ChatTurn类型（用于多轮对话）
 - `reqwest`: HTTP客户端，用于API调用
 - `serde`/`serde_json`: JSON序列化和反序列化
 - `anyhow`: 错误处理
 - `async-trait`: 异步trait支持
 - `tracing`: 日志记录
+- `chrono`: 时间戳（Langfuse事件和日志文件名）
+- `dirs`: 获取home目录（日志路径）
+- `tokio`: 异步运行时（重试sleep、Langfuse后台发送）
 - `std::process::Command`: 执行命令获取API密钥
 - `std::sync::{Arc, RwLock}`: 线程安全的引用计数和读写锁
 
 ## 模块文件结构
 - `lib.rs`: 模块入口，导出所有公共接口
-- `backend.rs`: LlmBackend trait、LlmRequest/LlmResponse、UseCase/TriggerType等核心类型
-- `tool.rs`: Tool trait和工具相关类型（ToolDef、ToolCall、ToolResult）
-- `anthropic.rs`: Anthropic API后端实现
-- `openai_compat.rs`: OpenAI兼容API后端实现
-- `factory.rs`: 后端工厂函数（create_backend、create_default_backend等）
-- `template.rs`: 提示模板（CHAT_SYSTEM_PROMPT、build_simple_completion_content等）
+- `backend.rs`: LlmBackend trait、LlmRequest/LlmResponse、Usage、UseCase/TriggerType等核心类型
+- `tool.rs`: 工具相关类型（ToolDef、ToolCall、ToolResult）
+- `anthropic.rs`: Anthropic API后端实现（含429/529重试）
+- `openai_compat.rs`: OpenAI兼容API后端实现（含429重试）
+- `factory.rs`: 后端工厂函数（create_backend、create_default_backend、MultiBackend、Langfuse包装逻辑）
+- `template.rs`: 提示模板（build_simple_completion_content、DAILY/HOURLY_NOTES_PROMPT等）
+- `prompt.rs`: PromptManager（可组合系统提示词片段管理）和内嵌chat提示词常量
+- `langfuse.rs`: Langfuse可观测性集成（LangfuseBackend包装器）
+- `message_log.rs`: LLM请求payload本地日志记录
+- `assets/chat.json`: 默认chat系统提示词片段JSON（编译内嵌）
+- `assets/chat.override.json.example`: chat覆盖文件示例
 
 ## 配置示例
 ```toml
@@ -393,11 +487,18 @@ max_content_chars = 128000
 completion = "local-vllm"
 analysis = "anthropic"
 chat = "anthropic"
+
+# 可选：Langfuse可观测性集成
+[llm.langfuse]
+public_key = "pk-..."
+secret_key = "sk-lf-..."             # 直接值，非命令
+base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
 ```
 
 ## 错误处理
 模块使用`anyhow::Result`进行错误处理，包括：
 - API调用失败（HTTP错误、网络问题）
+- 429/529速率限制和过载错误（自动重试，最多3次，指数退避）
 - 响应格式错误（缺少必需字段）
 - 配置错误（缺少必需参数）
 - 命令执行失败（获取API密钥失败）
@@ -407,11 +508,67 @@ chat = "anthropic"
 - API密钥解析
 - 后端创建
 - 提示模板构建（前缀稳定性验证）
-- chat系统提示词与用户可见命令同步验证
+- PromptManager片段加载、合并、构建
+- chat系统提示词关键内容验证
 - thinking标签的提取和剥离
+- UUID生成格式验证
+- 截断函数
 - 错误处理场景
 
 ## 更新历史
+
+### v0.6.0 - 可观测性、提示词管理和健壮性改进
+
+**主要新功能:**
+
+1. **Langfuse可观测性集成** (commit e447ff3, af926cf, be6d2af, b6d1226):
+   - 新增`langfuse.rs`模块，`LangfuseBackend`以装饰器模式包装后端
+   - 每次LLM调用后异步上报trace和generation事件
+   - 记录模型、use_case、输入摘要、输出、工具调用数、延迟、token使用量
+   - 配置字段变更：`secret_key_cmd`→`secret_key`（直接值），`host`→`base_url`
+   - 修复Langfuse输入记录为实际内容而非字符数
+
+2. **PromptManager可组合提示词** (commit 0eba0ec, efff522):
+   - 新增`prompt.rs`模块，`PromptManager`管理具名提示词片段
+   - 支持从JSON加载、合并覆盖、插件片段追加
+   - 替代原先的`CHAT_SYSTEM_PROMPT`硬编码常量
+
+3. **Chat提示词JSON内嵌和覆盖机制** (commit f3ce03a, c0a9c41, d615da0):
+   - `assets/chat.json`通过`include_str!`编译内嵌到二进制
+   - 启动时安装到`~/.omnish/chat.json`
+   - `prompt.json`重命名为`tool.override.json`
+   - 新增`chat.override.json`支持，可覆盖或追加提示词片段
+   - Chat系统提示词基于Claude Code模式重新设计
+
+4. **LLM请求payload日志** (commit 19de992, c00a368):
+   - 新增`message_log.rs`模块
+   - Chat请求的完整JSON体保存到`~/.omnish/logs/messages/`
+   - 滚动清理，最多保留30个文件
+
+5. **429/529自动重试** (commit ed37473):
+   - Anthropic后端支持429（速率限制）和529（过载）自动重试
+   - OpenAI兼容后端支持429自动重试
+   - 最多3次重试，指数退避（5s/10s/20s），上限60s
+   - 支持解析`retry-after`响应头
+
+6. **思考模式支持chat** (commit 0d3239e):
+   - `enable_thinking`支持`Some(true)`启用Anthropic扩展思考（budget_tokens: 4096）
+   - Chat模式下可启用思考模式
+
+7. **Usage解析** (commit c1a9b34):
+   - 新增`Usage`结构体，从API响应中解析token使用统计
+   - `LlmResponse`新增`usage`字段
+   - 两个后端均支持解析input/output tokens和cache统计
+   - Langfuse上报中包含usage数据
+
+8. **Tool trait移除，工具简化** (commit ed5ab15, 7d7d8af):
+   - 移除`Tool` trait，工具简化为固有方法实现
+   - `tool.rs`仅保留`ToolDef`、`ToolCall`、`ToolResult`数据类型
+
+9. **Anthropic max_tokens设置** (commit a593cf6):
+   - Anthropic后端`max_tokens`固定为8192
+
+**相关issue:** #199 (plugin prompt fragments), #205 (message logging), #207 (retry), #254 (override rename), #257 (embed chat prompt), #260 (langfuse input), #262 (thinking mode), #263 (usage parsing)
 
 ### v0.5.0 - 工具调用支持（2026-03）
 

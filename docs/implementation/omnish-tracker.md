@@ -50,6 +50,7 @@ OSC 133序列检测器，实现字节级状态机解析OSC 133序列。
 - `OutputStart`: OSC 133;C - 输出开始
 - `CommandEnd { exit_code: i32 }`: OSC 133;D;{exit_code} - 命令结束（包含退出码）
 - `ReadlineLine { content, point }`: OSC 133;RL - bash readline状态报告
+- `NoReadline`: OSC 133;NO_READLINE - bash缺少readline支持的通知（用于检测无readline的bash环境）
 
 **结构 `Osc133Event`:**
 - `kind: Osc133EventKind`: 事件类型
@@ -257,6 +258,10 @@ B;<command>;cwd:<path>;orig:<original_input>
 ```
 
 对应：`command = "ls -la"`, `cwd = "/home/user"`, `original = "ll"`
+
+## 无readline检测
+
+当bash缺少readline支持时（例如某些最小化安装环境），shell hook会发送 `\x1b]133;NO_READLINE\x07` 序列。`Osc133Detector` 将其解析为 `NoReadline` 事件，`CommandTracker` 本身忽略此事件，由 `omnish-client` 的 `shell_input` 模块处理，以便在无readline环境下采用替代的输入处理策略。
 
 ## 设计特点
 

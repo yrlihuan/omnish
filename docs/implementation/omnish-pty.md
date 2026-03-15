@@ -83,6 +83,15 @@ PTY代理，负责：
 **用途:** 获取子进程退出状态
 **实现细节:** 使用`waitpid`等待进程终止
 
+### `PtyProxy::from_raw_fd()`
+从已有文件描述符和子进程PID重建PTY代理（unsafe）。
+
+**参数:** `fd: RawFd`, `pid: i32`
+**返回:** `PtyProxy`
+**用途:** 在`exec`边界后重建PTY代理，支持`/update`透明自重启功能
+**实现细节:** 使用`FromRawFd`将原始文件描述符转换为`OwnedFd`，结合已知的子进程PID重建代理对象
+**安全性:** 调用者必须确保`fd`是有效的PTY主端文件描述符，且`pid`对应正确的子进程
+
 ### `RawModeGuard::enter()`
 创建原始模式守卫。
 
@@ -151,6 +160,7 @@ let exit_code = proxy.wait()?;
 4. **环境变量**: 子进程继承父进程环境，可通过`spawn_with_env`自定义
 5. **错误处理**: 所有操作都可能失败，需要适当处理错误
 6. **TIOCSCTTY ioctl**: 在不同平台上TIOCSCTTY常数的定义可能不同，需使用`as _`进行类型转换以保证兼容性
+7. **exec边界PTY恢复**: `from_raw_fd()`用于`/update`自重启场景，调用者必须确保传入的文件描述符有效且未被关闭
 
 ## 平台支持
 
