@@ -105,7 +105,7 @@ _show_help() {
     echo "Usage: $(basename "$0") [-w] [-t TEST_CASE] [-h]"
     echo ""
     echo "Options:"
-    echo "  -w             Wait for user confirmation before starting tests"
+    echo "  -w             Wait for user confirmation before and after each test"
     echo "  -t TEST_CASE   Run specific test (number or 'all', default: all)"
     echo "  -h, --help     Show this help message"
     # Caller can override show_usage to add test-specific docs
@@ -392,6 +392,10 @@ run_tests() {
             ((_TEST_TOTAL++))
             if "test_$i"; then
                 ((_TEST_PASSED++))
+            fi
+            if [[ "$_WAIT_FOR_USER" == "true" ]]; then
+                echo -e "${YELLOW}Test $i done. Press Enter to continue...${NC}"
+                read -r
             fi
         fi
     done
