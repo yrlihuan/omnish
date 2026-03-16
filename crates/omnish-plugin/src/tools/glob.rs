@@ -58,7 +58,7 @@ impl GlobTool {
         let total = files.len();
 
         // Sort by modification time, most recent first
-        files.sort_by(|a, b| b.1.cmp(&a.1));
+        files.sort_by_key(|f| std::cmp::Reverse(f.1));
 
         // Truncate to MAX_RESULTS
         files.truncate(MAX_RESULTS);
