@@ -112,6 +112,18 @@ impl ToolFormatter for ReadFormatter {
 
 struct EditFormatter;
 
+/// Generate colored diff lines from old_string and new_string.
+fn format_diff(old: &str, new: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    for line in old.lines() {
+        lines.push(format!("\x1b[31m- {}\x1b[0m", line));
+    }
+    for line in new.lines() {
+        lines.push(format!("\x1b[32m+ {}\x1b[0m", line));
+    }
+    lines
+}
+
 impl ToolFormatter for EditFormatter {
     fn format(&self, input: &FormatInput) -> FormatOutput {
         let param_desc = input
@@ -123,14 +135,19 @@ impl ToolFormatter for EditFormatter {
         let icon = status_icon(&input.output, &input.is_error);
         let (result_compact, result_full) = match &input.output {
             None => (vec![], vec![]),
-            Some(text) => {
-                let full = all_lines(text);
-                let compact = if input.is_error == Some(true) {
-                    head_lines(text, 5)
+            Some(_) => {
+                if input.is_error == Some(true) {
+                    let text = input.output.as_deref().unwrap_or("");
+                    let full = all_lines(text);
+                    let compact = head_lines(text, 5);
+                    (compact, full)
                 } else {
-                    vec!["done".to_string()]
-                };
-                (compact, full)
+                    let old = input.params.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+                    let new = input.params.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+                    let diff = format_diff(old, new);
+                    let compact: Vec<String> = diff.iter().take(5).cloned().collect();
+                    (compact, diff)
+                }
             }
         };
         FormatOutput {
@@ -264,18 +281,37 @@ mod tests {
     }
 
     #[test]
-    fn edit_formatter_compact_shows_done() {
+    fn edit_formatter_shows_colored_diff() {
         let input = make_input(
             "edit",
             "",
-            json!({"file_path": "/tmp/test.txt"}),
+            json!({"file_path": "/tmp/test.txt", "old_string": "hello", "new_string": "goodbye"}),
             Some("ok"),
             Some(false),
         );
         let out = EditFormatter.format(&input);
         assert_eq!(out.status_icon, StatusIcon::Success);
         assert_eq!(out.param_desc, "/tmp/test.txt");
-        assert_eq!(out.result_compact, vec!["done"]);
+        assert_eq!(out.result_compact.len(), 2);
+        assert!(out.result_compact[0].contains("- hello"));
+        assert!(out.result_compact[1].contains("+ goodbye"));
+    }
+
+    #[test]
+    fn edit_formatter_multiline_diff() {
+        let input = make_input(
+            "edit",
+            "",
+            json!({"file_path": "/tmp/test.txt", "old_string": "a\nb\nc", "new_string": "x\ny"}),
+            Some("ok"),
+            Some(false),
+        );
+        let out = EditFormatter.format(&input);
+        // 3 old lines + 2 new lines = 5 diff lines
+        assert_eq!(out.result_full.len(), 5);
+        assert_eq!(out.result_compact.len(), 5);
+        assert!(out.result_full[0].contains("- a"));
+        assert!(out.result_full[3].contains("+ x"));
     }
 
     #[test]
