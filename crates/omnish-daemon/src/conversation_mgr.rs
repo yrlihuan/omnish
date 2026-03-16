@@ -87,7 +87,7 @@ impl ConversationManager {
                 Some((thread_id.clone(), modified, exchange_count, last_question))
             })
             .collect();
-        conversations.sort_by(|a, b| b.1.cmp(&a.1));
+        conversations.sort_by_key(|c| std::cmp::Reverse(c.1));
         conversations
     }
 

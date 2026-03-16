@@ -33,13 +33,11 @@ pub fn render(content: &str) -> String {
                 Tag::Heading { .. } => {
                     out.push_str(HEADING_COLOR);
                 }
-                Tag::Paragraph => {
-                    // Add blank line between paragraphs (but not inside lists)
-                    if !out.is_empty() && list_depth == 0
-                        && !out.ends_with("\r\n") {
-                        out.push_str("\r\n");
-                    }
+                Tag::Paragraph if !out.is_empty() && list_depth == 0
+                    && !out.ends_with("\r\n") => {
+                    out.push_str("\r\n");
                 }
+                Tag::Paragraph => {}
                 Tag::BlockQuote(_) => {
                     out.push_str(DIM);
                     out.push_str(GREEN);

@@ -668,7 +668,7 @@ impl SessionManager {
         }
 
         let mut entries = snapshots;
-        entries.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.last_active));
 
         // Group by host and separate active/dead sessions
         let mut host_sessions: HashMap<String, Vec<&SessionSnapshot>> = HashMap::new();
