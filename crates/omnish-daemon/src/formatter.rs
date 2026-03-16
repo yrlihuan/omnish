@@ -161,8 +161,9 @@ fn parse_replace_count(output: &str) -> Option<usize> {
 }
 
 /// Format numbered diff from edit tool context snippet.
-/// Snippet lines: "lineno:>content" (changed) or "lineno:  content" (context).
-/// Inserts old (removed) lines before the first new line.
+/// Snippet lines: "lineno:>content" (changed), "lineno:  content" (context),
+/// or "lineno:D" (deletion marker).
+/// Inserts old (removed) lines before the first new line or at the deletion marker.
 fn format_numbered_diff(output: &str, old: &str, _new: &str) -> Vec<String> {
     let snippet = match output.split_once("\n---\n") {
         Some((_, ctx)) => ctx,
@@ -178,7 +179,7 @@ fn format_numbered_diff(output: &str, old: &str, _new: &str) -> Vec<String> {
     }
 
     let mut diff_lines: Vec<DiffLine> = Vec::new();
-    let mut first_new_seen = false;
+    let mut old_inserted = false;
 
     for line in snippet.lines() {
         let (num_str, rest) = match line.split_once(':') {
@@ -190,9 +191,19 @@ fn format_numbered_diff(output: &str, old: &str, _new: &str) -> Vec<String> {
             Err(_) => continue,
         };
 
-        if let Some(content) = rest.strip_prefix('>') {
-            if !first_new_seen {
-                first_new_seen = true;
+        if rest == "D" {
+            // Deletion marker — insert all old lines here
+            for (i, ol) in old_lines.iter().enumerate() {
+                diff_lines.push(DiffLine {
+                    lineno: lineno + i,
+                    marker: '-',
+                    content: ol.to_string(),
+                });
+            }
+            old_inserted = true;
+        } else if let Some(content) = rest.strip_prefix('>') {
+            if !old_inserted {
+                old_inserted = true;
                 // Insert old (removed) lines with old file line numbers
                 for (i, ol) in old_lines.iter().enumerate() {
                     diff_lines.push(DiffLine {
@@ -584,5 +595,28 @@ mod tests {
         let out = EditFormatter.format(&input);
         assert_eq!(out.status_icon, StatusIcon::Error);
         assert_eq!(out.result_full, vec!["permission denied"]);
+    }
+
+    #[test]
+    fn edit_formatter_deletion_with_marker() {
+        // Deletion: old lines removed, new_string empty, snippet has D marker
+        let output = "Edited /tmp/t.txt\n---\n1:  before1\n2:  before2\n3:D\n3:  after1\n4:  after2";
+        let input = make_input(
+            "edit",
+            "",
+            json!({"file_path": "/tmp/t.txt", "old_string": "del_a\ndel_b\ndel_c", "new_string": ""}),
+            Some(output),
+            Some(false),
+        );
+        let out = EditFormatter.format(&input);
+        assert_eq!(out.result_full[0], "Removed 3 lines");
+        // full: summary(1) + ctx(2) + 3 old(-) + ctx(2) = 8
+        assert_eq!(out.result_full.len(), 8, "full: {:?}", out.result_full);
+        assert!(out.result_full[1].contains("before1"));
+        assert!(out.result_full[2].contains("before2"));
+        assert!(out.result_full[3].contains("-del_a"));
+        assert!(out.result_full[5].contains("-del_c"));
+        assert!(out.result_full[6].contains("after1"));
+        assert!(out.result_full[7].contains("after2"));
     }
 }

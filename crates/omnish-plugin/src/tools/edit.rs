@@ -1,30 +1,46 @@
 use omnish_llm::tool::ToolResult;
 
-/// Extract context lines around `needle` in `content`.
+/// Extract context lines around an edit location in `content`.
+/// `edit_start_line` is the 0-based line index where the edit starts.
+/// `changed_count` is the number of new lines at that position (0 for deletion).
 /// Each line is formatted as "lineno:  content" (context) or "lineno:>content" (changed).
+/// For deletion (changed_count == 0), a "lineno:D" marker is inserted.
 /// Line numbers are 1-based.
-fn build_context_snippet(content: &str, needle: &str, ctx: usize) -> String {
-    let pos = match content.find(needle) {
-        Some(p) => p,
-        None => return String::new(),
-    };
+fn build_context_snippet(
+    content: &str,
+    edit_start_line: usize,
+    changed_count: usize,
+    ctx: usize,
+) -> String {
     let file_lines: Vec<&str> = content.lines().collect();
-    let start_line = content[..pos].chars().filter(|&c| c == '\n').count();
-    let needle_line_count = needle.lines().count().max(1);
-    let end_line = start_line + needle_line_count; // exclusive
+    let end_line = edit_start_line + changed_count;
 
-    let ctx_start = start_line.saturating_sub(ctx);
+    let ctx_start = edit_start_line.saturating_sub(ctx);
     let ctx_end = (end_line + ctx).min(file_lines.len());
 
     let mut lines = Vec::new();
-    for (i, line) in file_lines.iter().enumerate().take(ctx_end).skip(ctx_start) {
+    let mut deletion_marker_inserted = false;
+
+    for (i, file_line) in file_lines.iter().enumerate().take(ctx_end).skip(ctx_start) {
         let lineno = i + 1; // 1-based
-        if i >= start_line && i < end_line {
-            lines.push(format!("{}:>{}", lineno, line));
+        // For deletion: insert marker before first context-after line
+        if changed_count == 0 && i >= edit_start_line && !deletion_marker_inserted {
+            lines.push(format!("{}:D", lineno));
+            deletion_marker_inserted = true;
+        }
+        if i >= edit_start_line && i < end_line {
+            lines.push(format!("{}:>{}", lineno, file_line));
         } else {
-            lines.push(format!("{}:  {}", lineno, line));
+            lines.push(format!("{}:  {}", lineno, file_line));
         }
     }
+
+    // Deletion at end of file
+    if changed_count == 0 && !deletion_marker_inserted {
+        let lineno = edit_start_line + 1;
+        lines.push(format!("{}:D", lineno));
+    }
+
     lines.join("\n")
 }
 
@@ -109,6 +125,12 @@ impl EditTool {
             };
         }
 
+        // Compute edit position (line number) before replacement
+        let edit_start_line = content[..content.find(old_string).unwrap()]
+            .chars()
+            .filter(|&c| c == '\n')
+            .count();
+
         let new_content = if replace_all {
             content.replace(old_string, new_string)
         } else {
@@ -129,8 +151,13 @@ impl EditTool {
             format!("Edited {}", file_path)
         };
 
-        // Build context snippet: N lines before + new_string lines + N lines after
-        let snippet = build_context_snippet(&new_content, new_string, 3);
+        // Build context snippet using the known edit position
+        let new_line_count = if new_string.is_empty() {
+            0
+        } else {
+            new_string.lines().count()
+        };
+        let snippet = build_context_snippet(&new_content, edit_start_line, new_line_count, 3);
         let content = if snippet.is_empty() {
             msg
         } else {
@@ -288,5 +315,45 @@ mod tests {
         }));
         assert!(!result.is_error, "{}", result.content);
         assert_eq!(fs::read_to_string(&path).unwrap(), "replaced1\nreplaced2\nline3\n");
+    }
+
+    #[test]
+    fn test_deletion_snippet_has_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("del.txt");
+        fs::write(&path, "a\nb\nc\nd\ne\nf\ng\n").unwrap();
+        let tool = EditTool::new();
+        let result = tool.execute(&serde_json::json!({
+            "file_path": path.to_str().unwrap(),
+            "old_string": "c\nd\ne",
+            "new_string": ""
+        }));
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "a\nb\n\nf\ng\n");
+        let snippet = result.content.split("\n---\n").nth(1).unwrap();
+        // Context before deletion
+        assert!(snippet.contains("2:  b"), "snippet: {}", snippet);
+        // Deletion marker
+        assert!(snippet.contains(":D"), "should have deletion marker, snippet: {}", snippet);
+        // Context after deletion
+        assert!(snippet.contains("f"), "snippet: {}", snippet);
+    }
+
+    #[test]
+    fn test_snippet_uses_correct_position_when_new_string_appears_earlier() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dup.txt");
+        // "goodbye" already appears at line 1; editing "hello" at line 4
+        fs::write(&path, "goodbye\nline2\nline3\nhello\nline5\nline6\n").unwrap();
+        let tool = EditTool::new();
+        let result = tool.execute(&serde_json::json!({
+            "file_path": path.to_str().unwrap(),
+            "old_string": "hello",
+            "new_string": "goodbye"
+        }));
+        assert!(!result.is_error, "{}", result.content);
+        let snippet = result.content.split("\n---\n").nth(1).unwrap();
+        // The changed line should be at line 4, not line 1
+        assert!(snippet.contains("4:>goodbye"), "snippet should show change at line 4: {}", snippet);
     }
 }
