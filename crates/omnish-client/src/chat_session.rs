@@ -112,7 +112,9 @@ impl ChatSession {
                 ScrollEntry::Response(content) => {
                     let rendered = super::markdown::render(content);
                     let rendered = format!("\x1b[97m●\x1b[0m {}", rendered);
-                    rendered.split("\r\n").map(String::from).collect()
+                    let mut out = vec![String::new()]; // empty line before response
+                    out.extend(rendered.split("\r\n").map(String::from));
+                    out
                 }
                 ScrollEntry::Separator => {
                     vec![display::render_separator(cols)]
