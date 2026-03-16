@@ -108,7 +108,17 @@ impl ChatSession {
                     }
                     lines
                 }
-                ScrollEntry::LlmText(text) => vec![text.clone()],
+                ScrollEntry::LlmText(text) => {
+                    let mut out = vec![String::new()];
+                    for (i, line) in text.split('\n').enumerate() {
+                        if i == 0 {
+                            out.push(format!("\x1b[97m●\x1b[0m {}", line));
+                        } else {
+                            out.push(format!("  {}", line));
+                        }
+                    }
+                    out
+                }
                 ScrollEntry::Response(content) => {
                     let rendered = super::markdown::render(content);
                     let mut out = vec![String::new()]; // empty line before response
@@ -372,7 +382,14 @@ impl ChatSession {
                                                 self.erase_thinking();
                                                 if cts.tool_name.is_empty() {
                                                     // LLM intermediate text
-                                                    self.print_line(&cts.status);
+                                                    self.print_line("");
+                                                    for (i, line) in cts.status.split('\n').enumerate() {
+                                                        if i == 0 {
+                                                            self.print_line(&format!("\x1b[97m●\x1b[0m {}", line));
+                                                        } else {
+                                                            self.print_line(&format!("  {}", line));
+                                                        }
+                                                    }
                                                     self.push_entry(ScrollEntry::LlmText(cts.status.clone()));
                                                 } else if cts.result_compact.is_none() {
                                                     // First status — tool is running (before execution)
@@ -976,7 +993,14 @@ impl ChatSession {
                             }
                         }
                         ScrollEntry::LlmText(text) => {
-                            self.print_line(text);
+                            self.print_line("");
+                            for (i, line) in text.split('\n').enumerate() {
+                                if i == 0 {
+                                    self.print_line(&format!("\x1b[97m●\x1b[0m {}", line));
+                                } else {
+                                    self.print_line(&format!("  {}", line));
+                                }
+                            }
                         }
                         ScrollEntry::Response(content) => {
                             self.print_line("");
