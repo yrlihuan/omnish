@@ -1,8 +1,8 @@
 use omnish_llm::tool::ToolResult;
 
 /// Extract context lines around `needle` in `content`.
-/// Returns the snippet as "ctx_before... | new_lines... | ctx_after..."
-/// with each line prefixed by "  " (context) or "> " (changed).
+/// Each line is formatted as "lineno:  content" (context) or "lineno:>content" (changed).
+/// Line numbers are 1-based.
 fn build_context_snippet(content: &str, needle: &str, ctx: usize) -> String {
     let pos = match content.find(needle) {
         Some(p) => p,
@@ -18,10 +18,11 @@ fn build_context_snippet(content: &str, needle: &str, ctx: usize) -> String {
 
     let mut lines = Vec::new();
     for (i, line) in file_lines.iter().enumerate().take(ctx_end).skip(ctx_start) {
+        let lineno = i + 1; // 1-based
         if i >= start_line && i < end_line {
-            lines.push(format!("> {}", line));
+            lines.push(format!("{}:>{}", lineno, line));
         } else {
-            lines.push(format!("  {}", line));
+            lines.push(format!("{}:  {}", lineno, line));
         }
     }
     lines.join("\n")
@@ -251,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn test_edit_returns_context_snippet() {
+    fn test_edit_returns_numbered_context_snippet() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ctx.txt");
         fs::write(&path, "line1\nline2\nline3\nhello\nline5\nline6\nline7\n").unwrap();
@@ -262,17 +263,16 @@ mod tests {
             "new_string": "goodbye"
         }));
         assert!(!result.is_error, "{}", result.content);
-        // Should contain the "---" separator and context
         assert!(result.content.contains("\n---\n"), "should have context separator");
         let snippet = result.content.split("\n---\n").nth(1).unwrap();
-        // Context before (3 lines)
-        assert!(snippet.contains("  line1"));
-        assert!(snippet.contains("  line3"));
-        // Changed line
-        assert!(snippet.contains("> goodbye"));
-        // Context after
-        assert!(snippet.contains("  line5"));
-        assert!(snippet.contains("  line7"));
+        // Numbered context before (lines 1-3)
+        assert!(snippet.contains("1:  line1"), "snippet: {}", snippet);
+        assert!(snippet.contains("3:  line3"));
+        // Numbered changed line (line 4)
+        assert!(snippet.contains("4:>goodbye"));
+        // Numbered context after (lines 5-7)
+        assert!(snippet.contains("5:  line5"));
+        assert!(snippet.contains("7:  line7"));
     }
 
     #[test]
