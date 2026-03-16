@@ -316,13 +316,25 @@ impl ChatSession {
                                                         "\x1b[38;5;114m●\x1b[0m \x1b[1m{}\x1b[0m\x1b[2m({})\x1b[0m",
                                                         cts.tool_name, escaped
                                                     );
-                                                    // Truncate for terminal display
+                                                    // Truncate for terminal display (char-boundary safe)
                                                     let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
-                                                    let max_status = (cols as usize).saturating_sub(6 + cts.tool_name.len());
-                                                    let truncated_status = if escaped.len() > max_status {
-                                                        format!("{}…", &escaped[..max_status.saturating_sub(1)])
-                                                    } else {
-                                                        escaped
+                                                    let max_cols = (cols as usize).saturating_sub(6 + cts.tool_name.len());
+                                                    let truncated_status = {
+                                                        let mut width = 0usize;
+                                                        let mut end = 0usize;
+                                                        for ch in escaped.chars() {
+                                                            let w = if ch.is_ascii() { 1 } else { 2 };
+                                                            if width + w + 1 > max_cols {
+                                                                break;
+                                                            }
+                                                            width += w;
+                                                            end += ch.len_utf8();
+                                                        }
+                                                        if end < escaped.len() {
+                                                            format!("{}…", &escaped[..end])
+                                                        } else {
+                                                            escaped
+                                                        }
                                                     };
                                                     let display = format!(
                                                         "\x1b[38;5;114m●\x1b[0m \x1b[1m{}\x1b[0m\x1b[2m({})\x1b[0m",
