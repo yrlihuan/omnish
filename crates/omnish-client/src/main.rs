@@ -2797,19 +2797,27 @@ async fn run_chat_loop(
             });
         }
 
-        // Scroll layout content into terminal scrollback so it's preserved
-        // in tmux history, then reset for the next round.
-        if !scroll_history.is_empty() {
+        // When content exceeded the screen (compact mode was active), print
+        // the FULL scroll_history and scroll it into terminal scrollback.
+        // For short content that fits on screen, keep it visible across rounds.
+        if last_scroll_view.is_some() {
             let (rows, _cols) = get_terminal_size().unwrap_or((24, 80));
             let total = layout.total_height();
             let mut seq = String::new();
-            // Move cursor to the bottom of the screen
+            // Move cursor to the top of the layout
+            if total > 0 {
+                seq.push_str(&format!("\x1b[{}A\r", total));
+            }
+            // Print full scroll_history (replaces compact view, scrolls naturally)
+            for line in &scroll_history {
+                seq.push_str(line);
+                seq.push_str("\r\n");
+            }
+            // Scroll any remaining visible content into scrollback
             seq.push_str(&format!("\x1b[{};1H", rows));
-            // Print enough newlines to scroll all layout content into scrollback
-            for _ in 0..total {
+            for _ in 0..rows as usize {
                 seq.push('\n');
             }
-            // Clear leftover text on the current line, leave cursor near bottom
             seq.push_str("\r\x1b[K");
             nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
             layout.set_content("scroll_view", vec![]);

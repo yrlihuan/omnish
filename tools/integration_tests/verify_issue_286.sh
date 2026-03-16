@@ -9,6 +9,7 @@
 #   1. Two simple Q&A rounds — both user inputs remain visible
 #   2. Three bash tool calls with 40-line output each — all results preserved,
 #      prompt near screen bottom
+#   3. Three short bash commands — all three "● bash(" visible on screen
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -18,6 +19,7 @@ show_usage() {
 Test cases:
   1. Two Q&A in one session — both user inputs visible after second response
   2. Three bash runs (40 lines each) — all outputs preserved, prompt near bottom
+  3. Three short bash runs — all three "● bash(" visible on screen
 EOF
 }
 
@@ -152,5 +154,54 @@ test_2() {
     fi
 }
 
+test_3() {
+    echo -e "\n${YELLOW}=== Test 3: Three short bash — all outputs visible on screen ===${NC}"
+
+    restart_client
+    wait_for_client
+
+    # Resize window + pane to 60 rows so all 3 rounds fit on screen
+    _tmux resize-window -t "$SESSION" -y 60
+
+    send_keys ":" 0.5
+    wait_for_prompt
+
+    local cmd="Run: echo hello"
+
+    for round in 1 2 3; do
+        echo -e "  ${YELLOW}--- Round $round ---${NC}"
+        send_keys "$cmd" 0.3
+        send_enter 0.3
+        if ! wait_for_chat_response 30; then
+            show_capture "After round $round" "$(capture_pane -50)" 15
+            assert_fail "No chat prompt after round $round"
+            send_special Escape 0.5
+            sleep 1.5
+            return 1
+        fi
+    done
+
+    # Capture only the visible screen (no scrollback)
+    local visible=$(_tmux capture-pane -p -J -t "$PANE")
+    show_capture "Visible screen after 3 short rounds" "$visible" 30
+
+    # Count "● bash(" lines on the visible screen
+    local bash_count
+    bash_count=$(echo "$visible" | grep -c '● bash(' || true)
+    echo -e "  '● bash(' lines on screen: $bash_count"
+
+    if [[ $bash_count -ge 3 ]]; then
+        assert_pass "All three '● bash(' visible on screen ($bash_count found)"
+        send_special Escape 0.5
+        sleep 1.5
+        return 0
+    else
+        assert_fail "Expected at least 3 '● bash(' on screen, got $bash_count"
+        send_special Escape 0.5
+        sleep 1.5
+        return 1
+    fi
+}
+
 echo -e "${YELLOW}Issue #286: chat output from previous queries should not disappear${NC}"
-run_tests 2
+run_tests 3
