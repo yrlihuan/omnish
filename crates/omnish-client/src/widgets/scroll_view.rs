@@ -602,6 +602,62 @@ mod tests {
         assert!(!all.contains("world"), "should be erased");
     }
 
+    /// Long lines should NOT be truncated in expanded (browse) mode.
+    /// The terminal clips them via \x1b[?7l (disable wrap).
+    #[test]
+    fn expanded_mode_preserves_full_long_lines() {
+        let cols = 40usize;
+        let mut sv = ScrollView::new(3, 10, cols);
+
+        // Build a 45-line echo command header (longer than terminal width)
+        let long_cmd: String = (1..=45)
+            .map(|i| format!("第{}行：这是测试文本", i))
+            .collect::<Vec<_>>()
+            .join("\\n");
+        let header = format!(
+            "\x1b[38;5;114m●\x1b[0m \x1b[1mbash\x1b[0m\x1b[2m(echo \"{}\")\x1b[0m",
+            long_cmd
+        );
+        sv.push_line(&header);
+
+        // Add some output lines
+        for i in 1..=5 {
+            sv.push_line(&format!("  \x1b[2m⎿  第{}行：这是测试文本\x1b[0m", i));
+        }
+        sv.push_line("  \x1b[2m   … +40 lines\x1b[0m");
+
+        // Enter browse mode
+        let seq = sv.enter_browse();
+
+        // The raw ANSI sequence should contain the full long_cmd without truncation
+        assert!(
+            seq.contains(&long_cmd),
+            "expanded mode should contain full command without truncation"
+        );
+
+        // Verify wrap is disabled
+        assert!(
+            seq.contains("\x1b[?7l"),
+            "expanded mode should disable line wrap"
+        );
+    }
+
+    /// Long lines in compact mode should still be truncated.
+    #[test]
+    fn compact_mode_truncates_long_lines() {
+        let cols = 40usize;
+        let mut sv = ScrollView::new(3, 10, cols);
+        let long_line = "a".repeat(100);
+        let seq = sv.push_line(&long_line);
+        let plain = strip_ansi(&seq);
+        // Should be truncated to ~40 cols with …
+        assert!(plain.contains("…"), "compact mode should truncate long lines");
+        assert!(
+            !plain.contains(&"a".repeat(100)),
+            "compact mode should not contain full 100-char line"
+        );
+    }
+
     #[test]
     fn vt100_expand_and_shrink() {
         let cols = 40u16;
