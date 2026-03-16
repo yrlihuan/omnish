@@ -2561,12 +2561,15 @@ async fn run_chat_loop(
             }
         }
 
+        // Hide editor during streaming — prevents stale "> " prompt detection
+        let seq = layout.hide("editor");
+        nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+
         // Append user input + thinking indicator to scroll history
         scroll_history.push(format!("\x1b[2;37m> {}\x1b[0m", trimmed));
         scroll_history.push(String::new());
         scroll_history.push("\x1b[2m(thinking...)\x1b[0m".to_string());
-        let seq = layout.update("scroll_view", scroll_history.clone());
-        nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+        last_scroll_view = render_scroll_view(&scroll_history, &mut layout);
 
         // Send ChatMessage, allow Ctrl-C to interrupt
         let req_id = Uuid::new_v4().to_string()[..8].to_string();
@@ -2630,8 +2633,7 @@ async fn run_chat_loop(
                                             let text = format!("\x1b[38;5;114m●\x1b[0m \x1b[2m{}({})\x1b[0m", cts.tool_name, cts.status);
                                             tool_status_indices.push(scroll_history.len());
                                             scroll_history.push(text);
-                                            let seq = layout.update("scroll_view", scroll_history.clone());
-                                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                                            last_scroll_view = render_scroll_view(&scroll_history, &mut layout);
                                         }
                                         Some(Message::ChatToolCall(tc)) => {
                                             tool_calls.push(tc);
@@ -2729,8 +2731,7 @@ async fn run_chat_loop(
                             } else {
                                 scroll_history.extend(out_lines.iter().cloned());
                             }
-                            let seq = layout.update("scroll_view", scroll_history.clone());
-                            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                            last_scroll_view = render_scroll_view(&scroll_history, &mut layout);
 
                             let result_msg = Message::ChatToolResult(ChatToolResult {
                                 request_id: tc.request_id.clone(),
@@ -2781,8 +2782,7 @@ async fn run_chat_loop(
 
         if interrupted {
             scroll_history.push("\x1b[2;37m(interrupted)\x1b[0m".to_string());
-            let seq = layout.update("scroll_view", scroll_history.clone());
-            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+            last_scroll_view = render_scroll_view(&scroll_history, &mut layout);
 
             // Send interrupt to daemon to record in conversation and clean up pending loop
             let interrupt_msg = Message::ChatInterrupt(omnish_protocol::message::ChatInterrupt {
@@ -2795,6 +2795,27 @@ async fn run_chat_loop(
             tokio::spawn(async move {
                 let _ = rpc_clone.call(interrupt_msg).await;
             });
+        }
+
+        // Scroll layout content into terminal scrollback so it's preserved
+        // in tmux history, then reset for the next round.
+        if !scroll_history.is_empty() {
+            let (rows, _cols) = get_terminal_size().unwrap_or((24, 80));
+            let total = layout.total_height();
+            let mut seq = String::new();
+            // Move cursor to the bottom of the screen
+            seq.push_str(&format!("\x1b[{};1H", rows));
+            // Print enough newlines to scroll all layout content into scrollback
+            for _ in 0..total {
+                seq.push('\n');
+            }
+            // Clear leftover text on the current line, leave cursor near bottom
+            seq.push_str("\r\x1b[K");
+            nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+            layout.set_content("scroll_view", vec![]);
+            layout.set_content("editor", vec![]);
+            scroll_history.clear();
+            last_scroll_view = None;
         }
     }
 }
