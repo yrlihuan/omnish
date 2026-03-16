@@ -112,8 +112,6 @@ impl ToolFormatter for ReadFormatter {
 
 struct EditFormatter;
 
-const CONTEXT_LINES: usize = 3;
-
 /// Generate colored diff lines from old_string and new_string (no file context).
 fn format_diff_simple(old: &str, new: &str) -> Vec<String> {
     let mut lines = Vec::new();
@@ -126,50 +124,45 @@ fn format_diff_simple(old: &str, new: &str) -> Vec<String> {
     lines
 }
 
-/// Generate diff with surrounding context lines from the edited file.
-/// Falls back to simple diff if file cannot be read or new_string not found.
-fn format_diff_with_context(file_path: &str, old: &str, new: &str) -> Vec<String> {
-    let file_content = match std::fs::read_to_string(file_path) {
-        Ok(c) => c,
-        Err(_) => return format_diff_simple(old, new),
-    };
-
-    let new_pos = match file_content.find(new) {
-        Some(pos) => pos,
+/// Parse the context snippet from the edit tool output and produce a colored diff.
+/// The output format after "---" separator:
+///   "  ctx_line"   → context (dim)
+///   "> changed"    → new line (green), with old line (red) inserted before
+///
+/// Falls back to simple diff if no context snippet present.
+fn format_diff_with_context(output: &str, old: &str, new: &str) -> Vec<String> {
+    // Split output by "---" separator; context snippet is after the separator
+    let snippet = match output.split_once("\n---\n") {
+        Some((_, ctx)) => ctx,
         None => return format_diff_simple(old, new),
     };
 
-    let file_lines: Vec<&str> = file_content.lines().collect();
-
-    // Find the line range where new_string sits
-    let prefix = &file_content[..new_pos];
-    let start_line = prefix.chars().filter(|&c| c == '\n').count();
-    let new_line_count = new.lines().count().max(1);
-    let end_line = start_line + new_line_count; // exclusive
-
-    // Context range
-    let ctx_start = start_line.saturating_sub(CONTEXT_LINES);
-    let ctx_end = (end_line + CONTEXT_LINES).min(file_lines.len());
-
+    let old_lines: Vec<&str> = old.lines().collect();
+    let mut old_idx = 0;
     let mut result = Vec::new();
 
-    // Context before
-    for i in ctx_start..start_line {
-        result.push(format!("\x1b[2m  {}\x1b[0m", file_lines[i]));
-    }
-    // Old lines (removed)
-    for line in old.lines() {
-        result.push(format!("\x1b[31m- {}\x1b[0m", line));
-    }
-    // New lines (added)
-    for line in new.lines() {
-        result.push(format!("\x1b[32m+ {}\x1b[0m", line));
-    }
-    // Context after
-    for i in end_line..ctx_end {
-        result.push(format!("\x1b[2m  {}\x1b[0m", file_lines[i]));
+    for line in snippet.lines() {
+        if let Some(content) = line.strip_prefix("> ") {
+            // This is a changed line — insert old line(s) first, then new line
+            if old_idx == 0 {
+                // Insert all old lines before the first new line
+                for ol in &old_lines {
+                    result.push(format!("\x1b[31m- {}\x1b[0m", ol));
+                }
+            }
+            old_idx += 1;
+            result.push(format!("\x1b[32m+ {}\x1b[0m", content));
+        } else if let Some(content) = line.strip_prefix("  ") {
+            result.push(format!("\x1b[2m  {}\x1b[0m", content));
+        } else {
+            // Unexpected format, include as-is
+            result.push(line.to_string());
+        }
     }
 
+    if result.is_empty() {
+        return format_diff_simple(old, new);
+    }
     result
 }
 
@@ -191,12 +184,12 @@ impl ToolFormatter for EditFormatter {
                     let compact = head_lines(text, 5);
                     (compact, full)
                 } else {
-                    let file_path = input.params.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+                    let output = input.output.as_deref().unwrap_or("");
                     let old = input.params.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
                     let new = input.params.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
                     let compact_diff = format_diff_simple(old, new);
                     let compact: Vec<String> = compact_diff.iter().take(5).cloned().collect();
-                    let full = format_diff_with_context(file_path, old, new);
+                    let full = format_diff_with_context(output, old, new);
                     (compact, full)
                 }
             }
@@ -332,93 +325,78 @@ mod tests {
     }
 
     #[test]
-    fn edit_formatter_shows_colored_diff() {
+    fn edit_formatter_simple_diff_no_context() {
+        // No context snippet in output → fallback to simple diff
         let input = make_input(
             "edit",
             "",
-            json!({"file_path": "/tmp/nonexistent.txt", "old_string": "hello", "new_string": "goodbye"}),
-            Some("ok"),
+            json!({"file_path": "/tmp/test.txt", "old_string": "hello", "new_string": "goodbye"}),
+            Some("Edited /tmp/test.txt"),
             Some(false),
         );
         let out = EditFormatter.format(&input);
         assert_eq!(out.status_icon, StatusIcon::Success);
-        assert_eq!(out.param_desc, "/tmp/nonexistent.txt");
-        // compact: simple diff (fallback, file doesn't exist)
+        assert_eq!(out.param_desc, "/tmp/test.txt");
         assert_eq!(out.result_compact.len(), 2);
         assert!(out.result_compact[0].contains("- hello"));
         assert!(out.result_compact[1].contains("+ goodbye"));
-        // full: also simple diff fallback
         assert_eq!(out.result_full.len(), 2);
-        assert!(out.result_full[0].contains("- hello"));
-        assert!(out.result_full[1].contains("+ goodbye"));
     }
 
     #[test]
-    fn edit_formatter_multiline_diff() {
+    fn edit_formatter_with_context_snippet() {
+        // Output includes context snippet from the edit tool
+        let output = "Edited /tmp/test.txt\n---\n  line1\n  line2\n  line3\n> goodbye\n  line5\n  line6\n  line7";
         let input = make_input(
             "edit",
             "",
-            json!({"file_path": "/tmp/nonexistent.txt", "old_string": "a\nb\nc", "new_string": "x\ny"}),
-            Some("ok"),
-            Some(false),
-        );
-        let out = EditFormatter.format(&input);
-        // compact: 3 old + 2 new = 5, take 5
-        assert_eq!(out.result_compact.len(), 5);
-        assert!(out.result_compact[0].contains("- a"));
-        assert!(out.result_compact[3].contains("+ x"));
-        // full: fallback simple diff (file doesn't exist)
-        assert_eq!(out.result_full.len(), 5);
-    }
-
-    #[test]
-    fn edit_formatter_with_file_context() {
-        use std::io::Write;
-        // Create a temp file with known content
-        let dir = std::env::temp_dir();
-        let path = dir.join("omnish_test_edit_ctx.txt");
-        {
-            let mut f = std::fs::File::create(&path).unwrap();
-            writeln!(f, "line1").unwrap();
-            writeln!(f, "line2").unwrap();
-            writeln!(f, "line3").unwrap();
-            writeln!(f, "REPLACED").unwrap();
-            writeln!(f, "line5").unwrap();
-            writeln!(f, "line6").unwrap();
-            writeln!(f, "line7").unwrap();
-        }
-        let input = make_input(
-            "edit",
-            "",
-            json!({
-                "file_path": path.to_str().unwrap(),
-                "old_string": "ORIGINAL",
-                "new_string": "REPLACED"
-            }),
-            Some("ok"),
+            json!({"file_path": "/tmp/test.txt", "old_string": "hello", "new_string": "goodbye"}),
+            Some(output),
             Some(false),
         );
         let out = EditFormatter.format(&input);
         // compact: simple diff (no context)
         assert_eq!(out.result_compact.len(), 2);
-        assert!(out.result_compact[0].contains("- ORIGINAL"));
-        assert!(out.result_compact[1].contains("+ REPLACED"));
-        // full: context lines + diff lines + context lines
-        // "REPLACED" is at line index 3, context=3 → lines 0..3 before, lines 4..7 after
-        assert!(out.result_full.len() > 2, "full should include context lines");
-        // Check context lines are dim
+        assert!(out.result_compact[0].contains("- hello"));
+        assert!(out.result_compact[1].contains("+ goodbye"));
+        // full: 3 context before + 1 old (red) + 1 new (green) + 3 context after = 8
+        assert_eq!(out.result_full.len(), 8);
+        // Context before (dim)
         assert!(out.result_full[0].contains("line1"));
         assert!(out.result_full[0].contains("\x1b[2m"));
-        // Check diff lines present
-        let has_old = out.result_full.iter().any(|l| l.contains("- ORIGINAL"));
-        let has_new = out.result_full.iter().any(|l| l.contains("+ REPLACED"));
-        assert!(has_old, "should have old line");
-        assert!(has_new, "should have new line");
-        // Check context after
-        let has_after = out.result_full.iter().any(|l| l.contains("line5"));
-        assert!(has_after, "should have context after");
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
+        assert!(out.result_full[2].contains("line3"));
+        // Old line (red)
+        assert!(out.result_full[3].contains("- hello"));
+        assert!(out.result_full[3].contains("\x1b[31m"));
+        // New line (green)
+        assert!(out.result_full[4].contains("+ goodbye"));
+        assert!(out.result_full[4].contains("\x1b[32m"));
+        // Context after (dim)
+        assert!(out.result_full[5].contains("line5"));
+        assert!(out.result_full[7].contains("line7"));
+    }
+
+    #[test]
+    fn edit_formatter_multiline_with_context() {
+        let output = "Edited /tmp/test.txt\n---\n  before\n> new_a\n> new_b\n  after";
+        let input = make_input(
+            "edit",
+            "",
+            json!({"file_path": "/tmp/test.txt", "old_string": "old_a\nold_b\nold_c", "new_string": "new_a\nnew_b"}),
+            Some(output),
+            Some(false),
+        );
+        let out = EditFormatter.format(&input);
+        // compact: 3 old + 2 new = 5
+        assert_eq!(out.result_compact.len(), 5);
+        // full: 1 ctx + 3 old + 2 new + 1 ctx = 7
+        assert_eq!(out.result_full.len(), 7);
+        assert!(out.result_full[0].contains("before"));
+        assert!(out.result_full[1].contains("- old_a"));
+        assert!(out.result_full[3].contains("- old_c"));
+        assert!(out.result_full[4].contains("+ new_a"));
+        assert!(out.result_full[5].contains("+ new_b"));
+        assert!(out.result_full[6].contains("after"));
     }
 
     #[test]

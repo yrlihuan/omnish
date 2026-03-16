@@ -1,5 +1,32 @@
 use omnish_llm::tool::ToolResult;
 
+/// Extract context lines around `needle` in `content`.
+/// Returns the snippet as "ctx_before... | new_lines... | ctx_after..."
+/// with each line prefixed by "  " (context) or "> " (changed).
+fn build_context_snippet(content: &str, needle: &str, ctx: usize) -> String {
+    let pos = match content.find(needle) {
+        Some(p) => p,
+        None => return String::new(),
+    };
+    let file_lines: Vec<&str> = content.lines().collect();
+    let start_line = content[..pos].chars().filter(|&c| c == '\n').count();
+    let needle_line_count = needle.lines().count().max(1);
+    let end_line = start_line + needle_line_count; // exclusive
+
+    let ctx_start = start_line.saturating_sub(ctx);
+    let ctx_end = (end_line + ctx).min(file_lines.len());
+
+    let mut lines = Vec::new();
+    for i in ctx_start..ctx_end {
+        if i >= start_line && i < end_line {
+            lines.push(format!("> {}", file_lines[i]));
+        } else {
+            lines.push(format!("  {}", file_lines[i]));
+        }
+    }
+    lines.join("\n")
+}
+
 #[derive(Default)]
 pub struct EditTool;
 
@@ -101,9 +128,17 @@ impl EditTool {
             format!("Edited {}", file_path)
         };
 
+        // Build context snippet: N lines before + new_string lines + N lines after
+        let snippet = build_context_snippet(&new_content, new_string, 3);
+        let content = if snippet.is_empty() {
+            msg
+        } else {
+            format!("{}\n---\n{}", msg, snippet)
+        };
+
         ToolResult {
             tool_use_id: String::new(),
-            content: msg,
+            content,
             is_error: false,
         }
     }
@@ -213,6 +248,31 @@ mod tests {
         }));
         assert!(result.is_error);
         assert!(result.content.contains("empty"));
+    }
+
+    #[test]
+    fn test_edit_returns_context_snippet() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ctx.txt");
+        fs::write(&path, "line1\nline2\nline3\nhello\nline5\nline6\nline7\n").unwrap();
+        let tool = EditTool::new();
+        let result = tool.execute(&serde_json::json!({
+            "file_path": path.to_str().unwrap(),
+            "old_string": "hello",
+            "new_string": "goodbye"
+        }));
+        assert!(!result.is_error, "{}", result.content);
+        // Should contain the "---" separator and context
+        assert!(result.content.contains("\n---\n"), "should have context separator");
+        let snippet = result.content.split("\n---\n").nth(1).unwrap();
+        // Context before (3 lines)
+        assert!(snippet.contains("  line1"));
+        assert!(snippet.contains("  line3"));
+        // Changed line
+        assert!(snippet.contains("> goodbye"));
+        // Context after
+        assert!(snippet.contains("  line5"));
+        assert!(snippet.contains("  line7"));
     }
 
     #[test]
