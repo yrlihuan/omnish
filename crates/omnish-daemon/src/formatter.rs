@@ -94,7 +94,7 @@ impl ToolFormatter for ReadFormatter {
                 let compact = if input.is_error == Some(true) {
                     head_lines(text, 5)
                 } else {
-                    vec![format!("{} lines", full.len())]
+                    vec![format!("Read {} lines", full.len())]
                 };
                 (compact, full)
             }
@@ -260,7 +260,7 @@ mod tests {
         let out = ReadFormatter.format(&input);
         assert_eq!(out.status_icon, StatusIcon::Success);
         assert_eq!(out.param_desc, "/tmp/test.txt");
-        assert_eq!(out.result_compact, vec!["3 lines"]);
+        assert_eq!(out.result_compact, vec!["Read 3 lines"]);
     }
 
     #[test]
