@@ -494,6 +494,41 @@ async fn handle_tool_result(
     let mut state = map.remove(&tr.request_id).unwrap();
     drop(map);
 
+    // Generate post-execution ChatToolStatus for each completed client-side tool
+    let mut update_messages = Vec::new();
+    for result in &state.completed_results {
+        // Find the original tool call to get name/input for formatting
+        if let Some(tc) = state.pending_tool_calls.iter().find(|tc| tc.id == result.tool_use_id) {
+            let fmt = formatter::get_formatter(
+                plugin_mgr.tool_formatter(&tc.name).unwrap_or("default")
+            );
+            let display_name = plugin_mgr.tool_display_name(&tc.name)
+                .unwrap_or(&tc.name).to_string();
+            let status_template = plugin_mgr.tool_status_template(&tc.name)
+                .unwrap_or("").to_string();
+            let fmt_out = fmt.format(&FormatInput {
+                tool_name: tc.name.clone(),
+                display_name: display_name.clone(),
+                status_template,
+                params: tc.input.clone(),
+                output: Some(result.content.clone()),
+                is_error: Some(result.is_error),
+            });
+            update_messages.push(Message::ChatToolStatus(ChatToolStatus {
+                request_id: state.cm.request_id.clone(),
+                thread_id: state.cm.thread_id.clone(),
+                tool_name: tc.name.clone(),
+                tool_call_id: Some(tc.id.clone()),
+                status: String::new(),
+                status_icon: Some(fmt_out.status_icon),
+                display_name: Some(display_name),
+                param_desc: Some(fmt_out.param_desc),
+                result_compact: Some(fmt_out.result_compact),
+                result_full: Some(fmt_out.result_full),
+            }));
+        }
+    }
+
     let result_content: Vec<serde_json::Value> = state
         .completed_results
         .iter()
@@ -516,7 +551,10 @@ async fn handle_tool_result(
     state.completed_results.clear();
     state.iteration += 1;
 
-    run_agent_loop(state, llm, conv_mgr, plugin_mgr, pending_loops).await
+    // Prepend update messages before agent loop continuation messages
+    let mut loop_messages = run_agent_loop(state, llm, conv_mgr, plugin_mgr, pending_loops).await;
+    update_messages.append(&mut loop_messages);
+    update_messages
 }
 
 /// Core agent loop: calls LLM, executes tools, pauses on client-side tools.
@@ -650,6 +688,36 @@ async fn run_agent_loop(
                                 }
                             };
                             result.tool_use_id = tc.id.clone();
+
+                            // Post-execution: send update ChatToolStatus with formatted results
+                            let post_fmt = formatter::get_formatter(
+                                plugin_mgr.tool_formatter(&tc.name).unwrap_or("default")
+                            );
+                            let post_display = plugin_mgr.tool_display_name(&tc.name)
+                                .unwrap_or(&tc.name).to_string();
+                            let post_template = plugin_mgr.tool_status_template(&tc.name)
+                                .unwrap_or("").to_string();
+                            let post_out = post_fmt.format(&FormatInput {
+                                tool_name: tc.name.clone(),
+                                display_name: post_display.clone(),
+                                status_template: post_template,
+                                params: tc.input.clone(),
+                                output: Some(result.content.clone()),
+                                is_error: Some(result.is_error),
+                            });
+                            messages.push(Message::ChatToolStatus(ChatToolStatus {
+                                request_id: state.cm.request_id.clone(),
+                                thread_id: state.cm.thread_id.clone(),
+                                tool_name: tc.name.clone(),
+                                tool_call_id: Some(tc.id.clone()),
+                                status: String::new(),
+                                status_icon: Some(post_out.status_icon),
+                                display_name: Some(post_display),
+                                param_desc: Some(post_out.param_desc),
+                                result_compact: Some(post_out.result_compact),
+                                result_full: Some(post_out.result_full),
+                            }));
+
                             tool_results.push(result);
                         }
                     }
