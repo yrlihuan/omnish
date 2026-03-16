@@ -121,6 +121,41 @@ pub fn render_chat_history(last_exchange: Option<&(String, String)>, earlier_cou
     output
 }
 
+pub fn render_tool_header(icon: &omnish_protocol::message::StatusIcon, display_name: &str, param_desc: &str, max_cols: usize) -> String {
+    use omnish_protocol::message::StatusIcon;
+    let icon_str = match icon {
+        StatusIcon::Running => "\x1b[97m●\x1b[0m",
+        StatusIcon::Success => "\x1b[38;5;114m●\x1b[0m",
+        StatusIcon::Error => "\x1b[38;5;211m●\x1b[0m",
+    };
+    let name_cols = display_name.len() + 2;
+    let available = max_cols.saturating_sub(4 + name_cols);
+    let truncated = truncate_cols(param_desc, available);
+    format!("{} \x1b[1m{}\x1b[0m\x1b[2m({})\x1b[0m", icon_str, display_name, truncated)
+}
+
+pub fn render_tool_header_full(icon: &omnish_protocol::message::StatusIcon, display_name: &str, param_desc: &str) -> String {
+    use omnish_protocol::message::StatusIcon;
+    let icon_str = match icon {
+        StatusIcon::Running => "\x1b[97m●\x1b[0m",
+        StatusIcon::Success => "\x1b[38;5;114m●\x1b[0m",
+        StatusIcon::Error => "\x1b[38;5;211m●\x1b[0m",
+    };
+    format!("{} \x1b[1m{}\x1b[0m\x1b[2m({})\x1b[0m", icon_str, display_name, param_desc)
+}
+
+pub fn render_tool_output(lines: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if i == 0 {
+            out.push(format!("  \x1b[2m⎿  {}\x1b[0m", line));
+        } else {
+            out.push(format!("  \x1b[2m   {}\x1b[0m", line));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

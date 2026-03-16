@@ -5,11 +5,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 
 use omnish_protocol::message::*;
+use omnish_protocol::message::{ChatToolStatus, StatusIcon};
 use omnish_pty::proxy::PtyProxy;
 use omnish_transport::rpc_client::RpcClient;
 
 use crate::{client_plugin, command, display, ghost_complete, markdown, widgets};
 use widgets::scroll_view::ScrollView;
+
+#[derive(Debug, Clone)]
+pub enum ScrollEntry {
+    UserInput(String),
+    ToolStatus(ChatToolStatus),
+    LlmText(String),
+    Response(String),
+    Separator,
+    SystemMessage(String),
+}
 
 pub struct ChatSession {
     current_thread_id: Option<String>,
@@ -17,7 +28,7 @@ pub struct ChatSession {
     chat_history: VecDeque<String>,
     history_index: Option<usize>,
     completer: ghost_complete::GhostCompleter,
-    scroll_history: Vec<String>,
+    scroll_history: Vec<ScrollEntry>,
     thinking_visible: bool,
     has_activity: bool,
     pending_input: Option<String>,
@@ -65,7 +76,10 @@ impl ChatSession {
     fn print_line(&mut self, line: &str) {
         write_stdout(line);
         write_stdout("\r\n");
-        self.scroll_history.push(line.to_string());
+    }
+
+    fn push_entry(&mut self, entry: ScrollEntry) {
+        self.scroll_history.push(entry);
     }
 
     fn browse_history(&self) {
@@ -73,10 +87,50 @@ impl ChatSession {
             return;
         }
         let (rows, cols) = super::get_terminal_size().unwrap_or((24, 80));
+        let lines: Vec<String> = self.scroll_history.iter().flat_map(|entry| {
+            match entry {
+                ScrollEntry::UserInput(text) => {
+                    text.lines().enumerate().map(|(i, line)| {
+                        if i == 0 {
+                            format!("\x1b[36m> \x1b[0m{}", line)
+                        } else {
+                            format!("  {}", line)
+                        }
+                    }).collect::<Vec<_>>()
+                }
+                ScrollEntry::ToolStatus(cts) => {
+                    let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
+                    let param_desc = cts.param_desc.as_deref().unwrap_or("");
+                    let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Success);
+                    let mut lines = vec![display::render_tool_header_full(icon, display_name, param_desc)];
+                    if let Some(ref full) = cts.result_full {
+                        lines.extend(display::render_tool_output(full));
+                    }
+                    lines
+                }
+                ScrollEntry::LlmText(text) => vec![text.clone()],
+                ScrollEntry::Response(content) => {
+                    let rendered = super::markdown::render(content);
+                    let rendered = format!("\x1b[97m●\x1b[0m {}", rendered);
+                    rendered.split("\r\n").map(String::from).collect()
+                }
+                ScrollEntry::Separator => {
+                    vec![display::render_separator(cols)]
+                }
+                ScrollEntry::SystemMessage(msg) => {
+                    vec![format!("\x1b[2;37m{}\x1b[0m", msg)]
+                }
+            }
+        }).collect();
+
+        if lines.is_empty() {
+            return;
+        }
+
         let compact_h = (rows as usize / 3).max(3);
         let expanded_h = (rows as usize).saturating_sub(3);
         let mut sv = ScrollView::new(compact_h, expanded_h, cols as usize);
-        for line in &self.scroll_history {
+        for line in &lines {
             sv.push_line(line);
         }
         sv.run_browse();
@@ -118,15 +172,7 @@ impl ChatSession {
             }
 
             // Add user input to scroll history for browse mode (Ctrl+O)
-            for (i, line) in trimmed.lines().enumerate() {
-                if i == 0 {
-                    self.scroll_history
-                        .push(format!("\x1b[36m> \x1b[0m{}", line));
-                } else {
-                    self.scroll_history
-                        .push(format!("  {}", line));
-                }
-            }
+            self.push_entry(ScrollEntry::UserInput(trimmed.to_string()));
 
             let is_inspection = trimmed.starts_with("/debug")
                 || trimmed.starts_with("/context")
@@ -317,27 +363,47 @@ impl ChatSession {
                                             Some(Message::ChatToolStatus(cts)) => {
                                                 self.erase_thinking();
                                                 if cts.tool_name.is_empty() {
-                                                    // LLM intermediate text — render as plain text
+                                                    // LLM intermediate text
                                                     self.print_line(&cts.status);
-                                                } else {
-                                                    // Escape newlines in status for display
-                                                    let escaped = cts.status.replace('\n', "\\n").replace('\r', "\\r");
-                                                    // Full version for scroll_history
-                                                    let full = format!(
-                                                        "\x1b[38;5;114m●\x1b[0m \x1b[1m{}\x1b[0m\x1b[2m({})\x1b[0m",
-                                                        cts.tool_name, escaped
-                                                    );
-                                                    // Truncate for terminal display
+                                                    self.push_entry(ScrollEntry::LlmText(cts.status.clone()));
+                                                } else if cts.result_compact.is_none() {
+                                                    // First status — tool is running (before execution)
                                                     let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
-                                                    let max_cols = (cols as usize).saturating_sub(6 + cts.tool_name.len());
-                                                    let truncated_status = display::truncate_cols(&escaped, max_cols);
-                                                    let display = format!(
-                                                        "\x1b[38;5;114m●\x1b[0m \x1b[1m{}\x1b[0m\x1b[2m({})\x1b[0m",
-                                                        cts.tool_name, truncated_status
-                                                    );
-                                                    write_stdout(&display);
-                                                    write_stdout("\r\n");
-                                                    self.scroll_history.push(full);
+                                                    let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
+                                                    let param_desc = cts.param_desc.as_deref().unwrap_or("");
+                                                    let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Running);
+                                                    let header = display::render_tool_header(icon, display_name, param_desc, cols as usize);
+                                                    self.print_line(&header);
+                                                    self.push_entry(ScrollEntry::ToolStatus(cts));
+                                                } else {
+                                                    // Second status — tool completed (after execution)
+                                                    // Update matching ToolStatus entry in scroll_history
+                                                    let tool_call_id = cts.tool_call_id.clone();
+                                                    if let Some(entry) = self.scroll_history.iter_mut().rev().find(|e| {
+                                                        matches!(e, ScrollEntry::ToolStatus(prev)
+                                                            if prev.tool_call_id == tool_call_id)
+                                                    }) {
+                                                        *entry = ScrollEntry::ToolStatus(cts.clone());
+                                                    }
+                                                    // Re-render terminal: overwrite the Running header with updated icon
+                                                    write_stdout("\x1b[1A\r\x1b[K");
+                                                    let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
+                                                    let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
+                                                    let param_desc = cts.param_desc.as_deref().unwrap_or("");
+                                                    let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Success);
+                                                    let header = display::render_tool_header(icon, display_name, param_desc, cols as usize);
+                                                    self.print_line(&header);
+                                                    // Render result_compact with ⎿ gutter
+                                                    if let Some(ref lines) = cts.result_compact {
+                                                        let rendered = display::render_tool_output(lines);
+                                                        for line in &rendered {
+                                                            self.print_line(line);
+                                                        }
+                                                        if lines.len() < cts.result_full.as_ref().map_or(0, |f| f.len()) {
+                                                            let total = cts.result_full.as_ref().unwrap().len();
+                                                            self.print_line(&format!("  \x1b[2m   … +{} lines\x1b[0m", total - lines.len()));
+                                                        }
+                                                    }
                                                 }
                                             }
                                             Some(Message::ChatToolCall(tc)) => {
@@ -351,8 +417,10 @@ impl ChatSession {
                                                 for line in rendered.split("\r\n") {
                                                     self.print_line(line);
                                                 }
+                                                self.push_entry(ScrollEntry::Response(resp.content.clone()));
                                                 let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
                                                 self.print_line(&display::render_separator(cols));
+                                                self.push_entry(ScrollEntry::Separator);
                                                 got_response = true;
                                                 break;
                                             }
@@ -410,7 +478,7 @@ impl ChatSession {
                                 }
                             }
 
-                            // Phase 3: Display output, send results
+                            // Phase 3: Send results (output rendered when second ChatToolStatus arrives)
                             let total = results.len();
                             let mut send_failed = false;
                             for (i, (tc, result)) in
@@ -418,32 +486,6 @@ impl ChatSession {
                             {
                                 let (content, is_error) = result
                                     .unwrap_or_else(|_| ("Tool execution panicked".to_string(), true));
-
-                                // Print tool output (head window with ⎿ gutter)
-                                let output_lines: Vec<&str> = content.lines().collect();
-                                let max_output = 5;
-                                let show_lines = if output_lines.len() > max_output {
-                                    &output_lines[..max_output]
-                                } else {
-                                    &output_lines[..]
-                                };
-                                for (j, line) in show_lines.iter().enumerate() {
-                                    if j == 0 {
-                                        self.print_line(&format!(
-                                            "  \x1b[2m⎿  {}\x1b[0m", line
-                                        ));
-                                    } else {
-                                        self.print_line(&format!(
-                                            "  \x1b[2m   {}\x1b[0m", line
-                                        ));
-                                    }
-                                }
-                                if output_lines.len() > max_output {
-                                    self.print_line(&format!(
-                                        "  \x1b[2m   … +{} lines\x1b[0m",
-                                        output_lines.len() - max_output
-                                    ));
-                                }
 
                                 let result_msg =
                                     Message::ChatToolResult(ChatToolResult {
@@ -497,6 +539,7 @@ impl ChatSession {
             if interrupted {
                 self.erase_thinking();
                 self.print_line("\x1b[2;37m(interrupted)\x1b[0m");
+                self.push_entry(ScrollEntry::SystemMessage("(interrupted)".to_string()));
 
                 let interrupt_msg = Message::ChatInterrupt(omnish_protocol::message::ChatInterrupt {
                     request_id: req_id.clone(),
@@ -836,10 +879,13 @@ impl ChatSession {
                 for line in rendered.split("\r\n") {
                     self.print_line(line);
                 }
+                self.push_entry(ScrollEntry::Response(msg));
                 let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
                 self.print_line(&display::render_separator(cols));
+                self.push_entry(ScrollEntry::Separator);
             } else {
                 write_stdout("\x1b[2;37m(resumed conversation)\x1b[0m\r\n");
+                self.push_entry(ScrollEntry::SystemMessage("(resumed conversation)".to_string()));
             }
         }
     }
