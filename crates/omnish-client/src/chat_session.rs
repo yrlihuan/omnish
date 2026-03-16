@@ -111,9 +111,14 @@ impl ChatSession {
                 ScrollEntry::LlmText(text) => vec![text.clone()],
                 ScrollEntry::Response(content) => {
                     let rendered = super::markdown::render(content);
-                    let rendered = format!("\x1b[97m●\x1b[0m {}", rendered);
                     let mut out = vec![String::new()]; // empty line before response
-                    out.extend(rendered.split("\r\n").map(String::from));
+                    for (i, line) in rendered.split("\r\n").enumerate() {
+                        if i == 0 {
+                            out.push(format!("\x1b[97m●\x1b[0m {}", line));
+                        } else {
+                            out.push(format!("  {}", line));
+                        }
+                    }
                     out
                 }
                 ScrollEntry::Separator => {
@@ -416,9 +421,12 @@ impl ChatSession {
                                                 self.erase_thinking();
                                                 self.print_line("");
                                                 let rendered = markdown::render(&resp.content);
-                                                let rendered = format!("\x1b[97m●\x1b[0m {}", rendered);
-                                                for line in rendered.split("\r\n") {
-                                                    self.print_line(line);
+                                                for (i, line) in rendered.split("\r\n").enumerate() {
+                                                    if i == 0 {
+                                                        self.print_line(&format!("\x1b[97m●\x1b[0m {}", line));
+                                                    } else {
+                                                        self.print_line(&format!("  {}", line));
+                                                    }
                                                 }
                                                 self.push_entry(ScrollEntry::Response(resp.content.clone()));
                                                 let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
@@ -977,9 +985,12 @@ impl ChatSession {
                         ScrollEntry::Response(content) => {
                             self.print_line("");
                             let rendered = markdown::render(content);
-                            let rendered = format!("\x1b[97m●\x1b[0m {}", rendered);
-                            for line in rendered.split("\r\n") {
-                                self.print_line(line);
+                            for (i, line) in rendered.split("\r\n").enumerate() {
+                                if i == 0 {
+                                    self.print_line(&format!("\x1b[97m●\x1b[0m {}", line));
+                                } else {
+                                    self.print_line(&format!("  {}", line));
+                                }
                             }
                         }
                         ScrollEntry::Separator => {
