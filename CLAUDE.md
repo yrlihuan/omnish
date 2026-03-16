@@ -1,3 +1,6 @@
+## About project
+integration tests are under tools/integration_tests
+
 ## Useful glab comments:
 
 ### view issue with comments
