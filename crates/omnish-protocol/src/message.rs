@@ -219,7 +219,7 @@ pub struct ChatInterrupt {
     pub query: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StatusIcon {
     Running,
     Success,
