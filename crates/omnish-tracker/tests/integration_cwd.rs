@@ -1,6 +1,6 @@
 // crates/omnish-tracker/tests/integration_cwd.rs
 use omnish_tracker::command_tracker::CommandTracker;
-use omnish_tracker::osc133_detector::{Osc133Detector, Osc133Event, Osc133EventKind};
+use omnish_tracker::osc133_detector::Osc133Detector;
 
 #[test]
 fn test_end_to_end_cwd_tracking() {

@@ -419,7 +419,7 @@ async fn test_interleaved_two_session_context_at_10_and_20_commands() {
         let t1 = ts_base + 1;
         let t2 = ts_base + 2;
 
-        mgr.write_io(sid, t0, 1, format!("$ ").as_bytes())
+        mgr.write_io(sid, t0, 1, "$ ".as_bytes())
             .await
             .unwrap();
         mgr.write_io(sid, t1, 0, format!("{}\r\n", cmd).as_bytes())

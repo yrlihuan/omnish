@@ -1,5 +1,6 @@
 use omnish_llm::tool::ToolResult;
 
+#[derive(Default)]
 pub struct EditTool;
 
 impl EditTool {

@@ -77,6 +77,29 @@ pub fn read_range(path: &Path, offset: u64, length: u64) -> Result<Vec<StreamEnt
     Ok(entries)
 }
 
+pub fn read_entries(path: &Path) -> Result<Vec<StreamEntry>> {
+    let mut data = Vec::new();
+    File::open(path)?.read_to_end(&mut data)?;
+    let mut entries = Vec::new();
+    let mut pos = 0;
+    while pos + 13 <= data.len() {
+        let timestamp_ms = u64::from_be_bytes(data[pos..pos + 8].try_into()?);
+        let direction = data[pos + 8];
+        let data_len = u32::from_be_bytes(data[pos + 9..pos + 13].try_into()?) as usize;
+        if pos + 13 + data_len > data.len() {
+            break;
+        }
+        let entry_data = data[pos + 13..pos + 13 + data_len].to_vec();
+        entries.push(StreamEntry {
+            timestamp_ms,
+            direction,
+            data: entry_data,
+        });
+        pos += 13 + data_len;
+    }
+    Ok(entries)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,27 +130,4 @@ mod tests {
         assert_eq!(entries[1].data, b"world");
         assert_eq!(entries[2].data, b"appended");
     }
-}
-
-pub fn read_entries(path: &Path) -> Result<Vec<StreamEntry>> {
-    let mut data = Vec::new();
-    File::open(path)?.read_to_end(&mut data)?;
-    let mut entries = Vec::new();
-    let mut pos = 0;
-    while pos + 13 <= data.len() {
-        let timestamp_ms = u64::from_be_bytes(data[pos..pos + 8].try_into()?);
-        let direction = data[pos + 8];
-        let data_len = u32::from_be_bytes(data[pos + 9..pos + 13].try_into()?) as usize;
-        if pos + 13 + data_len > data.len() {
-            break;
-        }
-        let entry_data = data[pos + 13..pos + 13 + data_len].to_vec();
-        entries.push(StreamEntry {
-            timestamp_ms,
-            direction,
-            data: entry_data,
-        });
-        pos += 13 + data_len;
-    }
-    Ok(entries)
 }

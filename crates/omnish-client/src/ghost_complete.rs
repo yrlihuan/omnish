@@ -96,7 +96,7 @@ mod tests {
     fn test_builtin_provider_exact_match_no_ghost() {
         let p = BuiltinProvider::new();
         // /context now has subcommands like /context chat, so it should suggest one
-        assert_eq!(p.suggest("/context").is_some(), true);
+        assert!(p.suggest("/context").is_some());
     }
 
     #[test]

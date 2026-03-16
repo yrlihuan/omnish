@@ -3,6 +3,7 @@ use omnish_llm::tool::ToolResult;
 /// Maximum number of matching paths to return.
 const MAX_RESULTS: usize = 100;
 
+#[derive(Default)]
 pub struct GlobTool;
 
 impl GlobTool {
@@ -95,7 +96,6 @@ impl GlobTool {
 mod tests {
     use super::*;
     use std::fs;
-    use std::io::Write;
 
     fn make_tree(dir: &std::path::Path) {
         fs::create_dir_all(dir.join("src")).unwrap();

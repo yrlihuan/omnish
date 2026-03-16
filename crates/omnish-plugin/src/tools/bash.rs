@@ -8,6 +8,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 120;
 /// Maximum command timeout in seconds.
 const MAX_TIMEOUT_SECS: u64 = 600;
 
+#[derive(Default)]
 pub struct BashTool;
 
 impl BashTool {

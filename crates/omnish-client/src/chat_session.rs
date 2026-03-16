@@ -136,6 +136,7 @@ impl ChatSession {
         sv.run_browse();
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn run(
         &mut self,
         rpc: &RpcClient,
@@ -263,7 +264,7 @@ impl ChatSession {
                 } else {
                     result
                 };
-                if let Some(path) = redirect.as_deref() {
+                if let Some(path) = redirect {
                     super::handle_command_result(&display_result, Some(path), proxy.child_pid() as u32);
                 } else {
                     write_stdout(&display::render_response(&display_result));
@@ -1118,16 +1119,16 @@ impl ChatSession {
 
             let cursor_after_visual_row: usize = {
                 let mut r = 0;
-                for i in 0..line_count.saturating_sub(1) {
-                    r += display_widths[i] / cols + 1;
+                for w in display_widths.iter().take(line_count.saturating_sub(1)) {
+                    r += w / cols + 1;
                 }
                 r += display_widths[line_count - 1] / cols;
                 r
             };
             let target_visual_row: usize = {
                 let mut r = 0;
-                for i in 0..cursor_row {
-                    r += display_widths[i] / cols + 1;
+                for w in display_widths.iter().take(cursor_row) {
+                    r += w / cols + 1;
                 }
                 r += cursor_display / cols;
                 r

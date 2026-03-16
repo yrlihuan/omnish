@@ -1051,6 +1051,7 @@ impl SessionManager {
     }
 
     /// Build context with automatic reduction of command count if character limit is exceeded
+    #[allow(clippy::too_many_arguments)]
     async fn build_context_with_limit(
         &self,
         commands: &[CommandRecord],
@@ -2297,11 +2298,11 @@ mod tests {
             started_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_millis() as u64 - 1 * 3600 * 1000, // 1 hour ago
+                .as_millis() as u64 - 3600 * 1000, // 1 hour ago
             ended_at: Some(SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_millis() as u64 - 1 * 3600 * 1000 + 1000),
+                .as_millis() as u64 - 3600 * 1000 + 1000),
             output_summary: "".into(),
             stream_offset: 0,
             stream_length: 0,

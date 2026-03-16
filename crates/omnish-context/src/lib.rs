@@ -105,6 +105,7 @@ pub async fn select_and_split<'a>(
 
 /// Like `build_context` but ensures at least `min_current_session_detailed` commands
 /// from the current session appear in the detailed (full output) portion.
+#[allow(clippy::too_many_arguments)]
 pub async fn build_context_with_session(
     strategy: &dyn ContextStrategy,
     formatter: &dyn ContextFormatter,

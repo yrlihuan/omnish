@@ -7,6 +7,7 @@ const DEFAULT_LIMIT: usize = 2000;
 /// Maximum characters per line before truncation.
 const MAX_LINE_CHARS: usize = 2000;
 
+#[derive(Default)]
 pub struct ReadTool;
 
 impl ReadTool {

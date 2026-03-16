@@ -79,7 +79,7 @@ impl ClientPluginManager {
         // Apply sandbox via pre_exec if requested
         if sandboxed {
             let data_dir_clone = data_dir.clone();
-            let cwd_owned: Option<std::path::PathBuf> = cwd.map(|s| std::path::PathBuf::from(s));
+            let cwd_owned: Option<std::path::PathBuf> = cwd.map(std::path::PathBuf::from);
             unsafe {
                 cmd.pre_exec(move || {
                     let cwd_path: Option<&std::path::Path> = cwd_owned.as_deref();

@@ -309,7 +309,7 @@ mod tests {
     fn test_truncate_by_chars_head_tail() {
         // Test that truncation keeps head and tail
         let text = "abcdefghijklmnopqrstuvwxyz";
-        let result = truncate_by_chars(&text, 10);
+        let result = truncate_by_chars(text, 10);
         assert!(result.starts_with("ab"));
         assert!(result.ends_with("yz"));
         assert!(result.contains("..."));

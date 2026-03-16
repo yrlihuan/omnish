@@ -57,6 +57,7 @@ impl Sink for ContentSink<'_> {
     }
 }
 
+#[derive(Default)]
 pub struct GrepTool;
 
 impl GrepTool {

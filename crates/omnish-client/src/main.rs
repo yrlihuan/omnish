@@ -1587,7 +1587,7 @@ impl DsrDetector {
                     let params = &self.buf[2..self.buf.len() - 1]; // between '[' and 'R'
                     let parsed = self.parse_params(params);
                     self.buf.clear();
-                    Some(parsed.map(|(r, c)| (r, c)))
+                    Some(parsed)
                 } else if byte.is_ascii_digit() || byte == b';' {
                     Some(None) // still accumulating params
                 } else {
@@ -1646,6 +1646,7 @@ fn command_basename(cmd: &str) -> &str {
 }
 
 /// Collect client debug state for /debug client command
+#[allow(clippy::too_many_arguments)]
 fn debug_client_state(
     shell_input: &shell_input::ShellInputTracker,
     interceptor: &interceptor::InputInterceptor,
@@ -2138,7 +2139,7 @@ mod tests {
         assert_eq!(d.feed(b"\x1b[?25h"), None); // show cursor
         assert_eq!(d.feed(b"\x1b[?25l"), None); // hide cursor
         assert_eq!(d.feed(b"\x1b[2J"), None);   // clear screen
-        assert_eq!(d.active, false);
+        assert!(!d.active);
     }
 
     #[test]

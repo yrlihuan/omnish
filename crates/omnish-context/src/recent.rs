@@ -1018,7 +1018,7 @@ mod tests {
         assert!(output_pos < sep_pos, "Output should appear before separator");
         // Separator should be on its own line
         let lines: Vec<&str> = result.lines().collect();
-        assert!(lines.iter().any(|line| *line == "--------------------"),
+        assert!(lines.contains(&"--------------------"),
                 "Separator should be a line of exactly 20 dashes");
 
         // Test interleaved formatter too

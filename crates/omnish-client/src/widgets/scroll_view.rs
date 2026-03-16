@@ -1,13 +1,13 @@
-/// A two-mode scrollable content viewer.
-///
-/// - **Compact mode** (default): shows the last `compact_height` lines, like a
-///   tail view.  New lines added via `push_line()` auto-scroll to the bottom.
-/// - **Expanded mode**: shows `expanded_height` lines with a scrollbar on the
-///   right edge and a hint line at the bottom.  The user can scroll with ↑↓/j/k,
-///   page with Ctrl-F/Ctrl-B, and exit with q/Esc.
-///
-/// Rendering uses ANSI cursor movement (same technique as Picker and LineStatus)
-/// — no alternate screen.
+//! A two-mode scrollable content viewer.
+//!
+//! - **Compact mode** (default): shows the last `compact_height` lines, like a
+//!   tail view.  New lines added via `push_line()` auto-scroll to the bottom.
+//! - **Expanded mode**: shows `expanded_height` lines with a scrollbar on the
+//!   right edge and a hint line at the bottom.  The user can scroll with ↑↓/j/k,
+//!   page with Ctrl-F/Ctrl-B, and exit with q/Esc.
+//!
+//! Rendering uses ANSI cursor movement (same technique as Picker and LineStatus)
+//! — no alternate screen.
 
 /// Scrollbar block characters.
 const THUMB: &str = "\x1b[2m\u{2590}\x1b[0m"; // ▐ (dim)
@@ -115,7 +115,7 @@ impl ScrollView {
         let mut rows = 0usize;
         for i in (0..total).rev() {
             let w = crate::display::display_width(&self.lines[i]);
-            let vr = if w == 0 { 1 } else { (w + cols - 1) / cols };
+            let vr = if w == 0 { 1 } else { w.div_ceil(cols) };
             if rows + vr > max_visual {
                 return (i + 1).min(total);
             }
@@ -228,6 +228,7 @@ impl ScrollView {
 
     /// Render expanded mode: viewport filling `expanded_height` visual rows + hint.
     /// Lines are NOT truncated — long lines wrap naturally, consuming multiple rows.
+    #[allow(clippy::needless_range_loop)]
     fn render_expanded(&mut self) -> String {
         let mut out = self.erase_seq();
         let total = self.lines.len();
@@ -238,14 +239,13 @@ impl ScrollView {
         let visual_rows: Vec<usize> = self.lines.iter()
             .map(|l| {
                 let w = crate::display::display_width(l);
-                if w == 0 { 1 } else { (w + cols - 1) / cols }
+                if w == 0 { 1 } else { w.div_ceil(cols) }
             })
             .collect();
 
-        // Walk backward from scroll_offset to find how many logical lines
+        // Walk forward from scroll_offset to find how many logical lines
         // fit in the viewport (in visual rows)
-        let end = (self.scroll_offset + total).min(total); // clamp
-        let mut start = self.scroll_offset.min(total);
+        let start = self.scroll_offset.min(total);
         let mut used_rows = 0usize;
         let mut lines_shown = 0usize;
         for i in start..total {

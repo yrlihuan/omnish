@@ -27,21 +27,17 @@ pub fn render(content: &str) -> String {
     let mut in_code_block = false;
     let mut list_depth: usize = 0;
     let mut ordered_index: Vec<u64> = Vec::new();
-    let mut heading_level: Option<u8> = None;
-
     for event in parser {
         match event {
             Event::Start(tag) => match tag {
-                Tag::Heading { level, .. } => {
-                    heading_level = Some(level as u8);
+                Tag::Heading { .. } => {
                     out.push_str(HEADING_COLOR);
                 }
                 Tag::Paragraph => {
                     // Add blank line between paragraphs (but not inside lists)
-                    if !out.is_empty() && list_depth == 0 {
-                        if !out.ends_with("\r\n") {
-                            out.push_str("\r\n");
-                        }
+                    if !out.is_empty() && list_depth == 0
+                        && !out.ends_with("\r\n") {
+                        out.push_str("\r\n");
                     }
                 }
                 Tag::BlockQuote(_) => {
@@ -101,7 +97,6 @@ pub fn render(content: &str) -> String {
             },
             Event::End(tag_end) => match tag_end {
                 TagEnd::Heading(_) => {
-                    heading_level = None;
                     out.push_str(RESET);
                     out.push_str("\r\n");
                 }
@@ -157,8 +152,6 @@ pub fn render(content: &str) -> String {
                     if out.ends_with("\r\n") {
                         out.truncate(out.len() - 2);
                     }
-                } else if heading_level.is_some() {
-                    out.push_str(&text);
                 } else {
                     out.push_str(&text);
                 }

@@ -224,8 +224,7 @@ impl InterceptGuard for TimeGapGuard {
 /// Return the expected byte length of a UTF-8 character from its leading byte.
 /// Returns 1 for ASCII / invalid lead bytes (safe default: flush immediately).
 fn utf8_char_len(first: u8) -> usize {
-    if first < 0x80 { 1 }
-    else if first < 0xC0 { 1 } // continuation byte (shouldn't be a lead)
+    if first < 0xC0 { 1 } // ASCII or continuation byte (shouldn't be a lead)
     else if first < 0xE0 { 2 }
     else if first < 0xF0 { 3 }
     else { 4 }
@@ -636,7 +635,7 @@ mod tests {
         // Now in chat mode
         interceptor.note_output(b"some output");
         // Chat state should be reset
-        assert_eq!(interceptor.in_chat, false);
+        assert!(!interceptor.in_chat);
         assert_eq!(interceptor.buffer.len(), 0);
     }
 

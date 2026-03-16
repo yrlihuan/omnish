@@ -749,7 +749,7 @@ mod tests {
         assert_eq!(c.ghost(), Some("cargo run"));
 
         // User types "cargo" — ghost trimmed to " run"
-        for (i, _ch) in "cargo".chars().enumerate() {
+        for (i, _ch) in "cargo".char_indices() {
             let typed: String = "cargo"[..=i].to_string();
             assert!(!c.on_input_changed(&typed, 2 + i as u64));
         }
