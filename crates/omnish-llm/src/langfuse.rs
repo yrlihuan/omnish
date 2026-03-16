@@ -268,7 +268,9 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max.min(s.len())])
+        // Find a valid char boundary at or before `max`
+        let end = s.floor_char_boundary(max);
+        format!("{}...", &s[..end])
     }
 }
 
@@ -299,5 +301,15 @@ mod tests {
         let t = truncate(&s, 10);
         assert!(t.ends_with("..."));
         assert_eq!(t.len(), 13);
+    }
+
+    #[test]
+    fn test_truncate_cjk_boundary() {
+        // '：' is 3 bytes (U+FF1A). Truncating at a byte offset inside it must not panic.
+        let s = "aaa：bbb"; // bytes: 3 + 3 + 3 = 9 total for "aaa："
+        // max=4 lands inside '：' (bytes 3..6), should truncate before it
+        let t = truncate(s, 4);
+        assert!(t.ends_with("..."));
+        assert!(t.starts_with("aaa"));
     }
 }
