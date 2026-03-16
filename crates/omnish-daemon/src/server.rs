@@ -1420,9 +1420,10 @@ async fn handle_llm_request(
                 response.model
             );
 
-            // Log thinking content if present
+            // Log thinking length and content
             if let Some(ref thinking) = response.thinking {
-                tracing::debug!("LLM thinking: {}", thinking);
+                tracing::info!("LLM thinking: {} chars", thinking.len());
+                tracing::debug!("LLM thinking content: {}", thinking);
             }
         }
         Err(e) => {
@@ -1515,9 +1516,10 @@ async fn handle_completion_request(
             }
             tracing::debug!("Completion LLM raw response: {:?}", response.text());
 
-            // Log thinking content if present
+            // Log thinking length and content
             if let Some(ref thinking) = response.thinking {
-                tracing::debug!("Completion LLM thinking: {}", thinking);
+                tracing::info!("Completion LLM thinking: {} chars", thinking.len());
+                tracing::debug!("Completion LLM thinking content: {}", thinking);
             }
         }
         Err(e) => {
