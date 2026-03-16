@@ -3,8 +3,8 @@
 /// - **Compact mode** (default): shows the last `compact_height` lines, like a
 ///   tail view.  New lines added via `push_line()` auto-scroll to the bottom.
 /// - **Expanded mode**: shows `expanded_height` lines with a scrollbar on the
-///   right edge and a hint line at the bottom.  The user can scroll with ↑↓/j/k
-///   and exit with q/Esc.
+///   right edge and a hint line at the bottom.  The user can scroll with ↑↓/j/k,
+///   page with Ctrl-F/Ctrl-B, and exit with q/Esc.
 ///
 /// Rendering uses ANSI cursor movement (same technique as Picker and LineStatus)
 /// — no alternate screen.
@@ -125,7 +125,7 @@ impl ScrollView {
     }
 
     /// Enter browse mode, handle scrolling keys, and return when the user exits.
-    /// Reads raw stdin: ↑↓/j/k scroll, q/Esc/Ctrl-O exit.
+    /// Reads raw stdin: ↑↓/j/k scroll, Ctrl-F/Ctrl-B page, q/Esc/Ctrl-O exit.
     /// Caller should erase/redraw surrounding UI after this returns.
     pub fn run_browse(&mut self) {
         use std::os::fd::AsRawFd;
@@ -174,6 +174,14 @@ impl ScrollView {
                 }
                 b'k' | b'K' => {
                     let seq = self.scroll_up(1);
+                    nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                }
+                0x06 => { // Ctrl-F: page down
+                    let seq = self.scroll_down(self.expanded_height);
+                    nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                }
+                0x02 => { // Ctrl-B: page up
+                    let seq = self.scroll_up(self.expanded_height);
                     nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
                 }
                 b'q' | b'Q' | 0x03 | 0x0f => break, // q, Ctrl-C, Ctrl-O
@@ -275,7 +283,7 @@ impl ScrollView {
         }
 
         // Hint line
-        out.push_str("\r\n\x1b[K\x1b[2m\u{2191}\u{2193}/j/k scroll  q quit\x1b[0m");
+        out.push_str("\r\n\x1b[K\x1b[2m\u{2191}\u{2193}/j/k scroll  ^F/^B page  q quit\x1b[0m");
 
         self.rendered_lines = used_rows + 1; // visual rows + hint
         out
