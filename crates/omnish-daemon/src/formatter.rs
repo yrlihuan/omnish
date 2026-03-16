@@ -203,7 +203,15 @@ impl ToolFormatter for EditFormatter {
             Some(_) => {
                 if input.is_error == Some(true) {
                     let text = input.output.as_deref().unwrap_or("");
-                    let full = all_lines(text);
+                    let old = input.params.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+                    let mut full = all_lines(text);
+                    if !old.is_empty() {
+                        full.push(String::new());
+                        full.push("old_string:".to_string());
+                        for line in old.lines() {
+                            full.push(format!("  {}", line));
+                        }
+                    }
                     let compact = head_lines(text, 5);
                     (compact, full)
                 } else {
@@ -444,23 +452,37 @@ mod tests {
     }
 
     #[test]
-    fn edit_formatter_error_shows_message() {
+    fn edit_formatter_error_shows_message_and_old_string() {
         let input = make_input(
             "edit",
             "",
-            json!({"file_path": "/tmp/test.txt"}),
-            Some("permission denied\ndetails here\nmore info"),
+            json!({"file_path": "/tmp/test.txt", "old_string": "fn foo() {\n    bar()\n}"}),
+            Some("Error: old_string not found in /tmp/test.txt"),
             Some(true),
         );
         let out = EditFormatter.format(&input);
         assert_eq!(out.status_icon, StatusIcon::Error);
-        assert_eq!(
-            out.result_compact,
-            vec!["permission denied", "details here", "more info"]
+        assert_eq!(out.result_compact, vec!["Error: old_string not found in /tmp/test.txt"]);
+        // full includes error message + blank line + old_string label + indented content
+        assert_eq!(out.result_full[0], "Error: old_string not found in /tmp/test.txt");
+        assert_eq!(out.result_full[1], "");
+        assert_eq!(out.result_full[2], "old_string:");
+        assert_eq!(out.result_full[3], "  fn foo() {");
+        assert_eq!(out.result_full[4], "      bar()");
+        assert_eq!(out.result_full[5], "  }");
+    }
+
+    #[test]
+    fn edit_formatter_error_no_old_string() {
+        let input = make_input(
+            "edit",
+            "",
+            json!({"file_path": "/tmp/test.txt"}),
+            Some("permission denied"),
+            Some(true),
         );
-        assert_eq!(
-            out.result_full,
-            vec!["permission denied", "details here", "more info"]
-        );
+        let out = EditFormatter.format(&input);
+        assert_eq!(out.status_icon, StatusIcon::Error);
+        assert_eq!(out.result_full, vec!["permission denied"]);
     }
 }
