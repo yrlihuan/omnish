@@ -1,5 +1,6 @@
 use anyhow::Result;
 use omnish_daemon::conversation_mgr::ConversationManager;
+use omnish_daemon::formatter::{self, FormatInput};
 use omnish_daemon::plugin::{PluginManager, PluginType};
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_daemon::task_mgr::TaskManager;
@@ -595,21 +596,31 @@ async fn run_agent_loop(
                     let mut tool_results = Vec::new();
                     let mut has_client_tools = false;
                     for tc in &tool_calls {
-                        let status_text = if tc.name == "command_query" {
-                            state.command_query_tool.status_text(&tc.name, &tc.input)
-                        } else {
-                            plugin_mgr.tool_status_text(&tc.name, &tc.input)
-                        };
+                        let display_name = plugin_mgr.tool_display_name(&tc.name)
+                            .unwrap_or(&tc.name).to_string();
+                        let formatter_name = plugin_mgr.tool_formatter(&tc.name)
+                            .unwrap_or("default");
+                        let status_template = plugin_mgr.tool_status_template(&tc.name)
+                            .unwrap_or("").to_string();
+                        let fmt = formatter::get_formatter(formatter_name);
+                        let fmt_out = fmt.format(&FormatInput {
+                            tool_name: tc.name.clone(),
+                            display_name: display_name.clone(),
+                            status_template,
+                            params: tc.input.clone(),
+                            output: None,
+                            is_error: None,
+                        });
 
                         messages.push(Message::ChatToolStatus(ChatToolStatus {
                             request_id: state.cm.request_id.clone(),
                             thread_id: state.cm.thread_id.clone(),
                             tool_name: tc.name.clone(),
-                            status: status_text,
-                            tool_call_id: None,
-                            status_icon: None,
-                            display_name: None,
-                            param_desc: None,
+                            tool_call_id: Some(tc.id.clone()),
+                            status: String::new(),
+                            status_icon: Some(fmt_out.status_icon),
+                            display_name: Some(display_name),
+                            param_desc: Some(fmt_out.param_desc),
                             result_compact: None,
                             result_full: None,
                         }));
