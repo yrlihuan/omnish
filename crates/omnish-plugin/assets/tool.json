@@ -48,7 +48,7 @@
         },
         "required": ["command"]
       },
-      "status_template": "执行: {command}",
+      "status_template": "{command}",
       "sandboxed": true
     },
     {
