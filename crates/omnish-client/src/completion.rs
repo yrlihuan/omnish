@@ -1201,6 +1201,102 @@ mod tests {
         assert_eq!(c.ghost(), None);
     }
 
+    // --- ESC dismiss tests ---
+
+    #[test]
+    fn test_dismiss_clears_ghost() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("git sta", 5);
+        c.mark_sent(5, "git sta");
+
+        let resp = CompletionResponse {
+            sequence_id: 5,
+            suggestions: vec![CompletionSuggestion {
+                text: "tus".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        c.on_response(&resp, "git sta");
+        assert_eq!(c.ghost(), Some("tus"));
+
+        // ESC dismiss should clear ghost
+        assert!(c.dismiss());
+        assert!(c.ghost().is_none());
+    }
+
+    #[test]
+    fn test_dismiss_without_ghost_returns_false() {
+        let mut c = ShellCompleter::new();
+        assert!(!c.dismiss());
+    }
+
+    #[test]
+    fn test_dismiss_suppresses_same_input_request() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("git sta", 5);
+        c.mark_sent(5, "git sta");
+
+        let resp = CompletionResponse {
+            sequence_id: 5,
+            suggestions: vec![CompletionSuggestion {
+                text: "tus".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        c.on_response(&resp, "git sta");
+        c.dismiss();
+
+        // Should not request again for the same input
+        c.on_input_changed("git sta", 6);
+        c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1));
+        assert!(!c.should_request(6, "git sta"));
+    }
+
+    #[test]
+    fn test_dismiss_allows_request_after_input_change() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("git sta", 5);
+        c.mark_sent(5, "git sta");
+
+        let resp = CompletionResponse {
+            sequence_id: 5,
+            suggestions: vec![CompletionSuggestion {
+                text: "tus".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        c.on_response(&resp, "git sta");
+        c.dismiss();
+
+        // Input changes — dismissed state should be cleared, requests allowed
+        c.on_input_changed("git status ", 6);
+        c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1));
+        assert!(c.should_request(6, "git status "));
+    }
+
+    #[test]
+    fn test_dismiss_cleared_on_prompt() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("ls", 1);
+        c.mark_sent(1, "ls");
+
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: " -la".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        c.on_response(&resp, "ls");
+        c.dismiss();
+
+        // New prompt (clear) should reset dismissed state
+        c.clear();
+        c.on_input_changed("ls", 2);
+        c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1));
+        assert!(c.should_request(2, "ls"));
+    }
+
     #[test]
     fn test_no_duplicate_requests_after_daemon_restart() {
         let mut c = ShellCompleter::new();
