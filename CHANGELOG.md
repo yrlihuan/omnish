@@ -1,5 +1,55 @@
 # Changelog
 
+## v0.6.4 (2026-03-16)
+
+### Features
+- **client**: Markdown rendering in chat responses (#272)
+- **client**: ScrollView widget with compact/browse mode for long chat responses (#274)
+- **client**: Full conversation history on `/resume` with ScrollView (#275)
+- **client**: ChatLayout region-based widget layout manager for unified chat rendering
+- **client**: Alternate screen for scroll view browse mode (#281)
+- **client**: Combine tool status and chat response in scroll view (#284)
+- **client**: Visual markers for user/tool/response in chat (#285)
+- **client**: Preserve chat history across query rounds (#286)
+- **client**: Unified tool output format with ⎿ gutter and head-first truncation (#287)
+- **client**: Dismiss ghost completion with ESC key (#259)
+- **client**: Ctrl-F/Ctrl-B page scrolling in browse mode (#282)
+- **client**: Wait for Enter after each test case in `-w` mode (#289)
+- **daemon**: Structured ChatToolStatus with display fields (#292)
+- **daemon**: Formatter module with built-in tool formatters (#292)
+- **daemon**: Structured history reconstruction for `/resume` (#293)
+- **plugin**: Display name and formatter fields in tool metadata (#292)
+- **plugin**: Edit formatter shows colored context diff output (#295)
+
+### Bug Fixes
+- **client**: Position cursor after "> " prefix when entering chat mode (#277)
+- **client**: Use relative cursor movement for editor redraw (#278)
+- **client**: Preserve shell prompt when entering chat mode (#279)
+- **client**: Handle visual line wrapping in editor redraw (#283)
+- **client**: Panic on CJK char boundary when truncating tool status (#288)
+- **client**: Let long lines wrap in browse mode instead of clipping (#288)
+- **client**: ESC dismiss — consume key and flush DSR detector (#259)
+- **client**: Include user input lines in chat browse history (#290)
+- **client**: Color only the > prompt, not user text in browse history (#290)
+- **daemon**: Read formatter shows "Read N lines" in compact output (#294)
+- **daemon**: Edit context diff — tool returns snippet, formatter parses it (#295)
+- **plugin**: Add /dev/null to Landlock writable paths (#273)
+
+### Performance
+- **client**: Fire-and-forget completion summary RPC to avoid blocking event loop
+
+### Refactoring
+- **client**: Extract chat logic into ChatSession, use natural scrollback
+- **client**: Unify truncation into `display::truncate_cols` with CJK support (#288)
+- **client**: Inline ScrollView hint and Ctrl+O browse into chat input
+- **client**: Move browse key handling into `ScrollView::run_browse()`
+- **client**: Resolve all clippy warnings across workspace
+
+### Build & CI
+- **ci**: Add GitHub Actions CI workflow (stable only)
+
+---
+
 ## v0.6.3 (2026-03-13)
 
 ### Features
