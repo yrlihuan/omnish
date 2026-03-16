@@ -81,6 +81,7 @@ impl ScrollView {
     }
 
     /// Exit expanded mode, return to compact.  Returns ANSI to redraw.
+    #[allow(dead_code)]
     pub fn exit_browse(&mut self) -> String {
         self.mode = ViewMode::Compact;
         self.render_compact()
@@ -262,6 +263,7 @@ impl ScrollView {
     /// Content lines contain ANSI styling but no cursor movement.
     /// Lines are truncated to max_cols. If content exceeds compact_height,
     /// returns the tail + a hint line.
+    #[allow(dead_code)]
     pub fn compact_lines(&self) -> Vec<String> {
         if self.lines.len() <= self.compact_height {
             return self.lines.iter()

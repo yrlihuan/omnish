@@ -65,6 +65,7 @@ impl LineStatus {
     /// Adds `text` as new line(s) below the existing content. If the total
     /// exceeds `max_lines`, older lines are hidden (only the most recent
     /// `max_lines` are shown).
+    #[allow(dead_code)]
     pub fn append(&mut self, text: &str) -> String {
         for line in text.lines() {
             self.content.push(line.to_string());
@@ -87,6 +88,7 @@ impl LineStatus {
 
     /// Returns current styled content lines for ChatLayout integration.
     /// Each line has dim styling applied.
+    #[allow(dead_code)]
     pub fn lines_content(&self) -> Vec<String> {
         if self.content.is_empty() {
             return Vec::new();

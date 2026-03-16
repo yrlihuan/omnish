@@ -1,15 +1,17 @@
+#[allow(dead_code)]
 pub struct Region {
     pub(crate) id: &'static str,
     pub(crate) height: usize,
     pub(crate) content: Vec<String>,
 }
 
+#[allow(dead_code)]
 pub struct ChatLayout {
     pub(crate) regions: Vec<Region>,
-    #[allow(dead_code)]
     cols: usize,
 }
 
+#[allow(dead_code)]
 impl ChatLayout {
     pub fn new(cols: usize) -> Self {
         Self { regions: Vec::new(), cols }
