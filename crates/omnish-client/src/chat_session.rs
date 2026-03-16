@@ -305,11 +305,16 @@ impl ChatSession {
                                         match msg {
                                             Some(Message::ChatToolStatus(cts)) => {
                                                 self.erase_thinking();
-                                                let text = format!(
-                                                    "\x1b[38;5;114m●\x1b[0m \x1b[2m{}({})\x1b[0m",
-                                                    cts.tool_name, cts.status
-                                                );
-                                                self.print_line(&text);
+                                                if cts.tool_name.is_empty() {
+                                                    // LLM intermediate text — render as plain text
+                                                    self.print_line(&cts.status);
+                                                } else {
+                                                    let text = format!(
+                                                        "\x1b[38;5;114m●\x1b[0m \x1b[1m{}\x1b[0m\x1b[2m({})\x1b[0m",
+                                                        cts.tool_name, cts.status
+                                                    );
+                                                    self.print_line(&text);
+                                                }
                                             }
                                             Some(Message::ChatToolCall(tc)) => {
                                                 tool_calls.push(tc);
@@ -390,23 +395,30 @@ impl ChatSession {
                                 let (content, is_error) = result
                                     .unwrap_or_else(|_| ("Tool execution panicked".to_string(), true));
 
-                                // Print tool output (tail window)
+                                // Print tool output (head window with ⎿ gutter)
                                 let output_lines: Vec<&str> = content.lines().collect();
                                 let max_output = 5;
+                                let show_lines = if output_lines.len() > max_output {
+                                    &output_lines[..max_output]
+                                } else {
+                                    &output_lines[..]
+                                };
+                                for (j, line) in show_lines.iter().enumerate() {
+                                    if j == 0 {
+                                        self.print_line(&format!(
+                                            "  \x1b[2m⎿  {}\x1b[0m", line
+                                        ));
+                                    } else {
+                                        self.print_line(&format!(
+                                            "  \x1b[2m   {}\x1b[0m", line
+                                        ));
+                                    }
+                                }
                                 if output_lines.len() > max_output {
                                     self.print_line(&format!(
-                                        "  \x1b[2m... +{} lines\x1b[0m",
+                                        "  \x1b[2m   … +{} lines\x1b[0m",
                                         output_lines.len() - max_output
                                     ));
-                                    for line in
-                                        output_lines.iter().skip(output_lines.len() - max_output)
-                                    {
-                                        self.print_line(&format!("  \x1b[2m{}\x1b[0m", line));
-                                    }
-                                } else {
-                                    for line in &output_lines {
-                                        self.print_line(&format!("  \x1b[2m{}\x1b[0m", line));
-                                    }
                                 }
 
                                 let result_msg =
