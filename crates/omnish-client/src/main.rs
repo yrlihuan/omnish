@@ -656,6 +656,17 @@ async fn main() -> Result<()> {
                                 }
                             }
                         } else {
+                            // ESC key dismisses ghost text (whether standalone or start of escape sequence)
+                            if bytes.contains(&0x1b) && shell_completer.ghost().is_some() {
+                                if shell_completer.dismiss() {
+                                    nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
+                                    if let Some(ref rpc) = daemon_conn {
+                                        let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
+                                        send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd).await;
+                                    }
+                                }
+                            }
+
                             // Forward these bytes to PTY
                             proxy.write_all(&bytes)?;
 

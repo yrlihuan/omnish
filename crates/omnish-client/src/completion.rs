@@ -42,6 +42,9 @@ pub struct ShellCompleter {
     sent_input: String,
     /// Last completion info for tracking (sequence_id, prompt, completion, response_time)
     last_completion: Option<CompletionInfo>,
+    /// Input that was explicitly dismissed by the user (ESC key).
+    /// Prevents re-requesting completion for the same input.
+    dismissed_input: Option<String>,
 }
 
 /// Info about the last completion response
@@ -66,6 +69,7 @@ impl ShellCompleter {
             ghost_set_at: None,
             sent_input: String::new(),
             last_completion: None,
+            dismissed_input: None,
         }
     }
 
@@ -81,6 +85,11 @@ impl ShellCompleter {
     pub fn on_input_changed(&mut self, input: &str, sequence_id: u64) -> bool {
         self.pending_seq = sequence_id;
         self.last_change = Some(Instant::now());
+
+        // Clear dismissed state when input changes
+        if self.dismissed_input.as_deref() != Some(input) {
+            self.dismissed_input = None;
+        }
 
         // If current ghost is still a prefix match, keep showing it
         if let Some(ref ghost) = self.current_ghost {
@@ -112,6 +121,11 @@ impl ShellCompleter {
     ///    after timeout (2× for empty input to reduce spam).
     /// 4. Require new input — sequence_id must have advanced since last send.
     pub fn should_request(&self, current_sequence_id: u64, current_input: &str) -> bool {
+        // Don't re-request for explicitly dismissed input
+        if self.dismissed_input.as_deref() == Some(current_input) {
+            return false;
+        }
+
         if self.active_requests.len() >= MAX_CONCURRENT_REQUESTS {
             return false;
         }
@@ -324,12 +338,27 @@ impl ShellCompleter {
         Some(ghost)
     }
 
+    /// Dismiss ghost text explicitly (user pressed ESC).
+    /// Clears ghost and suppresses re-requesting for the same input.
+    /// Returns `true` if ghost text was dismissed (caller should erase it from screen).
+    pub fn dismiss(&mut self) -> bool {
+        let had_ghost = self.current_ghost.is_some();
+        if had_ghost {
+            self.dismissed_input = Some(self.ghost_input.clone());
+            self.current_ghost = None;
+            self.ghost_input.clear();
+            self.ghost_set_at = None;
+        }
+        had_ghost
+    }
+
     /// Clear ghost text and clean up any active requests.
     /// Called when prompt appears or user cancels completion.
     pub fn clear(&mut self) {
         self.current_ghost = None;
         self.ghost_input.clear();
         self.ghost_set_at = None;
+        self.dismissed_input = None;
         // Clear active requests when ghost is cleared
         self.active_requests.clear();
         // Set last_change to a time in the past so debounce is expired
