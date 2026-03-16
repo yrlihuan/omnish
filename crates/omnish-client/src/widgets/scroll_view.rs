@@ -299,11 +299,7 @@ impl ScrollView {
     }
 
     fn truncate_line(line: &str, max_cols: usize) -> String {
-        if max_cols == 0 || line.chars().count() <= max_cols {
-            return line.to_string();
-        }
-        let truncated: String = line.chars().take(max_cols.saturating_sub(3)).collect();
-        format!("{}...", truncated)
+        crate::display::truncate_cols(line, max_cols)
     }
 }
 

@@ -34,7 +34,7 @@ impl InlineNotice {
     }
 
     pub fn render_at(message: &str, max_cols: usize, at_bottom: bool) -> String {
-        let truncated = truncate(message, max_cols);
+        let truncated = crate::display::truncate_cols(message, max_cols);
         if at_bottom {
             format!(
                 "\x1b7\x1b[1S\x1b[1A\x1b[1L\r\x1b[2m{}\x1b[0m\x1b8",
@@ -49,25 +49,10 @@ impl InlineNotice {
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if max == 0 {
-        return String::new();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= max {
-        s.to_string()
-    } else if max <= 3 {
-        chars[..max].iter().collect()
-    } else {
-        let mut out: String = chars[..max - 3].iter().collect();
-        out.push_str("...");
-        out
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::display::truncate_cols as truncate;
 
     #[test]
     fn test_render_contains_message() {
@@ -122,19 +107,19 @@ mod tests {
 
     #[test]
     fn test_truncate_long() {
-        assert_eq!(truncate("hello world", 8), "hello...");
+        assert_eq!(truncate("hello world", 8), "hello w…");
     }
 
     #[test]
     fn test_truncate_tiny_max() {
-        assert_eq!(truncate("hello", 2), "he");
+        assert_eq!(truncate("hello", 2), "h…");
     }
 
     #[test]
     fn test_render_truncates_to_max_cols() {
         let long_msg = "a".repeat(100);
         let output = InlineNotice::render(&long_msg, 20);
-        assert!(output.contains("..."));
+        assert!(output.contains("…"));
         assert!(!output.contains(&"a".repeat(100)));
     }
 

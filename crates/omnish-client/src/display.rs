@@ -3,6 +3,34 @@
 // Pure functions that produce ANSI terminal output strings for the :: interactive mode.
 // All functions return a String suitable for writing to a raw-mode terminal (using \r\n).
 
+/// Truncate a string to fit within `max_cols` display columns.
+/// CJK / fullwidth characters count as 2 columns.
+/// Appends "…" if truncated.
+pub fn truncate_cols(s: &str, max_cols: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    if max_cols == 0 {
+        return String::new();
+    }
+    // First check if the string fits entirely
+    let total_width: usize = s.chars().map(|c| c.width().unwrap_or(0)).sum();
+    if total_width <= max_cols {
+        return s.to_string();
+    }
+    // Doesn't fit — truncate, reserving 1 column for "…"
+    let limit = max_cols.saturating_sub(1);
+    let mut width = 0usize;
+    let mut end = 0usize;
+    for ch in s.chars() {
+        let w = ch.width().unwrap_or(0);
+        if width + w > limit {
+            break;
+        }
+        width += w;
+        end += ch.len_utf8();
+    }
+    format!("{}…", &s[..end])
+}
+
 /// Render a separator line spanning `cols` columns (dim ─ characters).
 pub fn render_separator(cols: u16) -> String {
     format!("\x1b[2m{}\x1b[0m", "─".repeat(cols as usize))
@@ -75,6 +103,40 @@ pub fn render_chat_history(last_exchange: Option<&(String, String)>, earlier_cou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncate_cols_ascii_fits() {
+        assert_eq!(truncate_cols("hello", 10), "hello");
+        assert_eq!(truncate_cols("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_cols_ascii_truncated() {
+        assert_eq!(truncate_cols("hello world", 8), "hello w…");
+    }
+
+    #[test]
+    fn truncate_cols_cjk_fits() {
+        assert_eq!(truncate_cols("你好", 4), "你好");
+    }
+
+    #[test]
+    fn truncate_cols_cjk_truncated() {
+        // "你好世界" = 8 cols, limit to 6 → "你好…" (4+1=5 cols)
+        assert_eq!(truncate_cols("你好世界", 6), "你好…");
+    }
+
+    #[test]
+    fn truncate_cols_mixed() {
+        // "ab你好cd" = 2+4+2 = 8 cols, limit to 6 → "ab你…" (2+2+1=5)
+        assert_eq!(truncate_cols("ab你好cd", 6), "ab你…");
+    }
+
+    #[test]
+    fn truncate_cols_empty() {
+        assert_eq!(truncate_cols("hello", 0), "");
+        assert_eq!(truncate_cols("", 10), "");
+    }
 
     /// Helper: feed bytes into a vt100 parser and return the parser for inspection.
     fn parse_ansi(input: &str, cols: u16, rows: u16) -> vt100::Parser {

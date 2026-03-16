@@ -123,13 +123,8 @@ impl LineStatus {
         }
     }
 
-    /// Truncate a line to fit within max_cols, appending "..." if needed.
     fn truncate_line(line: &str, max_cols: usize) -> String {
-        if max_cols == 0 || line.chars().count() <= max_cols {
-            return line.to_string();
-        }
-        let truncated: String = line.chars().take(max_cols.saturating_sub(3)).collect();
-        format!("{}...", truncated)
+        crate::display::truncate_cols(line, max_cols)
     }
 
     /// Build the ANSI sequence that clears all occupied lines from bottom to
@@ -262,8 +257,8 @@ mod tests {
         let mut s = LineStatus::new(20, 5);
         let seq = s.show("this is a very long line that exceeds the limit");
         let visible = strip_ansi(&seq);
-        assert!(visible.contains("..."));
-        // The truncated content should be at most 20 chars
+        assert!(visible.contains("…"));
+        // The truncated content should be at most 20 display columns
         for line in visible.lines() {
             let line = line.trim_start_matches('\r');
             if !line.is_empty() {
@@ -278,7 +273,7 @@ mod tests {
         let seq = s.show("short");
         let visible = strip_ansi(&seq);
         assert!(visible.contains("short"));
-        assert!(!visible.contains("..."));
+        assert!(!visible.contains("…"));
     }
 
     #[test]
@@ -287,7 +282,7 @@ mod tests {
         let long = "a".repeat(200);
         let seq = s.show(&long);
         let visible = strip_ansi(&seq);
-        assert!(!visible.contains("..."));
+        assert!(!visible.contains("…"));
     }
 
     // -- Append tests --
