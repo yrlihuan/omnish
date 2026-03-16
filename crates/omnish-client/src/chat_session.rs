@@ -117,6 +117,17 @@ impl ChatSession {
                 continue;
             }
 
+            // Add user input to scroll history for browse mode (Ctrl+O)
+            for (i, line) in trimmed.lines().enumerate() {
+                if i == 0 {
+                    self.scroll_history
+                        .push(format!("\x1b[36m> {}\x1b[0m", line));
+                } else {
+                    self.scroll_history
+                        .push(format!("\x1b[36m  {}\x1b[0m", line));
+                }
+            }
+
             let is_inspection = trimmed.starts_with("/debug")
                 || trimmed.starts_with("/context")
                 || trimmed.starts_with("/template");
