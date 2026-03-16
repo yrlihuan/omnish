@@ -40,7 +40,7 @@ fn should_buffer(msg: &Message) -> bool {
 }
 
 /// Send completion summary to daemon if there's a pending completion
-async fn send_completion_summary(
+fn send_completion_summary(
     rpc: &RpcClient,
     shell_completer: &mut completion::ShellCompleter,
     session_id: &str,
@@ -48,20 +48,23 @@ async fn send_completion_summary(
     cwd: Option<String>,
 ) {
     if let Some(summary) = shell_completer.take_completion_summary(session_id, accepted, cwd) {
+        let rpc = rpc.clone();
         let msg = Message::CompletionSummary(summary);
-        let _ = rpc.call(msg).await;
+        tokio::spawn(async move {
+            let _ = rpc.call(msg).await;
+        });
     }
 }
 
 /// Send completion summary for ignored completion (accepted=false)
-async fn send_ignored_summary(
+fn send_ignored_summary(
     rpc: &RpcClient,
     shell_completer: &mut completion::ShellCompleter,
     session_id: &str,
     cwd: Option<String>,
 ) {
     // take_completion_summary returns None if there's no pending completion
-    send_completion_summary(rpc, shell_completer, session_id, false, cwd).await;
+    send_completion_summary(rpc, shell_completer, session_id, false, cwd);
 }
 
 /// Send a message to the daemon, buffering it if the send fails and
@@ -657,7 +660,7 @@ async fn main() -> Result<()> {
                                 // Send completion summary (accepted)
                                 if let Some(ref rpc) = daemon_conn {
                                     let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
-                                    send_completion_summary(rpc, &mut shell_completer, &session_id, true, shell_cwd).await;
+                                    send_completion_summary(rpc, &mut shell_completer, &session_id, true, shell_cwd);
                                 }
                             }
                         } else if bytes == [0x1b] && shell_completer.ghost().is_some() {
@@ -666,7 +669,7 @@ async fn main() -> Result<()> {
                                 nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
                                 if let Some(ref rpc) = daemon_conn {
                                     let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
-                                    send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd).await;
+                                    send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd);
                                 }
                             }
                         } else {
@@ -690,7 +693,7 @@ async fn main() -> Result<()> {
                                         // Send completion summary (ignored - user pressed Tab/Up/Down)
                                         if let Some(ref rpc) = daemon_conn {
                                             let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
-                                            send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd).await;
+                                            send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd);
                                         }
                                         shell_completer.clear();
                                         nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
@@ -706,7 +709,7 @@ async fn main() -> Result<()> {
                                         // Send completion summary (ignored - user pressed Ctrl+R)
                                         if let Some(ref rpc) = daemon_conn {
                                             let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
-                                            send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd).await;
+                                            send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd);
                                         }
                                         shell_completer.clear();
                                         nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
@@ -726,7 +729,7 @@ async fn main() -> Result<()> {
                                     // Send completion summary (ignored - user typed different input)
                                     if let Some(ref rpc) = daemon_conn {
                                         let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
-                                        send_ignored_summary(rpc, &mut shell_completer, &session_id, shell_cwd).await;
+                                        send_ignored_summary(rpc, &mut shell_completer, &session_id, shell_cwd);
                                     }
                                 }
                             }
@@ -866,7 +869,7 @@ async fn main() -> Result<()> {
                                 nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
                                 if let Some(ref rpc) = daemon_conn {
                                     let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
-                                    send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd).await;
+                                    send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd);
                                 }
                             }
                         } else {
@@ -985,7 +988,7 @@ async fn main() -> Result<()> {
                                 // User pressed Enter - send completion summary (ignored)
                                 if let Some(ref rpc) = daemon_conn {
                                     let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
-                                    send_ignored_summary(rpc, &mut shell_completer, &session_id, shell_cwd).await;
+                                    send_ignored_summary(rpc, &mut shell_completer, &session_id, shell_cwd);
                                 }
                                 shell_completer.clear();
                                 // Reset polling interval to 1s on command start
@@ -1001,7 +1004,7 @@ async fn main() -> Result<()> {
                                 // Output started - send completion summary (ignored)
                                 if let Some(ref rpc) = daemon_conn {
                                     let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
-                                    send_ignored_summary(rpc, &mut shell_completer, &session_id, shell_cwd).await;
+                                    send_ignored_summary(rpc, &mut shell_completer, &session_id, shell_cwd);
                                 }
                                 shell_completer.clear();
                             }
@@ -1183,7 +1186,7 @@ async fn main() -> Result<()> {
             // Send completion summary (ignored - ghost expired)
             if let Some(ref rpc) = daemon_conn {
                 let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
-                send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd).await;
+                send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd);
             }
             shell_completer.clear();
             nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
