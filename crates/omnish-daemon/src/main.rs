@@ -161,6 +161,17 @@ async fn async_main() -> Result<()> {
         );
     }
 
+    let conv_mgr = Arc::new(ConversationManager::new(omnish_dir.join("threads")));
+
+    // Register thread summary job (runs every 10 minutes)
+    {
+        let job = omnish_daemon::thread_summary::create_thread_summary_job(
+            Arc::clone(&conv_mgr),
+            llm_backend.clone(),
+        )?;
+        task_mgr.register("thread_summary", "0 */10 * * * *", job).await?;
+    }
+
     task_mgr.start().await?;
     let task_mgr = Arc::new(tokio::sync::Mutex::new(task_mgr));
 
@@ -178,8 +189,6 @@ async fn async_main() -> Result<()> {
     } else {
         None
     };
-
-    let conv_mgr = Arc::new(ConversationManager::new(omnish_dir.join("threads")));
 
     // Write embedded assets to ~/.omnish/ (overwritten on every startup)
     install_embedded_assets(&omnish_dir);

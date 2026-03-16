@@ -62,6 +62,12 @@ pub const HOURLY_NOTES_PROMPT: &str =
     "以下<commands>中是从多台终端收集的过去1小时的命令及其简要输出。\
      请用中文以项目符号列表形式列出这一个小时的工作内容，每个条目包含一项主要活动或成果。适合直接作为工作日志。";
 
+/// The thread-summary LLM prompt.
+pub const THREAD_SUMMARY_PROMPT: &str =
+    "以下<conversation>中是一段用户与AI助手的对话记录。\
+     请用中文生成一句简短摘要（不超过50字），概括这段对话的主要话题和目的。\
+     只输出摘要本身，不要加引号或前缀。";
+
 /// Known template names for `/template <name>`.
 pub const TEMPLATE_NAMES: &[&str] = &["chat", "chat-system", "auto-complete", "daily-notes", "hourly-notes"];
 

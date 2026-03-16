@@ -2,6 +2,19 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct ThreadMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Number of conversation rounds when summary was last generated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_rounds: Option<u32>,
+}
+
 pub struct ConversationManager {
     threads_dir: PathBuf,
     /// In-memory store: thread_id → raw JSON messages.
@@ -41,15 +54,34 @@ impl ConversationManager {
         Self { threads_dir, threads: Mutex::new(threads) }
     }
 
-    /// Create a new thread, return its UUID.
-    pub fn create_thread(&self) -> String {
+    /// Create a new thread with optional metadata, return its UUID.
+    pub fn create_thread(&self, meta: ThreadMeta) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         // Create empty file on disk
         let path = self.threads_dir.join(format!("{}.jsonl", id));
         std::fs::File::create(&path).ok();
+        // Save metadata
+        self.save_meta(&id, &meta);
         // Insert empty vec in memory
         self.threads.lock().unwrap().insert(id.clone(), Vec::new());
         id
+    }
+
+    /// Save thread metadata to a sidecar `.meta.json` file.
+    pub fn save_meta(&self, thread_id: &str, meta: &ThreadMeta) {
+        let path = self.threads_dir.join(format!("{}.meta.json", thread_id));
+        if let Ok(json) = serde_json::to_string_pretty(meta) {
+            std::fs::write(&path, json).ok();
+        }
+    }
+
+    /// Load thread metadata from the sidecar `.meta.json` file.
+    pub fn load_meta(&self, thread_id: &str) -> ThreadMeta {
+        let path = self.threads_dir.join(format!("{}.meta.json", thread_id));
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
     }
 
     /// Get the most recent thread by file modification time, or None.
@@ -91,6 +123,20 @@ impl ConversationManager {
         conversations
     }
 
+    /// List all thread IDs.
+    pub fn list_thread_ids(&self) -> Vec<String> {
+        self.threads.lock().unwrap().keys().cloned().collect()
+    }
+
+    /// Count conversation rounds (user inputs) in a thread.
+    pub fn count_rounds(&self, thread_id: &str) -> u32 {
+        let threads = self.threads.lock().unwrap();
+        threads
+            .get(thread_id)
+            .map(|msgs| msgs.iter().filter(|m| Self::is_user_input(m)).count() as u32)
+            .unwrap_or(0)
+    }
+
     /// Get thread_id by index (0-based, sorted by modification time).
     /// Returns None if index is out of bounds.
     pub fn get_thread_by_index(&self, index: usize) -> Option<String> {
@@ -98,13 +144,15 @@ impl ConversationManager {
         conversations.into_iter().nth(index).map(|(thread_id, _, _, _)| thread_id)
     }
 
-    /// Delete a thread by ID. Removes from both memory and disk.
+    /// Delete a thread by ID. Removes from both memory and disk (including metadata).
     /// Returns true if the thread existed and was deleted.
     pub fn delete_thread(&self, thread_id: &str) -> bool {
         let removed = self.threads.lock().unwrap().remove(thread_id).is_some();
         if removed {
             let path = self.threads_dir.join(format!("{}.jsonl", thread_id));
             std::fs::remove_file(&path).ok();
+            let meta_path = self.threads_dir.join(format!("{}.meta.json", thread_id));
+            std::fs::remove_file(&meta_path).ok();
         }
         removed
     }
@@ -237,7 +285,7 @@ mod tests {
         let mgr = ConversationManager::new(dir.path().to_path_buf());
         assert!(mgr.get_latest_thread().is_none());
 
-        let id = mgr.create_thread();
+        let id = mgr.create_thread(ThreadMeta::default());
         let latest = mgr.get_latest_thread().unwrap();
         assert_eq!(latest, id);
     }
@@ -246,7 +294,7 @@ mod tests {
     fn test_append_and_load_raw() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConversationManager::new(dir.path().to_path_buf());
-        let id = mgr.create_thread();
+        let id = mgr.create_thread(ThreadMeta::default());
 
         mgr.append_messages(&id, &[user_msg("hello"), assistant_msg("hi there")]);
         mgr.append_messages(&id, &[user_msg("how are you?"), assistant_msg("I'm fine")]);
@@ -267,7 +315,7 @@ mod tests {
     fn test_get_all_exchanges() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConversationManager::new(dir.path().to_path_buf());
-        let id = mgr.create_thread();
+        let id = mgr.create_thread(ThreadMeta::default());
 
         // Empty thread
         let exchanges = mgr.get_all_exchanges(&id);
@@ -294,7 +342,7 @@ mod tests {
     fn test_empty_thread_load() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConversationManager::new(dir.path().to_path_buf());
-        let id = mgr.create_thread();
+        let id = mgr.create_thread(ThreadMeta::default());
 
         let msgs = mgr.load_raw_messages(&id);
         assert!(msgs.is_empty());
@@ -304,7 +352,7 @@ mod tests {
     fn test_tool_use_messages_preserved() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConversationManager::new(dir.path().to_path_buf());
-        let id = mgr.create_thread();
+        let id = mgr.create_thread(ThreadMeta::default());
 
         let messages = vec![
             user_msg("what did ls output?"),
@@ -327,7 +375,7 @@ mod tests {
     fn test_get_all_exchanges_with_tool_use() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConversationManager::new(dir.path().to_path_buf());
-        let id = mgr.create_thread();
+        let id = mgr.create_thread(ThreadMeta::default());
 
         let messages = vec![
             user_msg("what did ls output?"),
@@ -348,7 +396,7 @@ mod tests {
     fn test_plain_query_stored_without_system_reminder() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConversationManager::new(dir.path().to_path_buf());
-        let id = mgr.create_thread();
+        let id = mgr.create_thread(ThreadMeta::default());
 
         // system-reminder is NOT stored — server strips it before persisting
         mgr.append_messages(&id, &[user_msg("what happened?"), assistant_msg("Everything is fine")]);
@@ -363,7 +411,7 @@ mod tests {
     fn test_interrupt_stored_as_raw_messages() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConversationManager::new(dir.path().to_path_buf());
-        let id = mgr.create_thread();
+        let id = mgr.create_thread(ThreadMeta::default());
 
         // Simulate interrupt: user message + partial assistant response
         let messages = vec![
@@ -383,8 +431,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConversationManager::new(dir.path().to_path_buf());
 
-        let id1 = mgr.create_thread();
-        let id2 = mgr.create_thread();
+        let id1 = mgr.create_thread(ThreadMeta::default());
+        let id2 = mgr.create_thread(ThreadMeta::default());
         mgr.append_messages(&id1, &[user_msg("msg1")]);
         mgr.append_messages(&id2, &[user_msg("msg2")]);
 
@@ -409,7 +457,7 @@ mod tests {
 
         {
             let mgr = ConversationManager::new(dir.path().to_path_buf());
-            thread_id = mgr.create_thread();
+            thread_id = mgr.create_thread(ThreadMeta::default());
             mgr.append_messages(&thread_id, &[
                 user_msg("persistent question"),
                 assistant_msg("persistent answer"),
@@ -421,5 +469,55 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0]["content"], "persistent question");
         assert_eq!(msgs[1]["content"], "persistent answer");
+    }
+
+    #[test]
+    fn test_meta_save_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+
+        let meta = ThreadMeta {
+            host: Some("myhost".to_string()),
+            cwd: Some("/home/user".to_string()),
+            ..Default::default()
+        };
+        let id = mgr.create_thread(meta);
+
+        let loaded = mgr.load_meta(&id);
+        assert_eq!(loaded.host.as_deref(), Some("myhost"));
+        assert_eq!(loaded.cwd.as_deref(), Some("/home/user"));
+
+        // Meta file exists on disk
+        let meta_path = dir.path().join(format!("{}.meta.json", id));
+        assert!(meta_path.exists());
+    }
+
+    #[test]
+    fn test_meta_default_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+
+        let loaded = mgr.load_meta(&id);
+        assert!(loaded.host.is_none());
+        assert!(loaded.cwd.is_none());
+    }
+
+    #[test]
+    fn test_delete_thread_removes_meta() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+
+        let meta = ThreadMeta {
+            host: Some("host".to_string()),
+            cwd: Some("/tmp".to_string()),
+            ..Default::default()
+        };
+        let id = mgr.create_thread(meta);
+        let meta_path = dir.path().join(format!("{}.meta.json", id));
+        assert!(meta_path.exists());
+
+        mgr.delete_thread(&id);
+        assert!(!meta_path.exists());
     }
 }

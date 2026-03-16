@@ -7,4 +7,5 @@ pub mod hourly_summary;
 pub mod plugin;
 pub mod session_mgr;
 pub mod task_mgr;
+pub mod thread_summary;
 pub mod tools;

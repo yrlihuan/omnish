@@ -1,5 +1,5 @@
 use anyhow::Result;
-use omnish_daemon::conversation_mgr::ConversationManager;
+use omnish_daemon::conversation_mgr::{ConversationManager, ThreadMeta};
 use omnish_daemon::formatter::{self, FormatInput};
 use omnish_daemon::plugin::{PluginManager, PluginType};
 use omnish_daemon::session_mgr::SessionManager;
@@ -266,10 +266,19 @@ async fn handle_message(
             Message::Ack
         }
         Message::ChatStart(cs) => {
+            let meta = {
+                let host = mgr.get_session_attr(&cs.session_id, "hostname").await;
+                let cwd = mgr.get_session_attr(&cs.session_id, "shell_cwd").await;
+                ThreadMeta { host, cwd, ..Default::default() }
+            };
             let thread_id = if cs.new_thread {
-                conv_mgr.create_thread()
+                conv_mgr.create_thread(meta)
             } else {
-                conv_mgr.get_latest_thread().unwrap_or_else(|| conv_mgr.create_thread())
+                let tid = conv_mgr.get_latest_thread()
+                    .unwrap_or_else(|| conv_mgr.create_thread(meta.clone()));
+                // Update meta for existing thread
+                conv_mgr.save_meta(&tid, &meta);
+                tid
             };
             Message::ChatReady(ChatReady {
                 request_id: cs.request_id,
