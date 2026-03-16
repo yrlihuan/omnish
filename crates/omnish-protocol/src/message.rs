@@ -6,7 +6,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version — increment on incompatible wire format changes.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
@@ -220,11 +220,24 @@ pub struct ChatInterrupt {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StatusIcon {
+    Running,
+    Success,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatToolStatus {
     pub request_id: String,
     pub thread_id: String,
     pub tool_name: String,
     pub status: String,
+    pub tool_call_id: Option<String>,
+    pub status_icon: Option<StatusIcon>,
+    pub display_name: Option<String>,
+    pub param_desc: Option<String>,
+    pub result_compact: Option<Vec<String>>,
+    pub result_full: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -438,6 +451,12 @@ mod tests {
                 thread_id: "thread1".to_string(),
                 tool_name: "command_query".to_string(),
                 status: "查询命令历史...".to_string(),
+                tool_call_id: Some("tc_001".to_string()),
+                status_icon: Some(StatusIcon::Running),
+                display_name: Some("Command Query".to_string()),
+                param_desc: Some("pattern=git".to_string()),
+                result_compact: None,
+                result_full: None,
             }),
         };
         let bytes = frame.to_bytes().unwrap();
@@ -446,6 +465,12 @@ mod tests {
         if let Message::ChatToolStatus(cts) = decoded.payload {
             assert_eq!(cts.tool_name, "command_query");
             assert_eq!(cts.status, "查询命令历史...");
+            assert_eq!(cts.tool_call_id, Some("tc_001".to_string()));
+            assert!(matches!(cts.status_icon, Some(StatusIcon::Running)));
+            assert_eq!(cts.display_name, Some("Command Query".to_string()));
+            assert_eq!(cts.param_desc, Some("pattern=git".to_string()));
+            assert!(cts.result_compact.is_none());
+            assert!(cts.result_full.is_none());
         } else {
             panic!("expected ChatToolStatus");
         }
@@ -590,6 +615,12 @@ mod tests {
                 thread_id: String::new(),
                 tool_name: String::new(),
                 status: String::new(),
+                tool_call_id: None,
+                status_icon: None,
+                display_name: None,
+                param_desc: None,
+                result_compact: None,
+                result_full: None,
             }),
             Message::ChatToolCall(ChatToolCall {
                 request_id: String::new(),

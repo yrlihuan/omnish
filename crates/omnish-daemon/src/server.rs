@@ -580,6 +580,12 @@ async fn run_agent_loop(
                                     thread_id: state.cm.thread_id.clone(),
                                     tool_name: String::new(),
                                     status: text.clone(),
+                                    tool_call_id: None,
+                                    status_icon: None,
+                                    display_name: None,
+                                    param_desc: None,
+                                    result_compact: None,
+                                    result_full: None,
                                 }));
                             }
                         }
@@ -600,6 +606,12 @@ async fn run_agent_loop(
                             thread_id: state.cm.thread_id.clone(),
                             tool_name: tc.name.clone(),
                             status: status_text,
+                            tool_call_id: None,
+                            status_icon: None,
+                            display_name: None,
+                            param_desc: None,
+                            result_compact: None,
+                            result_full: None,
                         }));
 
                         let ptype = plugin_mgr.tool_plugin_type(&tc.name);
