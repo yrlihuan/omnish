@@ -201,8 +201,11 @@ impl ScrollView {
     }
 
     /// Render expanded mode: viewport of `expanded_height` lines + scrollbar + hint.
+    /// Lines are NOT truncated — terminal clips at the right edge via \x1b[?7l.
     fn render_expanded(&mut self) -> String {
         let mut out = self.erase_seq();
+        // Disable line wrap so long lines are clipped, not wrapped
+        out.push_str("\x1b[?7l");
         let total = self.lines.len();
         let viewport = self.expanded_height.min(total);
         let end = (self.scroll_offset + viewport).min(total);
@@ -219,11 +222,12 @@ impl ScrollView {
             } else {
                 " "
             };
-            let line = Self::truncate_line(&self.lines[i], bar_col.saturating_sub(1));
-            out.push_str(&format!("\r\n\x1b[K{}\x1b[0m\x1b[{}G{}", line, bar_col, bar));
+            // No truncation — line is clipped by terminal (wrap disabled)
+            out.push_str(&format!("\r\n\x1b[K{}\x1b[0m\x1b[{}G{}", self.lines[i], bar_col, bar));
         }
 
-        // Hint line
+        // Re-enable line wrap, then render hint
+        out.push_str("\x1b[?7h");
         out.push_str("\r\n\x1b[K\x1b[2m\u{2191}\u{2193}/j/k scroll  q quit\x1b[0m");
 
         self.rendered_lines = viewport + 1; // viewport + hint
