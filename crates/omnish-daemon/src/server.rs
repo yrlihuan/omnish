@@ -883,6 +883,141 @@ fn cmd_display(s: impl Into<String>) -> serde_json::Value {
     serde_json::json!({ "display": s.into() })
 }
 
+/// Reconstruct structured history entries from stored raw LLM messages.
+///
+/// Iterates over raw messages and produces a JSON array with typed entries:
+/// - `user_input`: a user message with string content
+/// - `llm_text`: assistant text that accompanies tool_use blocks
+/// - `tool_status`: a formatted tool call + result pair
+/// - `response`: assistant final text-only response
+/// - `separator`: marks end of an exchange
+fn reconstruct_history(
+    raw_messages: &[serde_json::Value],
+    plugin_mgr: &PluginManager,
+) -> Vec<serde_json::Value> {
+    use std::collections::HashMap as HM;
+
+    let mut entries = Vec::new();
+    // Map from tool_use_id → (tool_name, input_json)
+    let mut pending_tools: HM<String, (String, serde_json::Value)> = HM::new();
+
+    for msg in raw_messages {
+        let role = msg["role"].as_str().unwrap_or("");
+        match role {
+            "user" => {
+                if let Some(text) = msg["content"].as_str() {
+                    // Plain user input
+                    entries.push(serde_json::json!({
+                        "type": "user_input",
+                        "text": text,
+                    }));
+                } else if let Some(arr) = msg["content"].as_array() {
+                    // tool_result array
+                    for block in arr {
+                        if block["type"].as_str() == Some("tool_result") {
+                            let tool_use_id = block["tool_use_id"].as_str().unwrap_or("").to_string();
+                            let output = block["content"].as_str().unwrap_or("").to_string();
+                            let is_error = block["is_error"].as_bool().unwrap_or(false);
+
+                            if let Some((tool_name, input)) = pending_tools.remove(&tool_use_id) {
+                                let formatter_name = plugin_mgr.tool_formatter(&tool_name)
+                                    .unwrap_or("default");
+                                let fmt = formatter::get_formatter(formatter_name);
+                                let display_name = plugin_mgr.tool_display_name(&tool_name)
+                                    .unwrap_or(&tool_name).to_string();
+                                let status_template = plugin_mgr.tool_status_template(&tool_name)
+                                    .unwrap_or("").to_string();
+                                let fmt_out = fmt.format(&FormatInput {
+                                    tool_name: tool_name.clone(),
+                                    display_name: display_name.clone(),
+                                    status_template,
+                                    params: input,
+                                    output: Some(output),
+                                    is_error: Some(is_error),
+                                });
+                                let icon_str = match fmt_out.status_icon {
+                                    omnish_protocol::message::StatusIcon::Running => "running",
+                                    omnish_protocol::message::StatusIcon::Success => "success",
+                                    omnish_protocol::message::StatusIcon::Error => "error",
+                                };
+                                entries.push(serde_json::json!({
+                                    "type": "tool_status",
+                                    "tool_name": tool_name,
+                                    "tool_call_id": tool_use_id,
+                                    "status_icon": icon_str,
+                                    "display_name": display_name,
+                                    "param_desc": fmt_out.param_desc,
+                                    "result_compact": fmt_out.result_compact,
+                                    "result_full": fmt_out.result_full,
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+            "assistant" => {
+                if let Some(arr) = msg["content"].as_array() {
+                    let has_tool_use = arr.iter().any(|b| b["type"].as_str() == Some("tool_use"));
+                    if has_tool_use {
+                        // Assistant message with tool calls
+                        for block in arr {
+                            match block["type"].as_str() {
+                                Some("text") => {
+                                    let text = block["text"].as_str().unwrap_or("");
+                                    if !text.is_empty() {
+                                        entries.push(serde_json::json!({
+                                            "type": "llm_text",
+                                            "text": text,
+                                        }));
+                                    }
+                                }
+                                Some("tool_use") => {
+                                    let id = block["id"].as_str().unwrap_or("").to_string();
+                                    let name = block["name"].as_str().unwrap_or("").to_string();
+                                    let input = block["input"].clone();
+                                    pending_tools.insert(id, (name, input));
+                                }
+                                _ => {}
+                            }
+                        }
+                    } else {
+                        // Assistant message with only text blocks → final response
+                        let text: String = arr.iter()
+                            .filter_map(|b| {
+                                if b["type"].as_str() == Some("text") {
+                                    b["text"].as_str().map(|s| s.to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if !text.is_empty() {
+                            entries.push(serde_json::json!({
+                                "type": "response",
+                                "text": text,
+                            }));
+                            entries.push(serde_json::json!({"type": "separator"}));
+                        }
+                    }
+                } else if let Some(text) = msg["content"].as_str() {
+                    // Simple string content assistant message → final response
+                    if !text.is_empty() {
+                        entries.push(serde_json::json!({
+                            "type": "response",
+                            "text": text,
+                        }));
+                        entries.push(serde_json::json!({"type": "separator"}));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    entries
+}
+
 async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>, plugin_mgr: &PluginManager) -> serde_json::Value {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
 
@@ -929,10 +1064,11 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
         };
         return match conv_mgr.get_thread_by_index(idx) {
             Some(thread_id) => {
-                let exchanges = conv_mgr.get_all_exchanges(&thread_id);
+                let raw_msgs = conv_mgr.load_raw_messages(&thread_id);
+                let history = reconstruct_history(&raw_msgs, plugin_mgr);
                 serde_json::json!({
-                    "display": format!("Resuming conversation [{}] ({} turns)\n{}", idx + 1, exchanges.len(), format_all_exchanges(&exchanges)),
                     "thread_id": thread_id,
+                    "history": history,
                 })
             }
             None => cmd_display("Invalid index: out of bounds"),
@@ -941,23 +1077,25 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
     // Handle /resume_tid <thread_id> for resuming by thread ID (stable across deletions)
     if let Some(tid) = sub.strip_prefix("resume_tid ") {
         let tid = tid.trim();
-        let exchanges = conv_mgr.get_all_exchanges(tid);
-        if exchanges.is_empty() {
+        let raw_msgs = conv_mgr.load_raw_messages(tid);
+        if raw_msgs.is_empty() {
             return cmd_display("Conversation not found");
         }
+        let history = reconstruct_history(&raw_msgs, plugin_mgr);
         return serde_json::json!({
-            "display": format!("Resuming conversation ({} turns)\n{}", exchanges.len(), format_all_exchanges(&exchanges)),
             "thread_id": tid,
+            "history": history,
         });
     }
     // Handle /resume without index (resume latest = /resume 1)
     if sub == "resume" {
         return match conv_mgr.get_thread_by_index(0) {
             Some(thread_id) => {
-                let exchanges = conv_mgr.get_all_exchanges(&thread_id);
+                let raw_msgs = conv_mgr.load_raw_messages(&thread_id);
+                let history = reconstruct_history(&raw_msgs, plugin_mgr);
                 serde_json::json!({
-                    "display": format!("Resuming conversation [1] ({} turns)\n{}", exchanges.len(), format_all_exchanges(&exchanges)),
                     "thread_id": thread_id,
+                    "history": history,
                 })
             }
             None => cmd_display("No conversations yet. Start a chat with :"),
@@ -1046,22 +1184,6 @@ async fn handle_template(name: &str, mgr: &SessionManager, plugin_mgr: &PluginMa
             }
         }
     }
-}
-
-/// Format chat history for display.
-/// Format all exchanges in a conversation for display.
-fn format_all_exchanges(exchanges: &[(String, String)]) -> String {
-    let mut output = String::new();
-    for (i, (user, assistant)) in exchanges.iter().enumerate() {
-        if i > 0 {
-            output.push_str("\n---\n\n");
-        }
-        output.push_str(&format!("\x1b[1;32mUser:\x1b[0m {}\n", user));
-        if !assistant.is_empty() {
-            output.push_str(&format!("\x1b[1;34mAssistant:\x1b[0m {}\n", assistant));
-        }
-    }
-    output
 }
 
 /// Format the list of conversations as JSON with display string and thread_ids.

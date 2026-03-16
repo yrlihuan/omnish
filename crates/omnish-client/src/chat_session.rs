@@ -740,7 +740,9 @@ impl ChatSession {
     }
 
     async fn handle_resume(&mut self, trimmed: &str, session_id: &str, rpc: &RpcClient) {
-        let (thread_id, display_msg) = if let Some(idx_str) = trimmed.strip_prefix("/resume ") {
+        // Returns (thread_id, response_json) where response_json contains structured history
+        let (thread_id, response_json): (Option<String>, Option<serde_json::Value>) =
+            if let Some(idx_str) = trimmed.strip_prefix("/resume ") {
             // Auto-fetch if cache empty
             if self.cached_thread_ids.is_empty() {
                 let rid = Uuid::new_v4().to_string()[..8].to_string();
@@ -780,14 +782,13 @@ impl ChatSession {
                             query: format!("__cmd:resume_tid {}", tid),
                             scope: RequestScope::AllSessions,
                         });
-                        let display = match rpc.call(req).await {
+                        let resp_json = match rpc.call(req).await {
                             Ok(Message::Response(resp)) if resp.request_id == rid => {
                                 super::parse_cmd_response(&resp.content)
-                                    .map(|j| super::cmd_display_str(&j))
                             }
                             _ => None,
                         };
-                        (Some(tid), display)
+                        (Some(tid), resp_json)
                     }
                 }
                 Ok(i) if i >= 1 => {
@@ -847,14 +848,13 @@ impl ChatSession {
                                             query: format!("__cmd:resume_tid {}", tid),
                                             scope: RequestScope::AllSessions,
                                         });
-                                        let display = match rpc.call(req2).await {
+                                        let resp_json = match rpc.call(req2).await {
                                             Ok(Message::Response(r)) if r.request_id == rid2 => {
                                                 super::parse_cmd_response(&r.content)
-                                                    .map(|j| super::cmd_display_str(&j))
                                             }
                                             _ => None,
                                         };
-                                        (Some(tid), display)
+                                        (Some(tid), resp_json)
                                     }
                                     _ => (None, None),
                                 }
@@ -874,15 +874,119 @@ impl ChatSession {
 
         if let Some(tid) = thread_id {
             self.current_thread_id = Some(tid);
-            if let Some(msg) = display_msg {
-                let rendered = markdown::render(&msg);
-                for line in rendered.split("\r\n") {
-                    self.print_line(line);
+            if let Some(history) = response_json.as_ref().and_then(|j| j.get("history")).and_then(|h| h.as_array()) {
+                // Parse structured history entries
+                let mut all_entries: Vec<ScrollEntry> = Vec::new();
+                for entry in history {
+                    match entry.get("type").and_then(|t| t.as_str()) {
+                        Some("user_input") => {
+                            let text = entry["text"].as_str().unwrap_or("");
+                            all_entries.push(ScrollEntry::UserInput(text.to_string()));
+                        }
+                        Some("llm_text") => {
+                            let text = entry["text"].as_str().unwrap_or("");
+                            all_entries.push(ScrollEntry::LlmText(text.to_string()));
+                        }
+                        Some("tool_status") => {
+                            let cts = ChatToolStatus {
+                                request_id: String::new(),
+                                thread_id: String::new(),
+                                tool_name: entry["tool_name"].as_str().unwrap_or("").to_string(),
+                                tool_call_id: entry["tool_call_id"].as_str().map(String::from),
+                                status: String::new(),
+                                status_icon: Some(match entry["status_icon"].as_str() {
+                                    Some("error") => StatusIcon::Error,
+                                    Some("running") => StatusIcon::Running,
+                                    _ => StatusIcon::Success,
+                                }),
+                                display_name: entry["display_name"].as_str().map(String::from),
+                                param_desc: entry["param_desc"].as_str().map(String::from),
+                                result_compact: entry["result_compact"].as_array().map(|a|
+                                    a.iter().filter_map(|v| v.as_str().map(String::from)).collect()),
+                                result_full: entry["result_full"].as_array().map(|a|
+                                    a.iter().filter_map(|v| v.as_str().map(String::from)).collect()),
+                            };
+                            all_entries.push(ScrollEntry::ToolStatus(cts));
+                        }
+                        Some("response") => {
+                            let text = entry["text"].as_str().unwrap_or("");
+                            all_entries.push(ScrollEntry::Response(text.to_string()));
+                        }
+                        Some("separator") => {
+                            all_entries.push(ScrollEntry::Separator);
+                        }
+                        _ => {}
+                    }
                 }
-                self.push_entry(ScrollEntry::Response(msg));
+
+                // Find the start of the last exchange (last UserInput)
+                let last_exchange_start = all_entries.iter().rposition(|e|
+                    matches!(e, ScrollEntry::UserInput(_))
+                ).unwrap_or(0);
+
+                // Push ALL entries to scroll_history (for Ctrl+O browse)
+                for entry in &all_entries {
+                    self.push_entry(entry.clone());
+                }
+
+                // Render only the last exchange on terminal
                 let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
-                self.print_line(&display::render_separator(cols));
-                self.push_entry(ScrollEntry::Separator);
+                // Show count of earlier entries if any
+                if last_exchange_start > 0 {
+                    let earlier_count = all_entries[..last_exchange_start].iter()
+                        .filter(|e| matches!(e, ScrollEntry::UserInput(_)))
+                        .count();
+                    if earlier_count > 0 {
+                        self.print_line(&format!(
+                            "\x1b[2;37m({} earlier exchange{})\x1b[0m",
+                            earlier_count,
+                            if earlier_count == 1 { "" } else { "s" }
+                        ));
+                    }
+                }
+                for entry in &all_entries[last_exchange_start..] {
+                    match entry {
+                        ScrollEntry::UserInput(text) => {
+                            for (i, line) in text.lines().enumerate() {
+                                if i == 0 {
+                                    self.print_line(&format!("\x1b[36m> \x1b[0m{}", line));
+                                } else {
+                                    self.print_line(&format!("  {}", line));
+                                }
+                            }
+                        }
+                        ScrollEntry::ToolStatus(cts) => {
+                            let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
+                            let param_desc = cts.param_desc.as_deref().unwrap_or("");
+                            let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Success);
+                            let header = display::render_tool_header(icon, display_name, param_desc, cols as usize);
+                            self.print_line(&header);
+                            if let Some(ref lines) = cts.result_compact {
+                                let rendered = display::render_tool_output(lines);
+                                for line in &rendered {
+                                    self.print_line(line);
+                                }
+                            }
+                        }
+                        ScrollEntry::LlmText(text) => {
+                            self.print_line(text);
+                        }
+                        ScrollEntry::Response(content) => {
+                            self.print_line("");
+                            let rendered = markdown::render(content);
+                            let rendered = format!("\x1b[97m●\x1b[0m {}", rendered);
+                            for line in rendered.split("\r\n") {
+                                self.print_line(line);
+                            }
+                        }
+                        ScrollEntry::Separator => {
+                            self.print_line(&display::render_separator(cols));
+                        }
+                        ScrollEntry::SystemMessage(msg) => {
+                            self.print_line(&format!("\x1b[2;37m{}\x1b[0m", msg));
+                        }
+                    }
+                }
             } else {
                 write_stdout("\x1b[2;37m(resumed conversation)\x1b[0m\r\n");
                 self.push_entry(ScrollEntry::SystemMessage("(resumed conversation)".to_string()));
