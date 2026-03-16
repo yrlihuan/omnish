@@ -17,6 +17,8 @@ struct ToolEntry {
     def: ToolDef,
     status_template: String,
     sandboxed: bool,
+    display_name: String,
+    formatter: String,
 }
 
 /// A plugin loaded from a tool.json file.
@@ -60,6 +62,10 @@ struct ToolJsonEntry {
     status_template: String,
     #[serde(default = "default_sandboxed")]
     sandboxed: bool,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    formatter: Option<String>,
 }
 
 /// Description can be a plain string or an array of lines for readability.
@@ -156,6 +162,8 @@ impl PluginManager {
                 }
                 let tool_idx = tools.len();
                 tool_index.insert(te.name.clone(), (plugin_idx, tool_idx));
+                let display_name = te.display_name.clone().unwrap_or_else(|| te.name.clone());
+                let formatter = te.formatter.clone().unwrap_or_else(|| "default".to_string());
                 tools.push(ToolEntry {
                     def: ToolDef {
                         name: te.name,
@@ -164,6 +172,8 @@ impl PluginManager {
                     },
                     status_template: te.status_template,
                     sandboxed: te.sandboxed,
+                    display_name,
+                    formatter,
                 });
             }
 
@@ -281,6 +291,27 @@ impl PluginManager {
         self.tool_index
             .get(tool_name)
             .map(|&(pi, ti)| self.plugins[pi].tools[ti].sandboxed)
+    }
+
+    /// Return the display name for the given tool.
+    pub fn tool_display_name(&self, tool_name: &str) -> Option<&str> {
+        self.tool_index
+            .get(tool_name)
+            .map(|&(pi, ti)| self.plugins[pi].tools[ti].display_name.as_str())
+    }
+
+    /// Return the formatter name for the given tool.
+    pub fn tool_formatter(&self, tool_name: &str) -> Option<&str> {
+        self.tool_index
+            .get(tool_name)
+            .map(|&(pi, ti)| self.plugins[pi].tools[ti].formatter.as_str())
+    }
+
+    /// Return the status template for the given tool.
+    pub fn tool_status_template(&self, tool_name: &str) -> Option<&str> {
+        self.tool_index
+            .get(tool_name)
+            .map(|&(pi, ti)| self.plugins[pi].tools[ti].status_template.as_str())
     }
 
     /// Spawn an async task that watches tool.override.json files for changes.

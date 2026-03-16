@@ -49,7 +49,9 @@
         "required": ["command"]
       },
       "status_template": "{command}",
-      "sandboxed": true
+      "sandboxed": true,
+      "display_name": "Bash",
+      "formatter": "default"
     },
     {
       "name": "glob",
@@ -76,7 +78,9 @@
         "required": ["pattern"]
       },
       "status_template": "搜索: {pattern}",
-      "sandboxed": true
+      "sandboxed": true,
+      "display_name": "Glob",
+      "formatter": "default"
     },
     {
       "name": "grep",
@@ -155,7 +159,9 @@
         "required": ["pattern"]
       },
       "status_template": "搜索: {pattern}",
-      "sandboxed": true
+      "sandboxed": true,
+      "display_name": "Grep",
+      "formatter": "default"
     },
     {
       "name": "read",
@@ -192,7 +198,9 @@
         "required": ["file_path"]
       },
       "status_template": "读取: {file_path}",
-      "sandboxed": true
+      "sandboxed": true,
+      "display_name": "Read",
+      "formatter": "read"
     },
     {
       "name": "edit",
@@ -230,7 +238,9 @@
         "required": ["file_path", "old_string", "new_string"]
       },
       "status_template": "编辑: {file_path}",
-      "sandboxed": false
+      "sandboxed": false,
+      "display_name": "Edit",
+      "formatter": "edit"
     },
     {
       "name": "write",
@@ -259,7 +269,9 @@
         "required": ["file_path", "content"]
       },
       "status_template": "写入: {file_path}",
-      "sandboxed": false
+      "sandboxed": false,
+      "display_name": "Write",
+      "formatter": "write"
     }
   ]
 }
