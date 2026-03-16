@@ -17,11 +17,11 @@ fn build_context_snippet(content: &str, needle: &str, ctx: usize) -> String {
     let ctx_end = (end_line + ctx).min(file_lines.len());
 
     let mut lines = Vec::new();
-    for i in ctx_start..ctx_end {
+    for (i, line) in file_lines.iter().enumerate().take(ctx_end).skip(ctx_start) {
         if i >= start_line && i < end_line {
-            lines.push(format!("> {}", file_lines[i]));
+            lines.push(format!("> {}", line));
         } else {
-            lines.push(format!("  {}", file_lines[i]));
+            lines.push(format!("  {}", line));
         }
     }
     lines.join("\n")
