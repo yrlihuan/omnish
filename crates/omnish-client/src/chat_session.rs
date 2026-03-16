@@ -407,10 +407,6 @@ impl ChatSession {
                                                         for line in &rendered {
                                                             self.print_line(line);
                                                         }
-                                                        if lines.len() < cts.result_full.as_ref().map_or(0, |f| f.len()) {
-                                                            let total = cts.result_full.as_ref().unwrap().len();
-                                                            self.print_line(&format!("  \x1b[2m   … +{} lines\x1b[0m", total - lines.len()));
-                                                        }
                                                     }
                                                 }
                                             }
