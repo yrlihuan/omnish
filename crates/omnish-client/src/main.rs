@@ -621,6 +621,11 @@ async fn main() -> Result<()> {
                 }
             }
 
+            // Flush bare ESC from DSR detector — a standalone ESC not followed
+            // by '[' in the same read() is a user keypress, not a DSR response.
+            if let Some(flushed) = dsr_detector.flush_bare_esc() {
+                filtered_input.extend_from_slice(&flushed);
+            }
             for &byte in &filtered_input {
                 match interceptor.feed_byte(byte) {
                     InterceptAction::Buffering(buf) => {
@@ -655,18 +660,16 @@ async fn main() -> Result<()> {
                                     send_completion_summary(rpc, &mut shell_completer, &session_id, true, shell_cwd).await;
                                 }
                             }
-                        } else {
-                            // ESC key dismisses ghost text (whether standalone or start of escape sequence)
-                            if bytes.contains(&0x1b) && shell_completer.ghost().is_some() {
-                                if shell_completer.dismiss() {
-                                    nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
-                                    if let Some(ref rpc) = daemon_conn {
-                                        let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
-                                        send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd).await;
-                                    }
+                        } else if bytes == [0x1b] && shell_completer.ghost().is_some() {
+                            // Bare ESC dismisses ghost text — consume the key (don't forward to PTY)
+                            if shell_completer.dismiss() {
+                                nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
+                                if let Some(ref rpc) = daemon_conn {
+                                    let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
+                                    send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd).await;
                                 }
                             }
-
+                        } else {
                             // Forward these bytes to PTY
                             proxy.write_all(&bytes)?;
 
@@ -857,19 +860,29 @@ async fn main() -> Result<()> {
                         completer.clear();
                     }
                     InterceptAction::Forward(bytes) => {
-                        // Bare ESC forwarded when not in chat mode
-                        proxy.write_all(&bytes)?;
-                        shell_input.feed_forwarded(&bytes);
-                        command_tracker.feed_input(&bytes, timestamp_ms());
-                        if let Some(ref rpc) = daemon_conn {
-                            if !alt_screen_detector.is_active() {
-                                let msg = Message::IoData(IoData {
-                                    session_id: session_id.clone(),
-                                    direction: IoDirection::Input,
-                                    timestamp_ms: timestamp_ms(),
-                                    data: bytes,
-                                });
-                                send_or_buffer(rpc, msg, &pending_buffer).await;
+                        // Bare ESC dismisses ghost text — consume the key
+                        if bytes == [0x1b] && shell_completer.ghost().is_some() {
+                            if shell_completer.dismiss() {
+                                nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
+                                if let Some(ref rpc) = daemon_conn {
+                                    let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
+                                    send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd).await;
+                                }
+                            }
+                        } else {
+                            proxy.write_all(&bytes)?;
+                            shell_input.feed_forwarded(&bytes);
+                            command_tracker.feed_input(&bytes, timestamp_ms());
+                            if let Some(ref rpc) = daemon_conn {
+                                if !alt_screen_detector.is_active() {
+                                    let msg = Message::IoData(IoData {
+                                        session_id: session_id.clone(),
+                                        direction: IoDirection::Input,
+                                        timestamp_ms: timestamp_ms(),
+                                        data: bytes,
+                                    });
+                                    send_or_buffer(rpc, msg, &pending_buffer).await;
+                                }
                             }
                         }
                     }
@@ -1596,6 +1609,17 @@ impl DsrDetector {
     fn take_buf(&mut self) -> Vec<u8> {
         self.state = DsrState::Normal;
         std::mem::take(&mut self.buf)
+    }
+
+    /// Flush a pending bare ESC (state == Esc) after processing all bytes from
+    /// a single read(). A bare ESC that isn't followed by `[` in the same read
+    /// is almost certainly a user keypress, not the start of a DSR response.
+    fn flush_bare_esc(&mut self) -> Option<Vec<u8>> {
+        if self.state == DsrState::Esc {
+            Some(self.take_buf())
+        } else {
+            None
+        }
     }
 }
 

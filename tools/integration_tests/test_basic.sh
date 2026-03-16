@@ -12,6 +12,7 @@
 #   6. Chat cursor position — cursor at column 2 after "> " when entering chat mode
 #   7. Typing in chat after output — no ghost lines from cursor mispositioning (#278)
 #   8. Shell prompt preserved when entering chat mode (#279)
+#   9. ESC dismisses ghost completion (#259)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -27,6 +28,7 @@ Test cases:
   6. Chat cursor at column 2 after "> "
   7. Typing in chat after output — no ghost lines (#278)
   8. Shell prompt preserved when entering chat (#279)
+  9. ESC dismisses ghost completion (#259)
 EOF
 }
 
@@ -408,5 +410,74 @@ test_8() {
     fi
 }
 
-echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history, cursor${NC}"
-run_tests 8
+# ── Test 9: ESC dismisses ghost completion (#259) ────────────────────────
+test_9() {
+    echo -e "\n${YELLOW}=== Test 9: ESC dismisses ghost completion (#259) ===${NC}"
+
+    restart_client
+    wait_for_client
+
+    # Run a command first to seed history context for completion
+    send_keys "echo hello world" 0.3
+    send_enter 1
+
+    # Type partial command likely to trigger ghost completion
+    send_keys "echo hel" 0.3
+
+    # Poll for ghost text to appear (debounce ~500ms + LLM latency)
+    local ghost_appeared=false
+    local content
+    for attempt in $(seq 1 15); do
+        sleep 1
+        content=$(capture_pane -5)
+        local last
+        last=$(last_nonempty_line "$content")
+        local stripped
+        stripped=$(echo "$last" | sed 's/\x1b\[[0-9;]*m//g')
+        # Ghost text adds characters after "echo hel" (e.g. "echo hello")
+        if echo "$stripped" | grep -q 'echo hel[a-zA-Z]'; then
+            ghost_appeared=true
+            break
+        fi
+    done
+
+    if ! $ghost_appeared; then
+        echo -e "  ${YELLOW}Ghost completion not available in test environment, skipping${NC}"
+        send_special C-c 0.5
+        assert_pass "ESC dismiss test skipped (no ghost completion)"
+        return 0
+    fi
+
+    show_capture "Ghost visible" "$content" 3
+
+    # Press ESC to dismiss ghost text
+    send_special Escape 0.5
+
+    content=$(capture_pane -5)
+    show_capture "After ESC" "$content" 3
+
+    local last stripped
+    last=$(last_nonempty_line "$content")
+    stripped=$(echo "$last" | sed 's/\x1b\[[0-9;]*m//g')
+
+    # Ghost text should be gone after ESC
+    if echo "$stripped" | grep -q 'echo hel[a-zA-Z]'; then
+        assert_fail "Ghost text still present after ESC"
+        send_special C-c 0.5
+        return 1
+    fi
+
+    # But typed text should still be preserved
+    if echo "$stripped" | grep -q 'echo hel'; then
+        assert_pass "ESC dismissed ghost completion (#259)"
+        send_special C-c 0.5
+        return 0
+    else
+        assert_fail "Typed text lost after ESC dismiss"
+        send_special C-c 0.5
+        return 1
+    fi
+}
+
+echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history, cursor, ghost-dismiss${NC}"
+run_tests 9

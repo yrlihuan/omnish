@@ -200,6 +200,12 @@ impl ShellCompleter {
     /// Returns the ghost text to display, if any.
     /// Now supports concurrent requests with intelligent filtering.
     pub fn on_response(&mut self, response: &CompletionResponse, current_input: &str) -> Option<&str> {
+        // Reject responses for dismissed input (user explicitly pressed ESC)
+        if self.dismissed_input.as_deref() == Some(current_input) {
+            self.active_requests.remove(&response.sequence_id);
+            return None;
+        }
+
         // Get the request input before removing the request
         let request_input = self.get_request_input(&response.sequence_id).unwrap_or_else(|| self.sent_input.clone());
 
@@ -1295,6 +1301,38 @@ mod tests {
         c.on_input_changed("ls", 2);
         c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1));
         assert!(c.should_request(2, "ls"));
+    }
+
+    #[test]
+    fn test_dismiss_blocks_pending_responses() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("echo hel", 1);
+        c.mark_sent(1, "echo hel");
+
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: "echo hello world".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        c.on_response(&resp, "echo hel");
+        assert!(c.ghost().is_some());
+
+        // Dismiss ghost text
+        assert!(c.dismiss());
+        assert!(c.ghost().is_none());
+
+        // A second pending response for the same input should be rejected
+        let resp2 = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: "echo help".to_string(),
+                confidence: 0.8,
+            }],
+        };
+        assert!(c.on_response(&resp2, "echo hel").is_none());
+        assert!(c.ghost().is_none());
     }
 
     #[test]
