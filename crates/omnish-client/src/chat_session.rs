@@ -121,10 +121,10 @@ impl ChatSession {
             for (i, line) in trimmed.lines().enumerate() {
                 if i == 0 {
                     self.scroll_history
-                        .push(format!("\x1b[36m> {}\x1b[0m", line));
+                        .push(format!("\x1b[36m> \x1b[0m{}", line));
                 } else {
                     self.scroll_history
-                        .push(format!("\x1b[36m  {}\x1b[0m", line));
+                        .push(format!("  {}", line));
                 }
             }
 
