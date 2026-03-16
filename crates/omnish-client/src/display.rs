@@ -31,6 +31,27 @@ pub fn truncate_cols(s: &str, max_cols: usize) -> String {
     format!("{}…", &s[..end])
 }
 
+/// Compute the display width of a string, stripping ANSI escape sequences.
+/// CJK / fullwidth characters count as 2 columns.
+pub fn display_width(s: &str) -> usize {
+    use unicode_width::UnicodeWidthChar;
+    let mut width = 0usize;
+    let mut chars = s.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            // Skip ANSI escape sequence
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            width += ch.width().unwrap_or(0);
+        }
+    }
+    width
+}
+
 /// Render a separator line spanning `cols` columns (dim ─ characters).
 pub fn render_separator(cols: u16) -> String {
     format!("\x1b[2m{}\x1b[0m", "─".repeat(cols as usize))

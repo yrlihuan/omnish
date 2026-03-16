@@ -74,9 +74,8 @@ impl ScrollView {
     /// Enter expanded (browse) mode.  Returns ANSI to redraw.
     pub fn enter_browse(&mut self) -> String {
         self.mode = ViewMode::Expanded;
-        // Scroll to bottom initially
-        let total = self.lines.len();
-        self.scroll_offset = total.saturating_sub(self.expanded_height);
+        // Scroll to bottom: find the starting logical line that fills the viewport
+        self.scroll_offset = self.max_scroll_offset();
         self.render_expanded()
     }
 
@@ -101,9 +100,28 @@ impl ScrollView {
         if self.mode != ViewMode::Expanded {
             return String::new();
         }
-        let max_offset = self.lines.len().saturating_sub(self.expanded_height);
+        let max_offset = self.max_scroll_offset();
         self.scroll_offset = (self.scroll_offset + n).min(max_offset);
         self.render_expanded()
+    }
+
+    /// Compute the maximum scroll offset (logical line index) such that
+    /// the remaining lines from that offset fill the viewport.
+    fn max_scroll_offset(&self) -> usize {
+        let cols = self.max_cols.max(1);
+        let max_visual = self.expanded_height;
+        let total = self.lines.len();
+        // Walk backward, accumulating visual rows
+        let mut rows = 0usize;
+        for i in (0..total).rev() {
+            let w = crate::display::display_width(&self.lines[i]);
+            let vr = if w == 0 { 1 } else { (w + cols - 1) / cols };
+            if rows + vr > max_visual {
+                return (i + 1).min(total);
+            }
+            rows += vr;
+        }
+        0
     }
 
     /// Enter browse mode, handle scrolling keys, and return when the user exits.
@@ -200,37 +218,66 @@ impl ScrollView {
         out
     }
 
-    /// Render expanded mode: viewport of `expanded_height` lines + scrollbar + hint.
-    /// Lines are NOT truncated — terminal clips at the right edge via \x1b[?7l.
+    /// Render expanded mode: viewport filling `expanded_height` visual rows + hint.
+    /// Lines are NOT truncated — long lines wrap naturally, consuming multiple rows.
     fn render_expanded(&mut self) -> String {
         let mut out = self.erase_seq();
-        // Disable line wrap so long lines are clipped, not wrapped
-        out.push_str("\x1b[?7l");
         let total = self.lines.len();
-        let viewport = self.expanded_height.min(total);
-        let end = (self.scroll_offset + viewport).min(total);
-        let start = end.saturating_sub(viewport);
+        let max_visual = self.expanded_height;
+        let cols = self.max_cols.max(1);
 
-        // Compute scrollbar
-        let scrollbar = Self::compute_scrollbar(total, viewport, start);
+        // Compute how many visual rows each line takes
+        let visual_rows: Vec<usize> = self.lines.iter()
+            .map(|l| {
+                let w = crate::display::display_width(l);
+                if w == 0 { 1 } else { (w + cols - 1) / cols }
+            })
+            .collect();
 
-        // Render viewport lines with scrollbar at column max_cols-2
-        let bar_col = self.max_cols.saturating_sub(2);
-        for (vi, i) in (start..end).enumerate() {
-            let bar = if vi < scrollbar.len() {
-                &scrollbar[vi]
+        // Walk backward from scroll_offset to find how many logical lines
+        // fit in the viewport (in visual rows)
+        let end = (self.scroll_offset + total).min(total); // clamp
+        let mut start = self.scroll_offset.min(total);
+        let mut used_rows = 0usize;
+        let mut lines_shown = 0usize;
+        for i in start..total {
+            let vr = visual_rows[i];
+            if used_rows + vr > max_visual && lines_shown > 0 {
+                break;
+            }
+            used_rows += vr;
+            lines_shown += 1;
+        }
+        let end = (start + lines_shown).min(total);
+
+        // Compute scrollbar based on logical lines
+        let scrollbar = Self::compute_scrollbar(total, max_visual, start);
+
+        // Render lines, placing scrollbar on the last visual row of each line
+        let bar_col = cols.saturating_sub(2);
+        let mut visual_row = 0usize;
+        for i in start..end {
+            let vr = visual_rows[i];
+            // Write the line (let terminal wrap naturally)
+            out.push_str(&format!("\r\n\x1b[K{}\x1b[0m", self.lines[i]));
+            // If line wraps, it already consumed vr rows from the first \r\n.
+            // For extra wrapped rows, we just let the terminal handle it.
+            // Place scrollbar on the last visual row of this line
+            let bar_row_end = visual_row + vr - 1;
+            // Move cursor to the scrollbar column on current row and place marker
+            let bar = if bar_row_end < scrollbar.len() {
+                scrollbar[bar_row_end]
             } else {
                 " "
             };
-            // No truncation — line is clipped by terminal (wrap disabled)
-            out.push_str(&format!("\r\n\x1b[K{}\x1b[0m\x1b[{}G{}", self.lines[i], bar_col, bar));
+            out.push_str(&format!("\x1b[{}G{}", bar_col, bar));
+            visual_row += vr;
         }
 
-        // Re-enable line wrap, then render hint
-        out.push_str("\x1b[?7h");
+        // Hint line
         out.push_str("\r\n\x1b[K\x1b[2m\u{2191}\u{2193}/j/k scroll  q quit\x1b[0m");
 
-        self.rendered_lines = viewport + 1; // viewport + hint
+        self.rendered_lines = used_rows + 1; // visual rows + hint
         out
     }
 
@@ -603,42 +650,32 @@ mod tests {
     }
 
     /// Long lines should NOT be truncated in expanded (browse) mode.
-    /// The terminal clips them via \x1b[?7l (disable wrap).
+    /// They wrap naturally across multiple visual rows.
     #[test]
     fn expanded_mode_preserves_full_long_lines() {
         let cols = 40usize;
-        let mut sv = ScrollView::new(3, 10, cols);
+        // Use a large viewport so the wrapped line fits
+        let mut sv = ScrollView::new(3, 100, cols);
 
-        // Build a 45-line echo command header (longer than terminal width)
-        let long_cmd: String = (1..=45)
-            .map(|i| format!("第{}行：这是测试文本", i))
-            .collect::<Vec<_>>()
-            .join("\\n");
-        let header = format!(
-            "\x1b[38;5;114m●\x1b[0m \x1b[1mbash\x1b[0m\x1b[2m(echo \"{}\")\x1b[0m",
-            long_cmd
-        );
+        // A line that's ~120 display chars → wraps to 3 visual rows at 40 cols
+        let long_content = "abcdefghij".repeat(12); // 120 chars
+        let header = format!("● bash({})", long_content);
         sv.push_line(&header);
-
-        // Add some output lines
-        for i in 1..=5 {
-            sv.push_line(&format!("  \x1b[2m⎿  第{}行：这是测试文本\x1b[0m", i));
-        }
-        sv.push_line("  \x1b[2m   … +40 lines\x1b[0m");
+        sv.push_line("short line");
 
         // Enter browse mode
         let seq = sv.enter_browse();
 
-        // The raw ANSI sequence should contain the full long_cmd without truncation
+        // The raw ANSI sequence should contain the full content without truncation
         assert!(
-            seq.contains(&long_cmd),
-            "expanded mode should contain full command without truncation"
+            seq.contains(&long_content),
+            "expanded mode should contain full line without truncation"
         );
 
-        // Verify wrap is disabled
+        // No \x1b[?7l (we allow wrapping now)
         assert!(
-            seq.contains("\x1b[?7l"),
-            "expanded mode should disable line wrap"
+            !seq.contains("\x1b[?7l"),
+            "expanded mode should allow line wrap, not clip"
         );
     }
 
