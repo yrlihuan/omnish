@@ -1,44 +1,53 @@
 use omnish_llm::tool::ToolResult;
 
-/// Extract context lines around an edit location in `content`.
-/// `edit_start_line` is the 0-based line index where the edit starts.
-/// `changed_count` is the number of new lines at that position (0 for deletion).
-/// Each line is formatted as "lineno:  content" (context) or "lineno:>content" (changed).
-/// For deletion (changed_count == 0), a "lineno:D" marker is inserted.
+/// Build a self-contained diff snippet showing context, old lines (-), and new lines (+).
+/// Uses both old and new content to produce a unified-diff-like output.
 /// Line numbers are 1-based.
+///
+/// Format: `lineno:  content` (context), `lineno:-content` (removed), `lineno:+content` (added).
+#[allow(clippy::needless_range_loop)]
 fn build_context_snippet(
-    content: &str,
+    old_content: &str,
+    new_content: &str,
     edit_start_line: usize,
-    changed_count: usize,
+    old_line_count: usize,
+    new_line_count: usize,
     ctx: usize,
 ) -> String {
-    let file_lines: Vec<&str> = content.lines().collect();
-    let end_line = edit_start_line + changed_count;
+    let old_lines: Vec<&str> = old_content.lines().collect();
+    let new_lines: Vec<&str> = new_content.lines().collect();
+    let old_end = edit_start_line + old_line_count;
+    let new_end = edit_start_line + new_line_count;
 
     let ctx_start = edit_start_line.saturating_sub(ctx);
-    let ctx_end = (end_line + ctx).min(file_lines.len());
+    let ctx_after_end = (new_end + ctx).min(new_lines.len());
 
     let mut lines = Vec::new();
-    let mut deletion_marker_inserted = false;
 
-    for (i, file_line) in file_lines.iter().enumerate().take(ctx_end).skip(ctx_start) {
-        let lineno = i + 1; // 1-based
-        // For deletion: insert marker before first context-after line
-        if changed_count == 0 && i >= edit_start_line && !deletion_marker_inserted {
-            lines.push(format!("{}:D", lineno));
-            deletion_marker_inserted = true;
-        }
-        if i >= edit_start_line && i < end_line {
-            lines.push(format!("{}:>{}", lineno, file_line));
-        } else {
-            lines.push(format!("{}:  {}", lineno, file_line));
+    // Context before (same in old and new)
+    for i in ctx_start..edit_start_line {
+        if i < new_lines.len() {
+            lines.push(format!("{}:  {}", i + 1, new_lines[i]));
         }
     }
 
-    // Deletion at end of file
-    if changed_count == 0 && !deletion_marker_inserted {
-        let lineno = edit_start_line + 1;
-        lines.push(format!("{}:D", lineno));
+    // Old lines (removed)
+    for i in edit_start_line..old_end {
+        if i < old_lines.len() {
+            lines.push(format!("{}:-{}", i + 1, old_lines[i]));
+        }
+    }
+
+    // New lines (added)
+    for i in edit_start_line..new_end {
+        if i < new_lines.len() {
+            lines.push(format!("{}:+{}", i + 1, new_lines[i]));
+        }
+    }
+
+    // Context after (from new content)
+    for i in new_end..ctx_after_end {
+        lines.push(format!("{}:  {}", i + 1, new_lines[i]));
     }
 
     lines.join("\n")
@@ -151,13 +160,13 @@ impl EditTool {
             format!("Edited {}", file_path)
         };
 
-        // Build context snippet using the known edit position
-        let new_line_count = if new_string.is_empty() {
-            0
-        } else {
-            new_string.lines().count()
-        };
-        let snippet = build_context_snippet(&new_content, edit_start_line, new_line_count, 3);
+        // Build context snippet using both old and new content
+        let old_line_count = if old_string.is_empty() { 0 } else { old_string.lines().count() };
+        let new_line_count = if new_string.is_empty() { 0 } else { new_string.lines().count() };
+        let snippet = build_context_snippet(
+            &content, &new_content, edit_start_line,
+            old_line_count, new_line_count, 3,
+        );
         let content = if snippet.is_empty() {
             msg
         } else {
@@ -295,8 +304,10 @@ mod tests {
         // Numbered context before (lines 1-3)
         assert!(snippet.contains("1:  line1"), "snippet: {}", snippet);
         assert!(snippet.contains("3:  line3"));
-        // Numbered changed line (line 4)
-        assert!(snippet.contains("4:>goodbye"));
+        // Old line removed
+        assert!(snippet.contains("4:-hello"), "snippet: {}", snippet);
+        // New line added
+        assert!(snippet.contains("4:+goodbye"), "snippet: {}", snippet);
         // Numbered context after (lines 5-7)
         assert!(snippet.contains("5:  line5"));
         assert!(snippet.contains("7:  line7"));
@@ -318,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deletion_snippet_has_marker() {
+    fn test_deletion_snippet() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("del.txt");
         fs::write(&path, "a\nb\nc\nd\ne\nf\ng\n").unwrap();
@@ -333,10 +344,13 @@ mod tests {
         let snippet = result.content.split("\n---\n").nth(1).unwrap();
         // Context before deletion
         assert!(snippet.contains("2:  b"), "snippet: {}", snippet);
-        // Deletion marker
-        assert!(snippet.contains(":D"), "should have deletion marker, snippet: {}", snippet);
+        // Old lines shown as removed
+        assert!(snippet.contains("3:-c"), "snippet: {}", snippet);
+        assert!(snippet.contains("5:-e"), "snippet: {}", snippet);
         // Context after deletion
         assert!(snippet.contains("f"), "snippet: {}", snippet);
+        // No + lines (deletion only)
+        assert!(!snippet.contains(":+"), "snippet should have no + lines: {}", snippet);
     }
 
     #[test]
@@ -353,7 +367,8 @@ mod tests {
         }));
         assert!(!result.is_error, "{}", result.content);
         let snippet = result.content.split("\n---\n").nth(1).unwrap();
-        // The changed line should be at line 4, not line 1
-        assert!(snippet.contains("4:>goodbye"), "snippet should show change at line 4: {}", snippet);
+        // The old and new lines should be at line 4, not line 1
+        assert!(snippet.contains("4:-hello"), "snippet should show old at line 4: {}", snippet);
+        assert!(snippet.contains("4:+goodbye"), "snippet should show new at line 4: {}", snippet);
     }
 }

@@ -161,16 +161,14 @@ fn parse_replace_count(output: &str) -> Option<usize> {
 }
 
 /// Format numbered diff from edit tool context snippet.
-/// Snippet lines: "lineno:>content" (changed), "lineno:  content" (context),
-/// or "lineno:D" (deletion marker).
-/// Inserts old (removed) lines before the first new line or at the deletion marker.
-fn format_numbered_diff(output: &str, old: &str, _new: &str) -> Vec<String> {
+/// Snippet lines: "lineno:-content" (removed), "lineno:+content" (added),
+/// "lineno:  content" (context).
+/// The snippet is self-contained — no need to inject old_string.
+fn format_numbered_diff(output: &str) -> Vec<String> {
     let snippet = match output.split_once("\n---\n") {
         Some((_, ctx)) => ctx,
         None => return Vec::new(),
     };
-
-    let old_lines: Vec<&str> = old.lines().collect();
 
     struct DiffLine {
         lineno: usize,
@@ -179,7 +177,6 @@ fn format_numbered_diff(output: &str, old: &str, _new: &str) -> Vec<String> {
     }
 
     let mut diff_lines: Vec<DiffLine> = Vec::new();
-    let mut old_inserted = false;
 
     for line in snippet.lines() {
         let (num_str, rest) = match line.split_once(':') {
@@ -191,39 +188,12 @@ fn format_numbered_diff(output: &str, old: &str, _new: &str) -> Vec<String> {
             Err(_) => continue,
         };
 
-        if rest == "D" {
-            // Deletion marker — insert all old lines here
-            for (i, ol) in old_lines.iter().enumerate() {
-                diff_lines.push(DiffLine {
-                    lineno: lineno + i,
-                    marker: '-',
-                    content: ol.to_string(),
-                });
-            }
-            old_inserted = true;
-        } else if let Some(content) = rest.strip_prefix('>') {
-            if !old_inserted {
-                old_inserted = true;
-                // Insert old (removed) lines with old file line numbers
-                for (i, ol) in old_lines.iter().enumerate() {
-                    diff_lines.push(DiffLine {
-                        lineno: lineno + i,
-                        marker: '-',
-                        content: ol.to_string(),
-                    });
-                }
-            }
-            diff_lines.push(DiffLine {
-                lineno,
-                marker: '+',
-                content: content.to_string(),
-            });
+        if let Some(content) = rest.strip_prefix('-') {
+            diff_lines.push(DiffLine { lineno, marker: '-', content: content.to_string() });
+        } else if let Some(content) = rest.strip_prefix('+') {
+            diff_lines.push(DiffLine { lineno, marker: '+', content: content.to_string() });
         } else if let Some(content) = rest.strip_prefix("  ") {
-            diff_lines.push(DiffLine {
-                lineno,
-                marker: ' ',
-                content: content.to_string(),
-            });
+            diff_lines.push(DiffLine { lineno, marker: ' ', content: content.to_string() });
         }
     }
 
@@ -281,7 +251,7 @@ impl ToolFormatter for EditFormatter {
                         .unwrap_or(false);
 
                     let summary = edit_summary(old, new);
-                    let mut diff = format_numbered_diff(output, old, new);
+                    let mut diff = format_numbered_diff(output);
 
                     // For replace_all with multiple occurrences, append note
                     if replace_all {
@@ -476,8 +446,8 @@ mod tests {
 
     #[test]
     fn edit_formatter_numbered_diff() {
-        // Snippet with line numbers: "lineno:>content" or "lineno:  content"
-        let output = "Edited /tmp/test.txt\n---\n1:  line1\n2:  line2\n3:  line3\n4:>goodbye\n5:  line5\n6:  line6\n7:  line7";
+        // New snippet format: "lineno:-old" and "lineno:+new"
+        let output = "Edited /tmp/test.txt\n---\n1:  line1\n2:  line2\n3:  line3\n4:-hello\n4:+goodbye\n5:  line5\n6:  line6\n7:  line7";
         let input = make_input(
             "edit",
             "",
@@ -486,26 +456,22 @@ mod tests {
             Some(false),
         );
         let out = EditFormatter.format(&input);
-        // First line: summary
         assert_eq!(out.result_full[0], "Edited 1 line");
         // full: summary + 3 ctx + 1 old + 1 new + 3 ctx = 9
         assert_eq!(out.result_full.len(), 9);
-        // Context has line numbers (dim)
-        assert!(out.result_full[1].contains("1") && out.result_full[1].contains("line1"));
-        assert!(out.result_full[1].contains("\x1b[2m"));
-        // Old line (red) with line number
-        assert!(out.result_full[4].contains("4") && out.result_full[4].contains("-"));
-        assert!(out.result_full[4].contains("hello"));
-        // New line (green) with line number
-        assert!(out.result_full[5].contains("4") && out.result_full[5].contains("+"));
-        assert!(out.result_full[5].contains("goodbye"));
+        // Context (dim)
+        assert!(out.result_full[1].contains("line1") && out.result_full[1].contains("\x1b[2m"));
+        // Old line (red)
+        assert!(out.result_full[4].contains("-hello") && out.result_full[4].contains("\x1b[31m"));
+        // New line (green)
+        assert!(out.result_full[5].contains("+goodbye") && out.result_full[5].contains("\x1b[32m"));
         // Context after
         assert!(out.result_full[6].contains("line5"));
     }
 
     #[test]
     fn edit_formatter_multiline_numbered() {
-        let output = "Edited /tmp/t.txt\n---\n9:  before\n10:>new_a\n11:>new_b\n12:  after";
+        let output = "Edited /tmp/t.txt\n---\n9:  before\n10:-old_a\n11:-old_b\n12:-old_c\n10:+new_a\n11:+new_b\n12:  after";
         let input = make_input(
             "edit",
             "",
@@ -527,7 +493,7 @@ mod tests {
 
     #[test]
     fn edit_formatter_replace_all_multiple() {
-        let output = "Replaced 3 occurrences in /tmp/t.txt\n---\n5:>bar\n6:  after";
+        let output = "Replaced 3 occurrences in /tmp/t.txt\n---\n5:-foo line\n5:+bar line\n6:  after";
         let input = make_input(
             "edit",
             "",
@@ -544,10 +510,13 @@ mod tests {
 
     #[test]
     fn edit_formatter_compact_limited_to_50() {
-        // Build a snippet with many lines
+        // Build a snippet with many old(-) and new(+) lines
         let mut snippet_lines = Vec::new();
         for i in 1..=60 {
-            snippet_lines.push(format!("{}:>line{}", i, i));
+            snippet_lines.push(format!("{}:-old{}", i, i));
+        }
+        for i in 1..=60 {
+            snippet_lines.push(format!("{}:+line{}", i, i));
         }
         let output = format!("Edited /tmp/t.txt\n---\n{}", snippet_lines.join("\n"));
         let old_lines: Vec<String> = (1..=60).map(|i| format!("old{}", i)).collect();
@@ -564,6 +533,28 @@ mod tests {
         assert!(out.result_compact.len() <= 51);
         // full: summary + all diff lines (60 old + 60 new = 120)
         assert!(out.result_full.len() > 51);
+    }
+
+    #[test]
+    fn edit_formatter_deletion() {
+        let output = "Edited /tmp/t.txt\n---\n1:  before1\n2:  before2\n3:-del_a\n4:-del_b\n5:-del_c\n3:  after1\n4:  after2";
+        let input = make_input(
+            "edit",
+            "",
+            json!({"file_path": "/tmp/t.txt", "old_string": "del_a\ndel_b\ndel_c", "new_string": ""}),
+            Some(output),
+            Some(false),
+        );
+        let out = EditFormatter.format(&input);
+        assert_eq!(out.result_full[0], "Removed 3 lines");
+        // full: summary(1) + ctx(2) + 3 old(-) + ctx(2) = 8
+        assert_eq!(out.result_full.len(), 8, "full: {:?}", out.result_full);
+        assert!(out.result_full[1].contains("before1"));
+        assert!(out.result_full[2].contains("before2"));
+        assert!(out.result_full[3].contains("-del_a"));
+        assert!(out.result_full[5].contains("-del_c"));
+        assert!(out.result_full[6].contains("after1"));
+        assert!(out.result_full[7].contains("after2"));
     }
 
     #[test]
@@ -598,25 +589,25 @@ mod tests {
     }
 
     #[test]
-    fn edit_formatter_deletion_with_marker() {
-        // Deletion: old lines removed, new_string empty, snippet has D marker
-        let output = "Edited /tmp/t.txt\n---\n1:  before1\n2:  before2\n3:D\n3:  after1\n4:  after2";
+    fn edit_formatter_substring_replace_all() {
+        // Simulates: replace "or" → "OR" in a file where "or" is a substring
+        // The snippet should show full lines, not just "or"/"OR"
+        let output = "Replaced 5 occurrences in /tmp/t.txt\n---\n1:-the world or nothing\n1:+the wORld OR nothing\n2:  unchanged line\n3:  another line";
         let input = make_input(
             "edit",
             "",
-            json!({"file_path": "/tmp/t.txt", "old_string": "del_a\ndel_b\ndel_c", "new_string": ""}),
+            json!({"file_path": "/tmp/t.txt", "old_string": "or", "new_string": "OR", "replace_all": true}),
             Some(output),
             Some(false),
         );
         let out = EditFormatter.format(&input);
-        assert_eq!(out.result_full[0], "Removed 3 lines");
-        // full: summary(1) + ctx(2) + 3 old(-) + ctx(2) = 8
-        assert_eq!(out.result_full.len(), 8, "full: {:?}", out.result_full);
-        assert!(out.result_full[1].contains("before1"));
-        assert!(out.result_full[2].contains("before2"));
-        assert!(out.result_full[3].contains("-del_a"));
-        assert!(out.result_full[5].contains("-del_c"));
-        assert!(out.result_full[6].contains("after1"));
-        assert!(out.result_full[7].contains("after2"));
+        assert_eq!(out.result_full[0], "Edited 1 line");
+        // Old full line (red)
+        assert!(out.result_full[1].contains("-the world or nothing"));
+        // New full line (green)
+        assert!(out.result_full[2].contains("+the wORld OR nothing"));
+        // "... and 4 more places"
+        let last = out.result_full.last().unwrap();
+        assert!(last.contains("4 more places"), "got: {}", last);
     }
 }
