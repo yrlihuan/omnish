@@ -1207,12 +1207,24 @@ fn format_conversations_json(conv_mgr: &Arc<ConversationManager>) -> serde_json:
     for (i, (thread_id, modified, exchange_count, last_question)) in conversations.into_iter().enumerate() {
         let time_ago = format_relative_time(modified);
 
-        let single_line = last_question.replace('\n', " ");
-        let question_display = if single_line.chars().count() > 50 {
-            let end: String = single_line.chars().take(47).collect();
-            format!("{}...", end)
+        // Use thread title (from meta.summary) if available, otherwise fall back to last question
+        let meta = conv_mgr.load_meta(&thread_id);
+        let display_text = if let Some(ref title) = meta.summary {
+            let single_line = title.replace('\n', " ");
+            if single_line.chars().count() > 50 {
+                let end: String = single_line.chars().take(47).collect();
+                format!("{}...", end)
+            } else {
+                single_line
+            }
         } else {
-            single_line
+            let single_line = last_question.replace('\n', " ");
+            if single_line.chars().count() > 50 {
+                let end: String = single_line.chars().take(47).collect();
+                format!("{}...", end)
+            } else {
+                single_line
+            }
         };
 
         output.push_str(&format!(
@@ -1220,20 +1232,8 @@ fn format_conversations_json(conv_mgr: &Arc<ConversationManager>) -> serde_json:
             i + 1,
             time_ago,
             exchange_count,
-            question_display
+            display_text
         ));
-
-        let meta = conv_mgr.load_meta(&thread_id);
-        if let Some(ref summary) = meta.summary {
-            let summary_line = summary.replace('\n', " ");
-            let summary_display = if summary_line.chars().count() > 70 {
-                let end: String = summary_line.chars().take(67).collect();
-                format!("{}...", end)
-            } else {
-                summary_line
-            };
-            output.push_str(&format!("      {}\n", summary_display));
-        }
 
         thread_ids.push(thread_id);
     }
