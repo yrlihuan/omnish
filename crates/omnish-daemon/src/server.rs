@@ -1222,6 +1222,19 @@ fn format_conversations_json(conv_mgr: &Arc<ConversationManager>) -> serde_json:
             exchange_count,
             question_display
         ));
+
+        let meta = conv_mgr.load_meta(&thread_id);
+        if let Some(ref summary) = meta.summary {
+            let summary_line = summary.replace('\n', " ");
+            let summary_display = if summary_line.chars().count() > 70 {
+                let end: String = summary_line.chars().take(67).collect();
+                format!("{}...", end)
+            } else {
+                summary_line
+            };
+            output.push_str(&format!("      {}\n", summary_display));
+        }
+
         thread_ids.push(thread_id);
     }
     serde_json::json!({
