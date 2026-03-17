@@ -62,7 +62,7 @@ pub fn create_backend(
                 client,
             }))
         }
-        "openai-compat" => {
+        "openai" | "openai-compat" => {
             let base_url = config
                 .base_url
                 .clone()
