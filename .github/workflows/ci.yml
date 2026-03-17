@@ -96,26 +96,21 @@ jobs:
           CXX_x86_64_unknown_linux_musl: musl-g++
         run: |
           cargo build --release --target x86_64-unknown-linux-musl
-          mkdir -p dist
-          cp target/x86_64-unknown-linux-musl/release/omnish dist/
-          cp target/x86_64-unknown-linux-musl/release/omnish-daemon dist/
-          cp target/x86_64-unknown-linux-musl/release/omnish-plugin dist/
+          VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c "import sys,json; print(json.load(sys.stdin)['packages'][0]['version'])")
+          bash scripts/build-tar.sh "$VERSION" target/x86_64-unknown-linux-musl/release
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64-musl
-          path: dist/*
+          path: dist/*.tar.gz
           retention-days: 30
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/omnish
-            dist/omnish-daemon
-            dist/omnish-plugin
+          files: dist/*.tar.gz
           generate_release_notes: true
           draft: false
           prerelease: false
