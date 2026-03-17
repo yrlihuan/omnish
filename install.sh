@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# Re-exec under bash if invoked via sh/dash (arrays require bash 4+)
+if [ -z "$BASH_VERSION" ]; then
+    if [ -f "$0" ]; then
+        exec bash "$0" "$@"
+    else
+        echo "Error: this script requires bash. Please run: curl ... | bash" >&2
+        exit 1
+    fi
+fi
 # omnish installer
 #
 # Downloads and installs omnish — a transparent shell wrapper with PTY proxy,
@@ -589,12 +598,6 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
             echo "# omnish" >> "$PROFILE"
             echo "$PATH_LINE" >> "$PROFILE"
             info "Added to ${PROFILE} — restart your shell or run: source ${PROFILE}"
-        else
-            echo ""
-            info "Add to your shell profile manually:"
-            echo ""
-            echo "  $PATH_LINE"
-            echo ""
         fi
     else
         echo ""
