@@ -2,8 +2,8 @@ use anyhow::Result;
 use std::path::PathBuf;
 use tokio_cron_scheduler::Job;
 
-/// Create a cron job that runs update.sh to check for and install updates,
-/// then runs deploy.sh to distribute to client machines.
+/// Create a cron job that runs `install.sh --upgrade` to check for and install updates,
+/// then runs `deploy.sh` to distribute to client machines.
 pub fn create_auto_update_job(
     omnish_dir: PathBuf,
     schedule: &str,
@@ -16,14 +16,15 @@ pub fn create_auto_update_job(
             tracing::debug!("task [auto_update] started");
 
             // Phase 1: Update server
-            let update_script = omnish_dir.join("update.sh");
-            if !update_script.exists() {
-                tracing::warn!("task [auto_update] update.sh not found: {}", update_script.display());
+            let install_script = omnish_dir.join("install.sh");
+            if !install_script.exists() {
+                tracing::warn!("task [auto_update] install.sh not found: {}", install_script.display());
                 return;
             }
 
             let output = tokio::process::Command::new("bash")
-                .arg(&update_script)
+                .arg(&install_script)
+                .arg("--upgrade")
                 .env("OMNISH_HOME", &omnish_dir)
                 .output()
                 .await;
@@ -36,12 +37,12 @@ pub fn create_auto_update_job(
                     }
                     if !output.status.success() {
                         let stderr = String::from_utf8_lossy(&output.stderr);
-                        tracing::warn!("task [auto_update] update.sh failed: {}{}", stdout, stderr);
+                        tracing::warn!("task [auto_update] install.sh --upgrade failed: {}{}", stdout, stderr);
                         return;
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("task [auto_update] failed to run update.sh: {}", e);
+                    tracing::warn!("task [auto_update] failed to run install.sh: {}", e);
                     return;
                 }
             }

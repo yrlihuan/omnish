@@ -5,7 +5,7 @@
 # inline LLM completion, and multi-terminal context aggregation.
 #
 # This script will:
-#   1. Download the latest release (or a specified version) from GitHub/GitLab
+#   1. Download the latest release (or a specified version) from GitHub
 #   2. Extract binaries to ~/.omnish/bin/ (or $OMNISH_HOME/bin/)
 #   3. Walk you through configuring LLM backends for chat and completion
 #   4. Generate TLS certificates and auth tokens for secure communication
@@ -13,7 +13,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/yrlihuan/omnish/master/install.sh | bash
-#   bash install.sh --github --version=v0.6.4
+#   bash install.sh --version=v0.6.4
 #   OMNISH_HOME=/opt/omnish bash install.sh
 #
 # Environment variables:
@@ -44,14 +44,13 @@ esac
 
 # ── Parse arguments ──────────────────────────────────────────────────────────
 
-SOURCE="gitlab"
 FORCE=false
 DRY_RUN=false
+UPGRADE=false
 VERSION=""
 for arg in "$@"; do
     case "$arg" in
-        --github)      SOURCE="github" ;;
-        --gitlab)      SOURCE="gitlab" ;;
+        --upgrade)     UPGRADE=true ;;
         --force)       FORCE=true ;;
         --dry-run)     DRY_RUN=true ;;
         --version=*)   VERSION="${arg#*=}"
@@ -60,9 +59,8 @@ for arg in "$@"; do
             echo "Usage: install.sh [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --github          Download from GitHub (default: gitlab)"
-            echo "  --gitlab          Download from GitLab"
             echo "  --version=vX.Y.Z  Install specific version (default: latest)"
+            echo "  --upgrade         Non-interactive upgrade (download + install only)"
             echo "  --force           Overwrite existing daemon.toml"
             echo "  --dry-run         Run config wizard but skip download/install/credentials"
             echo "  -h, --help        Show this help"
@@ -83,39 +81,32 @@ TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 if [[ "$DRY_RUN" == true ]]; then
-    info "[DRY RUN] Would download omnish $VERSION from $SOURCE"
+    info "[DRY RUN] Would download omnish $VERSION"
     info "[DRY RUN] Would install to ${OMNISH_DIR}"
 else
-    info "Downloading omnish from $SOURCE..."
-
-    if [[ "$SOURCE" == "github" ]]; then
-        REPO="yrlihuan/omnish"
-        if [[ -z "$VERSION" ]]; then
-            VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-                | grep '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//')
-            [[ -n "$VERSION" ]] || error "Could not determine latest version"
-        fi
-        TAR_URL="https://github.com/${REPO}/releases/download/${VERSION}/omnish-${VERSION#v}-linux-${ARCH}.tar.gz"
-    else
-        PROJECT="dev%2Fomnish"
-        if [[ -z "$VERSION" ]]; then
-            VERSION=$(glab api "projects/${PROJECT}/releases" 2>/dev/null \
-                | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['tag_name'])" 2>/dev/null || echo "")
-            [[ -n "$VERSION" ]] || error "Could not determine latest version. Use --version=vX.Y.Z"
-        fi
-        TAR_URL=$(glab api "projects/${PROJECT}/releases/${VERSION}" 2>/dev/null \
-            | python3 -c "
-import sys, json
-links = json.load(sys.stdin).get('assets', {}).get('links', [])
-for l in links:
-    if 'tar.gz' in l.get('name', ''):
-        print(l['direct_asset_url'])
-        break
-" 2>/dev/null || echo "")
-        [[ -n "$TAR_URL" ]] || error "Could not find tar.gz asset for ${VERSION}"
+    REPO="yrlihuan/omnish"
+    if [[ -z "$VERSION" ]]; then
+        info "Fetching latest version..."
+        VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+            | grep '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//')
+        [[ -n "$VERSION" ]] || error "Could not determine latest version"
     fi
+    TAR_URL="https://github.com/${REPO}/releases/download/${VERSION}/omnish-${VERSION#v}-linux-${ARCH}.tar.gz"
 
     info "Version: $VERSION"
+
+    # In upgrade mode, skip if already up to date
+    if [[ "$UPGRADE" == true ]]; then
+        CURRENT_VERSION=""
+        if [[ -x "$BIN_DIR/omnish-daemon" ]]; then
+            CURRENT_VERSION=$("$BIN_DIR/omnish-daemon" --version 2>/dev/null | awk '{print $2}' || echo "")
+        fi
+        if [[ "$CURRENT_VERSION" == "${VERSION#v}" ]]; then
+            info "Already up to date (v${CURRENT_VERSION})"
+            exit 0
+        fi
+        info "Update available: v${CURRENT_VERSION:-unknown} -> ${VERSION}"
+    fi
 
     curl -fSL "$TAR_URL" -o "$TMPDIR/omnish.tar.gz" || error "Download failed"
     tar -xzf "$TMPDIR/omnish.tar.gz" -C "$TMPDIR"
@@ -159,12 +150,19 @@ for l in links:
         fi
 
         # Scripts (always overwrite)
-        cp "$EXTRACTED/assets/update.sh" "$OMNISH_DIR/"
+        cp "$EXTRACTED/assets/install.sh" "$OMNISH_DIR/"
         cp "$EXTRACTED/assets/deploy.sh" "$OMNISH_DIR/"
-        chmod 755 "$OMNISH_DIR/update.sh" "$OMNISH_DIR/deploy.sh"
+        chmod 755 "$OMNISH_DIR/install.sh" "$OMNISH_DIR/deploy.sh"
     fi
 
     chmod 700 "$OMNISH_DIR"
+fi
+
+# In upgrade mode, skip all interactive configuration
+if [[ "$UPGRADE" == true ]]; then
+    echo ""
+    info "Upgrade complete (${VERSION})"
+    exit 0
 fi
 
 # ── LLM configuration ───────────────────────────────────────────────────────
