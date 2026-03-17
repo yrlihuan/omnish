@@ -32,7 +32,7 @@ BIN_DIR="${OMNISH_DIR}/bin"
 info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33mWARN:\033[0m %s\n' "$*"; }
 error() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
-ask()   { printf '\033[1;32m?\033[0m %s ' "$1" >&2; read -r REPLY; }
+ask()   { printf '\033[1;32m?\033[0m %s ' "$1" >&2; read -r REPLY </dev/tty; }
 
 # ── Platform detection ───────────────────────────────────────────────────────
 
