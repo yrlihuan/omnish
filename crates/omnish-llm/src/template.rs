@@ -59,7 +59,8 @@ pub const DAILY_NOTES_PROMPT: &str =
 
 /// The hourly-notes LLM summary prompt.
 pub const HOURLY_NOTES_PROMPT: &str =
-    "以下<commands>中是从多台终端收集的过去1小时的命令及其简要输出。\
+    "以下<commands>中是从多台终端收集的过去1小时的命令及其简要输出（如有），\
+     <conversations>中是与AI助手的对话记录（如有）。\
      请用中文以项目符号列表形式列出这一个小时的工作内容，每个条目包含一项主要活动或成果。适合直接作为工作日志。";
 
 /// The thread-title LLM prompt — generates a short title for the thread.

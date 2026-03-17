@@ -125,6 +125,8 @@ async fn async_main() -> Result<()> {
         Err(e) => tracing::warn!("failed to load existing sessions: {}", e),
     }
 
+    let conv_mgr = Arc::new(ConversationManager::new(omnish_dir.join("threads")));
+
     // Set up scheduled task manager
     let mut task_mgr = omnish_daemon::task_mgr::TaskManager::new().await?;
 
@@ -143,6 +145,7 @@ async fn async_main() -> Result<()> {
         let notes_dir = omnish_dir.join("notes");
         let job = create_hourly_summary_job(
             Arc::clone(&session_mgr),
+            Arc::clone(&conv_mgr),
             llm_backend.clone(),
             notes_dir,
         )?;
@@ -193,8 +196,6 @@ async fn async_main() -> Result<()> {
             auto_update_config.schedule
         );
     }
-
-    let conv_mgr = Arc::new(ConversationManager::new(omnish_dir.join("threads")));
 
     // Register thread summary job (runs every 10 minutes)
     {

@@ -1,3 +1,4 @@
+use crate::conversation_mgr::ConversationManager;
 use crate::session_mgr::SessionManager;
 use chrono::Local;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
@@ -9,6 +10,7 @@ use tokio_cron_scheduler::Job;
 /// Create a cron job that generates hourly summaries.
 pub fn create_hourly_summary_job(
     mgr: Arc<SessionManager>,
+    conv_mgr: Arc<ConversationManager>,
     llm_backend: Option<Arc<dyn LlmBackend>>,
     summaries_dir: PathBuf,
 ) -> anyhow::Result<Job> {
@@ -16,11 +18,12 @@ pub fn create_hourly_summary_job(
     let cron = "0 0 * * * *".to_string();
     Ok(Job::new_async(cron, move |_uuid, _lock| {
         let mgr = mgr.clone();
+        let conv_mgr = conv_mgr.clone();
         let llm = llm_backend.clone();
         let dir = summaries_dir.clone();
         Box::pin(async move {
             tracing::debug!("task [hourly_summary] started");
-            if let Err(e) = generate_hourly_summary(&mgr, llm.as_deref(), &dir).await {
+            if let Err(e) = generate_hourly_summary(&mgr, &conv_mgr, llm.as_deref(), &dir).await {
                 tracing::warn!("task [hourly_summary] failed: {}", e);
             }
             tracing::debug!("task [hourly_summary] finished");
@@ -31,6 +34,7 @@ pub fn create_hourly_summary_job(
 /// Generate the hourly summary file with LLM summary only.
 async fn generate_hourly_summary(
     mgr: &SessionManager,
+    conv_mgr: &ConversationManager,
     llm_backend: Option<&dyn LlmBackend>,
     summaries_dir: &Path,
 ) -> anyhow::Result<()> {
@@ -42,8 +46,10 @@ async fn generate_hourly_summary(
     let since_ms = now_ms.saturating_sub(one_hour_ms);
 
     let commands = mgr.collect_recent_commands(since_ms).await;
-    if commands.is_empty() {
-        tracing::info!("hourly summary: no commands in the last hour, skipping");
+    let conversations_md = collect_recent_conversations(conv_mgr);
+
+    if commands.is_empty() && conversations_md.is_empty() {
+        tracing::info!("hourly summary: no commands or conversations in the last hour, skipping");
         return Ok(());
     }
 
@@ -66,12 +72,21 @@ async fn generate_hourly_summary(
         ));
     }
 
+    // Build context with commands and conversations
+    let mut context = String::new();
+    if !table_md.is_empty() {
+        context.push_str(&format!("<commands>\n{}</commands>\n\n", table_md));
+    }
+    if !conversations_md.is_empty() {
+        context.push_str(&format!("<conversations>\n{}</conversations>", conversations_md));
+    }
+
     // Try LLM summary
     let summary = if let Some(backend) = llm_backend {
         let use_case = UseCase::Analysis;
         let max_content_chars = backend.max_content_chars_for_use_case(use_case);
         let req = LlmRequest {
-            context: format!("<commands>\n{}</commands>", table_md),
+            context,
             query: Some(omnish_llm::template::HOURLY_NOTES_PROMPT.to_string()),
             trigger: TriggerType::AutoPattern,
             session_ids: vec![],
@@ -120,6 +135,81 @@ async fn generate_hourly_summary(
     Ok(())
 }
 
+/// Collect conversations from threads modified in the last hour.
+/// Extracts text-only content, filtering out tool_use and tool_result blocks.
+fn collect_recent_conversations(conv_mgr: &ConversationManager) -> String {
+    let one_hour_ago = SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(3600))
+        .unwrap_or(UNIX_EPOCH);
+
+    let conversations = conv_mgr.list_conversations();
+    let mut result = String::new();
+
+    for (thread_id, mtime, _count, _last_q) in &conversations {
+        if *mtime < one_hour_ago {
+            continue;
+        }
+
+        let meta = conv_mgr.load_meta(thread_id);
+        let title = meta.summary.unwrap_or_else(|| "untitled".to_string());
+
+        let messages = conv_mgr.load_raw_messages(thread_id);
+        if messages.is_empty() {
+            continue;
+        }
+
+        let mut thread_md = format!("## Thread: {}\n\n", title);
+        for msg in &messages {
+            let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+            let text = extract_text_content(msg);
+            if text.is_empty() {
+                continue;
+            }
+            let label = match role {
+                "user" => "User",
+                "assistant" => "Assistant",
+                _ => continue,
+            };
+            thread_md.push_str(&format!("{}: {}\n\n", label, text));
+        }
+
+        result.push_str(&thread_md);
+    }
+
+    result
+}
+
+/// Extract text content from a message, filtering out tool_use/tool_result blocks.
+fn extract_text_content(msg: &serde_json::Value) -> String {
+    let content = match msg.get("content") {
+        Some(c) => c,
+        None => return String::new(),
+    };
+
+    // Simple string content
+    if let Some(s) = content.as_str() {
+        return s.to_string();
+    }
+
+    // Array content: filter for text blocks only
+    if let Some(arr) = content.as_array() {
+        let texts: Vec<&str> = arr
+            .iter()
+            .filter_map(|block| {
+                let block_type = block.get("type")?.as_str()?;
+                if block_type == "text" {
+                    block.get("text")?.as_str()
+                } else {
+                    None
+                }
+            })
+            .collect();
+        return texts.join("\n");
+    }
+
+    String::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,10 +218,11 @@ mod tests {
     async fn test_generate_hourly_summary_empty_commands() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+        let conv_mgr = ConversationManager::new(dir.path().join("threads"));
         let summaries_dir = dir.path().join("summaries");
 
-        // No commands -> should skip without error
-        generate_hourly_summary(&mgr, None, &summaries_dir).await.unwrap();
+        // No commands or conversations -> should skip without error
+        generate_hourly_summary(&mgr, &conv_mgr, None, &summaries_dir).await.unwrap();
         assert!(!summaries_dir.exists());
     }
 
