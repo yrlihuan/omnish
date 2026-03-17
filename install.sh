@@ -152,7 +152,7 @@ elif [[ -z "${EXTRACTED:-}" ]]; then
         fi
         if [[ "$CURRENT_VERSION" == "${VERSION#v}" ]]; then
             info "Already up to date (v${CURRENT_VERSION})"
-            exit 0
+            exit 2  # No update needed — daemon skips deploy
         fi
         info "Update available: v${CURRENT_VERSION:-unknown} -> ${VERSION}"
     fi

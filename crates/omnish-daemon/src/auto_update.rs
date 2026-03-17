@@ -35,6 +35,12 @@ pub fn create_auto_update_job(
                     for line in stdout.lines() {
                         tracing::info!("task [auto_update] {}", line);
                     }
+                    let code = output.status.code().unwrap_or(-1);
+                    if code == 2 {
+                        // Exit 2 = already up to date, skip deploy
+                        tracing::debug!("task [auto_update] already up to date, skipping deploy");
+                        return;
+                    }
                     if !output.status.success() {
                         let stderr = String::from_utf8_lossy(&output.stderr);
                         tracing::warn!("task [auto_update] install.sh --upgrade failed: {}{}", stdout, stderr);
