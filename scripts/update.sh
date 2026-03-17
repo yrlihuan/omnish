@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
-# omnish auto-updater
+# omnish updater
 #
-# Checks GitHub for the latest release, downloads and installs if newer,
-# then distributes updated files to client machines.
+# Checks GitHub for the latest release, downloads and installs if newer.
 #
 # Usage:
-#   bash update.sh [user@host1 user@host2 ...]
-#
-# When called by the daemon's auto_update task, client hosts from
-# [tasks.auto_update] clients config are passed as arguments.
-# Can also be run manually.
+#   bash update.sh
 #
 # Environment variables:
 #   OMNISH_HOME   Override the default directory (~/.omnish)
@@ -19,7 +14,6 @@ set -euo pipefail
 OMNISH_DIR="${OMNISH_HOME:-${HOME}/.omnish}"
 BIN_DIR="${OMNISH_DIR}/bin"
 REPO="yrlihuan/omnish"
-CLIENTS=("$@")
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -79,26 +73,8 @@ if [[ -d "$EXTRACTED/assets" ]]; then
     { echo "// This file is for demonstration only. Use tool.override.json to customize."; cat "$EXTRACTED/assets/plugins/builtin/tool.json"; } > "$OMNISH_DIR/plugins/builtin/tool.json"
     { echo "// This file is for demonstration only. Use chat.override.json to customize."; cat "$EXTRACTED/assets/prompts/chat.json"; } > "$OMNISH_DIR/prompts/chat.json"
     cp "$EXTRACTED/assets/update.sh" "$OMNISH_DIR/"
-    chmod 755 "$OMNISH_DIR/update.sh"
+    cp "$EXTRACTED/assets/deploy.sh" "$OMNISH_DIR/"
+    chmod 755 "$OMNISH_DIR/update.sh" "$OMNISH_DIR/deploy.sh"
 fi
-
-info "Server updated to v${LATEST_VERSION}"
-
-# ── Client distribution ─────────────────────────────────────────────────────
-
-for client in "${CLIENTS[@]}"; do
-    [[ -z "$client" ]] && continue
-
-    info "Updating client: ${client}..."
-    REMOTE_HOME="~/.omnish"
-
-    if scp -q "${BIN_DIR}/omnish" "${BIN_DIR}/omnish-plugin" "${client}:${REMOTE_HOME}/bin/" 2>/dev/null; then
-        scp -q "${OMNISH_DIR}/tls/cert.pem" "${client}:${REMOTE_HOME}/tls/" 2>/dev/null || true
-        scp -q "${OMNISH_DIR}/auth_token" "${client}:${REMOTE_HOME}/" 2>/dev/null || true
-        info "Updated ${client}"
-    else
-        warn "Failed to update ${client}"
-    fi
-done
 
 info "Update complete (v${LATEST_VERSION})"

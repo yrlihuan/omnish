@@ -26,6 +26,7 @@ cp "$REPO_ROOT/crates/omnish-plugin/assets/tool.override.json.example"   "$STAGI
 cp "$REPO_ROOT/crates/omnish-llm/assets/chat.json"                       "$STAGING/assets/prompts/"
 cp "$REPO_ROOT/crates/omnish-llm/assets/chat.override.json.example"      "$STAGING/assets/prompts/"
 cp "$REPO_ROOT/scripts/update.sh"                                        "$STAGING/assets/"
+cp "$REPO_ROOT/scripts/deploy.sh"                                        "$STAGING/assets/"
 
 tar -czf "${STAGING}.tar.gz" -C dist "omnish-${VERSION}-linux-x86_64"
 echo "Created ${STAGING}.tar.gz"

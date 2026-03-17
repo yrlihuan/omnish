@@ -2,31 +2,65 @@ use anyhow::Result;
 use std::path::PathBuf;
 use tokio_cron_scheduler::Job;
 
-/// Create a cron job that runs the update.sh script to check for and install updates.
-///
-/// The script checks GitHub for the latest release, downloads if newer,
-/// and distributes updated binaries to the specified client machines.
+/// Create a cron job that runs update.sh to check for and install updates,
+/// then runs deploy.sh to distribute to client machines.
 pub fn create_auto_update_job(
     omnish_dir: PathBuf,
     schedule: &str,
     clients: Vec<String>,
 ) -> Result<Job> {
     Ok(Job::new_async(schedule, move |_uuid, _lock| {
-        let script = omnish_dir.join("update.sh");
+        let omnish_dir = omnish_dir.clone();
         let clients = clients.clone();
         Box::pin(async move {
             tracing::debug!("task [auto_update] started");
 
-            if !script.exists() {
-                tracing::warn!("task [auto_update] script not found: {}", script.display());
+            // Phase 1: Update server
+            let update_script = omnish_dir.join("update.sh");
+            if !update_script.exists() {
+                tracing::warn!("task [auto_update] update.sh not found: {}", update_script.display());
+                return;
+            }
+
+            let output = tokio::process::Command::new("bash")
+                .arg(&update_script)
+                .env("OMNISH_HOME", &omnish_dir)
+                .output()
+                .await;
+
+            match output {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    for line in stdout.lines() {
+                        tracing::info!("task [auto_update] {}", line);
+                    }
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        tracing::warn!("task [auto_update] update.sh failed: {}{}", stdout, stderr);
+                        return;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("task [auto_update] failed to run update.sh: {}", e);
+                    return;
+                }
+            }
+
+            // Phase 2: Deploy to clients
+            if clients.is_empty() {
+                tracing::debug!("task [auto_update] no clients configured, skipping deploy");
+                return;
+            }
+
+            let deploy_script = omnish_dir.join("deploy.sh");
+            if !deploy_script.exists() {
+                tracing::warn!("task [auto_update] deploy.sh not found: {}", deploy_script.display());
                 return;
             }
 
             let mut cmd = tokio::process::Command::new("bash");
-            cmd.arg(&script)
-                .env("OMNISH_HOME", script.parent().unwrap_or(&script));
-
-            // Pass client hosts as positional arguments
+            cmd.arg(&deploy_script)
+                .env("OMNISH_HOME", &omnish_dir);
             for client in &clients {
                 cmd.arg(client);
             }
@@ -34,22 +68,16 @@ pub fn create_auto_update_job(
             match cmd.output().await {
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    if output.status.success() {
-                        for line in stdout.lines() {
-                            tracing::info!("task [auto_update] {}", line);
-                        }
-                    } else {
-                        tracing::warn!(
-                            "task [auto_update] script exited with {}: {}{}",
-                            output.status,
-                            stdout,
-                            stderr,
-                        );
+                    for line in stdout.lines() {
+                        tracing::info!("task [auto_update] {}", line);
+                    }
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        tracing::warn!("task [auto_update] deploy.sh failed: {}{}", stdout, stderr);
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("task [auto_update] failed to run script: {}", e);
+                    tracing::warn!("task [auto_update] failed to run deploy.sh: {}", e);
                 }
             }
 

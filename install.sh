@@ -158,9 +158,10 @@ for l in links:
             cp "$EXTRACTED/assets/prompts/chat.override.json.example" "$OMNISH_DIR/prompts/"
         fi
 
-        # Update script (always overwrite)
+        # Scripts (always overwrite)
         cp "$EXTRACTED/assets/update.sh" "$OMNISH_DIR/"
-        chmod 755 "$OMNISH_DIR/update.sh"
+        cp "$EXTRACTED/assets/deploy.sh" "$OMNISH_DIR/"
+        chmod 755 "$OMNISH_DIR/update.sh" "$OMNISH_DIR/deploy.sh"
     fi
 
     chmod 700 "$OMNISH_DIR"
