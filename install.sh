@@ -185,6 +185,11 @@ configure_backend() {
         default_model="$recommended_model"
     fi
 
+    if [[ "$provider" == "custom" ]]; then
+        ask "Base URL:"
+        base_url="$REPLY"
+    fi
+
     if [[ -n "$default_model" ]]; then
         ask "Model name [$default_model]:"
         local model="${REPLY:-$default_model}"
@@ -196,20 +201,28 @@ configure_backend() {
     ask "API key:"
     local api_key="$REPLY"
 
-    if [[ "$provider" == "custom" ]]; then
-        ask "Base URL:"
-        base_url="$REPLY"
+    # Build TOML snippet
+    local toml="[llm.backends.${name}]"$'\n'
+    toml+="backend_type = \"${backend_type}\""$'\n'
+    toml+="model = \"${model}\""$'\n'
+    toml+="api_key_cmd = 'echo \"${api_key}\"'"$'\n'
+    if [[ -n "$base_url" ]]; then
+        toml+="base_url = \"${base_url}\""$'\n'
+    fi
+
+    # Preview with masked API key and confirm
+    echo "" >&2
+    echo "───────────────────────────────────────" >&2
+    echo "$toml" | sed 's/echo "\(.\{4\}\).*\(.\{4\}\)"/echo "\1...\2"/' >&2
+    echo "───────────────────────────────────────" >&2
+    ask "OK? [Y/n]:"
+    if [[ "${REPLY:-Y}" =~ ^[Nn] ]]; then
+        warn "Aborted" >&2
+        exit 1
     fi
 
     # Write TOML section to stdout
-    echo "[llm.backends.${name}]"
-    echo "backend_type = \"${backend_type}\""
-    echo "model = \"${model}\""
-    echo "api_key_cmd = 'echo \"${api_key}\"'"
-    if [[ -n "$base_url" ]]; then
-        echo "base_url = \"${base_url}\""
-    fi
-    echo ""
+    printf '%s\n' "$toml"
 }
 
 DAEMON_TOML="$OMNISH_DIR/daemon.toml"
@@ -282,25 +295,12 @@ completion = "claude"'
         echo "$USE_CASES"
     } > "$TMPDIR/daemon.toml"
 
-    # Preview and confirm
-    echo ""
-    info "daemon.toml preview:"
-    echo "───────────────────────────────────────"
-    # Mask API keys in preview
-    sed 's/echo "\(.\{4\}\).*\(.\{4\}\)"/echo "\1...\2"/' "$TMPDIR/daemon.toml"
-    echo "───────────────────────────────────────"
-
     if [[ "$DRY_RUN" == true ]]; then
         info "[DRY RUN] Would write to $DAEMON_TOML"
     else
-        ask "Write to $DAEMON_TOML? [Y/n]:"
-        if [[ "${REPLY:-Y}" =~ ^[Nn] ]]; then
-            info "Skipped writing daemon.toml"
-        else
-            cp "$TMPDIR/daemon.toml" "$DAEMON_TOML"
-            chmod 600 "$DAEMON_TOML"
-            info "Written: $DAEMON_TOML"
-        fi
+        cp "$TMPDIR/daemon.toml" "$DAEMON_TOML"
+        chmod 600 "$DAEMON_TOML"
+        info "Written: $DAEMON_TOML"
     fi
 fi
 
