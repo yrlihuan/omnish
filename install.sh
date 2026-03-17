@@ -94,7 +94,7 @@ else
                 | grep '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//')
             [[ -n "$VERSION" ]] || error "Could not determine latest version"
         fi
-        TAR_URL="https://github.com/${REPO}/releases/download/${VERSION}/omnish-${VERSION}-linux-${ARCH}.tar.gz"
+        TAR_URL="https://github.com/${REPO}/releases/download/${VERSION}/omnish-${VERSION#v}-linux-${ARCH}.tar.gz"
     else
         PROJECT="dev%2Fomnish"
         if [[ -z "$VERSION" ]]; then
