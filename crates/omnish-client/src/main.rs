@@ -523,6 +523,7 @@ async fn main() -> Result<()> {
             && shell_input.at_prompt()
             && last_keystroke.elapsed() >= AUTO_UPDATE_IDLE
             && !interceptor.is_in_chat()
+            && !alt_screen_detector.is_active()
         {
             last_update_check = std::time::Instant::now();
             if let Some(ref startup_mtime) = exe_mtime {
