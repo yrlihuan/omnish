@@ -33,20 +33,14 @@ For detailed module documentation and implementation details, see the [module do
 
 ## Features
 
-- **Zero interference** — All programs (vim, ssh, htop, etc.) behave identically. The proxy is fully transparent.
-- **Graceful degradation** — Works as a normal shell when the daemon is unavailable.
-- **Command recording** — Detects shell prompts to segment continuous I/O into individual commands with metadata and output summaries.
+- **Zero interference** — All programs (vim, ssh, htop, etc.) behave identically.
 - **Ghost completion** — LLM-powered inline command suggestions as you type.
-- **Multi-session aggregation** — Query context from multiple terminals at once.
-- **Multi-backend LLM** — Anthropic (Claude), OpenAI, Azure, local models (Ollama/LM Studio) via OpenAI-compatible API.
-- **Agent loop with tool-use** — LLM can call tools (e.g. run shell commands, query plugins) in a multi-turn loop and stream live status to the terminal.
-- **Plugin system** — Load external tools via JSON-RPC subprocess protocol; plugins expose tools that the LLM agent can invoke.
-- **Interactive picker** — Arrow-key selection widget for thread resumption and multi-select deletion.
-- **Auto-trigger** — Optionally analyze on non-zero exit codes or stderr patterns.
-- **Scheduled tasks** — Hourly summaries, daily notes, session eviction, disk cleanup, and auto-update run automatically.
-- **Auto-update** — Daemon periodically checks GitHub for new releases and distributes updates to client machines.
-- **Security** — Token authentication, Unix socket permissions (0600) with SO_PEERCRED UID verification, TLS encryption for TCP connections.
-- **Cross-platform** — Linux and macOS support.
+- **Chat mode** — Type `:` to ask the LLM about recent terminal activity across all sessions.
+- **Agent with tools** — LLM can run shell commands, query plugins, and stream results back to the terminal.
+- **Multi-backend LLM** — Anthropic, OpenAI, DeepSeek, Moonshot, OpenRouter, or any OpenAI-compatible API.
+- **Scheduled tasks** — Hourly/daily work summaries, session cleanup.
+- **Auto-update** — Daemon periodically checks for new releases and distributes to client machines.
+- **Cross-platform** — Linux and macOS.
 
 ## Installation
 
