@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.6.5 (2026-03-17)
+
+### Features
+- **daemon**: Periodic thread summary generation task (#301)
+- **daemon**: Claude Code-style numbered diff for edit formatter (#300)
+- **daemon**: Read formatter shows numbered lines for N<=10, summary for N>10 (#298)
+- **daemon**: Edit formatter shows old_string on error
+- **client**: Show thread summary and title in `/thread list` (#306)
+- **plugin**: Read tool output uses `cat -n` format (tab separator) (#305)
+- **plugin**: Add edit-over-write preference hint to write tool description
+- **install**: Add `install.sh` for automated server deployment with interactive LLM configuration
+- **install**: Support `OMNISH_HOME` env var to override default `~/.omnish` directory
+- **daemon**: `--init` flag for credential generation without starting server
+
+### Bug Fixes
+- **daemon**: Edit diff shows full lines instead of raw old_string (#303)
+- **daemon**: Edit formatter shows diff for deletions and duplicate text (#300)
+- **llm**: CJK char truncation panic in langfuse (#302)
+- **client**: Indent LLM response lines to align with bullet prefix (#297)
+- **client**: Apply bullet prefix and indent to intermediate LLM text (#297)
+- **client**: Remove "+N lines" hint after result_compact
+- **client**: Add empty line before response in browse mode (#296)
+- **client**: Correct page-up/down key order in browse hint (#296)
+
+### Build & CI
+- Fix GitHub release permissions and update action version
+
+---
+
 ## v0.6.4 (2026-03-16)
 
 ### Features
