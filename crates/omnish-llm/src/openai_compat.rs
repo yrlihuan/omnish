@@ -1,4 +1,5 @@
 use crate::backend::{ContentBlock, LlmBackend, LlmRequest, LlmResponse, StopReason, Usage};
+use crate::tool::ToolCall;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::time::Duration;
@@ -36,12 +37,93 @@ fn extract_thinking(content: &str) -> (Option<String>, String) {
     (None, content.to_string())
 }
 
+/// Convert Anthropic-format extra_messages to OpenAI-format messages.
+///
+/// Anthropic format stores tool interactions as:
+///   - assistant: `{"role":"assistant","content":[{"type":"tool_use","id":..,"name":..,"input":..}, {"type":"text","text":..}]}`
+///   - user: `{"role":"user","content":[{"type":"tool_result","tool_use_id":..,"content":..}]}`
+///
+/// OpenAI format uses:
+///   - assistant: `{"role":"assistant","tool_calls":[{"id":..,"type":"function","function":{"name":..,"arguments":..}}]}`
+///   - tool: `{"role":"tool","tool_call_id":..,"content":..}`
+fn convert_extra_messages(extra: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for msg in extra {
+        let role = msg["role"].as_str().unwrap_or("");
+        match role {
+            "assistant" => {
+                if let Some(content_arr) = msg["content"].as_array() {
+                    let mut text_parts = Vec::new();
+                    let mut tool_calls = Vec::new();
+                    for block in content_arr {
+                        match block["type"].as_str() {
+                            Some("tool_use") => {
+                                tool_calls.push(serde_json::json!({
+                                    "id": block["id"],
+                                    "type": "function",
+                                    "function": {
+                                        "name": block["name"],
+                                        "arguments": serde_json::to_string(&block["input"]).unwrap_or_default(),
+                                    }
+                                }));
+                            }
+                            Some("text") => {
+                                if let Some(t) = block["text"].as_str() {
+                                    if !t.is_empty() {
+                                        text_parts.push(t.to_string());
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let mut m = serde_json::Map::new();
+                    m.insert("role".into(), serde_json::json!("assistant"));
+                    if !text_parts.is_empty() {
+                        m.insert("content".into(), serde_json::json!(text_parts.join("\n")));
+                    } else {
+                        m.insert("content".into(), serde_json::Value::Null);
+                    }
+                    if !tool_calls.is_empty() {
+                        m.insert("tool_calls".into(), serde_json::json!(tool_calls));
+                    }
+                    out.push(serde_json::Value::Object(m));
+                } else {
+                    // Plain text assistant message
+                    out.push(msg.clone());
+                }
+            }
+            "user" => {
+                if let Some(content_arr) = msg["content"].as_array() {
+                    // Convert tool_result blocks to separate "tool" role messages
+                    for block in content_arr {
+                        if block["type"].as_str() == Some("tool_result") {
+                            out.push(serde_json::json!({
+                                "role": "tool",
+                                "tool_call_id": block["tool_use_id"],
+                                "content": block["content"].as_str().unwrap_or(""),
+                            }));
+                        }
+                    }
+                } else {
+                    // Plain text user message
+                    out.push(msg.clone());
+                }
+            }
+            _ => {
+                out.push(msg.clone());
+            }
+        }
+    }
+    out
+}
+
 #[async_trait]
 impl LlmBackend for OpenAiCompatBackend {
     async fn complete(&self, req: &LlmRequest) -> Result<LlmResponse> {
         let client = &self.client;
 
-        let mut messages: Vec<serde_json::Value> = if req.conversation.is_empty() {
+        let mut messages: Vec<serde_json::Value> = if req.conversation.is_empty() && req.extra_messages.is_empty() {
             // Existing single-turn behavior
             let user_content = crate::template::build_user_content(
                 &req.context,
@@ -49,7 +131,7 @@ impl LlmBackend for OpenAiCompatBackend {
             );
             vec![serde_json::json!({"role": "user", "content": user_content})]
         } else {
-            // Multi-turn: conversation history + current query
+            // Multi-turn: conversation history + current query + extra (tool) messages
             let mut msgs = Vec::new();
             for (i, turn) in req.conversation.iter().enumerate() {
                 let content = if i == 0 && !req.context.is_empty() {
@@ -60,10 +142,14 @@ impl LlmBackend for OpenAiCompatBackend {
                 };
                 msgs.push(serde_json::json!({"role": &turn.role, "content": content}));
             }
-            // Append current query as final user message
-            if let Some(ref q) = req.query {
-                msgs.push(serde_json::json!({"role": "user", "content": q}));
+            // Append current query as user message (before extra messages on first call)
+            if req.extra_messages.is_empty() {
+                if let Some(ref q) = req.query {
+                    msgs.push(serde_json::json!({"role": "user", "content": q}));
+                }
             }
+            // Convert and append extra messages (tool_use/tool_result exchanges)
+            msgs.extend(convert_extra_messages(&req.extra_messages));
             msgs
         };
 
@@ -76,6 +162,22 @@ impl LlmBackend for OpenAiCompatBackend {
         let mut body_map = serde_json::Map::new();
         body_map.insert("model".to_string(), serde_json::Value::String(self.model.clone()));
         body_map.insert("messages".to_string(), serde_json::Value::Array(messages));
+
+        // Add tools if provided (OpenAI format)
+        if !req.tools.is_empty() {
+            let tools_json: Vec<serde_json::Value> = req.tools
+                .iter()
+                .map(|t| serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.input_schema,
+                    }
+                }))
+                .collect();
+            body_map.insert("tools".to_string(), serde_json::Value::Array(tools_json));
+        }
 
         // Add thinking control for models like Qwen3
         if req.enable_thinking == Some(false) {
@@ -148,17 +250,48 @@ impl LlmBackend for OpenAiCompatBackend {
                 ));
             }
 
-            let raw_content = json["choices"][0]["message"]["content"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("Invalid response format: missing choices[0].message.content"))?
-                .to_string();
+            let message = &json["choices"][0]["message"];
 
-            // Extract thinking from content, unless explicitly disabled
-            let (thinking, content) = if req.enable_thinking == Some(false) {
-                (None, raw_content.clone())
-            } else {
-                extract_thinking(&raw_content)
+            // Parse finish_reason / stop_reason
+            let finish_reason = json["choices"][0]["finish_reason"].as_str().unwrap_or("stop");
+            let stop_reason = match finish_reason {
+                "tool_calls" => StopReason::ToolUse,
+                "length" => StopReason::MaxTokens,
+                _ => StopReason::EndTurn,
             };
+
+            // Parse content blocks
+            let mut thinking: Option<String> = None;
+            let mut content_blocks = Vec::new();
+
+            // Text content
+            if let Some(raw_content) = message["content"].as_str() {
+                let (think, text) = if req.enable_thinking == Some(false) {
+                    (None, raw_content.to_string())
+                } else {
+                    extract_thinking(raw_content)
+                };
+                thinking = think;
+                if !text.is_empty() {
+                    content_blocks.push(ContentBlock::Text(text));
+                }
+            }
+
+            // Tool calls
+            if let Some(tool_calls) = message["tool_calls"].as_array() {
+                for tc in tool_calls {
+                    let id = tc["id"].as_str().unwrap_or("").to_string();
+                    let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
+                    let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
+                    let input: serde_json::Value = serde_json::from_str(args_str)
+                        .unwrap_or(serde_json::json!({}));
+                    content_blocks.push(ContentBlock::ToolUse(ToolCall { id, name, input }));
+                }
+            }
+
+            if content_blocks.is_empty() && stop_reason == StopReason::EndTurn {
+                return Err(anyhow::anyhow!("Invalid response format: no content blocks found"));
+            }
 
             let usage = json["usage"].as_object().map(|u| Usage {
                 input_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
@@ -168,8 +301,8 @@ impl LlmBackend for OpenAiCompatBackend {
             });
 
             return Ok(LlmResponse {
-                content: vec![ContentBlock::Text(content)],
-                stop_reason: StopReason::EndTurn,
+                content: content_blocks,
+                stop_reason,
                 model: self.model.clone(),
                 thinking,
                 usage,
@@ -264,5 +397,72 @@ mod tests {
 
         assert!(thinking.is_none());
         assert_eq!(content, "Some content");
+    }
+
+    #[test]
+    fn test_convert_extra_messages_tool_use() {
+        let extra = vec![
+            serde_json::json!({
+                "role": "user",
+                "content": "what files are here?"
+            }),
+            serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Let me check"},
+                    {"type": "tool_use", "id": "call_1", "name": "command_query", "input": {"action": "list_history"}}
+                ]
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "call_1", "content": "file1.txt\nfile2.txt"}
+                ]
+            }),
+            serde_json::json!({
+                "role": "assistant",
+                "content": "Here are the files: file1.txt and file2.txt"
+            }),
+        ];
+        let converted = convert_extra_messages(&extra);
+        assert_eq!(converted.len(), 4);
+
+        // Plain user message passes through
+        assert_eq!(converted[0]["role"], "user");
+        assert_eq!(converted[0]["content"], "what files are here?");
+
+        // Assistant with tool_use → OpenAI format
+        assert_eq!(converted[1]["role"], "assistant");
+        assert_eq!(converted[1]["content"], "Let me check");
+        assert!(converted[1]["tool_calls"].is_array());
+        let tc = &converted[1]["tool_calls"][0];
+        assert_eq!(tc["id"], "call_1");
+        assert_eq!(tc["type"], "function");
+        assert_eq!(tc["function"]["name"], "command_query");
+
+        // tool_result → "tool" role message
+        assert_eq!(converted[2]["role"], "tool");
+        assert_eq!(converted[2]["tool_call_id"], "call_1");
+        assert_eq!(converted[2]["content"], "file1.txt\nfile2.txt");
+
+        // Plain assistant message passes through
+        assert_eq!(converted[3]["role"], "assistant");
+    }
+
+    #[test]
+    fn test_convert_extra_messages_no_text_in_tool_use() {
+        let extra = vec![
+            serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "call_2", "name": "read_file", "input": {"path": "/tmp/test"}}
+                ]
+            }),
+        ];
+        let converted = convert_extra_messages(&extra);
+        assert_eq!(converted.len(), 1);
+        // content should be null when no text
+        assert!(converted[0]["content"].is_null());
+        assert_eq!(converted[0]["tool_calls"][0]["id"], "call_2");
     }
 }
