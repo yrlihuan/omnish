@@ -134,18 +134,18 @@ for l in links:
 
     # Install assets (plugin configs, prompts, update script)
     if [[ -d "$EXTRACTED/assets" ]]; then
-        # Plugin tool definitions (always overwrite)
+        # Plugin tool definitions (always overwrite, with warning header)
         mkdir -p "$OMNISH_DIR/plugins/builtin"
-        cp "$EXTRACTED/assets/plugins/builtin/tool.json" "$OMNISH_DIR/plugins/builtin/"
+        { echo "// This file is for demonstration only. Use tool.override.json to customize."; cat "$EXTRACTED/assets/plugins/builtin/tool.json"; } > "$OMNISH_DIR/plugins/builtin/tool.json"
 
         # tool.override.json.example (only if not present)
         if [[ ! -f "$OMNISH_DIR/plugins/builtin/tool.override.json.example" ]]; then
             cp "$EXTRACTED/assets/plugins/builtin/tool.override.json.example" "$OMNISH_DIR/plugins/builtin/"
         fi
 
-        # Chat prompts (always overwrite)
+        # Chat prompts (always overwrite, with warning header)
         mkdir -p "$OMNISH_DIR/prompts"
-        cp "$EXTRACTED/assets/prompts/chat.json" "$OMNISH_DIR/prompts/"
+        { echo "// This file is for demonstration only. Use chat.override.json to customize."; cat "$EXTRACTED/assets/prompts/chat.json"; } > "$OMNISH_DIR/prompts/chat.json"
 
         # chat.override.json.example (only if not present)
         if [[ ! -f "$OMNISH_DIR/prompts/chat.override.json.example" ]]; then

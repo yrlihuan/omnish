@@ -76,8 +76,8 @@ chmod 755 "$BIN_DIR"/*
 # Install assets
 if [[ -d "$EXTRACTED/assets" ]]; then
     mkdir -p "$OMNISH_DIR/plugins/builtin" "$OMNISH_DIR/prompts"
-    cp "$EXTRACTED/assets/plugins/builtin/tool.json" "$OMNISH_DIR/plugins/builtin/"
-    cp "$EXTRACTED/assets/prompts/chat.json" "$OMNISH_DIR/prompts/"
+    { echo "// This file is for demonstration only. Use tool.override.json to customize."; cat "$EXTRACTED/assets/plugins/builtin/tool.json"; } > "$OMNISH_DIR/plugins/builtin/tool.json"
+    { echo "// This file is for demonstration only. Use chat.override.json to customize."; cat "$EXTRACTED/assets/prompts/chat.json"; } > "$OMNISH_DIR/prompts/chat.json"
     cp "$EXTRACTED/assets/update.sh" "$OMNISH_DIR/"
     chmod 755 "$OMNISH_DIR/update.sh"
 fi
