@@ -1,6 +1,6 @@
 /target
 .worktrees
 *.swp
-.claude/settings.local.json
+.claude
 .langfuse/
 /prompts/
