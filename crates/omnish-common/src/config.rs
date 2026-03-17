@@ -137,6 +137,9 @@ pub struct AutoUpdateConfig {
     /// Cron schedule for update checks. Default: daily at 04:00.
     #[serde(default = "default_auto_update_schedule")]
     pub schedule: String,
+    /// Client hosts to distribute updates to (e.g. ["user@host1", "user@host2"]).
+    #[serde(default)]
+    pub clients: Vec<String>,
 }
 
 impl Default for AutoUpdateConfig {
@@ -144,6 +147,7 @@ impl Default for AutoUpdateConfig {
         Self {
             enabled: false,
             schedule: default_auto_update_schedule(),
+            clients: Vec::new(),
         }
     }
 }

@@ -2,10 +2,14 @@
 # omnish auto-updater
 #
 # Checks GitHub for the latest release, downloads and installs if newer,
-# then distributes updated files to configured client machines.
+# then distributes updated files to client machines.
 #
-# This script is called periodically by omnish-daemon's auto_update task.
-# It can also be run manually: bash ~/.omnish/update.sh
+# Usage:
+#   bash update.sh [user@host1 user@host2 ...]
+#
+# When called by the daemon's auto_update task, client hosts from
+# [tasks.auto_update] clients config are passed as arguments.
+# Can also be run manually.
 #
 # Environment variables:
 #   OMNISH_HOME   Override the default directory (~/.omnish)
@@ -14,8 +18,8 @@ set -euo pipefail
 
 OMNISH_DIR="${OMNISH_HOME:-${HOME}/.omnish}"
 BIN_DIR="${OMNISH_DIR}/bin"
-CLIENTS_FILE="${OMNISH_DIR}/clients"
 REPO="yrlihuan/omnish"
+CLIENTS=("$@")
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -73,26 +77,19 @@ info "Server updated to v${LATEST_VERSION}"
 
 # ── Client distribution ─────────────────────────────────────────────────────
 
-if [[ -f "$CLIENTS_FILE" ]]; then
-    while IFS= read -r client; do
-        # Skip empty lines and comments
-        [[ -z "$client" || "$client" == \#* ]] && continue
+for client in "${CLIENTS[@]}"; do
+    [[ -z "$client" ]] && continue
 
-        info "Updating client: ${client}..."
-        REMOTE_HOME="~/.omnish"
+    info "Updating client: ${client}..."
+    REMOTE_HOME="~/.omnish"
 
-        # Copy binaries
-        if scp -q "${BIN_DIR}/omnish" "${BIN_DIR}/omnish-plugin" "${client}:${REMOTE_HOME}/bin/" 2>/dev/null; then
-            # Copy TLS cert and auth token
-            scp -q "${OMNISH_DIR}/tls/cert.pem" "${client}:${REMOTE_HOME}/tls/" 2>/dev/null || true
-            scp -q "${OMNISH_DIR}/auth_token" "${client}:${REMOTE_HOME}/" 2>/dev/null || true
-            info "Updated ${client}"
-        else
-            warn "Failed to update ${client}"
-        fi
-    done < "$CLIENTS_FILE"
-else
-    info "No clients file found (${CLIENTS_FILE}), skipping distribution"
-fi
+    if scp -q "${BIN_DIR}/omnish" "${BIN_DIR}/omnish-plugin" "${client}:${REMOTE_HOME}/bin/" 2>/dev/null; then
+        scp -q "${OMNISH_DIR}/tls/cert.pem" "${client}:${REMOTE_HOME}/tls/" 2>/dev/null || true
+        scp -q "${OMNISH_DIR}/auth_token" "${client}:${REMOTE_HOME}/" 2>/dev/null || true
+        info "Updated ${client}"
+    else
+        warn "Failed to update ${client}"
+    fi
+done
 
 info "Update complete (v${LATEST_VERSION})"

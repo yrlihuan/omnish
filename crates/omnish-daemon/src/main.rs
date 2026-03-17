@@ -210,6 +210,7 @@ async fn async_main() -> Result<()> {
         let job = omnish_daemon::auto_update::create_auto_update_job(
             omnish_dir.clone(),
             &auto_update_config.schedule,
+            auto_update_config.clients.clone(),
         )?;
         task_mgr
             .register("auto_update", &auto_update_config.schedule, job)

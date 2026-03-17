@@ -378,7 +378,7 @@ chmod 600 ${remote_home}/client.toml ${remote_home}/auth_token"
         echo "  Run on client: export PATH=\"\$HOME/.omnish/bin:\$PATH\""
     }
 
-    CLIENTS_FILE="${OMNISH_DIR}/clients"
+    DEPLOYED_CLIENTS=()
 
     if [[ "$DRY_RUN" == true ]]; then
         info "[DRY RUN] Would ask to deploy clients via scp"
@@ -389,16 +389,35 @@ chmod 600 ${remote_home}/client.toml ${remote_home}/auth_token"
             while true; do
                 ask "  Client:"
                 [[ -n "$REPLY" ]] || break
-                deploy_client "$REPLY" || true
-                # Save to clients file for auto-update
-                echo "$REPLY" >> "$CLIENTS_FILE"
+                CLIENT_HOST="$REPLY"
+
+                # Verify SSH connectivity
+                info "Checking SSH connectivity to ${CLIENT_HOST}..."
+                if ssh -o ConnectTimeout=5 -o BatchMode=yes "$CLIENT_HOST" true 2>/dev/null; then
+                    info "SSH OK: ${CLIENT_HOST}"
+                    deploy_client "$CLIENT_HOST" && DEPLOYED_CLIENTS+=("$CLIENT_HOST") || true
+                else
+                    warn "Cannot connect to ${CLIENT_HOST} via SSH, skipping"
+                fi
             done
-            if [[ -f "$CLIENTS_FILE" ]]; then
-                # Deduplicate
-                sort -u "$CLIENTS_FILE" -o "$CLIENTS_FILE"
-                info "Client list saved to ${CLIENTS_FILE}"
-            fi
         fi
+    fi
+
+    # Append auto_update config with client list to daemon.toml
+    if [[ ${#DEPLOYED_CLIENTS[@]} -gt 0 ]] && [[ -f "$DAEMON_TOML" ]]; then
+        {
+            echo ""
+            echo "[tasks.auto_update]"
+            echo "enabled = true"
+            # Build TOML array
+            printf 'clients = ['
+            for i in "${!DEPLOYED_CLIENTS[@]}"; do
+                (( i > 0 )) && printf ', '
+                printf '"%s"' "${DEPLOYED_CLIENTS[$i]}"
+            done
+            echo ']'
+        } >> "$DAEMON_TOML"
+        info "Auto-update enabled with ${#DEPLOYED_CLIENTS[@]} client(s) in daemon.toml"
     fi
 
     # Always print manual instructions for reference
@@ -415,11 +434,10 @@ chmod 600 ${remote_home}/client.toml ${remote_home}/auth_token"
     echo "  Add to PATH on client:"
     echo "    export PATH=\"\$HOME/.omnish/bin:\$PATH\""
     echo ""
-    info "To enable auto-update, add to daemon.toml:"
-    echo "    [tasks.auto_update]"
-    echo "    enabled = true"
-    echo ""
-    echo "  Clients are read from ${CLIENTS_FILE} (one user@host per line)"
+    info "To configure auto-update in daemon.toml:"
+    echo '    [tasks.auto_update]'
+    echo '    enabled = true'
+    echo '    clients = ["user@host1", "user@host2"]'
 fi
 
 echo ""
