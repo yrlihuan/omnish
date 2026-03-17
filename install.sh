@@ -355,9 +355,17 @@ DAEMON_TOML="$OMNISH_DIR/daemon.toml"
 
 if [[ -f "$DAEMON_TOML" ]] && [[ "$FORCE" != true ]]; then
     info "daemon.toml already exists, skipping LLM configuration (use --force to overwrite)"
-    # Still need LISTEN_CHOICE for client deployment instructions
-    if grep -q 'listen_addr.*:' "$DAEMON_TOML" 2>/dev/null; then
+    # Still need LISTEN_CHOICE/LISTEN_ADDR for client deployment
+    LISTEN_ADDR=$(grep '^listen_addr' "$DAEMON_TOML" 2>/dev/null | sed 's/.*= *"\(.*\)"/\1/' || echo "")
+    if [[ "$LISTEN_ADDR" == *:* ]]; then
         LISTEN_CHOICE="2"
+        # Resolve SERVER_IP from existing client.toml or hostname
+        if [[ -f "$OMNISH_DIR/client.toml" ]]; then
+            SERVER_IP=$(grep '^daemon_addr' "$OMNISH_DIR/client.toml" 2>/dev/null | sed 's/.*= *"\(.*\):.*/\1/' || echo "")
+        fi
+        if [[ -z "${SERVER_IP:-}" ]]; then
+            SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "<server-ip>")
+        fi
     else
         LISTEN_CHOICE="1"
     fi
@@ -405,6 +413,36 @@ completion = \"${CHAT_NAME}\""
     if [[ "$LISTEN_CHOICE" == "2" ]]; then
         ask "TCP address [0.0.0.0:9800]:"
         LISTEN_ADDR="${REPLY:-0.0.0.0:9800}"
+
+        # Select server IP for client.toml
+        CANDIDATE_IPS=()
+        if command -v hostname &>/dev/null; then
+            for ip in $(hostname -I 2>/dev/null); do
+                if [[ "$ip" == 192.168.* ]] || [[ "$ip" == 10.* ]]; then
+                    CANDIDATE_IPS+=("$ip")
+                fi
+            done
+        fi
+
+        if [[ ${#CANDIDATE_IPS[@]} -gt 1 ]]; then
+            echo "" >&2
+            info "Multiple private IPs detected:" >&2
+            i=1
+            for ip in "${CANDIDATE_IPS[@]}"; do
+                echo "  [$i] $ip" >&2
+                ((i++))
+            done
+            ask "Select server IP [1]:"
+            idx=$(( ${REPLY:-1} - 1 ))
+            if (( idx < 0 || idx >= ${#CANDIDATE_IPS[@]} )); then
+                idx=0
+            fi
+            SERVER_IP="${CANDIDATE_IPS[$idx]}"
+        elif [[ ${#CANDIDATE_IPS[@]} -eq 1 ]]; then
+            SERVER_IP="${CANDIDATE_IPS[0]}"
+        else
+            SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || hostname -i 2>/dev/null || echo "<server-ip>")
+        fi
     else
         LISTEN_ADDR="${OMNISH_DIR}/omnish.sock"
     fi
@@ -460,39 +498,8 @@ fi
 
 CLIENT_TOML="$OMNISH_DIR/client.toml"
 if [[ ! -f "$CLIENT_TOML" ]] || [[ "$FORCE" == true ]]; then
-    if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]]; then
+    if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${SERVER_IP:-}" ]]; then
         LISTEN_PORT="${LISTEN_ADDR##*:}"
-
-        # Collect private network IPs (192.168.x.x and 10.x.x.x)
-        CANDIDATE_IPS=()
-        if command -v hostname &>/dev/null; then
-            for ip in $(hostname -I 2>/dev/null); do
-                if [[ "$ip" == 192.168.* ]] || [[ "$ip" == 10.* ]]; then
-                    CANDIDATE_IPS+=("$ip")
-                fi
-            done
-        fi
-
-        if [[ ${#CANDIDATE_IPS[@]} -gt 1 ]]; then
-            echo "" >&2
-            info "Multiple private IPs detected:" >&2
-            i=1
-            for ip in "${CANDIDATE_IPS[@]}"; do
-                echo "  [$i] $ip" >&2
-                ((i++))
-            done
-            ask "Select server IP [1]:"
-            idx=$(( ${REPLY:-1} - 1 ))
-            if (( idx < 0 || idx >= ${#CANDIDATE_IPS[@]} )); then
-                idx=0
-            fi
-            SERVER_IP="${CANDIDATE_IPS[$idx]}"
-        elif [[ ${#CANDIDATE_IPS[@]} -eq 1 ]]; then
-            SERVER_IP="${CANDIDATE_IPS[0]}"
-        else
-            SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || hostname -i 2>/dev/null || echo "<server-ip>")
-        fi
-
         CLIENT_DAEMON_ADDR="${SERVER_IP}:${LISTEN_PORT}"
     else
         CLIENT_DAEMON_ADDR="${LISTEN_ADDR:-${OMNISH_DIR}/omnish.sock}"
@@ -621,24 +628,27 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]] && [[ -z "${OLD_
 
         info "Deploying to ${target}..."
 
+        local SSH_OPTS="-o BatchMode=yes"
+
         # Create directories
-        ssh -n "$target" "mkdir -p ${remote_home}/bin ${remote_home}/tls" \
+        ssh -n $SSH_OPTS "$target" "mkdir -p ${remote_home}/bin ${remote_home}/tls" \
             || { warn "SSH connection failed for ${target}"; return 1; }
 
         # Copy binaries
-        scp -q "${BIN_DIR}/omnish" "${BIN_DIR}/omnish-plugin" "${target}:${remote_home}/bin/" \
+        scp -q $SSH_OPTS "${BIN_DIR}/omnish" "${BIN_DIR}/omnish-plugin" "${target}:${remote_home}/bin/" \
             || { warn "Failed to copy binaries to ${target}"; return 1; }
 
         # Copy TLS cert and auth token
-        scp -q "${OMNISH_DIR}/tls/cert.pem" "${target}:${remote_home}/tls/" \
+        scp -q $SSH_OPTS "${OMNISH_DIR}/tls/cert.pem" "${target}:${remote_home}/tls/" \
             || { warn "Failed to copy TLS cert to ${target}"; return 1; }
-        scp -q "${OMNISH_DIR}/auth_token" "${target}:${remote_home}/" \
+        scp -q $SSH_OPTS "${OMNISH_DIR}/auth_token" "${target}:${remote_home}/" \
             || { warn "Failed to copy auth token to ${target}"; return 1; }
 
         # Copy client.toml and set permissions
-        scp -q "${OMNISH_DIR}/client.toml" "${target}:${remote_home}/" \
+        scp -q $SSH_OPTS "${OMNISH_DIR}/client.toml" "${target}:${remote_home}/" \
             || { warn "Failed to copy client.toml to ${target}"; return 1; }
-        ssh -n "$target" "chmod 600 ${remote_home}/client.toml ${remote_home}/auth_token"
+        ssh -n $SSH_OPTS "$target" "chmod 600 ${remote_home}/client.toml ${remote_home}/auth_token" \
+            || { warn "Failed to set permissions on ${target}"; return 1; }
 
         info "Deployed to ${target}"
         echo "  Run on client: export PATH=\"\$HOME/.omnish/bin:\$PATH\""
