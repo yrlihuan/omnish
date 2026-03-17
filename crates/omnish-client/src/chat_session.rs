@@ -132,7 +132,7 @@ impl ChatSession {
                     out
                 }
                 ScrollEntry::Separator => {
-                    vec![display::render_separator(cols)]
+                    vec![display::render_separator_plain(cols)]
                 }
                 ScrollEntry::SystemMessage(msg) => {
                     vec![format!("\x1b[2;37m{}\x1b[0m", msg)]
@@ -1014,7 +1014,7 @@ impl ChatSession {
                             }
                         }
                         ScrollEntry::Separator => {
-                            self.print_line(&display::render_separator(cols));
+                            self.print_line(&display::render_separator_plain(cols));
                         }
                         ScrollEntry::SystemMessage(msg) => {
                             self.print_line(&format!("\x1b[2;37m{}\x1b[0m", msg));

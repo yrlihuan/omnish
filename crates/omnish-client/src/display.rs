@@ -52,10 +52,15 @@ pub fn display_width(s: &str) -> usize {
     width
 }
 
+/// Render a plain separator line spanning `cols` columns (dim ─ characters).
+pub fn render_separator_plain(cols: u16) -> String {
+    format!("\x1b[2m{}\x1b[0m", "─".repeat(cols as usize))
+}
+
 /// Render a separator line spanning `cols` columns (dim ─ characters),
 /// with a `ctrl+o` hint embedded on the right side.
 pub fn render_separator(cols: u16) -> String {
-    let hint = " ctrl+o ";
+    let hint = " ctrl+o to expand ";
     let cols = cols as usize;
     if cols > hint.len() + 4 {
         let right_dashes = 2;
@@ -67,7 +72,7 @@ pub fn render_separator(cols: u16) -> String {
             "─".repeat(right_dashes),
         )
     } else {
-        format!("\x1b[2m{}\x1b[0m", "─".repeat(cols))
+        render_separator_plain(cols as u16)
     }
 }
 
