@@ -220,12 +220,12 @@ fi
 # Provider presets: name -> (backend_type, base_url, default_model)
 declare -A PROVIDER_TYPE PROVIDER_URL PROVIDER_MODEL
 PROVIDER_TYPE[anthropic]="anthropic";    PROVIDER_URL[anthropic]="";                                PROVIDER_MODEL[anthropic]="claude-sonnet-4-20250514"
-PROVIDER_TYPE[openai]="openai";          PROVIDER_URL[openai]="https://api.openai.com/v1";          PROVIDER_MODEL[openai]="gpt-4o"
-PROVIDER_TYPE[openrouter]="openai";      PROVIDER_URL[openrouter]="https://openrouter.ai/api/v1";   PROVIDER_MODEL[openrouter]=""
+PROVIDER_TYPE[openai]="openai-compat";          PROVIDER_URL[openai]="https://api.openai.com/v1";          PROVIDER_MODEL[openai]="gpt-4o"
+PROVIDER_TYPE[openrouter]="openai-compat";      PROVIDER_URL[openrouter]="https://openrouter.ai/api/v1";   PROVIDER_MODEL[openrouter]=""
 PROVIDER_TYPE[deepseek]="anthropic";      PROVIDER_URL[deepseek]="https://api.deepseek.com/anthropic";      PROVIDER_MODEL[deepseek]="deepseek-chat"
 PROVIDER_TYPE[moonshot-cn]="anthropic";  PROVIDER_URL[moonshot-cn]="https://api.moonshot.cn/anthropic";     PROVIDER_MODEL[moonshot-cn]="kimi-k2-preview"
 PROVIDER_TYPE[moonshot-global]="anthropic"; PROVIDER_URL[moonshot-global]="https://api.moonshot.ai/anthropic"; PROVIDER_MODEL[moonshot-global]="kimi-k2-preview"
-PROVIDER_TYPE[custom]="openai";          PROVIDER_URL[custom]="";                                    PROVIDER_MODEL[custom]=""
+PROVIDER_TYPE[custom]="openai-compat";          PROVIDER_URL[custom]="";                                    PROVIDER_MODEL[custom]=""
 
 CHAT_PROVIDERS=(anthropic openai openrouter deepseek moonshot-cn moonshot-global custom)
 COMPLETION_PROVIDERS=(openrouter custom)
@@ -268,44 +268,75 @@ configure_backend() {
         default_model="$recommended_model"
     fi
 
-    if [[ "$provider" == "custom" ]]; then
-        ask "Base URL:"
-        base_url="$REPLY"
-    fi
+    local model="" api_key="" cur_base_url="$base_url" cur_backend_type="$backend_type"
 
-    if [[ -n "$default_model" ]]; then
-        ask "Model name [$default_model]:"
-        local model="${REPLY:-$default_model}"
-    else
-        ask "Model name:"
-        local model="$REPLY"
-    fi
+    while true; do
+        if [[ "$provider" == "custom" ]]; then
+            echo "  [1] OpenAI-compatible" >&2
+            echo "  [2] Anthropic-compatible" >&2
+            local type_default="1"
+            [[ "$cur_backend_type" == "anthropic" ]] && type_default="2"
+            ask "API type [$type_default]:"
+            if [[ "${REPLY:-$type_default}" == "2" ]]; then
+                cur_backend_type="anthropic"
+            else
+                cur_backend_type="openai-compat"
+            fi
+            if [[ -n "$cur_base_url" ]]; then
+                ask "Base URL [$cur_base_url]:"
+                cur_base_url="${REPLY:-$cur_base_url}"
+            else
+                ask "Base URL:"
+                cur_base_url="$REPLY"
+            fi
+        fi
 
-    ask "API key:"
-    local api_key="$REPLY"
+        local model_default="${model:-$default_model}"
+        if [[ -n "$model_default" ]]; then
+            ask "Model name [$model_default]:"
+            model="${REPLY:-$model_default}"
+        else
+            ask "Model name:"
+            model="$REPLY"
+        fi
+
+        local key_hint=""
+        if [[ -n "$api_key" ]]; then
+            key_hint="${api_key:0:4}...${api_key: -4}"
+        fi
+        if [[ -n "$key_hint" ]]; then
+            ask "API key [$key_hint]:"
+            api_key="${REPLY:-$api_key}"
+        else
+            ask "API key:"
+            api_key="$REPLY"
+        fi
+
+        # Build TOML snippet
+        local toml="[llm.backends.${name}]"$'\n'
+        toml+="backend_type = \"${cur_backend_type}\""$'\n'
+        toml+="model = \"${model}\""$'\n'
+        toml+="api_key_cmd = 'echo \"${api_key}\"'"$'\n'
+        if [[ -n "$cur_base_url" ]]; then
+            toml+="base_url = \"${cur_base_url}\""$'\n'
+        fi
+
+        # Preview with masked API key and confirm
+        echo "" >&2
+        echo "───────────────────────────────────────" >&2
+        echo "$toml" | sed 's/echo "\(.\{4\}\).*\(.\{4\}\)"/echo "\1...\2"/' >&2
+        echo "───────────────────────────────────────" >&2
+        ask "OK? [Y/n]:"
+        if [[ "${REPLY:-Y}" =~ ^[Nn] ]]; then
+            echo "" >&2
+            info "Let's try again..." >&2
+            continue
+        fi
+        break
+    done
 
     # Save backend name for caller
     echo "$name" > "$TMPDIR/last_backend_name"
-
-    # Build TOML snippet
-    local toml="[llm.backends.${name}]"$'\n'
-    toml+="backend_type = \"${backend_type}\""$'\n'
-    toml+="model = \"${model}\""$'\n'
-    toml+="api_key_cmd = 'echo \"${api_key}\"'"$'\n'
-    if [[ -n "$base_url" ]]; then
-        toml+="base_url = \"${base_url}\""$'\n'
-    fi
-
-    # Preview with masked API key and confirm
-    echo "" >&2
-    echo "───────────────────────────────────────" >&2
-    echo "$toml" | sed 's/echo "\(.\{4\}\).*\(.\{4\}\)"/echo "\1...\2"/' >&2
-    echo "───────────────────────────────────────" >&2
-    ask "OK? [Y/n]:"
-    if [[ "${REPLY:-Y}" =~ ^[Nn] ]]; then
-        warn "Aborted" >&2
-        exit 1
-    fi
 
     # Write TOML section to stdout
     printf '%s\n' "$toml"
@@ -386,11 +417,12 @@ completion = \"${CHAT_NAME}\""
         echo "[llm]"
         echo "default = \"${CHAT_NAME}\""
         echo ""
+        echo "$USE_CASES"
+        echo ""
         cat "$TMPDIR/chat_backend.toml"
         if [[ -f "$TMPDIR/completion_backend.toml" ]]; then
             cat "$TMPDIR/completion_backend.toml"
         fi
-        echo "$USE_CASES"
         echo ""
         echo "[tasks.auto_update]"
         echo "enabled = ${AUTO_UPDATE_ENABLED}"
