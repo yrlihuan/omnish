@@ -72,7 +72,7 @@ impl ReadTool {
             } else {
                 line.to_string()
             };
-            let numbered = format!("{:>6}\u{2192}{}\n", line_no, display_line);
+            let numbered = format!("{:>6}\t{}\n", line_no, display_line);
             bytes += numbered.len();
             if bytes > MAX_OUTPUT_BYTES {
                 result.push_str(&format!(
@@ -115,7 +115,7 @@ mod tests {
         let result = tool.execute(&serde_json::json!({"file_path": tmp.path().to_str().unwrap()}));
         assert!(!result.is_error);
         assert!(result.content.contains("line1"));
-        assert!(result.content.contains("\u{2192}"));
+        assert!(result.content.contains("\t"));
     }
 
     #[test]
@@ -128,7 +128,7 @@ mod tests {
         assert!(result.content.contains("c"));
         assert!(result.content.contains("d"));
         // Line "a" should not appear (it's before offset)
-        assert!(!result.content.contains("\u{2192}a\n"));
+        assert!(!result.content.contains("\ta\n"));
     }
 
     #[test]

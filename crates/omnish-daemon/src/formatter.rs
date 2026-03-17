@@ -96,25 +96,17 @@ impl ToolFormatter for ReadFormatter {
                     (compact, full)
                 } else {
                     // Count content lines (exclude metadata like "N more lines after...")
+                    // Read tool outputs cat -n format: "     1\tcontent"
+                    // Count lines that have the tab-separated line number prefix
                     let content_lines: Vec<&str> = text
                         .lines()
-                        .filter(|l| l.contains('\u{2192}')) // arrow separator from read tool
+                        .filter(|l| l.starts_with(|c: char| c == ' ' || c.is_ascii_digit()) && l.contains('\t'))
                         .collect();
                     let n = content_lines.len();
                     let compact = vec![format!("Read {} lines", n)];
                     let full = if n <= 10 {
-                        // Show numbered lines as "lineno\tcontent"
-                        content_lines
-                            .iter()
-                            .map(|l| {
-                                // Parse "  lineno→content" into "lineno\tcontent"
-                                if let Some((num, content)) = l.split_once('\u{2192}') {
-                                    format!("{}\t{}", num.trim(), content)
-                                } else {
-                                    l.to_string()
-                                }
-                            })
-                            .collect()
+                        // Already in cat -n format (lineno\tcontent), pass through
+                        content_lines.iter().map(|l| l.to_string()).collect()
                     } else {
                         vec![format!("Read {} lines", n)]
                     };
@@ -397,7 +389,7 @@ mod tests {
             "read",
             "",
             json!({"file_path": "/tmp/test.txt"}),
-            Some("     1\u{2192}aaa\n     2\u{2192}bbb\n     3\u{2192}ccc"),
+            Some("     1\taaa\n     2\tbbb\n     3\tccc"),
             Some(false),
         );
         let out = ReadFormatter.format(&input);
@@ -405,13 +397,13 @@ mod tests {
         assert_eq!(out.param_desc, "/tmp/test.txt");
         assert_eq!(out.result_compact, vec!["Read 3 lines"]);
         // N<=10: full shows numbered lines
-        assert_eq!(out.result_full, vec!["1\taaa", "2\tbbb", "3\tccc"]);
+        assert_eq!(out.result_full, vec!["     1\taaa", "     2\tbbb", "     3\tccc"]);
     }
 
     #[test]
     fn read_formatter_full_many_lines_shows_summary() {
         let lines: Vec<String> = (1..=15)
-            .map(|i| format!("{:>6}\u{2192}line{}", i, i))
+            .map(|i| format!("{:>6}\tline{}", i, i))
             .collect();
         let text = lines.join("\n");
         let input = make_input(
