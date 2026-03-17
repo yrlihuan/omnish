@@ -16,6 +16,9 @@
 #   bash install.sh --version=v0.6.4
 #   OMNISH_HOME=/opt/omnish bash install.sh
 #
+# If run from an extracted release directory (containing bin/ and assets/),
+# it will use the local files instead of downloading from GitHub.
+#
 # Environment variables:
 #   OMNISH_HOME   Override the default installation directory (~/.omnish)
 
@@ -97,15 +100,26 @@ if [[ "$DRY_RUN" == true ]]; then
     VERSION="${VERSION:-v0.0.0-dry-run}"
 fi
 
-# ── Download & Install ───────────────────────────────────────────────────────
+# ── Locate or download release ────────────────────────────────────────────────
 
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# Auto-detect: if bin/ and assets/ exist next to this script, use local files
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -d "$SCRIPT_DIR/bin" ]] && [[ -d "$SCRIPT_DIR/assets" ]]; then
+    EXTRACTED="$SCRIPT_DIR"
+    # Derive version from binary if not specified
+    if [[ -z "$VERSION" ]] && [[ -x "$EXTRACTED/bin/omnish-daemon" ]]; then
+        VERSION="v$("$EXTRACTED/bin/omnish-daemon" --version 2>/dev/null | awk '{print $2}' || echo "unknown")"
+    fi
+    info "Installing from local directory: $EXTRACTED"
+fi
+
 if [[ "$DRY_RUN" == true ]]; then
-    info "[DRY RUN] Would download omnish $VERSION"
-    info "[DRY RUN] Would install to ${OMNISH_DIR}"
-else
+    info "[DRY RUN] Would install omnish ${VERSION:-latest} to ${OMNISH_DIR}"
+elif [[ -z "${EXTRACTED:-}" ]]; then
+    # Download from GitHub
     REPO="yrlihuan/omnish"
     if [[ -z "$VERSION" ]]; then
         info "Fetching latest version..."
@@ -113,7 +127,6 @@ else
             | grep '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//')
         [[ -n "$VERSION" ]] || error "Could not determine latest version"
     fi
-    TAR_URL="https://github.com/${REPO}/releases/download/${VERSION}/omnish-${VERSION#v}-linux-${ARCH}.tar.gz"
 
     info "Version: $VERSION"
 
@@ -130,12 +143,18 @@ else
         info "Update available: v${CURRENT_VERSION:-unknown} -> ${VERSION}"
     fi
 
+    TAR_URL="https://github.com/${REPO}/releases/download/${VERSION}/omnish-${VERSION#v}-linux-${ARCH}.tar.gz"
     curl -fSL "$TAR_URL" -o "$TMPDIR/omnish.tar.gz" || error "Download failed"
     tar -xzf "$TMPDIR/omnish.tar.gz" -C "$TMPDIR"
 
-    # Find extracted directory
     EXTRACTED=$(find "$TMPDIR" -maxdepth 1 -type d -name 'omnish-*' | head -1)
     [[ -d "$EXTRACTED" ]] || error "Unexpected archive layout"
+fi
+
+# ── Install ──────────────────────────────────────────────────────────────────
+
+if [[ "$DRY_RUN" != true ]]; then
+    info "Version: ${VERSION:-unknown}"
 
     # Detect existing version for upgrade message
     OLD_VERSION=""
@@ -143,7 +162,6 @@ else
         OLD_VERSION=$("$BIN_DIR/omnish" --version 2>/dev/null | awk '{print $NF}' || echo "")
     fi
 
-    # Install to ~/.omnish/
     info "Installing to ${OMNISH_DIR}..."
 
     mkdir -p "$BIN_DIR" "$OMNISH_DIR/plugins"
@@ -151,7 +169,7 @@ else
     cp "$EXTRACTED/bin/"* "$BIN_DIR/"
     chmod 755 "$BIN_DIR"/*
 
-    # Install assets (plugin configs, prompts, update script)
+    # Install assets (plugin configs, prompts, scripts)
     if [[ -d "$EXTRACTED/assets" ]]; then
         # Plugin tool definitions (always overwrite, with warning header)
         mkdir -p "$OMNISH_DIR/plugins/builtin"
@@ -172,9 +190,14 @@ else
         fi
 
         # Scripts (always overwrite)
-        cp "$EXTRACTED/assets/install.sh" "$OMNISH_DIR/"
         cp "$EXTRACTED/assets/deploy.sh" "$OMNISH_DIR/"
-        chmod 755 "$OMNISH_DIR/install.sh" "$OMNISH_DIR/deploy.sh"
+        chmod 755 "$OMNISH_DIR/deploy.sh"
+    fi
+
+    # Copy install.sh itself (from extracted root or assets)
+    if [[ -f "$EXTRACTED/install.sh" ]]; then
+        cp "$EXTRACTED/install.sh" "$OMNISH_DIR/"
+        chmod 755 "$OMNISH_DIR/install.sh"
     fi
 
     chmod 700 "$OMNISH_DIR"
