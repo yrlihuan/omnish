@@ -9,7 +9,7 @@
 #   2. Extract binaries to ~/.omnish/bin/ (or $OMNISH_HOME/bin/)
 #   3. Walk you through configuring LLM backends for chat and completion
 #   4. Generate TLS certificates and auth tokens for secure communication
-#   5. Print client deployment instructions (if using TCP mode)
+#   5. Deploy to remote client machines via scp (if using TCP mode)
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/yrlihuan/omnish/master/install.sh | bash
@@ -123,6 +123,12 @@ for l in links:
     # Find extracted directory
     EXTRACTED=$(find "$TMPDIR" -maxdepth 1 -type d -name 'omnish-*' | head -1)
     [[ -d "$EXTRACTED" ]] || error "Unexpected archive layout"
+
+    # Detect existing version for upgrade message
+    OLD_VERSION=""
+    if [[ -x "$BIN_DIR/omnish" ]]; then
+        OLD_VERSION=$("$BIN_DIR/omnish" --version 2>/dev/null | awk '{print $NF}' || echo "")
+    fi
 
     # Install to ~/.omnish/
     info "Installing to ${OMNISH_DIR}..."
@@ -396,16 +402,41 @@ fi
 # ── PATH setup ───────────────────────────────────────────────────────────────
 
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
-    echo ""
-    info "Add to your shell profile:"
-    echo ""
-    echo "  export PATH=\"${BIN_DIR}:\$PATH\""
-    echo ""
+    # Detect user's shell profile
+    SHELL_NAME="$(basename "${SHELL:-/bin/bash}")"
+    case "$SHELL_NAME" in
+        zsh)  PROFILE="$HOME/.zshrc" ;;
+        bash) PROFILE="$HOME/.bashrc" ;;
+        *)    PROFILE="" ;;
+    esac
+    PATH_LINE="export PATH=\"${BIN_DIR}:\$PATH\""
+
+    if [[ -n "$PROFILE" ]]; then
+        ask "Add omnish to PATH in ${PROFILE}? [Y/n]:"
+        if [[ ! "${REPLY:-Y}" =~ ^[Nn] ]]; then
+            echo "" >> "$PROFILE"
+            echo "# omnish" >> "$PROFILE"
+            echo "$PATH_LINE" >> "$PROFILE"
+            info "Added to ${PROFILE} — restart your shell or run: source ${PROFILE}"
+        else
+            echo ""
+            info "Add to your shell profile manually:"
+            echo ""
+            echo "  $PATH_LINE"
+            echo ""
+        fi
+    else
+        echo ""
+        info "Add to your shell profile:"
+        echo ""
+        echo "  $PATH_LINE"
+        echo ""
+    fi
 fi
 
-# ── Client deployment ──────────────────────────────────────────────────────
+# ── Client deployment (skip on upgrade) ───────────────────────────────────
 
-if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]]; then
+if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]] && [[ -z "${OLD_VERSION:-}" ]]; then
     echo ""
     info "=== Client Deployment ==="
     echo ""
@@ -504,4 +535,8 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]]; then
 fi
 
 echo ""
-info "Installation complete! (omnish ${VERSION})"
+if [[ -n "${OLD_VERSION:-}" ]] && [[ "$OLD_VERSION" != "${VERSION#v}" ]]; then
+    info "Upgrade complete! (v${OLD_VERSION} → ${VERSION})"
+else
+    info "Installation complete! (omnish ${VERSION})"
+fi
