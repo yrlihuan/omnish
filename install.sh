@@ -614,8 +614,6 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]] && [[ -z "${OLD_
     echo ""
     info "=== Client Deployment ==="
     echo ""
-    info "Server address: ${SERVER_IP}:${LISTEN_PORT}"
-    echo ""
 
     deploy_client() {
         local target="$1"
@@ -624,7 +622,7 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]] && [[ -z "${OLD_
         info "Deploying to ${target}..."
 
         # Create directories
-        ssh "$target" "mkdir -p ${remote_home}/bin ${remote_home}/tls" \
+        ssh -n "$target" "mkdir -p ${remote_home}/bin ${remote_home}/tls" \
             || { warn "SSH connection failed for ${target}"; return 1; }
 
         # Copy binaries
@@ -640,7 +638,7 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]] && [[ -z "${OLD_
         # Copy client.toml and set permissions
         scp -q "${OMNISH_DIR}/client.toml" "${target}:${remote_home}/" \
             || { warn "Failed to copy client.toml to ${target}"; return 1; }
-        ssh "$target" "chmod 600 ${remote_home}/client.toml ${remote_home}/auth_token"
+        ssh -n "$target" "chmod 600 ${remote_home}/client.toml ${remote_home}/auth_token"
 
         info "Deployed to ${target}"
         echo "  Run on client: export PATH=\"\$HOME/.omnish/bin:\$PATH\""
@@ -667,7 +665,7 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]] && [[ -z "${OLD_
 
                 # Verify SSH connectivity
                 info "Checking SSH connectivity to ${CLIENT_HOST}..."
-                if ssh -o ConnectTimeout=5 -o BatchMode=yes "$CLIENT_HOST" true 2>/dev/null; then
+                if ssh -n -o ConnectTimeout=5 -o BatchMode=yes "$CLIENT_HOST" true 2>/dev/null; then
                     info "SSH OK: ${CLIENT_HOST}"
                     deploy_client "$CLIENT_HOST" && DEPLOYED_CLIENTS+=("$CLIENT_HOST") || true
                 else
