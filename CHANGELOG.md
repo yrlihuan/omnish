@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.6.6 (2026-03-17)
+
+### Features
+- **install**: Add `--upgrade` flag for non-interactive updates (replaces standalone update.sh)
+- **install**: Interactive client deployment via scp with SSH connectivity check
+- **install**: Generate client.toml on server with full config options
+- **install**: Prepend demonstration warning to installed tool.json and chat.json
+- **daemon**: Periodic auto-update from GitHub with client distribution (#308)
+- **ci**: Add macOS build to GitHub CI for client binaries (#307)
+
+### Refactoring
+- Move static assets (tool.json, chat.json) from daemon binary to tar package
+- Split update/deploy into separate scripts; then consolidate update into install.sh --upgrade
+
+---
+
 ## v0.6.5 (2026-03-17)
 
 ### Features
