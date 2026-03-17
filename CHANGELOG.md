@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.6.8 (2026-03-17)
+
+### Features
+- **install**: Retry loop for backend config preview instead of aborting
+- **install**: API type selection (OpenAI-compat vs Anthropic) for custom providers
+- **install**: Bash re-exec guard for sh/dash invocations
+
+### Fixes
+- **llm**: Tolerate individual backend init failures — bad config no longer breaks all backends (#315)
+- **install**: Skip deploy when `--upgrade` finds no update (exit code 2)
+- **install**: Skip manual PATH hint when user declines shell profile update
+
+### Performance
+- Enable thin LTO and size optimization for release builds (~30% smaller binaries)
+
+---
+
 ## v0.6.7 (2026-03-17)
 
 ### Features
