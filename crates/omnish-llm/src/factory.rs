@@ -108,25 +108,42 @@ impl MultiBackend {
         // Resolve Langfuse config if present
         let langfuse_config = resolve_langfuse_config(llm_config);
 
-        let default_backend = {
-            let b = create_default_backend(llm_config)?;
-            maybe_wrap_langfuse(b, &langfuse_config)
-        };
+        // Try to create the default backend; if it fails, defer — a use-case backend may work
+        let default_backend_result = create_default_backend(llm_config);
+        if let Err(ref e) = default_backend_result {
+            tracing::warn!("default backend '{}' failed to initialize: {}", llm_config.default, e);
+        }
 
         let use_case_backends = RwLock::new(HashMap::new());
         let mut use_case_max_chars = HashMap::new();
+        let mut first_working_backend: Option<Arc<dyn LlmBackend>> = None;
 
-        // Create backends for each use case
+        // Create backends for each use case (failures are non-fatal, fall back to default)
         for (use_case_name, backend_name) in &llm_config.use_cases {
             if let Some(backend_config) = llm_config.backends.get(backend_name) {
-                let backend = create_backend(backend_name, backend_config)?;
-                let backend = maybe_wrap_langfuse(backend, &langfuse_config);
-                use_case_backends
-                    .write()
-                    .map_err(|_| anyhow!("failed to acquire write lock"))?
-                    .insert(use_case_name.clone(), backend);
-                // Store max_content_chars for this use case
-                use_case_max_chars.insert(use_case_name.clone(), backend_config.max_content_chars);
+                match create_backend(backend_name, backend_config) {
+                    Ok(backend) => {
+                        let backend = maybe_wrap_langfuse(backend, &langfuse_config);
+                        if first_working_backend.is_none() {
+                            first_working_backend = Some(backend.clone());
+                        }
+                        use_case_backends
+                            .write()
+                            .map_err(|_| anyhow!("failed to acquire write lock"))?
+                            .insert(use_case_name.clone(), backend);
+                        // Store max_content_chars for this use case
+                        use_case_max_chars
+                            .insert(use_case_name.clone(), backend_config.max_content_chars);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "backend '{}' for use case '{}' failed to initialize: {}, will use default",
+                            backend_name,
+                            use_case_name,
+                            e
+                        );
+                    }
+                }
             } else {
                 tracing::warn!(
                     "backend '{}' not found for use case '{}', will use default",
@@ -135,6 +152,14 @@ impl MultiBackend {
                 );
             }
         }
+
+        // Resolve default: configured default > first working use-case backend > error
+        let default_backend = match default_backend_result {
+            Ok(b) => maybe_wrap_langfuse(b, &langfuse_config),
+            Err(_) => first_working_backend.ok_or_else(|| {
+                anyhow!("no LLM backends could be initialized — check backend_type values in daemon.toml")
+            })?,
+        };
 
         Ok(Self {
             use_case_backends,
