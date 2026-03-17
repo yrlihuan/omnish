@@ -64,6 +64,10 @@ impl PromptManager {
             serde_json::from_str(json).map_err(|e| format!("invalid prompt JSON: {}", e))?;
         let mut pm = Self::new();
         for f in fragments {
+            // Skip metadata fields (e.g. _warning)
+            if f.name.starts_with('_') {
+                continue;
+            }
             pm.add(&f.name, &f.content.into_string());
         }
         Ok(pm)

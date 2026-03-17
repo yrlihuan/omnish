@@ -1,4 +1,5 @@
 {
+  "_warning": "This file is overwritten on update. Use tool.override.json to customize.",
   "plugin_type": "client_tool",
   "tools": [
     {
