@@ -54,7 +54,8 @@ for arg in "$@"; do
         --gitlab)      SOURCE="gitlab" ;;
         --force)       FORCE=true ;;
         --dry-run)     DRY_RUN=true ;;
-        --version=*)   VERSION="${arg#*=}" ;;
+        --version=*)   VERSION="${arg#*=}"
+                       [[ "$VERSION" == v* ]] || VERSION="v${VERSION}" ;;
         --help|-h)
             echo "Usage: install.sh [OPTIONS]"
             echo ""
