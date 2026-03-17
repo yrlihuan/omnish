@@ -1,3 +1,4 @@
+pub mod auto_update;
 pub mod cleanup;
 pub mod conversation_mgr;
 pub mod daily_notes;

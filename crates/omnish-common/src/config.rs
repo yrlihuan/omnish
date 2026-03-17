@@ -130,6 +130,28 @@ impl Default for DiskCleanupConfig {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct AutoUpdateConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Cron schedule for update checks. Default: daily at 04:00.
+    #[serde(default = "default_auto_update_schedule")]
+    pub schedule: String,
+}
+
+impl Default for AutoUpdateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            schedule: default_auto_update_schedule(),
+        }
+    }
+}
+
+fn default_auto_update_schedule() -> String {
+    "0 0 4 * * *".to_string()
+}
+
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct TasksConfig {
     #[serde(default)]
@@ -138,6 +160,8 @@ pub struct TasksConfig {
     pub daily_notes: DailyNotesConfig,
     #[serde(default)]
     pub disk_cleanup: DiskCleanupConfig,
+    #[serde(default)]
+    pub auto_update: AutoUpdateConfig,
 }
 
 // ---------------------------------------------------------------------------

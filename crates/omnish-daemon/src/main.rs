@@ -96,6 +96,15 @@ fn install_embedded_assets(omnish_dir: &std::path::Path) {
     if !chat_override_example.exists() {
         let _ = std::fs::write(&chat_override_example, omnish_llm::prompt::CHAT_OVERRIDE_EXAMPLE);
     }
+
+    // update.sh (always overwrite)
+    let update_script = omnish_dir.join("update.sh");
+    let _ = std::fs::write(&update_script, include_str!("../../../scripts/update.sh"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&update_script, std::fs::Permissions::from_mode(0o755));
+    }
 }
 
 async fn async_main() -> Result<()> {
@@ -135,6 +144,7 @@ async fn async_main() -> Result<()> {
     let evict_hours = config.tasks.eviction.session_evict_hours;
     let daily_notes_config = config.tasks.daily_notes.clone();
     let disk_cleanup_config = config.tasks.disk_cleanup.clone();
+    let auto_update_config = config.tasks.auto_update.clone();
     let session_mgr = Arc::new(SessionManager::new(omnish_dir.clone(), config.context));
     match session_mgr.load_existing().await {
         Ok(count) if count > 0 => tracing::info!("loaded {} existing session(s)", count),
@@ -192,6 +202,21 @@ async fn async_main() -> Result<()> {
         tracing::info!(
             "daily notes enabled (schedule_hour={})",
             daily_notes_config.schedule_hour
+        );
+    }
+
+    // Register auto-update job if enabled
+    if auto_update_config.enabled {
+        let job = omnish_daemon::auto_update::create_auto_update_job(
+            omnish_dir.clone(),
+            &auto_update_config.schedule,
+        )?;
+        task_mgr
+            .register("auto_update", &auto_update_config.schedule, job)
+            .await?;
+        tracing::info!(
+            "auto update enabled (schedule={})",
+            auto_update_config.schedule
         );
     }
 
