@@ -35,4 +35,6 @@ uuid = { version = "1", features = ["v4"] }
 
 [profile.release]
 strip = false
-lto = false
+lto = "thin"
+codegen-units = 1
+opt-level = "s"
