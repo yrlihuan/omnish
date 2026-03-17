@@ -326,6 +326,27 @@ else
     chmod 600 "$OMNISH_DIR/auth_token"
 fi
 
+# ── Generate client.toml ──────────────────────────────────────────────────────
+
+CLIENT_TOML="$OMNISH_DIR/client.toml"
+if [[ ! -f "$CLIENT_TOML" ]] || [[ "$FORCE" == true ]]; then
+    if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]]; then
+        SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || hostname -i 2>/dev/null || echo "<server-ip>")
+        LISTEN_PORT="${LISTEN_ADDR##*:}"
+        CLIENT_DAEMON_ADDR="${SERVER_IP}:${LISTEN_PORT}"
+    else
+        CLIENT_DAEMON_ADDR="${LISTEN_ADDR:-${OMNISH_DIR}/omnish.sock}"
+    fi
+
+    if [[ "$DRY_RUN" == true ]]; then
+        info "[DRY RUN] Would write client.toml (daemon_addr = \"${CLIENT_DAEMON_ADDR}\")"
+    else
+        echo "daemon_addr = \"${CLIENT_DAEMON_ADDR}\"" > "$CLIENT_TOML"
+        chmod 600 "$CLIENT_TOML"
+        info "Written: $CLIENT_TOML"
+    fi
+fi
+
 # ── PATH setup ───────────────────────────────────────────────────────────────
 
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
@@ -339,9 +360,6 @@ fi
 # ── Client deployment ──────────────────────────────────────────────────────
 
 if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]]; then
-    SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || hostname -i 2>/dev/null || echo "<server-ip>")
-    LISTEN_PORT="${LISTEN_ADDR##*:}"
-
     echo ""
     info "=== Client Deployment ==="
     echo ""
@@ -368,11 +386,10 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]]; then
         scp -q "${OMNISH_DIR}/auth_token" "${target}:${remote_home}/" \
             || { warn "Failed to copy auth token to ${target}"; return 1; }
 
-        # Generate client.toml
-        ssh "$target" "cat > ${remote_home}/client.toml << 'TOML'
-daemon_addr = \"${SERVER_IP}:${LISTEN_PORT}\"
-TOML
-chmod 600 ${remote_home}/client.toml ${remote_home}/auth_token"
+        # Copy client.toml and set permissions
+        scp -q "${OMNISH_DIR}/client.toml" "${target}:${remote_home}/" \
+            || { warn "Failed to copy client.toml to ${target}"; return 1; }
+        ssh "$target" "chmod 600 ${remote_home}/client.toml ${remote_home}/auth_token"
 
         info "Deployed to ${target}"
         echo "  Run on client: export PATH=\"\$HOME/.omnish/bin:\$PATH\""
