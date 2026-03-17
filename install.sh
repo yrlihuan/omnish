@@ -142,37 +142,39 @@ fi
 
 # Provider presets: name -> (backend_type, base_url, default_model)
 declare -A PROVIDER_TYPE PROVIDER_URL PROVIDER_MODEL
-PROVIDER_TYPE[anthropic]="anthropic";  PROVIDER_URL[anthropic]="";                                    PROVIDER_MODEL[anthropic]="claude-sonnet-4-20250514"
-PROVIDER_TYPE[openrouter]="openai";    PROVIDER_URL[openrouter]="https://openrouter.ai/api/v1";       PROVIDER_MODEL[openrouter]=""
-PROVIDER_TYPE[deepseek]="openai";      PROVIDER_URL[deepseek]="https://api.deepseek.com/v1";          PROVIDER_MODEL[deepseek]="deepseek-chat"
-PROVIDER_TYPE[siliconflow]="openai";   PROVIDER_URL[siliconflow]="https://api.siliconflow.cn/v1";     PROVIDER_MODEL[siliconflow]="Qwen/Qwen2.5-Coder-32B-Instruct"
-PROVIDER_TYPE[together]="openai";      PROVIDER_URL[together]="https://api.together.xyz/v1";          PROVIDER_MODEL[together]=""
-PROVIDER_TYPE[fireworks]="openai";     PROVIDER_URL[fireworks]="https://api.fireworks.ai/inference/v1"; PROVIDER_MODEL[fireworks]=""
-PROVIDER_TYPE[groq]="openai";         PROVIDER_URL[groq]="https://api.groq.com/openai/v1";           PROVIDER_MODEL[groq]=""
-PROVIDER_TYPE[custom]="openai";        PROVIDER_URL[custom]="";                                       PROVIDER_MODEL[custom]=""
+PROVIDER_TYPE[anthropic]="anthropic";    PROVIDER_URL[anthropic]="";                                PROVIDER_MODEL[anthropic]="claude-sonnet-4-20250514"
+PROVIDER_TYPE[openai]="openai";          PROVIDER_URL[openai]="https://api.openai.com/v1";          PROVIDER_MODEL[openai]="gpt-4o"
+PROVIDER_TYPE[openrouter]="openai";      PROVIDER_URL[openrouter]="https://openrouter.ai/api/v1";   PROVIDER_MODEL[openrouter]=""
+PROVIDER_TYPE[deepseek]="anthropic";      PROVIDER_URL[deepseek]="https://api.deepseek.com/anthropic";      PROVIDER_MODEL[deepseek]="deepseek-chat"
+PROVIDER_TYPE[moonshot-cn]="anthropic";  PROVIDER_URL[moonshot-cn]="https://api.moonshot.cn/anthropic";     PROVIDER_MODEL[moonshot-cn]="kimi-k2-preview"
+PROVIDER_TYPE[moonshot-global]="anthropic"; PROVIDER_URL[moonshot-global]="https://api.moonshot.ai/anthropic"; PROVIDER_MODEL[moonshot-global]="kimi-k2-preview"
+PROVIDER_TYPE[custom]="openai";          PROVIDER_URL[custom]="";                                    PROVIDER_MODEL[custom]=""
 
-PROVIDER_NAMES=(anthropic openrouter deepseek siliconflow together fireworks groq custom)
+CHAT_PROVIDERS=(anthropic openai openrouter deepseek moonshot-cn moonshot-global custom)
+COMPLETION_PROVIDERS=(openrouter custom)
 
 configure_backend() {
     local name="$1"
     local purpose="$2"
     local recommended_model="${3:-}"
+    shift 3
+    local providers=("$@")
 
     # Interactive prompts go to stderr (stdout is for TOML output)
     echo "" >&2
     info "Configure $purpose backend ($name):" >&2
     local i=1
-    for p in "${PROVIDER_NAMES[@]}"; do
+    for p in "${providers[@]}"; do
         echo "  [$i] $p" >&2
         ((i++))
     done
     ask "Provider [1]:"
     local choice="${REPLY:-1}"
     local idx=$((choice - 1))
-    if (( idx < 0 || idx >= ${#PROVIDER_NAMES[@]} )); then
+    if (( idx < 0 || idx >= ${#providers[@]} )); then
         idx=0
     fi
-    local provider="${PROVIDER_NAMES[$idx]}"
+    local provider="${providers[$idx]}"
 
     local backend_type="${PROVIDER_TYPE[$provider]}"
     local base_url="${PROVIDER_URL[$provider]}"
@@ -227,7 +229,7 @@ else
     echo "  This model handles interactive chat (: prefix), command error analysis," >&2
     echo "  and context-aware responses. A capable model (e.g. Claude Sonnet) is" >&2
     echo "  recommended for best results." >&2
-    configure_backend "claude" "chat/analysis" "" > "$TMPDIR/chat_backend.toml"
+    configure_backend "claude" "chat/analysis" "" "${CHAT_PROVIDERS[@]}" > "$TMPDIR/chat_backend.toml"
 
     echo "" >&2
     info "Step 2: Completion model" >&2
@@ -239,7 +241,7 @@ else
     SAME="${REPLY:-Y}"
 
     if [[ "$SAME" =~ ^[Nn] ]]; then
-        configure_backend "claude-fast" "completion" "Qwen/Qwen2.5-Coder-32B-Instruct" > "$TMPDIR/completion_backend.toml"
+        configure_backend "claude-fast" "completion" "Qwen/Qwen2.5-Coder-32B-Instruct" "${COMPLETION_PROVIDERS[@]}" > "$TMPDIR/completion_backend.toml"
         USE_CASES='[llm.use_cases]
 chat = "claude"
 analysis = "claude"
@@ -280,15 +282,25 @@ completion = "claude"'
         echo "$USE_CASES"
     } > "$TMPDIR/daemon.toml"
 
+    # Preview and confirm
+    echo ""
+    info "daemon.toml preview:"
+    echo "───────────────────────────────────────"
+    # Mask API keys in preview
+    sed 's/echo "\(.\{4\}\).*\(.\{4\}\)"/echo "\1...\2"/' "$TMPDIR/daemon.toml"
+    echo "───────────────────────────────────────"
+
     if [[ "$DRY_RUN" == true ]]; then
-        info "[DRY RUN] daemon.toml would contain:"
-        echo "---"
-        cat "$TMPDIR/daemon.toml"
-        echo "---"
+        info "[DRY RUN] Would write to $DAEMON_TOML"
     else
-        cp "$TMPDIR/daemon.toml" "$DAEMON_TOML"
-        chmod 600 "$DAEMON_TOML"
-        info "Written: $DAEMON_TOML"
+        ask "Write to $DAEMON_TOML? [Y/n]:"
+        if [[ "${REPLY:-Y}" =~ ^[Nn] ]]; then
+            info "Skipped writing daemon.toml"
+        else
+            cp "$TMPDIR/daemon.toml" "$DAEMON_TOML"
+            chmod 600 "$DAEMON_TOML"
+            info "Written: $DAEMON_TOML"
+        fi
     fi
 fi
 
