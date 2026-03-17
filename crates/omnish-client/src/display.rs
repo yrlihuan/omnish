@@ -52,9 +52,23 @@ pub fn display_width(s: &str) -> usize {
     width
 }
 
-/// Render a separator line spanning `cols` columns (dim ─ characters).
+/// Render a separator line spanning `cols` columns (dim ─ characters),
+/// with a `ctrl+o` hint embedded on the right side.
 pub fn render_separator(cols: u16) -> String {
-    format!("\x1b[2m{}\x1b[0m", "─".repeat(cols as usize))
+    let hint = " ctrl+o ";
+    let cols = cols as usize;
+    if cols > hint.len() + 4 {
+        let right_dashes = 2;
+        let left_dashes = cols - hint.len() - right_dashes;
+        format!(
+            "\x1b[2m{}{}{}\x1b[0m",
+            "─".repeat(left_dashes),
+            hint,
+            "─".repeat(right_dashes),
+        )
+    } else {
+        format!("\x1b[2m{}\x1b[0m", "─".repeat(cols))
+    }
 }
 
 /// Render the initial prompt: newline, separator, newline, ❯ cursor.
@@ -288,9 +302,10 @@ mod tests {
         let parser = parse_ansi(&output, cols, 24);
         let screen = parser.screen();
         let row = get_row(screen, 0, cols);
-        let dashes: Vec<char> = row.trim_end().chars().collect();
-        assert_eq!(dashes.len(), cols as usize, "separator should be exactly cols wide");
-        assert!(dashes.iter().all(|&c| c == '─'), "separator should only contain ─");
+        let trimmed = row.trim_end();
+        assert_eq!(trimmed.chars().count(), cols as usize, "separator should be exactly cols wide");
+        assert!(trimmed.contains("ctrl+o"), "separator should contain ctrl+o hint");
+        assert!(trimmed.contains('─'), "separator should contain ─ dashes");
     }
 
     #[test]

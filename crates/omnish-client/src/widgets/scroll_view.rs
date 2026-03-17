@@ -283,7 +283,7 @@ impl ScrollView {
         }
 
         // Hint line
-        out.push_str("\r\n\x1b[K\x1b[2m\u{2191}\u{2193}/j/k scroll  ctrl+b/+f page-up/down  q quit\x1b[0m");
+        out.push_str("\r\n\x1b[K\x1b[2m\u{2191}\u{2193}/j/k scroll  ctrl+b/+f page-up/down  ctrl+o/esc quit\x1b[0m");
 
         self.rendered_lines = used_rows + 1; // visual rows + hint
         out
