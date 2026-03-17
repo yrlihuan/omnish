@@ -155,15 +155,14 @@ CHAT_PROVIDERS=(anthropic openai openrouter deepseek moonshot-cn moonshot-global
 COMPLETION_PROVIDERS=(openrouter custom)
 
 configure_backend() {
-    local name="$1"
-    local purpose="$2"
-    local recommended_model="${3:-}"
-    shift 3
+    local purpose="$1"
+    local recommended_model="${2:-}"
+    shift 2
     local providers=("$@")
 
     # Interactive prompts go to stderr (stdout is for TOML output)
     echo "" >&2
-    info "Configure $purpose backend ($name):" >&2
+    info "Configure $purpose backend:" >&2
     local i=1
     for p in "${providers[@]}"; do
         echo "  [$i] $p" >&2
@@ -176,6 +175,13 @@ configure_backend() {
         idx=0
     fi
     local provider="${providers[$idx]}"
+
+    # Backend name: provider name for presets, user-specified for custom
+    local name="$provider"
+    if [[ "$provider" == "custom" ]]; then
+        ask "Backend name:"
+        name="$REPLY"
+    fi
 
     local backend_type="${PROVIDER_TYPE[$provider]}"
     local base_url="${PROVIDER_URL[$provider]}"
@@ -201,6 +207,9 @@ configure_backend() {
 
     ask "API key:"
     local api_key="$REPLY"
+
+    # Save backend name for caller
+    echo "$name" > "$TMPDIR/last_backend_name"
 
     # Build TOML snippet
     local toml="[llm.backends.${name}]"$'\n'
@@ -243,7 +252,8 @@ else
     echo "  This model handles interactive chat (: prefix), command error analysis," >&2
     echo "  and context-aware responses. A capable model (e.g. Claude Sonnet) is" >&2
     echo "  recommended for best results." >&2
-    configure_backend "claude" "chat/analysis" "" "${CHAT_PROVIDERS[@]}" > "$TMPDIR/chat_backend.toml"
+    configure_backend "chat/analysis" "" "${CHAT_PROVIDERS[@]}" > "$TMPDIR/chat_backend.toml"
+    CHAT_NAME=$(cat "$TMPDIR/last_backend_name")
 
     echo "" >&2
     info "Step 2: Completion model" >&2
@@ -255,16 +265,17 @@ else
     SAME="${REPLY:-Y}"
 
     if [[ "$SAME" =~ ^[Nn] ]]; then
-        configure_backend "claude-fast" "completion" "Qwen/Qwen2.5-Coder-32B-Instruct" "${COMPLETION_PROVIDERS[@]}" > "$TMPDIR/completion_backend.toml"
-        USE_CASES='[llm.use_cases]
-chat = "claude"
-analysis = "claude"
-completion = "claude-fast"'
+        configure_backend "completion" "Qwen/Qwen2.5-Coder-32B-Instruct" "${COMPLETION_PROVIDERS[@]}" > "$TMPDIR/completion_backend.toml"
+        COMPLETION_NAME=$(cat "$TMPDIR/last_backend_name")
+        USE_CASES="[llm.use_cases]
+chat = \"${CHAT_NAME}\"
+analysis = \"${CHAT_NAME}\"
+completion = \"${COMPLETION_NAME}\""
     else
-        USE_CASES='[llm.use_cases]
-chat = "claude"
-analysis = "claude"
-completion = "claude"'
+        USE_CASES="[llm.use_cases]
+chat = \"${CHAT_NAME}\"
+analysis = \"${CHAT_NAME}\"
+completion = \"${CHAT_NAME}\""
     fi
 
     # Listen address
@@ -287,7 +298,7 @@ completion = "claude"'
         echo "listen_addr = \"${LISTEN_ADDR}\""
         echo ""
         echo "[llm]"
-        echo 'default = "claude"'
+        echo "default = \"${CHAT_NAME}\""
         echo ""
         cat "$TMPDIR/chat_backend.toml"
         if [[ -f "$TMPDIR/completion_backend.toml" ]]; then
