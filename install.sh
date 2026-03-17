@@ -287,11 +287,8 @@ completion = \"${CHAT_NAME}\""
     LISTEN_CHOICE="${REPLY:-1}"
 
     if [[ "$LISTEN_CHOICE" == "2" ]]; then
-        LISTEN_ADDR=""
-        while [[ -z "$LISTEN_ADDR" ]]; do
-            ask "TCP address (e.g. 0.0.0.0:9800):"
-            LISTEN_ADDR="$REPLY"
-        done
+        ask "TCP address [0.0.0.0:9800]:"
+        LISTEN_ADDR="${REPLY:-0.0.0.0:9800}"
     else
         LISTEN_ADDR="${OMNISH_DIR}/omnish.sock"
     fi
