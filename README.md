@@ -43,23 +43,34 @@ For detailed module documentation and implementation details, see the [module do
 - **Plugin system** — Load external tools via JSON-RPC subprocess protocol; plugins expose tools that the LLM agent can invoke.
 - **Interactive picker** — Arrow-key selection widget for thread resumption and multi-select deletion.
 - **Auto-trigger** — Optionally analyze on non-zero exit codes or stderr patterns.
-- **Scheduled tasks** — Hourly summaries, daily notes, session eviction, and disk cleanup run automatically.
+- **Scheduled tasks** — Hourly summaries, daily notes, session eviction, disk cleanup, and auto-update run automatically.
+- **Auto-update** — Daemon periodically checks GitHub for new releases and distributes updates to client machines.
 - **Security** — Token authentication, Unix socket permissions (0600) with SO_PEERCRED UID verification, TLS encryption for TCP connections.
 - **Cross-platform** — Linux and macOS support.
 
-## Build
+## Installation
+
+### From GitHub (downloads latest release)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yrlihuan/omnish/master/install.sh | bash
+```
+
+### From a downloaded release
+
+```bash
+tar -xzf omnish-0.6.6-linux-x86_64.tar.gz
+cd omnish-0.6.6-linux-x86_64
+bash install.sh
+```
+
+### Build from source
 
 Requires Rust toolchain and `clang` (for rustls/ring):
 
 ```bash
 cargo build --release
 ```
-
-Produces two binaries:
-- `target/release/omnish-client` — the shell wrapper
-- `target/release/omnish-daemon` — the daemon
-
-A diagnostic tool is also built:
 
 ## Configuration
 
@@ -68,38 +79,44 @@ Configuration uses two files under `~/.omnish/`:
 **Client config** — `~/.omnish/client.toml` (or `$OMNISH_CLIENT_CONFIG`):
 
 ```toml
+daemon_addr = "~/.omnish/omnish.sock"  # or "server-ip:9800" for TCP
+completion_enabled = true
+
 [shell]
 command = "/bin/bash"
 command_prefix = ":"        # prefix for chat mode (default: ":")
 intercept_gap_ms = 1000     # min ms between inputs to trigger interception
 ghost_timeout_ms = 10000    # ghost-text suggestion timeout
-
-daemon_addr = "~/.omnish/omnish.sock"
-completion_enabled = true
 ```
 
 **Daemon config** — `~/.omnish/daemon.toml` (or `$OMNISH_DAEMON_CONFIG`):
 
 ```toml
-listen_addr = "~/.omnish/omnish.sock"
+listen_addr = "~/.omnish/omnish.sock"  # or "0.0.0.0:9800" for TCP
 
 [llm]
 default = "claude"
 
 [llm.backends.claude]
 backend_type = "anthropic"
-model = "claude-sonnet-4-5-20250929"
+model = "claude-sonnet-4-20250514"
 api_key_cmd = "pass show anthropic/api-key"
-max_content_chars = 200000
+
+[llm.backends.openrouter]
+backend_type = "openai"
+model = "Qwen/Qwen2.5-Coder-32B-Instruct"
+api_key_cmd = "cat ~/.openrouter_api_key"
+base_url = "https://openrouter.ai/api/v1"
+
+[llm.use_cases]
+chat = "claude"
+analysis = "claude"
+completion = "openrouter"
 
 [llm.auto_trigger]
 on_nonzero_exit = true
 on_stderr_patterns = ["error", "panic", "traceback", "fatal"]
 cooldown_seconds = 5
-
-[llm.use_cases]
-completion = "claude-haiku"
-chat = "claude"
 
 [tasks.eviction]
 session_evict_hours = 48
@@ -109,6 +126,11 @@ schedule_hour = 18
 
 [tasks.disk_cleanup]
 schedule = "0 0 */6 * * *"
+
+[tasks.auto_update]
+enabled = true
+# schedule = "0 0 4 * * *"  # default: 4 AM daily
+# clients = ["user@host1", "user@host2"]
 
 [context.completion]
 max_commands = 50
@@ -123,15 +145,21 @@ enabled = []   # list plugin names; each must have ~/.omnish/plugins/{name}/{nam
 ```toml
 # OpenAI
 [llm.backends.openai]
-backend_type = "openai-compat"
-model = "gpt-4"
+backend_type = "openai"
+model = "gpt-4o"
 api_key_cmd = "cat ~/.openai_api_key"
 base_url = "https://api.openai.com/v1"
-max_content_chars = 128000
+
+# DeepSeek (Anthropic-compatible)
+[llm.backends.deepseek]
+backend_type = "anthropic"
+model = "deepseek-chat"
+api_key_cmd = "cat ~/.deepseek_api_key"
+base_url = "https://api.deepseek.com/anthropic"
 
 # Local (Ollama, LM Studio)
 [llm.backends.local]
-backend_type = "openai-compat"
+backend_type = "openai"
 model = "llama3"
 api_key_cmd = "echo dummy"
 base_url = "http://localhost:1234/v1"
@@ -150,7 +178,7 @@ omnish uses layered security for daemon/client communication:
 Start the daemon, then use `omnish` as your shell:
 
 ```bash
-omnishd &
+omnish-daemon &
 omnish
 ```
 
@@ -195,6 +223,8 @@ Session data is stored under `~/.omnish/`:
 
 ```
 ~/.omnish/
+├── install.sh               # installer (also used for --upgrade)
+├── deploy.sh                # client deployment script
 ├── client.toml              # client configuration
 ├── daemon.toml              # daemon configuration
 ├── omnish.sock              # Unix domain socket
@@ -202,6 +232,17 @@ Session data is stored under `~/.omnish/`:
 ├── tls/                     # TLS cert and key for TCP mode
 │   ├── cert.pem
 │   └── key.pem
+├── bin/                     # binaries
+│   ├── omnish
+│   ├── omnish-daemon
+│   └── omnish-plugin
+├── plugins/
+│   └── builtin/
+│       ├── tool.json        # built-in tool definitions
+│       └── tool.override.json.example
+├── prompts/
+│   ├── chat.json            # chat prompt template
+│   └── chat.override.json.example
 ├── sessions/
 │   └── 2026-02-13T10-30-00_abc12345/
 │       ├── meta.json        # session metadata
@@ -227,6 +268,7 @@ Session data is stored under `~/.omnish/`:
 | `omnish-common` | Shared config types, auth token utilities |
 | `omnish-tracker` | Command tracker for shell command monitoring and analysis |
 | `omnish-context` | Context builder for LLM prompt construction |
+| `omnish-plugin` | Plugin host for external JSON-RPC tool subprocess |
 
 For detailed module documentation, see [`docs/implementation/`](docs/implementation/).
 
