@@ -18,6 +18,17 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if std::env::args().any(|a| a == "--init") {
+        let omnish_dir = omnish_dir();
+        let (token, token_status, cert_status) = init_omnish_dir(&omnish_dir)?;
+        println!("auth_token: {} ({})", omnish_common::auth::default_token_path().display(), token_status);
+        let tls_dir = omnish_transport::tls::default_tls_dir();
+        println!("tls cert:   {}/cert.pem ({})", tls_dir.display(), cert_status);
+        println!("tls key:    {}/key.pem ({})", tls_dir.display(), cert_status);
+        let _ = token;
+        return Ok(());
+    }
+
     let worker_threads = std::thread::available_parallelism()
         .map(|n| n.get().min(30))
         .unwrap_or(4);
@@ -26,6 +37,29 @@ fn main() -> Result<()> {
         .enable_all()
         .build()?
         .block_on(async_main())
+}
+
+/// Initialize ~/.omnish/ directory: create credentials, install embedded assets.
+/// Returns (auth_token, token_status, cert_status) where status is "existing" or "created".
+fn init_omnish_dir(omnish_dir: &std::path::Path) -> Result<(String, &'static str, &'static str)> {
+    std::fs::create_dir_all(omnish_dir)?;
+
+    // Auth token
+    let token_path = omnish_common::auth::default_token_path();
+    let token_existed = token_path.exists();
+    let token = omnish_common::auth::load_or_create_token(&token_path)?;
+    let token_status = if token_existed { "existing" } else { "created" };
+
+    // TLS cert
+    let tls_dir = omnish_transport::tls::default_tls_dir();
+    let cert_existed = tls_dir.join("cert.pem").exists();
+    let _ = omnish_transport::tls::load_or_create_cert(&tls_dir)?;
+    let cert_status = if cert_existed { "existing" } else { "created" };
+
+    // Embedded assets (plugin tool.json, chat prompt, etc.)
+    install_embedded_assets(omnish_dir);
+
+    Ok((token, token_status, cert_status))
 }
 
 /// Write embedded assets (builtin plugin config, chat prompt) to ~/.omnish/.
@@ -175,12 +209,11 @@ async fn async_main() -> Result<()> {
     task_mgr.start().await?;
     let task_mgr = Arc::new(tokio::sync::Mutex::new(task_mgr));
 
-    // Load or create auth token
-    let token_path = omnish_common::auth::default_token_path();
-    let auth_token = omnish_common::auth::load_or_create_token(&token_path)?;
-    tracing::info!("auth token loaded from {}", token_path.display());
+    // Initialize credentials and embedded assets
+    let (auth_token, token_status, _cert_status) = init_omnish_dir(&omnish_dir)?;
+    tracing::info!("auth token {} ({})", omnish_common::auth::default_token_path().display(), token_status);
 
-    // Load or create TLS cert (only for TCP mode)
+    // Create TLS acceptor (only for TCP mode)
     let tls_acceptor = if socket_path.contains(':') {
         let tls_dir = omnish_transport::tls::default_tls_dir();
         let acceptor = omnish_transport::tls::make_acceptor(&tls_dir)?;
@@ -189,9 +222,6 @@ async fn async_main() -> Result<()> {
     } else {
         None
     };
-
-    // Write embedded assets to ~/.omnish/ (overwritten on every startup)
-    install_embedded_assets(&omnish_dir);
 
     // Initialize plugin manager — loads tool definitions from JSON files
     let plugins_dir = omnish_dir.join("plugins");

@@ -3,8 +3,12 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Returns the omnish base directory: `~/.omnish`, fallback `/tmp/omnish`.
+/// Returns the omnish base directory.
+/// Priority: `$OMNISH_HOME` > `~/.omnish` > `/tmp/omnish`.
 pub fn omnish_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("OMNISH_HOME") {
+        return PathBuf::from(dir);
+    }
     dirs::home_dir()
         .map(|h| h.join(".omnish"))
         .unwrap_or_else(|| PathBuf::from("/tmp/omnish"))
