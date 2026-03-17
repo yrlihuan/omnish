@@ -232,6 +232,9 @@ pub struct ShellConfig {
     pub command: String,
     #[serde(default = "default_command_prefix")]
     pub command_prefix: String,
+    /// Prefix to resume last chat thread (default: "::")
+    #[serde(default = "default_resume_prefix")]
+    pub resume_prefix: String,
     #[serde(default = "default_intercept_gap_ms")]
     pub intercept_gap_ms: u64,
     #[serde(default = "default_ghost_timeout_ms")]
@@ -243,6 +246,7 @@ impl Default for ShellConfig {
         Self {
             command: default_shell_command(),
             command_prefix: default_command_prefix(),
+            resume_prefix: default_resume_prefix(),
             intercept_gap_ms: default_intercept_gap_ms(),
             ghost_timeout_ms: default_ghost_timeout_ms(),
         }
@@ -255,6 +259,10 @@ fn default_shell_command() -> String {
 
 fn default_command_prefix() -> String {
     ":".to_string()
+}
+
+fn default_resume_prefix() -> String {
+    "::".to_string()
 }
 
 fn default_intercept_gap_ms() -> u64 {

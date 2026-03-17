@@ -437,6 +437,9 @@ auto_update = true
 # Prefix to trigger chat mode
 command_prefix = ":"
 
+# Prefix to resume last chat thread
+resume_prefix = "::"
+
 # Minimum idle time (ms) before prefix triggers intercept
 # intercept_gap_ms = 1000
 

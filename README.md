@@ -85,6 +85,7 @@ completion_enabled = true
 [shell]
 command = "/bin/bash"
 command_prefix = ":"        # prefix for chat mode (default: ":")
+resume_prefix = "::"       # prefix to resume last thread (default: "::")
 intercept_gap_ms = 1000     # min ms between inputs to trigger interception
 ghost_timeout_ms = 10000    # ghost-text suggestion timeout
 ```
