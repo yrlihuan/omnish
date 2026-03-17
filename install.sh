@@ -336,35 +336,75 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
     echo ""
 fi
 
-# ── Client deployment instructions ──────────────────────────────────────────
+# ── Client deployment ──────────────────────────────────────────────────────
 
 if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]]; then
     SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || hostname -i 2>/dev/null || echo "<server-ip>")
     LISTEN_PORT="${LISTEN_ADDR##*:}"
+
     echo ""
     info "=== Client Deployment ==="
     echo ""
-    echo "On each client machine, run:"
+    info "Server address: ${SERVER_IP}:${LISTEN_PORT}"
     echo ""
-    echo "  mkdir -p ~/.omnish/bin ~/.omnish/tls"
+
+    deploy_client() {
+        local target="$1"
+        local remote_home="~/.omnish"
+
+        info "Deploying to ${target}..."
+
+        # Create directories
+        ssh "$target" "mkdir -p ${remote_home}/bin ${remote_home}/tls" \
+            || { warn "SSH connection failed for ${target}"; return 1; }
+
+        # Copy binaries
+        scp -q "${BIN_DIR}/omnish" "${BIN_DIR}/omnish-plugin" "${target}:${remote_home}/bin/" \
+            || { warn "Failed to copy binaries to ${target}"; return 1; }
+
+        # Copy TLS cert and auth token
+        scp -q "${OMNISH_DIR}/tls/cert.pem" "${target}:${remote_home}/tls/" \
+            || { warn "Failed to copy TLS cert to ${target}"; return 1; }
+        scp -q "${OMNISH_DIR}/auth_token" "${target}:${remote_home}/" \
+            || { warn "Failed to copy auth token to ${target}"; return 1; }
+
+        # Generate client.toml
+        ssh "$target" "cat > ${remote_home}/client.toml << 'TOML'
+daemon_addr = \"${SERVER_IP}:${LISTEN_PORT}\"
+TOML
+chmod 600 ${remote_home}/client.toml ${remote_home}/auth_token"
+
+        info "Deployed to ${target}"
+        echo "  Run on client: export PATH=\"\$HOME/.omnish/bin:\$PATH\""
+    }
+
+    if [[ "$DRY_RUN" == true ]]; then
+        info "[DRY RUN] Would ask to deploy clients via scp"
+    else
+        ask "Deploy to client machines via scp? [Y/n]:"
+        if [[ ! "${REPLY:-Y}" =~ ^[Nn] ]]; then
+            echo "  Enter user@host for each client (empty line to finish):"
+            while true; do
+                ask "  Client:"
+                [[ -n "$REPLY" ]] || break
+                deploy_client "$REPLY" || true
+            done
+        fi
+    fi
+
+    # Always print manual instructions for reference
     echo ""
-    echo "Then copy these files from this server:"
-    echo ""
-    echo "  scp ${BIN_DIR}/omnish ${BIN_DIR}/omnish-plugin \\"
-    echo "      ${OMNISH_DIR}/tls/cert.pem ${OMNISH_DIR}/auth_token \\"
-    echo "      user@client:~/.omnish/"
+    info "Manual deployment (if needed):"
     echo ""
     echo "  scp ${BIN_DIR}/omnish ${BIN_DIR}/omnish-plugin user@client:~/.omnish/bin/"
     echo "  scp ${OMNISH_DIR}/tls/cert.pem user@client:~/.omnish/tls/"
     echo "  scp ${OMNISH_DIR}/auth_token user@client:~/.omnish/"
     echo ""
-    echo "Create ~/.omnish/client.toml on the client:"
+    echo "  client.toml contents:"
+    echo "    daemon_addr = \"${SERVER_IP}:${LISTEN_PORT}\""
     echo ""
-    echo "  daemon_addr = \"${SERVER_IP}:${LISTEN_PORT}\""
-    echo ""
-    echo "Add to PATH on the client:"
-    echo ""
-    echo "  export PATH=\"\$HOME/.omnish/bin:\$PATH\""
+    echo "  Add to PATH on client:"
+    echo "    export PATH=\"\$HOME/.omnish/bin:\$PATH\""
 fi
 
 echo ""
