@@ -261,10 +261,10 @@ else
     echo "  It runs frequently and should be fast and cheap. A coding-specific model" >&2
     echo "  like Qwen2.5-Coder-32B works well. You can use the same model as chat," >&2
     echo "  but a separate, faster model is recommended." >&2
-    ask "Use the same backend as chat/analysis? [Y/n]:"
-    SAME="${REPLY:-Y}"
+    ask "Use the same backend as chat/analysis? [y/N]:"
+    SAME="${REPLY:-N}"
 
-    if [[ "$SAME" =~ ^[Nn] ]]; then
+    if [[ ! "$SAME" =~ ^[Yy] ]]; then
         configure_backend "completion" "Qwen/Qwen2.5-Coder-32B-Instruct" "${COMPLETION_PROVIDERS[@]}" > "$TMPDIR/completion_backend.toml"
         COMPLETION_NAME=$(cat "$TMPDIR/last_backend_name")
         USE_CASES="[llm.use_cases]
