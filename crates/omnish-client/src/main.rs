@@ -51,7 +51,7 @@ fn send_completion_summary(
         let rpc = rpc.clone();
         let msg = Message::CompletionSummary(summary);
         tokio::spawn(async move {
-            let _ = rpc.call(msg).await;
+            let _ = rpc.send(msg).await;
         });
     }
 }
@@ -70,7 +70,7 @@ fn send_ignored_summary(
 /// Send a message to the daemon, buffering it if the send fails and
 /// the message type is eligible for retry.
 async fn send_or_buffer(rpc: &RpcClient, msg: Message, buffer: &MessageBuffer) {
-    if rpc.call(msg.clone()).await.is_err() && should_buffer(&msg) {
+    if rpc.send(msg.clone()).await.is_err() && should_buffer(&msg) {
         let mut buf = buffer.lock().await;
         if buf.len() >= MAX_BUFFER_SIZE {
             buf.pop_front();
@@ -1206,7 +1206,7 @@ async fn main() -> Result<()> {
             timestamp_ms: timestamp_ms(),
             exit_code: None,
         });
-        let _ = rpc.call(msg).await;
+        let _ = rpc.send(msg).await;
     }
 
     // Drop raw mode guard BEFORE process::exit, since exit() skips destructors

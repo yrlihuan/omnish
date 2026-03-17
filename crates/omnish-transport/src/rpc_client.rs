@@ -15,6 +15,7 @@ use tokio_rustls::TlsConnector;
 enum ReplyTx {
     Once(oneshot::Sender<Message>),
     Stream(mpsc::Sender<Message>),
+    None,
 }
 
 struct WriteRequest {
@@ -384,6 +385,27 @@ impl RpcClient {
             .map_err(|_| anyhow::anyhow!("read task closed before response"))
     }
 
+    /// Fire-and-forget: send a message without waiting for a response.
+    /// Returns Ok(()) once the message is queued for writing.
+    pub async fn send(&self, msg: Message) -> Result<()> {
+        let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let frame = Frame {
+            request_id,
+            payload: msg,
+        };
+
+        let inner = self.inner.lock().await;
+        if !inner.connected.load(Ordering::SeqCst) {
+            return Err(anyhow::anyhow!("not connected"));
+        }
+        inner
+            .tx
+            .send(WriteRequest { frame, reply_tx: ReplyTx::None })
+            .await
+            .map_err(|_| anyhow::anyhow!("write task closed"))?;
+        Ok(())
+    }
+
     /// Send a message and receive multiple responses (for streaming).
     pub async fn call_stream(&self, msg: Message) -> Result<mpsc::Receiver<Message>> {
         let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -415,10 +437,12 @@ impl RpcClient {
                     continue;
                 }
             };
-            pending
-                .lock()
-                .await
-                .insert(req.frame.request_id, req.reply_tx);
+            if !matches!(req.reply_tx, ReplyTx::None) {
+                pending
+                    .lock()
+                    .await
+                    .insert(req.frame.request_id, req.reply_tx);
+            }
             if writer.write_u32(bytes.len() as u32).await.is_err() {
                 connected.store(false, Ordering::SeqCst);
                 break;
@@ -467,6 +491,10 @@ impl RpcClient {
                         } else if tx.try_send(frame.payload).is_err() {
                             map.remove(&frame.request_id);
                         }
+                    }
+                    ReplyTx::None => {
+                        // Fire-and-forget — discard response, clean up
+                        map.remove(&frame.request_id);
                     }
                 }
             }
