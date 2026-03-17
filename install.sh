@@ -341,7 +341,32 @@ if [[ ! -f "$CLIENT_TOML" ]] || [[ "$FORCE" == true ]]; then
     if [[ "$DRY_RUN" == true ]]; then
         info "[DRY RUN] Would write client.toml (daemon_addr = \"${CLIENT_DAEMON_ADDR}\")"
     else
-        echo "daemon_addr = \"${CLIENT_DAEMON_ADDR}\"" > "$CLIENT_TOML"
+        cat > "$CLIENT_TOML" << EOF
+# omnish client configuration
+# Copy to ~/.omnish/client.toml on each client machine
+
+# Daemon address (Unix socket path or host:port for TCP)
+daemon_addr = "${CLIENT_DAEMON_ADDR}"
+
+# Enable inline ghost-text completion
+completion_enabled = true
+
+# Enable auto-update from server
+auto_update = true
+
+[shell]
+# Shell to spawn (defaults to \$SHELL)
+# command = "/bin/bash"
+
+# Prefix to trigger chat mode
+command_prefix = ":"
+
+# Minimum idle time (ms) before prefix triggers intercept
+# intercept_gap_ms = 1000
+
+# Timeout (ms) for ghost-text completion
+# ghost_timeout_ms = 10000
+EOF
         chmod 600 "$CLIENT_TOML"
         info "Written: $CLIENT_TOML"
     fi
