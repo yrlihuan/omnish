@@ -41,6 +41,7 @@ build-release:
     - cargo build --release --target x86_64-unknown-linux-musl
     - VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c "import sys,json; print(json.load(sys.stdin)['packages'][0]['version'])")
     - bash scripts/build-tar.sh "$VERSION" target/x86_64-unknown-linux-musl/release
+    - echo "VERSION=$VERSION" > build.env
     - mkdir -p dist-compat
     - cp target/x86_64-unknown-linux-musl/release/omnish dist-compat/
     - cp target/x86_64-unknown-linux-musl/release/omnish-daemon dist-compat/
@@ -51,6 +52,8 @@ build-release:
       - dist-compat/omnish
       - dist-compat/omnish-daemon
       - dist-compat/omnish-plugin
+    reports:
+      dotenv: build.env
     expire_in: 30 days
   rules:
     - if: $CI_COMMIT_TAG
@@ -62,12 +65,7 @@ release:
     - job: build-release
       artifacts: true
   script:
-    - VERSION="${CI_COMMIT_TAG#v}"
     - echo "Creating release for ${CI_COMMIT_TAG} (version ${VERSION})"
-    - echo "VERSION=${VERSION}" > release.env
-  artifacts:
-    reports:
-      dotenv: release.env
   release:
     tag_name: ${CI_COMMIT_TAG}
     name: "omnish ${CI_COMMIT_TAG}"
