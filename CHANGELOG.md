@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.6.7 (2026-03-17)
+
+### Features
+- **daemon**: Include thread conversations in hourly notes context (#251)
+- **client**: Configurable `resume_prefix` for resuming last thread (#314)
+- **client**: Improve ctrl+o hint — show "to expand", hide in browse mode (#299)
+- **plugin**: Add git repo root to sandbox writable paths (#312)
+- **install**: Private IP selection, auto-update prompt, cleaner output
+
+---
+
 ## v0.6.6 (2026-03-17)
 
 ### Features
