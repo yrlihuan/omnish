@@ -55,6 +55,27 @@ for arg in "$@"; do
         --dry-run)     DRY_RUN=true ;;
         --version=*)   VERSION="${arg#*=}"
                        [[ "$VERSION" == v* ]] || VERSION="v${VERSION}" ;;
+        --uninstall)
+            echo ""
+            info "Uninstalling omnish..."
+            SERVICE_FILE="$HOME/.config/systemd/user/omnish-daemon.service"
+            if [[ -f "$SERVICE_FILE" ]]; then
+                systemctl --user stop omnish-daemon 2>/dev/null || true
+                systemctl --user disable omnish-daemon 2>/dev/null || true
+                rm -f "$SERVICE_FILE"
+                systemctl --user daemon-reload
+                info "Removed systemd service"
+            fi
+            # Remove PATH line from shell profiles
+            for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+                if [[ -f "$rc" ]] && grep -q '# omnish' "$rc"; then
+                    sed -i '/# omnish/d;/omnish\/bin/d' "$rc"
+                    info "Cleaned PATH from ${rc}"
+                fi
+            done
+            info "Uninstall complete"
+            exit 0
+            ;;
         --help|-h)
             echo "Usage: install.sh [OPTIONS]"
             echo ""
@@ -63,6 +84,7 @@ for arg in "$@"; do
             echo "  --upgrade         Non-interactive upgrade (download + install only)"
             echo "  --force           Overwrite existing daemon.toml"
             echo "  --dry-run         Run config wizard but skip download/install/credentials"
+            echo "  --uninstall       Remove omnish, systemd service, and PATH entries"
             echo "  -h, --help        Show this help"
             exit 0
             ;;
@@ -395,6 +417,50 @@ command_prefix = ":"
 EOF
         chmod 600 "$CLIENT_TOML"
         info "Written: $CLIENT_TOML"
+    fi
+fi
+
+# ── Systemd service ──────────────────────────────────────────────────────────
+
+SERVICE_DIR="$HOME/.config/systemd/user"
+SERVICE_FILE="$SERVICE_DIR/omnish-daemon.service"
+
+if [[ "$DRY_RUN" == true ]]; then
+    info "[DRY RUN] Would offer to install systemd user service"
+elif ! command -v systemctl &>/dev/null; then
+    info "systemctl not found, skipping daemon autostart setup"
+elif [[ -f "$SERVICE_FILE" ]]; then
+    info "systemd service already installed, reloading..."
+    systemctl --user daemon-reload
+    systemctl --user restart omnish-daemon
+    info "omnish-daemon restarted"
+else
+    ask "Enable omnish-daemon to start on boot (systemd user service)? [Y/n]:"
+    if [[ ! "${REPLY:-Y}" =~ ^[Nn] ]]; then
+        mkdir -p "$SERVICE_DIR"
+        cat > "$SERVICE_FILE" << UNIT
+[Unit]
+Description=omnish daemon
+After=network.target
+
+[Service]
+ExecStart=${BIN_DIR}/omnish-daemon
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+UNIT
+        systemctl --user daemon-reload
+        systemctl --user enable --now omnish-daemon
+        info "omnish-daemon enabled and started"
+
+        # enable-linger so service runs without active login session
+        if command -v loginctl &>/dev/null && ! loginctl show-user "$USER" --property=Linger 2>/dev/null | grep -q 'yes'; then
+            info "Enabling lingering for $USER (so daemon runs at boot without login)..."
+            sudo loginctl enable-linger "$USER" 2>/dev/null \
+                || warn "Could not enable linger — run: sudo loginctl enable-linger $USER"
+        fi
     fi
 fi
 
