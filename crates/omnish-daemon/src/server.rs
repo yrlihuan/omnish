@@ -1207,33 +1207,36 @@ fn format_conversations_json(conv_mgr: &Arc<ConversationManager>) -> serde_json:
     for (i, (thread_id, modified, exchange_count, last_question)) in conversations.into_iter().enumerate() {
         let time_ago = format_relative_time(modified);
 
-        // Use thread title (from meta.summary) if available, otherwise fall back to last question
         let meta = conv_mgr.load_meta(&thread_id);
-        let display_text = if let Some(ref title) = meta.summary {
-            let single_line = title.replace('\n', " ");
-            if single_line.chars().count() > 50 {
-                let end: String = single_line.chars().take(47).collect();
-                format!("{}...", end)
-            } else {
-                single_line
-            }
-        } else {
-            let single_line = last_question.replace('\n', " ");
-            if single_line.chars().count() > 50 {
-                let end: String = single_line.chars().take(47).collect();
+
+        let truncate_display = |s: &str, max: usize| -> String {
+            let single_line = s.replace('\n', " ");
+            if single_line.chars().count() > max {
+                let end: String = single_line.chars().take(max - 3).collect();
                 format!("{}...", end)
             } else {
                 single_line
             }
         };
 
-        output.push_str(&format!(
-            "  [{}] {} | {} turns | {}\n",
-            i + 1,
-            time_ago,
-            exchange_count,
-            display_text
-        ));
+        if let Some(ref title) = meta.summary {
+            output.push_str(&format!(
+                "  [{}] {} | {} turns | {} | {}\n",
+                i + 1,
+                time_ago,
+                exchange_count,
+                truncate_display(title, 30),
+                truncate_display(&last_question, 30),
+            ));
+        } else {
+            output.push_str(&format!(
+                "  [{}] {} | {} turns | {}\n",
+                i + 1,
+                time_ago,
+                exchange_count,
+                truncate_display(&last_question, 50),
+            ));
+        }
 
         thread_ids.push(thread_id);
     }
