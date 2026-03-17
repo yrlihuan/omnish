@@ -279,10 +279,10 @@ completion = \"${CHAT_NAME}\""
     fi
 
     # Listen address
-    echo ""
-    info "Daemon listen address:"
-    echo "  [1] Unix socket (local only, default)"
-    echo "  [2] TCP (for remote clients)"
+    echo "" >&2
+    info "Daemon listen address:" >&2
+    echo "  [1] Unix socket (local only, default)" >&2
+    echo "  [2] TCP (for remote clients)" >&2
     ask "Choice [1]:"
     LISTEN_CHOICE="${REPLY:-1}"
 
