@@ -29,7 +29,7 @@ BIN_DIR="${OMNISH_DIR}/bin"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+info()  { printf '\033[1;34m[omnish]\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33mWARN:\033[0m %s\n' "$*"; }
 error() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 ask()   { printf '\033[1;32m?\033[0m %s ' "$1" >&2; read -r REPLY </dev/tty; }
@@ -369,6 +369,16 @@ completion = \"${CHAT_NAME}\""
         LISTEN_ADDR="${OMNISH_DIR}/omnish.sock"
     fi
 
+    # Auto-update
+    echo "" >&2
+    ask "Enable auto-update? [Y/n]:"
+    AUTO_UPDATE="${REPLY:-Y}"
+    if [[ "$AUTO_UPDATE" =~ ^[Yy] ]]; then
+        AUTO_UPDATE_ENABLED=true
+    else
+        AUTO_UPDATE_ENABLED=false
+    fi
+
     # Assemble daemon.toml
     {
         echo "listen_addr = \"${LISTEN_ADDR}\""
@@ -381,6 +391,9 @@ completion = \"${CHAT_NAME}\""
             cat "$TMPDIR/completion_backend.toml"
         fi
         echo "$USE_CASES"
+        echo ""
+        echo "[tasks.auto_update]"
+        echo "enabled = ${AUTO_UPDATE_ENABLED}"
     } > "$TMPDIR/daemon.toml"
 
     if [[ "$DRY_RUN" == true ]]; then
@@ -407,8 +420,38 @@ fi
 CLIENT_TOML="$OMNISH_DIR/client.toml"
 if [[ ! -f "$CLIENT_TOML" ]] || [[ "$FORCE" == true ]]; then
     if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]]; then
-        SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || hostname -i 2>/dev/null || echo "<server-ip>")
         LISTEN_PORT="${LISTEN_ADDR##*:}"
+
+        # Collect private network IPs (192.168.x.x and 10.x.x.x)
+        CANDIDATE_IPS=()
+        if command -v hostname &>/dev/null; then
+            for ip in $(hostname -I 2>/dev/null); do
+                if [[ "$ip" == 192.168.* ]] || [[ "$ip" == 10.* ]]; then
+                    CANDIDATE_IPS+=("$ip")
+                fi
+            done
+        fi
+
+        if [[ ${#CANDIDATE_IPS[@]} -gt 1 ]]; then
+            echo "" >&2
+            info "Multiple private IPs detected:" >&2
+            i=1
+            for ip in "${CANDIDATE_IPS[@]}"; do
+                echo "  [$i] $ip" >&2
+                ((i++))
+            done
+            ask "Select server IP [1]:"
+            idx=$(( ${REPLY:-1} - 1 ))
+            if (( idx < 0 || idx >= ${#CANDIDATE_IPS[@]} )); then
+                idx=0
+            fi
+            SERVER_IP="${CANDIDATE_IPS[$idx]}"
+        elif [[ ${#CANDIDATE_IPS[@]} -eq 1 ]]; then
+            SERVER_IP="${CANDIDATE_IPS[0]}"
+        else
+            SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || hostname -i 2>/dev/null || echo "<server-ip>")
+        fi
+
         CLIENT_DAEMON_ADDR="${SERVER_IP}:${LISTEN_PORT}"
     else
         CLIENT_DAEMON_ADDR="${LISTEN_ADDR:-${OMNISH_DIR}/omnish.sock}"
@@ -428,7 +471,7 @@ daemon_addr = "${CLIENT_DAEMON_ADDR}"
 completion_enabled = true
 
 # Enable auto-update from server
-auto_update = true
+auto_update = ${AUTO_UPDATE_ENABLED:-true}
 
 [shell]
 # Shell to spawn (defaults to \$SHELL)
@@ -576,9 +619,15 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]] && [[ -z "${OLD_
         ask "Deploy to client machines via scp? [Y/n]:"
         if [[ ! "${REPLY:-Y}" =~ ^[Nn] ]]; then
             echo "  Enter user@host for each client (empty line to finish):"
+            CLIENT_COUNT=0
             while true; do
-                ask "  Client:"
+                if [[ $CLIENT_COUNT -eq 0 ]]; then
+                    ask "  Client:"
+                else
+                    ask "  Another client (enter to finish):"
+                fi
                 [[ -n "$REPLY" ]] || break
+                ((CLIENT_COUNT++))
                 CLIENT_HOST="$REPLY"
 
                 # Verify SSH connectivity
@@ -610,24 +659,6 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]] && [[ -z "${OLD_
         info "Auto-update enabled with ${#DEPLOYED_CLIENTS[@]} client(s) in daemon.toml"
     fi
 
-    # Always print manual instructions for reference
-    echo ""
-    info "Manual deployment (if needed):"
-    echo ""
-    echo "  scp ${BIN_DIR}/omnish ${BIN_DIR}/omnish-plugin user@client:~/.omnish/bin/"
-    echo "  scp ${OMNISH_DIR}/tls/cert.pem user@client:~/.omnish/tls/"
-    echo "  scp ${OMNISH_DIR}/auth_token user@client:~/.omnish/"
-    echo ""
-    echo "  client.toml contents:"
-    echo "    daemon_addr = \"${SERVER_IP}:${LISTEN_PORT}\""
-    echo ""
-    echo "  Add to PATH on client:"
-    echo "    export PATH=\"\$HOME/.omnish/bin:\$PATH\""
-    echo ""
-    info "To configure auto-update in daemon.toml:"
-    echo '    [tasks.auto_update]'
-    echo '    enabled = true'
-    echo '    clients = ["user@host1", "user@host2"]'
 fi
 
 echo ""
