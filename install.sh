@@ -106,8 +106,13 @@ TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 # Auto-detect: if bin/ and assets/ exist next to this script, use local files
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -d "$SCRIPT_DIR/bin" ]] && [[ -d "$SCRIPT_DIR/assets" ]]; then
+# (BASH_SOURCE is unset when piped via curl|bash, so skip detection in that case)
+if [[ -n "${BASH_SOURCE[0]+x}" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+    SCRIPT_DIR=""
+fi
+if [[ -n "$SCRIPT_DIR" ]] && [[ -d "$SCRIPT_DIR/bin" ]] && [[ -d "$SCRIPT_DIR/assets" ]]; then
     EXTRACTED="$SCRIPT_DIR"
     # Derive version from binary if not specified
     if [[ -z "$VERSION" ]] && [[ -x "$EXTRACTED/bin/omnish-daemon" ]]; then

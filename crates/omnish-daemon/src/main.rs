@@ -40,7 +40,7 @@ fn main() -> Result<()> {
 }
 
 /// Initialize ~/.omnish/ directory: create credentials.
-/// Returns (auth_token, token_status, cert_status) where status is "existing" or "created".
+/// Returns (auth_token, token_status, cert_status) where status is "existed, skip" or "created".
 fn init_omnish_dir(omnish_dir: &std::path::Path) -> Result<(String, &'static str, &'static str)> {
     std::fs::create_dir_all(omnish_dir)?;
 
@@ -48,13 +48,13 @@ fn init_omnish_dir(omnish_dir: &std::path::Path) -> Result<(String, &'static str
     let token_path = omnish_common::auth::default_token_path();
     let token_existed = token_path.exists();
     let token = omnish_common::auth::load_or_create_token(&token_path)?;
-    let token_status = if token_existed { "existing" } else { "created" };
+    let token_status = if token_existed { "existed, skip" } else { "created" };
 
     // TLS cert
     let tls_dir = omnish_transport::tls::default_tls_dir();
     let cert_existed = tls_dir.join("cert.pem").exists();
     let _ = omnish_transport::tls::load_or_create_cert(&tls_dir)?;
-    let cert_status = if cert_existed { "existing" } else { "created" };
+    let cert_status = if cert_existed { "existed, skip" } else { "created" };
 
     Ok((token, token_status, cert_status))
 }
