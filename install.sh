@@ -1,4 +1,24 @@
 #!/usr/bin/env bash
+# omnish installer
+#
+# Downloads and installs omnish — a transparent shell wrapper with PTY proxy,
+# inline LLM completion, and multi-terminal context aggregation.
+#
+# This script will:
+#   1. Download the latest release (or a specified version) from GitHub/GitLab
+#   2. Extract binaries to ~/.omnish/bin/ (or $OMNISH_HOME/bin/)
+#   3. Walk you through configuring LLM backends for chat and completion
+#   4. Generate TLS certificates and auth tokens for secure communication
+#   5. Print client deployment instructions (if using TCP mode)
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/yrlihuan/omnish/master/install.sh | bash
+#   bash install.sh --github --version=v0.6.4
+#   OMNISH_HOME=/opt/omnish bash install.sh
+#
+# Environment variables:
+#   OMNISH_HOME   Override the default installation directory (~/.omnish)
+
 set -euo pipefail
 
 OMNISH_DIR="${OMNISH_HOME:-${HOME}/.omnish}"
@@ -202,9 +222,20 @@ if [[ -f "$DAEMON_TOML" ]] && [[ "$FORCE" != true ]]; then
     fi
 else
     # Chat/analysis backend
+    echo "" >&2
+    info "Step 1: Chat & Analysis model" >&2
+    echo "  This model handles interactive chat (: prefix), command error analysis," >&2
+    echo "  and context-aware responses. A capable model (e.g. Claude Sonnet) is" >&2
+    echo "  recommended for best results." >&2
     configure_backend "claude" "chat/analysis" "" > "$TMPDIR/chat_backend.toml"
 
-    ask "Use the same backend for completion? [Y/n] (recommended: separate, e.g. Qwen/Qwen2.5-Coder-32B-Instruct):"
+    echo "" >&2
+    info "Step 2: Completion model" >&2
+    echo "  This model powers inline ghost-text completion as you type in the shell." >&2
+    echo "  It runs frequently and should be fast and cheap. A coding-specific model" >&2
+    echo "  like Qwen2.5-Coder-32B works well. You can use the same model as chat," >&2
+    echo "  but a separate, faster model is recommended." >&2
+    ask "Use the same backend as chat/analysis? [Y/n]:"
     SAME="${REPLY:-Y}"
 
     if [[ "$SAME" =~ ^[Nn] ]]; then
