@@ -39,7 +39,7 @@ fn main() -> Result<()> {
         .block_on(async_main())
 }
 
-/// Initialize ~/.omnish/ directory: create credentials, install embedded assets.
+/// Initialize ~/.omnish/ directory: create credentials.
 /// Returns (auth_token, token_status, cert_status) where status is "existing" or "created".
 fn init_omnish_dir(omnish_dir: &std::path::Path) -> Result<(String, &'static str, &'static str)> {
     std::fs::create_dir_all(omnish_dir)?;
@@ -56,55 +56,7 @@ fn init_omnish_dir(omnish_dir: &std::path::Path) -> Result<(String, &'static str
     let _ = omnish_transport::tls::load_or_create_cert(&tls_dir)?;
     let cert_status = if cert_existed { "existing" } else { "created" };
 
-    // Embedded assets (plugin tool.json, chat prompt, etc.)
-    install_embedded_assets(omnish_dir);
-
     Ok((token, token_status, cert_status))
-}
-
-/// Write embedded assets (builtin plugin config, chat prompt) to ~/.omnish/.
-/// Defaults (chat.json, tool.json) are overwritten on every startup.
-/// Templates (*.override.json) are only written if not already present.
-fn install_embedded_assets(omnish_dir: &std::path::Path) {
-    // Builtin plugin tool.json (always overwrite)
-    let builtin_dir = omnish_dir.join("plugins/builtin");
-    let _ = std::fs::create_dir_all(&builtin_dir);
-    let _ = std::fs::write(
-        builtin_dir.join("tool.json"),
-        include_str!("../../omnish-plugin/assets/tool.json"),
-    );
-
-    // tool.override.json.example (only if not present)
-    let tool_override_example = builtin_dir.join("tool.override.json.example");
-    if !tool_override_example.exists() {
-        let _ = std::fs::write(
-            &tool_override_example,
-            include_str!("../../omnish-plugin/assets/tool.override.json.example"),
-        );
-    }
-
-    // Chat system prompt (always overwrite)
-    let prompts_dir = omnish_dir.join("prompts");
-    let _ = std::fs::create_dir_all(&prompts_dir);
-    let _ = std::fs::write(
-        prompts_dir.join("chat.json"),
-        omnish_llm::prompt::CHAT_PROMPT_JSON,
-    );
-
-    // chat.override.json.example (only if not present)
-    let chat_override_example = prompts_dir.join("chat.override.json.example");
-    if !chat_override_example.exists() {
-        let _ = std::fs::write(&chat_override_example, omnish_llm::prompt::CHAT_OVERRIDE_EXAMPLE);
-    }
-
-    // update.sh (always overwrite)
-    let update_script = omnish_dir.join("update.sh");
-    let _ = std::fs::write(&update_script, include_str!("../../../scripts/update.sh"));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&update_script, std::fs::Permissions::from_mode(0o755));
-    }
 }
 
 async fn async_main() -> Result<()> {

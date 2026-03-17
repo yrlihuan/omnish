@@ -132,8 +132,29 @@ for l in links:
     cp "$EXTRACTED/bin/"* "$BIN_DIR/"
     chmod 755 "$BIN_DIR"/*
 
-    if [[ -d "$EXTRACTED/plugins" ]] && ls "$EXTRACTED/plugins/"* &>/dev/null; then
-        cp -r "$EXTRACTED/plugins/"* "$OMNISH_DIR/plugins/"
+    # Install assets (plugin configs, prompts, update script)
+    if [[ -d "$EXTRACTED/assets" ]]; then
+        # Plugin tool definitions (always overwrite)
+        mkdir -p "$OMNISH_DIR/plugins/builtin"
+        cp "$EXTRACTED/assets/plugins/builtin/tool.json" "$OMNISH_DIR/plugins/builtin/"
+
+        # tool.override.json.example (only if not present)
+        if [[ ! -f "$OMNISH_DIR/plugins/builtin/tool.override.json.example" ]]; then
+            cp "$EXTRACTED/assets/plugins/builtin/tool.override.json.example" "$OMNISH_DIR/plugins/builtin/"
+        fi
+
+        # Chat prompts (always overwrite)
+        mkdir -p "$OMNISH_DIR/prompts"
+        cp "$EXTRACTED/assets/prompts/chat.json" "$OMNISH_DIR/prompts/"
+
+        # chat.override.json.example (only if not present)
+        if [[ ! -f "$OMNISH_DIR/prompts/chat.override.json.example" ]]; then
+            cp "$EXTRACTED/assets/prompts/chat.override.json.example" "$OMNISH_DIR/prompts/"
+        fi
+
+        # Update script (always overwrite)
+        cp "$EXTRACTED/assets/update.sh" "$OMNISH_DIR/"
+        chmod 755 "$OMNISH_DIR/update.sh"
     fi
 
     chmod 700 "$OMNISH_DIR"

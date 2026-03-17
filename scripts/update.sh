@@ -73,6 +73,15 @@ info "Installing to ${BIN_DIR}..."
 cp "$EXTRACTED/bin/"* "$BIN_DIR/"
 chmod 755 "$BIN_DIR"/*
 
+# Install assets
+if [[ -d "$EXTRACTED/assets" ]]; then
+    mkdir -p "$OMNISH_DIR/plugins/builtin" "$OMNISH_DIR/prompts"
+    cp "$EXTRACTED/assets/plugins/builtin/tool.json" "$OMNISH_DIR/plugins/builtin/"
+    cp "$EXTRACTED/assets/prompts/chat.json" "$OMNISH_DIR/prompts/"
+    cp "$EXTRACTED/assets/update.sh" "$OMNISH_DIR/"
+    chmod 755 "$OMNISH_DIR/update.sh"
+fi
+
 info "Server updated to v${LATEST_VERSION}"
 
 # ── Client distribution ─────────────────────────────────────────────────────
