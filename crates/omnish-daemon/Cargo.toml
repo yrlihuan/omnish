@@ -17,6 +17,7 @@ tokio-rustls = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
 chrono = { workspace = true }
 dirs = "5"
 serde = { workspace = true }
