@@ -160,13 +160,6 @@ api_key_cmd = "echo dummy"
 base_url = "http://localhost:1234/v1"
 ```
 
-## Security
-
-omnish uses layered security for daemon/client communication:
-
-- **Token authentication** — A shared 32-byte random token (`~/.omnish/auth_token`, mode 0600) is required for all connections. The client sends an `Auth` message before any other communication.
-- **Unix socket** — Socket file is set to mode 0600 (owner-only). Peer UID is verified via `SO_PEERCRED` to reject connections from other users.
-- **TLS for TCP** — When using TCP transport, connections are encrypted with TLS using a self-signed certificate (auto-generated in `~/.omnish/tls/`).
 
 ## Usage
 
