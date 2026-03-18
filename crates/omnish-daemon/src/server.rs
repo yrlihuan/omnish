@@ -539,35 +539,17 @@ async fn handle_tool_result(
     }
 
     // Add the received client-side tool result
+    let tool_call_id = tr.tool_call_id.clone();
     state.completed_results.push(omnish_llm::tool::ToolResult {
         tool_use_id: tr.tool_call_id.clone(),
         content: tr.content,
         is_error: tr.is_error,
     });
 
-    // Check if all tool calls are now completed
-    let completed_ids: std::collections::HashSet<String> = state
-        .completed_results
-        .iter()
-        .map(|r| r.tool_use_id.clone())
-        .collect();
-    let all_complete = state.pending_tool_calls.iter().all(|tc| completed_ids.contains(&tc.id));
-
-    if !all_complete {
-        // More results expected from client — acknowledge and wait
-        drop(map);
-        return vec![Message::Ack];
-    }
-
-    // All tool calls complete — remove state and continue agent loop
-    let mut state = map.remove(&tr.request_id).unwrap();
-    drop(map);
-
-    // Generate post-execution ChatToolStatus for each completed client-side tool
+    // Generate immediate ChatToolStatus for this result
     let mut update_messages = Vec::new();
-    for result in &state.completed_results {
-        // Find the original tool call to get name/input for formatting
-        if let Some(tc) = state.pending_tool_calls.iter().find(|tc| tc.id == result.tool_use_id) {
+    if let Some(result) = state.completed_results.iter().find(|r| r.tool_use_id == tool_call_id) {
+        if let Some(tc) = state.pending_tool_calls.iter().find(|tc| tc.id == tool_call_id) {
             let fmt = formatter::get_formatter(
                 plugin_mgr.tool_formatter(&tc.name).unwrap_or("default")
             );
@@ -597,6 +579,24 @@ async fn handle_tool_result(
             }));
         }
     }
+
+    // Check if all tool calls are now completed
+    let completed_ids: std::collections::HashSet<String> = state
+        .completed_results
+        .iter()
+        .map(|r| r.tool_use_id.clone())
+        .collect();
+    let all_complete = state.pending_tool_calls.iter().all(|tc| completed_ids.contains(&tc.id));
+
+    if !all_complete {
+        // More results expected — send status update for this tool, keep waiting
+        drop(map);
+        return update_messages;
+    }
+
+    // All tool calls complete — remove state and continue agent loop
+    let mut state = map.remove(&tr.request_id).unwrap();
+    drop(map);
 
     let result_content: Vec<serde_json::Value> = state
         .completed_results
