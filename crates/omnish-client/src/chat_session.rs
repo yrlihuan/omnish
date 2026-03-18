@@ -33,7 +33,6 @@ pub struct ChatSession {
     has_activity: bool,
     pending_input: Option<String>,
     client_plugins: Arc<client_plugin::ClientPluginManager>,
-    model_name: Option<String>,
     ghost_hint_shown: bool,
     pending_model: Option<String>,
 }
@@ -69,7 +68,6 @@ impl ChatSession {
             has_activity: false,
             pending_input: None,
             client_plugins: Arc::new(client_plugin::ClientPluginManager::new()),
-            model_name: None,
             ghost_hint_shown: false,
             pending_model: None,
         }
@@ -192,22 +190,6 @@ impl ChatSession {
 
         // Move past shell prompt to a new line
         write_stdout("\r\n");
-
-        // Get model name for ghost hint (don't create a new thread here)
-        {
-            let req_id = Uuid::new_v4().to_string()[..8].to_string();
-            let start_msg = Message::ChatStart(ChatStart {
-                request_id: req_id.clone(),
-                session_id: session_id.to_string(),
-                new_thread: false,
-            });
-            match rpc.call(start_msg).await {
-                Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
-                    self.model_name = ready.model_name;
-                }
-                _ => {}
-            }
-        }
 
         loop {
             let input = if let Some(msg) = self.pending_input.take() {
