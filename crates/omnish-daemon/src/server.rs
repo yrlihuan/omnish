@@ -1145,6 +1145,24 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             Ok(info) => cmd_display(info),
             Err(e) => cmd_display(format!("Error: {}", e)),
         },
+        "daemon" => {
+            let mut lines = vec![format!("omnish-daemon {}", omnish_common::VERSION)];
+            lines.push(String::new());
+            let tm = task_mgr.lock().await;
+            lines.push(tm.format_list());
+            lines.push(String::new());
+            // Auto-update status from task list
+            let tasks = tm.list();
+            let auto_update = tasks.iter().find(|(name, _, _)| name == "auto_update");
+            match auto_update {
+                Some((_, schedule, enabled)) => {
+                    let status = if *enabled { "enabled" } else { "disabled" };
+                    lines.push(format!("Auto-update: {} [{}]", status, schedule));
+                }
+                None => lines.push("Auto-update: not configured".to_string()),
+            }
+            cmd_display(lines.join("\n"))
+        }
         sub if sub == "tasks" || sub.starts_with("tasks ") => {
             cmd_display(handle_tasks_command(sub, task_mgr).await)
         }
