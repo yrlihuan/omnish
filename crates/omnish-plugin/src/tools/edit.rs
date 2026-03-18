@@ -5,6 +5,9 @@ use omnish_llm::tool::ToolResult;
 /// Line numbers are 1-based.
 ///
 /// Format: `lineno:  content` (context), `lineno:-content` (removed), `lineno:+content` (added).
+///
+/// Common prefix/suffix lines between old and new edit regions are shown as context
+/// rather than as removed-then-added.
 #[allow(clippy::needless_range_loop)]
 fn build_context_snippet(
     old_content: &str,
@@ -19,6 +22,25 @@ fn build_context_snippet(
     let old_end = edit_start_line + old_line_count;
     let new_end = edit_start_line + new_line_count;
 
+    // Extract the edit region lines from old and new
+    let old_edit: Vec<&str> = old_lines[edit_start_line..old_end.min(old_lines.len())].to_vec();
+    let new_edit: Vec<&str> = new_lines[edit_start_line..new_end.min(new_lines.len())].to_vec();
+
+    // Find common prefix length
+    let common_prefix = old_edit.iter().zip(new_edit.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    // Find common suffix length (don't overlap with prefix)
+    let remaining_old = old_edit.len() - common_prefix;
+    let remaining_new = new_edit.len() - common_prefix;
+    let common_suffix = old_edit[common_prefix..].iter().rev()
+        .zip(new_edit[common_prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(remaining_old)
+        .min(remaining_new);
+
     let ctx_start = edit_start_line.saturating_sub(ctx);
     let ctx_after_end = (new_end + ctx).min(new_lines.len());
 
@@ -31,18 +53,30 @@ fn build_context_snippet(
         }
     }
 
-    // Old lines (removed)
-    for i in edit_start_line..old_end {
-        if i < old_lines.len() {
-            lines.push(format!("{}:-{}", i + 1, old_lines[i]));
-        }
+    // Common prefix lines (shown as context)
+    for i in 0..common_prefix {
+        let line_idx = edit_start_line + i;
+        lines.push(format!("{}:  {}", line_idx + 1, new_edit[i]));
     }
 
-    // New lines (added)
-    for i in edit_start_line..new_end {
-        if i < new_lines.len() {
-            lines.push(format!("{}:+{}", i + 1, new_lines[i]));
-        }
+    // Changed old lines (removed)
+    let old_changed_end = old_edit.len() - common_suffix;
+    for i in common_prefix..old_changed_end {
+        let line_idx = edit_start_line + i;
+        lines.push(format!("{}:-{}", line_idx + 1, old_edit[i]));
+    }
+
+    // Changed new lines (added) — use new line numbers
+    let new_changed_end = new_edit.len() - common_suffix;
+    for i in common_prefix..new_changed_end {
+        let line_idx = edit_start_line + i;
+        lines.push(format!("{}:+{}", line_idx + 1, new_edit[i]));
+    }
+
+    // Common suffix lines (shown as context, using new line numbers)
+    for i in new_changed_end..new_edit.len() {
+        let line_idx = edit_start_line + i;
+        lines.push(format!("{}:  {}", line_idx + 1, new_edit[i]));
     }
 
     // Context after (from new content)
@@ -370,5 +404,39 @@ mod tests {
         // The old and new lines should be at line 4, not line 1
         assert!(snippet.contains("4:-hello"), "snippet should show old at line 4: {}", snippet);
         assert!(snippet.contains("4:+goodbye"), "snippet should show new at line 4: {}", snippet);
+    }
+
+    #[test]
+    fn test_unchanged_lines_shown_as_context() {
+        // When old_string and new_string share common prefix/suffix lines,
+        // those lines should appear as context (space), not as -/+.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.txt");
+        fs::write(
+            &path,
+            "line1\nline2\nshared_a\nshared_b\nold_line\nshared_c\nline7\nline8\n",
+        )
+        .unwrap();
+        let tool = EditTool::new();
+        let result = tool.execute(&serde_json::json!({
+            "file_path": path.to_str().unwrap(),
+            "old_string": "shared_a\nshared_b\nold_line\nshared_c",
+            "new_string": "shared_a\nshared_b\nnew_line1\nnew_line2\nshared_c"
+        }));
+        assert!(!result.is_error, "{}", result.content);
+        let snippet = result.content.split("\n---\n").nth(1).unwrap();
+        // shared_a and shared_b should be context, not -/+
+        assert!(snippet.contains("3:  shared_a"), "shared_a should be context: {}", snippet);
+        assert!(snippet.contains("4:  shared_b"), "shared_b should be context: {}", snippet);
+        // old_line should be removed
+        assert!(snippet.contains("5:-old_line"), "old_line should be removed: {}", snippet);
+        // new lines should be added
+        assert!(snippet.contains("5:+new_line1"), "new_line1 should be added: {}", snippet);
+        assert!(snippet.contains("6:+new_line2"), "new_line2 should be added: {}", snippet);
+        // shared_c should be context
+        assert!(snippet.contains(":  shared_c"), "shared_c should be context: {}", snippet);
+        // No -/+ for shared lines
+        assert!(!snippet.contains(":-shared_a"), "shared_a should NOT be removed: {}", snippet);
+        assert!(!snippet.contains(":+shared_a"), "shared_a should NOT be added: {}", snippet);
     }
 }
