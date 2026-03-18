@@ -203,6 +203,7 @@ impl ShellCompleter {
         // Reject responses for dismissed input (user explicitly pressed ESC)
         if self.dismissed_input.as_deref() == Some(current_input) {
             self.active_requests.remove(&response.sequence_id);
+            crate::event_log::push(format!("on_response seq={}: rejected (dismissed)", response.sequence_id));
             return None;
         }
 
@@ -213,6 +214,7 @@ impl ShellCompleter {
         if !self.is_response_relevant(response, current_input) {
             // Remove the request even if it's not relevant (to clean up)
             self.active_requests.remove(&response.sequence_id);
+            crate::event_log::push(format!("on_response seq={}: rejected (not relevant)", response.sequence_id));
             return None;
         }
 
@@ -220,6 +222,7 @@ impl ShellCompleter {
         if response.sequence_id < self.pending_seq {
             // Remove the request even if it's stale (to clean up)
             self.active_requests.remove(&response.sequence_id);
+            crate::event_log::push(format!("on_response seq={}: rejected (stale: {} < {})", response.sequence_id, response.sequence_id, self.pending_seq));
             return None;
         }
 
@@ -237,6 +240,7 @@ impl ShellCompleter {
             if last_change > rs.sent_at {
                 // User typed after request was sent - discard completion
                 self.current_ghost = None;
+                crate::event_log::push(format!("on_response seq={}: rejected (typed after send)", response.sequence_id));
                 return None;
             }
         }
@@ -278,10 +282,12 @@ impl ShellCompleter {
                     // LLM returned a prefix/subset of the input (e.g. input="rm 1.txt "
                     // and LLM returned "rm 1.txt") — nothing to add, discard.
                     self.current_ghost = None;
+                    crate::event_log::push(format!("on_response seq={}: rejected (input is prefix of suggestion)", response.sequence_id));
                     return None;
                 } else if best.text.trim().is_empty() {
                     // Suggestion is just whitespace - discard (issue #91)
                     self.current_ghost = None;
+                    crate::event_log::push(format!("on_response seq={}: rejected (whitespace)", response.sequence_id));
                     return None;
                 } else {
                     // Suggestion doesn't start with request_input.
@@ -292,6 +298,7 @@ impl ShellCompleter {
                     if common > request_input.len() / 2 {
                         // Likely a variant/correction — can't show as ghost
                         self.current_ghost = None;
+                        crate::event_log::push(format!("on_response seq={}: rejected (correction, common={}/{})", response.sequence_id, common, request_input.len()));
                         return None;
                     }
                     // Genuine suffix (e.g. LLM returned just the completion part)
@@ -327,6 +334,7 @@ impl ShellCompleter {
                     // Current input is not a prefix of full suggestion
                     // Discard completion according to issue #6
                     self.current_ghost = None;
+                    crate::event_log::push(format!("on_response seq={}: rejected (input not prefix of suggestion)", response.sequence_id));
                     return None;
                 }
             }

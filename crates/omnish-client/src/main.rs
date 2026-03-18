@@ -471,6 +471,9 @@ async fn main() -> Result<()> {
     let mut pending_completion_responses: Vec<omnish_protocol::message::CompletionResponse> = Vec::new();
     // Whether we've triggered a readline report for pending completions
     let mut readline_triggered_for_completions = false;
+    // Deferred ghost text render — rendered after next PTY display_data write
+    // so bash's readline redraw (after bind-x hook) doesn't overwrite it.
+    let mut deferred_ghost: Option<String> = None;
     // When we triggered readline report (for timeout)
     let mut readline_trigger_time: Option<std::time::Instant> = None;
     let in_tmux = std::env::var("TMUX").is_ok();
@@ -596,6 +599,7 @@ async fn main() -> Result<()> {
                 break;
             }
             last_keystroke = std::time::Instant::now();
+            deferred_ghost = None; // User typed — cancel pending ghost render
 
             // Suppress interceptor when not at prompt (child process running:
             // ssh, python REPL, etc.) so ':' is forwarded to the child.
@@ -927,6 +931,11 @@ async fn main() -> Result<()> {
 
                     nix::unistd::write(std::io::stdout(), display_data)?;
 
+                    // Render deferred ghost text after bash's readline redraw
+                    if let Some(ghost_render) = deferred_ghost.take() {
+                        nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                    }
+
                     // Track cursor position on display (stripped) data
                     col_tracker.feed(display_data);
                     notice_queue::set_cursor_row(col_tracker.row);
@@ -1029,8 +1038,9 @@ async fn main() -> Result<()> {
                                         let current = shell_input.input();
                                         for resp in pending_completion_responses.drain(..) {
                                             if let Some(ghost) = shell_completer.on_response(&resp, current) {
-                                                let ghost_render = display::render_ghost_text(ghost);
-                                                nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                                                // Defer rendering until after bash's readline
+                                                // redraw (which arrives in the next PTY read).
+                                                deferred_ghost = Some(display::render_ghost_text(ghost));
                                             }
                                         }
                                     } else {
