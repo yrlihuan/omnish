@@ -225,6 +225,22 @@ async fn handle_message(
                 req.input,
                 req.sequence_id
             );
+            // Debug shortcut: return canned suggestions for testing
+            if req.input.trim() == "omnish_debug" {
+                return vec![Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
+                    sequence_id: req.sequence_id,
+                    suggestions: vec![
+                        omnish_protocol::message::CompletionSuggestion {
+                            text: "omnish_debug yes".to_string(),
+                            confidence: 1.0,
+                        },
+                        omnish_protocol::message::CompletionSuggestion {
+                            text: "omnish_debug || echo works".to_string(),
+                            confidence: 0.9,
+                        },
+                    ],
+                })];
+            }
             if let Some(ref backend) = llm {
                 match handle_completion_request(&req, mgr, backend).await {
                     Ok(suggestions) => {
