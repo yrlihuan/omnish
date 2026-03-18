@@ -269,6 +269,15 @@ impl ChatSession {
                 continue;
             }
 
+            // /test picker [N] — hidden test command (not in /help)
+            if trimmed == "/test picker" || trimmed.starts_with("/test picker ") {
+                let idx: usize = trimmed.strip_prefix("/test picker ")
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or(0);
+                self.handle_test_picker(idx);
+                continue;
+            }
+
             // /context
             if trimmed == "/context" || trimmed.starts_with("/context ") {
                 let (without_redirect, redirect) = command::parse_redirect_pub(trimmed);
@@ -1174,6 +1183,22 @@ impl ChatSession {
             }
             _ => {} // ESC or no selection — do nothing
         }
+    }
+
+    // ── Test helpers (hidden from /help) ────────────────────────────────
+
+    fn handle_test_picker(&self, selected_idx: usize) {
+        let items: Vec<String> = (1..=20)
+            .map(|i| format!("test-backend-{} (test-model-{})", i, i))
+            .collect();
+        let refs: Vec<&str> = items.iter().map(|s| s.as_str()).collect();
+        let idx = selected_idx.min(items.len().saturating_sub(1));
+        let result = widgets::picker::pick_one_at("Select model:", &refs, idx);
+        let msg = match result {
+            Some(idx) => format!("Selected: {}", items[idx]),
+            None => "Cancelled".to_string(),
+        };
+        write_stdout(&format!("\x1b[2;90m{}\x1b[0m\r\n", msg));
     }
 
     // ── Input handling ───────────────────────────────────────────────────
