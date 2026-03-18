@@ -2,6 +2,10 @@
 
 本目录包含omnish项目各模块的详细说明文档。
 
+## 架构概述
+
+首先阅读 [omnish Architecture Overview](./overview.md) 了解整体架构设计。
+
 ## 模块列表
 
 1. [omnish-common](./omnish-common.md) - 共享配置、工具函数和常量定义
