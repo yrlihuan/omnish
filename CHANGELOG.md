@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.8.0 (2026-03-18)
+
+### Features
+- **daemon**: Incremental tool status updates during parallel tool use — each tool sends status as it completes (#344)
+- **client**: Parallel tool status redraw — full section erase-and-rerender approach with `redraw_tool_section()`, intermediate results processed from `rpc.call()` (#342)
+- **client**: `/test picker` command for integration tests (#343)
+
+### Fixes
+- **client**: Parallel tool calls update status icon in place with output below header (#342)
+- **common**: `build.rs` always re-runs to detect dirty version
+
+### Docs
+- Architecture overview document
+- Implementation docs updated for v0.7.x changes (llm, protocol, common, transport, client, daemon)
+
+---
+
 ## v0.7.4 (2026-03-18)
 
 ### Fixes
