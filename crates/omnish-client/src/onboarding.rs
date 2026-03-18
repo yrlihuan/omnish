@@ -42,7 +42,21 @@ pub fn mark_onboarded() {
         }
     };
     doc["onboarded"] = toml_edit::value(true);
-    if let Err(e) = std::fs::write(&path, doc.to_string()) {
+    let mut output = doc.to_string();
+    // Remove commented-out onboarded lines (e.g. "# onboarded = false") to avoid confusion
+    output = output
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !(trimmed.starts_with('#') && trimmed.contains("onboarded"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Ensure file ends with newline
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    if let Err(e) = std::fs::write(&path, output) {
         tracing::warn!("cannot write onboarded flag to client.toml: {}", e);
     }
 }
