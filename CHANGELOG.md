@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.6.9 (2026-03-18)
+
+### Features
+- **install**: `--dir=<path>` flag to install from local directory containing tar.gz files (#316)
+- **daemon**: Auto-update supports local directory source via `source_dir` config
+
+### Fixes
+- **install**: Prevent ssh/scp from stealing tty input during client deployment (BatchMode=yes)
+- **install**: Move server IP selection to right after TCP address choice
+- **daemon**: Default stderr log level to debug to match file output
+
+---
+
 ## v0.6.8 (2026-03-17)
 
 ### Features
