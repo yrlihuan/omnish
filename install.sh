@@ -8,6 +8,9 @@ if [ -z "$BASH_VERSION" ]; then
         exit 1
     fi
 fi
+# Force bash to read the entire script into memory before executing,
+# so self-replacement during upgrade won't corrupt the running script.
+{
 # omnish installer
 #
 # Downloads and installs omnish — a transparent shell wrapper with PTY proxy,
@@ -226,6 +229,8 @@ if [[ "$DRY_RUN" != true ]]; then
 
     mkdir -p "$BIN_DIR" "$OMNISH_DIR/plugins"
 
+    # Remove old binaries first (running binaries can't be overwritten: "Text file busy")
+    rm -f "$BIN_DIR"/omnish "$BIN_DIR"/omnish-daemon "$BIN_DIR"/omnish-plugin
     cp "$EXTRACTED/bin/"* "$BIN_DIR/"
     chmod 755 "$BIN_DIR"/*
 
@@ -822,3 +827,5 @@ else
         echo "  ${BIN_DIR}/omnish"
     fi
 fi
+exit
+}
