@@ -35,6 +35,7 @@ set -euo pipefail
 
 OMNISH_DIR="${OMNISH_HOME:-${HOME}/.omnish}"
 BIN_DIR="${OMNISH_DIR}/bin"
+DEPLOYED_CLIENTS=()
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -753,8 +754,18 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]] && [[ -z "${OLD_
 fi
 
 echo ""
-if [[ -n "${OLD_VERSION:-}" ]] && [[ "$OLD_VERSION" != "${VERSION#v}" ]]; then
-    info "Upgrade complete! (v${OLD_VERSION} → ${VERSION})"
+if [[ "$UPGRADE" == true ]] || { [[ -n "${OLD_VERSION:-}" ]] && [[ "$OLD_VERSION" != "${VERSION#v}" ]]; }; then
+    info "Upgrade complete! (v${OLD_VERSION:-unknown} → ${VERSION})"
 else
     info "Installation complete! (omnish ${VERSION})"
+    info "Installed to: ${OMNISH_DIR}"
+    if [[ ${#DEPLOYED_CLIENTS[@]} -gt 0 ]]; then
+        info "Deployed clients: $(IFS=', '; echo "${DEPLOYED_CLIENTS[*]}")"
+    fi
+    echo ""
+    if echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
+        info "Run 'omnish' to get started."
+    else
+        info "Run '${BIN_DIR}/omnish' to get started."
+    fi
 fi
