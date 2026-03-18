@@ -13,6 +13,7 @@
 #   7. Typing in chat after output — no ghost lines from cursor mispositioning (#278)
 #   8. Shell prompt preserved when entering chat mode (#279)
 #   9. ESC dismisses ghost completion (#259)
+#  10. Ghost text completion via omnish_debug (#328)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -29,6 +30,7 @@ Test cases:
   7. Typing in chat after output — no ghost lines (#278)
   8. Shell prompt preserved when entering chat (#279)
   9. ESC dismisses ghost completion (#259)
+ 10. Ghost text completion via omnish_debug (#328)
 EOF
 }
 
@@ -479,5 +481,63 @@ test_9() {
     fi
 }
 
-echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history, cursor, ghost-dismiss${NC}"
-run_tests 9
+# ── Test 10: Ghost text completion via omnish_debug (#328) ────────────────
+test_10() {
+    echo -e "\n${YELLOW}=== Test 10: Ghost text completion via omnish_debug (#328) ===${NC}"
+
+    restart_client
+    wait_for_client
+
+    # Type "omnish_debug" — daemon returns canned suggestions
+    send_keys "omnish_debug" 0.3
+
+    # Poll for ghost text to appear (debounce ~500ms + round trip)
+    local ghost_appeared=false
+    local content
+    for attempt in $(seq 1 15); do
+        sleep 1
+        content=$(capture_pane -5)
+        local last
+        last=$(last_nonempty_line "$content")
+        local stripped
+        stripped=$(echo "$last" | sed 's/\x1b\[[0-9;]*m//g')
+        # Ghost text should add " yes" after "omnish_debug"
+        if echo "$stripped" | grep -q 'omnish_debug yes'; then
+            ghost_appeared=true
+            break
+        fi
+    done
+
+    if ! $ghost_appeared; then
+        show_capture "No ghost text" "$content" 5
+        assert_fail "Ghost text did not appear for omnish_debug"
+        send_special C-c 0.5
+        return 1
+    fi
+
+    show_capture "Ghost visible" "$content" 3
+
+    # Press Tab to accept ghost text
+    send_special Tab 0.5
+
+    content=$(capture_pane -5)
+    show_capture "After Tab accept" "$content" 3
+
+    local last stripped
+    last=$(last_nonempty_line "$content")
+    stripped=$(echo "$last" | sed 's/\x1b\[[0-9;]*m//g')
+
+    # After Tab, readline should contain "omnish_debug yes" as real text
+    if echo "$stripped" | grep -q 'omnish_debug yes'; then
+        assert_pass "Ghost text completion works end-to-end via omnish_debug"
+        send_special C-c 0.5
+        return 0
+    else
+        assert_fail "Tab accept failed, got: $stripped"
+        send_special C-c 0.5
+        return 1
+    fi
+}
+
+echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history, cursor, ghost-dismiss, completion${NC}"
+run_tests 10
