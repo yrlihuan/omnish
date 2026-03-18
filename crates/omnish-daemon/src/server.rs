@@ -43,6 +43,8 @@ struct AgentLoopState {
     cm: ChatMessage,
     start: std::time::Instant,
     command_query_tool: omnish_daemon::tools::command_query::CommandQueryTool,
+    /// The resolved backend for this agent loop (preserves per-thread model override).
+    effective_backend: Arc<dyn LlmBackend>,
 }
 
 pub struct DaemonServer {
@@ -317,7 +319,7 @@ async fn handle_message(
             return handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, pending_loops).await;
         }
         Message::ChatToolResult(tr) => {
-            return handle_tool_result(tr, mgr, llm, conv_mgr, plugin_mgr, pending_loops).await;
+            return handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, pending_loops).await;
         }
         Message::ChatInterrupt(ci) => {
             // Clean up pending agent loop and store partial results
@@ -501,17 +503,16 @@ async fn handle_chat_message(
         cm,
         start: std::time::Instant::now(),
         command_query_tool,
+        effective_backend,
     };
 
-    let effective_llm = Some(effective_backend);
-    run_agent_loop(state, &effective_llm, conv_mgr, plugin_mgr, pending_loops).await
+    run_agent_loop(state, conv_mgr, plugin_mgr, pending_loops).await
 }
 
 /// Handle a ChatToolResult from the client — accumulate results, resume when all are received.
 async fn handle_tool_result(
     tr: ChatToolResult,
     _mgr: &SessionManager,
-    llm: &Option<Arc<dyn LlmBackend>>,
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
@@ -620,7 +621,7 @@ async fn handle_tool_result(
     state.iteration += 1;
 
     // Prepend update messages before agent loop continuation messages
-    let mut loop_messages = run_agent_loop(state, llm, conv_mgr, plugin_mgr, pending_loops).await;
+    let mut loop_messages = run_agent_loop(state, conv_mgr, plugin_mgr, pending_loops).await;
     update_messages.append(&mut loop_messages);
     update_messages
 }
@@ -629,21 +630,11 @@ async fn handle_tool_result(
 /// Used by both `handle_chat_message` (initial) and `handle_tool_result` (resumption).
 async fn run_agent_loop(
     mut state: AgentLoopState,
-    llm: &Option<Arc<dyn LlmBackend>>,
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
 ) -> Vec<Message> {
-    let backend = match llm {
-        Some(b) => b,
-        None => {
-            return vec![Message::ChatResponse(ChatResponse {
-                request_id: state.cm.request_id,
-                thread_id: state.cm.thread_id,
-                content: "(LLM backend not configured)".to_string(),
-            })];
-        }
-    };
+    let backend = &state.effective_backend;
 
     let max_iterations = 30;
     let mut messages = std::mem::take(&mut state.messages);
