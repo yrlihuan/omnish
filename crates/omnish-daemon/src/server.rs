@@ -389,6 +389,20 @@ struct ChatSetup {
     system_prompt: String,
 }
 
+/// Serialize a ContentBlock to its JSON representation for the Anthropic messages API.
+fn content_block_to_json(block: &ContentBlock) -> serde_json::Value {
+    match block {
+        ContentBlock::Thinking(t) => serde_json::json!({"type": "thinking", "thinking": t}),
+        ContentBlock::Text(t) => serde_json::json!({"type": "text", "text": t}),
+        ContentBlock::ToolUse(tc) => serde_json::json!({
+            "type": "tool_use",
+            "id": tc.id,
+            "name": tc.name,
+            "input": tc.input,
+        }),
+    }
+}
+
 async fn build_chat_setup(mgr: &SessionManager, plugin_mgr: &PluginManager) -> ChatSetup {
     let (commands, stream_reader) = mgr.get_all_commands_with_reader().await;
     let command_query_tool = omnish_daemon::tools::command_query::CommandQueryTool::new(
@@ -622,26 +636,13 @@ async fn run_agent_loop(
                         break;
                     }
 
-                    // Build assistant message with tool_use blocks
-                    let mut assistant_content: Vec<serde_json::Value> = Vec::new();
-                    // Include thinking block if present (required by DeepSeek-compatible APIs)
-                    if let Some(ref thinking) = response.thinking {
-                        assistant_content.push(serde_json::json!({
-                            "type": "thinking",
-                            "thinking": thinking,
-                        }));
-                    }
-                    assistant_content.extend(response.content.iter().map(|b| match b {
-                        ContentBlock::Text(t) => {
-                            serde_json::json!({"type": "text", "text": t})
-                        }
-                        ContentBlock::ToolUse(tc) => serde_json::json!({
-                            "type": "tool_use",
-                            "id": tc.id,
-                            "name": tc.name,
-                            "input": tc.input,
-                        }),
-                    }));
+                    // Build assistant message preserving original block order
+                    // (thinking, text, tool_use — order matters for DeepSeek-compatible APIs)
+                    let assistant_content: Vec<serde_json::Value> = response
+                        .content
+                        .iter()
+                        .map(content_block_to_json)
+                        .collect();
                     state.llm_req.extra_messages.push(serde_json::json!({
                         "role": "assistant",
                         "content": assistant_content,
@@ -798,20 +799,15 @@ async fn run_agent_loop(
                     iteration,
                     state.cm.thread_id
                 );
-                // Push final assistant response (include thinking if present)
-                let assistant_msg = if let Some(ref thinking) = response.thinking {
-                    serde_json::json!({
-                        "role": "assistant",
-                        "content": [
-                            {"type": "thinking", "thinking": thinking},
-                            {"type": "text", "text": text},
-                        ],
-                    })
+                // Push final assistant response preserving original block order
+                let has_thinking = response.content.iter().any(|b| matches!(b, ContentBlock::Thinking(_)));
+                let assistant_msg = if has_thinking {
+                    let content: Vec<serde_json::Value> = response.content.iter()
+                        .map(content_block_to_json)
+                        .collect();
+                    serde_json::json!({ "role": "assistant", "content": content })
                 } else {
-                    serde_json::json!({
-                        "role": "assistant",
-                        "content": text,
-                    })
+                    serde_json::json!({ "role": "assistant", "content": text })
                 };
                 state.llm_req.extra_messages.push(assistant_msg);
                 // Store new messages without system-reminder in user message
@@ -1492,7 +1488,7 @@ async fn handle_llm_request(
             );
 
             // Log thinking length and content
-            if let Some(ref thinking) = response.thinking {
+            if let Some(ref thinking) = response.thinking() {
                 tracing::info!("LLM thinking: {} chars", thinking.len());
                 tracing::debug!("LLM thinking content: {}", thinking);
             }
@@ -1588,7 +1584,7 @@ async fn handle_completion_request(
             tracing::debug!("Completion LLM raw response: {:?}", response.text());
 
             // Log thinking length and content
-            if let Some(ref thinking) = response.thinking {
+            if let Some(ref thinking) = response.thinking() {
                 tracing::info!("Completion LLM thinking: {} chars", thinking.len());
                 tracing::debug!("Completion LLM thinking content: {}", thinking);
             }
@@ -1722,7 +1718,6 @@ mod tests {
                 content: vec![ContentBlock::Text(r#"[{"text": " status", "confidence": 0.9}]"#.to_string())],
                 stop_reason: StopReason::EndTurn,
                 model: "mock".to_string(),
-                thinking: None,
                 usage: None,
             })
         }

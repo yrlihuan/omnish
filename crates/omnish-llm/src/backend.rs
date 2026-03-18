@@ -21,6 +21,7 @@ pub enum UseCase {
 pub enum ContentBlock {
     Text(String),
     ToolUse(ToolCall),
+    Thinking(String),
 }
 
 /// Why the LLM stopped generating.
@@ -77,8 +78,6 @@ pub struct LlmResponse {
     pub content: Vec<ContentBlock>,
     pub stop_reason: StopReason,
     pub model: String,
-    /// Thinking content from models that support it
-    pub thinking: Option<String>,
     /// Token usage statistics from the API response
     pub usage: Option<Usage>,
 }
@@ -95,6 +94,15 @@ impl LlmResponse {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Extract concatenated thinking content (if any).
+    pub fn thinking(&self) -> Option<String> {
+        let parts: Vec<&str> = self.content.iter().filter_map(|b| match b {
+            ContentBlock::Thinking(t) => Some(t.as_str()),
+            _ => None,
+        }).collect();
+        if parts.is_empty() { None } else { Some(parts.join("\n")) }
     }
 
     /// Extract all tool calls from the response.

@@ -235,7 +235,6 @@ mod tests {
                     content: vec![ContentBlock::Text("今天主要进行了项目构建工作。".to_string())],
                     stop_reason: StopReason::EndTurn,
                     model: "mock".to_string(),
-                    thinking: None,
                     usage: None,
                 })
             }

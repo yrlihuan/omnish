@@ -261,17 +261,18 @@ impl LlmBackend for OpenAiCompatBackend {
             };
 
             // Parse content blocks
-            let mut thinking: Option<String> = None;
             let mut content_blocks = Vec::new();
 
-            // Text content
+            // Text content (may contain <think> tags for OpenAI-compat models)
             if let Some(raw_content) = message["content"].as_str() {
                 let (think, text) = if req.enable_thinking == Some(false) {
                     (None, raw_content.to_string())
                 } else {
                     extract_thinking(raw_content)
                 };
-                thinking = think;
+                if let Some(thinking) = think {
+                    content_blocks.push(ContentBlock::Thinking(thinking));
+                }
                 if !text.is_empty() {
                     content_blocks.push(ContentBlock::Text(text));
                 }
@@ -304,7 +305,6 @@ impl LlmBackend for OpenAiCompatBackend {
                 content: content_blocks,
                 stop_reason,
                 model: self.model.clone(),
-                thinking,
                 usage,
             });
         }

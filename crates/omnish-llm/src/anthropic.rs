@@ -176,14 +176,15 @@ impl LlmBackend for AnthropicBackend {
                 _ => StopReason::EndTurn,
             };
 
-            // Extract content blocks
-            let mut thinking: Option<String> = None;
+            // Extract content blocks — preserve original order (including thinking)
             let mut content_blocks = Vec::new();
 
             for block in json["content"].as_array().unwrap_or(&vec![]) {
                 match block["type"].as_str() {
                     Some("thinking") => {
-                        thinking = block["thinking"].as_str().map(|s| s.to_string());
+                        if let Some(text) = block["thinking"].as_str() {
+                            content_blocks.push(ContentBlock::Thinking(text.to_string()));
+                        }
                     }
                     Some("text") => {
                         let text = strip_thinking(block["text"].as_str().unwrap_or(""));
@@ -216,7 +217,6 @@ impl LlmBackend for AnthropicBackend {
                 content: content_blocks,
                 stop_reason,
                 model: self.model.clone(),
-                thinking,
                 usage,
             });
         }
