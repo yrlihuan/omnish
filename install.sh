@@ -718,7 +718,7 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]] && [[ -z "${OLD_
                     ask "  Another client (enter to finish):"
                 fi
                 [[ -n "$REPLY" ]] || break
-                ((CLIENT_COUNT++))
+                CLIENT_COUNT=$((CLIENT_COUNT + 1))
                 CLIENT_HOST="$REPLY"
 
                 # Verify SSH connectivity

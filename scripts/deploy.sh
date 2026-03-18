@@ -38,9 +38,14 @@ for client in "${CLIENTS[@]}"; do
     info "Deploying to: ${client}..."
     REMOTE_HOME="~/.omnish"
 
-    if scp -q "${BIN_DIR}/omnish" "${BIN_DIR}/omnish-plugin" "${client}:${REMOTE_HOME}/bin/" 2>/dev/null; then
-        scp -q "${OMNISH_DIR}/tls/cert.pem" "${client}:${REMOTE_HOME}/tls/" 2>/dev/null || true
-        scp -q "${OMNISH_DIR}/auth_token" "${client}:${REMOTE_HOME}/" 2>/dev/null || true
+    # Ensure remote directories exist
+    ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$client" \
+        "mkdir -p ${REMOTE_HOME}/bin ${REMOTE_HOME}/tls" 2>/dev/null \
+        || { warn "Cannot connect to ${client}, skipping"; continue; }
+
+    if scp -q -o BatchMode=yes "${BIN_DIR}/omnish" "${BIN_DIR}/omnish-plugin" "${client}:${REMOTE_HOME}/bin/" 2>/dev/null; then
+        scp -q -o BatchMode=yes "${OMNISH_DIR}/tls/cert.pem" "${client}:${REMOTE_HOME}/tls/" 2>/dev/null || true
+        scp -q -o BatchMode=yes "${OMNISH_DIR}/auth_token" "${client}:${REMOTE_HOME}/" 2>/dev/null || true
         info "Deployed to ${client}"
     else
         warn "Failed to deploy to ${client}"
