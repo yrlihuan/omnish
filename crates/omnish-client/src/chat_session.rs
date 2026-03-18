@@ -217,19 +217,11 @@ impl ChatSession {
                 // Show ghost hint on first prompt
                 if show_ghost_hint && !self.ghost_hint_shown {
                     self.ghost_hint_shown = true;
-                    let model_part = self.model_name.as_deref()
-                        .map(|m| format!("current model is {}. ", strip_date_suffix(m)));
-                    let action = if is_resumed {
+                    let hint = if is_resumed {
                         "type to continue"
                     } else {
-                        "type /resume to continue last conversation."
+                        "type to start, /resume to continue"
                     };
-                    let hint = format!(
-                        "{}{}",
-                        model_part.as_deref().unwrap_or(""),
-                        action,
-                    );
-                    // Save cursor, write dim hint, restore cursor
                     write_stdout(&format!("\x1b7\x1b[2;90m{}\x1b[0m\x1b8", hint));
                 }
                 match self.read_input(!self.has_activity) {
