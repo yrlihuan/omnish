@@ -174,8 +174,6 @@ The daemon is managed via systemd (set up by `install.sh`):
 
 ```bash
 systemctl --user start omnish-daemon    # start
-systemctl --user stop omnish-daemon     # stop
-systemctl --user restart omnish-daemon  # restart
 systemctl --user status omnish-daemon   # check status
 journalctl --user -u omnish-daemon -f   # follow logs
 ```
