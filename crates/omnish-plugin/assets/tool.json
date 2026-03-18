@@ -238,7 +238,7 @@
         "required": ["file_path", "old_string", "new_string"]
       },
       "status_template": "编辑: {file_path}",
-      "sandboxed": false,
+      "sandboxed": true,
       "display_name": "Edit",
       "formatter": "edit"
     },
@@ -270,7 +270,7 @@
         "required": ["file_path", "content"]
       },
       "status_template": "写入: {file_path}",
-      "sandboxed": false,
+      "sandboxed": true,
       "display_name": "Write",
       "formatter": "write"
     }

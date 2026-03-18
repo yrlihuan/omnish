@@ -16,7 +16,6 @@ pub enum PluginType {
 struct ToolEntry {
     def: ToolDef,
     status_template: String,
-    sandboxed: bool,
     display_name: String,
     formatter: String,
 }
@@ -60,7 +59,9 @@ struct ToolJsonEntry {
     input_schema: serde_json::Value,
     #[serde(default)]
     status_template: String,
-    #[serde(default = "default_sandboxed")]
+    /// Ignored — all tools are sandboxed. Kept for backwards compatibility with existing tool.json files.
+    #[serde(default)]
+    #[allow(dead_code)]
     sandboxed: bool,
     #[serde(default)]
     display_name: Option<String>,
@@ -83,10 +84,6 @@ impl DescriptionValue {
             Self::Lines(lines) => lines.join("\n"),
         }
     }
-}
-
-fn default_sandboxed() -> bool {
-    true
 }
 
 /// tool.override.json: user-specified overrides for tool descriptions.
@@ -145,7 +142,6 @@ impl PluginManager {
                             input_schema: te.input_schema,
                         },
                         status_template: te.status_template,
-                        sandboxed: te.sandboxed,
                         display_name,
                         formatter,
                     });
@@ -218,7 +214,6 @@ impl PluginManager {
                         input_schema: te.input_schema,
                     },
                     status_template: te.status_template,
-                    sandboxed: te.sandboxed,
                     display_name,
                     formatter,
                 });
@@ -333,11 +328,11 @@ impl PluginManager {
             .map(|&(pi, _)| self.plugins[pi].dir_name.as_str())
     }
 
-    /// Return whether the tool should be sandboxed.
+    /// Return whether the tool should be sandboxed. Always true — plugins cannot opt out.
     pub fn tool_sandboxed(&self, tool_name: &str) -> Option<bool> {
         self.tool_index
             .get(tool_name)
-            .map(|&(pi, ti)| self.plugins[pi].tools[ti].sandboxed)
+            .map(|_| true)
     }
 
     /// Return the display name for the given tool.
@@ -747,10 +742,12 @@ mod tests {
     #[test]
     fn test_tool_sandboxed() {
         let tmp = tempfile::tempdir().unwrap();
-        // Uses embedded builtin tools
+        // All tools are always sandboxed
         let mgr = PluginManager::load(tmp.path());
         assert_eq!(mgr.tool_sandboxed("bash"), Some(true));
-        assert_eq!(mgr.tool_sandboxed("edit"), Some(false));
+        assert_eq!(mgr.tool_sandboxed("edit"), Some(true));
+        assert_eq!(mgr.tool_sandboxed("write"), Some(true));
+        assert_eq!(mgr.tool_sandboxed("nonexistent"), None);
     }
 
     #[test]
