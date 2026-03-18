@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.7.0 (2026-03-18)
+
+### Features
+- **install**: Generate daemon.toml/client.toml with all config options as commented defaults (#323)
+- **client**: New user onboarding welcome message (#317)
+- **install**: Show directory and client info in completion message (#317)
+- **client**: Numbered diff display for edit tool output (#321)
+
+### Fixes
+- **install**: Deploy exits on first client due to `((0++))` under `set -e` (#320)
+- **daemon**: Rename `source_dir` to `check_url` for auto-update source config
+
+---
+
 ## v0.6.9 (2026-03-18)
 
 ### Features
