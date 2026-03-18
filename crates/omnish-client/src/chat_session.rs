@@ -162,6 +162,7 @@ impl ChatSession {
         initial_msg: Option<String>,
         client_debug_fn: &dyn Fn() -> String,
         auto_update_enabled: &AtomicBool,
+        onboarded: &AtomicBool,
         cursor_col: u16,
         cursor_row: u16,
     ) {
@@ -187,6 +188,12 @@ impl ChatSession {
             let trimmed = input.trim();
             if trimmed.is_empty() {
                 continue;
+            }
+
+            // Mark onboarded on first chat entry
+            if !onboarded.load(Ordering::Relaxed) {
+                onboarded.store(true, Ordering::Relaxed);
+                crate::onboarding::mark_onboarded();
             }
 
             // Add user input to scroll history for browse mode (Ctrl+O)

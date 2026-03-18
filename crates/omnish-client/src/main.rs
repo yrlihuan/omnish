@@ -13,6 +13,7 @@ mod shell_hook;
 mod shell_input;
 mod throttle;
 mod util;
+mod onboarding;
 mod widgets;
 
 use anyhow::Result;
@@ -300,6 +301,7 @@ async fn main() -> Result<()> {
     }
 
     let config = load_client_config().unwrap_or_default();
+    let onboarded = Arc::new(AtomicBool::new(config.onboarded));
     let resume_args = parse_resume_args();
 
     // If stdin is not a terminal (e.g. rsync over SSH, piped commands),
@@ -341,6 +343,10 @@ async fn main() -> Result<()> {
         };
         let shell_args_ref: Vec<&str> = shell_args.iter().map(|s| s.as_str()).collect();
         let proxy = PtyProxy::spawn_with_env(&shell, &shell_args_ref, child_env)?;
+        // Print welcome message for first-time users
+        if !config.onboarded {
+            onboarding::print_welcome();
+        }
         (session_id, proxy, osc133_hook_installed)
     };
     let parent_session_id = std::env::var("OMNISH_SESSION_ID").ok();
@@ -565,7 +571,7 @@ async fn main() -> Result<()> {
                             );
                             {
                                 let mut session = chat_session::ChatSession::new(std::mem::take(&mut chat_history));
-                                session.run(rpc, &session_id, &proxy, None, &dbg_fn, &auto_update_enabled, col_tracker.col, col_tracker.row).await;
+                                session.run(rpc, &session_id, &proxy, None, &dbg_fn, &auto_update_enabled, &onboarded, col_tracker.col, col_tracker.row).await;
                                 chat_history = session.into_history();
                             }
                         } else {
@@ -781,7 +787,7 @@ async fn main() -> Result<()> {
                             );
                             {
                                 let mut session = chat_session::ChatSession::new(std::mem::take(&mut chat_history));
-                                session.run(rpc, &session_id, &proxy, initial, &dbg_fn, &auto_update_enabled, col_tracker.col, col_tracker.row).await;
+                                session.run(rpc, &session_id, &proxy, initial, &dbg_fn, &auto_update_enabled, &onboarded, col_tracker.col, col_tracker.row).await;
                                 chat_history = session.into_history();
                             }
                         } else {
@@ -827,7 +833,7 @@ async fn main() -> Result<()> {
                             );
                             {
                                 let mut session = chat_session::ChatSession::new(std::mem::take(&mut chat_history));
-                                session.run(rpc, &session_id, &proxy, Some("/resume 1".to_string()), &dbg_fn, &auto_update_enabled, col_tracker.col, col_tracker.row).await;
+                                session.run(rpc, &session_id, &proxy, Some("/resume 1".to_string()), &dbg_fn, &auto_update_enabled, &onboarded, col_tracker.col, col_tracker.row).await;
                                 chat_history = session.into_history();
                             }
                         } else {
