@@ -1,5 +1,5 @@
-## About project
-integration tests are under tools/integration_tests
+## About integration test
+Integration tests are under tools/integration_tests. To understand how integration test works, read lib.sh and test_basic.sh.
 
 ## Useful glab comments:
 
