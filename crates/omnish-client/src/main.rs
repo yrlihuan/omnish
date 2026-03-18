@@ -2029,7 +2029,8 @@ pub(crate) async fn handle_slash_command(
             if let Some(path) = redirect.as_deref() {
                 handle_command_result(&display_result, Some(path), proxy.child_pid() as u32);
             } else {
-                let output = display::render_response(&display_result);
+                // Command output is plain text — skip markdown rendering
+                let output = format!("\r\n{}\r\n", display_result.replace('\n', "\r\n"));
                 nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
             }
             true
@@ -2077,7 +2078,8 @@ pub(crate) async fn handle_slash_command(
                         } else {
                             display
                         };
-                        let output = display::render_response(&display);
+                        // Command output is plain text — skip markdown rendering
+                        let output = format!("\r\n{}\r\n", display.replace('\n', "\r\n"));
                         nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
                     }
                     _ => {
