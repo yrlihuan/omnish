@@ -140,6 +140,10 @@ pub struct AutoUpdateConfig {
     /// Client hosts to distribute updates to (e.g. ["user@host1", "user@host2"]).
     #[serde(default)]
     pub clients: Vec<String>,
+    /// Update source: local directory path containing tar.gz files.
+    /// If omitted, downloads from GitHub.
+    #[serde(default)]
+    pub source_dir: Option<String>,
 }
 
 impl Default for AutoUpdateConfig {
@@ -148,6 +152,7 @@ impl Default for AutoUpdateConfig {
             enabled: false,
             schedule: default_auto_update_schedule(),
             clients: Vec::new(),
+            source_dir: None,
         }
     }
 }

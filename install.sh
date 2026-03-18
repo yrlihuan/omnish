@@ -60,6 +60,7 @@ FORCE=false
 DRY_RUN=false
 UPGRADE=false
 VERSION=""
+FROM_DIR=""
 for arg in "$@"; do
     case "$arg" in
         --upgrade)     UPGRADE=true ;;
@@ -67,6 +68,7 @@ for arg in "$@"; do
         --dry-run)     DRY_RUN=true ;;
         --version=*)   VERSION="${arg#*=}"
                        [[ "$VERSION" == v* ]] || VERSION="v${VERSION}" ;;
+        --dir=*)       FROM_DIR="${arg#*=}" ;;
         --uninstall)
             echo ""
             info "Uninstalling omnish..."
@@ -93,6 +95,7 @@ for arg in "$@"; do
             echo ""
             echo "Options:"
             echo "  --version=vX.Y.Z  Install specific version (default: latest)"
+            echo "  --dir=<path>      Install from local directory containing tar.gz files"
             echo "  --upgrade         Non-interactive upgrade (download + install only)"
             echo "  --force           Overwrite existing daemon.toml"
             echo "  --dry-run         Run config wizard but skip download/install/credentials"
@@ -132,6 +135,48 @@ fi
 
 if [[ "$DRY_RUN" == true ]]; then
     info "[DRY RUN] Would install omnish ${VERSION:-latest} to ${OMNISH_DIR}"
+elif [[ -z "${EXTRACTED:-}" ]] && [[ -n "$FROM_DIR" ]]; then
+    # Install from local directory containing tar.gz files
+    [[ -d "$FROM_DIR" ]] || error "Directory not found: $FROM_DIR"
+
+    # Find matching tar.gz files, sort by version (newest first)
+    TAR_FILE=""
+    BEST_VERSION=""
+    for f in "$FROM_DIR"/omnish-*-linux-${ARCH}.tar.gz; do
+        [[ -f "$f" ]] || continue
+        # Extract version from filename: omnish-<version>-linux-<arch>.tar.gz
+        fname="$(basename "$f")"
+        ver="${fname#omnish-}"
+        ver="${ver%-linux-*}"
+        if [[ -z "$VERSION" ]] || [[ "v${ver}" == "$VERSION" ]]; then
+            # Compare versions: use sort -V to find the latest
+            if [[ -z "$BEST_VERSION" ]] || [[ "$(printf '%s\n%s' "$ver" "$BEST_VERSION" | sort -V | tail -1)" == "$ver" ]]; then
+                BEST_VERSION="$ver"
+                TAR_FILE="$f"
+            fi
+        fi
+    done
+
+    [[ -n "$TAR_FILE" ]] || error "No matching tar.gz found in $FROM_DIR"
+    VERSION="v${BEST_VERSION}"
+    info "Found: $(basename "$TAR_FILE")"
+
+    # In upgrade mode, skip if already up to date
+    if [[ "$UPGRADE" == true ]]; then
+        CURRENT_VERSION=""
+        if [[ -x "$BIN_DIR/omnish-daemon" ]]; then
+            CURRENT_VERSION=$("$BIN_DIR/omnish-daemon" --version 2>/dev/null | awk '{print $2}' || echo "")
+        fi
+        if [[ "$CURRENT_VERSION" == "${VERSION#v}" ]]; then
+            info "Already up to date (v${CURRENT_VERSION})"
+            exit 2
+        fi
+        info "Update available: v${CURRENT_VERSION:-unknown} -> ${VERSION}"
+    fi
+
+    tar -xzf "$TAR_FILE" -C "$TMPDIR"
+    EXTRACTED=$(find "$TMPDIR" -maxdepth 1 -type d -name 'omnish-*' | head -1)
+    [[ -d "$EXTRACTED" ]] || error "Unexpected archive layout"
 elif [[ -z "${EXTRACTED:-}" ]]; then
     # Download from GitHub
     REPO="yrlihuan/omnish"
@@ -473,6 +518,9 @@ completion = \"${CHAT_NAME}\""
         echo ""
         echo "[tasks.auto_update]"
         echo "enabled = ${AUTO_UPDATE_ENABLED}"
+        if [[ -n "$FROM_DIR" ]]; then
+            echo "source_dir = \"${FROM_DIR}\""
+        fi
     } > "$TMPDIR/daemon.toml"
 
     if [[ "$DRY_RUN" == true ]]; then

@@ -8,10 +8,12 @@ pub fn create_auto_update_job(
     omnish_dir: PathBuf,
     schedule: &str,
     clients: Vec<String>,
+    source_dir: Option<String>,
 ) -> Result<Job> {
     Ok(Job::new_async(schedule, move |_uuid, _lock| {
         let omnish_dir = omnish_dir.clone();
         let clients = clients.clone();
+        let source_dir = source_dir.clone();
         Box::pin(async move {
             tracing::debug!("task [auto_update] started");
 
@@ -22,12 +24,14 @@ pub fn create_auto_update_job(
                 return;
             }
 
-            let output = tokio::process::Command::new("bash")
-                .arg(&install_script)
+            let mut cmd = tokio::process::Command::new("bash");
+            cmd.arg(&install_script)
                 .arg("--upgrade")
-                .env("OMNISH_HOME", &omnish_dir)
-                .output()
-                .await;
+                .env("OMNISH_HOME", &omnish_dir);
+            if let Some(ref dir) = source_dir {
+                cmd.arg(format!("--dir={}", dir));
+            }
+            let output = cmd.output().await;
 
             match output {
                 Ok(output) => {
