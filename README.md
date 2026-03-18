@@ -37,8 +37,9 @@ For detailed module documentation and implementation details, see the [module do
 - **Ghost completion** — LLM-powered inline command suggestions as you type.
 - **Chat mode** — Type `:` to ask the LLM about recent terminal activity across all sessions.
 - **Agent with tools** — LLM can run shell commands, query plugins, and stream results back to the terminal.
+- **Per-thread model selection** — Switch LLM backend mid-conversation with `/model`.
 - **Multi-backend LLM** — Anthropic, OpenAI, DeepSeek, Moonshot, OpenRouter, or any OpenAI-compatible API.
-- **Scheduled tasks** — Hourly/daily work summaries, session cleanup.
+- **Scheduled tasks** — Hourly/daily work summaries, thread summaries, session cleanup.
 - **Auto-update** — Daemon periodically checks for new releases and distributes to client machines.
 - **Cross-platform** — Linux and macOS.
 
@@ -53,8 +54,8 @@ curl -fsSL https://raw.githubusercontent.com/yrlihuan/omnish/master/install.sh |
 ### From a downloaded release
 
 ```bash
-tar -xzf omnish-0.6.6-linux-x86_64.tar.gz
-cd omnish-0.6.6-linux-x86_64
+tar -xzf omnish-0.8.0-linux-x86_64.tar.gz
+cd omnish-0.8.0-linux-x86_64
 bash install.sh
 ```
 
@@ -107,11 +108,6 @@ base_url = "https://openrouter.ai/api/v1"
 chat = "claude"
 analysis = "claude"
 completion = "openrouter"
-
-[llm.auto_trigger]
-on_nonzero_exit = true
-on_stderr_patterns = ["error", "panic", "traceback", "fatal"]
-cooldown_seconds = 5
 
 [tasks.eviction]
 session_evict_hours = 48
@@ -210,6 +206,8 @@ Chat-mode commands (available only inside a chat session):
 
 ```bash
 /resume       # resume or start a conversation thread (interactive picker)
+/model        # switch LLM backend for current thread (interactive picker)
+/context      # show current chat context (system-reminder)
 ```
 
 Results from auto-triggers appear above the shell prompt without disrupting your workflow.
@@ -241,12 +239,19 @@ Session data is stored under `~/.omnish/`:
 ├── prompts/
 │   ├── chat.json            # chat prompt template
 │   └── chat.override.json.example
+├── threads/                 # chat conversation threads
+│   ├── <uuid>.jsonl         # raw LLM messages (JSONL)
+│   └── <uuid>.meta.json     # thread metadata (model, summary)
 ├── sessions/
 │   └── 2026-02-13T10-30-00_abc12345/
 │       ├── meta.json        # session metadata
 │       ├── stream.bin       # raw I/O stream (binary, timestamped)
 │       ├── commands.jsonl   # segmented command records
 │       └── completions.jsonl # completion interaction summaries
+├── logs/
+│   ├── messages/            # LLM request payloads (JSON, rolling 30)
+│   ├── samples/             # completion quality samples (JSONL)
+│   └── daemon.log.*         # daemon logs (daily rotation)
 └── notes/
     ├── hourly/              # hourly activity summaries (YYYY-MM-DD/HH.md)
     └── 2026-03-03.md        # daily notes
@@ -256,8 +261,8 @@ Session data is stored under `~/.omnish/`:
 
 | Crate | Purpose |
 |-------|---------|
-| `omnish-client` | PTY proxy binary, input interception, ghost completion, display |
-| `omnish-daemon` | Session manager, scheduled tasks, prompt detection, command tracking, server |
+| `omnish-client` | PTY proxy binary, input interception, ghost completion, chat session, display |
+| `omnish-daemon` | Session manager, agent loop, tool formatters, scheduled tasks, server |
 | `omnish-transport` | Transport layer (Unix socket, TCP+TLS), RPC client/server, token auth |
 | `omnish-protocol` | Binary framed message format (length + bincode) |
 | `omnish-pty` | `forkpty()` wrapper, raw mode guard |
