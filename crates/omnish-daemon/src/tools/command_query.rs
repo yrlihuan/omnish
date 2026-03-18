@@ -139,51 +139,55 @@ impl CommandQueryTool {
         }
     }
 
-    pub fn definition(&self) -> ToolDef {
-        ToolDef {
-            name: "command_query".to_string(),
-            description: "Query shell command history and get full command output. \
-                Use get_output(seq) to retrieve the full output of a specific command. \
-                The last 5 commands are provided in <system-reminder> at the end of each user message, \
-                so you do NOT need to call list_history unless you need older commands.".to_string(),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["list_history", "get_output"],
-                        "description": "Action to perform"
-                    },
-                    "seq": {
-                        "type": "integer",
-                        "description": "Command sequence number (required for get_output, obtained from list_history)"
-                    },
-                    "count": {
-                        "type": "integer",
-                        "description": "Number of recent commands to list (default 20, only for list_history)"
+    pub fn definitions(&self) -> Vec<ToolDef> {
+        vec![
+            ToolDef {
+                name: "omnish_list_history".to_string(),
+                description: "List recent shell command history. \
+                    The last 5 commands are provided in <system-reminder> at the end of each user message, \
+                    so you do NOT need to call this unless you need older commands.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "count": {
+                            "type": "integer",
+                            "description": "Number of recent commands to list (default 20)"
+                        }
                     }
-                },
-                "required": ["action"]
-            }),
-        }
+                }),
+            },
+            ToolDef {
+                name: "omnish_get_output".to_string(),
+                description: "Get the full output of a specific shell command by its sequence number. \
+                    Use omnish_list_history to find the sequence number first.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "seq": {
+                            "type": "integer",
+                            "description": "Command sequence number (from omnish_list_history or <system-reminder>)"
+                        }
+                    },
+                    "required": ["seq"]
+                }),
+            },
+        ]
     }
 
-    pub fn execute(&self, input: &serde_json::Value) -> ToolResult {
-        let action = input["action"].as_str().unwrap_or("");
+    pub fn execute(&self, tool_name: &str, input: &serde_json::Value) -> ToolResult {
         let tool_use_id = String::new(); // Filled by caller
-
-        match action {
-            "list_history" => {
+        match tool_name {
+            "omnish_list_history" => {
                 let count = input["count"].as_u64().unwrap_or(20) as usize;
                 let content = self.list_history(count);
                 ToolResult { tool_use_id, content, is_error: false }
             }
-            "get_output" => {
+            "omnish_get_output" => {
                 let seq = input["seq"].as_u64().unwrap_or(0) as usize;
                 if seq == 0 {
                     return ToolResult {
                         tool_use_id,
-                        content: "Error: 'seq' is required for get_output".to_string(),
+                        content: "Error: 'seq' is required".to_string(),
                         is_error: true,
                     };
                 }
@@ -192,16 +196,16 @@ impl CommandQueryTool {
             }
             _ => ToolResult {
                 tool_use_id,
-                content: format!("Error: unknown action '{}'", action),
+                content: format!("Error: unknown tool '{}'", tool_name),
                 is_error: true,
             },
         }
     }
 
-    pub fn status_text(&self, _tool_name: &str, input: &serde_json::Value) -> String {
-        match input["action"].as_str() {
-            Some("list_history") => "查询命令历史...".to_string(),
-            Some("get_output") => format!(
+    pub fn status_text(&self, tool_name: &str, input: &serde_json::Value) -> String {
+        match tool_name {
+            "omnish_list_history" => "查询命令历史...".to_string(),
+            "omnish_get_output" => format!(
                 "获取命令输出 [{}]...",
                 input["seq"].as_u64().unwrap_or(0)
             ),

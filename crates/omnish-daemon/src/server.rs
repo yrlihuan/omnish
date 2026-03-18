@@ -388,7 +388,7 @@ async fn build_chat_setup(mgr: &SessionManager, plugin_mgr: &PluginManager) -> C
         stream_reader,
     );
 
-    let mut tools = vec![command_query_tool.definition()];
+    let mut tools = command_query_tool.definitions();
     tools.extend(plugin_mgr.all_tools());
 
     // Load base chat prompt, then apply user overrides from chat.override.json
@@ -703,8 +703,8 @@ async fn run_agent_loop(
                             has_client_tools = true;
                         } else {
                             // Daemon-side tool: execute directly
-                            let mut result = if tc.name == "command_query" {
-                                state.command_query_tool.execute(&tc.input)
+                            let mut result = if tc.name == "omnish_list_history" || tc.name == "omnish_get_output" {
+                                state.command_query_tool.execute(&tc.name, &tc.input)
                             } else {
                                 omnish_llm::tool::ToolResult {
                                     tool_use_id: String::new(),

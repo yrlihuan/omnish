@@ -554,45 +554,40 @@ mod tests {
         f.write_all(content.as_bytes()).unwrap();
     }
 
+    /// Number of tools embedded in BUILTIN_TOOL_JSON.
+    const BUILTIN_COUNT: usize = 6;
+
     #[test]
     fn test_load_empty_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let mgr = PluginManager::load(tmp.path());
-        assert!(mgr.all_tools().is_empty());
+        // Only embedded builtin tools
+        assert_eq!(mgr.all_tools().len(), BUILTIN_COUNT);
     }
 
     #[test]
     fn test_load_single_plugin() {
         let tmp = tempfile::tempdir().unwrap();
-        write_tool_json(tmp.path(), "builtin", r#"{
+        write_tool_json(tmp.path(), "myplugin", r#"{
             "plugin_type": "client_tool",
             "tools": [{
-                "name": "bash",
-                "description": "Run commands",
+                "name": "my_tool",
+                "description": "My tool",
                 "input_schema": {"type": "object", "properties": {}, "required": []},
-                "status_template": "执行: {command}",
+                "status_template": "run: {arg}",
                 "sandboxed": true
             }]
         }"#);
         let mgr = PluginManager::load(tmp.path());
-        assert_eq!(mgr.all_tools().len(), 1);
-        assert_eq!(mgr.all_tools()[0].name, "bash");
+        assert_eq!(mgr.all_tools().len(), BUILTIN_COUNT + 1);
+        assert!(mgr.all_tools().iter().any(|t| t.name == "my_tool"));
     }
 
     #[test]
     fn test_tool_plugin_name() {
         let tmp = tempfile::tempdir().unwrap();
-        write_tool_json(tmp.path(), "builtin", r#"{
-            "plugin_type": "client_tool",
-            "tools": [{
-                "name": "bash",
-                "description": "Run",
-                "input_schema": {"type": "object"},
-                "status_template": "",
-                "sandboxed": true
-            }]
-        }"#);
         let mgr = PluginManager::load(tmp.path());
+        // "bash" comes from embedded builtin
         assert_eq!(mgr.tool_plugin_name("bash"), Some("builtin"));
     }
 
@@ -616,37 +611,18 @@ mod tests {
     #[test]
     fn test_status_text_interpolation() {
         let tmp = tempfile::tempdir().unwrap();
-        write_tool_json(tmp.path(), "builtin", r#"{
-            "plugin_type": "client_tool",
-            "tools": [{
-                "name": "bash",
-                "description": "Run",
-                "input_schema": {"type": "object"},
-                "status_template": "执行: {command}",
-                "sandboxed": true
-            }]
-        }"#);
         let mgr = PluginManager::load(tmp.path());
+        // Embedded builtin "bash" has status_template "{command}"
         let input = serde_json::json!({"command": "ls -la"});
-        assert_eq!(mgr.tool_status_text("bash", &input), "执行: ls -la");
+        assert_eq!(mgr.tool_status_text("bash", &input), "ls -la");
     }
 
     #[test]
     fn test_status_text_missing_field() {
         let tmp = tempfile::tempdir().unwrap();
-        write_tool_json(tmp.path(), "builtin", r#"{
-            "plugin_type": "client_tool",
-            "tools": [{
-                "name": "bash",
-                "description": "Run",
-                "input_schema": {"type": "object"},
-                "status_template": "执行: {command}",
-                "sandboxed": true
-            }]
-        }"#);
         let mgr = PluginManager::load(tmp.path());
         let input = serde_json::json!({"timeout": 30});
-        assert_eq!(mgr.tool_status_text("bash", &input), "执行: {command}");
+        assert_eq!(mgr.tool_status_text("bash", &input), "{command}");
     }
 
     #[test]
@@ -656,7 +632,7 @@ mod tests {
         write_tool_json(tmp.path(), "good", r#"{
             "plugin_type": "client_tool",
             "tools": [{
-                "name": "read",
+                "name": "custom_read",
                 "description": "Read",
                 "input_schema": {"type": "object"},
                 "status_template": "",
@@ -664,8 +640,8 @@ mod tests {
             }]
         }"#);
         let mgr = PluginManager::load(tmp.path());
-        assert_eq!(mgr.all_tools().len(), 1);
-        assert_eq!(mgr.all_tools()[0].name, "read");
+        assert_eq!(mgr.all_tools().len(), BUILTIN_COUNT + 1);
+        assert!(mgr.all_tools().iter().any(|t| t.name == "custom_read"));
     }
 
     #[test]
@@ -674,7 +650,7 @@ mod tests {
         write_tool_json(tmp.path(), "plugin_a", r#"{
             "plugin_type": "client_tool",
             "tools": [{
-                "name": "bash",
+                "name": "dup_tool",
                 "description": "First",
                 "input_schema": {"type": "object"},
                 "status_template": "",
@@ -684,7 +660,7 @@ mod tests {
         write_tool_json(tmp.path(), "plugin_b", r#"{
             "plugin_type": "client_tool",
             "tools": [{
-                "name": "bash",
+                "name": "dup_tool",
                 "description": "Duplicate",
                 "input_schema": {"type": "object"},
                 "status_template": "",
@@ -692,22 +668,18 @@ mod tests {
             }]
         }"#);
         let mgr = PluginManager::load(tmp.path());
-        assert_eq!(mgr.all_tools().len(), 1);
+        // BUILTIN_COUNT + 1 (only first dup_tool loaded, second skipped)
+        assert_eq!(mgr.all_tools().len(), BUILTIN_COUNT + 1);
+    }
+
+    fn get_description(mgr: &PluginManager, name: &str) -> String {
+        mgr.all_tools().into_iter().find(|t| t.name == name).unwrap().description
     }
 
     #[test]
     fn test_prompt_json_replace_description() {
         let tmp = tempfile::tempdir().unwrap();
-        write_tool_json(tmp.path(), "builtin", r#"{
-            "plugin_type": "client_tool",
-            "tools": [{
-                "name": "bash",
-                "description": "Original description",
-                "input_schema": {"type": "object"},
-                "status_template": "",
-                "sandboxed": true
-            }]
-        }"#);
+        // Override builtin "bash" description via tool.override.json
         write_tool_override(tmp.path(), "builtin", r#"{
             "tools": {
                 "bash": {
@@ -716,22 +688,12 @@ mod tests {
             }
         }"#);
         let mgr = PluginManager::load(tmp.path());
-        assert_eq!(mgr.all_tools()[0].description, "Custom description");
+        assert_eq!(get_description(&mgr, "bash"), "Custom description");
     }
 
     #[test]
     fn test_prompt_json_append_description() {
         let tmp = tempfile::tempdir().unwrap();
-        write_tool_json(tmp.path(), "builtin", r#"{
-            "plugin_type": "client_tool",
-            "tools": [{
-                "name": "bash",
-                "description": "Original",
-                "input_schema": {"type": "object"},
-                "status_template": "",
-                "sandboxed": true
-            }]
-        }"#);
         write_tool_override(tmp.path(), "builtin", r#"{
             "tools": {
                 "bash": {
@@ -740,22 +702,13 @@ mod tests {
             }
         }"#);
         let mgr = PluginManager::load(tmp.path());
-        assert_eq!(mgr.all_tools()[0].description, "Original\nExtra guideline");
+        let desc = get_description(&mgr, "bash");
+        assert!(desc.ends_with("\nExtra guideline"));
     }
 
     #[test]
     fn test_prompt_json_description_takes_priority_over_append() {
         let tmp = tempfile::tempdir().unwrap();
-        write_tool_json(tmp.path(), "builtin", r#"{
-            "plugin_type": "client_tool",
-            "tools": [{
-                "name": "bash",
-                "description": "Original",
-                "input_schema": {"type": "object"},
-                "status_template": "",
-                "sandboxed": true
-            }]
-        }"#);
         write_tool_override(tmp.path(), "builtin", r#"{
             "tools": {
                 "bash": {
@@ -765,22 +718,12 @@ mod tests {
             }
         }"#);
         let mgr = PluginManager::load(tmp.path());
-        assert_eq!(mgr.all_tools()[0].description, "Replaced");
+        assert_eq!(get_description(&mgr, "bash"), "Replaced");
     }
 
     #[test]
     fn test_prompt_json_multiline_description() {
         let tmp = tempfile::tempdir().unwrap();
-        write_tool_json(tmp.path(), "builtin", r#"{
-            "plugin_type": "client_tool",
-            "tools": [{
-                "name": "bash",
-                "description": "Original",
-                "input_schema": {"type": "object"},
-                "status_template": "",
-                "sandboxed": true
-            }]
-        }"#);
         write_tool_override(tmp.path(), "builtin", r#"{
             "tools": {
                 "bash": {
@@ -789,36 +732,22 @@ mod tests {
             }
         }"#);
         let mgr = PluginManager::load(tmp.path());
-        assert_eq!(mgr.all_tools()[0].description, "Line 1\nLine 2\n\nLine 4");
+        assert_eq!(get_description(&mgr, "bash"), "Line 1\nLine 2\n\nLine 4");
     }
 
     #[test]
     fn test_no_prompt_json_keeps_original() {
         let tmp = tempfile::tempdir().unwrap();
-        write_tool_json(tmp.path(), "builtin", r#"{
-            "plugin_type": "client_tool",
-            "tools": [{
-                "name": "bash",
-                "description": "Original description",
-                "input_schema": {"type": "object"},
-                "status_template": "",
-                "sandboxed": true
-            }]
-        }"#);
+        // No override file — embedded description is used
         let mgr = PluginManager::load(tmp.path());
-        assert_eq!(mgr.all_tools()[0].description, "Original description");
+        let desc = get_description(&mgr, "bash");
+        assert!(desc.contains("bash"));  // embedded description mentions bash
     }
 
     #[test]
     fn test_tool_sandboxed() {
         let tmp = tempfile::tempdir().unwrap();
-        write_tool_json(tmp.path(), "builtin", r#"{
-            "plugin_type": "client_tool",
-            "tools": [
-                {"name": "bash", "description": "", "input_schema": {"type": "object"}, "status_template": "", "sandboxed": true},
-                {"name": "edit", "description": "", "input_schema": {"type": "object"}, "status_template": "", "sandboxed": false}
-            ]
-        }"#);
+        // Uses embedded builtin tools
         let mgr = PluginManager::load(tmp.path());
         assert_eq!(mgr.tool_sandboxed("bash"), Some(true));
         assert_eq!(mgr.tool_sandboxed("edit"), Some(false));
@@ -827,29 +756,20 @@ mod tests {
     #[test]
     fn test_reload_overrides_picks_up_changes() {
         let tmp = tempfile::tempdir().unwrap();
-        write_tool_json(tmp.path(), "builtin", r#"{
-            "plugin_type": "client_tool",
-            "tools": [{
-                "name": "bash",
-                "description": "Original",
-                "input_schema": {"type": "object"},
-                "status_template": "",
-                "sandboxed": true
-            }]
-        }"#);
         let mgr = PluginManager::load(tmp.path());
-        assert_eq!(mgr.all_tools()[0].description, "Original");
+        let original = get_description(&mgr, "bash");
 
         // Write tool.override.json and reload
         write_tool_override(tmp.path(), "builtin", r#"{
             "tools": { "bash": { "description": "Updated" } }
         }"#);
         mgr.reload_overrides();
-        assert_eq!(mgr.all_tools()[0].description, "Updated");
+        assert_eq!(get_description(&mgr, "bash"), "Updated");
+        assert_ne!(original, "Updated");
 
         // Remove tool.override.json override by writing empty overrides
         write_tool_override(tmp.path(), "builtin", r#"{ "tools": {} }"#);
         mgr.reload_overrides();
-        assert_eq!(mgr.all_tools()[0].description, "Original");
+        assert_eq!(get_description(&mgr, "bash"), original);
     }
 }
