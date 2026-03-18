@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.7.2 (2026-03-18)
+
+### Features
+- **daemon**: `/debug daemon` command showing version, tasks, and auto-update status (#326)
+- **daemon**: `omnish_debug` canned completion response for end-to-end ghost text testing (#328)
+- **test**: Ghost text completion integration test using omnish_debug (#328)
+
+### Fixes
+- **client**: Defer ghost text render to survive bash readline redraw (#327)
+- **client**: All command outputs skip markdown rendering to preserve formatting (#329)
+- **client**: `/debug client` output missing blank lines between sections (#329)
+- **client**: Remove unused auto_trigger feature (#330)
+- **install**: Prevent duplicate `[tasks.auto_update]` section in daemon.toml
+- **install**: Fix config/daemon.toml auto_update section name
+
+---
+
 ## v0.7.1 (2026-03-18)
 
 ### Features
