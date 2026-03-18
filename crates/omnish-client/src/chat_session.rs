@@ -35,6 +35,8 @@ pub struct ChatSession {
     client_plugins: Arc<client_plugin::ClientPluginManager>,
     ghost_hint_shown: bool,
     pending_model: Option<String>,
+    /// Non-default model name for resumed thread (shown as ghost hint).
+    resumed_model: Option<String>,
 }
 
 fn write_stdout(s: &str) {
@@ -70,6 +72,7 @@ impl ChatSession {
             client_plugins: Arc::new(client_plugin::ClientPluginManager::new()),
             ghost_hint_shown: false,
             pending_model: None,
+            resumed_model: None,
         }
     }
 
@@ -199,12 +202,16 @@ impl ChatSession {
                 // Show ghost hint on first prompt
                 if show_ghost_hint && !self.ghost_hint_shown {
                     self.ghost_hint_shown = true;
-                    let hint = if is_resumed {
-                        "type to continue"
+                    let hint = if let Some(ref model) = self.resumed_model {
+                        format!("model for conversation: {}", model)
+                    } else if is_resumed {
+                        String::new()
                     } else {
-                        "type to start, /resume to continue"
+                        "type to start, /resume to continue".to_string()
                     };
-                    write_stdout(&format!("\x1b7\x1b[2;90m{}\x1b[0m\x1b8", hint));
+                    if !hint.is_empty() {
+                        write_stdout(&format!("\x1b7\x1b[2;90m{}\x1b[0m\x1b8", hint));
+                    }
                 }
                 match self.read_input(!self.has_activity) {
                     Some(line) => {
@@ -1081,10 +1088,9 @@ impl ChatSession {
                 write_stdout("\x1b[2;37m(resumed conversation)\x1b[0m\r\n");
                 self.push_entry(ScrollEntry::SystemMessage("(resumed conversation)".to_string()));
             }
-            // Show hint if thread uses a non-default model
+            // Store non-default model name for ghost hint
             if let Some(model) = response_json.as_ref().and_then(|j| j.get("model")).and_then(|v| v.as_str()) {
-                let hint = format!("current model: {}", model);
-                write_stdout(&format!("\x1b[2;90m{}\x1b[0m\r\n", hint));
+                self.resumed_model = Some(model.to_string());
             }
         }
     }
