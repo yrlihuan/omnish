@@ -54,6 +54,7 @@ fn convert_extra_messages(extra: &[serde_json::Value]) -> Vec<serde_json::Value>
             "assistant" => {
                 if let Some(content_arr) = msg["content"].as_array() {
                     let mut text_parts = Vec::new();
+                    let mut thinking_parts = Vec::new();
                     let mut tool_calls = Vec::new();
                     for block in content_arr {
                         match block["type"].as_str() {
@@ -74,6 +75,13 @@ fn convert_extra_messages(extra: &[serde_json::Value]) -> Vec<serde_json::Value>
                                     }
                                 }
                             }
+                            Some("thinking") => {
+                                if let Some(t) = block["thinking"].as_str() {
+                                    if !t.is_empty() {
+                                        thinking_parts.push(t.to_string());
+                                    }
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -83,6 +91,9 @@ fn convert_extra_messages(extra: &[serde_json::Value]) -> Vec<serde_json::Value>
                         m.insert("content".into(), serde_json::json!(text_parts.join("\n")));
                     } else {
                         m.insert("content".into(), serde_json::Value::Null);
+                    }
+                    if !thinking_parts.is_empty() {
+                        m.insert("reasoning_content".into(), serde_json::json!(thinking_parts.join("\n")));
                     }
                     if !tool_calls.is_empty() {
                         m.insert("tool_calls".into(), serde_json::json!(tool_calls));
@@ -447,6 +458,27 @@ mod tests {
 
         // Plain assistant message passes through
         assert_eq!(converted[3]["role"], "assistant");
+    }
+
+    #[test]
+    fn test_convert_extra_messages_thinking_blocks() {
+        let extra = vec![
+            serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "Let me analyze this..."},
+                    {"type": "text", "text": "I'll check the files"},
+                    {"type": "tool_use", "id": "call_1", "name": "glob", "input": {"pattern": "*.rs"}}
+                ]
+            }),
+        ];
+        let converted = convert_extra_messages(&extra);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "assistant");
+        assert_eq!(converted[0]["content"], "I'll check the files");
+        assert_eq!(converted[0]["reasoning_content"], "Let me analyze this...");
+        assert!(converted[0]["tool_calls"].is_array());
+        assert_eq!(converted[0]["tool_calls"][0]["id"], "call_1");
     }
 
     #[test]
