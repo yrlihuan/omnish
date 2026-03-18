@@ -814,14 +814,11 @@ if [[ "$UPGRADE" == true ]] || { [[ -n "${OLD_VERSION:-}" ]] && [[ "$OLD_VERSION
     info "Upgrade complete! (v${OLD_VERSION:-unknown} → ${VERSION})"
 else
     info "Installation complete! (omnish ${VERSION})"
-    info "Installed to: ${OMNISH_DIR}"
-    if [[ ${#DEPLOYED_CLIENTS[@]} -gt 0 ]]; then
-        info "Deployed clients: $(IFS=', '; echo "${DEPLOYED_CLIENTS[*]}")"
-    fi
     echo ""
+    echo "To get started, run:"
     if echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
-        info "Run 'omnish' to get started."
+        echo "  omnish"
     else
-        info "Run '${BIN_DIR}/omnish' to get started."
+        echo "  ${BIN_DIR}/omnish"
     fi
 fi
