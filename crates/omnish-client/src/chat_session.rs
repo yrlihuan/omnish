@@ -37,10 +37,12 @@ pub struct ChatSession {
     pending_model: Option<String>,
     /// Non-default model name for resumed thread (shown as ghost hint).
     resumed_model: Option<String>,
-    /// Total terminal lines printed (for tracking tool header positions).
+    /// Total terminal lines printed (for tracking tool section position).
     lines_printed: usize,
-    /// Running tool positions: tool_call_id → lines_printed value when header was output.
-    running_tool_lines: std::collections::HashMap<String, usize>,
+    /// Line position where the current batch of tool headers starts.
+    tool_section_start: Option<usize>,
+    /// scroll_history index where the current tool batch starts.
+    tool_section_hist_idx: Option<usize>,
 }
 
 fn write_stdout(s: &str) {
@@ -78,7 +80,8 @@ impl ChatSession {
             pending_model: None,
             resumed_model: None,
             lines_printed: 0,
-            running_tool_lines: std::collections::HashMap::new(),
+            tool_section_start: None,
+            tool_section_hist_idx: None,
         }
     }
 
@@ -102,6 +105,50 @@ impl ChatSession {
         write_stdout(line);
         write_stdout("\r\n");
         self.lines_printed += 1;
+    }
+
+    /// Re-render the tool section from tool_section_start.
+    /// Moves cursor up, erases, and re-renders all ToolStatus entries with their output.
+    fn redraw_tool_section(&mut self) {
+        let start_line = match self.tool_section_start {
+            Some(s) => s,
+            None => return,
+        };
+        let hist_start = match self.tool_section_hist_idx {
+            Some(s) => s,
+            None => return,
+        };
+
+        let lines_up = self.lines_printed - start_line;
+        if lines_up > 0 {
+            write_stdout(&format!("\x1b[{}A", lines_up));
+        }
+        write_stdout("\r\x1b[J"); // erase from cursor to end of screen
+
+        let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
+        let mut count = 0usize;
+
+        for entry in &self.scroll_history[hist_start..] {
+            if let ScrollEntry::ToolStatus(cts) = entry {
+                let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
+                let param_desc = cts.param_desc.as_deref().unwrap_or("");
+                let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Running);
+                let header = display::render_tool_header(icon, display_name, param_desc, cols as usize);
+                write_stdout(&header);
+                write_stdout("\r\n");
+                count += 1;
+                if let Some(ref lines) = cts.result_compact {
+                    let rendered = display::render_tool_output(lines);
+                    for line in &rendered {
+                        write_stdout(line);
+                        write_stdout("\r\n");
+                        count += 1;
+                    }
+                }
+            }
+        }
+
+        self.lines_printed = start_line + count;
     }
 
     fn push_entry(&mut self, entry: ScrollEntry) {
@@ -468,14 +515,15 @@ impl ChatSession {
                                                     self.push_entry(ScrollEntry::LlmText(cts.status.clone()));
                                                 } else if cts.result_compact.is_none() {
                                                     // First status — tool is running (before execution)
+                                                    if self.tool_section_start.is_none() {
+                                                        self.tool_section_start = Some(self.lines_printed);
+                                                        self.tool_section_hist_idx = Some(self.scroll_history.len());
+                                                    }
                                                     let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
                                                     let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
                                                     let param_desc = cts.param_desc.as_deref().unwrap_or("");
                                                     let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Running);
                                                     let header = display::render_tool_header(icon, display_name, param_desc, cols as usize);
-                                                    if let Some(ref id) = cts.tool_call_id {
-                                                        self.running_tool_lines.insert(id.clone(), self.lines_printed);
-                                                    }
                                                     self.print_line(&header);
                                                     self.push_entry(ScrollEntry::ToolStatus(cts));
                                                 } else {
@@ -488,44 +536,8 @@ impl ChatSession {
                                                     }) {
                                                         *entry = ScrollEntry::ToolStatus(cts.clone());
                                                     }
-                                                    // Re-render terminal: overwrite the Running header with updated icon
-                                                    let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
-                                                    let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
-                                                    let param_desc = cts.param_desc.as_deref().unwrap_or("");
-                                                    let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Success);
-                                                    let header = display::render_tool_header(icon, display_name, param_desc, cols as usize);
-                                                    let (lines_up, completed_pos) = tool_call_id.as_ref()
-                                                        .and_then(|id| self.running_tool_lines.remove(id))
-                                                        .map(|pos| (self.lines_printed - pos, pos))
-                                                        .unwrap_or((1, self.lines_printed.saturating_sub(1)));
-                                                    let output_lines = cts.result_compact.as_ref()
-                                                        .map(|l| display::render_tool_output(l))
-                                                        .unwrap_or_default();
-                                                    let n_output = output_lines.len();
-                                                    // Move up to header, overwrite icon
-                                                    write_stdout(&format!("\x1b[{}A\r\x1b[K{}", lines_up, header));
-                                                    if n_output > 0 {
-                                                        // Insert output lines below header
-                                                        write_stdout(&format!("\n\x1b[{}L", n_output));
-                                                        for (i, line) in output_lines.iter().enumerate() {
-                                                            write_stdout(&format!("\r{}", line));
-                                                            if i < n_output - 1 {
-                                                                write_stdout("\n");
-                                                            }
-                                                        }
-                                                        // Move back to bottom
-                                                        write_stdout(&format!("\x1b[{}B\r", lines_up));
-                                                        // Shift positions of tools below this one
-                                                        for tool_pos in self.running_tool_lines.values_mut() {
-                                                            if *tool_pos > completed_pos {
-                                                                *tool_pos += n_output;
-                                                            }
-                                                        }
-                                                        self.lines_printed += n_output;
-                                                    } else {
-                                                        // No output — move back to bottom
-                                                        write_stdout(&format!("\x1b[{}B\r", lines_up));
-                                                    }
+                                                    // Re-render entire tool section with updated statuses
+                                                    self.redraw_tool_section();
                                                 }
                                             }
                                             Some(Message::ChatToolCall(tc)) => {
@@ -533,6 +545,8 @@ impl ChatSession {
                                             }
                                             Some(Message::ChatResponse(resp)) if resp.request_id == req_id => {
                                                 self.erase_thinking();
+                                                self.tool_section_start = None;
+                                                self.tool_section_hist_idx = None;
                                                 self.print_line("");
                                                 let rendered = markdown::render(&resp.content);
                                                 for (i, line) in rendered.split("\r\n").enumerate() {
