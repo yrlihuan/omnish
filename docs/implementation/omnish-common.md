@@ -14,6 +14,7 @@ omnish-common 包含客户端和守护进程共享的配置结构和工具函数
 - `daemon_addr`: 守护进程地址（默认：`~/.omnish/omnish.sock`）
 - `completion_enabled`: 是否启用自动补全（默认：`true`）
 - `auto_update`: 是否启用自动更新，当二进制文件变化时自动重启（默认：`false`）
+- `onboarded`: 用户是否已完成新手引导（默认：`false`）；首次进入聊天后自动写入 `true`
 
 ### `DaemonConfig`
 守护进程配置结构，包含：
@@ -27,6 +28,7 @@ omnish-common 包含客户端和守护进程共享的配置结构和工具函数
 Shell相关配置，包含：
 - `command`: 要执行的shell命令（默认：`$SHELL`环境变量或`/bin/sh`）
 - `command_prefix`: 触发LLM查询的命令前缀（默认`:`）
+- `resume_prefix`: 恢复上次聊天线程的前缀（默认`::`）
 - `intercept_gap_ms`: 命令拦截间隔毫秒数（默认：1000ms）
 - `ghost_timeout_ms`: ghost-text超时毫秒数（默认：10000ms）
 
@@ -34,9 +36,10 @@ Shell相关配置，包含：
 LLM配置结构，包含：
 - `default`: 默认LLM后端名称（默认：`"claude"`）
 - `backends`: LLM后端配置映射表（`HashMap<String, LlmBackendConfig>`）
-- `auto_trigger`: 自动触发配置（`AutoTriggerConfig`类型）
 - `use_cases`: UseCase到后端名的映射（`HashMap<String, String>`）
 - `langfuse`: Langfuse可观测性集成配置（`Option<LangfuseConfig>`，可选）
+
+注意：`auto_trigger`（`AutoTriggerConfig`）字段已从 `LlmConfig` 中移除。
 
 ### `LangfuseConfig`
 Langfuse可观测性集成配置，包含：
@@ -47,22 +50,32 @@ Langfuse可观测性集成配置，包含：
 ### `ContextConfig`
 上下文构建配置，包含：
 - `completion`: 补全上下文配置（`CompletionContextConfig`类型）
-- `hourly_summary`: 小时摘要上下文配置
-- `daily_summary`: 日报上下文配置
+- `hourly_summary`: 小时摘要上下文配置（`HourlySummaryConfig`类型）
+- `daily_summary`: 日报上下文配置（`DailySummaryConfig`类型）
 
 ### `CompletionContextConfig`
 补全上下文配置，包含：
-- `max_commands`: 历史命令最大数量
-- `max_chars`: 上下文最大字符数
+- `detailed_commands`: 显示完整详情（输出、耗时、退出码）的近期命令数量（默认：30）
+- `history_commands`: 仅显示命令行（无输出）的历史命令数量（默认：500）
+- `head_lines` / `tail_lines`: 每条命令输出保留的头/尾行数（默认：20/20）
 - `max_line_width`: 行最大宽度（默认：200）
+- `min_current_session_commands`: 当前会话最少保留命令数（默认：5）
+- `max_context_chars`: 上下文最大字符数限制（可选，超出时自动缩减窗口）
 - `detailed_min` / `detailed_max`: 弹性详细窗口范围（默认：20/30）
-- `max_output_chars_per_command`: 每个命令输出最大字符数（可选）
 
 ### `TasksConfig`
 定时任务配置，包含：
-- `eviction`: 会话淘汰配置（`inactive_hours`）
-- `daily_notes`: 日报生成配置（`schedule_hour`，默认18）
-- `disk_cleanup`: 磁盘清理配置（`cron`表达式）
+- `eviction`: 会话淘汰配置（`EvictionConfig`，`session_evict_hours` 默认：48小时）
+- `daily_notes`: 日报生成配置（`DailyNotesConfig`，`enabled`默认`false`，`schedule_hour`默认23）
+- `disk_cleanup`: 磁盘清理配置（`DiskCleanupConfig`，`schedule` cron表达式，默认`"0 0 */6 * * *"`）
+- `auto_update`: 自动更新配置（`AutoUpdateConfig`类型）
+
+### `AutoUpdateConfig`
+周期性自动更新配置，包含：
+- `enabled`: 是否启用自动更新（默认：`false`）
+- `schedule`: 检查更新的cron计划（默认：`"0 0 4 * * *"`，每日04:00）
+- `clients`: 需要分发更新的客户端主机列表（如 `["user@host1", "user@host2"]`），原存储于 `~/.omnish/clients` 文件，现移至此处
+- `check_url`: 更新源，本地目录路径或 GitHub API URL；省略时默认指向 GitHub（`yrlihuan/omnish`）
 
 ### `PluginsConfig`
 插件系统配置结构，包含：
@@ -79,19 +92,14 @@ LLM后端具体配置，包含：
 - `base_url`: API基础URL（可选）
 - `max_content_chars`: 模型上下文最大字符数（可选）
 
-### `AutoTriggerConfig`
-自动触发LLM分析的配置，包含：
-- `on_nonzero_exit`: 是否在非零退出码时触发（默认：`false`）
-- `on_stderr_patterns`: 匹配stderr模式时触发的正则表达式列表
-- `cooldown_seconds`: 触发冷却时间（默认：5秒）
-
 ## 关键函数说明
 
 ### `omnish_dir()`
 获取omnish基础目录路径。
 
 **参数:** 无
-**返回:** `PathBuf`（`~/.omnish`，回退到`/tmp/omnish`）
+**返回:** `PathBuf`
+**优先级:** `$OMNISH_HOME` 环境变量 > `~/.omnish` > `/tmp/omnish`
 **用途:** 获取配置文件和会话数据的存储目录
 
 ### `load_client_config()`
@@ -110,6 +118,29 @@ LLM后端具体配置，包含：
 **用途:** 初始化守护进程配置
 **配置文件路径:** `$OMNISH_DAEMON_CONFIG`环境变量或`~/.omnish/daemon.toml`
 
+## config_edit 模块
+
+`omnish-common` 包含 `config_edit` 子模块，提供格式保留的 TOML 配置文件原地修改能力（基于 `toml_edit`）。
+
+### `set_toml_value()`
+原地更新 TOML 配置文件中的顶层键值，保留原有注释和格式。
+
+**参数:**
+- `path: &Path` - 配置文件路径
+- `key: &str` - 要更新的顶层键名
+- `value: impl Into<TomlValue>` - 新值（支持 `bool`、`String`、`&str`、`i64`）
+
+**返回:** `anyhow::Result<()>`
+
+**行为:**
+- 读取文件并用 `toml_edit` 解析，设置键值后写回
+- 自动删除文件中所有含该键名的注释行（避免 `# key = old_value` 残留）
+- 确保文件末尾有换行符
+
+**典型用途:**
+- 首次进入聊天后将 `onboarded = true` 写入 `client.toml`
+- 用户通过 `/auto_update` 命令切换并持久化 `auto_update` 字段
+
 ## 使用示例
 
 ### 加载客户端配置
@@ -127,7 +158,16 @@ use omnish_common::config;
 
 let daemon_config = config::load_daemon_config()?;
 println!("Listening on: {}", daemon_config.listen_addr);
-println!("Sessions directory: {}", daemon_config.sessions_dir);
+```
+
+### 原地更新配置文件
+```rust
+use omnish_common::config_edit;
+use std::path::Path;
+
+let path = Path::new("/home/user/.omnish/client.toml");
+config_edit::set_toml_value(path, "auto_update", true)?;
+config_edit::set_toml_value(path, "onboarded", true)?;
 ```
 
 ### 配置文件示例 (client.toml)
@@ -135,16 +175,17 @@ println!("Sessions directory: {}", daemon_config.sessions_dir);
 [shell]
 command = "/bin/bash"
 command_prefix = ":"
+resume_prefix = "::"
 intercept_gap_ms = 500
 
 daemon_addr = "/tmp/omnish.sock"
 auto_update = true
+onboarded = false
 ```
 
 ### 配置文件示例 (daemon.toml)
 ```toml
 listen_addr = "/tmp/omnish.sock"
-sessions_dir = "/tmp/omnish-sessions"
 
 [llm]
 default = "claude"
@@ -155,15 +196,16 @@ model = "claude-3-haiku-20240307"
 api_key_cmd = "pass show api/anthropic"
 max_content_chars = 200000
 
-[llm.auto_trigger]
-on_nonzero_exit = true
-on_stderr_patterns = ["error:", "fatal:", "not found"]
-cooldown_seconds = 10
-
 [llm.langfuse]
 public_key = "pk-lf-..."
 secret_key = "sk-lf-..."
 base_url = "https://cloud.langfuse.com"
+
+[tasks.auto_update]
+enabled = true
+schedule = "0 0 4 * * *"
+clients = ["user@host1", "user@host2"]
+# check_url = "https://api.github.com/repos/yrlihuan/omnish/releases/latest"
 
 [plugins]
 enabled = ["example_plugin", "another_plugin"]
@@ -199,6 +241,7 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 ## 依赖关系
 - `serde`: 序列化/反序列化配置结构
 - `toml`: TOML配置文件解析
+- `toml_edit`: 格式保留的TOML编辑（用于 `config_edit` 模块）
 - `anyhow`: 统一的错误处理
 - `dirs`: 获取标准目录路径（如用户主目录）
 - `rand`: 随机令牌生成
@@ -209,14 +252,19 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 2. 默认配置文件路径（`~/.omnish/client.toml`/`~/.omnish/daemon.toml`）
 3. 内置默认值（如果配置文件不存在）
 
+首次安装时，`install.sh` 会生成带有注释默认值的 `daemon.toml` 和 `client.toml`，所有配置项均以注释形式呈现，方便用户按需启用。
+
 ## 默认值说明
 - Shell命令: `$SHELL`环境变量或`/bin/sh`
 - 命令前缀: `:`
-- 守护进程socket路径: `~/.omnish/omnish.sock`
+- 恢复线程前缀: `::`
+- 守护进程socket路径: `~/.omnish/omnish.sock`（或 `$OMNISH_HOME/omnish.sock`）
 - 默认LLM后端: `"claude"`
 - 拦截间隔: 1000ms
 - Ghost-text超时: 10000ms
-- 自动触发冷却时间: 5秒
 - 认证令牌路径: `~/.omnish/auth_token`
 - 自动更新: `false`
 - Langfuse base_url: `https://cloud.langfuse.com`
+- 会话淘汰时间: 48小时
+- 磁盘清理计划: `"0 0 */6 * * *"`（每6小时）
+- 自动更新检查计划: `"0 0 4 * * *"`（每日04:00）

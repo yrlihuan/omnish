@@ -4,7 +4,7 @@
 
 ## 模块概述
 
-omnish-protocol 定义了客户端和守护进程之间交换的消息类型，使用bincode进行二进制序列化。协议包含一个简单的帧格式，每个帧包含请求ID和消息负载，使用魔术字节"OS"(0x4F 0x53)进行验证。当前协议版本为v4（`PROTOCOL_VERSION = 4`），客户端和服务器在认证阶段进行版本协商。
+omnish-protocol 定义了客户端和守护进程之间交换的消息类型，使用bincode进行二进制序列化。协议包含一个简单的帧格式，每个帧包含请求ID和消息负载，使用魔术字节"OS"(0x4F 0x53)进行验证。当前协议版本为v7（`PROTOCOL_VERSION = 7`），客户端和服务器在认证阶段进行版本协商。
 
 ## 重要数据结构
 
@@ -159,6 +159,7 @@ LLM响应消息，包含：
 - `thread_id`: 线程标识符
 - `last_exchange`: 上一轮对话（可选，`(String, String)` 用户问题和助手回复）
 - `earlier_count`: 更早的对话回合数
+- `model_name`: 聊天LLM后端使用的模型名称（可选，`#[serde(default)]`，例如 `"claude-sonnet-4-5-20250929"`，用于在ghost text提示中显示当前模型）
 
 ### `ChatMessage`
 聊天消息（客户端发送查询），包含：
@@ -166,6 +167,7 @@ LLM响应消息，包含：
 - `session_id`: 会话标识符
 - `thread_id`: 线程标识符
 - `query`: 用户查询内容
+- `model`: 指定使用的模型（可选，用于per-thread模型选择，通过`/model`命令设置）
 
 ### `ChatResponse`
 聊天响应（守护进程返回LLM回复），包含：
@@ -180,19 +182,31 @@ LLM响应消息，包含：
 - `thread_id`: 线程标识符
 - `query`: 被中断的查询内容
 
+### `StatusIcon` 枚举
+工具执行状态图标，用于`ChatToolStatus`消息中的状态展示：
+- `Running`: 工具正在执行中
+- `Success`: 工具执行成功
+- `Error`: 工具执行出错
+
 ### `ChatToolStatus`
 工具执行状态消息（守护进程在代理循环中流式发送工具执行状态），包含：
 - `request_id`: 请求标识符
 - `thread_id`: 线程标识符
 - `tool_name`: 正在执行的工具名称
 - `status`: 状态字符串（例如："执行中"、"查询命令历史..."等人类可读的描述）
+- `tool_call_id`: 工具调用ID（可选，用于将状态更新与具体的工具调用关联）
+- `status_icon`: 状态图标（可选，`StatusIcon`枚举，用于展示工具执行阶段）
+- `display_name`: 工具的友好显示名称（可选，例如 `"Command Query"`）
+- `param_desc`: 工具参数的简短描述（可选，例如 `"pattern=git"`）
+- `result_compact`: 执行结果的紧凑摘要行列表（可选，`Vec<String>`，用于在UI中内联显示）
+- `result_full`: 执行结果的完整文本行列表（可选，`Vec<String>`，用于展开显示完整输出）
 
 **用途：** 在聊天会话的代理循环中，当LLM决定使用工具（如命令查询、文件操作等）时，守护进程通过此消息类型向客户端实时推送工具的执行状态。这使得客户端能够向用户显示当前正在执行的操作，提供更好的用户体验和可见性。
 
 **使用场景：**
-- 代理开始执行某个工具时发送状态更新
-- 工具执行过程中可发送多个状态更新以反映进度
-- 客户端可根据`tool_name`和`status`向用户展示友好的进度提示
+- 代理开始执行某个工具时发送状态更新（`status_icon: Running`）
+- 工具执行完成后发送最终状态（`status_icon: Success` 或 `status_icon: Error`），同时携带`result_compact`和`result_full`
+- 客户端可根据`tool_call_id`将多次状态更新关联到同一工具调用，并原地更新展示
 
 ### `ChatToolCall`
 客户端侧工具调用转发消息（守护进程发送给客户端执行），包含：
@@ -325,9 +339,13 @@ let restored_frame = Frame::from_bytes(&frame_bytes).unwrap();
 
 ## 协议版本管理
 
-协议版本通过`PROTOCOL_VERSION`常量定义（当前值为4），用于客户端和服务器之间的版本协商。
+协议版本通过`PROTOCOL_VERSION`常量定义（当前值为7），用于客户端和服务器之间的版本协商。
 
 **编译时守卫测试：** `message_variant_guard`测试检测Message枚举变体数量变化，变体数不一致时测试失败并提醒开发者考虑更新`PROTOCOL_VERSION`。
 
 **版本历史：**
 - v4: 新增`ChatToolCall`、`ChatToolResult`消息，支持客户端侧工具执行转发；新增`AuthOk`消息替代认证成功时的`Ack`；`Auth`和`ChatInterrupt`新增字段
+- v5: `ChatToolStatus`扩展结构化展示字段：新增`tool_call_id`（工具调用关联）、`status_icon`（`StatusIcon`枚举）、`display_name`、`param_desc`、`result_compact`、`result_full`
+- v6: `ChatReady`新增`model_name`字段，用于在ghost text提示中显示当前模型名称
+- v7: `ChatMessage`新增`model`字段，支持per-thread模型选择（通过`/model`命令）
+

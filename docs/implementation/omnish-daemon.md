@@ -11,12 +11,16 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 4. 集成LLM后端处理用户查询和自动补全请求
 5. 提供RPC服务接口供客户端调用
 6. 认证和安全（令牌认证、TLS加密）
-7. 定时任务管理（会话驱逐、日报、小时摘要、磁盘清理）
+7. 定时任务管理（会话驱逐、日报、小时摘要、磁盘清理、对话摘要、自动更新）
 8. 管理多轮聊天对话（线程存储、恢复、列表、删除，支持工具使用）
 9. 补全采样（pending sample 捕获、JSONL 持久化）
-10. 插件管理（基于 tool.json 的元数据插件系统，内置工具 + 外部插件）
-11. 智能体循环（Agent Loop）实现多轮工具调用，支持客户端侧工具转发和并行执行
+10. 插件管理（基于 tool.json 的元数据插件系统，内置工具 + 外部插件，所有工具强制沙箱）
+11. 智能体循环（Agent Loop）实现多轮工具调用，支持客户端侧工具转发、并行执行和增量状态更新
 12. 提示词管理（PromptManager 可组合系统提示词片段，支持用户覆盖）
+13. 工具结果格式化（Formatter 模块，区分 read/edit/default 格式，生成带颜色行号 diff）
+14. 守护进程日志轮转（每日自动轮转到 `~/.omnish/logs/daemon.log`）
+15. 自动更新与优雅重启（升级后以退出码 42 退出，由 systemd 用新二进制重启）
+16. 线程级模型选择（每个聊天线程可独立指定 LLM 后端模型）
 
 守护进程以Unix domain socket方式运行，支持多个客户端同时连接。工作线程数上限为 30（`available_parallelism().min(30)`）。
 
@@ -30,6 +34,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - `conv_mgr`: `Arc<ConversationManager>` - 对话管理器
 - `plugin_mgr`: `Arc<PluginManager>` - 插件管理器
 - `pending_agent_loops`: `Arc<Mutex<HashMap<String, AgentLoopState>>>` - 等待客户端工具结果的暂停态智能体循环
+- `chat_model_name`: `Option<String>` - 聊天后端的模型名称（用于 ChatReady ghost hint，从配置的 chat use case 或默认后端中提取）
 
 ### `AgentLoopState`
 暂停态的智能体循环，等待客户端侧工具执行结果返回后恢复，包含：
@@ -42,6 +47,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - `cm`: `ChatMessage` - 原始聊天消息请求
 - `start`: `Instant` - 循环开始时间（用于超时检测）
 - `command_query_tool`: `CommandQueryTool` - 命令查询工具实例
+- `effective_backend`: `Arc<dyn LlmBackend>` - 本次循环实际使用的后端（保留线程级模型覆盖，防止恢复后退回默认后端）
 
 ### `SessionManager`
 会话管理器，负责管理所有活跃会话，包含：
@@ -74,11 +80,11 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 **主要特点:**
 - **tool.json 驱动**：每个插件子目录必须包含 `tool.json`，定义 `plugin_type`（`"client_tool"` 或 `"daemon_tool"`）和工具列表
 - **插件类型分类**（`PluginType` 枚举）：
-  - `DaemonTool` — 工具在守护进程内执行（如 `command_query`）
-  - `ClientTool` — 工具转发到客户端执行（如 `bash`、`read`、`edit` 等），客户端启动 `omnish-plugin` 子进程执行
+  - `DaemonTool` — 工具在守护进程内执行（如 `omnish_list_history`、`omnish_get_output`）
+  - `ClientTool` — 工具转发到客户端执行（如 `bash`、`read`、`edit`、`write`、`glob`、`grep` 等），客户端启动 `omnish-plugin` 子进程执行
 - **工具定义聚合**：通过 `all_tools()` 收集所有插件的工具定义，应用 `tool.override.json` 覆盖后返回
 - **状态模板插值**：每个工具可定义 `status_template`（如 `"执行: {command}"`），`tool_status_text()` 将 `{field}` 替换为实际输入参数
-- **沙箱标记**：每个工具在 `tool.json` 中标记 `sandboxed`（默认 `true`），指示客户端是否应用 Landlock 沙箱
+- **沙箱标记**：所有工具强制启用沙箱（`sandboxed` 字段已不再允许 opt-out），Landlock 沙箱对所有工具均有效
 - **tool.override.json 覆盖**：用户可在插件目录下放置 `tool.override.json` 来替换（`description`）或追加（`append`）工具描述
 - **inotify 热重载**：Linux 上通过 inotify 监视 `tool.override.json` 文件变更，自动调用 `reload_overrides()` 更新；非 Linux 平台每 5 秒轮询
 - **内嵌资源自动安装**：守护进程启动时将编译期内嵌的 `tool.json` 写入 `~/.omnish/plugins/builtin/`（每次启动覆盖），`tool.override.json.example` 仅在不存在时写入
@@ -112,6 +118,12 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - 支持删除线程（同时移除内存缓存和磁盘文件）
 - **工具使用感知**：能够区分用户输入消息和工具结果消息（content 为字符串 vs 数组）
 - **全量对话历史**：`get_all_exchanges()` 提取线程中所有用户-助手交换对，用于 `/resume` 显示完整历史
+- **线程元数据**（`ThreadMeta`）：每个线程有对应的 `.meta.json` sidecar 文件，包含：
+  - `host`: 会话主机名
+  - `cwd`: 会话工作目录
+  - `summary`: LLM 生成的线程摘要（由 `thread_summary` 任务生成）
+  - `summary_rounds`: 生成摘要时的对话轮次数
+  - `model`: 线程级别的模型覆盖（per-thread model override）
 
 ### `EventDetector`
 事件检测器，用于检测自动触发条件，包含：
@@ -158,12 +170,12 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 精确字符串替换编辑文件。
 - 输入参数：`file_path`（必需）、`old_string`（必需）、`new_string`（必需）、`replace_all`
 - `old_string` 必须在文件中唯一匹配（除非 `replace_all`）
-- 沙箱：禁用（需要写入任意路径）
+- 沙箱：启用
 
 #### write 工具
 创建或覆盖写入文件。
 - 输入参数：`file_path`（必需）、`content`（必需）
-- 沙箱：禁用
+- 沙箱：启用
 
 #### glob 工具
 快速文件模式匹配，按修改时间排序返回。
@@ -181,20 +193,22 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 
 守护进程内置的 `DaemonTool`，用于查询命令历史和获取完整命令输出，定义在 `crates/omnish-daemon/src/tools/command_query.rs`。
 
-**工具定义:**
-- 名称：`command_query`
-- 操作：`list_history` 和 `get_output`
-- 输入参数：`action`（必需）、`seq`（用于 get_output）、`count`（用于 list_history）
+**工具定义（拆分为两个独立工具）:**
 
-**功能:**
-- `list_history(count)` - 列出最近 N 条命令（默认 20），包含序号、命令行、退出码、相对时间
-- `get_output(seq)` - 获取指定序号命令的完整输出（自动跳过回显行，限制 500 行 / 50KB）
+- **`omnish_list_history`**
+  - 功能：列出最近 N 条命令（默认 20），包含序号、命令行、退出码、相对时间
+  - 输入参数：`count`（可选，整数）
+  - 说明：最近 5 条命令已包含在 `<system-reminder>` 中，只有需要更多历史时才调用此工具
+
+- **`omnish_get_output`**
+  - 功能：获取指定序号命令的完整输出（自动跳过回显行，限制 500 行 / 50KB）
+  - 输入参数：`seq`（必需，整数，从 `omnish_list_history` 或 `<system-reminder>` 获取）
 
 **实现细节:**
 - 构造时传入所有会话的 `commands` 和 `stream_reader`
 - 输出自动截断并显示总行数，防止响应过大
 - 提供 `build_system_reminder()` 生成 `<system-reminder>` 标签内容
-- 提供 `status_text()` 生成中文状态文本
+- 提供 `status_text()` 生成中文状态文本（`omnish_list_history` → "查询命令历史..."，`omnish_get_output` → "获取命令输出 [seq]..."）
 
 ### 外部插件
 
@@ -204,8 +218,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - 沙箱通过 `omnish_plugin::apply_sandbox()` 在 `pre_exec`（fork 后、exec 前）应用
 - 读取权限：全文件系统
 - 写入权限：仅限 `data_dir`、`/tmp`、`/dev/null`、以及可选的当前工作目录
-- 非沙箱工具（`sandboxed: false`，如 `edit` 和 `write`）以 **特权模式** 运行，不应用 Landlock 限制
-- 非 Linux 平台为 no-op
+- 所有工具均应用沙箱（无 opt-out），非 Linux 平台为 no-op
 
 ### PROMPT.md 支持
 
@@ -245,6 +258,74 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 ```
 
 `description` 优先于 `append`；两者均支持字符串或字符串数组。
+
+## 工具格式化模块
+
+### Formatter（`crates/omnish-daemon/src/formatter.rs`）
+
+`formatter` 模块负责将工具调用结果格式化为可显示的文本，填充 `ChatToolStatus` 消息的结构化字段。
+
+#### 核心结构
+
+**`FormatInput`** — 格式化输入：
+- `tool_name`: `String` - 工具名称
+- `display_name`: `String` - 工具显示名称
+- `status_template`: `String` - 状态模板（用于 `{field}` 插值）
+- `params`: `serde_json::Value` - 工具输入参数
+- `output`: `Option<String>` - 工具执行输出（`None` 表示尚未执行）
+- `is_error`: `Option<bool>` - 是否为错误结果
+
+**`FormatOutput`** — 格式化输出：
+- `status_icon`: `StatusIcon` - 状态图标（`Running`/`Success`/`Error`）
+- `param_desc`: `String` - 参数描述（单行，嵌入换行转义为 `\n`）
+- `result_compact`: `Vec<String>` - 精简结果（多行，适合折叠显示）
+- `result_full`: `Vec<String>` - 完整结果（多行，适合展开显示）
+
+**`ToolFormatter` trait** — 格式化器接口：
+```rust
+pub trait ToolFormatter: Send + Sync {
+    fn format(&self, input: &FormatInput) -> FormatOutput;
+}
+```
+
+#### 内置格式化器
+
+**`DefaultFormatter`**（默认，适用于 bash、grep、glob 等）：
+- `param_desc`：使用 `status_template` 对参数插值（`{field}` → 实际值）
+- `result_compact`：输出前 5 行
+- `result_full`：全部输出行
+
+**`ReadFormatter`**（用于 `read` 工具）：
+- `param_desc`：直接使用 `file_path` 参数值
+- 成功时 `result_compact`：`"Read N lines"`
+- 成功时 `result_full`：行数 ≤ 10 时显示带行号的 `cat -n` 格式内容；行数 > 10 时仍显示行数摘要
+- 错误时：同 DefaultFormatter
+
+**`EditFormatter`**（用于 `edit` 和 `write` 工具）：
+- `param_desc`：直接使用 `file_path` 参数值
+- 成功时 `result_compact`：编辑摘要（如 `"Edited 1 line"`、`"Added 2 lines, removed 3 lines"`）+ 最多 50 行带颜色行号的 diff
+- 成功时 `result_full`：编辑摘要 + 全部带颜色行号的 diff
+- diff 格式：ANSI 颜色（红色 `-` 删除行、绿色 `+` 新增行、暗色上下文行），行号右对齐
+- `replace_all` 多处替换时追加 `"... and N more places"` 提示
+- 错误时：输出全文 + `old_string` 内容（辅助调试）
+
+#### 格式化器查找
+
+```rust
+pub fn get_formatter(name: &str) -> &'static dyn ToolFormatter
+```
+
+- `"read"` → `ReadFormatter`
+- `"edit"` 或 `"write"` → `EditFormatter`
+- 其他 → `DefaultFormatter`
+
+#### 使用场景
+
+格式化器在以下两处被调用：
+1. **工具调用前**（`output: None`）：生成 `Running` 状态的 `param_desc`，发送 `ChatToolStatus` 预告
+2. **工具调用后**（`output: Some(...)`）：生成 `Success`/`Error` 状态及完整格式化结果，再次发送 `ChatToolStatus` 更新
+
+DaemonTool 在同一进程内执行，直接在 `run_agent_loop()` 内完成两次格式化。ClientTool 在 `handle_tool_result()` 收到结果后执行第二次格式化并发送增量状态更新。
 
 ## 提示词管理
 
@@ -309,7 +390,7 @@ LAST 5 COMMANDS:
 
 **工具定义:**
 - 工具定义（`ToolDef`）包含工具名、描述和 JSON Schema 输入规范
-- `command_query` 工具的定义由 `CommandQueryTool::definition()` 生成
+- `omnish_list_history` 和 `omnish_get_output` 工具的定义由 `CommandQueryTool::definitions()` 生成
 - 所有其他工具定义通过 `plugin_mgr.all_tools()` 收集（应用 `tool.override.json` 覆盖后）
 - 两者合并后传递给 LLM
 
@@ -330,7 +411,10 @@ LAST 5 COMMANDS:
 
 **流式状态消息:**
 - LLM 的文本块（如 "I'll run this command"）通过 `ChatToolStatus` 转发给客户端显示
-- 每个工具调用发送 `ChatToolStatus` 消息，包含从 `status_template` 插值生成的状态文本
+- 每个工具调用在**调用前**发送一条 `ChatToolStatus`（`Running` 状态，含 `param_desc`）
+- 每个工具调用在**完成后**再发送一条 `ChatToolStatus`（`Success`/`Error` 状态，含 `result_compact`/`result_full`）
+- `ChatToolStatus` 结构化字段：`tool_call_id`、`status_icon`（`StatusIcon` 枚举）、`display_name`、`param_desc`、`result_compact`（`Vec<String>`）、`result_full`（`Vec<String>`）
+- 并行工具执行时，每个工具完成后**立即**发送增量状态更新（不等待其他工具完成），由 `handle_tool_result()` 在累积结果的同时同步返回
 
 ### 智能体循环（Agent Loop）
 
@@ -340,6 +424,8 @@ LAST 5 COMMANDS:
 - 最多迭代 30 次（`max_iterations = 30`）
 - 超时限制 600 秒（10 分钟），超时后清理暂停态并返回错误
 - 每次迭代：调用 LLM → 检查是否有工具调用 → 执行工具 → 将结果反馈给 LLM
+- **使用线程级后端**：循环始终通过 `state.effective_backend` 调用 LLM，在客户端工具返回后恢复循环时也使用同一后端（修复了恢复后退回默认后端的 bug）
+- **Thinking 块保留**：当 LLM 响应中包含 `ContentBlock::Thinking` 块时，assistant 消息以内容数组形式存储（thinking + text + tool_use），确保 thinking 上下文在多轮工具调用中正确传递
 - 循环终止条件：
   - LLM 返回文本响应（无 `tool_use` 块）
   - 达到最大迭代次数
@@ -395,6 +481,11 @@ Assistant: {{final response}}
 ### Thinking 模式
 
 聊天请求启用 thinking 模式（`enable_thinking: Some(true)`），允许 LLM 在回答前进行深度推理。补全请求则禁用 thinking 模式（`enable_thinking: Some(false)`）以减少延迟。
+
+**Thinking 块保留（多轮工具调用）：**
+- LLM 响应的 `ContentBlock` 枚举包含 `Thinking(String)` 变体
+- `run_agent_loop()` 在构建 assistant 消息时，若响应中含有 `Thinking` 块，以完整内容数组（thinking + text + tool_use）而非纯字符串序列化，确保 thinking 上下文在后续工具结果循环中正确传递给 LLM
+- 最终响应（非工具调用轮次）同样保留 thinking 块存入对话历史
 
 ### 聊天上下文增强
 
@@ -517,9 +608,11 @@ Assistant: {{final response}}
 **ChatMessage 处理细节:**
 - 每条消息都构建 `ChatSetup`（通过 `build_chat_setup()` 共享函数）
 - `ChatSetup` 包含 `CommandQueryTool`、合并的工具列表、系统提示词
-- 系统提示词通过 `PromptManager` 加载：基础 `chat.json` + 用户 `chat.override.json`
+- 系统提示词通过 `PromptManager` 加载：基础 `chat.json`（编译期内嵌，启动时写入 `~/.omnish/plugins/builtin/tool.json`）+ 用户 `chat.override.json`
 - system-reminder 包含实时 `shell_cwd`（从会话探测获取）
+- **线程级模型选择**：`ChatMessage.model` 字段指定模型名时，保存到 `ThreadMeta.model`，后续对话从元数据中读取并通过 `backend.get_backend_by_name()` 解析为具体后端
 - 所有消息（包括工具调用）以原始 JSON 格式存储，但 `<system-reminder>` 在存储前被过滤
+- thinking 块以完整 `ContentBlock::Thinking` 数组存储到对话历史，供后续轮次使用
 
 ## 补全采样
 
@@ -619,6 +712,34 @@ schedule_hour = 18      # 每天几点生成（0-23），默认 18:00
 schedule = "0 0 */6 * * *"  # Cron 表达式，默认每6小时
 ```
 **实现:** 通过 `create_disk_cleanup_job()` 函数创建，调用 `SessionManager::cleanup_expired_dirs()`
+
+#### 5. `thread_summary` - 对话摘要任务
+**执行周期:** 每10分钟 (`0 */10 * * * *`)
+**功能:** 扫描所有对话线程，为有新对话轮次的线程生成或更新摘要，存储到线程的 `.meta.json` sidecar 文件中（`ThreadMeta.summary` 字段）
+**特点:**
+- 只对有内容（`rounds > 0`）且摘要已过期（新增轮次超过阈值）的线程生成摘要
+- 调用 LLM 后端生成简短摘要文本
+- 无 LLM 后端时自动跳过
+**实现:** 通过 `create_thread_summary_job()` 函数创建
+
+#### 6. `auto_update` - 自动更新任务
+**执行周期:** 可配置（默认不启用）
+**功能:** 自动从 GitHub 或本地目录下载并安装新版本，完成后优雅重启守护进程
+**机制:**
+- Phase 1：运行 `~/.omnish/install.sh --upgrade` 升级服务端二进制
+- Phase 2：运行 `~/.omnish/deploy.sh` 将新版本分发到配置的客户端机器
+- 升级成功后通知 `restart_signal`（`Arc<Notify>`），主循环检测到信号后以退出码 42（`EXIT_RESTART`）退出
+- systemd 的 `Restart=on-failure` 配置使其自动用新二进制重启
+- SIGUSR1 信号也可触发同样的 42 退出码重启流程
+**相关配置:**
+```toml
+[tasks.auto_update]
+enabled = true
+schedule = "0 0 3 * * *"   # 每天凌晨3点检查
+check_url = "https://github.com/..."  # 可选，默认使用 GitHub
+clients = ["user@host1", "user@host2"]  # 要分发的客户端机器列表
+```
+**实现:** 通过 `create_auto_update_job()` 函数创建（`crates/omnish-daemon/src/auto_update.rs`）
 
 ### TaskManager 关键函数说明
 
@@ -726,6 +847,12 @@ schedule_hour = 23
 [tasks.disk_cleanup]
 schedule = "0 0 */6 * * *"
 
+[tasks.auto_update]
+enabled = true
+schedule = "0 0 3 * * *"
+clients = ["user@host1"]
+check_url = "https://github.com/..."
+
 [context.hourly_summary]
 head_lines = 50
 tail_lines = 100
@@ -797,6 +924,7 @@ max_line_width = 128
 - `task_mgr`: `Arc<Mutex<TaskManager>>` - 定时任务管理器
 - `conv_mgr`: `Arc<ConversationManager>` - 对话管理器
 - `plugin_mgr`: `Arc<PluginManager>` - 插件管理器
+- `chat_model_name`: `Option<String>` - 聊天后端模型名称（用于 `ChatReady` 的 ghost hint）
 
 **返回:** `DaemonServer` 实例
 
@@ -992,14 +1120,15 @@ max_line_width = 128
 智能体循环核心逻辑，被 `handle_chat_message()`（初始启动）和 `handle_tool_result()`（恢复）共同调用。
 
 **流程:**
-1. 调用 LLM（传递工具定义，启用 thinking 模式）
-2. 检查响应中的 `tool_use` 块
-3. 区分 DaemonTool 和 ClientTool：
-   - DaemonTool 直接执行，收集结果
+1. 使用 `state.effective_backend` 调用 LLM（保留线程级模型覆盖，避免恢复后退回默认后端）
+2. 保留完整 assistant 消息块（包括 `ContentBlock::Thinking`），以正确顺序序列化为 JSON（thinking → text → tool_use）
+3. 检查响应中的 `tool_use` 块
+4. 区分 DaemonTool 和 ClientTool：
+   - DaemonTool 直接执行，执行前后各发送一条 `ChatToolStatus`
    - 有 ClientTool 时暂停循环，将 state 存入 `pending_agent_loops`，返回 `ChatToolCall` 消息
-4. 全部为 DaemonTool 时继续循环
-5. 无工具调用时存储消息并返回最终响应
-6. 达到最大迭代次数时返回错误提示
+5. 全部为 DaemonTool 时继续循环
+6. 无工具调用时存储消息并返回最终响应（含 thinking 块时以内容数组存储，否则以纯字符串存储）
+7. 达到最大迭代次数时返回错误提示
 
 ### `handle_tool_result()`
 处理客户端返回的工具执行结果，恢复暂停的智能体循环。
@@ -1011,7 +1140,9 @@ max_line_width = 128
 1. 从 `pending_agent_loops` 中查找对应的暂停态
 2. 检查超时（600 秒）
 3. 累积结果到 `completed_results`
-4. 所有工具完成后调用 `run_agent_loop()` 恢复循环
+4. **立即**通过 Formatter 格式化当前工具结果，生成增量 `ChatToolStatus` 更新消息（并行执行场景下每个工具完成时立即通知客户端，不等待其他工具）
+5. 若仍有工具未完成，直接返回增量状态消息，继续等待
+6. 所有工具完成后调用 `run_agent_loop()` 恢复循环，将增量消息前置于后续消息列表
 
 ### `build_chat_setup()`
 构建聊天所需的共享状态（工具列表和系统提示词），被 `handle_chat_message()` 和 `/template chat` 共同使用。
@@ -1229,7 +1360,8 @@ async fn main() -> anyhow::Result<()> {
 │       ├── commands.json
 │       └── stream.bin
 ├── threads/
-│   ├── a1b2c3d4-...-uuid1.jsonl   # 对话线程（每行一个原始 JSON 消息）
+│   ├── a1b2c3d4-...-uuid1.jsonl        # 对话线程（每行一个原始 JSON 消息）
+│   ├── a1b2c3d4-...-uuid1.meta.json    # 线程元数据（host/cwd/summary/model）
 │   └── e5f6g7h8-...-uuid2.jsonl
 ├── plugins/
 │   ├── builtin/
@@ -1246,7 +1378,8 @@ async fn main() -> anyhow::Result<()> {
 ├── logs/
 │   ├── completions/           # 补全记录（JSONL）
 │   ├── sessions/              # 会话更新记录（JSONL）
-│   └── samples/               # 补全采样数据（JSONL）
+│   ├── samples/               # 补全采样数据（JSONL）
+│   └── daemon.log.YYYY-MM-DD  # 每日轮转的守护进程日志
 └── notes/
     ├── 2026-02-24.md          # 日报
     └── hourly/
@@ -1258,7 +1391,8 @@ async fn main() -> anyhow::Result<()> {
 - `meta.json`: JSON格式的会话元数据（ID、时间戳、属性等）
 - `commands.json`: JSON数组格式的命令记录
 - `stream.bin`: 二进制格式的I/O流数据，包含时间戳、方向和原始字节
-- `*.jsonl`（threads/）: 每行一个原始 JSON 消息，保留完整的 LLM API 格式（包括 tool_use、tool_result 等复杂内容块）。`<system-reminder>` 标签在存储前被过滤。
+- `*.jsonl`（threads/）: 每行一个原始 JSON 消息，保留完整的 LLM API 格式（包括 tool_use、tool_result、thinking 等复杂内容块）。`<system-reminder>` 标签在存储前被过滤。
+- `*.meta.json`（threads/）: 线程元数据（ThreadMeta），含 host/cwd/summary/summary_rounds/model 字段。
 - `*.jsonl`（logs/samples/）: 每行一个 `CompletionSample` JSON对象
 - `tool.json`: 插件工具定义文件，包含 `plugin_type` 和工具列表
 - `tool.override.json`: 用户自定义工具描述覆盖
@@ -1316,11 +1450,13 @@ async fn main() -> anyhow::Result<()> {
   - 聊天模板包含实际注册的工具定义（来自 `PluginManager`）
 - `__cmd:sessions` — 列出所有活跃会话
 - `__cmd:session` — 显示当前会话调试信息
+- `__cmd:daemon` — 显示守护进程版本号及当前定时任务列表（等同于 `/debug daemon`）
 - `__cmd:conversations` — 列出所有聊天对话（含 `thread_ids` 数组），按修改时间降序排列，显示相对时间（如 "12s ago"、"1h ago"）、交换次数、最后问题
-- `__cmd:resume` — 恢复最近的对话（等同于 `__cmd:resume 1`），显示完整对话历史（所有用户-助手交换对），返回 `thread_id`
-- `__cmd:resume N` — 按索引恢复指定对话（1-based），显示完整对话历史，返回 `thread_id`
-- `__cmd:resume_tid <thread_id>` — 按线程 ID 恢复对话（跨删除操作稳定），返回完整对话历史
+- `__cmd:resume` — 恢复最近的对话（等同于 `__cmd:resume 1`），返回结构化历史（`history` 数组含 `user_input`、`llm_text`、`tool_status`、`response`、`separator` 类型条目）及 `thread_id`
+- `__cmd:resume N` — 按索引恢复指定对话（1-based），返回结构化历史及 `thread_id`
+- `__cmd:resume_tid <thread_id>` — 按线程 ID 恢复对话（跨删除操作稳定），返回结构化历史
 - `__cmd:conversations del <thread_id>` — 按线程 ID 删除对话，返回 `deleted_thread_id`
+- `__cmd:models [thread_id]` — 列出所有可用后端（含 `name`、`model`、`selected` 字段），可选传入线程 ID 以显示该线程的当前模型选择
 - `__cmd:tasks [disable <name>]` — 查看或管理定时任务
 
 这些命令由客户端的`/`命令转发，通过`handle_builtin_command()`函数处理。

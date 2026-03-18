@@ -32,12 +32,20 @@ LLM请求的工具调用：
 
 ### LLM后端接口
 
+#### `BackendInfo`
+后端信息结构体，用于列举可用后端：
+- `name`: 后端名称（配置中的key）
+- `model`: 模型名称
+
 #### `LlmBackend` trait
 LLM后端接口，定义所有LLM后端必须实现的方法：
 - `complete()`: 发送补全请求并获取响应
 - `name()`: 返回后端名称标识符
 - `max_content_chars()`: 返回该后端模型的上下文最大字符数（可选，默认None）
 - `max_content_chars_for_use_case()`: 根据用途返回上下文字符数限制（可选，默认返回max_content_chars()）
+- `list_backends()`: 列举所有可用后端信息（仅 `MultiBackend` 有意义，其他返回空列表）
+- `chat_default_name()`: 返回默认 Chat 后端名称（仅 `MultiBackend` 有意义）
+- `get_backend_by_name()`: 根据配置名称获取特定后端（用于按线程模型覆盖）
 
 #### `LlmRequest`
 LLM请求结构体，包含发送给LLM的完整请求信息：
@@ -55,14 +63,14 @@ LLM请求结构体，包含发送给LLM的完整请求信息：
 
 #### `LlmResponse`
 LLM响应结构体，包含LLM返回的结果：
-- `content`: 响应内容块列表（`Vec<ContentBlock>`）
+- `content`: 响应内容块列表（`Vec<ContentBlock>`），按API返回顺序保留，可能包含 `Thinking`、`Text`、`ToolUse` 的混合
 - `stop_reason`: 停止原因（`StopReason`枚举）
 - `model`: 使用的模型名称
-- `thinking`: 思考内容（可选，来自支持思考模式的模型）
 - `usage`: token使用统计（可选，`Usage`结构体）
 
 辅助方法：
 - `text()`: 提取所有文本块并用换行符连接，方便不使用tool-use的调用者
+- `thinking()`: 提取所有思考块的内容（`Option<String>`），若无思考内容返回`None`
 - `tool_calls()`: 提取所有工具调用（`Vec<&ToolCall>`）
 
 #### `Usage`
@@ -76,6 +84,7 @@ token使用统计结构体，从API响应中解析：
 响应内容块类型：
 - `Text(String)`: 文本内容
 - `ToolUse(ToolCall)`: 工具调用请求
+- `Thinking(String)`: 思考内容块（来自支持扩展思考的模型，按API返回的原始顺序保留）
 
 #### `StopReason` 枚举
 LLM停止生成的原因：
@@ -143,14 +152,15 @@ Anthropic API后端实现：
 
 #### `OpenAiCompatBackend`
 OpenAI兼容API后端实现：
-- 支持OpenAI、Azure OpenAI、本地兼容API（如vLLM）
+- 支持OpenAI、Azure OpenAI、本地兼容API（如vLLM）；配置中 `"openai"` 可作为 `"openai-compat"` 的别名
 - 实现`LlmBackend` trait
 - 使用OpenAI兼容的Chat Completions API
 - 多轮对话支持：conversation历史映射为messages数组
 - 系统提示词支持：作为 `role: "system"` 消息前置
 - 思考模式：通过 `chat_template_kwargs` 传递 `enable_thinking: false`（适配vLLM/Qwen3）
 - 工具调用支持：通过`tools`字段提供工具定义，解析响应中的`tool_calls`
-- `extract_thinking()` 辅助函数解析响应中的 `<think>` 标签
+- `extract_thinking()` 辅助函数解析响应中的 `<think>` 标签（提取为 `ContentBlock::Thinking`）
+- `convert_extra_messages()` 辅助函数将 Anthropic 格式的 extra_messages（含 `tool_use`/`tool_result`/`thinking` 内容块）转换为 OpenAI 格式（`tool_calls`/`tool` role/`reasoning_content`）
 - 429自动重试：最多3次重试，指数退避，支持解析`retry-after`响应头
 - Usage解析：从API响应中提取`prompt_tokens`→`input_tokens`、`completion_tokens`→`output_tokens`、`cached_tokens`→`cache_read_input_tokens`
 - 请求日志：Chat请求的完整payload记录到`~/.omnish/logs/messages/`
@@ -160,6 +170,9 @@ OpenAI兼容API后端实现：
 - 根据 `UseCase` 将请求路由到不同的后端实例
 - 支持为 Completion、Analysis、Chat 分别配置不同的模型
 - 创建时自动解析Langfuse配置并包装各后端
+- 存储所有命名后端（`named_backends: HashMap<String, Arc<dyn LlmBackend>>`），支持按名称获取后端
+- 初始化时容忍单个后端失败：use_case 对应的后端初始化失败时记录 warning 并回退到默认后端，而不是中止所有初始化
+- 实现 `list_backends()`、`chat_default_name()`、`get_backend_by_name()` 用于每线程模型选择
 
 #### `LangfuseBackend`（可观测性）
 Langfuse可观测性包装器，透明地为LLM调用添加追踪：
@@ -516,6 +529,42 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
 - 错误处理场景
 
 ## 更新历史
+
+### v0.7.x - 思考块重构、每线程模型选择、OpenAI工具调用增强
+
+**主要变更:**
+
+1. **ContentBlock重构** (commit 7270e7c):
+   - 新增 `ContentBlock::Thinking(String)` 变体，按原始顺序保留API响应中的思考块
+   - 移除 `LlmResponse.thinking: Option<String>` 独立字段
+   - 新增 `LlmResponse::thinking()` 方法提取思考内容
+   - 思考块在工具调用循环中被正确保留（修复 #335）
+
+2. **每线程模型选择** (commit 2a2e8d0):
+   - 新增 `BackendInfo` 结构体（`name`, `model`）
+   - `LlmBackend` trait 新增 `list_backends()`、`chat_default_name()`、`get_backend_by_name()` 方法
+   - `MultiBackend` 新增 `named_backends` HashMap 和相关字段，支持按名称获取后端
+   - 支持 `/model` 命令在聊天中切换当前线程的模型
+
+3. **后端初始化容错** (commit a6b6e97):
+   - use_case 后端初始化失败时记录 warning 并回退到默认后端
+   - 不再因单个后端失败而中止整体初始化（修复 #315）
+
+4. **OpenAI 别名** (commit 32cb551):
+   - `"openai"` 可作为 `"openai-compat"` 的别名用于 `backend_type` 配置
+
+5. **OpenAI工具调用增强** (commit 021d446, 69d2208):
+   - OpenAI兼容后端完整支持工具调用
+   - 新增 `convert_extra_messages()` 函数：将 Anthropic 格式 extra_messages（含 thinking 块）转换为 OpenAI 格式
+   - 修复工具调用循环中思考块被丢失的问题（修复 #339）
+
+6. **每小时总结上下文增强** (commit 4ba3183):
+   - `HOURLY_NOTES_PROMPT` 上下文新增 `<conversations>` 标签，包含相关线程对话记录
+
+7. **线程标题总结** (commit 26491af):
+   - 新增 `THREAD_SUMMARY_PROMPT` 常量，为对话线程生成≤20字的中文标题
+
+**相关issue:** #154 (per-thread model), #335 (thinking block order), #339 (OpenAI thinking in tool loop), #315 (backend init tolerance)
 
 ### v0.6.0 - 可观测性、提示词管理和健壮性改进
 

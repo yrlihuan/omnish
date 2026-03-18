@@ -127,6 +127,19 @@ pub struct Frame {
 **返回:** `Result<Message>`
 **用途:** 发送请求并等待单个响应，使用请求ID匹配响应
 
+### `RpcClient::send()`
+以 fire-and-forget 模式发送消息，不等待响应。
+
+**参数:** `msg: Message`
+**返回:** `Result<()>`
+**用途:** 发送不需要响应的消息（如 CompletionSummary、SessionEnd 等），避免阻塞调用者的事件循环。与 `call()` 的区别在于不注册 reply 通道，消息发送后立即返回，不等待服务器响应。
+
+**使用场景：**
+- `SessionEnd` — 会话结束通知
+- `CompletionSummary` — 补全采样数据上报
+- `send_or_buffer()` 中的非关键消息
+- 任何只需单向通知、不需要响应的消息
+
 ### `RpcClient::call_stream()`
 发送消息到服务器并接收多个响应（用于流式传输）。
 

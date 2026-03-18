@@ -405,6 +405,11 @@ omnish-client 提供了一个交互式选择器组件，用于在终端中进行
 - 用户按ESC取消时返回None
 - 用于 `/resume` 命令选择对话
 
+**`pick_one_at(title: &str, items: &[&str], initial: usize) -> Option<usize>`**
+- 单选模式，带预选索引，初始光标定位在 `initial` 项
+- 用于 `/model` 命令，预选当前模型（commit 2a2e8d0）
+- 初始化时 `scroll_offset` 自动居中在 `initial` 位置：`cursor.saturating_sub(vis/2).min(max_scroll)`
+
 **`pick_many(title: &str, items: &[&str]) -> Option<Vec<usize>>`**
 - 多选模式，返回选中项的索引列表（从0开始）
 - 用户按ESC取消时返回None
@@ -420,6 +425,7 @@ omnish-client 提供了一个交互式选择器组件，用于在终端中进行
 - 超过10项时启用滚动视口（`MAX_VISIBLE = 10`）
 - 滚动时标题行显示 `(N more above)` 或 `(N more below)` 提示
 - 光标移出视口时自动滚动
+- `scroll_offset` 溢出修复（commit 81d0a6b）：`max_scroll` 使用 `items.len().saturating_sub(vis)` 计算，防止当 `initial >= items.len()` 时 `scroll_offset` 超出合法范围
 
 #### 渲染方式
 
@@ -624,6 +630,22 @@ Title text
 - 用户直接输入问题即可自动创建新对话线程（懒创建）
 - 简化的命令集使交互更直观
 
+**线程创建延迟 (commit 9dfeb9c, bef24ac):**
+- 进入聊天模式时不再立即发送 `ChatStart` 消息
+- 线程在首条用户消息发送前才懒创建（发送 `ChatStart` → 等待 `ChatReady`）
+- 这样避免了因用户直接退出聊天模式而产生空线程
+
+**聊天模式入口Ghost Hint (commit 60fb568):**
+- 进入聊天模式时（新聊天或resume），在 `> ` 提示符后方显示一行dim ghost提示
+- 新聊天：显示 "type to start, /resume to continue"
+- resume后有非默认模型：显示 "model for conversation: {model_name}"（来自 `ChatReady.model_name`）
+- 模型名自动去除 `-YYYYMMDD` 日期后缀（`strip_date_suffix()`）
+- 仅显示一次（`ghost_hint_shown` 标志控制）
+
+**resume分隔线Ctrl+O提示 (commit 76cc3da):**
+- resume显示历史后的分隔线改用 `render_separator()`（含 "ctrl+o to expand" 提示）
+- 之前误用了 `render_separator_plain()`，没有提示
+
 **双前缀快速恢复 (issue #261):**
 - 连续快速输入两次前缀（如`::`）在250ms内触发 `InterceptAction::ResumeChat`
 - 自动恢复最近的对话线程（等价于 `/resume 1`）
@@ -661,6 +683,69 @@ Title text
 - 区域高度变化时自动协调重绘，防止内容重叠
 - 编辑器重绘使用相对光标移动（issue #278），避免全屏重绘
 
+### `ChatSession` 数据结构
+
+`ChatSession` 封装了多轮聊天循环的全部状态，由 `run_chat_loop` 持有并驱动。
+
+**字段:**
+- `current_thread_id: Option<String>` - 当前会话线程ID，懒创建（首条消息发送时才创建，issue #130）
+- `cached_thread_ids: Vec<String>` - 从 `/thread list` 缓存的线程ID列表，用于 `/resume N` 的稳定索引（issue #133, #150）
+- `chat_history: VecDeque<String>` - 聊天历史记录（跨会话持久化，issue #149）
+- `history_index: Option<usize>` - 历史导航索引
+- `completer: GhostCompleter` - 命令补全器（用于 `/` 前缀的ghost text自动完成）
+- `scroll_history: Vec<ScrollEntry>` - 可浏览的完整会话历史（Ctrl+O browse mode）
+- `thinking_visible: bool` - 是否显示 "(thinking...)" 指示器
+- `has_activity: bool` - 是否执行过命令（控制backspace退出和自动退出行为，issue #148, #151）
+- `pending_input: Option<String>` - 进入聊天时携带的初始消息
+- `client_plugins: Arc<ClientPluginManager>` - 客户端插件管理器
+- `ghost_hint_shown: bool` - 入口ghost hint是否已显示
+- `pending_model: Option<String>` - 待应用的模型名（新线程首条消息时随 `ChatMessage.model` 发出）
+- `resumed_model: Option<String>` - 恢复的线程的非默认模型名（显示为ghost hint提示）
+- `lines_printed: usize` - 已打印的终端行数（用于追踪工具区段的屏幕位置）
+- `tool_section_start: Option<usize>` - 当前工具批次头部在屏幕中的起始行（用于 `redraw_tool_section()`）
+- `tool_section_hist_idx: Option<usize>` - `scroll_history` 中当前工具批次开始的索引
+
+**关键方法:**
+- `new(chat_history: VecDeque<String>) -> Self` - 创建新实例
+- `into_history(self) -> VecDeque<String>` - 取出聊天历史（会话结束时持久化）
+- `run(rpc, session_id, proxy, initial_msg, ...) -> async` - 多轮聊天主循环
+- `redraw_tool_section()` - 重新渲染工具区段（见下文）
+- `handle_thread_del(trimmed, session_id, rpc)` - 处理 `/thread del` 命令
+- `handle_thread_list(session_id, rpc)` - 处理 `/thread list` 命令
+- `handle_resume(trimmed, session_id, rpc)` - 处理 `/resume` 命令
+- `handle_model(session_id, rpc)` - 处理 `/model` 命令（模型picker选择）
+- `handle_test_picker(selected_idx)` - 处理 `/test picker` 命令（集成测试用）
+- `read_input(allow_backspace_exit) -> Option<String>` - 读取用户输入（使用LineEditor）
+
+### `redraw_tool_section()` 方法
+
+并行工具执行时，当某个工具完成后需要原地更新对应行的状态图标和输出。`redraw_tool_section()` 实现了完整的工具区段重绘。
+
+**工作原理:**
+1. 从 `tool_section_start`（已打印行数）计算需要上移多少行
+2. 发送 `\x1b[{N}A` 上移光标到工具区段起始行
+3. 发送 `\x1b[J` 擦除光标到屏幕底部的全部内容
+4. 重新渲染 `scroll_history[tool_section_hist_idx..]` 中所有 `ToolStatus` 条目
+5. 更新 `lines_printed` 为重绘后的实际行数
+
+**触发时机:**
+- 流式消息中收到带 `result_compact` 的第二次 `ChatToolStatus`（工具完成）
+- 并行发送中间工具结果时（`rpc.call()` 返回带 `result_compact` 的 `ChatToolStatus`）
+
+### `ScrollEntry` 枚举
+
+`scroll_history` 的条目类型，用于 Ctrl+O browse mode 重现会话内容。
+
+**变体:**
+- `UserInput(String)` - 用户输入文本
+- `ToolStatus(ChatToolStatus)` - 工具执行状态（包含 display_name、param_desc、status_icon、result_compact、result_full）
+- `LlmText(String)` - LLM中间文本（thinking/streaming text）
+- `Response(String)` - LLM最终响应（Markdown格式）
+- `Separator` - 响应后的分隔线
+- `SystemMessage(String)` - 系统消息（如 "(interrupted)", "(resumed conversation)"）
+
+`ToolStatus` 变体使用结构化渲染：browse mode 下调用 `render_tool_header_full()` + `render_tool_output(result_full)`，inline模式下调用 `render_tool_header()` + `render_tool_output(result_compact)`。
+
 ### `run_chat_loop()` 函数
 多轮聊天主循环，接管用户输入直到退出。
 
@@ -675,24 +760,17 @@ Title text
 - `cursor_col: u16` - 当前光标列
 - `cursor_row: u16` - 当前光标行
 
-**内部状态:**
-- `current_thread_id: Option<String>` - 当前会话线程ID，懒创建（issue #130）
-- `cached_thread_ids: Vec<String>` - 从 `/thread list` 缓存的线程ID列表，用于 `/resume N` 的稳定索引（issue #133, #150）
-- `has_activity: bool` - 跟踪是否执行过命令，控制backspace退出和自动退出行为（issue #148, #151）
-- `last_scroll_view: Option<ScrollView>` - 最近响应的ScrollView（传给read_chat_input供Ctrl+O浏览）
-- `layout: ChatLayout` - 布局管理器（scroll_view + editor + status 三个区域）
-- `client_plugins: ClientPluginManager` - 客户端插件管理器
-
 **流程:**
-1. 初始化ChatLayout（scroll_view + editor + status 三个区域）
-2. 通过 `layout.update("editor", ...)` 渲染聊天提示符（`> `）
-3. 通过 `read_chat_input()` 读取用户输入（使用LineEditor）
-4. 处理聊天内命令（`/resume`, `/thread list`, `/thread del`, `/context`, 等）
+1. 创建 `ChatSession`（或由上层传入），设置 `pending_input`
+2. 若无 pending_input，渲染 `> ` 提示符；首次进入时显示 ghost hint（"type to start, /resume to continue" 或非默认模型名）
+3. 通过 `read_input()` 读取用户输入（使用LineEditor）
+4. 处理聊天内命令（`/resume`, `/thread list`, `/thread del`, `/model`, `/context`, 等）
 5. 检查命令执行后是否应该自动退出（检查类命令且作为首个动作）
-6. 非命令输入作为LLM查询发送（懒创建线程）
-7. 使用Markdown渲染LLM响应，通过ScrollView显示
-8. 工具调用通过ClientPluginManager本地执行，并行处理多个工具
-9. 循环继续
+6. 非命令输入作为LLM查询发送：先懒创建线程（`ChatStart` → `ChatReady`），再发送 `ChatMessage`
+7. 流式处理响应：`ChatToolStatus`（工具状态）→ `ChatToolCall`（工具调用）→ `ChatResponse`（最终响应）
+8. 工具调用通过 `ClientPluginManager` 并行执行，中间结果通过 `rpc.call()` 发送，最后结果通过 `rpc.call_stream()` 获取新响应流
+9. 工具完成后调用 `redraw_tool_section()` 更新工具区段的状态图标
+10. Markdown渲染LLM最终响应，打印分隔线（含 ctrl+o 提示），循环继续
 
 ### `read_chat_input()` 函数
 在原始模式下使用LineEditor读取聊天输入。
@@ -739,6 +817,14 @@ Title text
   - 支持多索引语法：逗号分隔和范围语法，如 `1,2-4,5` 删除序号1, 2, 3, 4, 5的线程（issue #156）
   - 索引按数值排序而非字典序（fix f7b4ebb）
 
+**模型选择命令:**
+- `/model` — 显示所有已配置LLM backend的picker选择器（commit 2a2e8d0），选中后切换当前线程使用的模型
+  - 已有线程：发送带空 `query` 的 `ChatMessage`（仅 `model` 字段）到守护进程，返回 `Ack` 表示成功
+  - 新线程（未发过消息）：保存到 `pending_model`，下一条消息时随 `ChatMessage.model` 一并发出
+  - 选择结果通过 `ThreadMeta` 持久化到守护进程
+  - 使用 `pick_one_at()` 预选当前模型（`selected=true` 的条目）
+  - 守护进程命令：`__cmd:models [thread_id]`，返回 `models` 数组（包含 `name`, `model`, `selected` 字段）
+
 **上下文命令:**
 - `/context` — 在聊天模式中显示当前线程的对话上下文（issue #136），支持 `| head/tail` 管道（issue #144）和重定向（issue #210）
 
@@ -757,6 +843,7 @@ Title text
 - `/tasks` — 查看或管理定时任务
 - `/update` — 透明自重启到磁盘最新版本（issue #217）
 - `/update auto` — 切换运行时自动更新开关（不持久化）
+- `/test picker [N]` — 隐藏测试命令（不在 `/help` 中显示），使用20个虚拟条目测试picker组件；`N` 为初始选中索引（commit 5df1e1b）
 
 ### Ctrl-C 中断 (issue #123, #241)
 聊天等待LLM响应或工具执行时，用户可按Ctrl-C中断：
@@ -1021,15 +1108,29 @@ omnish-client 包含客户端事件日志系统，用于调试和监控异步事
 纯函数，生成ANSI终端输出字符串。
 
 **函数列表:**
-- `render_separator(cols: u16) -> String` - 渲染分隔线
+- `render_separator(cols: u16) -> String` - 渲染分隔线（含 "ctrl+o to expand" 提示，右侧2个短划线）
+- `render_separator_plain(cols: u16) -> String` - 渲染纯分隔线（无提示，仅 `─` 重复）
 - `render_chat_prompt() -> String` - 渲染聊天模式内的输入提示（`> `），用于多轮聊天循环
 - `render_dismiss() -> String` - 清除聊天界面
 - `render_input_echo(user_input: &[u8]) -> String` - 渲染输入回显
-- `render_thinking() -> String` - 渲染思考状态
-- `render_response(content: &str) -> String` - 渲染LLM响应
-- `render_error(msg: &str) -> String` - 渲染错误消息
-- `render_ghost_text(ghost: &str) -> String` - 渲染幽灵文本建议
+- `render_response(content: &str) -> String` - 渲染LLM响应（Markdown → ANSI）
+- `render_error(msg: &str) -> String` - 渲染错误消息（红色 `[omnish] ...`）
+- `render_ghost_text(ghost: &str) -> String` - 渲染幽灵文本建议（dim灰色，save/restore光标）
 - `render_chat_history(last_exchange: Option<&(String, String)>, earlier_count: u32) -> String` - 渲染聊天历史（用于恢复对话时显示上下文）
+- `render_tool_header(icon: &StatusIcon, display_name: &str, param_desc: &str, max_cols: usize) -> String` - 渲染工具状态头行（inline模式，param_desc截断到可用宽度）
+- `render_tool_header_full(icon: &StatusIcon, display_name: &str, param_desc: &str) -> String` - 渲染工具状态头行（browse模式，param_desc不截断）
+- `render_tool_output(lines: &[String]) -> Vec<String>` - 渲染工具输出行（`⎿` gutter格式，dim样式）
+- `truncate_cols(s: &str, max_cols: usize) -> String` - CJK感知截断（全角字符占2列，超出用 `…`）
+- `display_width(s: &str) -> usize` - 计算字符串显示宽度（剥离ANSI序列，CJK全角算2列）
+
+**工具状态显示格式:**
+```
+● ToolName(param desc truncated...)    ← render_tool_header（inline，running/done/error）
+  ⎿  result line 1                     ← render_tool_output 第一行
+     result line 2                     ← render_tool_output 后续行
+```
+- 状态图标：`●`（白色=Running，绿色=Success，红色=Error）
+- `display_name` 粗体，`param_desc` dim括号内，truncate到终端宽度
 
 ### 命令分发 (`command.rs`)
 解析聊天消息中的命令，使用统一的命令注册表管理所有聊天命令和完成建议。
@@ -1103,9 +1204,15 @@ omnish-client 包含客户端事件日志系统，用于调试和监控异步事
 - 支持外部插件工具（plugin系统）
 - 特权模式（privileged）工具可以写入CWD（issue #219）
 
+**并行工具状态渲染（commit 81a9475, 8ae0126）:**
+- 工具开始执行时（第一次 `ChatToolStatus`，无 `result_compact`）：记录 `tool_section_start` 和 `tool_section_hist_idx`，追加显示工具头行
+- 工具完成时（第二次 `ChatToolStatus`，有 `result_compact`）：更新 `scroll_history` 中对应条目，调用 `redraw_tool_section()` 整体重绘工具区段
+- 中间结果（`rpc.call()` 返回的 `ChatToolStatus`）：同样更新条目并触发 `redraw_tool_section()`
+- 效果：多工具并行时，每个工具完成后状态图标原地从 `●`(running) 变为 `●`(success/error)，输出出现在各自头行下方
+
 **用户体验:**
-- 工具执行时显示实时状态（通过LineStatus组件）
-- 多工具并行执行，显示追加式状态
+- 工具执行时显示实时状态（`●` 图标 + 工具名 + 参数描述）
+- 多工具并行执行，所有工具集中在一个区段内同步更新
 - 工具完成后继续显示LLM的最终响应（通过Markdown渲染）
 - 用户无需手动触发工具调用，全自动化
 - 支持Ctrl-C中断工具执行循环（issue #241）
@@ -1381,6 +1488,10 @@ auto_update = true
   - 测试 `/resume` 命令中的picker交互
   - 验证方向键导航和Enter确认
   - 验证选择结果正确恢复对话
+- `/test picker` 集成测试命令（commit 5df1e1b）
+  - 在聊天模式内运行 `/test picker [N]` 启动20项虚拟picker
+  - 用于验证picker在实际终端中的显示和交互行为
+  - 通过 `/test` picker命令在集成测试框架中调用
 - 多索引删除测试（`tools/integration_tests` 中的线程清理）
   - 使用 `/thread del 1-N` 批量删除测试线程
 
@@ -1405,3 +1516,58 @@ auto_update = true
 - 输出数据节流发送
 - 使用原始模式减少系统调用
 - 编辑器重绘使用相对光标移动代替layout.update()（issue #278）
+
+## 更新历史
+
+### 2026-03-18（当前，约60个commit自feeb741起）
+
+**并行工具状态渲染重写 (commit 81a9475, 8ae0126, #342):**
+- `ChatSession` 新增 `lines_printed`、`tool_section_start`、`tool_section_hist_idx` 字段
+- 新增 `redraw_tool_section()` 方法：上移光标到工具区段起始行，擦除后整体重绘所有 `ToolStatus` 条目
+- 工具完成时（第二次 `ChatToolStatus`）原地更新 `scroll_history` 中的条目，再调用重绘
+- 中间工具结果（`rpc.call()` 响应中的 `ChatToolStatus`）也触发更新（commit d9b9a42, #344）
+- 多工具并行时所有工具状态图标在同一区段内原地更新，视觉效果清晰
+
+**新增 `ScrollEntry::ToolStatus` 变体 (commit d227799):**
+- 将工具执行状态作为结构化条目存入 `scroll_history`，替代之前的纯文本方式
+- 使用 `ChatToolStatus` 结构体存储 display_name、param_desc、status_icon、result_compact、result_full
+- Browse mode（Ctrl+O）中使用 `result_full`，inline显示使用 `result_compact`
+
+**统一工具输出格式 (commit 762e512, 4a6687d):**
+- `render_tool_output()` 使用 `⎿` gutter格式，所有输出行带dim样式
+- `render_tool_header()` / `render_tool_header_full()` 统一状态图标和参数描述格式
+
+**每线程模型选择 (commit 2a2e8d0):**
+- 新增 `/model` 命令，显示所有已配置LLM backend的picker选择器
+- 选择持久化通过守护进程 `ThreadMeta` 机制
+- 新增 `ChatSession.pending_model` 字段（新线程首条消息时携带）
+- 新增 `ChatSession.resumed_model` 字段（resume时来自响应JSON的 `model` 字段）
+- Picker新增 `pick_one_at()` 函数支持预选初始项
+- 模型名自动去除 `-YYYYMMDD` 日期后缀（`strip_date_suffix()` 函数）
+
+**Picker scroll_offset 溢出修复 (commit 81d0a6b):**
+- `max_scroll` 改用 `items.len().saturating_sub(vis)` 计算，防止 `initial >= items.len()` 时溢出
+
+**Resume分隔线Ctrl+O提示修复 (commit 76cc3da):**
+- Resume显示历史后的分隔线改用 `render_separator()`，添加 "ctrl+o to expand" 提示
+
+**聊天模式入口Ghost Hint (commit 60fb568):**
+- 进入聊天模式时在 `> ` 后显示dim ghost提示
+- 新聊天显示 "type to start, /resume to continue"
+- Resume后有非默认模型则显示 "model for conversation: {model_name}"
+
+**线程创建延迟 (commit 9dfeb9c, bef24ac):**
+- 进入聊天模式时不再立即发送 `ChatStart`
+- 线程在首条用户消息前懒创建，避免空线程
+
+**Browse mode改进 (commit d8f503f, 09d71ff 等):**
+- Ctrl-F/Ctrl-B 分页滚动
+- CJK感知截断（`truncate_cols()` 支持全角字符）
+- 长行折行显示代替截断裁剪
+
+**ScrollView提取 (commit 791716d):**
+- `ChatSession` 使用自然scrollback显示历史（scroll_view提取自inline chat）
+
+**集成测试框架扩展 (commit 5df1e1b, #343):**
+- 新增 `/test picker [N]` 隐藏命令，用于picker组件集成测试
+- 新增 `/test` picker命令在集成测试框架中选择测试用例
