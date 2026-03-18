@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.7.1 (2026-03-18)
+
+### Features
+- **client**: `/integrate` command for tmux, screen, ssh integration (#318)
+- **daemon**: Graceful shutdown and restart after auto-update (#325)
+- **common**: Generic `set_toml_value` helper, persist `/update auto` setting (#324)
+- **install**: Set `max_content_chars` per provider (deepseek=130k, completion=32k)
+
+### Fixes
+- **install**: Prevent self-replacement corruption during upgrade (`{ ... exit; }` wrapper)
+- **install**: Remove old binaries before copy to avoid "Text file busy" error
+- **install**: Remove remote binaries before scp to avoid overwrite failure
+
+---
+
 ## v0.7.0 (2026-03-18)
 
 ### Features
