@@ -64,3 +64,11 @@ cooldown_seconds = 5
 [tasks.daily_notes]
 enabled = true
 # schedule_hour = 23       # 每天几点生成日报 (0-23)，默认 23
+
+[auto_update]
+enabled = true
+# check_interval_hours = 24  # 检查更新间隔时间（小时），默认 24
+# auto_install = true        # 是否自动安装更新，默认 true
+# notify_on_update = true    # 更新时是否通知，默认 true
+# channel = "stable"         # 更新通道：stable, beta, nightly，默认 stable
+# check_url = "https://api.github.com/repos/omnish/omnish/releases/latest"  # 自定义检查URL
