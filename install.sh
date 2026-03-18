@@ -795,20 +795,19 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]] && [[ -z "${OLD_
         fi
     fi
 
-    # Append auto_update config with client list to daemon.toml
+    # Add client list to existing [tasks.auto_update] section in daemon.toml
     if [[ ${#DEPLOYED_CLIENTS[@]} -gt 0 ]] && [[ -f "$DAEMON_TOML" ]]; then
-        {
-            echo ""
-            echo "[tasks.auto_update]"
-            echo "enabled = true"
-            # Build TOML array
-            printf 'clients = ['
-            for i in "${!DEPLOYED_CLIENTS[@]}"; do
-                (( i > 0 )) && printf ', '
-                printf '"%s"' "${DEPLOYED_CLIENTS[$i]}"
-            done
-            echo ']'
-        } >> "$DAEMON_TOML"
+        # Build TOML array string: clients = ["user@host1", "user@host2"]
+        CLIENTS_TOML="clients = ["
+        for i in "${!DEPLOYED_CLIENTS[@]}"; do
+            (( i > 0 )) && CLIENTS_TOML+=", "
+            CLIENTS_TOML+="\"${DEPLOYED_CLIENTS[$i]}\""
+        done
+        CLIENTS_TOML+="]"
+        # Insert clients line after check_url (unique in the file, inside [tasks.auto_update])
+        sed -i "/check_url/a ${CLIENTS_TOML}" "$DAEMON_TOML"
+        # Ensure auto_update is enabled (only match within [tasks.auto_update] section)
+        sed -i '/^\[tasks\.auto_update\]/,/^\[/{s/^enabled = false$/enabled = true/}' "$DAEMON_TOML"
         info "Auto-update enabled with ${#DEPLOYED_CLIENTS[@]} client(s) in daemon.toml"
     fi
 
