@@ -193,20 +193,17 @@ impl ChatSession {
         // Move past shell prompt to a new line
         write_stdout("\r\n");
 
-        // Eagerly start chat to get model name for ghost hint
+        // Get model name for ghost hint (don't create a new thread here)
         {
             let req_id = Uuid::new_v4().to_string()[..8].to_string();
             let start_msg = Message::ChatStart(ChatStart {
                 request_id: req_id.clone(),
                 session_id: session_id.to_string(),
-                new_thread: !is_resumed,
+                new_thread: false,
             });
             match rpc.call(start_msg).await {
                 Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
                     self.model_name = ready.model_name;
-                    if !is_resumed {
-                        self.current_thread_id = Some(ready.thread_id);
-                    }
                 }
                 _ => {}
             }

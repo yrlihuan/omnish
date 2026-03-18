@@ -297,11 +297,13 @@ async fn handle_message(
             let thread_id = if cs.new_thread {
                 conv_mgr.create_thread(meta)
             } else {
-                let tid = conv_mgr.get_latest_thread()
-                    .unwrap_or_else(|| conv_mgr.create_thread(meta.clone()));
-                // Update meta for existing thread
-                conv_mgr.save_meta(&tid, &meta);
-                tid
+                match conv_mgr.get_latest_thread() {
+                    Some(tid) => {
+                        conv_mgr.save_meta(&tid, &meta);
+                        tid
+                    }
+                    None => String::new(), // No thread yet — return empty, don't create
+                }
             };
             Message::ChatReady(ChatReady {
                 request_id: cs.request_id,
