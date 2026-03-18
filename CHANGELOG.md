@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.7.4 (2026-03-18)
+
+### Fixes
+- **client**: Picker scroll_offset overflow causes duplicate items when pre-selected item is scrolled (#337)
+- **client**: Resume separator missing `ctrl+o` hint (#341)
+- **daemon**: Agent loop uses wrong backend after client-side tool resumption (#339)
+- **daemon**: Preserve thinking blocks in OpenAI-compat tool use loop (#339)
+- **daemon**: Enforce sandbox on all tools, remove sandboxed opt-out (#322)
+
+### Other
+- **client**: Deferred thread creation until first message in chat mode (#336)
+- **client**: Integration test for picker scroll rendering (`verify_issue_337.sh`)
+
+---
+
 ## v0.7.3 (2026-03-18)
 
 ### Features
