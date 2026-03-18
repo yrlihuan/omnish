@@ -38,9 +38,9 @@ for client in "${CLIENTS[@]}"; do
     info "Deploying to: ${client}..."
     REMOTE_HOME="~/.omnish"
 
-    # Ensure remote directories exist
+    # Ensure remote directories exist and remove old binaries (running binaries can't be overwritten)
     ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$client" \
-        "mkdir -p ${REMOTE_HOME}/bin ${REMOTE_HOME}/tls" 2>/dev/null \
+        "mkdir -p ${REMOTE_HOME}/bin ${REMOTE_HOME}/tls && rm -f ${REMOTE_HOME}/bin/omnish ${REMOTE_HOME}/bin/omnish-plugin" 2>/dev/null \
         || { warn "Cannot connect to ${client}, skipping"; continue; }
 
     if scp -q -o BatchMode=yes "${BIN_DIR}/omnish" "${BIN_DIR}/omnish-plugin" "${client}:${REMOTE_HOME}/bin/" 2>/dev/null; then

@@ -735,8 +735,8 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]] && [[ -z "${OLD_
 
         local SSH_OPTS="-o BatchMode=yes"
 
-        # Create directories
-        ssh -n $SSH_OPTS "$target" "mkdir -p ${remote_home}/bin ${remote_home}/tls" \
+        # Create directories and remove old binaries (running binaries can't be overwritten)
+        ssh -n $SSH_OPTS "$target" "mkdir -p ${remote_home}/bin ${remote_home}/tls && rm -f ${remote_home}/bin/omnish ${remote_home}/bin/omnish-plugin" \
             || { warn "SSH connection failed for ${target}"; return 1; }
 
         # Copy binaries
