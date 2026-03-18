@@ -623,21 +623,25 @@ async fn run_agent_loop(
                     }
 
                     // Build assistant message with tool_use blocks
-                    let assistant_content: Vec<serde_json::Value> = response
-                        .content
-                        .iter()
-                        .map(|b| match b {
-                            ContentBlock::Text(t) => {
-                                serde_json::json!({"type": "text", "text": t})
-                            }
-                            ContentBlock::ToolUse(tc) => serde_json::json!({
-                                "type": "tool_use",
-                                "id": tc.id,
-                                "name": tc.name,
-                                "input": tc.input,
-                            }),
-                        })
-                        .collect();
+                    let mut assistant_content: Vec<serde_json::Value> = Vec::new();
+                    // Include thinking block if present (required by DeepSeek-compatible APIs)
+                    if let Some(ref thinking) = response.thinking {
+                        assistant_content.push(serde_json::json!({
+                            "type": "thinking",
+                            "thinking": thinking,
+                        }));
+                    }
+                    assistant_content.extend(response.content.iter().map(|b| match b {
+                        ContentBlock::Text(t) => {
+                            serde_json::json!({"type": "text", "text": t})
+                        }
+                        ContentBlock::ToolUse(tc) => serde_json::json!({
+                            "type": "tool_use",
+                            "id": tc.id,
+                            "name": tc.name,
+                            "input": tc.input,
+                        }),
+                    }));
                     state.llm_req.extra_messages.push(serde_json::json!({
                         "role": "assistant",
                         "content": assistant_content,
@@ -794,11 +798,22 @@ async fn run_agent_loop(
                     iteration,
                     state.cm.thread_id
                 );
-                // Push final assistant response
-                state.llm_req.extra_messages.push(serde_json::json!({
-                    "role": "assistant",
-                    "content": text,
-                }));
+                // Push final assistant response (include thinking if present)
+                let assistant_msg = if let Some(ref thinking) = response.thinking {
+                    serde_json::json!({
+                        "role": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": thinking},
+                            {"type": "text", "text": text},
+                        ],
+                    })
+                } else {
+                    serde_json::json!({
+                        "role": "assistant",
+                        "content": text,
+                    })
+                };
+                state.llm_req.extra_messages.push(assistant_msg);
                 // Store new messages without system-reminder in user message
                 let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
                 to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
