@@ -201,6 +201,9 @@ Built-in commands:
 /thread del <n>[,<n>...]  # delete thread(s) by number (interactive multi-select if omitted)
 /tasks                    # list scheduled tasks and their status
 /tasks disable <name>     # disable a scheduled task
+/integrate tmux           # add omnish as default shell in ~/.tmux.conf
+/integrate screen         # add omnish as shell in ~/.screenrc
+/integrate ssh            # show SSH config snippet for RemoteCommand
 ```
 
 Chat-mode commands (available only inside a chat session):

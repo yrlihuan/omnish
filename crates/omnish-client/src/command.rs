@@ -62,6 +62,87 @@ fn debug_usage(_args: &str) -> String {
     format!("Usage: /debug <{}> [> file.txt]", subs.join("|"))
 }
 
+fn integrate_command(args: &str) -> String {
+    let omnish_bin = {
+        let home = std::env::var("OMNISH_HOME")
+            .unwrap_or_else(|_| {
+                let h = std::env::var("HOME").unwrap_or_default();
+                format!("{}/.omnish", h)
+            });
+        format!("{}/bin/omnish", home)
+    };
+
+    let target = args.trim();
+    if target.is_empty() {
+        return "Usage: /integrate <tmux|screen|ssh>\n\
+                \n  tmux   — inject default-shell into ~/.tmux.conf\
+                \n  screen — inject shell setting into ~/.screenrc\
+                \n  ssh    — show SSH config snippet for RemoteCommand".to_string();
+    }
+
+    match target {
+        "tmux" => {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let conf = format!("{}/.tmux.conf", home);
+            let snippet = format!(
+                "\n# omnish integration\n\
+                 if-shell \"[ -x {} ]\" \\\n    \
+                 \"set-option -g default-shell {}\"\n",
+                omnish_bin, omnish_bin
+            );
+
+            // Check if already integrated
+            if let Ok(content) = std::fs::read_to_string(&conf) {
+                if content.contains("omnish integration") {
+                    return format!("Already integrated in {}", conf);
+                }
+            }
+
+            match std::fs::OpenOptions::new().create(true).append(true).open(&conf) {
+                Ok(mut f) => {
+                    use std::io::Write;
+                    let _ = f.write_all(snippet.as_bytes());
+                    format!("Added omnish integration to {}", conf)
+                }
+                Err(e) => format!("Failed to write {}: {}", conf, e),
+            }
+        }
+        "screen" => {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let conf = format!("{}/.screenrc", home);
+            let snippet = format!(
+                "\n# omnish integration\nshell {}\n",
+                omnish_bin
+            );
+
+            if let Ok(content) = std::fs::read_to_string(&conf) {
+                if content.contains("omnish integration") {
+                    return format!("Already integrated in {}", conf);
+                }
+            }
+
+            match std::fs::OpenOptions::new().create(true).append(true).open(&conf) {
+                Ok(mut f) => {
+                    use std::io::Write;
+                    let _ = f.write_all(snippet.as_bytes());
+                    format!("Added omnish integration to {}", conf)
+                }
+                Err(e) => format!("Failed to write {}: {}", conf, e),
+            }
+        }
+        "ssh" => {
+            format!(
+                "Add to ~/.ssh/config for hosts with omnish installed:\n\n\
+                 Host <hostname>\n    \
+                 RequestTTY yes\n    \
+                 RemoteCommand {}\n",
+                omnish_bin
+            )
+        }
+        other => format!("Unknown target: {}. Use tmux, screen, or ssh.", other),
+    }
+}
+
 fn help_command(_args: &str) -> String {
     let mut output = String::from("Available commands:\n");
     for entry in COMMANDS {
@@ -141,6 +222,11 @@ const COMMANDS: &[CommandEntry] = &[
     },
     // Registered as Daemon but intercepted client-side in main.rs
     // because it needs process state (proxy fd/pid) for exec.
+    CommandEntry {
+        path: "/integrate",
+        kind: CommandKind::Local(integrate_command),
+        help: "Integrate omnish with tmux, screen, or ssh",
+    },
     CommandEntry {
         path: "/update",
         kind: CommandKind::Daemon("__cmd:update"),
