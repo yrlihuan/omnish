@@ -160,7 +160,8 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize) -
     let cols = terminal_cols();
     let mut cursor: usize = initial_cursor.min(items.len().saturating_sub(1));
     let vis = visible_count(items.len());
-    let mut scroll_offset: usize = cursor.saturating_sub(vis / 2);
+    let max_scroll = items.len().saturating_sub(vis);
+    let mut scroll_offset: usize = cursor.saturating_sub(vis / 2).min(max_scroll);
     let mut checked = vec![false; items.len()];
 
     // Hide cursor during picker interaction
