@@ -280,8 +280,16 @@ impl ChatSession {
             let (base_cmd, limit) = command::parse_limit_pub(without_redirect);
             if base_cmd == "/update auto" {
                 let prev = auto_update_enabled.load(Ordering::Relaxed);
-                auto_update_enabled.store(!prev, Ordering::Relaxed);
-                let status = if !prev { "enabled" } else { "disabled" };
+                let new_val = !prev;
+                auto_update_enabled.store(new_val, Ordering::Relaxed);
+                // Persist to client.toml
+                let config_path = std::env::var("OMNISH_CLIENT_CONFIG")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|_| omnish_common::config::omnish_dir().join("client.toml"));
+                if let Err(e) = omnish_common::config_edit::set_toml_value(&config_path, "auto_update", new_val) {
+                    tracing::warn!("cannot persist auto_update to client.toml: {}", e);
+                }
+                let status = if new_val { "enabled" } else { "disabled" };
                 let result = format!("Auto-update {}", status);
                 let display_result = if let Some(ref l) = limit {
                     command::apply_limit(&result, l)
