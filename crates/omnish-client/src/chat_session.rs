@@ -531,10 +531,11 @@ impl ChatSession {
                                 break 'stream;
                             }
 
-                            // Phase 2: Execute tools in parallel
+                            // Phase 2+3: Execute tools in parallel, send results as they complete
                             let shell_cwd = super::get_shell_cwd(proxy.child_pid() as u32);
-                            let mut handles = Vec::with_capacity(tool_calls.len());
-                            for tc in &tool_calls {
+                            let total = tool_calls.len();
+                            let mut join_set = tokio::task::JoinSet::new();
+                            for (idx, tc) in tool_calls.iter().enumerate() {
                                 let plugins = Arc::clone(&self.client_plugins);
                                 let tool_name = tc.tool_name.clone();
                                 let plugin_name = tc.plugin_name.clone();
@@ -542,75 +543,101 @@ impl ChatSession {
                                 let tool_input: serde_json::Value =
                                     serde_json::from_str(&tc.input).unwrap_or_default();
                                 let cwd = shell_cwd.clone();
-                                handles.push(tokio::task::spawn_blocking(move || {
-                                    plugins.execute_tool(
-                                        &plugin_name,
-                                        &tool_name,
-                                        &tool_input,
-                                        cwd.as_deref(),
-                                        sandboxed,
-                                    )
-                                }));
+                                join_set.spawn(async move {
+                                    let result = tokio::task::spawn_blocking(move || {
+                                        plugins.execute_tool(
+                                            &plugin_name,
+                                            &tool_name,
+                                            &tool_input,
+                                            cwd.as_deref(),
+                                            sandboxed,
+                                        )
+                                    }).await;
+                                    (idx, result)
+                                });
                             }
 
-                            // Wait for tools, race against Ctrl-C
-                            let results;
-                            {
+                            let mut completed = 0;
+                            let mut send_failed = false;
+                            loop {
                                 let mut crx2 = cancel_rx.clone();
                                 tokio::select! {
-                                    all = async {
-                                        let mut out = Vec::with_capacity(handles.len());
-                                        for h in handles { out.push(h.await); }
-                                        out
-                                    } => { results = all; }
+                                    next = join_set.join_next() => {
+                                        match next {
+                                            Some(Ok((idx, result))) => {
+                                                completed += 1;
+                                                let tc = &tool_calls[idx];
+                                                let (content, is_error) = result
+                                                    .unwrap_or_else(|_| ("Tool execution panicked".to_string(), true));
+
+                                                let result_msg =
+                                                    Message::ChatToolResult(ChatToolResult {
+                                                        request_id: tc.request_id.clone(),
+                                                        thread_id: tc.thread_id.clone(),
+                                                        tool_call_id: tc.tool_call_id.clone(),
+                                                        content,
+                                                        is_error,
+                                                    });
+
+                                                if completed < total {
+                                                    // Intermediate result — send and render status inline
+                                                    match rpc.call(result_msg).await {
+                                                        Ok(Message::ChatToolStatus(cts)) => {
+                                                            // Update running header in-place: move cursor up to the tool's line
+                                                            let lines_up = total - idx;
+                                                            let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
+                                                            let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
+                                                            let param_desc = cts.param_desc.as_deref().unwrap_or("");
+                                                            let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Success);
+                                                            let header = display::render_tool_header(icon, display_name, param_desc, cols as usize);
+                                                            write_stdout(&format!("\x1b[{}A\r\x1b[K{}\x1b[{}B\r", lines_up, header, lines_up));
+                                                            // Update scroll_history entry
+                                                            let tool_call_id = cts.tool_call_id.clone();
+                                                            if let Some(entry) = self.scroll_history.iter_mut().rev().find(|e| {
+                                                                matches!(e, ScrollEntry::ToolStatus(prev) if prev.tool_call_id == tool_call_id)
+                                                            }) {
+                                                                *entry = ScrollEntry::ToolStatus(cts);
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            write_stdout(&display::render_error(&format!(
+                                                                "Failed to send tool result: {}",
+                                                                e
+                                                            )));
+                                                            send_failed = true;
+                                                            break;
+                                                        }
+                                                        _ => {} // Ack or other
+                                                    }
+                                                } else {
+                                                    // Last result — switch to streaming for agent loop continuation
+                                                    match rpc.call_stream(result_msg).await {
+                                                        Ok(new_rx) => {
+                                                            rx = new_rx;
+                                                            continue 'stream;
+                                                        }
+                                                        Err(e) => {
+                                                            write_stdout(&display::render_error(&format!(
+                                                                "Failed to send tool result: {}",
+                                                                e
+                                                            )));
+                                                            send_failed = true;
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Some(Err(_)) => {
+                                                // JoinSet task panicked
+                                                completed += 1;
+                                                if completed >= total { break; }
+                                            }
+                                            None => break, // All tasks done
+                                        }
+                                    }
                                     _ = wait_cancel(&mut crx2) => {
                                         interrupted = true;
                                         break 'stream;
-                                    }
-                                }
-                            }
-
-                            // Phase 3: Send results (output rendered when second ChatToolStatus arrives)
-                            let total = results.len();
-                            let mut send_failed = false;
-                            for (i, (tc, result)) in
-                                tool_calls.iter().zip(results).enumerate()
-                            {
-                                let (content, is_error) = result
-                                    .unwrap_or_else(|_| ("Tool execution panicked".to_string(), true));
-
-                                let result_msg =
-                                    Message::ChatToolResult(ChatToolResult {
-                                        request_id: tc.request_id.clone(),
-                                        thread_id: tc.thread_id.clone(),
-                                        tool_call_id: tc.tool_call_id.clone(),
-                                        content,
-                                        is_error,
-                                    });
-
-                                if i < total - 1 {
-                                    if let Err(e) = rpc.call(result_msg).await {
-                                        write_stdout(&display::render_error(&format!(
-                                            "Failed to send tool result: {}",
-                                            e
-                                        )));
-                                        send_failed = true;
-                                        break;
-                                    }
-                                } else {
-                                    match rpc.call_stream(result_msg).await {
-                                        Ok(new_rx) => {
-                                            rx = new_rx;
-                                            continue 'stream;
-                                        }
-                                        Err(e) => {
-                                            write_stdout(&display::render_error(&format!(
-                                                "Failed to send tool result: {}",
-                                                e
-                                            )));
-                                            send_failed = true;
-                                            break;
-                                        }
                                     }
                                 }
                             }
