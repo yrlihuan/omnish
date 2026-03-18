@@ -831,11 +831,15 @@ impl ChatSession {
                     }
                 }
                 Ok(i) if i >= 1 => {
-                    write_stdout(&display::render_error(&format!(
-                        "Index {} out of range ({} conversations)",
-                        i,
-                        self.cached_thread_ids.len()
-                    )));
+                    if self.cached_thread_ids.is_empty() {
+                        write_stdout(&display::render_error("No conversation to resume"));
+                    } else {
+                        write_stdout(&display::render_error(&format!(
+                            "Index {} out of range ({} conversations)",
+                            i,
+                            self.cached_thread_ids.len()
+                        )));
+                    }
                     (None, None)
                 }
                 _ => {
