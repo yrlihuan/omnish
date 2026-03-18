@@ -272,15 +272,15 @@ fi
 
 # ── LLM configuration ───────────────────────────────────────────────────────
 
-# Provider presets: name -> (backend_type, base_url, default_model)
-declare -A PROVIDER_TYPE PROVIDER_URL PROVIDER_MODEL
-PROVIDER_TYPE[anthropic]="anthropic";    PROVIDER_URL[anthropic]="";                                PROVIDER_MODEL[anthropic]="claude-sonnet-4-20250514"
-PROVIDER_TYPE[openai]="openai-compat";          PROVIDER_URL[openai]="https://api.openai.com/v1";          PROVIDER_MODEL[openai]="gpt-4o"
-PROVIDER_TYPE[openrouter]="openai-compat";      PROVIDER_URL[openrouter]="https://openrouter.ai/api/v1";   PROVIDER_MODEL[openrouter]=""
-PROVIDER_TYPE[deepseek]="anthropic";      PROVIDER_URL[deepseek]="https://api.deepseek.com/anthropic";      PROVIDER_MODEL[deepseek]="deepseek-chat"
-PROVIDER_TYPE[moonshot-cn]="anthropic";  PROVIDER_URL[moonshot-cn]="https://api.moonshot.cn/anthropic";     PROVIDER_MODEL[moonshot-cn]="kimi-k2-preview"
-PROVIDER_TYPE[moonshot-global]="anthropic"; PROVIDER_URL[moonshot-global]="https://api.moonshot.ai/anthropic"; PROVIDER_MODEL[moonshot-global]="kimi-k2-preview"
-PROVIDER_TYPE[custom]="openai-compat";          PROVIDER_URL[custom]="";                                    PROVIDER_MODEL[custom]=""
+# Provider presets: name -> (backend_type, base_url, default_model, max_content_chars)
+declare -A PROVIDER_TYPE PROVIDER_URL PROVIDER_MODEL PROVIDER_MAX_CHARS
+PROVIDER_TYPE[anthropic]="anthropic";       PROVIDER_URL[anthropic]="";                                    PROVIDER_MODEL[anthropic]="claude-sonnet-4-20250514";  PROVIDER_MAX_CHARS[anthropic]=200000
+PROVIDER_TYPE[openai]="openai-compat";      PROVIDER_URL[openai]="https://api.openai.com/v1";              PROVIDER_MODEL[openai]="gpt-4o";                       PROVIDER_MAX_CHARS[openai]=200000
+PROVIDER_TYPE[openrouter]="openai-compat";  PROVIDER_URL[openrouter]="https://openrouter.ai/api/v1";       PROVIDER_MODEL[openrouter]="";                          PROVIDER_MAX_CHARS[openrouter]=200000
+PROVIDER_TYPE[deepseek]="anthropic";        PROVIDER_URL[deepseek]="https://api.deepseek.com/anthropic";    PROVIDER_MODEL[deepseek]="deepseek-chat";               PROVIDER_MAX_CHARS[deepseek]=130000
+PROVIDER_TYPE[moonshot-cn]="anthropic";     PROVIDER_URL[moonshot-cn]="https://api.moonshot.cn/anthropic";  PROVIDER_MODEL[moonshot-cn]="kimi-k2-preview";          PROVIDER_MAX_CHARS[moonshot-cn]=200000
+PROVIDER_TYPE[moonshot-global]="anthropic"; PROVIDER_URL[moonshot-global]="https://api.moonshot.ai/anthropic"; PROVIDER_MODEL[moonshot-global]="kimi-k2-preview";   PROVIDER_MAX_CHARS[moonshot-global]=200000
+PROVIDER_TYPE[custom]="openai-compat";      PROVIDER_URL[custom]="";                                       PROVIDER_MODEL[custom]="";                              PROVIDER_MAX_CHARS[custom]=200000
 
 CHAT_PROVIDERS=(anthropic openai openrouter deepseek moonshot-cn moonshot-global custom)
 COMPLETION_PROVIDERS=(openrouter custom)
@@ -288,7 +288,8 @@ COMPLETION_PROVIDERS=(openrouter custom)
 configure_backend() {
     local purpose="$1"
     local recommended_model="${2:-}"
-    shift 2
+    local max_chars_override="${3:-}"
+    shift 3
     local providers=("$@")
 
     # Interactive prompts go to stderr (stdout is for TOML output)
@@ -367,6 +368,9 @@ configure_backend() {
             api_key="$REPLY"
         fi
 
+        # Determine max_content_chars
+        local max_chars="${max_chars_override:-${PROVIDER_MAX_CHARS[$provider]:-200000}}"
+
         # Build TOML snippet
         local toml="[llm.backends.${name}]"$'\n'
         toml+="backend_type = \"${cur_backend_type}\""$'\n'
@@ -375,6 +379,7 @@ configure_backend() {
         if [[ -n "$cur_base_url" ]]; then
             toml+="base_url = \"${cur_base_url}\""$'\n'
         fi
+        toml+="max_content_chars = ${max_chars}"$'\n'
 
         # Preview with masked API key and confirm
         echo "" >&2
@@ -422,7 +427,7 @@ else
     echo "  This model handles interactive chat (: prefix), command error analysis," >&2
     echo "  and context-aware responses. A capable model (e.g. Claude Sonnet) is" >&2
     echo "  recommended for best results." >&2
-    configure_backend "chat/analysis" "" "${CHAT_PROVIDERS[@]}" > "$TMPDIR/chat_backend.toml"
+    configure_backend "chat/analysis" "" "" "${CHAT_PROVIDERS[@]}" > "$TMPDIR/chat_backend.toml"
     CHAT_NAME=$(cat "$TMPDIR/last_backend_name")
 
     echo "" >&2
@@ -435,7 +440,7 @@ else
     SAME="${REPLY:-N}"
 
     if [[ ! "$SAME" =~ ^[Yy] ]]; then
-        configure_backend "completion" "Qwen/Qwen2.5-Coder-32B-Instruct" "${COMPLETION_PROVIDERS[@]}" > "$TMPDIR/completion_backend.toml"
+        configure_backend "completion" "Qwen/Qwen2.5-Coder-32B-Instruct" "32000" "${COMPLETION_PROVIDERS[@]}" > "$TMPDIR/completion_backend.toml"
         COMPLETION_NAME=$(cat "$TMPDIR/last_backend_name")
         USE_CASES="[llm.use_cases]
 chat = \"${CHAT_NAME}\"
