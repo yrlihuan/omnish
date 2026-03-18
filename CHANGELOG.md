@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.7.3 (2026-03-18)
+
+### Features
+- **client**: `/model` picker command for per-thread model selection in chat mode (#154)
+- **daemon**: `__cmd:models` builtin command listing available backends with selected flag (#154)
+- **protocol**: `ChatMessage.model` field for backend override, protocol v7 (#154)
+- **llm**: `MultiBackend` stores named backends, supports `list_backends`/`get_backend_by_name` (#154)
+- **client**: `pick_one_at` picker widget with pre-selected index (#154)
+- **client**: Ghost text hint with model name in chat mode (#334)
+- **daemon**: Preserve thinking blocks in assistant messages (#335)
+
+---
+
 ## v0.7.2 (2026-03-18)
 
 ### Features
