@@ -152,16 +152,16 @@ fn redraw_item(text: &str, selected: bool, checked: bool, multi: bool) {
 }
 
 /// Core picker loop. Returns selected index(es) or None on ESC.
-fn run_picker(title: &str, items: &[&str], multi: bool) -> Option<Vec<usize>> {
+fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize) -> Option<Vec<usize>> {
     if items.is_empty() {
         return None;
     }
 
     let cols = terminal_cols();
-    let mut cursor: usize = 0;
-    let mut scroll_offset: usize = 0;
-    let mut checked = vec![false; items.len()];
+    let mut cursor: usize = initial_cursor.min(items.len().saturating_sub(1));
     let vis = visible_count(items.len());
+    let mut scroll_offset: usize = cursor.saturating_sub(vis / 2);
+    let mut checked = vec![false; items.len()];
 
     // Hide cursor during picker interaction
     nix::unistd::write(std::io::stdout(), b"\x1b[?25l").ok();
@@ -287,12 +287,17 @@ fn run_picker(title: &str, items: &[&str], multi: bool) -> Option<Vec<usize>> {
 
 /// Single select: returns the selected index (0-based), or None on ESC.
 pub fn pick_one(title: &str, items: &[&str]) -> Option<usize> {
-    run_picker(title, items, false).map(|v| v[0])
+    run_picker(title, items, false, 0).map(|v| v[0])
+}
+
+/// Single select with pre-selected index: returns the selected index (0-based), or None on ESC.
+pub fn pick_one_at(title: &str, items: &[&str], initial: usize) -> Option<usize> {
+    run_picker(title, items, false, initial).map(|v| v[0])
 }
 
 /// Multi select: returns selected indices (0-based), or None on ESC.
 pub fn pick_many(title: &str, items: &[&str]) -> Option<Vec<usize>> {
-    run_picker(title, items, true)
+    run_picker(title, items, true, 0)
 }
 
 #[cfg(test)]

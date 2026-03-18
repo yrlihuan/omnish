@@ -437,8 +437,26 @@ async fn handle_chat_message(
     }
     let backend = llm.as_ref().unwrap();
 
+    // Handle model override
+    if let Some(ref model_name) = cm.model {
+        let mut meta = conv_mgr.load_meta(&cm.thread_id);
+        meta.model = Some(model_name.clone());
+        conv_mgr.save_meta(&cm.thread_id, &meta);
+    }
+
+    // Model-only message (no query) — just acknowledge
+    if cm.query.is_empty() {
+        return vec![Message::Ack];
+    }
+
+    // Resolve per-thread model override for backend selection
+    let meta = conv_mgr.load_meta(&cm.thread_id);
+    let effective_backend: Arc<dyn LlmBackend> = meta.model.as_ref()
+        .and_then(|name| backend.get_backend_by_name(name))
+        .unwrap_or_else(|| backend.clone());
+
     let use_case = UseCase::Chat;
-    let max_context_chars = backend.max_content_chars_for_use_case(use_case);
+    let max_context_chars = effective_backend.max_content_chars_for_use_case(use_case);
 
     let ChatSetup { command_query_tool, tools, system_prompt } =
         build_chat_setup(mgr, plugin_mgr).await;
@@ -483,7 +501,8 @@ async fn handle_chat_message(
         command_query_tool,
     };
 
-    run_agent_loop(state, llm, conv_mgr, plugin_mgr, pending_loops).await
+    let effective_llm = Some(effective_backend);
+    run_agent_loop(state, &effective_llm, conv_mgr, plugin_mgr, pending_loops).await
 }
 
 /// Handle a ChatToolResult from the client — accumulate results, resume when all are received.
@@ -1155,6 +1174,40 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             });
         } else {
             return cmd_display("Conversation not found");
+        }
+    }
+    // Handle /model — list available backends with selected flag
+    if sub == "models" || sub.starts_with("models ") {
+        let thread_id = sub.strip_prefix("models ").unwrap_or("").trim();
+
+        if let Some(ref backend) = *llm_backend {
+            let backends = backend.list_backends();
+            if backends.is_empty() {
+                return cmd_display("No LLM backends configured".to_string());
+            }
+
+            // Determine which backend is selected for this thread
+            let selected_name = if !thread_id.is_empty() {
+                let meta = conv_mgr.load_meta(thread_id);
+                meta.model.unwrap_or_else(|| backend.chat_default_name().to_string())
+            } else {
+                backend.chat_default_name().to_string()
+            };
+
+            let models: Vec<serde_json::Value> = backends.iter().map(|b| {
+                serde_json::json!({
+                    "name": b.name,
+                    "model": b.model,
+                    "selected": b.name == selected_name,
+                })
+            }).collect();
+
+            return serde_json::json!({
+                "display": "",
+                "models": models,
+            });
+        } else {
+            return cmd_display("No LLM backends configured".to_string());
         }
     }
     if let Some(name) = sub.strip_prefix("template ") {

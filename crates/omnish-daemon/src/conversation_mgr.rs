@@ -13,6 +13,9 @@ pub struct ThreadMeta {
     /// Number of conversation rounds when summary was last generated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_rounds: Option<u32>,
+    /// Backend name for per-thread model override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 pub struct ConversationManager {

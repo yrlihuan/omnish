@@ -1,8 +1,16 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::tool::{ToolCall, ToolDef};
+
+/// Info about an available backend for listing purposes.
+#[derive(Debug, Clone)]
+pub struct BackendInfo {
+    pub name: String,
+    pub model: String,
+}
 
 /// Use case for LLM requests - determines which model to use
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -129,4 +137,10 @@ pub trait LlmBackend: Send + Sync {
     fn max_content_chars_for_use_case(&self, _use_case: UseCase) -> Option<usize> {
         self.max_content_chars()
     }
+    /// List available backends (only meaningful for MultiBackend).
+    fn list_backends(&self) -> Vec<BackendInfo> { vec![] }
+    /// Default chat backend name.
+    fn chat_default_name(&self) -> &str { "" }
+    /// Get backend by config name (for per-thread model override).
+    fn get_backend_by_name(&self, _name: &str) -> Option<Arc<dyn LlmBackend>> { None }
 }

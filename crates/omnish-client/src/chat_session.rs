@@ -35,6 +35,7 @@ pub struct ChatSession {
     client_plugins: Arc<client_plugin::ClientPluginManager>,
     model_name: Option<String>,
     ghost_hint_shown: bool,
+    pending_model: Option<String>,
 }
 
 fn write_stdout(s: &str) {
@@ -70,6 +71,7 @@ impl ChatSession {
             client_plugins: Arc::new(client_plugin::ClientPluginManager::new()),
             model_name: None,
             ghost_hint_shown: false,
+            pending_model: None,
         }
     }
 
@@ -283,6 +285,12 @@ impl ChatSession {
                 continue;
             }
 
+            // /model
+            if trimmed == "/model" {
+                self.handle_model(session_id, rpc).await;
+                continue;
+            }
+
             // /context
             if trimmed == "/context" || trimmed.starts_with("/context ") {
                 let (without_redirect, redirect) = command::parse_redirect_pub(trimmed);
@@ -402,6 +410,7 @@ impl ChatSession {
                 session_id: session_id.to_string(),
                 thread_id: self.current_thread_id.clone().unwrap(),
                 query: trimmed.to_string(),
+                model: self.pending_model.take(),
             });
 
             // Ctrl-C cancellation
@@ -1101,6 +1110,87 @@ impl ChatSession {
                 write_stdout("\x1b[2;37m(resumed conversation)\x1b[0m\r\n");
                 self.push_entry(ScrollEntry::SystemMessage("(resumed conversation)".to_string()));
             }
+        }
+    }
+
+    // ── Model picker ─────────────────────────────────────────────────────
+
+    async fn handle_model(&mut self, session_id: &str, rpc: &RpcClient) {
+        // Build query with thread_id if available
+        let query = match &self.current_thread_id {
+            Some(tid) => format!("__cmd:models {}", tid),
+            None => "__cmd:models".to_string(),
+        };
+
+        let rid = Uuid::new_v4().to_string()[..8].to_string();
+        let req = Message::Request(Request {
+            request_id: rid.clone(),
+            session_id: session_id.to_string(),
+            query,
+            scope: RequestScope::AllSessions,
+        });
+
+        let models = match rpc.call(req).await {
+            Ok(Message::Response(resp)) if resp.request_id == rid => {
+                match super::parse_cmd_response(&resp.content) {
+                    Some(json) => json.get("models").and_then(|v| v.as_array()).cloned(),
+                    None => None,
+                }
+            }
+            _ => None,
+        };
+
+        let models = match models {
+            Some(m) if !m.is_empty() => m,
+            _ => {
+                write_stdout(&display::render_error("No LLM backends available"));
+                return;
+            }
+        };
+
+        // Build picker items and find selected index
+        let mut selected_idx = 0;
+        let item_strings: Vec<String> = models.iter().enumerate().map(|(i, m)| {
+            let name = m["name"].as_str().unwrap_or("?");
+            let model = m["model"].as_str().unwrap_or("?");
+            let short_model = strip_date_suffix(model);
+            if m["selected"].as_bool().unwrap_or(false) {
+                selected_idx = i;
+            }
+            format!("{} ({})", name, short_model)
+        }).collect();
+        let items: Vec<&str> = item_strings.iter().map(|s| s.as_str()).collect();
+
+        match widgets::picker::pick_one_at("Select model:", &items, selected_idx) {
+            Some(idx) if idx < models.len() => {
+                let name = models[idx]["name"].as_str().unwrap_or("").to_string();
+                let display_name = &item_strings[idx];
+
+                if let Some(ref tid) = self.current_thread_id {
+                    // Existing thread — send model-only ChatMessage
+                    let rid = Uuid::new_v4().to_string()[..8].to_string();
+                    let msg = Message::ChatMessage(omnish_protocol::message::ChatMessage {
+                        request_id: rid.clone(),
+                        session_id: session_id.to_string(),
+                        thread_id: tid.clone(),
+                        query: String::new(),
+                        model: Some(name),
+                    });
+                    match rpc.call(msg).await {
+                        Ok(Message::Ack) => {
+                            write_stdout(&format!("\x1b[2;90mSwitched to {}\x1b[0m\r\n", display_name));
+                        }
+                        _ => {
+                            write_stdout(&display::render_error("Failed to switch model"));
+                        }
+                    }
+                } else {
+                    // New thread — defer model selection to first message
+                    self.pending_model = Some(name);
+                    write_stdout(&format!("\x1b[2;90mModel set to {} (will apply on first message)\x1b[0m\r\n", display_name));
+                }
+            }
+            _ => {} // ESC or no selection — do nothing
         }
     }
 

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version — increment on incompatible wire format changes.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
@@ -205,6 +205,7 @@ pub struct ChatMessage {
     pub session_id: String,
     pub thread_id: String,
     pub query: String,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -488,6 +489,7 @@ mod tests {
                 session_id: "sess1".to_string(),
                 thread_id: "thread-uuid".to_string(),
                 query: "hello".to_string(),
+                model: None,
             }),
         };
         let bytes = frame.to_bytes().unwrap();
@@ -602,6 +604,7 @@ mod tests {
                 session_id: String::new(),
                 thread_id: String::new(),
                 query: String::new(),
+                model: None,
             }),
             Message::ChatResponse(ChatResponse {
                 request_id: String::new(),

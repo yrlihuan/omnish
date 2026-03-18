@@ -1,5 +1,5 @@
 use crate::anthropic::AnthropicBackend;
-use crate::backend::{LlmBackend, UseCase};
+use crate::backend::{BackendInfo, LlmBackend, UseCase};
 use crate::langfuse::{LangfuseBackend, LangfuseConfig};
 use crate::openai_compat::OpenAiCompatBackend;
 use anyhow::{anyhow, Result};
@@ -100,6 +100,12 @@ pub struct MultiBackend {
     default_backend: Arc<dyn LlmBackend>,
     /// Map from use case name to max_content_chars
     use_case_max_chars: HashMap<String, Option<usize>>,
+    /// All backends by config name (for per-thread model selection).
+    named_backends: HashMap<String, Arc<dyn LlmBackend>>,
+    /// Backend info list for listing available models.
+    backend_configs: Vec<BackendInfo>,
+    /// Default chat backend name.
+    chat_backend_name: String,
 }
 
 impl MultiBackend {
@@ -108,63 +114,66 @@ impl MultiBackend {
         // Resolve Langfuse config if present
         let langfuse_config = resolve_langfuse_config(llm_config);
 
-        // Try to create the default backend; if it fails, defer — a use-case backend may work
-        let default_backend_result = create_default_backend(llm_config);
-        if let Err(ref e) = default_backend_result {
-            tracing::warn!("default backend '{}' failed to initialize: {}", llm_config.default, e);
+        // First pass: create all backends by config name
+        let mut named_backends = HashMap::new();
+        let mut backend_configs = Vec::new();
+        for (name, cfg) in &llm_config.backends {
+            match create_backend(name, cfg) {
+                Ok(backend) => {
+                    let backend = maybe_wrap_langfuse(backend, &langfuse_config);
+                    named_backends.insert(name.clone(), backend);
+                    backend_configs.push(BackendInfo {
+                        name: name.clone(),
+                        model: cfg.model.clone(),
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("backend '{}' failed to initialize: {}", name, e);
+                }
+            }
         }
+        backend_configs.sort_by(|a, b| a.name.cmp(&b.name));
 
+        // Second pass: map use cases to backends
         let use_case_backends = RwLock::new(HashMap::new());
         let mut use_case_max_chars = HashMap::new();
-        let mut first_working_backend: Option<Arc<dyn LlmBackend>> = None;
-
-        // Create backends for each use case (failures are non-fatal, fall back to default)
         for (use_case_name, backend_name) in &llm_config.use_cases {
-            if let Some(backend_config) = llm_config.backends.get(backend_name) {
-                match create_backend(backend_name, backend_config) {
-                    Ok(backend) => {
-                        let backend = maybe_wrap_langfuse(backend, &langfuse_config);
-                        if first_working_backend.is_none() {
-                            first_working_backend = Some(backend.clone());
-                        }
-                        use_case_backends
-                            .write()
-                            .map_err(|_| anyhow!("failed to acquire write lock"))?
-                            .insert(use_case_name.clone(), backend);
-                        // Store max_content_chars for this use case
-                        use_case_max_chars
-                            .insert(use_case_name.clone(), backend_config.max_content_chars);
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "backend '{}' for use case '{}' failed to initialize: {}, will use default",
-                            backend_name,
-                            use_case_name,
-                            e
-                        );
-                    }
+            if let Some(backend) = named_backends.get(backend_name) {
+                use_case_backends
+                    .write()
+                    .map_err(|_| anyhow!("failed to acquire write lock"))?
+                    .insert(use_case_name.clone(), backend.clone());
+                if let Some(cfg) = llm_config.backends.get(backend_name) {
+                    use_case_max_chars.insert(use_case_name.clone(), cfg.max_content_chars);
                 }
             } else {
                 tracing::warn!(
-                    "backend '{}' not found for use case '{}', will use default",
-                    backend_name,
-                    use_case_name
+                    "backend '{}' not available for use case '{}'",
+                    backend_name, use_case_name
                 );
             }
         }
 
-        // Resolve default: configured default > first working use-case backend > error
-        let default_backend = match default_backend_result {
-            Ok(b) => maybe_wrap_langfuse(b, &langfuse_config),
-            Err(_) => first_working_backend.ok_or_else(|| {
+        // Resolve default: configured default > first working backend > error
+        let default_backend = named_backends.get(&llm_config.default)
+            .cloned()
+            .or_else(|| named_backends.values().next().cloned())
+            .ok_or_else(|| {
                 anyhow!("no LLM backends could be initialized — check backend_type values in daemon.toml")
-            })?,
-        };
+            })?;
+
+        let chat_backend_name = llm_config.use_cases
+            .get("chat")
+            .cloned()
+            .unwrap_or_else(|| llm_config.default.clone());
 
         Ok(Self {
             use_case_backends,
             default_backend,
             use_case_max_chars,
+            named_backends,
+            backend_configs,
+            chat_backend_name,
         })
     }
 
@@ -211,6 +220,18 @@ impl LlmBackend for MultiBackend {
 
     fn max_content_chars_for_use_case(&self, use_case: crate::backend::UseCase) -> Option<usize> {
         self.get_max_content_chars(use_case)
+    }
+
+    fn list_backends(&self) -> Vec<BackendInfo> {
+        self.backend_configs.clone()
+    }
+
+    fn chat_default_name(&self) -> &str {
+        &self.chat_backend_name
+    }
+
+    fn get_backend_by_name(&self, name: &str) -> Option<Arc<dyn LlmBackend>> {
+        self.named_backends.get(name).cloned()
     }
 }
 
