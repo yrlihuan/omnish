@@ -1077,7 +1077,7 @@ impl ChatSession {
                             }
                         }
                         ScrollEntry::Separator => {
-                            self.print_line(&display::render_separator_plain(cols));
+                            self.print_line(&display::render_separator(cols));
                         }
                         ScrollEntry::SystemMessage(msg) => {
                             self.print_line(&format!("\x1b[2;37m{}\x1b[0m", msg));
