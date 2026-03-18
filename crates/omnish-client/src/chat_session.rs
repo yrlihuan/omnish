@@ -1163,7 +1163,7 @@ impl ChatSession {
                 } else {
                     // New thread — defer model selection to first message
                     self.pending_model = Some(name);
-                    write_stdout(&format!("\x1b[2;90mModel set to {} (will apply on first message)\x1b[0m\r\n", display_name));
+                    write_stdout(&format!("\x1b[2;90mSwitched to {}\x1b[0m\r\n", display_name));
                 }
             }
             _ => {} // ESC or no selection — do nothing
