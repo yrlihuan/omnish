@@ -67,7 +67,7 @@ async fn async_main() -> Result<()> {
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
     let stderr_filter = tracing_subscriber::EnvFilter::from_default_env()
-        .add_directive("info".parse().unwrap())
+        .add_directive("debug".parse().unwrap())
         .add_directive("rustls=off".parse().unwrap());
     let file_filter = tracing_subscriber::EnvFilter::new("debug")
         .add_directive("rustls=off".parse().unwrap());
