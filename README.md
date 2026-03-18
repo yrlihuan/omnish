@@ -170,10 +170,19 @@ omnish uses layered security for daemon/client communication:
 
 ## Usage
 
-Start the daemon, then use `omnish` as your shell:
+The daemon is managed via systemd (set up by `install.sh`):
 
 ```bash
-omnish-daemon &
+systemctl --user start omnish-daemon    # start
+systemctl --user stop omnish-daemon     # stop
+systemctl --user restart omnish-daemon  # restart
+systemctl --user status omnish-daemon   # check status
+journalctl --user -u omnish-daemon -f   # follow logs
+```
+
+Then use `omnish` as your shell:
+
+```bash
 omnish
 ```
 
