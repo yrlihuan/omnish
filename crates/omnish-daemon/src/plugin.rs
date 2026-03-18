@@ -106,9 +106,14 @@ struct ToolOverrideEntry {
     append: Option<DescriptionValue>,
 }
 
+/// Built-in tool definitions embedded at compile time.
+/// Guarantees tools are always available even without on-disk assets.
+const BUILTIN_TOOL_JSON: &str = include_str!("../../omnish-plugin/assets/tool.json");
+
 impl PluginManager {
     /// Load all plugins from the given directory.
     /// Each subdirectory containing a `tool.json` is treated as a plugin.
+    /// Built-in tools are always loaded from embedded data if not found on disk.
     pub fn load(plugins_dir: &Path) -> Self {
         let mut plugins = Vec::new();
         let mut tool_index = HashMap::new();
@@ -119,16 +124,58 @@ impl PluginManager {
         };
         entries.sort_by_key(|e| e.file_name());
 
+        // Always load built-in tools from embedded data
+        match serde_json::from_str::<ToolJsonFile>(BUILTIN_TOOL_JSON) {
+            Ok(parsed) => {
+                let plugin_type = match parsed.plugin_type.as_str() {
+                    "client_tool" => PluginType::ClientTool,
+                    _ => PluginType::DaemonTool,
+                };
+                let plugin_idx = plugins.len();
+                let mut tools = Vec::new();
+                for te in parsed.tools {
+                    let tool_idx = tools.len();
+                    tool_index.insert(te.name.clone(), (plugin_idx, tool_idx));
+                    let display_name = te.display_name.clone().unwrap_or_else(|| te.name.clone());
+                    let formatter = te.formatter.clone().unwrap_or_else(|| "default".to_string());
+                    tools.push(ToolEntry {
+                        def: ToolDef {
+                            name: te.name,
+                            description: te.description.into_string(),
+                            input_schema: te.input_schema,
+                        },
+                        status_template: te.status_template,
+                        sandboxed: te.sandboxed,
+                        display_name,
+                        formatter,
+                    });
+                }
+                tracing::info!("Loaded builtin plugin with {} tools", tools.len());
+                plugins.push(PluginInfo {
+                    dir_name: "builtin".to_string(),
+                    plugin_type,
+                    tools,
+                });
+            }
+            Err(e) => {
+                tracing::error!("Failed to parse embedded builtin tool.json: {}", e);
+            }
+        }
+
         for entry in entries {
             let path = entry.path();
             if !path.is_dir() {
+                continue;
+            }
+            let dir_name = entry.file_name().to_string_lossy().to_string();
+            // Skip "builtin" — always loaded from embedded data above
+            if dir_name == "builtin" {
                 continue;
             }
             let tool_json = path.join("tool.json");
             if !tool_json.is_file() {
                 continue;
             }
-            let dir_name = entry.file_name().to_string_lossy().to_string();
             let content = match std::fs::read_to_string(&tool_json) {
                 Ok(c) => c,
                 Err(e) => {
