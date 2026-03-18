@@ -504,24 +504,73 @@ completion = \"${CHAT_NAME}\""
     fi
 
     # Assemble daemon.toml
+    CHECK_URL_LINE=""
+    if [[ -n "$FROM_DIR" ]]; then
+        CHECK_URL_LINE="check_url = \"${FROM_DIR}\""
+    else
+        CHECK_URL_LINE="# check_url = \"https://api.github.com/repos/yrlihuan/omnish/releases/latest\""
+    fi
+
     {
-        echo "listen_addr = \"${LISTEN_ADDR}\""
-        echo ""
-        echo "[llm]"
-        echo "default = \"${CHAT_NAME}\""
-        echo ""
-        echo "$USE_CASES"
-        echo ""
+        cat << DAEMON_EOF
+# omnish daemon configuration
+
+listen_addr = "${LISTEN_ADDR}"
+
+[llm]
+default = "${CHAT_NAME}"
+
+${USE_CASES}
+
+DAEMON_EOF
         cat "$TMPDIR/chat_backend.toml"
         if [[ -f "$TMPDIR/completion_backend.toml" ]]; then
             cat "$TMPDIR/completion_backend.toml"
         fi
-        echo ""
-        echo "[tasks.auto_update]"
-        echo "enabled = ${AUTO_UPDATE_ENABLED}"
-        if [[ -n "$FROM_DIR" ]]; then
-            echo "source_dir = \"${FROM_DIR}\""
-        fi
+        cat << DAEMON_EOF
+
+# Optional: Langfuse observability (LLM tracing & analytics)
+# [llm.langfuse]
+# public_key = "pk-lf-..."
+# secret_key = "sk-lf-..."
+# base_url = "https://cloud.langfuse.com"
+
+[llm.auto_trigger]
+on_nonzero_exit = true
+on_stderr_patterns = ["error", "panic", "traceback", "fatal"]
+cooldown_seconds = 5
+
+[context.completion]
+# detailed_commands = 30   # recent commands with full output
+# history_commands = 500   # older commands as command-line only
+# head_lines = 20          # output lines from start of each command
+# tail_lines = 20          # output lines from end of each command
+# max_line_width = 200     # max characters per output line
+# max_context_chars = 8000 # fallback context limit
+
+# [context.hourly_summary]
+# head_lines = 50
+# tail_lines = 100
+# max_line_width = 128
+
+[tasks.eviction]
+# session_evict_hours = 48
+
+[tasks.daily_notes]
+# enabled = true
+# schedule_hour = 23
+
+[tasks.disk_cleanup]
+# schedule = "0 0 */6 * * *"
+
+[tasks.auto_update]
+enabled = ${AUTO_UPDATE_ENABLED}
+# schedule = "0 0 4 * * *"
+${CHECK_URL_LINE}
+
+# [plugins]
+# enabled = []
+DAEMON_EOF
     } > "$TMPDIR/daemon.toml"
 
     if [[ "$DRY_RUN" == true ]]; then
@@ -559,7 +608,6 @@ if [[ ! -f "$CLIENT_TOML" ]] || [[ "$FORCE" == true ]]; then
     else
         cat > "$CLIENT_TOML" << EOF
 # omnish client configuration
-# Copy to ~/.omnish/client.toml on each client machine
 
 # Daemon address (Unix socket path or host:port for TCP)
 daemon_addr = "${CLIENT_DAEMON_ADDR}"
@@ -567,8 +615,11 @@ daemon_addr = "${CLIENT_DAEMON_ADDR}"
 # Enable inline ghost-text completion
 completion_enabled = true
 
-# Enable auto-update from server
+# Auto-update: client checks binary mtime and re-execs if updated
 auto_update = ${AUTO_UPDATE_ENABLED:-true}
+
+# First-run onboarding completed
+# onboarded = false
 
 [shell]
 # Shell to spawn (defaults to \$SHELL)

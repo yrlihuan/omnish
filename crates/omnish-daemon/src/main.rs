@@ -187,7 +187,7 @@ async fn async_main() -> Result<()> {
             omnish_dir.clone(),
             &auto_update_config.schedule,
             auto_update_config.clients.clone(),
-            auto_update_config.source_dir.clone(),
+            auto_update_config.check_url.clone(),
         )?;
         task_mgr
             .register("auto_update", &auto_update_config.schedule, job)

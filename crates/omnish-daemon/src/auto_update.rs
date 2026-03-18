@@ -8,12 +8,12 @@ pub fn create_auto_update_job(
     omnish_dir: PathBuf,
     schedule: &str,
     clients: Vec<String>,
-    source_dir: Option<String>,
+    check_url: Option<String>,
 ) -> Result<Job> {
     Ok(Job::new_async(schedule, move |_uuid, _lock| {
         let omnish_dir = omnish_dir.clone();
         let clients = clients.clone();
-        let source_dir = source_dir.clone();
+        let check_url = check_url.clone();
         Box::pin(async move {
             tracing::debug!("task [auto_update] started");
 
@@ -28,8 +28,13 @@ pub fn create_auto_update_job(
             cmd.arg(&install_script)
                 .arg("--upgrade")
                 .env("OMNISH_HOME", &omnish_dir);
-            if let Some(ref dir) = source_dir {
-                cmd.arg(format!("--dir={}", dir));
+            if let Some(ref url) = check_url {
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    // Local directory path
+                    cmd.arg(format!("--dir={}", url));
+                }
+                // For HTTP URLs, install.sh uses GitHub by default — no extra arg needed
+                // (custom GitHub URL support can be added later)
             }
             let output = cmd.output().await;
 
