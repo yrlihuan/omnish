@@ -6,7 +6,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version — increment on incompatible wire format changes.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
@@ -194,6 +194,9 @@ pub struct ChatReady {
     pub thread_id: String,
     pub last_exchange: Option<(String, String)>,
     pub earlier_count: u32,
+    /// Model name from the chat LLM backend (e.g. "claude-sonnet-4-5-20250929").
+    #[serde(default)]
+    pub model_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -592,6 +595,7 @@ mod tests {
                 thread_id: String::new(),
                 last_exchange: None,
                 earlier_count: 0,
+                model_name: None,
             }),
             Message::ChatMessage(ChatMessage {
                 request_id: String::new(),

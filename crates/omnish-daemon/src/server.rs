@@ -52,6 +52,7 @@ pub struct DaemonServer {
     conv_mgr: Arc<ConversationManager>,
     plugin_mgr: Arc<PluginManager>,
     pending_agent_loops: Arc<Mutex<HashMap<String, AgentLoopState>>>,
+    chat_model_name: Option<String>,
 }
 
 impl DaemonServer {
@@ -61,6 +62,7 @@ impl DaemonServer {
         task_mgr: Arc<Mutex<TaskManager>>,
         conv_mgr: Arc<ConversationManager>,
         plugin_mgr: Arc<PluginManager>,
+        chat_model_name: Option<String>,
     ) -> Self {
         Self {
             session_mgr,
@@ -69,6 +71,7 @@ impl DaemonServer {
             conv_mgr,
             plugin_mgr,
             pending_agent_loops: Arc::new(Mutex::new(HashMap::new())),
+            chat_model_name,
         }
     }
 
@@ -87,6 +90,7 @@ impl DaemonServer {
         let conv_mgr = self.conv_mgr.clone();
         let plugin_mgr = self.plugin_mgr.clone();
         let pending_loops = self.pending_agent_loops.clone();
+        let chat_model_name = self.chat_model_name.clone();
 
         // Periodically sweep stale pending agent loop entries
         let pending_cleanup = self.pending_agent_loops.clone();
@@ -115,7 +119,8 @@ impl DaemonServer {
                     let conv_mgr = conv_mgr.clone();
                     let plugin_mgr = plugin_mgr.clone();
                     let pending_loops = pending_loops.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &pending_loops).await })
+                    let chat_model_name = chat_model_name.clone();
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &pending_loops, &chat_model_name).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -124,6 +129,7 @@ impl DaemonServer {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_message(
     msg: Message,
     mgr: Arc<SessionManager>,
@@ -132,6 +138,7 @@ async fn handle_message(
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
+    chat_model_name: &Option<String>,
 ) -> Vec<Message> {
     // Shadow with reference for existing code; use mgr_arc for spawned tasks
     let mgr_arc = mgr;
@@ -301,6 +308,7 @@ async fn handle_message(
                 thread_id,
                 last_exchange: None,
                 earlier_count: 0,
+                model_name: chat_model_name.clone(),
             })
         }
         Message::ChatMessage(cm) => {

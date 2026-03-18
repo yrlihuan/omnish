@@ -33,10 +33,24 @@ pub struct ChatSession {
     has_activity: bool,
     pending_input: Option<String>,
     client_plugins: Arc<client_plugin::ClientPluginManager>,
+    model_name: Option<String>,
+    ghost_hint_shown: bool,
 }
 
 fn write_stdout(s: &str) {
     nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+}
+
+/// Strip `-YYYYMMDD` date suffix from model name for display.
+/// e.g. "claude-sonnet-4-5-20250929" → "claude-sonnet-4-5"
+fn strip_date_suffix(model: &str) -> &str {
+    if model.len() > 9 {
+        let suffix = &model[model.len() - 9..];
+        if suffix.starts_with('-') && suffix[1..].bytes().all(|b| b.is_ascii_digit()) {
+            return &model[..model.len() - 9];
+        }
+    }
+    model
 }
 
 impl ChatSession {
@@ -54,6 +68,8 @@ impl ChatSession {
             has_activity: false,
             pending_input: None,
             client_plugins: Arc::new(client_plugin::ClientPluginManager::new()),
+            model_name: None,
+            ghost_hint_shown: false,
         }
     }
 
@@ -166,16 +182,57 @@ impl ChatSession {
         cursor_col: u16,
         cursor_row: u16,
     ) {
+        let is_resumed = initial_msg.as_ref()
+            .map(|m| m.starts_with("/resume"))
+            .unwrap_or(false);
+        let show_ghost_hint = initial_msg.is_none() || is_resumed;
         self.pending_input = initial_msg;
 
         // Move past shell prompt to a new line
         write_stdout("\r\n");
+
+        // Eagerly start chat to get model name for ghost hint
+        {
+            let req_id = Uuid::new_v4().to_string()[..8].to_string();
+            let start_msg = Message::ChatStart(ChatStart {
+                request_id: req_id.clone(),
+                session_id: session_id.to_string(),
+                new_thread: !is_resumed,
+            });
+            match rpc.call(start_msg).await {
+                Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
+                    self.model_name = ready.model_name;
+                    if !is_resumed {
+                        self.current_thread_id = Some(ready.thread_id);
+                    }
+                }
+                _ => {}
+            }
+        }
 
         loop {
             let input = if let Some(msg) = self.pending_input.take() {
                 msg
             } else {
                 write_stdout("\x1b[36m> \x1b[0m");
+                // Show ghost hint on first prompt
+                if show_ghost_hint && !self.ghost_hint_shown {
+                    self.ghost_hint_shown = true;
+                    let model_part = self.model_name.as_deref()
+                        .map(|m| format!("current model is {}. ", strip_date_suffix(m)));
+                    let action = if is_resumed {
+                        "type to continue"
+                    } else {
+                        "type /resume to continue last conversation."
+                    };
+                    let hint = format!(
+                        "{}{}",
+                        model_part.as_deref().unwrap_or(""),
+                        action,
+                    );
+                    // Save cursor, write dim hint, restore cursor
+                    write_stdout(&format!("\x1b7\x1b[2;90m{}\x1b[0m\x1b8", hint));
+                }
                 match self.read_input(!self.has_activity) {
                     Some(line) => {
                         write_stdout("\r\n");

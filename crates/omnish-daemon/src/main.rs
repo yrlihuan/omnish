@@ -254,7 +254,13 @@ async fn async_main() -> Result<i32> {
     let plugin_mgr_watcher = Arc::clone(&plugin_mgr);
     tokio::spawn(async move { plugin_mgr_watcher.watch_overrides().await });
 
-    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr);
+    // Extract chat model name for ghost hint
+    let chat_model_name = config.llm.use_cases.get("chat")
+        .and_then(|backend_name| config.llm.backends.get(backend_name))
+        .or_else(|| config.llm.backends.get(&config.llm.default))
+        .map(|bc| bc.model.clone());
+
+    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, chat_model_name);
 
     tracing::info!("starting omnishd at {}", socket_path);
 
