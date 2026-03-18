@@ -28,16 +28,10 @@ backend_type = "anthropic"
 model = "claude-sonnet-4-5-20250929"
 api_key_cmd = "echo test-key"
 
-[llm.auto_trigger]
-on_nonzero_exit = true
-on_stderr_patterns = ["error", "panic", "traceback", "fatal"]
-cooldown_seconds = 5
 "#;
     let config: DaemonConfig = toml::from_str(toml_str).unwrap();
     assert_eq!(config.listen_addr, "/tmp/omnish.sock");
     assert_eq!(config.llm.default, "claude");
-    assert!(config.llm.auto_trigger.on_nonzero_exit);
-    assert_eq!(config.llm.auto_trigger.cooldown_seconds, 5);
 }
 
 #[test]
@@ -54,7 +48,6 @@ fn test_daemon_config_defaults() {
     let config: DaemonConfig = toml::from_str(toml_str).unwrap();
     assert!(config.listen_addr.ends_with("omnish.sock"));
     assert_eq!(config.llm.default, "claude");
-    assert!(!config.llm.auto_trigger.on_nonzero_exit);
 }
 
 #[test]

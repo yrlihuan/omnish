@@ -1,5 +1,3 @@
-#[allow(dead_code)]
-mod event_detector;
 mod server;
 
 use anyhow::Result;

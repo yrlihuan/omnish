@@ -545,10 +545,6 @@ DAEMON_EOF
 # secret_key = "sk-lf-..."
 # base_url = "https://cloud.langfuse.com"
 
-[llm.auto_trigger]
-on_nonzero_exit = true
-on_stderr_patterns = ["error", "panic", "traceback", "fatal"]
-cooldown_seconds = 5
 
 [context.completion]
 # detailed_commands = 30   # recent commands with full output

@@ -289,8 +289,6 @@ pub struct LlmConfig {
     pub default: String,
     #[serde(default)]
     pub backends: HashMap<String, LlmBackendConfig>,
-    #[serde(default)]
-    pub auto_trigger: AutoTriggerConfig,
     /// Map use cases to backend names
     /// Example:
     ///   [llm.use_cases]
@@ -309,7 +307,6 @@ impl Default for LlmConfig {
         Self {
             default: default_llm_name(),
             backends: HashMap::new(),
-            auto_trigger: AutoTriggerConfig::default(),
             use_cases: HashMap::new(),
             langfuse: None,
         }
@@ -351,20 +348,6 @@ pub struct LlmBackendConfig {
     /// Maximum content characters for context (model-specific limit)
     #[serde(default)]
     pub max_content_chars: Option<usize>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct AutoTriggerConfig {
-    #[serde(default)]
-    pub on_nonzero_exit: bool,
-    #[serde(default)]
-    pub on_stderr_patterns: Vec<String>,
-    #[serde(default = "default_cooldown")]
-    pub cooldown_seconds: u64,
-}
-
-fn default_cooldown() -> u64 {
-    5
 }
 
 // ---------------------------------------------------------------------------
