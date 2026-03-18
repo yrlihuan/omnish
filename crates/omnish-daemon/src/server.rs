@@ -1083,6 +1083,32 @@ fn reconstruct_history(
     entries
 }
 
+/// Build JSON response for /resume, including thread model if non-default.
+fn build_resume_response(
+    thread_id: &str,
+    conv_mgr: &ConversationManager,
+    plugin_mgr: &PluginManager,
+    llm_backend: &Option<Arc<dyn LlmBackend>>,
+) -> serde_json::Value {
+    let raw_msgs = conv_mgr.load_raw_messages(thread_id);
+    let history = reconstruct_history(&raw_msgs, plugin_mgr);
+    let mut json = serde_json::json!({
+        "thread_id": thread_id,
+        "history": history,
+    });
+    // Include thread model if it differs from the default chat backend
+    let meta = conv_mgr.load_meta(thread_id);
+    if let Some(ref model_name) = meta.model {
+        let is_default = llm_backend.as_ref()
+            .map(|b| b.chat_default_name() == model_name)
+            .unwrap_or(true);
+        if !is_default {
+            json["model"] = serde_json::json!(model_name);
+        }
+    }
+    json
+}
+
 async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>, plugin_mgr: &PluginManager) -> serde_json::Value {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
 
@@ -1128,14 +1154,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             Err(_) => return cmd_display("Invalid index: not a number"),
         };
         return match conv_mgr.get_thread_by_index(idx) {
-            Some(thread_id) => {
-                let raw_msgs = conv_mgr.load_raw_messages(&thread_id);
-                let history = reconstruct_history(&raw_msgs, plugin_mgr);
-                serde_json::json!({
-                    "thread_id": thread_id,
-                    "history": history,
-                })
-            }
+            Some(thread_id) => build_resume_response(&thread_id, conv_mgr, plugin_mgr, llm_backend),
             None => cmd_display("Invalid index: out of bounds"),
         };
     }
@@ -1146,23 +1165,12 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
         if raw_msgs.is_empty() {
             return cmd_display("Conversation not found");
         }
-        let history = reconstruct_history(&raw_msgs, plugin_mgr);
-        return serde_json::json!({
-            "thread_id": tid,
-            "history": history,
-        });
+        return build_resume_response(tid, conv_mgr, plugin_mgr, llm_backend);
     }
     // Handle /resume without index (resume latest = /resume 1)
     if sub == "resume" {
         return match conv_mgr.get_thread_by_index(0) {
-            Some(thread_id) => {
-                let raw_msgs = conv_mgr.load_raw_messages(&thread_id);
-                let history = reconstruct_history(&raw_msgs, plugin_mgr);
-                serde_json::json!({
-                    "thread_id": thread_id,
-                    "history": history,
-                })
-            }
+            Some(thread_id) => build_resume_response(&thread_id, conv_mgr, plugin_mgr, llm_backend),
             None => cmd_display("No conversations yet. Start a chat with :"),
         };
     }

@@ -1081,6 +1081,11 @@ impl ChatSession {
                 write_stdout("\x1b[2;37m(resumed conversation)\x1b[0m\r\n");
                 self.push_entry(ScrollEntry::SystemMessage("(resumed conversation)".to_string()));
             }
+            // Show hint if thread uses a non-default model
+            if let Some(model) = response_json.as_ref().and_then(|j| j.get("model")).and_then(|v| v.as_str()) {
+                let hint = format!("current model: {}", model);
+                write_stdout(&format!("\x1b[2;90m{}\x1b[0m\r\n", hint));
+            }
         }
     }
 
