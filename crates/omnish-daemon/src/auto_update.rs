@@ -1,19 +1,26 @@
 use anyhow::Result;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Notify;
 use tokio_cron_scheduler::Job;
 
 /// Create a cron job that runs `install.sh --upgrade` to check for and install updates,
 /// then runs `deploy.sh` to distribute to client machines.
+///
+/// When an upgrade succeeds, `restart_signal` is notified so the daemon can
+/// shut down gracefully and let systemd restart it with the new binary.
 pub fn create_auto_update_job(
     omnish_dir: PathBuf,
     schedule: &str,
     clients: Vec<String>,
     check_url: Option<String>,
+    restart_signal: Arc<Notify>,
 ) -> Result<Job> {
     Ok(Job::new_async(schedule, move |_uuid, _lock| {
         let omnish_dir = omnish_dir.clone();
         let clients = clients.clone();
         let check_url = check_url.clone();
+        let restart_signal = restart_signal.clone();
         Box::pin(async move {
             tracing::debug!("task [auto_update] started");
 
@@ -62,42 +69,40 @@ pub fn create_auto_update_job(
                 }
             }
 
-            // Phase 2: Deploy to clients
-            if clients.is_empty() {
-                tracing::debug!("task [auto_update] no clients configured, skipping deploy");
-                return;
-            }
-
-            let deploy_script = omnish_dir.join("deploy.sh");
-            if !deploy_script.exists() {
-                tracing::warn!("task [auto_update] deploy.sh not found: {}", deploy_script.display());
-                return;
-            }
-
-            let mut cmd = tokio::process::Command::new("bash");
-            cmd.arg(&deploy_script)
-                .env("OMNISH_HOME", &omnish_dir);
-            for client in &clients {
-                cmd.arg(client);
-            }
-
-            match cmd.output().await {
-                Ok(output) => {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    for line in stdout.lines() {
-                        tracing::info!("task [auto_update] {}", line);
+            // Phase 2: Deploy to clients (if configured)
+            if !clients.is_empty() {
+                let deploy_script = omnish_dir.join("deploy.sh");
+                if !deploy_script.exists() {
+                    tracing::warn!("task [auto_update] deploy.sh not found: {}", deploy_script.display());
+                } else {
+                    let mut cmd = tokio::process::Command::new("bash");
+                    cmd.arg(&deploy_script)
+                        .env("OMNISH_HOME", &omnish_dir);
+                    for client in &clients {
+                        cmd.arg(client);
                     }
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        tracing::warn!("task [auto_update] deploy.sh failed: {}{}", stdout, stderr);
+
+                    match cmd.output().await {
+                        Ok(output) => {
+                            let stdout = String::from_utf8_lossy(&output.stdout);
+                            for line in stdout.lines() {
+                                tracing::info!("task [auto_update] {}", line);
+                            }
+                            if !output.status.success() {
+                                let stderr = String::from_utf8_lossy(&output.stderr);
+                                tracing::warn!("task [auto_update] deploy.sh failed: {}{}", stdout, stderr);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("task [auto_update] failed to run deploy.sh: {}", e);
+                        }
                     }
-                }
-                Err(e) => {
-                    tracing::warn!("task [auto_update] failed to run deploy.sh: {}", e);
                 }
             }
 
-            tracing::debug!("task [auto_update] finished");
+            // Server binary was updated in Phase 1 — restart to use the new binary
+            tracing::info!("task [auto_update] upgrade complete, requesting daemon restart");
+            restart_signal.notify_one();
         })
     })?)
 }

@@ -12,31 +12,51 @@ use omnish_llm::factory::MultiBackend;
 use server::DaemonServer;
 use std::sync::Arc;
 
-fn main() -> Result<()> {
+/// Exit code indicating the daemon should be restarted (e.g. after upgrade).
+/// Systemd's `Restart=on-failure` treats non-zero exits as failures and restarts.
+const EXIT_RESTART: i32 = 42;
+
+fn main() {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
         println!("omnish-daemon {}", omnish_common::VERSION);
-        return Ok(());
+        return;
     }
 
     if std::env::args().any(|a| a == "--init") {
         let omnish_dir = omnish_dir();
-        let (token, token_status, cert_status) = init_omnish_dir(&omnish_dir)?;
-        println!("auth_token: {} ({})", omnish_common::auth::default_token_path().display(), token_status);
-        let tls_dir = omnish_transport::tls::default_tls_dir();
-        println!("tls cert:   {}/cert.pem ({})", tls_dir.display(), cert_status);
-        println!("tls key:    {}/key.pem ({})", tls_dir.display(), cert_status);
-        let _ = token;
-        return Ok(());
+        match init_omnish_dir(&omnish_dir) {
+            Ok((token, token_status, cert_status)) => {
+                println!("auth_token: {} ({})", omnish_common::auth::default_token_path().display(), token_status);
+                let tls_dir = omnish_transport::tls::default_tls_dir();
+                println!("tls cert:   {}/cert.pem ({})", tls_dir.display(), cert_status);
+                println!("tls key:    {}/key.pem ({})", tls_dir.display(), cert_status);
+                let _ = token;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
     }
 
     let worker_threads = std::thread::available_parallelism()
         .map(|n| n.get().min(30))
         .unwrap_or(4);
-    tokio::runtime::Builder::new_multi_thread()
+    let exit_code = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads)
         .enable_all()
-        .build()?
-        .block_on(async_main())
+        .build()
+        .map_err(anyhow::Error::from)
+        .and_then(|rt| rt.block_on(async_main()))
+    {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("Fatal: {}", e);
+            1
+        }
+    };
+    std::process::exit(exit_code);
 }
 
 /// Initialize ~/.omnish/ directory: create credentials.
@@ -59,7 +79,7 @@ fn init_omnish_dir(omnish_dir: &std::path::Path) -> Result<(String, &'static str
     Ok((token, token_status, cert_status))
 }
 
-async fn async_main() -> Result<()> {
+async fn async_main() -> Result<i32> {
     // Initialize tracing: stderr (RUST_LOG, default info) + file (always debug)
     let log_dir = omnish_dir().join("logs");
     std::fs::create_dir_all(&log_dir)?;
@@ -181,6 +201,9 @@ async fn async_main() -> Result<()> {
         );
     }
 
+    // Restart signal: notified when auto-update installs a new binary
+    let restart_signal = Arc::new(tokio::sync::Notify::new());
+
     // Register auto-update job if enabled
     if auto_update_config.enabled {
         let job = omnish_daemon::auto_update::create_auto_update_job(
@@ -188,6 +211,7 @@ async fn async_main() -> Result<()> {
             &auto_update_config.schedule,
             auto_update_config.clients.clone(),
             auto_update_config.check_url.clone(),
+            Arc::clone(&restart_signal),
         )?;
         task_mgr
             .register("auto_update", &auto_update_config.schedule, job)
@@ -235,5 +259,39 @@ async fn async_main() -> Result<()> {
     let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr);
 
     tracing::info!("starting omnishd at {}", socket_path);
-    server.run(&socket_path, auth_token, tls_acceptor).await
+
+    // Set up signal handlers
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut sigusr1 = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())?;
+
+    // Race between server, signals, and restart request
+    let exit_code = tokio::select! {
+        result = server.run(&socket_path, auth_token, tls_acceptor) => {
+            if let Err(e) = result {
+                tracing::error!("server error: {}", e);
+                1
+            } else {
+                0
+            }
+        }
+        _ = restart_signal.notified() => {
+            tracing::info!("restart requested after upgrade");
+            EXIT_RESTART
+        }
+        _ = sigterm.recv() => {
+            tracing::info!("received SIGTERM, shutting down");
+            0
+        }
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("received SIGINT, shutting down");
+            0
+        }
+        _ = sigusr1.recv() => {
+            tracing::info!("received SIGUSR1, restarting");
+            EXIT_RESTART
+        }
+    };
+
+    tracing::info!("omnishd exiting with code {}", exit_code);
+    Ok(exit_code)
 }

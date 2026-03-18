@@ -990,7 +990,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "toml_edit",
  "tracing",
  "unicode-width 0.2.2",
  "uuid",
@@ -1008,6 +1007,7 @@ dependencies = [
  "serde",
  "tempfile",
  "toml",
+ "toml_edit",
 ]
 
 [[package]]
