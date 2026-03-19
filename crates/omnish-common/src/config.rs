@@ -166,12 +166,33 @@ fn default_auto_update_schedule() -> String {
     "0 0 4 * * *".to_string()
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct PeriodicSummaryConfig {
+    /// Interval in hours between periodic summaries. Default: 4.
+    #[serde(default = "default_summary_interval_hours")]
+    pub interval_hours: u8,
+}
+
+impl Default for PeriodicSummaryConfig {
+    fn default() -> Self {
+        Self {
+            interval_hours: default_summary_interval_hours(),
+        }
+    }
+}
+
+fn default_summary_interval_hours() -> u8 {
+    4
+}
+
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct TasksConfig {
     #[serde(default)]
     pub eviction: EvictionConfig,
     #[serde(default)]
     pub daily_notes: DailyNotesConfig,
+    #[serde(default)]
+    pub periodic_summary: PeriodicSummaryConfig,
     #[serde(default)]
     pub disk_cleanup: DiskCleanupConfig,
     #[serde(default)]
