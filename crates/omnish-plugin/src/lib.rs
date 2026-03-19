@@ -124,7 +124,8 @@ pub fn apply_sandbox(data_dir: &std::path::Path, cwd: Option<&std::path::Path>) 
     }
 }
 
-/// No-op sandbox on non-Linux platforms.
+/// No-op: on macOS, sandboxing is applied at the command level via sandbox-exec.
+/// On other non-Linux platforms, sandboxing is not available.
 #[cfg(not(target_os = "linux"))]
 pub fn apply_sandbox(_data_dir: &std::path::Path, _cwd: Option<&std::path::Path>) -> Result<(), String> {
     Ok(())
