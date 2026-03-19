@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Read JSON request from stdin
+INPUT=$(cat)
+QUERY=$(echo "$INPUT" | jq -r '.input.query // empty')
+COUNT=$(echo "$INPUT" | jq -r '.input.count // 5')
+API_KEY=$(echo "$INPUT" | jq -r '.input.api_key // empty')
+BASE_URL=$(echo "$INPUT" | jq -r '.input.base_url // "https://api.search.brave.com/res/v1/web/search"')
+DOMAIN_FILTER=$(echo "$INPUT" | jq -r '.input.domain_filter // empty')
+
+# Validate required params
+if [ -z "$QUERY" ]; then
+  jq -n '{"content":"Error: query parameter is required","is_error":true}'
+  exit 0
+fi
+if [ -z "$API_KEY" ]; then
+  jq -n '{"content":"Error: api_key not configured. Add [tools.web_search] api_key = \"...\" to daemon.toml","is_error":true}'
+  exit 0
+fi
+
+# Apply domain filter: prepend site: / -site: to query
+if [ -n "$DOMAIN_FILTER" ]; then
+  IFS=',' read -ra DOMAINS <<< "$DOMAIN_FILTER"
+  for d in "${DOMAINS[@]}"; do
+    d=$(echo "$d" | xargs)  # trim whitespace
+    if [[ "$d" == -* ]]; then
+      QUERY="$QUERY -site:${d#-}"
+    else
+      QUERY="$QUERY site:$d"
+    fi
+  done
+fi
+
+# Call Brave Search API
+RESPONSE=$(curl -s -w "\n%{http_code}" \
+  -H "X-Subscription-Token: $API_KEY" \
+  -H "Accept: application/json" \
+  --get --data-urlencode "q=$QUERY" --data-urlencode "count=$COUNT" \
+  "$BASE_URL")
+
+HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+BODY=$(echo "$RESPONSE" | sed '$d')
+
+if [ "$HTTP_CODE" != "200" ]; then
+  ERROR_MSG=$(echo "$BODY" | jq -r '.message // .error // "Unknown error"' 2>/dev/null || echo "HTTP $HTTP_CODE")
+  jq -n --arg msg "$ERROR_MSG" '{"content": ("Search failed: " + $msg), "is_error": true}'
+  exit 0
+fi
+
+# Format results as markdown
+RESULT=$(echo "$BODY" | jq -r '
+  .web.results // [] |
+  to_entries |
+  map("\(.key + 1). [\(.value.title)](\(.value.url))\n   \(.value.description // "No description")") |
+  join("\n\n")
+')
+
+if [ -z "$RESULT" ]; then
+  RESULT="No results found for: $QUERY"
+fi
+
+# Output JSON response (use jq to properly escape the content string)
+jq -n --arg content "$RESULT" '{"content": $content, "is_error": false}'

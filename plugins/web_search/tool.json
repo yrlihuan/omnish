@@ -1,0 +1,43 @@
+{
+  "plugin_type": "daemon_tool",
+  "tools": [
+    {
+      "name": "web_search",
+      "description": [
+        "Search the web using Brave Search API and return results.",
+        "Returns search result titles, URLs, and snippets formatted as markdown.",
+        "Use this tool to find up-to-date information beyond your knowledge cutoff.",
+        "",
+        "After answering the user's question based on search results, include a Sources section:",
+        "Sources:",
+        "- [Title](URL)",
+        "",
+        "Usage notes:",
+        "- Domain filtering supports include and exclude: \"stackoverflow.com,-reddit.com\"",
+        "- Prefix a domain with - to exclude it from results"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The search query"
+          },
+          "count": {
+            "type": "integer",
+            "description": "Number of results to return (default: 5, max: 20)"
+          },
+          "domain_filter": {
+            "type": "string",
+            "description": "Comma-separated domains to include or exclude. Prefix with - to exclude. Example: \"stackoverflow.com,-reddit.com\""
+          }
+        },
+        "required": ["query"]
+      },
+      "status_template": "搜索: {query}",
+      "sandboxed": false,
+      "display_name": "Web Search",
+      "formatter": "default"
+    }
+  ]
+}
