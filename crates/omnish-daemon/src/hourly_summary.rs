@@ -46,7 +46,10 @@ async fn generate_hourly_summary(
     let since_ms = now_ms.saturating_sub(one_hour_ms);
 
     let commands = mgr.collect_recent_commands(since_ms).await;
-    let conversations_md = collect_recent_conversations(conv_mgr);
+    let one_hour_ago = SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(3600))
+        .unwrap_or(UNIX_EPOCH);
+    let conversations_md = conv_mgr.collect_recent_conversations_md(one_hour_ago);
 
     if commands.is_empty() && conversations_md.is_empty() {
         tracing::info!("hourly summary: no commands or conversations in the last hour, skipping");
@@ -133,81 +136,6 @@ async fn generate_hourly_summary(
     tracing::info!("hourly summary: wrote {}", file_path.display());
 
     Ok(())
-}
-
-/// Collect conversations from threads modified in the last hour.
-/// Extracts text-only content, filtering out tool_use and tool_result blocks.
-fn collect_recent_conversations(conv_mgr: &ConversationManager) -> String {
-    let one_hour_ago = SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(3600))
-        .unwrap_or(UNIX_EPOCH);
-
-    let conversations = conv_mgr.list_conversations();
-    let mut result = String::new();
-
-    for (thread_id, mtime, _count, _last_q) in &conversations {
-        if *mtime < one_hour_ago {
-            continue;
-        }
-
-        let meta = conv_mgr.load_meta(thread_id);
-        let title = meta.summary.unwrap_or_else(|| "untitled".to_string());
-
-        let messages = conv_mgr.load_raw_messages(thread_id);
-        if messages.is_empty() {
-            continue;
-        }
-
-        let mut thread_md = format!("## Thread: {}\n\n", title);
-        for msg in &messages {
-            let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
-            let text = extract_text_content(msg);
-            if text.is_empty() {
-                continue;
-            }
-            let label = match role {
-                "user" => "User",
-                "assistant" => "Assistant",
-                _ => continue,
-            };
-            thread_md.push_str(&format!("{}: {}\n\n", label, text));
-        }
-
-        result.push_str(&thread_md);
-    }
-
-    result
-}
-
-/// Extract text content from a message, filtering out tool_use/tool_result blocks.
-fn extract_text_content(msg: &serde_json::Value) -> String {
-    let content = match msg.get("content") {
-        Some(c) => c,
-        None => return String::new(),
-    };
-
-    // Simple string content
-    if let Some(s) = content.as_str() {
-        return s.to_string();
-    }
-
-    // Array content: filter for text blocks only
-    if let Some(arr) = content.as_array() {
-        let texts: Vec<&str> = arr
-            .iter()
-            .filter_map(|block| {
-                let block_type = block.get("type")?.as_str()?;
-                if block_type == "text" {
-                    block.get("text")?.as_str()
-                } else {
-                    None
-                }
-            })
-            .collect();
-        return texts.join("\n");
-    }
-
-    String::new()
 }
 
 #[cfg(test)]

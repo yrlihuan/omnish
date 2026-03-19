@@ -188,6 +188,7 @@ async fn async_main() -> Result<i32> {
         let cron = format!("0 0 {} * * *", daily_notes_config.schedule_hour);
         let job = create_daily_notes_job(
             Arc::clone(&session_mgr),
+            Arc::clone(&conv_mgr),
             llm_backend.clone(),
             notes_dir,
             daily_notes_config.schedule_hour,

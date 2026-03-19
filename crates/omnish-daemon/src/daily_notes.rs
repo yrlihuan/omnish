@@ -1,3 +1,4 @@
+use crate::conversation_mgr::ConversationManager;
 use crate::session_mgr::SessionManager;
 use chrono::Local;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
@@ -9,6 +10,7 @@ use tokio_cron_scheduler::Job;
 /// Create a cron job that generates daily notes at the given hour.
 pub fn create_daily_notes_job(
     mgr: Arc<SessionManager>,
+    conv_mgr: Arc<ConversationManager>,
     llm_backend: Option<Arc<dyn LlmBackend>>,
     notes_dir: PathBuf,
     schedule_hour: u8,
@@ -16,11 +18,12 @@ pub fn create_daily_notes_job(
     let cron = format!("0 0 {} * * *", schedule_hour);
     Ok(Job::new_async_tz(cron, Local, move |_uuid, _lock| {
         let mgr = mgr.clone();
+        let conv_mgr = conv_mgr.clone();
         let llm = llm_backend.clone();
         let dir = notes_dir.clone();
         Box::pin(async move {
             tracing::debug!("task [daily_notes] started");
-            if let Err(e) = generate_daily_note(&mgr, llm.as_deref(), &dir).await {
+            if let Err(e) = generate_daily_note(&mgr, &conv_mgr, llm.as_deref(), &dir).await {
                 tracing::warn!("task [daily_notes] failed: {}", e);
             }
             tracing::debug!("task [daily_notes] finished");
@@ -90,6 +93,7 @@ fn collect_hourly_notes(notes_dir: &Path, date: &str) -> String {
 /// Generate the daily note markdown file.
 async fn generate_daily_note(
     mgr: &SessionManager,
+    conv_mgr: &ConversationManager,
     llm_backend: Option<&dyn LlmBackend>,
     notes_dir: &PathBuf,
 ) -> anyhow::Result<()> {
@@ -101,22 +105,40 @@ async fn generate_daily_note(
     let since_ms = now_ms.saturating_sub(twenty_four_hours_ms);
 
     let commands = mgr.collect_recent_commands(since_ms).await;
-    if commands.is_empty() {
-        tracing::info!("daily notes: no commands in the last 24h, skipping");
+
+    // Collect conversations from the last 24 hours
+    let twenty_four_hours_ago = SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(24 * 3600))
+        .unwrap_or(UNIX_EPOCH);
+    let conversations_md = conv_mgr.collect_recent_conversations_md(twenty_four_hours_ago);
+
+    if commands.is_empty() && conversations_md.is_empty() {
+        tracing::info!("daily notes: no commands or conversations in the last 24h, skipping");
         return Ok(());
     }
 
     let mut md = build_daily_notes_context(&commands);
+
+    // Add conversations section to output
+    if !conversations_md.is_empty() {
+        md.push_str("\n## 会话记录\n\n");
+        md.push_str(&conversations_md);
+    }
 
     // Try LLM summary
     if let Some(backend) = llm_backend {
         let use_case = UseCase::Analysis;
         let max_content_chars = backend.max_content_chars_for_use_case(use_case);
 
-        // Build LLM context: include hourly notes for better summary, but not in final output
+        // Build LLM context: commands + conversations + hourly notes
         let today = Local::now().format("%Y-%m-%d").to_string();
         let hourly_context = collect_hourly_notes(notes_dir, &today);
         let mut llm_context = format!("<commands>\n{}</commands>", md);
+        if !conversations_md.is_empty() {
+            llm_context.push_str("\n\n<conversations>\n");
+            llm_context.push_str(&conversations_md);
+            llm_context.push_str("</conversations>");
+        }
         if !hourly_context.is_empty() {
             llm_context.push_str("\n\n<hourly_summaries>\n");
             llm_context.push_str(&hourly_context);
@@ -166,10 +188,11 @@ mod tests {
     async fn test_generate_daily_note_empty_commands() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+        let conv_mgr = ConversationManager::new(dir.path().join("threads"));
         let notes_dir = dir.path().join("notes");
 
-        // No commands → should skip without error
-        generate_daily_note(&mgr, None, &notes_dir).await.unwrap();
+        // No commands or conversations → should skip without error
+        generate_daily_note(&mgr, &conv_mgr, None, &notes_dir).await.unwrap();
         assert!(!notes_dir.exists());
     }
 
@@ -207,8 +230,9 @@ mod tests {
         .await
         .unwrap();
 
+        let conv_mgr = ConversationManager::new(dir.path().join("threads"));
         let notes_dir = dir.path().join("notes");
-        generate_daily_note(&mgr, None, &notes_dir).await.unwrap();
+        generate_daily_note(&mgr, &conv_mgr, None, &notes_dir).await.unwrap();
 
         let today = Local::now().format("%Y-%m-%d").to_string();
         let content = std::fs::read_to_string(notes_dir.join(format!("{}.md", today))).unwrap();
@@ -273,9 +297,10 @@ mod tests {
         .await
         .unwrap();
 
+        let conv_mgr = ConversationManager::new(dir.path().join("threads"));
         let notes_dir = dir.path().join("notes");
         let mock_llm: &dyn LlmBackend = &MockLlm;
-        generate_daily_note(&mgr, Some(mock_llm), &notes_dir)
+        generate_daily_note(&mgr, &conv_mgr, Some(mock_llm), &notes_dir)
             .await
             .unwrap();
 

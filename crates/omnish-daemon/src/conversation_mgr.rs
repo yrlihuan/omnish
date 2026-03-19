@@ -249,6 +249,47 @@ impl ConversationManager {
     pub fn extract_text_public(msg: &serde_json::Value) -> String {
         Self::extract_text(msg)
     }
+
+    /// Collect conversations from threads modified since `since`, formatted as markdown.
+    /// Each thread becomes a `## Thread: {title}` section with User/Assistant exchanges.
+    /// Filters out tool_use/tool_result blocks, keeping only text content.
+    pub fn collect_recent_conversations_md(&self, since: std::time::SystemTime) -> String {
+        let conversations = self.list_conversations();
+        let mut result = String::new();
+
+        for (thread_id, mtime, _count, _last_q) in &conversations {
+            if *mtime < since {
+                continue;
+            }
+
+            let meta = self.load_meta(thread_id);
+            let title = meta.summary.unwrap_or_else(|| "untitled".to_string());
+
+            let messages = self.load_raw_messages(thread_id);
+            if messages.is_empty() {
+                continue;
+            }
+
+            let mut thread_md = format!("## Thread: {}\n\n", title);
+            for msg in &messages {
+                let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+                let text = Self::extract_text(msg);
+                if text.is_empty() {
+                    continue;
+                }
+                let label = match role {
+                    "user" => "User",
+                    "assistant" => "Assistant",
+                    _ => continue,
+                };
+                thread_md.push_str(&format!("{}: {}\n\n", label, text));
+            }
+
+            result.push_str(&thread_md);
+        }
+
+        result
+    }
 }
 
 #[cfg(test)]
