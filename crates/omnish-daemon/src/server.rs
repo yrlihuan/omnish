@@ -1325,6 +1325,18 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
     let command_query_tool = omnish_daemon::tools::command_query::CommandQueryTool::new(commands, stream_reader);
     let reminder = command_query_tool.build_system_reminder(5, None);
 
+    // Handle /release_thread <thread_id> — release active thread binding
+    if let Some(tid) = sub.strip_prefix("release_thread ") {
+        let tid = tid.trim();
+        let mut threads = active_threads.lock().await;
+        if let Some(claim) = threads.get(tid) {
+            if claim.session_id == req.session_id {
+                threads.remove(tid);
+            }
+        }
+        return cmd_display("ok");
+    }
+
     // Handle /context chat:<thread_id> — show conversation context + system-reminder
     if let Some(thread_id) = sub.strip_prefix("context chat:") {
         let msgs = conv_mgr.load_raw_messages(thread_id);

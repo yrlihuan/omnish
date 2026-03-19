@@ -746,6 +746,18 @@ impl ChatSession {
                 });
             }
         }
+
+        // Release the thread binding on the daemon so other sessions can use it
+        if let Some(ref tid) = self.current_thread_id {
+            let rid = Uuid::new_v4().to_string()[..8].to_string();
+            let req = Message::Request(Request {
+                request_id: rid,
+                session_id: session_id.to_string(),
+                query: format!("__cmd:release_thread {}", tid),
+                scope: RequestScope::AllSessions,
+            });
+            let _ = rpc.call(req).await;
+        }
     }
 
     // ── Command handlers ─────────────────────────────────────────────────
