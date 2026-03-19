@@ -32,6 +32,8 @@ struct PluginInfo {
 struct PromptCache {
     /// tool_name → effective description (base with override/append applied)
     descriptions: HashMap<String, String>,
+    /// tool_name → override params from tool.override.json
+    override_params: HashMap<String, HashMap<String, serde_json::Value>>,
 }
 
 /// Metadata-only plugin manager. Loads tool definitions from JSON files.
@@ -101,6 +103,9 @@ struct ToolOverrideEntry {
     /// Appended to the tool description (ignored if `description` is set).
     #[serde(default)]
     append: Option<DescriptionValue>,
+    /// Extra parameters merged into tool call input at execution time.
+    #[serde(default)]
+    params: Option<HashMap<String, serde_json::Value>>,
 }
 
 /// Built-in tool definitions embedded at compile time.
@@ -237,6 +242,7 @@ impl PluginManager {
             tool_index,
             prompt_cache: RwLock::new(PromptCache {
                 descriptions: HashMap::new(),
+                override_params: HashMap::new(),
             }),
         };
         mgr.reload_overrides();
@@ -246,6 +252,7 @@ impl PluginManager {
     /// Re-read all tool.override.json files and update the prompt cache.
     pub fn reload_overrides(&self) {
         let mut descriptions = HashMap::new();
+        let mut override_params = HashMap::new();
 
         for plugin in &self.plugins {
             let override_path = self.plugins_dir.join(&plugin.dir_name).join("tool.override.json");
@@ -277,6 +284,9 @@ impl PluginManager {
                             desc.push('\n');
                             desc.push_str(&a.clone().into_string());
                         }
+                        if let Some(ref p) = ovr.params {
+                            override_params.insert(te.def.name.clone(), p.clone());
+                        }
                     }
                 }
                 descriptions.insert(te.def.name.clone(), desc);
@@ -287,6 +297,7 @@ impl PluginManager {
 
         let mut cache = self.prompt_cache.write().unwrap();
         cache.descriptions = descriptions;
+        cache.override_params = override_params;
     }
 
     /// Collect all tool definitions from all plugins (with prompt overrides applied).
@@ -354,6 +365,20 @@ impl PluginManager {
         self.tool_index
             .get(tool_name)
             .map(|&(pi, ti)| self.plugins[pi].tools[ti].status_template.as_str())
+    }
+
+    /// Return override params for the given tool (from tool.override.json).
+    pub fn tool_override_params(&self, tool_name: &str) -> Option<HashMap<String, serde_json::Value>> {
+        let cache = self.prompt_cache.read().unwrap();
+        cache.override_params.get(tool_name).cloned()
+    }
+
+    /// Return the executable path for the plugin that owns the given tool.
+    pub fn plugin_executable(&self, tool_name: &str) -> Option<std::path::PathBuf> {
+        self.tool_index.get(tool_name).map(|&(pi, _)| {
+            let dir_name = &self.plugins[pi].dir_name;
+            self.plugins_dir.join(dir_name).join(dir_name)
+        })
     }
 
     /// Spawn an async task that watches tool.override.json files for changes.
@@ -748,6 +773,81 @@ mod tests {
         assert_eq!(mgr.tool_sandboxed("edit"), Some(true));
         assert_eq!(mgr.tool_sandboxed("write"), Some(true));
         assert_eq!(mgr.tool_sandboxed("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_override_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tool_json(tmp.path(), "myplugin", r#"{
+            "plugin_type": "daemon_tool",
+            "tools": [{
+                "name": "my_tool",
+                "description": "My tool",
+                "input_schema": {"type": "object"},
+                "status_template": ""
+            }]
+        }"#);
+        write_tool_override(tmp.path(), "myplugin", r#"{
+            "tools": {
+                "my_tool": {
+                    "params": {
+                        "api_key": "test123",
+                        "count": 10
+                    }
+                }
+            }
+        }"#);
+        let mgr = PluginManager::load(tmp.path());
+        let params = mgr.tool_override_params("my_tool").unwrap();
+        assert_eq!(params["api_key"], serde_json::json!("test123"));
+        assert_eq!(params["count"], serde_json::json!(10));
+    }
+
+    #[test]
+    fn test_no_override_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = PluginManager::load(tmp.path());
+        assert!(mgr.tool_override_params("bash").is_none());
+    }
+
+    #[test]
+    fn test_plugin_executable() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tool_json(tmp.path(), "web_search", r#"{
+            "plugin_type": "daemon_tool",
+            "tools": [{
+                "name": "web_search",
+                "description": "Search",
+                "input_schema": {"type": "object"},
+                "status_template": ""
+            }]
+        }"#);
+        let mgr = PluginManager::load(tmp.path());
+        let exe = mgr.plugin_executable("web_search").unwrap();
+        assert_eq!(exe, tmp.path().join("web_search").join("web_search"));
+    }
+
+    #[test]
+    fn test_merge_precedence() {
+        let mut input = serde_json::json!({"query": "test", "count": 3});
+        let override_params: HashMap<String, serde_json::Value> = [
+            ("count".to_string(), serde_json::json!(5)),
+            ("api_key".to_string(), serde_json::json!("override_key")),
+        ].into();
+        let config_params: HashMap<String, serde_json::Value> = [
+            ("api_key".to_string(), serde_json::json!("config_key")),
+        ].into();
+
+        if let Some(obj) = input.as_object_mut() {
+            for (k, v) in &override_params { obj.insert(k.clone(), v.clone()); }
+        }
+        if let Some(obj) = input.as_object_mut() {
+            for (k, v) in &config_params { obj.insert(k.clone(), v.clone()); }
+        }
+
+        assert_eq!(input["query"], "test");
+        assert_eq!(input["count"], 5);
+        assert_eq!(input["api_key"], "config_key");
     }
 
     #[test]
