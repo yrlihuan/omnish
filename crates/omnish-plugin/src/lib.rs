@@ -27,12 +27,10 @@ fn git_repo_root(dir: &std::path::Path) -> Option<std::path::PathBuf> {
 /// Escapes backslashes first, then double quotes, to prevent profile injection.
 #[cfg(any(target_os = "macos", test))]
 fn escape_sb_path(path: &str) -> String {
-    // Reject paths with control characters (newlines etc.) that would break .sb profile syntax
-    assert!(
-        !path.bytes().any(|b| b < 0x20),
-        "sandbox profile path contains control characters: {path:?}"
-    );
-    path.replace('\\', "\\\\").replace('"', "\\\"")
+    // Strip control characters (newlines, tabs, etc.) that would break .sb profile syntax,
+    // then escape backslashes and quotes
+    let cleaned: String = path.chars().filter(|c| !c.is_control()).collect();
+    cleaned.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Build a sandbox-exec `.sb` profile string.

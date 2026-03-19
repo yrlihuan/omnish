@@ -33,7 +33,7 @@ impl ClientPluginManager {
     /// - `tool_name`: the specific tool within the plugin
     /// - `input`: tool input JSON
     /// - `cwd`: optional working directory to inject into input
-    /// - `sandboxed`: whether to apply Landlock sandbox
+    /// - `sandboxed`: whether to apply platform sandbox (Landlock on Linux, sandbox-exec on macOS)
     pub fn execute_tool(
         &self,
         plugin_name: &str,
