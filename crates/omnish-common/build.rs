@@ -13,5 +13,11 @@ fn main() {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
 
     println!("cargo:rustc-env=OMNISH_VERSION={}", version);
-    // No rerun-if-changed: always re-run so `--dirty` reflects current state
+    // Re-run when git state changes:
+    // - HEAD/refs/packed-refs: new commit, branch switch, tag
+    // - index: git add/reset (tracks --dirty state)
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../.git/refs");
+    println!("cargo:rerun-if-changed=../../.git/packed-refs");
+    println!("cargo:rerun-if-changed=../../.git/index");
 }
