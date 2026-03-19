@@ -486,6 +486,7 @@ async fn main() -> Result<()> {
     >(4);
     // Chat command history persists across chat sessions within same client
     let mut chat_history: VecDeque<String> = VecDeque::with_capacity(100);
+    let mut last_thread_id: Option<String> = None;
 
     // Auto-update state
     let auto_update_enabled = Arc::new(AtomicBool::new(config.auto_update));
@@ -792,6 +793,7 @@ async fn main() -> Result<()> {
                             {
                                 let mut session = chat_session::ChatSession::new(std::mem::take(&mut chat_history));
                                 session.run(rpc, &session_id, &proxy, initial, &dbg_fn, &auto_update_enabled, &onboarded, col_tracker.col, col_tracker.row).await;
+                                last_thread_id = session.thread_id().map(String::from);
                                 chat_history = session.into_history();
                             }
                         } else {
@@ -836,8 +838,13 @@ async fn main() -> Result<()> {
                                 &col_tracker,
                             );
                             {
+                                let resume_cmd = match last_thread_id {
+                                    Some(ref tid) => format!("/resume_tid {}", tid),
+                                    None => "/resume 1".to_string(),
+                                };
                                 let mut session = chat_session::ChatSession::new(std::mem::take(&mut chat_history));
-                                session.run(rpc, &session_id, &proxy, Some("/resume 1".to_string()), &dbg_fn, &auto_update_enabled, &onboarded, col_tracker.col, col_tracker.row).await;
+                                session.run(rpc, &session_id, &proxy, Some(resume_cmd), &dbg_fn, &auto_update_enabled, &onboarded, col_tracker.col, col_tracker.row).await;
+                                last_thread_id = session.thread_id().map(String::from);
                                 chat_history = session.into_history();
                             }
                         } else {

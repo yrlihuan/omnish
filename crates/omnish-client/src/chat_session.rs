@@ -89,6 +89,11 @@ impl ChatSession {
         self.chat_history
     }
 
+    /// Return the thread ID used in this chat session (if any).
+    pub fn thread_id(&self) -> Option<&str> {
+        self.current_thread_id.as_deref()
+    }
+
     fn show_thinking(&mut self) {
         write_stdout("\x1b[2m(thinking...)\x1b[0m\r\n");
         self.thinking_visible = true;
@@ -324,6 +329,12 @@ impl ChatSession {
             // /thread list
             if trimmed == "/thread list" {
                 self.handle_thread_list(session_id, rpc).await;
+                continue;
+            }
+
+            // /resume_tid <thread_id> (internal — used by :: resume shortcut)
+            if let Some(tid) = trimmed.strip_prefix("/resume_tid ") {
+                self.handle_resume_tid(tid.trim(), session_id, rpc).await;
                 continue;
             }
 
@@ -1058,6 +1069,11 @@ impl ChatSession {
             }
         };
 
+        self.apply_resume_response(thread_id, response_json);
+    }
+
+    /// Shared logic: apply a resume response (set thread, render history, show errors).
+    fn apply_resume_response(&mut self, thread_id: Option<String>, response_json: Option<serde_json::Value>) {
         if let Some(tid) = thread_id {
             // Check if the daemon returned an error (e.g. thread locked by another session)
             if let Some(err) = response_json.as_ref().and_then(|j| j.get("error")).and_then(|e| e.as_str()) {
@@ -1201,6 +1217,26 @@ impl ChatSession {
                 self.resumed_model = Some(model.to_string());
             }
         }
+    }
+
+    /// Resume a specific thread by ID (used by :: shortcut to return to
+    /// the session's previous thread).
+    async fn handle_resume_tid(&mut self, tid: &str, session_id: &str, rpc: &RpcClient) {
+        let rid = Uuid::new_v4().to_string()[..8].to_string();
+        let req = Message::Request(Request {
+            request_id: rid.clone(),
+            session_id: session_id.to_string(),
+            query: format!("__cmd:resume_tid {}", tid),
+            scope: RequestScope::AllSessions,
+        });
+        let resp_json = match rpc.call(req).await {
+            Ok(Message::Response(resp)) if resp.request_id == rid => {
+                super::parse_cmd_response(&resp.content)
+            }
+            _ => None,
+        };
+        // Delegate to the shared resume-response handler
+        self.apply_resume_response(Some(tid.to_string()), resp_json);
     }
 
     // ── Model picker ─────────────────────────────────────────────────────
