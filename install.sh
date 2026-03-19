@@ -245,7 +245,14 @@ if [[ -n "$SETUP_PLUGIN" ]]; then
     DAEMON_TOML="$OMNISH_DIR/daemon.toml"
     [[ -f "$DAEMON_TOML" ]] || error "daemon.toml not found. Run install.sh first."
     [[ -d "$OMNISH_DIR/plugins/$SETUP_PLUGIN" ]] || error "Plugin not found: $SETUP_PLUGIN"
-    setup_plugin "$SETUP_PLUGIN"
+    if setup_plugin "$SETUP_PLUGIN"; then
+        ask "Restart omnish-daemon to apply changes? [Y/n]:"
+        if [[ ! "${REPLY:-Y}" =~ ^[Nn] ]]; then
+            systemctl --user restart omnish-daemon 2>/dev/null \
+                && info "omnish-daemon restarted" \
+                || warn "Failed to restart daemon. Try: systemctl --user restart omnish-daemon"
+        fi
+    fi
     exit 0
 fi
 
