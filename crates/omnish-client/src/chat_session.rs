@@ -239,6 +239,19 @@ impl ChatSession {
         cursor_col: u16,
         cursor_row: u16,
     ) {
+        // Eagerly update cwd so the daemon has the current value before any chat message.
+        // Without this, polling lag (up to 60s) can cause chat to see a stale cwd (#354).
+        if let Some(cwd) = crate::get_shell_cwd(proxy.child_pid() as u32) {
+            let mut attrs = std::collections::HashMap::new();
+            attrs.insert("shell_cwd".to_string(), cwd);
+            let msg = Message::SessionUpdate(SessionUpdate {
+                session_id: session_id.to_string(),
+                timestamp_ms: crate::timestamp_ms(),
+                attrs,
+            });
+            let _ = rpc.send(msg).await;
+        }
+
         let is_resumed = initial_msg.as_ref()
             .map(|m| m.starts_with("/resume"))
             .unwrap_or(false);
