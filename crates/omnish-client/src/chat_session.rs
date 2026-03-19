@@ -1214,12 +1214,27 @@ impl ChatSession {
             new_thread: false,
             thread_id: Some(tid.to_string()),
         });
-        match rpc.call(start_msg).await {
-            Ok(Message::ChatReady(ready)) if ready.request_id == rid => {
+        tracing::debug!("handle_resume_tid: sending ChatStart for thread {}", tid);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            rpc.call(start_msg),
+        ).await;
+        match result {
+            Ok(Ok(Message::ChatReady(ready))) if ready.request_id == rid => {
+                tracing::debug!("handle_resume_tid: got ChatReady, error={:?}", ready.error);
                 self.apply_chat_ready(ready);
             }
-            _ => {
+            Ok(Ok(msg)) => {
+                tracing::warn!("handle_resume_tid: unexpected response: {:?}", std::mem::discriminant(&msg));
                 write_stdout(&display::render_error("Failed to resume conversation"));
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("handle_resume_tid: RPC error: {}", e);
+                write_stdout(&display::render_error("Failed to resume conversation"));
+            }
+            Err(_) => {
+                tracing::warn!("handle_resume_tid: timed out waiting for daemon response");
+                write_stdout(&display::render_error("Resume timed out — daemon may be busy"));
             }
         }
     }
