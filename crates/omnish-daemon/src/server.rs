@@ -90,7 +90,7 @@ async fn thread_locked_error(mgr: &SessionManager, owner_session_id: &str) -> se
     let cwd = mgr.get_session_attr(owner_session_id, "shell_cwd").await
         .unwrap_or_else(|| "?".to_string());
     let display = format!(
-        "This thread is currently on another session (host={}, pid={}, cwd={})",
+        "Thread active on another session (host={}, pid={}, cwd={})",
         host, pid, cwd
     );
     serde_json::json!({
