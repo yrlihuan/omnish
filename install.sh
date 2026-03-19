@@ -259,6 +259,17 @@ if [[ "$DRY_RUN" != true ]]; then
         chmod 755 "$OMNISH_DIR/deploy.sh"
     fi
 
+    # Install plugins (preserve existing, add new)
+    if [[ -d "$EXTRACTED/plugins" ]]; then
+        for plugin_dir in "$EXTRACTED/plugins"/*/; do
+            [[ -d "$plugin_dir" ]] || continue
+            plugin_name=$(basename "$plugin_dir")
+            mkdir -p "$OMNISH_DIR/plugins/$plugin_name"
+            cp -f "$plugin_dir"* "$OMNISH_DIR/plugins/$plugin_name/"
+            chmod +x "$OMNISH_DIR/plugins/$plugin_name/$plugin_name" 2>/dev/null || true
+        done
+    fi
+
     # Copy install.sh itself (from extracted root or assets)
     if [[ -f "$EXTRACTED/install.sh" ]]; then
         cp "$EXTRACTED/install.sh" "$OMNISH_DIR/"
