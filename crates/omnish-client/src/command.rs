@@ -254,6 +254,10 @@ pub fn completable_commands() -> Vec<String> {
         cmds.push(format!("/template {}", name));
         cmds.push(format!("/context {}", name));
     }
+    // /integrate subcommands
+    for sub in &["tmux", "screen", "ssh"] {
+        cmds.push(format!("/integrate {}", sub));
+    }
     for cmd in CHAT_ONLY_COMMANDS {
         cmds.push(cmd.to_string());
     }
@@ -567,11 +571,12 @@ mod tests {
         assert!(cmds.contains(&"/context hourly-notes".to_string()));
         // Chat-mode command
         assert!(cmds.contains(&"/resume".to_string()));
-        // COMMANDS + /template subcommands + /context subcommands + chat commands
+        // COMMANDS + /template subcommands + /context subcommands + /integrate subcommands + chat commands
         let template_count = omnish_llm::template::TEMPLATE_NAMES.len();
+        let integrate_subs = 3; // tmux, screen, ssh
         assert_eq!(
             cmds.len(),
-            COMMANDS.len() + template_count * 2 + CHAT_ONLY_COMMANDS.len()
+            COMMANDS.len() + template_count * 2 + integrate_subs + CHAT_ONLY_COMMANDS.len()
         );
     }
 

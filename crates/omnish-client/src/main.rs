@@ -2047,7 +2047,10 @@ pub(crate) async fn handle_slash_command(
                 handle_command_result(&display_result, Some(path), proxy.child_pid() as u32);
             } else {
                 // Command output is plain text — skip markdown rendering
-                let output = format!("\r\n{}\r\n", display_result.replace('\n', "\r\n"));
+                // Single-line output: no leading blank line; multi-line: add one for readability
+                let is_multiline = display_result.contains('\n');
+                let prefix = if is_multiline { "\r\n" } else { "" };
+                let output = format!("{}{}\r\n", prefix, display_result.replace('\n', "\r\n"));
                 nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
             }
             true
