@@ -114,6 +114,82 @@ patch_plugins_enabled() {
     fi
 }
 
+# Run interactive setup for a plugin using its setup.json manifest
+setup_plugin() {
+    local plugin_name="$1"
+    local plugin_dir="$OMNISH_DIR/plugins/$plugin_name"
+    local setup_file="$plugin_dir/setup.json"
+    local daemon_toml="$OMNISH_DIR/daemon.toml"
+
+    if [[ ! -f "$setup_file" ]]; then
+        return 0
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        warn "jq not found, skipping setup for $plugin_name"
+        return 1
+    fi
+
+    echo ""
+    info "Setting up plugin: $plugin_name"
+
+    local param_count
+    param_count=$(jq '.params | length' "$setup_file")
+
+    # Collect values
+    declare -A PARAM_VALUES
+    for ((i = 0; i < param_count; i++)); do
+        local name prompt required secret default_val
+        name=$(jq -r ".params[$i].name" "$setup_file")
+        prompt=$(jq -r ".params[$i].prompt" "$setup_file")
+        required=$(jq -r ".params[$i].required // false" "$setup_file")
+        secret=$(jq -r ".params[$i].secret // false" "$setup_file")
+        default_val=$(jq -r ".params[$i].default // empty" "$setup_file")
+
+        if [[ "$secret" == "true" ]]; then
+            printf '\033[1;32m?\033[0m %s ' "$prompt" >&2
+            read -rs REPLY </dev/tty
+            echo "" >&2  # newline after silent input
+            PARAM_VALUES[$name]="$REPLY"
+        elif [[ -n "$default_val" ]]; then
+            ask "$prompt [$default_val]:"
+            PARAM_VALUES[$name]="${REPLY:-$default_val}"
+        else
+            ask "$prompt:"
+            PARAM_VALUES[$name]="$REPLY"
+        fi
+
+        if [[ "$required" == "true" ]] && [[ -z "${PARAM_VALUES[$name]}" ]]; then
+            warn "Required parameter '$name' not provided, skipping $plugin_name"
+            info "Run install.sh --setup-plugin=$plugin_name to configure later"
+            return 1
+        fi
+    done
+
+    # Write [tools.<plugin_name>] section to daemon.toml
+    patch_toml_section "$daemon_toml" "$plugin_name" PARAM_VALUES
+
+    # Add to [plugins] enabled
+    patch_plugins_enabled "$daemon_toml" "$plugin_name"
+
+    # Show confirmation with secret masking
+    for key in "${!PARAM_VALUES[@]}"; do
+        local val="${PARAM_VALUES[$key]}"
+        # Check if this param is secret
+        local is_secret
+        is_secret=$(jq -r ".params[] | select(.name == \"$key\") | .secret // false" "$setup_file")
+        if [[ "$is_secret" == "true" ]] && [[ ${#val} -ge 8 ]]; then
+            info "  $key = ${val:0:4}...${val: -4}"
+        elif [[ "$is_secret" == "true" ]]; then
+            info "  $key = ****"
+        else
+            info "  $key = $val"
+        fi
+    done
+
+    info "Plugin $plugin_name configured and enabled"
+}
+
 # ── Platform detection ───────────────────────────────────────────────────────
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -132,6 +208,7 @@ DRY_RUN=false
 UPGRADE=false
 VERSION=""
 FROM_DIR=""
+SETUP_PLUGIN=""
 for arg in "$@"; do
     case "$arg" in
         --upgrade)     UPGRADE=true ;;
@@ -161,6 +238,7 @@ for arg in "$@"; do
             info "Uninstall complete"
             exit 0
             ;;
+        --setup-plugin=*) SETUP_PLUGIN="${arg#*=}" ;;
         --help|-h)
             echo "Usage: install.sh [OPTIONS]"
             echo ""
@@ -171,11 +249,21 @@ for arg in "$@"; do
             echo "  --force           Overwrite existing daemon.toml"
             echo "  --dry-run         Run config wizard but skip download/install/credentials"
             echo "  --uninstall       Remove omnish, systemd service, and PATH entries"
+            echo "  --setup-plugin=<name> Configure (or reconfigure) a specific plugin"
             echo "  -h, --help        Show this help"
             exit 0
             ;;
     esac
 done
+
+# ── Plugin setup (standalone mode) ──────────────────────────────────────────
+if [[ -n "$SETUP_PLUGIN" ]]; then
+    DAEMON_TOML="$OMNISH_DIR/daemon.toml"
+    [[ -f "$DAEMON_TOML" ]] || error "daemon.toml not found. Run install.sh first."
+    [[ -d "$OMNISH_DIR/plugins/$SETUP_PLUGIN" ]] || error "Plugin not found: $SETUP_PLUGIN"
+    setup_plugin "$SETUP_PLUGIN"
+    exit 0
+fi
 
 # In dry-run mode, replace destructive commands with echo
 if [[ "$DRY_RUN" == true ]]; then
