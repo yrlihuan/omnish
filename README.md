@@ -1,8 +1,6 @@
 # omnish
 
-Transparent shell wrapper that captures terminal I/O across multiple sessions and integrates with LLMs for context-aware analysis.
-
-omnish sits between you and your shell as a PTY proxy. It records everything, segments commands, and lets you query an LLM about what just happened — across any number of terminals.
+AI-powered shell for software development. omnish wraps your terminal as a transparent PTY proxy, providing an inline coding assistant with full context of your development workflow — commands, outputs, errors, and project state across all terminals.
 
 ## Architecture
 
@@ -33,10 +31,10 @@ For detailed module documentation and implementation details, see the [module do
 
 ## Features
 
-- **Zero interference** — All programs (vim, ssh, htop, etc.) behave identically.
-- **Ghost completion** — LLM-powered inline command suggestions as you type.
-- **Chat mode** — Type `:` to ask the LLM about recent terminal activity across all sessions.
-- **Agent with tools** — LLM can run shell commands, query plugins, and stream results back to the terminal.
+- **Coding agent** — LLM agent with built-in tools: read/write/edit files, run shell commands, glob/grep search, stream results back inline. Ask it to fix a bug, refactor code, or explore unfamiliar codebases.
+- **Ghost completion** — LLM-powered inline command suggestions as you type, context-aware of recent outputs and errors.
+- **Chat mode** — Type `:` to ask about build failures, debug errors, or get explanations — with full context of what just happened across all terminals.
+- **Zero interference** — All programs (vim, ssh, htop, etc.) behave identically. omnish is invisible until you need it.
 - **Per-thread model selection** — Switch LLM backend mid-conversation with `/model`.
 - **Multi-backend LLM** — Anthropic, OpenAI, DeepSeek, Moonshot, OpenRouter, or any OpenAI-compatible API.
 - **Scheduled tasks** — Hourly/daily work summaries, thread summaries, session cleanup.
@@ -176,8 +174,10 @@ omnish
 Inside any omnish session, type `:` to enter chat mode, then you can directly interact with the LLM:
 
 ```bash
-:why did make fail just now        # analyze recent output
-:what are all my terminals doing   # cross-session query
+> why did the build fail            # analyze compiler errors with full context
+> fix the type error in main.rs     # agent edits the file directly
+> what changed since yesterday      # cross-session development activity
+> refactor this function to async   # agent reads, edits, and verifies
 ```
 
 Built-in commands:
@@ -271,7 +271,7 @@ Session data is stored under `~/.omnish/`:
 | `omnish-common` | Shared config types, auth token utilities |
 | `omnish-tracker` | Command tracker for shell command monitoring and analysis |
 | `omnish-context` | Context builder for LLM prompt construction |
-| `omnish-plugin` | Plugin host for external JSON-RPC tool subprocess |
+| `omnish-plugin` | Built-in coding tools (file I/O, shell, search) + external plugin host |
 
 For detailed module documentation, see [`docs/implementation/`](docs/implementation/).
 
