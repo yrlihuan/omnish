@@ -1084,6 +1084,16 @@ impl ChatSession {
                 write_stdout(&display::render_error(display));
                 return;
             }
+            // If the response has a display message but no history, it's a daemon-side
+            // error (e.g. "Conversation not found") — show it and don't switch thread.
+            if response_json.as_ref().is_some_and(|j| j.get("history").is_none()) {
+                if let Some(msg) = response_json.as_ref().and_then(|j| j.get("display")).and_then(|d| d.as_str()) {
+                    write_stdout(&display::render_error(msg));
+                } else {
+                    write_stdout(&display::render_error("Failed to resume conversation"));
+                }
+                return;
+            }
             self.current_thread_id = Some(tid);
             if let Some(history) = response_json.as_ref().and_then(|j| j.get("history")).and_then(|h| h.as_array()) {
                 // Parse structured history entries
