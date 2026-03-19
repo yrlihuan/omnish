@@ -227,6 +227,10 @@ pub struct DaemonConfig {
     pub tasks: TasksConfig,
     #[serde(default)]
     pub plugins: PluginsConfig,
+    /// Per-tool parameter overrides.
+    /// Example: [tools.web_search] api_key = "..."
+    #[serde(default)]
+    pub tools: HashMap<String, HashMap<String, serde_json::Value>>,
 }
 
 impl Default for DaemonConfig {
@@ -237,6 +241,7 @@ impl Default for DaemonConfig {
             context: ContextConfig::default(),
             tasks: TasksConfig::default(),
             plugins: PluginsConfig::default(),
+            tools: HashMap::new(),
         }
     }
 }
