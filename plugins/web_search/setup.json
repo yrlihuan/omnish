@@ -1,0 +1,10 @@
+{
+  "params": [
+    {
+      "name": "api_key",
+      "prompt": "Brave Search API key",
+      "required": true,
+      "secret": true
+    }
+  ]
+}
