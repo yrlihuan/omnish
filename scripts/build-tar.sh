@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: scripts/build-tar.sh <version> <target-dir>
-# Produces: dist/omnish-<version>-linux-x86_64.tar.gz
+# Usage: scripts/build-tar.sh <version> <target-dir> [<arch>]
+# Produces: dist/omnish-<version>-linux-<arch>.tar.gz
 
-VERSION="${1:?Usage: build-tar.sh <version> <target-dir>}"
-TARGET_DIR="${2:?Usage: build-tar.sh <version> <target-dir>}"
+VERSION="${1:?Usage: build-tar.sh <version> <target-dir> [<arch>]}"
+TARGET_DIR="${2:?Usage: build-tar.sh <version> <target-dir> [<arch>]}"
+ARCH="${3:-x86_64}"
 
 # Locate repo root (one level up from scripts/)
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-STAGING="dist/omnish-${VERSION}-linux-x86_64"
+STAGING="dist/omnish-${VERSION}-linux-${ARCH}"
 rm -rf "$STAGING"
 mkdir -p "$STAGING/bin"
 
@@ -33,5 +34,5 @@ if [[ -d "$REPO_ROOT/plugins" ]]; then
     cp -r "$REPO_ROOT/plugins" "$STAGING/"
 fi
 
-tar -czf "${STAGING}.tar.gz" -C dist "omnish-${VERSION}-linux-x86_64"
+tar -czf "${STAGING}.tar.gz" -C dist "omnish-${VERSION}-linux-${ARCH}"
 echo "Created ${STAGING}.tar.gz"

@@ -71,32 +71,8 @@ else
     TARGET_DIR="target/release"
 fi
 
-# ── Package ─────────────────────────────────────────────────────────────────
+# ── Package (delegate to build-tar.sh) ──────────────────────────────────────
 
-STAGING="dist/omnish-${VERSION}-linux-${ARCH}"
-rm -rf "$STAGING"
-mkdir -p "$STAGING/bin"
-
-cp "$TARGET_DIR/omnish"        "$STAGING/bin/"
-cp "$TARGET_DIR/omnish-daemon" "$STAGING/bin/"
-cp "$TARGET_DIR/omnish-plugin" "$STAGING/bin/"
-
-# Assets
-mkdir -p "$STAGING/assets/plugins/builtin" "$STAGING/assets/prompts"
-cp "$REPO_ROOT/crates/omnish-plugin/assets/tool.json"                  "$STAGING/assets/plugins/builtin/"
-cp "$REPO_ROOT/crates/omnish-plugin/assets/tool.override.json.example" "$STAGING/assets/plugins/builtin/"
-cp "$REPO_ROOT/crates/omnish-llm/assets/chat.json"                     "$STAGING/assets/prompts/"
-cp "$REPO_ROOT/crates/omnish-llm/assets/chat.override.json.example"    "$STAGING/assets/prompts/"
-cp "$REPO_ROOT/install.sh"                                             "$STAGING/"
-cp "$REPO_ROOT/scripts/deploy.sh"                                      "$STAGING/assets/"
-
-# Plugins
-if [[ -d "$REPO_ROOT/plugins" ]]; then
-    cp -r "$REPO_ROOT/plugins" "$STAGING/"
-fi
-
-tar -czf "${STAGING}.tar.gz" -C dist "omnish-${VERSION}-linux-${ARCH}"
-echo ""
-echo "Created ${STAGING}.tar.gz"
+bash "$REPO_ROOT/scripts/build-tar.sh" "$VERSION" "$TARGET_DIR" "$ARCH"
 echo ""
 echo "To install: bash install.sh --dir=dist"
