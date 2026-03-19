@@ -47,6 +47,32 @@ struct AgentLoopState {
     effective_backend: Arc<dyn LlmBackend>,
 }
 
+/// Tracks which session is actively using each thread (thread_id → session_id).
+type ActiveThreads = Arc<Mutex<HashMap<String, String>>>;
+
+/// Try to claim a thread for a session.  Returns `Ok(())` if the thread is
+/// free or already owned by the same session, `Err(())` if another session holds it.
+/// On success the session's previous thread (if any) is released.
+async fn try_claim_thread(active_threads: &ActiveThreads, thread_id: &str, session_id: &str) -> Result<(), ()> {
+    let mut threads = active_threads.lock().await;
+    if let Some(owner) = threads.get(thread_id) {
+        if *owner != session_id {
+            return Err(());
+        }
+    }
+    // Release any thread this session previously held, then claim the new one
+    threads.retain(|_, sid| *sid != session_id);
+    threads.insert(thread_id.to_string(), session_id.to_string());
+    Ok(())
+}
+
+fn thread_locked_error() -> serde_json::Value {
+    serde_json::json!({
+        "display": "This thread is being used by another session",
+        "error": "thread_locked",
+    })
+}
+
 pub struct DaemonServer {
     session_mgr: Arc<SessionManager>,
     llm_backend: Option<Arc<dyn LlmBackend>>,
@@ -54,6 +80,7 @@ pub struct DaemonServer {
     conv_mgr: Arc<ConversationManager>,
     plugin_mgr: Arc<PluginManager>,
     pending_agent_loops: Arc<Mutex<HashMap<String, AgentLoopState>>>,
+    active_threads: ActiveThreads,
     chat_model_name: Option<String>,
 }
 
@@ -73,6 +100,7 @@ impl DaemonServer {
             conv_mgr,
             plugin_mgr,
             pending_agent_loops: Arc::new(Mutex::new(HashMap::new())),
+            active_threads: Arc::new(Mutex::new(HashMap::new())),
             chat_model_name,
         }
     }
@@ -92,6 +120,7 @@ impl DaemonServer {
         let conv_mgr = self.conv_mgr.clone();
         let plugin_mgr = self.plugin_mgr.clone();
         let pending_loops = self.pending_agent_loops.clone();
+        let active_threads = self.active_threads.clone();
         let chat_model_name = self.chat_model_name.clone();
 
         // Periodically sweep stale pending agent loop entries
@@ -121,8 +150,9 @@ impl DaemonServer {
                     let conv_mgr = conv_mgr.clone();
                     let plugin_mgr = plugin_mgr.clone();
                     let pending_loops = pending_loops.clone();
+                    let active_threads = active_threads.clone();
                     let chat_model_name = chat_model_name.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &pending_loops, &chat_model_name).await })
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &pending_loops, &active_threads, &chat_model_name).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -140,6 +170,7 @@ async fn handle_message(
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
+    active_threads: &ActiveThreads,
     chat_model_name: &Option<String>,
 ) -> Vec<Message> {
     // Shadow with reference for existing code; use mgr_arc for spawned tasks
@@ -159,6 +190,8 @@ async fn handle_message(
             if let Err(e) = mgr.end_session(&s.session_id).await {
                 tracing::error!("end_session error: {}", e);
             }
+            // Release any threads held by this session
+            active_threads.lock().await.retain(|_, sid| *sid != s.session_id);
             Message::Ack
         }
         Message::SessionUpdate(su) => {
@@ -197,7 +230,7 @@ async fn handle_message(
         }
         Message::Request(req) => {
             if req.query.starts_with("__cmd:") {
-                let result = handle_builtin_command(&req, mgr, task_mgr, llm, conv_mgr, plugin_mgr).await;
+                let result = handle_builtin_command(&req, mgr, task_mgr, llm, conv_mgr, plugin_mgr, active_threads).await;
                 let content = serde_json::to_string(&result).unwrap_or_else(|_| {
                     r#"{"display":"(serialization error)"}"#.to_string()
                 });
@@ -297,10 +330,22 @@ async fn handle_message(
                 ThreadMeta { host, cwd, ..Default::default() }
             };
             let thread_id = if cs.new_thread {
-                conv_mgr.create_thread(meta)
+                let tid = conv_mgr.create_thread(meta);
+                // New thread — always succeeds, no contention possible
+                try_claim_thread(active_threads, &tid, &cs.session_id).await.ok();
+                tid
             } else {
                 match conv_mgr.get_latest_thread() {
                     Some(tid) => {
+                        if try_claim_thread(active_threads, &tid, &cs.session_id).await.is_err() {
+                            return vec![Message::ChatReady(ChatReady {
+                                request_id: cs.request_id,
+                                thread_id: String::new(),
+                                last_exchange: None,
+                                earlier_count: 0,
+                                model_name: chat_model_name.clone(),
+                            })];
+                        }
                         conv_mgr.save_meta(&tid, &meta);
                         tid
                     }
@@ -1100,7 +1145,7 @@ fn build_resume_response(
     json
 }
 
-async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>, plugin_mgr: &PluginManager) -> serde_json::Value {
+async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>, plugin_mgr: &PluginManager, active_threads: &ActiveThreads) -> serde_json::Value {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
 
     // Build system-reminder for context display
@@ -1145,7 +1190,12 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             Err(_) => return cmd_display("Invalid index: not a number"),
         };
         return match conv_mgr.get_thread_by_index(idx) {
-            Some(thread_id) => build_resume_response(&thread_id, conv_mgr, plugin_mgr, llm_backend),
+            Some(thread_id) => {
+                if try_claim_thread(active_threads, &thread_id, &req.session_id).await.is_err() {
+                    return thread_locked_error();
+                }
+                build_resume_response(&thread_id, conv_mgr, plugin_mgr, llm_backend)
+            }
             None => cmd_display("Invalid index: out of bounds"),
         };
     }
@@ -1156,12 +1206,20 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
         if raw_msgs.is_empty() {
             return cmd_display("Conversation not found");
         }
+        if try_claim_thread(active_threads, tid, &req.session_id).await.is_err() {
+            return thread_locked_error();
+        }
         return build_resume_response(tid, conv_mgr, plugin_mgr, llm_backend);
     }
     // Handle /resume without index (resume latest = /resume 1)
     if sub == "resume" {
         return match conv_mgr.get_thread_by_index(0) {
-            Some(thread_id) => build_resume_response(&thread_id, conv_mgr, plugin_mgr, llm_backend),
+            Some(thread_id) => {
+                if try_claim_thread(active_threads, &thread_id, &req.session_id).await.is_err() {
+                    return thread_locked_error();
+                }
+                build_resume_response(&thread_id, conv_mgr, plugin_mgr, llm_backend)
+            }
             None => cmd_display("No conversations yet. Start a chat with :"),
         };
     }

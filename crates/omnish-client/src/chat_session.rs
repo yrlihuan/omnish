@@ -1059,6 +1059,15 @@ impl ChatSession {
         };
 
         if let Some(tid) = thread_id {
+            // Check if the daemon returned an error (e.g. thread locked by another session)
+            if let Some(err) = response_json.as_ref().and_then(|j| j.get("error")).and_then(|e| e.as_str()) {
+                let display = response_json.as_ref()
+                    .and_then(|j| j.get("display"))
+                    .and_then(|d| d.as_str())
+                    .unwrap_or(err);
+                write_stdout(&display::render_error(display));
+                return;
+            }
             self.current_thread_id = Some(tid);
             if let Some(history) = response_json.as_ref().and_then(|j| j.get("history")).and_then(|h| h.as_array()) {
                 // Parse structured history entries
