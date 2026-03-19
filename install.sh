@@ -139,19 +139,13 @@ setup_plugin() {
     # Collect values
     declare -A PARAM_VALUES
     for ((i = 0; i < param_count; i++)); do
-        local name prompt required secret default_val
+        local name prompt required default_val
         name=$(jq -r ".params[$i].name" "$setup_file")
         prompt=$(jq -r ".params[$i].prompt" "$setup_file")
         required=$(jq -r ".params[$i].required // false" "$setup_file")
-        secret=$(jq -r ".params[$i].secret // false" "$setup_file")
         default_val=$(jq -r ".params[$i].default // empty" "$setup_file")
 
-        if [[ "$secret" == "true" ]]; then
-            printf '\033[1;32m?\033[0m %s ' "$prompt" >&2
-            read -rs REPLY </dev/tty
-            echo "" >&2  # newline after silent input
-            PARAM_VALUES[$name]="$REPLY"
-        elif [[ -n "$default_val" ]]; then
+        if [[ -n "$default_val" ]]; then
             ask "$prompt [$default_val]:"
             PARAM_VALUES[$name]="${REPLY:-$default_val}"
         else
@@ -172,19 +166,9 @@ setup_plugin() {
     # Add to [plugins] enabled
     patch_plugins_enabled "$daemon_toml" "$plugin_name"
 
-    # Show confirmation with secret masking
+    # Show confirmation
     for key in "${!PARAM_VALUES[@]}"; do
-        local val="${PARAM_VALUES[$key]}"
-        # Check if this param is secret
-        local is_secret
-        is_secret=$(jq -r ".params[] | select(.name == \"$key\") | .secret // false" "$setup_file")
-        if [[ "$is_secret" == "true" ]] && [[ ${#val} -ge 8 ]]; then
-            info "  $key = ${val:0:4}...${val: -4}"
-        elif [[ "$is_secret" == "true" ]]; then
-            info "  $key = ****"
-        else
-            info "  $key = $val"
-        fi
+        info "  $key = ${PARAM_VALUES[$key]}"
     done
 
     info "Plugin $plugin_name configured and enabled"
