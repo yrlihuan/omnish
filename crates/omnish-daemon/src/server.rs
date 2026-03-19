@@ -472,6 +472,8 @@ async fn handle_message(
             Message::Ack
         }
         Message::ChatStart(cs) => {
+            tracing::debug!("[ChatStart] session={} new_thread={} thread_id={:?}",
+                cs.session_id, cs.new_thread, cs.thread_id);
             let meta = {
                 let host = mgr.get_session_attr(&cs.session_id, "hostname").await;
                 let cwd = mgr.get_session_attr(&cs.session_id, "shell_cwd").await;
@@ -484,8 +486,11 @@ async fn handle_message(
             //  3. otherwise           → resume latest thread
             if let Some(ref tid) = cs.thread_id {
                 // Resume specific thread
+                tracing::debug!("[ChatStart] resuming thread={}", tid);
                 let raw_msgs = conv_mgr.load_raw_messages(tid);
+                tracing::debug!("[ChatStart] loaded {} raw messages for thread={}", raw_msgs.len(), tid);
                 if raw_msgs.is_empty() {
+                    tracing::debug!("[ChatStart] thread not found, returning error");
                     return vec![Message::ChatReady(ChatReady {
                         request_id: cs.request_id,
                         thread_id: String::new(),
@@ -497,7 +502,9 @@ async fn handle_message(
                         error_display: Some("Conversation not found".to_string()),
                     })];
                 }
+                tracing::debug!("[ChatStart] trying to claim thread={}", tid);
                 if let Err(owner) = try_claim_thread(active_threads, tid, &cs.session_id).await {
+                    tracing::debug!("[ChatStart] thread locked by session={}", owner);
                     let err = thread_locked_error(mgr, &owner).await;
                     return vec![Message::ChatReady(ChatReady {
                         request_id: cs.request_id,
@@ -510,8 +517,10 @@ async fn handle_message(
                         error_display: err.get("display").and_then(|d| d.as_str()).map(String::from),
                     })];
                 }
+                tracing::debug!("[ChatStart] claimed thread={}, reconstructing history", tid);
                 conv_mgr.save_meta(tid, &meta);
                 let history = reconstruct_history(&raw_msgs, plugin_mgr);
+                tracing::debug!("[ChatStart] history reconstructed: {} entries", history.len());
                 // Thread model override
                 let thread_model = {
                     let m = conv_mgr.load_meta(tid);
@@ -522,6 +531,7 @@ async fn handle_message(
                         if is_default { None } else { Some(model_name) }
                     })
                 };
+                tracing::debug!("[ChatStart] sending ChatReady for thread={}", tid);
                 Message::ChatReady(ChatReady {
                     request_id: cs.request_id,
                     thread_id: tid.clone(),
@@ -534,6 +544,7 @@ async fn handle_message(
                 })
             } else if cs.new_thread {
                 let tid = conv_mgr.create_thread(meta);
+                tracing::debug!("[ChatStart] created new thread={}", tid);
                 try_claim_thread(active_threads, &tid, &cs.session_id).await.ok();
                 Message::ChatReady(ChatReady {
                     request_id: cs.request_id,
@@ -547,9 +558,12 @@ async fn handle_message(
                 })
             } else {
                 // Resume latest thread
+                tracing::debug!("[ChatStart] resuming latest thread");
                 let thread_id = match conv_mgr.get_latest_thread() {
                     Some(tid) => {
+                        tracing::debug!("[ChatStart] latest thread={}", tid);
                         if let Err(owner) = try_claim_thread(active_threads, &tid, &cs.session_id).await {
+                            tracing::debug!("[ChatStart] latest thread locked by session={}", owner);
                             let err = thread_locked_error(mgr, &owner).await;
                             return vec![Message::ChatReady(ChatReady {
                                 request_id: cs.request_id,
@@ -565,8 +579,12 @@ async fn handle_message(
                         conv_mgr.save_meta(&tid, &meta);
                         tid
                     }
-                    None => String::new(),
+                    None => {
+                        tracing::debug!("[ChatStart] no threads found");
+                        String::new()
+                    }
                 };
+                tracing::debug!("[ChatStart] sending ChatReady thread_id={:?}", thread_id);
                 Message::ChatReady(ChatReady {
                     request_id: cs.request_id,
                     thread_id,
@@ -580,12 +598,19 @@ async fn handle_message(
             }
         }
         Message::ChatEnd(ce) => {
+            tracing::debug!("[ChatEnd] session={} thread={}", ce.session_id, ce.thread_id);
             // Release thread binding
             let mut threads = active_threads.lock().await;
             if let Some(claim) = threads.get(&ce.thread_id) {
                 if claim.session_id == ce.session_id {
                     threads.remove(&ce.thread_id);
+                    tracing::debug!("[ChatEnd] released thread={}", ce.thread_id);
+                } else {
+                    tracing::debug!("[ChatEnd] thread={} owned by different session={}, not releasing",
+                        ce.thread_id, claim.session_id);
                 }
+            } else {
+                tracing::debug!("[ChatEnd] thread={} not in active_threads", ce.thread_id);
             }
             Message::Ack
         }

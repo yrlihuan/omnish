@@ -288,7 +288,10 @@ impl ChatSession {
                         write_stdout(&format!("\x1b7\x1b[2;90m{}\x1b[0m\x1b8", hint));
                     }
                 }
-                match self.read_input(!self.has_activity) {
+                crate::event_log::push(format!("chat_loop: entering read_input allow_backspace_exit={}", !self.has_activity));
+                let result = self.read_input(!self.has_activity);
+                crate::event_log::push(format!("chat_loop: read_input returned {}", if result.is_some() { "Some" } else { "None" }));
+                match result {
                     Some(line) => {
                         write_stdout("\r\n");
                         line
@@ -1207,6 +1210,7 @@ impl ChatSession {
 
     /// Resume a specific thread by ID via ChatStart protocol message.
     async fn handle_resume_tid(&mut self, tid: &str, session_id: &str, rpc: &RpcClient) {
+        crate::event_log::push(format!("resume_tid: sending ChatStart thread={}", tid));
         let rid = Uuid::new_v4().to_string()[..8].to_string();
         let start_msg = Message::ChatStart(ChatStart {
             request_id: rid.clone(),
@@ -1214,29 +1218,31 @@ impl ChatSession {
             new_thread: false,
             thread_id: Some(tid.to_string()),
         });
-        tracing::debug!("handle_resume_tid: sending ChatStart for thread {}", tid);
+        crate::event_log::push("resume_tid: awaiting ChatReady (timeout 15s)");
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(15),
             rpc.call(start_msg),
         ).await;
         match result {
             Ok(Ok(Message::ChatReady(ready))) if ready.request_id == rid => {
-                tracing::debug!("handle_resume_tid: got ChatReady, error={:?}", ready.error);
+                crate::event_log::push(format!("resume_tid: got ChatReady error={:?}", ready.error));
                 self.apply_chat_ready(ready);
+                crate::event_log::push("resume_tid: apply_chat_ready done");
             }
             Ok(Ok(msg)) => {
-                tracing::warn!("handle_resume_tid: unexpected response: {:?}", std::mem::discriminant(&msg));
+                crate::event_log::push(format!("resume_tid: unexpected response {:?}", std::mem::discriminant(&msg)));
                 write_stdout(&display::render_error("Failed to resume conversation"));
             }
             Ok(Err(e)) => {
-                tracing::warn!("handle_resume_tid: RPC error: {}", e);
+                crate::event_log::push(format!("resume_tid: RPC error: {}", e));
                 write_stdout(&display::render_error("Failed to resume conversation"));
             }
             Err(_) => {
-                tracing::warn!("handle_resume_tid: timed out waiting for daemon response");
+                crate::event_log::push("resume_tid: timed out waiting for daemon response");
                 write_stdout(&display::render_error("Resume timed out — daemon may be busy"));
             }
         }
+        crate::event_log::push("resume_tid: done");
     }
 
     // ── Model picker ─────────────────────────────────────────────────────
