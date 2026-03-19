@@ -27,6 +27,11 @@ fn git_repo_root(dir: &std::path::Path) -> Option<std::path::PathBuf> {
 /// Escapes backslashes first, then double quotes, to prevent profile injection.
 #[cfg(any(target_os = "macos", test))]
 fn escape_sb_path(path: &str) -> String {
+    // Reject paths with control characters (newlines etc.) that would break .sb profile syntax
+    assert!(
+        !path.bytes().any(|b| b < 0x20),
+        "sandbox profile path contains control characters: {path:?}"
+    );
     path.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
@@ -62,8 +67,11 @@ fn build_sandbox_profile(
     }
 
     if let Some(root) = repo_root {
-        let escaped = escape_sb_path(&root.to_string_lossy());
-        profile.push_str(&format!("(allow file-write* (subpath \"{escaped}\"))\n"));
+        // Avoid duplicate rule when repo root is the same as cwd
+        if Some(root) != cwd {
+            let escaped = escape_sb_path(&root.to_string_lossy());
+            profile.push_str(&format!("(allow file-write* (subpath \"{escaped}\"))\n"));
+        }
     }
 
     profile
@@ -163,13 +171,28 @@ mod tests {
     }
 
     #[test]
-    fn test_build_sandbox_profile_with_cwd_and_repo() {
+    fn test_build_sandbox_profile_with_cwd_and_same_repo() {
+        // When cwd == repo_root, only one rule is emitted (deduplication)
         let profile = build_sandbox_profile(
             Path::new("/data/plugin"),
             Some(Path::new("/home/user/project")),
             Some(Path::new("/home/user/project")),
         );
         assert!(profile.contains("(allow file-write* (subpath \"/home/user/project\"))"));
+        // data_dir + /tmp + /dev/null + cwd = 4 (repo deduped)
+        assert_eq!(profile.matches("(allow file-write*").count(), 4);
+    }
+
+    #[test]
+    fn test_build_sandbox_profile_with_cwd_and_different_repo() {
+        let profile = build_sandbox_profile(
+            Path::new("/data/plugin"),
+            Some(Path::new("/home/user/project/subdir")),
+            Some(Path::new("/home/user/project")),
+        );
+        assert!(profile.contains("(allow file-write* (subpath \"/home/user/project/subdir\"))"));
+        assert!(profile.contains("(allow file-write* (subpath \"/home/user/project\"))"));
+        // data_dir + /tmp + /dev/null + cwd + repo = 5
         assert_eq!(profile.matches("(allow file-write*").count(), 5);
     }
 
