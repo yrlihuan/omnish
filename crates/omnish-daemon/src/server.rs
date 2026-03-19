@@ -108,6 +108,104 @@ pub struct DaemonServer {
     pending_agent_loops: Arc<Mutex<HashMap<String, AgentLoopState>>>,
     active_threads: ActiveThreads,
     chat_model_name: Option<String>,
+    tool_params: HashMap<String, HashMap<String, serde_json::Value>>,
+}
+
+/// Shallow-merge params into a JSON object. Source keys overwrite target keys.
+fn merge_tool_params(target: &mut serde_json::Value, params: &HashMap<String, serde_json::Value>) {
+    if let Some(obj) = target.as_object_mut() {
+        for (k, v) in params {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+}
+
+/// Execute a daemon-side external plugin by spawning a subprocess.
+/// Uses the same stdin/stdout JSON protocol as client-side plugins.
+async fn execute_daemon_plugin(
+    executable: &std::path::Path,
+    tool_name: &str,
+    input: &serde_json::Value,
+) -> omnish_llm::tool::ToolResult {
+    use tokio::process::Command;
+    use tokio::io::AsyncWriteExt;
+
+    let request = serde_json::json!({
+        "name": tool_name,
+        "input": input,
+    });
+
+    let mut child = match Command::new(executable)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return omnish_llm::tool::ToolResult {
+                tool_use_id: String::new(),
+                content: format!("Failed to spawn plugin '{}': {}", executable.display(), e),
+                is_error: true,
+            };
+        }
+    };
+
+    // Write request to stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        let data = serde_json::to_string(&request).unwrap();
+        let _ = stdin.write_all(data.as_bytes()).await;
+        let _ = stdin.write_all(b"\n").await;
+        drop(stdin);
+    }
+
+    // Wait with timeout
+    let timeout = std::time::Duration::from_secs(30);
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => {
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return omnish_llm::tool::ToolResult {
+                    tool_use_id: String::new(),
+                    content: format!("Plugin exited with {}: {}", output.status, stderr.trim()),
+                    is_error: true,
+                };
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            #[derive(serde::Deserialize)]
+            struct PluginResponse {
+                content: String,
+                #[serde(default)]
+                is_error: bool,
+            }
+            match serde_json::from_str::<PluginResponse>(stdout.trim()) {
+                Ok(resp) => omnish_llm::tool::ToolResult {
+                    tool_use_id: String::new(),
+                    content: resp.content,
+                    is_error: resp.is_error,
+                },
+                Err(e) => omnish_llm::tool::ToolResult {
+                    tool_use_id: String::new(),
+                    content: format!("Invalid plugin response: {e}"),
+                    is_error: true,
+                },
+            }
+        }
+        Ok(Err(e)) => omnish_llm::tool::ToolResult {
+            tool_use_id: String::new(),
+            content: format!("Plugin I/O error: {e}"),
+            is_error: true,
+        },
+        Err(_) => {
+            // Timeout: the future was dropped, which drops the Child,
+            // killing the process. Return error.
+            omnish_llm::tool::ToolResult {
+                tool_use_id: String::new(),
+                content: "Plugin timed out (30s)".to_string(),
+                is_error: true,
+            }
+        }
+    }
 }
 
 impl DaemonServer {
@@ -118,6 +216,7 @@ impl DaemonServer {
         conv_mgr: Arc<ConversationManager>,
         plugin_mgr: Arc<PluginManager>,
         chat_model_name: Option<String>,
+        tool_params: HashMap<String, HashMap<String, serde_json::Value>>,
     ) -> Self {
         Self {
             session_mgr,
@@ -128,6 +227,7 @@ impl DaemonServer {
             pending_agent_loops: Arc::new(Mutex::new(HashMap::new())),
             active_threads: Arc::new(Mutex::new(HashMap::new())),
             chat_model_name,
+            tool_params,
         }
     }
 
@@ -148,6 +248,7 @@ impl DaemonServer {
         let pending_loops = self.pending_agent_loops.clone();
         let active_threads = self.active_threads.clone();
         let chat_model_name = self.chat_model_name.clone();
+        let tool_params = Arc::new(self.tool_params.clone());
 
         // Periodically sweep stale pending agent loop entries
         let pending_cleanup = self.pending_agent_loops.clone();
@@ -197,7 +298,8 @@ impl DaemonServer {
                     let pending_loops = pending_loops.clone();
                     let active_threads = active_threads.clone();
                     let chat_model_name = chat_model_name.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &pending_loops, &active_threads, &chat_model_name).await })
+                    let tool_params = tool_params.clone();
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &pending_loops, &active_threads, &chat_model_name, &tool_params).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -217,6 +319,7 @@ async fn handle_message(
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     active_threads: &ActiveThreads,
     chat_model_name: &Option<String>,
+    tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
 ) -> Vec<Message> {
     // Shadow with reference for existing code; use mgr_arc for spawned tasks
     let mgr_arc = mgr;
@@ -407,11 +510,11 @@ async fn handle_message(
         }
         Message::ChatMessage(cm) => {
             touch_thread(active_threads, &cm.thread_id).await;
-            return handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, pending_loops).await;
+            return handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, pending_loops, tool_params).await;
         }
         Message::ChatToolResult(tr) => {
             touch_thread(active_threads, &tr.thread_id).await;
-            return handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, pending_loops).await;
+            return handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, pending_loops, tool_params).await;
         }
         Message::ChatInterrupt(ci) => {
             // Clean up pending agent loop and store partial results
@@ -523,6 +626,7 @@ async fn handle_chat_message(
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
+    tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
 ) -> Vec<Message> {
     if llm.is_none() {
         return vec![Message::ChatResponse(ChatResponse {
@@ -598,7 +702,7 @@ async fn handle_chat_message(
         effective_backend,
     };
 
-    run_agent_loop(state, conv_mgr, plugin_mgr, pending_loops).await
+    run_agent_loop(state, conv_mgr, plugin_mgr, pending_loops, tool_params).await
 }
 
 /// Handle a ChatToolResult from the client — accumulate results, resume when all are received.
@@ -608,6 +712,7 @@ async fn handle_tool_result(
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
+    tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
 ) -> Vec<Message> {
     let mut map = pending_loops.lock().await;
     let state = match map.get_mut(&tr.request_id) {
@@ -713,7 +818,7 @@ async fn handle_tool_result(
     state.iteration += 1;
 
     // Prepend update messages before agent loop continuation messages
-    let mut loop_messages = run_agent_loop(state, conv_mgr, plugin_mgr, pending_loops).await;
+    let mut loop_messages = run_agent_loop(state, conv_mgr, plugin_mgr, pending_loops, tool_params).await;
     update_messages.append(&mut loop_messages);
     update_messages
 }
@@ -725,6 +830,7 @@ async fn run_agent_loop(
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
+    tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
 ) -> Vec<Message> {
     let backend = &state.effective_backend;
 
@@ -808,20 +914,39 @@ async fn run_agent_loop(
                         let ptype = plugin_mgr.tool_plugin_type(&tc.name);
                         if ptype == Some(PluginType::ClientTool) {
                             // Client-side tool: forward to client for parallel execution
+                            // Merge params for client-side tools too
+                            let mut merged_input = tc.input.clone();
+                            if let Some(override_params) = plugin_mgr.tool_override_params(&tc.name) {
+                                merge_tool_params(&mut merged_input, &override_params);
+                            }
+                            if let Some(config_params) = tool_params.get(&tc.name) {
+                                merge_tool_params(&mut merged_input, config_params);
+                            }
                             messages.push(Message::ChatToolCall(ChatToolCall {
                                 request_id: state.cm.request_id.clone(),
                                 thread_id: state.cm.thread_id.clone(),
                                 tool_name: tc.name.clone(),
                                 tool_call_id: tc.id.clone(),
-                                input: serde_json::to_string(&tc.input).unwrap_or_default(),
+                                input: serde_json::to_string(&merged_input).unwrap_or_default(),
                                 plugin_name: plugin_mgr.tool_plugin_name(&tc.name).unwrap_or("builtin").to_string(),
                                 sandboxed: plugin_mgr.tool_sandboxed(&tc.name).unwrap_or(true),
                             }));
                             has_client_tools = true;
                         } else {
                             // Daemon-side tool: execute directly
+                            // Merge params: override.json defaults, then daemon.toml overrides
+                            let mut merged_input = tc.input.clone();
+                            if let Some(override_params) = plugin_mgr.tool_override_params(&tc.name) {
+                                merge_tool_params(&mut merged_input, &override_params);
+                            }
+                            if let Some(config_params) = tool_params.get(&tc.name) {
+                                merge_tool_params(&mut merged_input, config_params);
+                            }
+
                             let mut result = if tc.name == "omnish_list_history" || tc.name == "omnish_get_output" {
-                                state.command_query_tool.execute(&tc.name, &tc.input)
+                                state.command_query_tool.execute(&tc.name, &merged_input)
+                            } else if let Some(exe) = plugin_mgr.plugin_executable(&tc.name) {
+                                execute_daemon_plugin(&exe, &tc.name, &merged_input).await
                             } else {
                                 omnish_llm::tool::ToolResult {
                                     tool_use_id: String::new(),

@@ -264,7 +264,7 @@ async fn async_main() -> Result<i32> {
         .or_else(|| config.llm.backends.get(&config.llm.default))
         .map(|bc| bc.model.clone());
 
-    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, chat_model_name);
+    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, chat_model_name, config.tools);
 
     tracing::info!("starting omnishd at {}", socket_path);
 
