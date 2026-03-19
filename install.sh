@@ -754,6 +754,21 @@ DAEMON_EOF
     fi
 fi
 
+# ── Plugin setup ──────────────────────────────────────────────────────────
+
+if [[ "$DRY_RUN" != true ]] && [[ -f "$DAEMON_TOML" ]]; then
+    for plugin_dir in "$OMNISH_DIR/plugins"/*/; do
+        [[ -d "$plugin_dir" ]] || continue
+        plugin_name=$(basename "$plugin_dir")
+        [[ "$plugin_name" == "builtin" ]] && continue
+        # Skip if already configured
+        if grep -q "^\[tools\.$plugin_name\]" "$DAEMON_TOML" 2>/dev/null; then
+            continue
+        fi
+        setup_plugin "$plugin_name" || true
+    done
+fi
+
 # ── Generate credentials ────────────────────────────────────────────────────
 
 if [[ "$DRY_RUN" == true ]]; then
