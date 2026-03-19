@@ -1297,11 +1297,14 @@ async fn connect_daemon(
                     Message::AuthOk(ok) => {
                         if ok.protocol_version != omnish_protocol::message::PROTOCOL_VERSION {
                             notice(&format!(
-                                "[omnish] Warning: protocol mismatch \
-                                 (client={}, daemon={}), please upgrade",
+                                "[omnish] Protocol mismatch \
+                                 (client={}, daemon={}), waiting for daemon upgrade...",
                                 omnish_protocol::message::PROTOCOL_VERSION,
                                 ok.protocol_version
                             ));
+                            anyhow::bail!("protocol mismatch (client={}, daemon={})",
+                                omnish_protocol::message::PROTOCOL_VERSION,
+                                ok.protocol_version);
                         }
                     }
                     // Old daemon that responds with Ack (no version info)
