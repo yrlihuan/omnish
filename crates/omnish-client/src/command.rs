@@ -87,7 +87,8 @@ fn integrate_command(args: &str) -> String {
             let snippet = format!(
                 "\n# omnish integration\n\
                  if-shell \"[ -x {} ]\" \\\n    \
-                 \"set-option -g default-shell {}\"\n",
+                 \"set-option -g default-shell {}\"\n\
+                 set-window-option -g allow-rename on\n",
                 omnish_bin, omnish_bin
             );
 
