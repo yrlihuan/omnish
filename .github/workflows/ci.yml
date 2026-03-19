@@ -175,11 +175,25 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract changelog for this release
+        id: changelog
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          # Extract the section for this version from CHANGELOG.md
+          # Grab everything between "## vX.Y.Z" and the next "---" separator
+          BODY=$(sed -n "/^## v${VERSION} /,/^---$/p" CHANGELOG.md | sed '1d;$d')
+          # Write to file to preserve newlines
+          echo "$BODY" > /tmp/release-notes.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.tar.gz
-          generate_release_notes: true
+          body_path: /tmp/release-notes.md
           draft: false
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
