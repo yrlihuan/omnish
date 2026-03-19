@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.8.1 (2026-03-19)
+
+### Features
+- **plugin**: macOS sandbox-exec support for plugin subprocesses (#345)
+- **plugin**: `sandbox_profile()` and `build_sandbox_profile()` with path escaping and deduplication (#345)
+
+### Fixes
+- **common**: Restore build.rs git state tracking with dirty detection (revert 33056cd)
+- **plugin**: Deduplicate sandbox profile rules when cwd == repo root (#345)
+- **plugin**: Strip control characters in sandbox paths instead of panicking (#345)
+
+### CI
+- Add changelog to GitHub release page (#348)
+
+### Docs
+- Emphasize coding assistant and agent features in README (#347)
+- Reorganize plans and specs under docs/superpowers/
+
+---
+
 ## v0.8.0 (2026-03-18)
 
 ### Features
