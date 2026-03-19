@@ -249,7 +249,10 @@ impl ChatSession {
                 timestamp_ms: crate::timestamp_ms(),
                 attrs,
             });
-            let _ = rpc.send(msg).await;
+            // Use call() (not send()) to wait for Ack — the daemon spawns each
+            // message as a separate tokio task, so fire-and-forget send() can race
+            // with the subsequent ChatMessage.
+            let _ = rpc.call(msg).await;
         }
 
         let is_resumed = initial_msg.as_ref()
