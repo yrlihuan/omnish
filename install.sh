@@ -59,9 +59,9 @@ patch_toml_section() {
         sed -i "/^\[tools\.$plugin_name\]/,/^\[/{/^\[tools\.$plugin_name\]/d;/^\[/!d}" "$toml_file"
     fi
 
-    # Also remove commented-out section and its commented keys
+    # Also remove commented-out section and its commented keys (including blank lines)
     if grep -q "^# *\[tools\.$plugin_name\]" "$toml_file"; then
-        sed -i "/^# *\[tools\.$plugin_name\]/,/^[^#]/{/^# *\[tools\.$plugin_name\]/d;/^# /d}" "$toml_file"
+        sed -i "/^# *\[tools\.$plugin_name\]/,/^[^#$]/{/^# *\[tools\.$plugin_name\]/d;/^# /d}" "$toml_file"
     fi
 
     # Append new section
@@ -89,7 +89,7 @@ patch_plugins_enabled() {
         if grep -q '^# *\[plugins\]' "$toml_file"; then
             # Uncomment and set
             sed -i 's/^# *\[plugins\]/[plugins]/' "$toml_file"
-            sed -i 's/^# *enabled = \[.*\]/enabled = ["'"$plugin_name"'"]/' "$toml_file"
+            sed -i '/^\[plugins\]/,/^\[/{s/^# *enabled = \[.*\]/enabled = ["'"$plugin_name"'"]/}' "$toml_file"
         else
             # Append new section
             printf '\n[plugins]\nenabled = ["%s"]\n' "$plugin_name" >> "$toml_file"
