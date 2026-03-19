@@ -1492,6 +1492,19 @@ impl ChatSession {
                 }
             }
 
+            // Idle timeout: exit chat after 30 minutes of no input
+            {
+                let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
+                let timeout_ms = 30 * 60 * 1000; // 30 minutes
+                let ready = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+                if ready == 0 {
+                    // Timeout — auto-exit chat mode
+                    write_stdout("\r\n\x1b[2;37m(chat closed due to inactivity)\x1b[0m\r\n");
+                    // Disable bracketed paste before exiting
+                    write_stdout("\x1b[?2004l");
+                    return None;
+                }
+            }
             match nix::unistd::read(stdin_fd, &mut byte) {
                 Ok(1) => {
                     let now = std::time::Instant::now();

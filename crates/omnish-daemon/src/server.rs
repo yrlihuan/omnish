@@ -47,23 +47,38 @@ struct AgentLoopState {
     effective_backend: Arc<dyn LlmBackend>,
 }
 
-/// Tracks which session is actively using each thread (thread_id → session_id).
-type ActiveThreads = Arc<Mutex<HashMap<String, String>>>;
+/// Tracks which session is actively using each thread.
+struct ThreadClaim {
+    session_id: String,
+    last_active: std::time::Instant,
+}
+
+type ActiveThreads = Arc<Mutex<HashMap<String, ThreadClaim>>>;
 
 /// Try to claim a thread for a session.  Returns `Ok(())` if the thread is
 /// free or already owned by the same session, `Err(())` if another session holds it.
 /// On success the session's previous thread (if any) is released.
 async fn try_claim_thread(active_threads: &ActiveThreads, thread_id: &str, session_id: &str) -> Result<(), ()> {
     let mut threads = active_threads.lock().await;
-    if let Some(owner) = threads.get(thread_id) {
-        if *owner != session_id {
+    if let Some(claim) = threads.get(thread_id) {
+        if claim.session_id != session_id {
             return Err(());
         }
     }
     // Release any thread this session previously held, then claim the new one
-    threads.retain(|_, sid| *sid != session_id);
-    threads.insert(thread_id.to_string(), session_id.to_string());
+    threads.retain(|_, c| c.session_id != session_id);
+    threads.insert(thread_id.to_string(), ThreadClaim {
+        session_id: session_id.to_string(),
+        last_active: std::time::Instant::now(),
+    });
     Ok(())
+}
+
+/// Update last_active timestamp for a thread (called on ChatMessage).
+async fn touch_thread(active_threads: &ActiveThreads, thread_id: &str) {
+    if let Some(claim) = active_threads.lock().await.get_mut(thread_id) {
+        claim.last_active = std::time::Instant::now();
+    }
 }
 
 fn thread_locked_error() -> serde_json::Value {
@@ -141,6 +156,25 @@ impl DaemonServer {
             }
         });
 
+        // Periodically release idle thread claims (safety net: 30m10s)
+        let idle_threads = self.active_threads.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            let max_idle = std::time::Duration::from_secs(30 * 60 + 10);
+            loop {
+                interval.tick().await;
+                let mut map = idle_threads.lock().await;
+                map.retain(|tid, claim| {
+                    if claim.last_active.elapsed() > max_idle {
+                        tracing::info!("Releasing idle thread claim: {} (session={})", tid, claim.session_id);
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+        });
+
         server
             .serve(
                 move |msg| {
@@ -191,7 +225,7 @@ async fn handle_message(
                 tracing::error!("end_session error: {}", e);
             }
             // Release any threads held by this session
-            active_threads.lock().await.retain(|_, sid| *sid != s.session_id);
+            active_threads.lock().await.retain(|_, c| c.session_id != s.session_id);
             Message::Ack
         }
         Message::SessionUpdate(su) => {
@@ -361,9 +395,11 @@ async fn handle_message(
             })
         }
         Message::ChatMessage(cm) => {
+            touch_thread(active_threads, &cm.thread_id).await;
             return handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, pending_loops).await;
         }
         Message::ChatToolResult(tr) => {
+            touch_thread(active_threads, &tr.thread_id).await;
             return handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, pending_loops).await;
         }
         Message::ChatInterrupt(ci) => {
