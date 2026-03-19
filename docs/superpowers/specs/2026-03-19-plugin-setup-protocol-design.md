@@ -127,8 +127,10 @@ patch_toml_section() {
         sed -i "/^\[tools\.$plugin_name\]/,/^\[/{/^\[tools\.$plugin_name\]/d;/^\[/!d}" "$toml_file"
     fi
 
-    # Also remove commented-out section header
-    sed -i "/^# *\[tools\.$plugin_name\]/d" "$toml_file"
+    # Also remove commented-out section and its commented keys
+    if grep -q "^# *\[tools\.$plugin_name\]" "$toml_file"; then
+        sed -i "/^# *\[tools\.$plugin_name\]/,/^[^#]/{/^# *\[tools\.$plugin_name\]/d;/^# /d}" "$toml_file"
+    fi
 
     # Append new section
     {
