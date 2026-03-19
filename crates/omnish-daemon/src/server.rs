@@ -378,7 +378,7 @@ async fn handle_message(
         }
         Message::Request(req) => {
             if req.query.starts_with("__cmd:") {
-                let result = handle_builtin_command(&req, mgr, task_mgr, llm, conv_mgr, plugin_mgr, active_threads).await;
+                let result = handle_builtin_command(&req, mgr, task_mgr, llm, conv_mgr, plugin_mgr).await;
                 let content = serde_json::to_string(&result).unwrap_or_else(|_| {
                     r#"{"display":"(serialization error)"}"#.to_string()
                 });
@@ -477,36 +477,117 @@ async fn handle_message(
                 let cwd = mgr.get_session_attr(&cs.session_id, "shell_cwd").await;
                 ThreadMeta { host, cwd, ..Default::default() }
             };
-            let thread_id = if cs.new_thread {
+
+            // Determine thread_id based on the request:
+            //  1. thread_id provided → resume that specific thread
+            //  2. new_thread = true   → create a new thread
+            //  3. otherwise           → resume latest thread
+            if let Some(ref tid) = cs.thread_id {
+                // Resume specific thread
+                let raw_msgs = conv_mgr.load_raw_messages(tid);
+                if raw_msgs.is_empty() {
+                    return vec![Message::ChatReady(ChatReady {
+                        request_id: cs.request_id,
+                        thread_id: String::new(),
+                        last_exchange: None,
+                        earlier_count: 0,
+                        model_name: chat_model_name.clone(),
+                        history: None,
+                        error: Some("not_found".to_string()),
+                        error_display: Some("Conversation not found".to_string()),
+                    })];
+                }
+                if let Err(owner) = try_claim_thread(active_threads, tid, &cs.session_id).await {
+                    let err = thread_locked_error(mgr, &owner).await;
+                    return vec![Message::ChatReady(ChatReady {
+                        request_id: cs.request_id,
+                        thread_id: String::new(),
+                        last_exchange: None,
+                        earlier_count: 0,
+                        model_name: chat_model_name.clone(),
+                        history: None,
+                        error: Some("thread_locked".to_string()),
+                        error_display: err.get("display").and_then(|d| d.as_str()).map(String::from),
+                    })];
+                }
+                conv_mgr.save_meta(tid, &meta);
+                let history = reconstruct_history(&raw_msgs, plugin_mgr);
+                // Thread model override
+                let thread_model = {
+                    let m = conv_mgr.load_meta(tid);
+                    m.model.and_then(|model_name| {
+                        let is_default = llm.as_ref()
+                            .map(|b| b.chat_default_name() == model_name)
+                            .unwrap_or(true);
+                        if is_default { None } else { Some(model_name) }
+                    })
+                };
+                Message::ChatReady(ChatReady {
+                    request_id: cs.request_id,
+                    thread_id: tid.clone(),
+                    last_exchange: None,
+                    earlier_count: 0,
+                    model_name: thread_model.or_else(|| chat_model_name.clone()),
+                    history: Some(history),
+                    error: None,
+                    error_display: None,
+                })
+            } else if cs.new_thread {
                 let tid = conv_mgr.create_thread(meta);
-                // New thread — always succeeds, no contention possible
                 try_claim_thread(active_threads, &tid, &cs.session_id).await.ok();
-                tid
+                Message::ChatReady(ChatReady {
+                    request_id: cs.request_id,
+                    thread_id: tid,
+                    last_exchange: None,
+                    earlier_count: 0,
+                    model_name: chat_model_name.clone(),
+                    history: None,
+                    error: None,
+                    error_display: None,
+                })
             } else {
-                match conv_mgr.get_latest_thread() {
+                // Resume latest thread
+                let thread_id = match conv_mgr.get_latest_thread() {
                     Some(tid) => {
-                        if try_claim_thread(active_threads, &tid, &cs.session_id).await.is_err() {
+                        if let Err(owner) = try_claim_thread(active_threads, &tid, &cs.session_id).await {
+                            let err = thread_locked_error(mgr, &owner).await;
                             return vec![Message::ChatReady(ChatReady {
                                 request_id: cs.request_id,
                                 thread_id: String::new(),
                                 last_exchange: None,
                                 earlier_count: 0,
                                 model_name: chat_model_name.clone(),
+                                history: None,
+                                error: Some("thread_locked".to_string()),
+                                error_display: err.get("display").and_then(|d| d.as_str()).map(String::from),
                             })];
                         }
                         conv_mgr.save_meta(&tid, &meta);
                         tid
                     }
-                    None => String::new(), // No thread yet — return empty, don't create
+                    None => String::new(),
+                };
+                Message::ChatReady(ChatReady {
+                    request_id: cs.request_id,
+                    thread_id,
+                    last_exchange: None,
+                    earlier_count: 0,
+                    model_name: chat_model_name.clone(),
+                    history: None,
+                    error: None,
+                    error_display: None,
+                })
+            }
+        }
+        Message::ChatEnd(ce) => {
+            // Release thread binding
+            let mut threads = active_threads.lock().await;
+            if let Some(claim) = threads.get(&ce.thread_id) {
+                if claim.session_id == ce.session_id {
+                    threads.remove(&ce.thread_id);
                 }
-            };
-            Message::ChatReady(ChatReady {
-                request_id: cs.request_id,
-                thread_id,
-                last_exchange: None,
-                earlier_count: 0,
-                model_name: chat_model_name.clone(),
-            })
+            }
+            Message::Ack
         }
         Message::ChatMessage(cm) => {
             touch_thread(active_threads, &cm.thread_id).await;
@@ -1317,25 +1398,13 @@ fn build_resume_response(
     json
 }
 
-async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>, plugin_mgr: &PluginManager, active_threads: &ActiveThreads) -> serde_json::Value {
+async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>, plugin_mgr: &PluginManager) -> serde_json::Value {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
 
     // Build system-reminder for context display
     let (commands, stream_reader) = mgr.get_all_commands_with_reader().await;
     let command_query_tool = omnish_daemon::tools::command_query::CommandQueryTool::new(commands, stream_reader);
     let reminder = command_query_tool.build_system_reminder(5, None);
-
-    // Handle /release_thread <thread_id> — release active thread binding
-    if let Some(tid) = sub.strip_prefix("release_thread ") {
-        let tid = tid.trim();
-        let mut threads = active_threads.lock().await;
-        if let Some(claim) = threads.get(tid) {
-            if claim.session_id == req.session_id {
-                threads.remove(tid);
-            }
-        }
-        return cmd_display("ok");
-    }
 
     // Handle /context chat:<thread_id> — show conversation context + system-reminder
     if let Some(thread_id) = sub.strip_prefix("context chat:") {
@@ -1374,36 +1443,14 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             Err(_) => return cmd_display("Invalid index: not a number"),
         };
         return match conv_mgr.get_thread_by_index(idx) {
-            Some(thread_id) => {
-                if let Err(owner) = try_claim_thread(active_threads, &thread_id, &req.session_id).await {
-                    return thread_locked_error(mgr, &owner).await;
-                }
-                build_resume_response(&thread_id, conv_mgr, plugin_mgr, llm_backend)
-            }
+            Some(thread_id) => build_resume_response(&thread_id, conv_mgr, plugin_mgr, llm_backend),
             None => cmd_display("Invalid index: out of bounds"),
         };
-    }
-    // Handle /resume_tid <thread_id> for resuming by thread ID (stable across deletions)
-    if let Some(tid) = sub.strip_prefix("resume_tid ") {
-        let tid = tid.trim();
-        let raw_msgs = conv_mgr.load_raw_messages(tid);
-        if raw_msgs.is_empty() {
-            return cmd_display("Conversation not found");
-        }
-        if let Err(owner) = try_claim_thread(active_threads, tid, &req.session_id).await {
-            return thread_locked_error(mgr, &owner).await;
-        }
-        return build_resume_response(tid, conv_mgr, plugin_mgr, llm_backend);
     }
     // Handle /resume without index (resume latest = /resume 1)
     if sub == "resume" {
         return match conv_mgr.get_thread_by_index(0) {
-            Some(thread_id) => {
-                if let Err(owner) = try_claim_thread(active_threads, &thread_id, &req.session_id).await {
-                    return thread_locked_error(mgr, &owner).await;
-                }
-                build_resume_response(&thread_id, conv_mgr, plugin_mgr, llm_backend)
-            }
+            Some(thread_id) => build_resume_response(&thread_id, conv_mgr, plugin_mgr, llm_backend),
             None => cmd_display("No conversations yet. Start a chat with :"),
         };
     }

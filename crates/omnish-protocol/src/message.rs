@@ -6,7 +6,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version — increment on incompatible wire format changes.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
@@ -23,6 +23,7 @@ pub enum Message {
     CompletionSummary(CompletionSummary),
     ChatStart(ChatStart),
     ChatReady(ChatReady),
+    ChatEnd(ChatEnd),
     ChatMessage(ChatMessage),
     ChatResponse(ChatResponse),
     ChatInterrupt(ChatInterrupt),
@@ -186,6 +187,9 @@ pub struct ChatStart {
     pub request_id: String,
     pub session_id: String,
     pub new_thread: bool,
+    /// If set, resume this specific thread instead of creating a new one.
+    #[serde(default)]
+    pub thread_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +201,21 @@ pub struct ChatReady {
     /// Model name from the chat LLM backend (e.g. "claude-sonnet-4-5-20250929").
     #[serde(default)]
     pub model_name: Option<String>,
+    /// Structured conversation history (for resumed threads).
+    #[serde(default)]
+    pub history: Option<Vec<Value>>,
+    /// Error key when thread cannot be entered (e.g. "thread_locked").
+    #[serde(default)]
+    pub error: Option<String>,
+    /// Human-readable error message.
+    #[serde(default)]
+    pub error_display: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatEnd {
+    pub session_id: String,
+    pub thread_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -438,6 +457,7 @@ mod tests {
                 request_id: "abc".to_string(),
                 session_id: "sess1".to_string(),
                 new_thread: false,
+                thread_id: None,
             }),
         };
         let bytes = frame.to_bytes().unwrap();
@@ -508,7 +528,7 @@ mod tests {
     /// reminding you to bump PROTOCOL_VERSION if the wire format changed.
     #[test]
     fn message_variant_guard() {
-        const EXPECTED_VARIANT_COUNT: usize = 23;
+        const EXPECTED_VARIANT_COUNT: usize = 24;
 
         let variants: Vec<Message> = vec![
             Message::SessionStart(SessionStart {
@@ -591,6 +611,7 @@ mod tests {
                 request_id: String::new(),
                 session_id: String::new(),
                 new_thread: false,
+                thread_id: None,
             }),
             Message::ChatReady(ChatReady {
                 request_id: String::new(),
@@ -598,6 +619,13 @@ mod tests {
                 last_exchange: None,
                 earlier_count: 0,
                 model_name: None,
+                history: None,
+                error: None,
+                error_display: None,
+            }),
+            Message::ChatEnd(ChatEnd {
+                session_id: String::new(),
+                thread_id: String::new(),
             }),
             Message::ChatMessage(ChatMessage {
                 request_id: String::new(),
@@ -672,6 +700,7 @@ mod tests {
                 | Message::CompletionSummary(_)
                 | Message::ChatStart(_)
                 | Message::ChatReady(_)
+                | Message::ChatEnd(_)
                 | Message::ChatMessage(_)
                 | Message::ChatResponse(_)
                 | Message::ChatInterrupt(_)

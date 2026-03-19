@@ -456,6 +456,7 @@ impl ChatSession {
                     request_id: req_id.clone(),
                     session_id: session_id.to_string(),
                     new_thread: true,
+                    thread_id: None,
                 });
                 match rpc.call(start_msg).await {
                     Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
@@ -749,14 +750,11 @@ impl ChatSession {
 
         // Release the thread binding on the daemon so other sessions can use it
         if let Some(ref tid) = self.current_thread_id {
-            let rid = Uuid::new_v4().to_string()[..8].to_string();
-            let req = Message::Request(Request {
-                request_id: rid,
+            let msg = Message::ChatEnd(ChatEnd {
                 session_id: session_id.to_string(),
-                query: format!("__cmd:release_thread {}", tid),
-                scope: RequestScope::AllSessions,
+                thread_id: tid.clone(),
             });
-            let _ = rpc.call(req).await;
+            let _ = rpc.call(msg).await;
         }
     }
 
@@ -945,55 +943,22 @@ impl ChatSession {
     }
 
     async fn handle_resume(&mut self, trimmed: &str, session_id: &str, rpc: &RpcClient) {
-        // Returns (thread_id, response_json) where response_json contains structured history
-        let (thread_id, response_json): (Option<String>, Option<serde_json::Value>) =
-            if let Some(idx_str) = trimmed.strip_prefix("/resume ") {
+        // Resolve which thread_id to resume, then delegate to handle_resume_tid
+        let tid: Option<String> = if let Some(idx_str) = trimmed.strip_prefix("/resume ") {
             // Auto-fetch if cache empty
             if self.cached_thread_ids.is_empty() {
-                let rid = Uuid::new_v4().to_string()[..8].to_string();
-                let req = Message::Request(Request {
-                    request_id: rid.clone(),
-                    session_id: session_id.to_string(),
-                    query: "__cmd:conversations".to_string(),
-                    scope: RequestScope::AllSessions,
-                });
-                if let Ok(Message::Response(resp)) = rpc.call(req).await {
-                    if resp.request_id == rid {
-                        if let Some(json) = super::parse_cmd_response(&resp.content) {
-                            if let Some(ids) = json.get("thread_ids").and_then(|v| v.as_array()) {
-                                self.cached_thread_ids = ids
-                                    .iter()
-                                    .filter_map(|v| v.as_str().map(String::from))
-                                    .collect();
-                            }
-                        }
-                    }
-                }
+                self.fetch_thread_ids(session_id, rpc).await;
             }
             match idx_str.trim().parse::<usize>() {
                 Ok(i) if i >= 1 && i <= self.cached_thread_ids.len() => {
-                    let tid = self.cached_thread_ids[i - 1].clone();
-                    if tid.is_empty() {
+                    let t = self.cached_thread_ids[i - 1].clone();
+                    if t.is_empty() {
                         write_stdout(&display::render_error(&format!(
-                            "Conversation [{}] was deleted",
-                            i
+                            "Conversation [{}] was deleted", i
                         )));
-                        (None, None)
+                        None
                     } else {
-                        let rid = Uuid::new_v4().to_string()[..8].to_string();
-                        let req = Message::Request(Request {
-                            request_id: rid.clone(),
-                            session_id: session_id.to_string(),
-                            query: format!("__cmd:resume_tid {}", tid),
-                            scope: RequestScope::AllSessions,
-                        });
-                        let resp_json = match rpc.call(req).await {
-                            Ok(Message::Response(resp)) if resp.request_id == rid => {
-                                super::parse_cmd_response(&resp.content)
-                            }
-                            _ => None,
-                        };
-                        (Some(tid), resp_json)
+                        Some(t)
                     }
                 }
                 Ok(i) if i >= 1 => {
@@ -1002,39 +967,33 @@ impl ChatSession {
                     } else {
                         write_stdout(&display::render_error(&format!(
                             "Index {} out of range ({} conversations)",
-                            i,
-                            self.cached_thread_ids.len()
+                            i, self.cached_thread_ids.len()
                         )));
                     }
-                    (None, None)
+                    None
                 }
                 _ => {
                     write_stdout(&display::render_error("Invalid index"));
-                    (None, None)
+                    None
                 }
             }
         } else {
             // /resume without index — picker
-            let rid = Uuid::new_v4().to_string()[..8].to_string();
-            let req = Message::Request(Request {
-                request_id: rid.clone(),
-                session_id: session_id.to_string(),
-                query: "__cmd:conversations".to_string(),
-                scope: RequestScope::AllSessions,
-            });
-            match rpc.call(req).await {
-                Ok(Message::Response(resp)) if resp.request_id == rid => {
-                    if let Some(json) = super::parse_cmd_response(&resp.content) {
-                        if let Some(ids) = json.get("thread_ids").and_then(|v| v.as_array()) {
-                            self.cached_thread_ids = ids
-                                .iter()
-                                .filter_map(|v| v.as_str().map(String::from))
-                                .collect();
-                        }
-                        if self.cached_thread_ids.is_empty() {
-                            write_stdout(&display::render_error("No conversations to resume"));
-                            (None, None)
-                        } else {
+            self.fetch_thread_ids(session_id, rpc).await;
+            if self.cached_thread_ids.is_empty() {
+                write_stdout(&display::render_error("No conversations to resume"));
+                None
+            } else {
+                let rid = Uuid::new_v4().to_string()[..8].to_string();
+                let req = Message::Request(Request {
+                    request_id: rid.clone(),
+                    session_id: session_id.to_string(),
+                    query: "__cmd:conversations".to_string(),
+                    scope: RequestScope::AllSessions,
+                });
+                match rpc.call(req).await {
+                    Ok(Message::Response(resp)) if resp.request_id == rid => {
+                        if let Some(json) = super::parse_cmd_response(&resp.content) {
                             let display_str = super::cmd_display_str(&json);
                             let item_strings: Vec<String> = display_str
                                 .lines()
@@ -1045,220 +1004,224 @@ impl ChatSession {
                                 item_strings.iter().map(|s| s.as_str()).collect();
                             if items.is_empty() {
                                 write_stdout(&display::render_error("No conversations to resume"));
-                                (None, None)
+                                None
                             } else {
                                 match widgets::picker::pick_one("Resume conversation:", &items) {
                                     Some(idx) if idx < self.cached_thread_ids.len() => {
-                                        let tid = self.cached_thread_ids[idx].clone();
-                                        let rid2 = Uuid::new_v4().to_string()[..8].to_string();
-                                        let req2 = Message::Request(Request {
-                                            request_id: rid2.clone(),
-                                            session_id: session_id.to_string(),
-                                            query: format!("__cmd:resume_tid {}", tid),
-                                            scope: RequestScope::AllSessions,
-                                        });
-                                        let resp_json = match rpc.call(req2).await {
-                                            Ok(Message::Response(r)) if r.request_id == rid2 => {
-                                                super::parse_cmd_response(&r.content)
-                                            }
-                                            _ => None,
-                                        };
-                                        (Some(tid), resp_json)
+                                        Some(self.cached_thread_ids[idx].clone())
                                     }
-                                    _ => (None, None),
+                                    _ => None,
                                 }
                             }
+                        } else {
+                            write_stdout(&display::render_error("No conversations to resume"));
+                            None
                         }
-                    } else {
-                        write_stdout(&display::render_error("No conversations to resume"));
-                        (None, None)
                     }
-                }
-                _ => {
-                    write_stdout(&display::render_error("Failed to list conversations"));
-                    (None, None)
+                    _ => {
+                        write_stdout(&display::render_error("Failed to list conversations"));
+                        None
+                    }
                 }
             }
         };
 
-        self.apply_resume_response(thread_id, response_json);
-    }
-
-    /// Shared logic: apply a resume response (set thread, render history, show errors).
-    fn apply_resume_response(&mut self, thread_id: Option<String>, response_json: Option<serde_json::Value>) {
-        if let Some(tid) = thread_id {
-            // Check if the daemon returned an error (e.g. thread locked by another session)
-            if let Some(err) = response_json.as_ref().and_then(|j| j.get("error")).and_then(|e| e.as_str()) {
-                let display = response_json.as_ref()
-                    .and_then(|j| j.get("display"))
-                    .and_then(|d| d.as_str())
-                    .unwrap_or(err);
-                write_stdout(&display::render_error(display));
-                return;
-            }
-            // If the response has a display message but no history, it's a daemon-side
-            // error (e.g. "Conversation not found") — show it and don't switch thread.
-            if response_json.as_ref().is_some_and(|j| j.get("history").is_none()) {
-                if let Some(msg) = response_json.as_ref().and_then(|j| j.get("display")).and_then(|d| d.as_str()) {
-                    write_stdout(&display::render_error(msg));
-                } else {
-                    write_stdout(&display::render_error("Failed to resume conversation"));
-                }
-                return;
-            }
-            self.current_thread_id = Some(tid);
-            if let Some(history) = response_json.as_ref().and_then(|j| j.get("history")).and_then(|h| h.as_array()) {
-                // Parse structured history entries
-                let mut all_entries: Vec<ScrollEntry> = Vec::new();
-                for entry in history {
-                    match entry.get("type").and_then(|t| t.as_str()) {
-                        Some("user_input") => {
-                            let text = entry["text"].as_str().unwrap_or("");
-                            all_entries.push(ScrollEntry::UserInput(text.to_string()));
-                        }
-                        Some("llm_text") => {
-                            let text = entry["text"].as_str().unwrap_or("");
-                            all_entries.push(ScrollEntry::LlmText(text.to_string()));
-                        }
-                        Some("tool_status") => {
-                            let cts = ChatToolStatus {
-                                request_id: String::new(),
-                                thread_id: String::new(),
-                                tool_name: entry["tool_name"].as_str().unwrap_or("").to_string(),
-                                tool_call_id: entry["tool_call_id"].as_str().map(String::from),
-                                status: String::new(),
-                                status_icon: Some(match entry["status_icon"].as_str() {
-                                    Some("error") => StatusIcon::Error,
-                                    Some("running") => StatusIcon::Running,
-                                    _ => StatusIcon::Success,
-                                }),
-                                display_name: entry["display_name"].as_str().map(String::from),
-                                param_desc: entry["param_desc"].as_str().map(String::from),
-                                result_compact: entry["result_compact"].as_array().map(|a|
-                                    a.iter().filter_map(|v| v.as_str().map(String::from)).collect()),
-                                result_full: entry["result_full"].as_array().map(|a|
-                                    a.iter().filter_map(|v| v.as_str().map(String::from)).collect()),
-                            };
-                            all_entries.push(ScrollEntry::ToolStatus(cts));
-                        }
-                        Some("response") => {
-                            let text = entry["text"].as_str().unwrap_or("");
-                            all_entries.push(ScrollEntry::Response(text.to_string()));
-                        }
-                        Some("separator") => {
-                            all_entries.push(ScrollEntry::Separator);
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Find the start of the last exchange (last UserInput)
-                let last_exchange_start = all_entries.iter().rposition(|e|
-                    matches!(e, ScrollEntry::UserInput(_))
-                ).unwrap_or(0);
-
-                // Push ALL entries to scroll_history (for Ctrl+O browse)
-                for entry in &all_entries {
-                    self.push_entry(entry.clone());
-                }
-
-                // Render only the last exchange on terminal
-                let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
-                // Show count of earlier entries if any
-                if last_exchange_start > 0 {
-                    let earlier_count = all_entries[..last_exchange_start].iter()
-                        .filter(|e| matches!(e, ScrollEntry::UserInput(_)))
-                        .count();
-                    if earlier_count > 0 {
-                        self.print_line(&format!(
-                            "\x1b[2;37m({} earlier exchange{})\x1b[0m",
-                            earlier_count,
-                            if earlier_count == 1 { "" } else { "s" }
-                        ));
-                    }
-                }
-                for entry in &all_entries[last_exchange_start..] {
-                    match entry {
-                        ScrollEntry::UserInput(text) => {
-                            for (i, line) in text.lines().enumerate() {
-                                if i == 0 {
-                                    self.print_line(&format!("\x1b[36m> \x1b[0m{}", line));
-                                } else {
-                                    self.print_line(&format!("  {}", line));
-                                }
-                            }
-                        }
-                        ScrollEntry::ToolStatus(cts) => {
-                            let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
-                            let param_desc = cts.param_desc.as_deref().unwrap_or("");
-                            let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Success);
-                            let header = display::render_tool_header(icon, display_name, param_desc, cols as usize);
-                            self.print_line(&header);
-                            if let Some(ref lines) = cts.result_compact {
-                                let rendered = display::render_tool_output(lines);
-                                for line in &rendered {
-                                    self.print_line(line);
-                                }
-                            }
-                        }
-                        ScrollEntry::LlmText(text) => {
-                            self.print_line("");
-                            for (i, line) in text.split('\n').enumerate() {
-                                if i == 0 {
-                                    self.print_line(&format!("\x1b[97m●\x1b[0m {}", line));
-                                } else {
-                                    self.print_line(&format!("  {}", line));
-                                }
-                            }
-                        }
-                        ScrollEntry::Response(content) => {
-                            self.print_line("");
-                            let rendered = markdown::render(content);
-                            for (i, line) in rendered.split("\r\n").enumerate() {
-                                if i == 0 {
-                                    self.print_line(&format!("\x1b[97m●\x1b[0m {}", line));
-                                } else {
-                                    self.print_line(&format!("  {}", line));
-                                }
-                            }
-                        }
-                        ScrollEntry::Separator => {
-                            self.print_line(&display::render_separator(cols));
-                        }
-                        ScrollEntry::SystemMessage(msg) => {
-                            self.print_line(&format!("\x1b[2;37m{}\x1b[0m", msg));
-                        }
-                    }
-                }
-            } else {
-                write_stdout("\x1b[2;37m(resumed conversation)\x1b[0m\r\n");
-                self.push_entry(ScrollEntry::SystemMessage("(resumed conversation)".to_string()));
-            }
-            // Store non-default model name for ghost hint
-            if let Some(model) = response_json.as_ref().and_then(|j| j.get("model")).and_then(|v| v.as_str()) {
-                self.resumed_model = Some(model.to_string());
-            }
+        if let Some(tid) = tid {
+            self.handle_resume_tid(&tid, session_id, rpc).await;
         }
     }
 
-    /// Resume a specific thread by ID (used by :: shortcut to return to
-    /// the session's previous thread).
-    async fn handle_resume_tid(&mut self, tid: &str, session_id: &str, rpc: &RpcClient) {
+    /// Fetch and cache thread IDs from the daemon.
+    async fn fetch_thread_ids(&mut self, session_id: &str, rpc: &RpcClient) {
         let rid = Uuid::new_v4().to_string()[..8].to_string();
         let req = Message::Request(Request {
             request_id: rid.clone(),
             session_id: session_id.to_string(),
-            query: format!("__cmd:resume_tid {}", tid),
+            query: "__cmd:conversations".to_string(),
             scope: RequestScope::AllSessions,
         });
-        let resp_json = match rpc.call(req).await {
-            Ok(Message::Response(resp)) if resp.request_id == rid => {
-                super::parse_cmd_response(&resp.content)
+        if let Ok(Message::Response(resp)) = rpc.call(req).await {
+            if resp.request_id == rid {
+                if let Some(json) = super::parse_cmd_response(&resp.content) {
+                    if let Some(ids) = json.get("thread_ids").and_then(|v| v.as_array()) {
+                        self.cached_thread_ids = ids
+                            .iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect();
+                    }
+                }
             }
-            _ => None,
-        };
-        // Delegate to the shared resume-response handler
-        self.apply_resume_response(Some(tid.to_string()), resp_json);
+        }
+    }
+
+    /// Apply a ChatReady response: handle errors, set thread, render history.
+    fn apply_chat_ready(&mut self, ready: ChatReady) {
+        // Error from daemon (thread_locked, not_found, etc.)
+        if let Some(ref err_display) = ready.error_display {
+            write_stdout(&display::render_error(err_display));
+            return;
+        }
+        if ready.error.is_some() {
+            write_stdout(&display::render_error("Failed to resume conversation"));
+            return;
+        }
+        if ready.thread_id.is_empty() {
+            write_stdout(&display::render_error("Failed to resume conversation"));
+            return;
+        }
+
+        self.current_thread_id = Some(ready.thread_id);
+
+        if let Some(history) = ready.history {
+            // Parse structured history entries
+            let mut all_entries: Vec<ScrollEntry> = Vec::new();
+            for entry in &history {
+                match entry.get("type").and_then(|t| t.as_str()) {
+                    Some("user_input") => {
+                        let text = entry["text"].as_str().unwrap_or("");
+                        all_entries.push(ScrollEntry::UserInput(text.to_string()));
+                    }
+                    Some("llm_text") => {
+                        let text = entry["text"].as_str().unwrap_or("");
+                        all_entries.push(ScrollEntry::LlmText(text.to_string()));
+                    }
+                    Some("tool_status") => {
+                        let cts = ChatToolStatus {
+                            request_id: String::new(),
+                            thread_id: String::new(),
+                            tool_name: entry["tool_name"].as_str().unwrap_or("").to_string(),
+                            tool_call_id: entry["tool_call_id"].as_str().map(String::from),
+                            status: String::new(),
+                            status_icon: Some(match entry["status_icon"].as_str() {
+                                Some("error") => StatusIcon::Error,
+                                Some("running") => StatusIcon::Running,
+                                _ => StatusIcon::Success,
+                            }),
+                            display_name: entry["display_name"].as_str().map(String::from),
+                            param_desc: entry["param_desc"].as_str().map(String::from),
+                            result_compact: entry["result_compact"].as_array().map(|a|
+                                a.iter().filter_map(|v| v.as_str().map(String::from)).collect()),
+                            result_full: entry["result_full"].as_array().map(|a|
+                                a.iter().filter_map(|v| v.as_str().map(String::from)).collect()),
+                        };
+                        all_entries.push(ScrollEntry::ToolStatus(cts));
+                    }
+                    Some("response") => {
+                        let text = entry["text"].as_str().unwrap_or("");
+                        all_entries.push(ScrollEntry::Response(text.to_string()));
+                    }
+                    Some("separator") => {
+                        all_entries.push(ScrollEntry::Separator);
+                    }
+                    _ => {}
+                }
+            }
+
+            // Find the start of the last exchange (last UserInput)
+            let last_exchange_start = all_entries.iter().rposition(|e|
+                matches!(e, ScrollEntry::UserInput(_))
+            ).unwrap_or(0);
+
+            // Push ALL entries to scroll_history (for Ctrl+O browse)
+            for entry in &all_entries {
+                self.push_entry(entry.clone());
+            }
+
+            // Render only the last exchange on terminal
+            let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
+            if last_exchange_start > 0 {
+                let earlier_count = all_entries[..last_exchange_start].iter()
+                    .filter(|e| matches!(e, ScrollEntry::UserInput(_)))
+                    .count();
+                if earlier_count > 0 {
+                    self.print_line(&format!(
+                        "\x1b[2;37m({} earlier exchange{})\x1b[0m",
+                        earlier_count,
+                        if earlier_count == 1 { "" } else { "s" }
+                    ));
+                }
+            }
+            for entry in &all_entries[last_exchange_start..] {
+                match entry {
+                    ScrollEntry::UserInput(text) => {
+                        for (i, line) in text.lines().enumerate() {
+                            if i == 0 {
+                                self.print_line(&format!("\x1b[36m> \x1b[0m{}", line));
+                            } else {
+                                self.print_line(&format!("  {}", line));
+                            }
+                        }
+                    }
+                    ScrollEntry::ToolStatus(cts) => {
+                        let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
+                        let param_desc = cts.param_desc.as_deref().unwrap_or("");
+                        let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Success);
+                        let header = display::render_tool_header(icon, display_name, param_desc, cols as usize);
+                        self.print_line(&header);
+                        if let Some(ref lines) = cts.result_compact {
+                            let rendered = display::render_tool_output(lines);
+                            for line in &rendered {
+                                self.print_line(line);
+                            }
+                        }
+                    }
+                    ScrollEntry::LlmText(text) => {
+                        self.print_line("");
+                        for (i, line) in text.split('\n').enumerate() {
+                            if i == 0 {
+                                self.print_line(&format!("\x1b[97m●\x1b[0m {}", line));
+                            } else {
+                                self.print_line(&format!("  {}", line));
+                            }
+                        }
+                    }
+                    ScrollEntry::Response(content) => {
+                        self.print_line("");
+                        let rendered = markdown::render(content);
+                        for (i, line) in rendered.split("\r\n").enumerate() {
+                            if i == 0 {
+                                self.print_line(&format!("\x1b[97m●\x1b[0m {}", line));
+                            } else {
+                                self.print_line(&format!("  {}", line));
+                            }
+                        }
+                    }
+                    ScrollEntry::Separator => {
+                        self.print_line(&display::render_separator(cols));
+                    }
+                    ScrollEntry::SystemMessage(msg) => {
+                        self.print_line(&format!("\x1b[2;37m{}\x1b[0m", msg));
+                    }
+                }
+            }
+        } else {
+            write_stdout("\x1b[2;37m(resumed conversation)\x1b[0m\r\n");
+            self.push_entry(ScrollEntry::SystemMessage("(resumed conversation)".to_string()));
+        }
+
+        // Store non-default model name for ghost hint
+        if let Some(model) = ready.model_name {
+            self.resumed_model = Some(model);
+        }
+    }
+
+    /// Resume a specific thread by ID via ChatStart protocol message.
+    async fn handle_resume_tid(&mut self, tid: &str, session_id: &str, rpc: &RpcClient) {
+        let rid = Uuid::new_v4().to_string()[..8].to_string();
+        let start_msg = Message::ChatStart(ChatStart {
+            request_id: rid.clone(),
+            session_id: session_id.to_string(),
+            new_thread: false,
+            thread_id: Some(tid.to_string()),
+        });
+        match rpc.call(start_msg).await {
+            Ok(Message::ChatReady(ready)) if ready.request_id == rid => {
+                self.apply_chat_ready(ready);
+            }
+            _ => {
+                write_stdout(&display::render_error("Failed to resume conversation"));
+            }
+        }
     }
 
     // ── Model picker ─────────────────────────────────────────────────────
