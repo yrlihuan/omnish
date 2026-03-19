@@ -2,6 +2,7 @@
 //! Spawns a fresh process per tool call: writes JSON to stdin, reads JSON from stdout.
 
 use std::io::{BufRead, BufReader, Write};
+#[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
@@ -71,21 +72,43 @@ impl ClientPluginManager {
             .join(plugin_name);
         let _ = std::fs::create_dir_all(&data_dir);
 
+        let cwd_path: Option<std::path::PathBuf> = cwd.map(std::path::PathBuf::from);
+
+        // On macOS: wrap with sandbox-exec; on Linux: use pre_exec Landlock
+        #[cfg(target_os = "macos")]
+        let mut cmd = if sandboxed {
+            let mut c = Command::new("sandbox-exec");
+            let profile = omnish_plugin::sandbox_profile(
+                &data_dir,
+                cwd_path.as_deref(),
+            );
+            c.args([
+                "-p",
+                &profile,
+                &executable.to_string_lossy(),
+            ]);
+            c
+        } else {
+            Command::new(&executable)
+        };
+
+        #[cfg(not(target_os = "macos"))]
         let mut cmd = Command::new(&executable);
+
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
 
-        // Apply sandbox via pre_exec if requested
+        // Apply Landlock sandbox via pre_exec on Linux
+        #[cfg(target_os = "linux")]
         if sandboxed {
             let data_dir_clone = data_dir.clone();
-            let cwd_owned: Option<std::path::PathBuf> = cwd.map(std::path::PathBuf::from);
+            let cwd_clone = cwd_path.clone();
             unsafe {
                 cmd.pre_exec(move || {
-                    let cwd_path: Option<&std::path::Path> = cwd_owned.as_deref();
-                    omnish_plugin::apply_sandbox(&data_dir_clone, cwd_path).map_err(|e| {
-                        std::io::Error::new(std::io::ErrorKind::PermissionDenied, e)
-                    })
+                    omnish_plugin::apply_sandbox(&data_dir_clone, cwd_clone.as_deref()).map_err(
+                        |e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e),
+                    )
                 });
             }
         }
