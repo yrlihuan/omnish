@@ -56,13 +56,14 @@ struct ThreadClaim {
 type ActiveThreads = Arc<Mutex<HashMap<String, ThreadClaim>>>;
 
 /// Try to claim a thread for a session.  Returns `Ok(())` if the thread is
-/// free or already owned by the same session, `Err(())` if another session holds it.
+/// free or already owned by the same session.  Returns `Err(owner_session_id)`
+/// if another session holds it.
 /// On success the session's previous thread (if any) is released.
-async fn try_claim_thread(active_threads: &ActiveThreads, thread_id: &str, session_id: &str) -> Result<(), ()> {
+async fn try_claim_thread(active_threads: &ActiveThreads, thread_id: &str, session_id: &str) -> Result<(), String> {
     let mut threads = active_threads.lock().await;
     if let Some(claim) = threads.get(thread_id) {
         if claim.session_id != session_id {
-            return Err(());
+            return Err(claim.session_id.clone());
         }
     }
     // Release any thread this session previously held, then claim the new one
@@ -81,9 +82,19 @@ async fn touch_thread(active_threads: &ActiveThreads, thread_id: &str) {
     }
 }
 
-fn thread_locked_error() -> serde_json::Value {
+async fn thread_locked_error(mgr: &SessionManager, owner_session_id: &str) -> serde_json::Value {
+    let host = mgr.get_session_attr(owner_session_id, "hostname").await
+        .unwrap_or_else(|| "unknown".to_string());
+    let pid = mgr.get_session_attr(owner_session_id, "pid").await
+        .unwrap_or_else(|| "?".to_string());
+    let cwd = mgr.get_session_attr(owner_session_id, "shell_cwd").await
+        .unwrap_or_else(|| "?".to_string());
+    let display = format!(
+        "This thread is being used by another session (host={}, pid={}, cwd={})",
+        host, pid, cwd
+    );
     serde_json::json!({
-        "display": "This thread is being used by another session",
+        "display": display,
         "error": "thread_locked",
     })
 }
@@ -1227,8 +1238,8 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
         };
         return match conv_mgr.get_thread_by_index(idx) {
             Some(thread_id) => {
-                if try_claim_thread(active_threads, &thread_id, &req.session_id).await.is_err() {
-                    return thread_locked_error();
+                if let Err(owner) = try_claim_thread(active_threads, &thread_id, &req.session_id).await {
+                    return thread_locked_error(mgr, &owner).await;
                 }
                 build_resume_response(&thread_id, conv_mgr, plugin_mgr, llm_backend)
             }
@@ -1242,8 +1253,8 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
         if raw_msgs.is_empty() {
             return cmd_display("Conversation not found");
         }
-        if try_claim_thread(active_threads, tid, &req.session_id).await.is_err() {
-            return thread_locked_error();
+        if let Err(owner) = try_claim_thread(active_threads, tid, &req.session_id).await {
+            return thread_locked_error(mgr, &owner).await;
         }
         return build_resume_response(tid, conv_mgr, plugin_mgr, llm_backend);
     }
@@ -1251,8 +1262,8 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
     if sub == "resume" {
         return match conv_mgr.get_thread_by_index(0) {
             Some(thread_id) => {
-                if try_claim_thread(active_threads, &thread_id, &req.session_id).await.is_err() {
-                    return thread_locked_error();
+                if let Err(owner) = try_claim_thread(active_threads, &thread_id, &req.session_id).await {
+                    return thread_locked_error(mgr, &owner).await;
                 }
                 build_resume_response(&thread_id, conv_mgr, plugin_mgr, llm_backend)
             }
