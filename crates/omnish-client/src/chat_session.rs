@@ -22,6 +22,13 @@ pub enum ScrollEntry {
     SystemMessage(String),
 }
 
+enum ResumeMismatchAction {
+    Cancel,
+    CdToOld(String),
+    StayHere(String),
+    ContinueDifferentHost,
+}
+
 pub struct ChatSession {
     current_thread_id: Option<String>,
     cached_thread_ids: Vec<String>,
@@ -37,6 +44,8 @@ pub struct ChatSession {
     pending_model: Option<String>,
     /// Non-default model name for resumed thread (shown as ghost hint).
     resumed_model: Option<String>,
+    /// System reminder to inject before the next chat message (e.g., cwd mismatch context).
+    pending_system_reminder: Option<String>,
     /// Total terminal lines printed (for tracking tool section position).
     lines_printed: usize,
     /// Line position where the current batch of tool headers starts.
@@ -47,6 +56,16 @@ pub struct ChatSession {
 
 fn write_stdout(s: &str) {
     nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+}
+
+/// Read a single key from stdin (terminal must already be in raw mode).
+fn read_single_key() -> Option<u8> {
+    let stdin_fd = std::io::stdin().as_raw_fd();
+    let mut buf = [0u8; 1];
+    match nix::unistd::read(stdin_fd, &mut buf) {
+        Ok(1) => Some(buf[0]),
+        _ => None,
+    }
 }
 
 /// Strip `-YYYYMMDD` date suffix from model name for display.
@@ -79,6 +98,7 @@ impl ChatSession {
             ghost_hint_shown: false,
             pending_model: None,
             resumed_model: None,
+            pending_system_reminder: None,
             lines_printed: 0,
             tool_section_start: None,
             tool_section_hist_idx: None,
@@ -477,11 +497,16 @@ impl ChatSession {
 
             // Send ChatMessage
             let req_id = Uuid::new_v4().to_string()[..8].to_string();
+            let query = if let Some(reminder) = self.pending_system_reminder.take() {
+                format!("<system-reminder>{}</system-reminder>\n{}", reminder, trimmed)
+            } else {
+                trimmed.to_string()
+            };
             let chat_msg = Message::ChatMessage(omnish_protocol::message::ChatMessage {
                 request_id: req_id.clone(),
                 session_id: session_id.to_string(),
                 thread_id: self.current_thread_id.clone().unwrap(),
-                query: trimmed.to_string(),
+                query,
                 model: self.pending_model.take(),
             });
 
@@ -1230,6 +1255,61 @@ impl ChatSession {
         match result {
             Ok(Ok(Message::ChatReady(ready))) if ready.request_id == rid => {
                 crate::event_log::push(format!("resume_tid: got ChatReady error={:?}", ready.error));
+                // Check cwd/host mismatch before applying
+                if ready.error.is_none() && !ready.thread_id.is_empty() {
+                    if let Some(action) = self.check_resume_mismatch(&ready) {
+                        match action {
+                            ResumeMismatchAction::Cancel => {
+                                crate::event_log::push("resume_tid: user cancelled due to cwd/host mismatch");
+                                // Release the thread claim
+                                let end_msg = Message::ChatEnd(ChatEnd {
+                                    session_id: session_id.to_string(),
+                                    thread_id: ready.thread_id.clone(),
+                                });
+                                let _ = rpc.send(end_msg).await;
+                                return;
+                            }
+                            ResumeMismatchAction::CdToOld(old_cwd) => {
+                                self.pending_system_reminder = Some(format!(
+                                    "The user resumed this conversation from a different directory. \
+                                     Previous: {}, Current: {}. They chose to cd to the previous directory.",
+                                    old_cwd,
+                                    std::env::current_dir()
+                                        .map(|p| p.to_string_lossy().to_string())
+                                        .unwrap_or_default(),
+                                ));
+                                // Note: actual cd happens in the shell, not here.
+                                // We inform the user they should cd manually.
+                                write_stdout(&format!(
+                                    "\x1b[2;37m(hint: cd {})\x1b[0m\r\n",
+                                    old_cwd
+                                ));
+                            }
+                            ResumeMismatchAction::StayHere(old_cwd) => {
+                                let cur_cwd = std::env::current_dir()
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                self.pending_system_reminder = Some(format!(
+                                    "The user resumed this conversation from a different directory. \
+                                     Previous: {}, Current: {}. They chose to stay in the current directory.",
+                                    old_cwd, cur_cwd,
+                                ));
+                            }
+                            ResumeMismatchAction::ContinueDifferentHost => {
+                                let cur_host = nix::unistd::gethostname()
+                                    .ok()
+                                    .and_then(|h| h.into_string().ok())
+                                    .unwrap_or_default();
+                                let old_host = ready.thread_host.as_deref().unwrap_or("unknown");
+                                self.pending_system_reminder = Some(format!(
+                                    "The user resumed this conversation from a different machine. \
+                                     Previous host: {}, Current host: {}.",
+                                    old_host, cur_host,
+                                ));
+                            }
+                        }
+                    }
+                }
                 self.apply_chat_ready(ready);
                 crate::event_log::push("resume_tid: apply_chat_ready done");
             }
@@ -1248,6 +1328,75 @@ impl ChatSession {
             }
         }
         crate::event_log::push("resume_tid: done");
+    }
+
+    // ── Resume mismatch check ─────────────────────────────────────────────
+
+    /// Compare thread's previous host/cwd against current environment.
+    /// Returns None if no mismatch, or Some(action) after prompting the user.
+    fn check_resume_mismatch(&self, ready: &ChatReady) -> Option<ResumeMismatchAction> {
+        let cur_host = nix::unistd::gethostname()
+            .ok()
+            .and_then(|h| h.into_string().ok())
+            .unwrap_or_default();
+        let cur_cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        let thread_host = ready.thread_host.as_deref().unwrap_or("");
+        let thread_cwd = ready.thread_cwd.as_deref().unwrap_or("");
+
+        // No previous data — nothing to compare
+        if thread_host.is_empty() && thread_cwd.is_empty() {
+            return None;
+        }
+
+        let same_host = thread_host.is_empty() || thread_host == cur_host;
+        let same_cwd = thread_cwd.is_empty() || thread_cwd == cur_cwd;
+
+        if same_host && same_cwd {
+            return None;
+        }
+
+        if !same_host {
+            // Different machine
+            write_stdout(&format!(
+                "\x1b[33mThis conversation was last used on \x1b[1m{}\x1b[22m (current: \x1b[1m{}\x1b[22m)\x1b[0m\r\n",
+                thread_host, cur_host,
+            ));
+            write_stdout("\x1b[33mContinue? [Y]es / [C]ancel: \x1b[0m");
+            match read_single_key() {
+                Some(b'y') | Some(b'Y') => {
+                    write_stdout("\r\n");
+                    Some(ResumeMismatchAction::ContinueDifferentHost)
+                }
+                _ => {
+                    write_stdout("\r\n");
+                    Some(ResumeMismatchAction::Cancel)
+                }
+            }
+        } else {
+            // Same machine, different cwd
+            write_stdout(&format!(
+                "\x1b[33mThis conversation was last used in \x1b[1m{}\x1b[22m\x1b[0m\r\n",
+                thread_cwd,
+            ));
+            write_stdout("\x1b[33m[Y] cd to previous dir  [N] stay here  [C] cancel: \x1b[0m");
+            match read_single_key() {
+                Some(b'y') | Some(b'Y') => {
+                    write_stdout("\r\n");
+                    Some(ResumeMismatchAction::CdToOld(thread_cwd.to_string()))
+                }
+                Some(b'n') | Some(b'N') => {
+                    write_stdout("\r\n");
+                    Some(ResumeMismatchAction::StayHere(thread_cwd.to_string()))
+                }
+                _ => {
+                    write_stdout("\r\n");
+                    Some(ResumeMismatchAction::Cancel)
+                }
+            }
+        }
     }
 
     // ── Model picker ─────────────────────────────────────────────────────

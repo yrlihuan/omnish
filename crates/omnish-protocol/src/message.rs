@@ -206,6 +206,12 @@ pub struct ChatReady {
     /// Each entry is a JSON-encoded string (bincode cannot deserialize serde_json::Value directly).
     #[serde(default)]
     pub history: Option<Vec<String>>,
+    /// Host where the thread was last used.
+    #[serde(default)]
+    pub thread_host: Option<String>,
+    /// Working directory where the thread was last used.
+    #[serde(default)]
+    pub thread_cwd: Option<String>,
     /// Error key when thread cannot be entered (e.g. "thread_locked").
     #[serde(default)]
     pub error: Option<String>,
@@ -622,6 +628,8 @@ mod tests {
                 earlier_count: 0,
                 model_name: None,
                 history: None,
+                thread_host: None,
+                thread_cwd: None,
                 error: None,
                 error_display: None,
             }),
@@ -745,6 +753,8 @@ mod tests {
                     r#"{"type":"user_input","text":"hello"}"#.to_string(),
                     r#"{"type":"response","text":"hi there"}"#.to_string(),
                 ]),
+                thread_host: Some("fortress".to_string()),
+                thread_cwd: Some("/home/user/project".to_string()),
                 error: None,
                 error_display: None,
             }),
