@@ -1352,10 +1352,15 @@ impl ChatSession {
             return None;
         }
 
+        // Show summary if available
+        if let Some(ref summary) = ready.thread_summary {
+            write_stdout(&format!("\x1b[2;37m{}\x1b[0m\r\n", summary));
+        }
+
         if !same_host {
             // Different machine
             let title = format!(
-                "This conversation was last used on {} (current: {})",
+                "This conversation was on {} (current: {})",
                 thread_host, cur_host,
             );
             let items = &["[Y]es, continue", "[C]ancel"];
@@ -1366,7 +1371,7 @@ impl ChatSession {
         } else {
             // Same machine, different cwd
             let title = format!(
-                "This conversation was last used in {}",
+                "This conversation was in {}",
                 thread_cwd,
             );
             let items = &["[Y] cd to previous dir", "[N] stay here", "[C]ancel"];

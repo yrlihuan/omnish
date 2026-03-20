@@ -524,6 +524,7 @@ async fn handle_message(
                         history: None,
                         thread_host: None,
                         thread_cwd: None,
+                        thread_summary: None,
                         error: Some("not_found".to_string()),
                         error_display: Some("Conversation not found".to_string()),
                     })];
@@ -541,6 +542,7 @@ async fn handle_message(
                         history: None,
                         thread_host: None,
                         thread_cwd: None,
+                        thread_summary: None,
                         error: Some("thread_locked".to_string()),
                         error_display: err.get("display").and_then(|d| d.as_str()).map(String::from),
                     })];
@@ -581,6 +583,7 @@ async fn handle_message(
                     history: Some(history),
                     thread_host: old_meta.host,
                     thread_cwd: old_meta.cwd,
+                    thread_summary: old_meta.summary,
                     error: None,
                     error_display: None,
                 })
@@ -597,6 +600,7 @@ async fn handle_message(
                     history: None,
                     thread_host: None,
                     thread_cwd: None,
+                    thread_summary: None,
                     error: None,
                     error_display: None,
                 })
@@ -618,6 +622,7 @@ async fn handle_message(
                                 history: None,
                                 thread_host: None,
                                 thread_cwd: None,
+                                thread_summary: None,
                                 error: Some("thread_locked".to_string()),
                                 error_display: err.get("display").and_then(|d| d.as_str()).map(String::from),
                             })];
@@ -651,6 +656,7 @@ async fn handle_message(
                             history: Some(history),
                             thread_host: old_meta.host,
                             thread_cwd: old_meta.cwd,
+                            thread_summary: old_meta.summary,
                             error: None,
                             error_display: None,
                         })
@@ -666,6 +672,7 @@ async fn handle_message(
                             history: None,
                             thread_host: None,
                             thread_cwd: None,
+                            thread_summary: None,
                             error: None,
                             error_display: None,
                         })

@@ -212,6 +212,9 @@ pub struct ChatReady {
     /// Working directory where the thread was last used.
     #[serde(default)]
     pub thread_cwd: Option<String>,
+    /// Summary of the conversation thread.
+    #[serde(default)]
+    pub thread_summary: Option<String>,
     /// Error key when thread cannot be entered (e.g. "thread_locked").
     #[serde(default)]
     pub error: Option<String>,
@@ -630,6 +633,7 @@ mod tests {
                 history: None,
                 thread_host: None,
                 thread_cwd: None,
+                thread_summary: None,
                 error: None,
                 error_display: None,
             }),
@@ -755,6 +759,7 @@ mod tests {
                 ]),
                 thread_host: Some("fortress".to_string()),
                 thread_cwd: Some("/home/user/project".to_string()),
+                thread_summary: Some("Discussed project setup".to_string()),
                 error: None,
                 error_display: None,
             }),
