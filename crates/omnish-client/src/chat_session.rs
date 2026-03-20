@@ -284,8 +284,8 @@ impl ChatSession {
         write_stdout("\r\n");
 
         loop {
-            let input = if let Some(msg) = self.pending_input.take() {
-                msg
+            let (input, is_fast_resume) = if let Some(msg) = self.pending_input.take() {
+                (msg, true)
             } else {
                 write_stdout("\x1b[36m> \x1b[0m");
                 // Show ghost hint on first prompt
@@ -308,7 +308,7 @@ impl ChatSession {
                 match result {
                     Some(line) => {
                         write_stdout("\r\n");
-                        line
+                        (line, false)
                     }
                     None => break,
                 }
@@ -351,18 +351,17 @@ impl ChatSession {
 
             // /resume_tid <thread_id> (internal — used by :: resume shortcut)
             if let Some(tid) = trimmed.strip_prefix("/resume_tid ") {
-                let ok = self.handle_resume_tid(tid.trim(), session_id, rpc).await;
-                crate::event_log::push(format!("resume_tid dispatch: ok={}", ok));
-                if !ok {
-                    crate::event_log::push("resume_tid: breaking out of chat loop");
-                    break; // cancelled or failed — exit chat mode entirely
+                if !self.handle_resume_tid(tid.trim(), session_id, rpc).await && is_fast_resume {
+                    break; // cancelled or failed on auto-resume — exit chat mode
                 }
                 continue;
             }
 
             // /resume [N]
             if trimmed == "/resume" || trimmed.starts_with("/resume ") {
-                self.handle_resume(trimmed, session_id, rpc).await;
+                if !self.handle_resume(trimmed, session_id, rpc).await && is_fast_resume {
+                    break; // cancelled or failed on auto-resume — exit chat mode
+                }
                 continue;
             }
 
@@ -969,7 +968,7 @@ impl ChatSession {
         }
     }
 
-    async fn handle_resume(&mut self, trimmed: &str, session_id: &str, rpc: &RpcClient) {
+    async fn handle_resume(&mut self, trimmed: &str, session_id: &str, rpc: &RpcClient) -> bool {
         // Resolve which thread_id to resume, then delegate to handle_resume_tid
         let tid: Option<String> = if let Some(idx_str) = trimmed.strip_prefix("/resume ") {
             // Auto-fetch if cache empty
@@ -1054,7 +1053,9 @@ impl ChatSession {
         };
 
         if let Some(tid) = tid {
-            self.handle_resume_tid(&tid, session_id, rpc).await;
+            self.handle_resume_tid(&tid, session_id, rpc).await
+        } else {
+            false
         }
     }
 
