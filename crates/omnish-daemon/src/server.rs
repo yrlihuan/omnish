@@ -52,6 +52,9 @@ struct AgentLoopState {
 struct ThreadClaim {
     session_id: String,
     last_active: std::time::Instant,
+    /// Meta to save when the first ChatMessage arrives (deferred from ChatStart
+    /// so that cancelling the resume doesn't overwrite the thread's stored host/cwd).
+    pending_meta: Option<ThreadMeta>,
 }
 
 type ActiveThreads = Arc<Mutex<HashMap<String, ThreadClaim>>>;
@@ -72,14 +75,19 @@ async fn try_claim_thread(active_threads: &ActiveThreads, thread_id: &str, sessi
     threads.insert(thread_id.to_string(), ThreadClaim {
         session_id: session_id.to_string(),
         last_active: std::time::Instant::now(),
+        pending_meta: None,
     });
     Ok(())
 }
 
 /// Update last_active timestamp for a thread (called on ChatMessage).
-async fn touch_thread(active_threads: &ActiveThreads, thread_id: &str) {
+/// Also flushes pending_meta (deferred save from ChatStart) on first touch.
+async fn touch_thread(active_threads: &ActiveThreads, thread_id: &str, conv_mgr: &ConversationManager) {
     if let Some(claim) = active_threads.lock().await.get_mut(thread_id) {
         claim.last_active = std::time::Instant::now();
+        if let Some(meta) = claim.pending_meta.take() {
+            conv_mgr.save_meta(thread_id, &meta);
+        }
     }
 }
 
@@ -538,9 +546,20 @@ async fn handle_message(
                     })];
                 }
                 tracing::debug!("[ChatStart] claimed thread={}, reconstructing history", tid);
-                // Load old meta (host/cwd/model) before overwriting with current session
+                // Load old meta before updating — we need old host/cwd for the
+                // mismatch check, and must preserve summary/model fields.
                 let old_meta = conv_mgr.load_meta(tid);
-                conv_mgr.save_meta(tid, &meta);
+                // Defer save_meta to first ChatMessage — if the user cancels the
+                // resume (e.g. cwd mismatch), the old meta is preserved (#376).
+                // Merge: only update host/cwd, preserve summary/summary_rounds/model.
+                let merged_meta = ThreadMeta {
+                    host: meta.host.clone(),
+                    cwd: meta.cwd.clone(),
+                    ..old_meta.clone()
+                };
+                if let Some(claim) = active_threads.lock().await.get_mut(tid) {
+                    claim.pending_meta = Some(merged_meta);
+                }
                 let history_vals = reconstruct_history(&raw_msgs, plugin_mgr);
                 tracing::debug!("[ChatStart] history reconstructed: {} entries", history_vals.len());
                 let history: Vec<String> = history_vals.iter()
@@ -604,7 +623,14 @@ async fn handle_message(
                             })];
                         }
                         let old_meta = conv_mgr.load_meta(&tid);
-                        conv_mgr.save_meta(&tid, &meta);
+                        let merged_meta = ThreadMeta {
+                            host: meta.host.clone(),
+                            cwd: meta.cwd.clone(),
+                            ..old_meta.clone()
+                        };
+                        if let Some(claim) = active_threads.lock().await.get_mut(tid.as_str()) {
+                            claim.pending_meta = Some(merged_meta);
+                        }
                         let raw_msgs = conv_mgr.load_raw_messages(&tid);
                         let history_vals = reconstruct_history(&raw_msgs, plugin_mgr);
                         let history: Vec<String> = history_vals.iter()
@@ -665,11 +691,11 @@ async fn handle_message(
             Message::Ack
         }
         Message::ChatMessage(cm) => {
-            touch_thread(active_threads, &cm.thread_id).await;
+            touch_thread(active_threads, &cm.thread_id, conv_mgr).await;
             return handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, pending_loops, tool_params).await;
         }
         Message::ChatToolResult(tr) => {
-            touch_thread(active_threads, &tr.thread_id).await;
+            touch_thread(active_threads, &tr.thread_id, conv_mgr).await;
             return handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, pending_loops, tool_params).await;
         }
         Message::ChatInterrupt(ci) => {
