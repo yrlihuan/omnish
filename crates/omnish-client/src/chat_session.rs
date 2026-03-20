@@ -795,8 +795,9 @@ impl ChatSession {
 
             if interrupted {
                 self.erase_thinking();
-                self.print_line("\x1b[2;37m(interrupted)\x1b[0m");
-                self.push_entry(ScrollEntry::SystemMessage("(interrupted)".to_string()));
+                self.print_line("");
+                self.print_line("\x1b[97m●\x1b[0m User interrupted. What should I do instead?");
+                self.push_entry(ScrollEntry::Response("User interrupted. What should I do instead?".to_string()));
 
                 let interrupt_msg = Message::ChatInterrupt(omnish_protocol::message::ChatInterrupt {
                     request_id: req_id.clone(),
