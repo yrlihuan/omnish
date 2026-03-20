@@ -1,3 +1,4 @@
+#[cfg(not(target_os = "linux"))]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
