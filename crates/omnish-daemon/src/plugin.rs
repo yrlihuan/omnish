@@ -2,7 +2,7 @@ use omnish_llm::tool::ToolDef;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 /// Classifies whether a plugin's tools run on the daemon or the client side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,160 +374,12 @@ impl PluginManager {
         })
     }
 
-    /// Spawn an async task that watches tool.override.json files for changes.
-    /// Uses inotify on Linux; polling fallback on other platforms.
-    /// Calls `reload_overrides()` when any tool.override.json is created or modified.
-    #[cfg(target_os = "linux")]
-    pub async fn watch_overrides(self: &std::sync::Arc<Self>) {
-        use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
-        use std::os::fd::AsFd;
-        use tokio::io::unix::AsyncFd;
-        use tokio::io::Interest;
-
-        let inotify = match Inotify::init(InitFlags::IN_NONBLOCK) {
-            Ok(i) => i,
-            Err(e) => {
-                tracing::warn!("Failed to init inotify: {}", e);
-                return;
-            }
-        };
-
-        let watch_flags = AddWatchFlags::IN_CREATE
-            | AddWatchFlags::IN_CLOSE_WRITE
-            | AddWatchFlags::IN_MOVED_TO;
-
-        // Watch the plugins root directory for new subdirectories
-        if let Err(e) = inotify.add_watch(&self.plugins_dir, watch_flags) {
-            tracing::warn!("Failed to watch {}: {}", self.plugins_dir.display(), e);
-            return;
-        }
-
-        // Watch each existing plugin subdirectory
-        if let Ok(rd) = std::fs::read_dir(&self.plugins_dir) {
-            for entry in rd.filter_map(|e| e.ok()) {
-                if entry.path().is_dir() {
-                    let _ = inotify.add_watch(&entry.path(), watch_flags);
-                }
-            }
-        }
-
-        let async_fd = match AsyncFd::with_interest(inotify.as_fd().try_clone_to_owned().unwrap(), Interest::READABLE) {
-            Ok(fd) => fd,
-            Err(e) => {
-                tracing::warn!("Failed to create AsyncFd for inotify: {}", e);
-                return;
-            }
-        };
-
-        // Keep inotify alive for the lifetime of this task
-        let _inotify = inotify;
-
-        tracing::info!("Watching tool.override.json files for changes in {}", self.plugins_dir.display());
-
-        loop {
-            let mut guard = match async_fd.readable().await {
-                Ok(g) => g,
-                Err(e) => {
-                    tracing::warn!("inotify readable error: {}", e);
-                    break;
-                }
-            };
-
-            // Read and consume all inotify events
-            let mut should_reload = false;
-            loop {
-                match _inotify.read_events() {
-                    Ok(events) => {
-                        for event in &events {
-                            let name = event.name
-                                .as_ref()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_default();
-
-                            // New subdirectory in plugins dir — add watch
-                            if event.mask.contains(AddWatchFlags::IN_CREATE)
-                                || event.mask.contains(AddWatchFlags::IN_MOVED_TO)
-                            {
-                                let new_path = self.plugins_dir.join(&name);
-                                if new_path.is_dir() {
-                                    let _ = _inotify.add_watch(&new_path, watch_flags);
-                                    tracing::info!("Watching new plugin dir: {}", name);
-                                }
-                            }
-
-                            // tool.override.json created or modified
-                            if name == "tool.override.json" {
-                                should_reload = true;
-                            }
-                        }
-                        if events.is_empty() {
-                            break;
-                        }
-                    }
-                    Err(nix::errno::Errno::EAGAIN) => break,
-                    Err(e) => {
-                        tracing::warn!("inotify read error: {}", e);
-                        break;
-                    }
-                }
-            }
-
-            guard.clear_ready();
-
-            if should_reload {
-                tracing::info!("tool.override.json changed, reloading...");
-                self.reload_overrides();
-            }
-        }
-    }
-
-    /// Fallback: poll tool.override.json files for changes every 5 seconds.
-    #[cfg(not(target_os = "linux"))]
-    pub async fn watch_overrides(self: &std::sync::Arc<Self>) {
-        use std::collections::HashMap;
-
-        tracing::info!("Polling tool.override.json files for changes in {}", self.plugins_dir.display());
-
-        let mut mtimes: HashMap<PathBuf, std::time::SystemTime> = HashMap::new();
-
-        // Seed initial modification times
-        for plugin in &self.plugins {
-            let path = self.plugins_dir.join(&plugin.dir_name).join("tool.override.json");
-            if let Ok(meta) = std::fs::metadata(&path) {
-                if let Ok(mtime) = meta.modified() {
-                    mtimes.insert(path, mtime);
-                }
-            }
-        }
-
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
-            let mut changed = false;
-            for plugin in &self.plugins {
-                let path = self.plugins_dir.join(&plugin.dir_name).join("tool.override.json");
-                if let Ok(meta) = std::fs::metadata(&path) {
-                    if let Ok(mtime) = meta.modified() {
-                        match mtimes.get(&path) {
-                            Some(prev) if *prev == mtime => {}
-                            _ => {
-                                mtimes.insert(path, mtime);
-                                changed = true;
-                            }
-                        }
-                    }
-                } else {
-                    // File removed — if we had it before, that's a change
-                    if mtimes.remove(&path).is_some() {
-                        changed = true;
-                    }
-                }
-            }
-
-            if changed {
-                tracing::info!("tool.override.json changed, reloading...");
-                self.reload_overrides();
-            }
+    /// Start watching plugin overrides using a shared file watcher receiver.
+    pub async fn watch_with(self: &Arc<Self>, mut rx: tokio::sync::watch::Receiver<()>) {
+        tracing::info!("watching plugin overrides via shared file watcher: {}", self.plugins_dir.display());
+        while rx.changed().await.is_ok() {
+            tracing::info!("tool.override.json changed, reloading...");
+            self.reload_overrides();
         }
     }
 }
