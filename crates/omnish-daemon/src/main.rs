@@ -1,3 +1,4 @@
+mod file_watcher;
 mod sandbox_rules;
 mod server;
 
