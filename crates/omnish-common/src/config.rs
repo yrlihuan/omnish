@@ -25,7 +25,7 @@ fn default_socket_path() -> String {
 // Client config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ClientConfig {
     #[serde(default)]
     pub shell: ShellConfig,
@@ -215,7 +215,7 @@ pub struct PluginsConfig {
 // Sandbox config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
 pub struct SandboxConfig {
     /// Per-tool permit rules. Key is tool_name (e.g. "bash").
     /// When any rule matches, the tool runs without Landlock sandbox.
@@ -223,7 +223,7 @@ pub struct SandboxConfig {
     pub plugins: HashMap<String, SandboxPluginConfig>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
 pub struct SandboxPluginConfig {
     /// Rules in format: "<param_field> <operator> <value>"
     /// Operators: starts_with, contains, equals, matches (regex)
@@ -235,7 +235,7 @@ pub struct SandboxPluginConfig {
 // Daemon config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct DaemonConfig {
     #[serde(default = "default_socket_path")]
     pub listen_addr: String,
@@ -285,7 +285,7 @@ pub fn load_daemon_config() -> Result<DaemonConfig> {
 // Shared types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ShellConfig {
     #[serde(default = "default_shell_command")]
     pub command: String,
@@ -332,7 +332,7 @@ fn default_ghost_timeout_ms() -> u64 {
     10_000
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct LlmConfig {
     #[serde(default = "default_llm_name")]
     pub default: String,
@@ -369,7 +369,7 @@ impl Default for LlmConfig {
 ///   public_key = "pk-..."
 ///   secret_key = "sk-lf-..."
 ///   base_url = "https://cloud.langfuse.com"
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct LangfuseConfig {
     pub public_key: String,
     #[serde(default)]
@@ -386,7 +386,7 @@ fn default_llm_name() -> String {
     "claude".to_string()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct LlmBackendConfig {
     pub backend_type: String,
     pub model: String,
