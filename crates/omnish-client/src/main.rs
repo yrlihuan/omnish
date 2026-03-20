@@ -335,30 +335,32 @@ async fn main() -> Result<()> {
         unreachable!();
     }
 
-    let (session_id, proxy, osc133_hook_installed) = if let Some(ref resume) = resume_args {
+    // Resolve shell and hook args early so they're available for respawn.
+    let shell = resolve_shell(&config.shell.command);
+    let osc133_rcfile = shell_hook::install_bash_hook(&shell);
+    let shell_args: Vec<String> = if let Some(ref rcfile) = osc133_rcfile {
+        vec!["--rcfile".to_string(), rcfile.to_string_lossy().to_string()]
+    } else {
+        vec![]
+    };
+    let shell_args_ref: Vec<&str> = shell_args.iter().map(|s| s.as_str()).collect();
+
+    let (session_id, mut proxy, osc133_hook_installed) = if let Some(ref resume) = resume_args {
         // Set cursor row early so resume notice uses correct rendering mode
         notice_queue::set_cursor_row(resume.cursor_row);
         // Resume mode: reconstruct PtyProxy from passed fd/pid
         let proxy = unsafe { PtyProxy::from_raw_fd(resume.master_fd, resume.child_pid) };
         notice(&format!("[omnish] Resumed (pid={}, fd={})", resume.child_pid, resume.master_fd));
-        (resume.session_id.clone(), proxy, true)
+        (resume.session_id.clone(), proxy, osc133_rcfile.is_some())
     } else {
         // Normal startup: spawn a new shell
         let session_id = Uuid::new_v4().to_string()[..8].to_string();
-        let shell = resolve_shell(&config.shell.command);
 
         let mut child_env = HashMap::new();
         child_env.insert("OMNISH_SESSION_ID".to_string(), session_id.clone());
         child_env.insert("SHELL".to_string(), shell.clone());
 
-        let osc133_rcfile = shell_hook::install_bash_hook(&shell);
         let osc133_hook_installed = osc133_rcfile.is_some();
-        let shell_args: Vec<String> = if let Some(ref rcfile) = osc133_rcfile {
-            vec!["--rcfile".to_string(), rcfile.to_string_lossy().to_string()]
-        } else {
-            vec![]
-        };
-        let shell_args_ref: Vec<&str> = shell_args.iter().map(|s| s.as_str()).collect();
         let proxy = PtyProxy::spawn_with_env(&shell, &shell_args_ref, child_env)?;
         // Print welcome message for first-time users
         if !config.onboarded {
@@ -453,7 +455,7 @@ async fn main() -> Result<()> {
     }
 
     // Install SIGWINCH handler
-    let master_fd = proxy.master_raw_fd();
+    let mut master_fd = proxy.master_raw_fd();
     setup_sigwinch(master_fd);
 
     // Main I/O loop using poll
@@ -519,6 +521,9 @@ async fn main() -> Result<()> {
     const AUTO_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
     const AUTO_UPDATE_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
 
+    // Landlock sandbox state
+    let mut locked = false;
+
     // Tracks when prefix was matched, for timing-based detection of
     // double-prefix (e.g. "::") vs single prefix (":").
     let mut prefix_match_time: Option<std::time::Instant> = None;
@@ -580,12 +585,15 @@ async fn main() -> Result<()> {
                     if matches!(action, InterceptAction::Chat(_)) {
                         // notice_queue::push(&format!(": timeout ({}ms)", t.elapsed().as_millis()));
                         event_log::push("chat mode enter (timeout)");
-                        enter_chat_mode(
+                        let exit_action = enter_chat_mode(
                             None, &daemon_conn, &mut chat_history, &mut last_thread_id,
                             &session_id, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
-                            &auto_update_enabled, &onboarded,
+                            &auto_update_enabled, &onboarded, locked,
                         ).await;
+                        if let chat_session::ChatExitAction::Lock(lock) = exit_action {
+                            handle_lock(&mut proxy, &mut master_fd, &mut locked, lock, &shell, &shell_args_ref, &session_id);
+                        }
                     }
                 }
             }
@@ -771,12 +779,15 @@ async fn main() -> Result<()> {
                         event_log::push("chat mode enter");
                         completer.clear();
                         let initial = if msg.trim().is_empty() { None } else { Some(msg) };
-                        enter_chat_mode(
+                        let exit_action = enter_chat_mode(
                             initial, &daemon_conn, &mut chat_history, &mut last_thread_id,
                             &session_id, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
-                            &auto_update_enabled, &onboarded,
+                            &auto_update_enabled, &onboarded, locked,
                         ).await;
+                        if let chat_session::ChatExitAction::Lock(lock) = exit_action {
+                            handle_lock(&mut proxy, &mut master_fd, &mut locked, lock, &shell, &shell_args_ref, &session_id);
+                        }
                     }
                     InterceptAction::ResumeChat => {
                         let gap_ms = prefix_match_time.map(|t| t.elapsed().as_millis()).unwrap_or(0);
@@ -787,12 +798,15 @@ async fn main() -> Result<()> {
                             Some(ref tid) => format!("/resume_tid {}", tid),
                             None => "/resume 1".to_string(),
                         };
-                        enter_chat_mode(
+                        let exit_action = enter_chat_mode(
                             Some(resume_cmd), &daemon_conn, &mut chat_history, &mut last_thread_id,
                             &session_id, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
-                            &auto_update_enabled, &onboarded,
+                            &auto_update_enabled, &onboarded, locked,
                         ).await;
+                        if let chat_session::ChatExitAction::Lock(lock) = exit_action {
+                            handle_lock(&mut proxy, &mut master_fd, &mut locked, lock, &shell, &shell_args_ref, &session_id);
+                        }
                     }
                     InterceptAction::Tab(_buf) => {
                         // Check if completer has a suggestion to accept
@@ -1292,6 +1306,60 @@ async fn connect_daemon(
     }
 }
 
+/// Respawn the shell with or without Landlock sandbox.
+fn handle_lock(
+    proxy: &mut PtyProxy,
+    master_fd: &mut i32,
+    locked: &mut bool,
+    lock: bool,
+    shell: &str,
+    shell_args: &[&str],
+    session_id: &str,
+) {
+    if lock == *locked {
+        let status = if lock { "already locked" } else { "already unlocked" };
+        let msg = format!("\r\n\x1b[33m{}\x1b[0m\r\n", status);
+        nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
+        return;
+    }
+
+    // Get current cwd from shell process before killing it
+    let cwd = get_shell_cwd(proxy.child_pid() as u32)
+        .map(std::path::PathBuf::from);
+
+    let mut env = std::collections::HashMap::new();
+    env.insert("OMNISH_SESSION_ID".to_string(), session_id.to_string());
+    env.insert("SHELL".to_string(), shell.to_string());
+
+    let pre_exec: Option<Box<dyn FnOnce() -> Result<(), String> + Send>> = if lock {
+        let cwd_clone = cwd.clone();
+        Some(Box::new(move || {
+            omnish_plugin::apply_lock_sandbox(cwd_clone.as_deref())
+        }))
+    } else {
+        None
+    };
+
+    match proxy.respawn(shell, shell_args, env, cwd.as_deref(), pre_exec) {
+        Ok(new_fd) => {
+            *master_fd = new_fd;
+            *locked = lock;
+            setup_sigwinch(new_fd);
+            if let Some((rows, cols)) = get_terminal_size() {
+                proxy.set_window_size(rows, cols).ok();
+            }
+            let status = if lock { "locked" } else { "unlocked" };
+            event_log::push(format!("lock: shell respawned ({})", status));
+            let msg = format!("\r\n\x1b[32mShell {}\x1b[0m\r\n", status);
+            nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
+        }
+        Err(e) => {
+            let msg = format!("\r\n\x1b[31mFailed to respawn shell: {}\x1b[0m\r\n", e);
+            nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
+        }
+    }
+}
+
 pub(crate) fn get_terminal_size() -> Option<(u16, u16)> {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
     let ret = unsafe { libc::ioctl(0, libc::TIOCGWINSZ, &mut ws) };
@@ -1624,29 +1692,33 @@ async fn enter_chat_mode(
     col_tracker: &CursorTracker,
     auto_update_enabled: &AtomicBool,
     onboarded: &AtomicBool,
-) {
+    locked: bool,
+) -> chat_session::ChatExitAction {
     notice_queue::defer();
     let saved_input = shell_input.input().to_string();
 
-    if let Some(ref rpc) = daemon_conn {
+    let exit_action = if let Some(ref rpc) = daemon_conn {
         let shell_pid = proxy.child_pid() as u32;
         let dbg_fn = || debug_client_state(
             shell_input, interceptor, shell_completer,
             daemon_conn, osc133_detector, last_readline_content,
-            shell_pid, col_tracker,
+            shell_pid, col_tracker, locked,
         );
+        let action;
         {
             let mut session = chat_session::ChatSession::new(std::mem::take(chat_history));
-            session.run(rpc, session_id, proxy, initial_msg, &dbg_fn, auto_update_enabled, onboarded, col_tracker.col, col_tracker.row).await;
+            action = session.run(rpc, session_id, proxy, initial_msg, &dbg_fn, auto_update_enabled, onboarded, col_tracker.col, col_tracker.row).await;
             let new_tid = session.thread_id().map(String::from);
             event_log::push(format!("chat exit: last_thread_id {:?} -> {:?}", last_thread_id, new_tid));
             *last_thread_id = new_tid;
             *chat_history = session.into_history();
         }
+        action
     } else {
         let err = display::render_error("Daemon not connected");
         nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-    }
+        chat_session::ChatExitAction::Normal
+    };
 
     nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
     notice_queue::flush();
@@ -1654,6 +1726,7 @@ async fn enter_chat_mode(
     if !saved_input.is_empty() {
         proxy.write_all(saved_input.as_bytes()).ok();
     }
+    exit_action
 }
 
 /// Collect client debug state for /debug client command
@@ -1667,6 +1740,7 @@ fn debug_client_state(
     last_readline: &Option<String>,
     shell_pid: u32,
     col_tracker: &CursorTracker,
+    locked: bool,
 ) -> String {
     let mut output = String::new();
 
@@ -1680,6 +1754,7 @@ fn debug_client_state(
     } else {
         output.push_str("  cwd: (unknown)\n");
     }
+    output.push_str(&format!("  locked: {}\n", locked));
     output.push('\n');
 
     // Cursor position

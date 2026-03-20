@@ -246,7 +246,7 @@ const COMMANDS: &[CommandEntry] = &[
 ];
 
 /// Chat-mode-only commands (not in COMMANDS registry).
-pub const CHAT_ONLY_COMMANDS: &[&str] = &["/resume", "/model"];
+pub const CHAT_ONLY_COMMANDS: &[&str] = &["/resume", "/model", "/lock"];
 
 /// Return all command paths for ghost-text completion.
 pub fn completable_commands() -> Vec<String> {

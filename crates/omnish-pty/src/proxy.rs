@@ -119,4 +119,77 @@ impl PtyProxy {
             _ => Ok(-1),
         }
     }
+
+    /// Kill the current child and spawn a new shell in a fresh PTY.
+    /// Returns the new master_fd raw value (caller must update poll fds and SIGWINCH).
+    /// An optional `pre_exec` closure runs in the child before exec (e.g. for Landlock).
+    pub fn respawn(
+        &mut self,
+        cmd: &str,
+        args: &[&str],
+        env: HashMap<String, String>,
+        cwd: Option<&std::path::Path>,
+        pre_exec: Option<Box<dyn FnOnce() -> Result<(), String> + Send>>,
+    ) -> Result<RawFd> {
+        // Kill old child
+        nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGKILL).ok();
+        // Reap zombie (non-blocking — child might already be gone)
+        waitpid(self.child_pid, Some(nix::sys::wait::WaitPidFlag::WNOHANG)).ok();
+
+        // Create new PTY pair
+        let OpenptyResult { master, slave } =
+            openpty(None, None).context("openpty failed (respawn)")?;
+
+        match unsafe { fork() }.context("fork failed (respawn)")? {
+            ForkResult::Child => {
+                drop(master);
+
+                setsid().ok();
+                unsafe {
+                    libc::ioctl(slave.as_raw_fd(), libc::TIOCSCTTY as _, 0);
+                }
+
+                dup2(slave.as_raw_fd(), 0).ok();
+                dup2(slave.as_raw_fd(), 1).ok();
+                dup2(slave.as_raw_fd(), 2).ok();
+                if slave.as_raw_fd() > 2 {
+                    drop(slave);
+                }
+
+                // Set cwd
+                if let Some(dir) = cwd {
+                    std::env::set_current_dir(dir).ok();
+                }
+
+                // Set environment variables
+                for (key, value) in &env {
+                    std::env::set_var(key, value);
+                }
+
+                // Apply pre_exec (e.g. Landlock sandbox)
+                if let Some(f) = pre_exec {
+                    if let Err(e) = f() {
+                        let msg = format!("pre_exec failed: {}\n", e);
+                        nix::unistd::write(std::io::stderr(), msg.as_bytes()).ok();
+                        unsafe { libc::_exit(126) };
+                    }
+                }
+
+                let c_cmd = CString::new(cmd).unwrap();
+                let mut c_args: Vec<CString> = vec![c_cmd.clone()];
+                for a in args {
+                    c_args.push(CString::new(*a).unwrap());
+                }
+                execvp(&c_cmd, &c_args).ok();
+                unsafe { libc::_exit(127) };
+            }
+            ForkResult::Parent { child } => {
+                drop(slave);
+                let new_fd = master.as_raw_fd();
+                self.master_fd = master;
+                self.child_pid = child;
+                Ok(new_fd)
+            }
+        }
+    }
 }

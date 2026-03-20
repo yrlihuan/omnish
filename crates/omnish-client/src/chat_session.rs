@@ -22,6 +22,14 @@ pub enum ScrollEntry {
     SystemMessage(String),
 }
 
+/// Action requested by chat session upon exit.
+pub enum ChatExitAction {
+    /// Normal exit — no special action needed.
+    Normal,
+    /// Request to toggle Landlock sandbox on the shell process.
+    Lock(bool),
+}
+
 enum ResumeMismatchAction {
     Cancel,
     CdToOld(String),
@@ -256,7 +264,7 @@ impl ChatSession {
         onboarded: &AtomicBool,
         cursor_col: u16,
         cursor_row: u16,
-    ) {
+    ) -> ChatExitAction {
         // Eagerly update cwd so the daemon has the current value before any chat message.
         // Without this, polling lag (up to 60s) can cause chat to see a stale cwd (#354).
         if let Some(cwd) = crate::get_shell_cwd(proxy.child_pid() as u32) {
@@ -283,6 +291,7 @@ impl ChatSession {
         // Move past shell prompt to a new line
         write_stdout("\r\n");
 
+        let mut exit_action = ChatExitAction::Normal;
         loop {
             let (input, is_fast_resume) = if let Some(msg) = self.pending_input.take() {
                 (msg, true)
@@ -427,6 +436,13 @@ impl ChatSession {
                 }
                 if auto_exit { break; }
                 continue;
+            }
+
+            // /lock on|off
+            if trimmed == "/lock on" || trimmed == "/lock off" {
+                let lock = trimmed == "/lock on";
+                exit_action = ChatExitAction::Lock(lock);
+                break;
             }
 
             // /update auto
@@ -788,6 +804,7 @@ impl ChatSession {
             });
             let _ = rpc.call(msg).await;
         }
+        exit_action
     }
 
     // ── Command handlers ─────────────────────────────────────────────────

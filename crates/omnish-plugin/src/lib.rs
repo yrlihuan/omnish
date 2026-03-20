@@ -83,28 +83,11 @@ pub fn sandbox_profile(data_dir: &std::path::Path, cwd: Option<&std::path::Path>
     build_sandbox_profile(data_dir, cwd, repo_root.as_deref())
 }
 
-/// Apply Landlock filesystem sandbox: read everywhere, write only to `data_dir`, `/tmp`,
-/// and optionally the current working directory (+ git repo root if inside a repo).
+/// Core Landlock enforcement: read everywhere, write only to the given paths.
 /// Called inside `pre_exec` (between fork and exec), so only affects the child process.
 #[cfg(target_os = "linux")]
-pub fn apply_sandbox(data_dir: &std::path::Path, cwd: Option<&std::path::Path>) -> Result<(), String> {
+fn apply_landlock(writable_paths: &[&std::path::Path]) -> Result<(), String> {
     let abi = ABI::V1;
-
-    // Build writable paths: data_dir, /tmp, /dev/null, and optionally cwd + git repo root
-    // /dev/null is needed by many programs (e.g. git) for output redirection
-    let mut writable_paths: Vec<&std::path::Path> = vec![
-        data_dir,
-        std::path::Path::new("/tmp"),
-        std::path::Path::new("/dev/null"),
-    ];
-    let repo_root = cwd.and_then(git_repo_root);
-    if let Some(ref root) = repo_root {
-        writable_paths.push(root.as_path());
-    }
-    if let Some(cwd) = cwd {
-        writable_paths.push(cwd);
-    }
-
     let status = Ruleset::default()
         .handle_access(AccessFs::from_all(abi))
         .map_err(|e| format!("landlock handle_access: {e}"))?
@@ -112,7 +95,7 @@ pub fn apply_sandbox(data_dir: &std::path::Path, cwd: Option<&std::path::Path>) 
         .map_err(|e| format!("landlock create: {e}"))?
         .add_rules(path_beneath_rules(&["/"], AccessFs::from_read(abi)))
         .map_err(|e| format!("landlock add read rules: {e}"))?
-        .add_rules(path_beneath_rules(&writable_paths, AccessFs::from_all(abi)))
+        .add_rules(path_beneath_rules(writable_paths, AccessFs::from_all(abi)))
         .map_err(|e| format!("landlock add write rules: {e}"))?
         .restrict_self()
         .map_err(|e| format!("landlock restrict_self: {e}"))?;
@@ -122,10 +105,50 @@ pub fn apply_sandbox(data_dir: &std::path::Path, cwd: Option<&std::path::Path>) 
     }
 }
 
+/// Build the common writable paths: /tmp, /dev/null, cwd, and git repo root.
+fn common_writable_paths(cwd: Option<&std::path::Path>) -> (Vec<std::path::PathBuf>, Option<std::path::PathBuf>) {
+    let mut paths = vec![
+        std::path::PathBuf::from("/tmp"),
+        std::path::PathBuf::from("/dev/null"),
+    ];
+    let repo_root = cwd.and_then(git_repo_root);
+    if let Some(ref root) = repo_root {
+        paths.push(root.clone());
+    }
+    if let Some(cwd) = cwd {
+        paths.push(cwd.to_path_buf());
+    }
+    (paths, repo_root)
+}
+
+/// Apply Landlock filesystem sandbox for plugins: read everywhere, write only to
+/// `data_dir`, `/tmp`, `/dev/null`, cwd, and git repo root.
+#[cfg(target_os = "linux")]
+pub fn apply_sandbox(data_dir: &std::path::Path, cwd: Option<&std::path::Path>) -> Result<(), String> {
+    let (mut paths, _) = common_writable_paths(cwd);
+    paths.insert(0, data_dir.to_path_buf());
+    let refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
+    apply_landlock(&refs)
+}
+
+/// Apply Landlock filesystem sandbox for `/lock` mode: read everywhere, write only to
+/// `/tmp`, `/dev/null`, cwd, and git repo root. No plugin data_dir.
+#[cfg(target_os = "linux")]
+pub fn apply_lock_sandbox(cwd: Option<&std::path::Path>) -> Result<(), String> {
+    let (paths, _) = common_writable_paths(cwd);
+    let refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
+    apply_landlock(&refs)
+}
+
 /// No-op: on macOS, sandboxing is applied at the command level via sandbox-exec.
 /// On other non-Linux platforms, sandboxing is not available.
 #[cfg(not(target_os = "linux"))]
 pub fn apply_sandbox(_data_dir: &std::path::Path, _cwd: Option<&std::path::Path>) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn apply_lock_sandbox(_cwd: Option<&std::path::Path>) -> Result<(), String> {
     Ok(())
 }
 
