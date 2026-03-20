@@ -46,6 +46,8 @@ pub struct ChatSession {
     resumed_model: Option<String>,
     /// System reminder to inject before the next chat message (e.g., cwd mismatch context).
     pending_system_reminder: Option<String>,
+    /// Shell's current working directory (from /proc/pid/cwd), set at chat entry.
+    shell_cwd: Option<String>,
     /// Total terminal lines printed (for tracking tool section position).
     lines_printed: usize,
     /// Line position where the current batch of tool headers starts.
@@ -99,6 +101,7 @@ impl ChatSession {
             pending_model: None,
             resumed_model: None,
             pending_system_reminder: None,
+            shell_cwd: None,
             lines_printed: 0,
             tool_section_start: None,
             tool_section_hist_idx: None,
@@ -267,6 +270,7 @@ impl ChatSession {
         // Eagerly update cwd so the daemon has the current value before any chat message.
         // Without this, polling lag (up to 60s) can cause chat to see a stale cwd (#354).
         if let Some(cwd) = crate::get_shell_cwd(proxy.child_pid() as u32) {
+            self.shell_cwd = Some(cwd.clone());
             let mut attrs = std::collections::HashMap::new();
             attrs.insert("shell_cwd".to_string(), cwd);
             let msg = Message::SessionUpdate(SessionUpdate {
@@ -1277,9 +1281,7 @@ impl ChatSession {
                                     "The user resumed this conversation from a different directory. \
                                      Previous: {}, Current: {}. They chose to cd to the previous directory.",
                                     old_cwd,
-                                    std::env::current_dir()
-                                        .map(|p| p.to_string_lossy().to_string())
-                                        .unwrap_or_default(),
+                                    self.shell_cwd.as_deref().unwrap_or(""),
                                 ));
                                 // Note: actual cd happens in the shell, not here.
                                 // We inform the user they should cd manually.
@@ -1289,9 +1291,7 @@ impl ChatSession {
                                 ));
                             }
                             ResumeMismatchAction::StayHere(old_cwd) => {
-                                let cur_cwd = std::env::current_dir()
-                                    .map(|p| p.to_string_lossy().to_string())
-                                    .unwrap_or_default();
+                                let cur_cwd = self.shell_cwd.as_deref().unwrap_or("");
                                 self.pending_system_reminder = Some(format!(
                                     "The user resumed this conversation from a different directory. \
                                      Previous: {}, Current: {}. They chose to stay in the current directory.",
@@ -1345,9 +1345,7 @@ impl ChatSession {
             .ok()
             .and_then(|h| h.into_string().ok())
             .unwrap_or_default();
-        let cur_cwd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let cur_cwd = self.shell_cwd.clone().unwrap_or_default();
 
         let thread_host = ready.thread_host.as_deref().unwrap_or("");
         let thread_cwd = ready.thread_cwd.as_deref().unwrap_or("");
