@@ -33,8 +33,11 @@ impl CommandQueryTool {
         let start = commands.len().saturating_sub(count);
         let mut lines = Vec::new();
         for (i, cmd) in commands[start..].iter().enumerate() {
+            let cmd_line = match cmd.command_line.as_deref() {
+                Some(line) if !line.is_empty() => line,
+                _ => continue,
+            };
             let seq = start + i + 1; // 1-based
-            let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
             let exit = cmd.exit_code.map(|c| format!("exit {}", c)).unwrap_or_default();
             let ago = format_ago(now_ms, cmd.started_at);
             lines.push(format!("[seq={}] {}  ({}, {})", seq, cmd_line, exit, ago));
@@ -75,12 +78,15 @@ impl CommandQueryTool {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
 
-        // Last N commands
+        // Last N commands (skip entries with no command_line)
         let start = commands.len().saturating_sub(count);
         let mut cmd_lines = Vec::new();
         for (i, cmd) in commands[start..].iter().enumerate() {
+            let cmd_line = match cmd.command_line.as_deref() {
+                Some(line) if !line.is_empty() => line,
+                _ => continue,
+            };
             let seq = start + i + 1;
-            let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
             let failed = match cmd.exit_code {
                 Some(code) if code != 0 => " [FAILED]",
                 _ => "",
