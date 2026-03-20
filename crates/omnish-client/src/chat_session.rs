@@ -357,7 +357,9 @@ impl ChatSession {
 
             // /resume_tid <thread_id> (internal — used by :: resume shortcut)
             if let Some(tid) = trimmed.strip_prefix("/resume_tid ") {
-                self.handle_resume_tid(tid.trim(), session_id, rpc).await;
+                if !self.handle_resume_tid(tid.trim(), session_id, rpc).await {
+                    break; // cancelled or failed — exit chat mode entirely
+                }
                 continue;
             }
 
@@ -1238,7 +1240,8 @@ impl ChatSession {
     }
 
     /// Resume a specific thread by ID via ChatStart protocol message.
-    async fn handle_resume_tid(&mut self, tid: &str, session_id: &str, rpc: &RpcClient) {
+    /// Returns `true` if the thread was successfully resumed, `false` if cancelled or failed.
+    async fn handle_resume_tid(&mut self, tid: &str, session_id: &str, rpc: &RpcClient) -> bool {
         crate::event_log::push(format!("resume_tid: sending ChatStart thread={}", tid));
         let rid = Uuid::new_v4().to_string()[..8].to_string();
         let start_msg = Message::ChatStart(ChatStart {
@@ -1267,7 +1270,7 @@ impl ChatSession {
                                     thread_id: ready.thread_id.clone(),
                                 });
                                 let _ = rpc.send(end_msg).await;
-                                return;
+                                return false;
                             }
                             ResumeMismatchAction::CdToOld(old_cwd) => {
                                 self.pending_system_reminder = Some(format!(
@@ -1312,6 +1315,8 @@ impl ChatSession {
                 }
                 self.apply_chat_ready(ready);
                 crate::event_log::push("resume_tid: apply_chat_ready done");
+                crate::event_log::push("resume_tid: done");
+                return true;
             }
             Ok(Ok(msg)) => {
                 crate::event_log::push(format!("resume_tid: unexpected response {:?}", std::mem::discriminant(&msg)));
@@ -1328,6 +1333,7 @@ impl ChatSession {
             }
         }
         crate::event_log::push("resume_tid: done");
+        false
     }
 
     // ── Resume mismatch check ─────────────────────────────────────────────
