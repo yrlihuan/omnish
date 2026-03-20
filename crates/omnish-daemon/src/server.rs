@@ -1082,6 +1082,7 @@ async fn run_agent_loop(
                     let mut tool_results = Vec::new();
                     let mut has_client_tools = false;
                     for tc in &tool_calls {
+                        let is_command_query = tc.name == "omnish_list_history" || tc.name == "omnish_get_output";
                         let display_name = plugin_mgr.tool_display_name(&tc.name)
                             .unwrap_or(&tc.name).to_string();
                         let formatter_name = plugin_mgr.tool_formatter(&tc.name)
@@ -1089,7 +1090,7 @@ async fn run_agent_loop(
                         let status_template = plugin_mgr.tool_status_template(&tc.name)
                             .unwrap_or("").to_string();
                         let fmt = formatter::get_formatter(formatter_name);
-                        let fmt_out = fmt.format(&FormatInput {
+                        let mut fmt_out = fmt.format(&FormatInput {
                             tool_name: tc.name.clone(),
                             display_name: display_name.clone(),
                             status_template,
@@ -1097,6 +1098,9 @@ async fn run_agent_loop(
                             output: None,
                             is_error: None,
                         });
+                        if is_command_query {
+                            fmt_out.param_desc = state.command_query_tool.status_text(&tc.name, &tc.input);
+                        }
 
                         messages.push(Message::ChatToolStatus(ChatToolStatus {
                             request_id: state.cm.request_id.clone(),
@@ -1178,7 +1182,7 @@ async fn run_agent_loop(
                                 .unwrap_or(&tc.name).to_string();
                             let post_template = plugin_mgr.tool_status_template(&tc.name)
                                 .unwrap_or("").to_string();
-                            let post_out = post_fmt.format(&FormatInput {
+                            let mut post_out = post_fmt.format(&FormatInput {
                                 tool_name: tc.name.clone(),
                                 display_name: post_display.clone(),
                                 status_template: post_template,
@@ -1186,6 +1190,9 @@ async fn run_agent_loop(
                                 output: Some(result.content.clone()),
                                 is_error: Some(result.is_error),
                             });
+                            if is_command_query {
+                                post_out.param_desc = state.command_query_tool.status_text(&tc.name, &tc.input);
+                            }
                             messages.push(Message::ChatToolStatus(ChatToolStatus {
                                 request_id: state.cm.request_id.clone(),
                                 thread_id: state.cm.thread_id.clone(),

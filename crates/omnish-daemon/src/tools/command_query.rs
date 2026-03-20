@@ -166,9 +166,13 @@ impl CommandQueryTool {
                         "seq": {
                             "type": "integer",
                             "description": "Command sequence number (from omnish_list_history or <system-reminder>)"
+                        },
+                        "command": {
+                            "type": "string",
+                            "description": "The command string at that seq (must match the recorded command)"
                         }
                     },
-                    "required": ["seq"]
+                    "required": ["seq", "command"]
                 }),
             },
         ]
@@ -191,6 +195,28 @@ impl CommandQueryTool {
                         is_error: true,
                     };
                 }
+                let command = input["command"].as_str().unwrap_or("");
+                if command.is_empty() {
+                    return ToolResult {
+                        tool_use_id,
+                        content: "Error: 'command' is required".to_string(),
+                        is_error: true,
+                    };
+                }
+                // Validate command matches the recorded command at this seq
+                if seq <= self.commands.len() {
+                    let recorded = self.commands[seq - 1].command_line.as_deref().unwrap_or("");
+                    if recorded != command {
+                        return ToolResult {
+                            tool_use_id,
+                            content: format!(
+                                "Error: command mismatch at seq {}.\n  expected: {}\n  got: {}",
+                                seq, recorded, command
+                            ),
+                            is_error: true,
+                        };
+                    }
+                }
                 let content = self.get_output(seq);
                 ToolResult { tool_use_id, content, is_error: false }
             }
@@ -205,10 +231,15 @@ impl CommandQueryTool {
     pub fn status_text(&self, tool_name: &str, input: &serde_json::Value) -> String {
         match tool_name {
             "omnish_list_history" => "查询命令历史...".to_string(),
-            "omnish_get_output" => format!(
-                "获取命令输出 [{}]...",
-                input["seq"].as_u64().unwrap_or(0)
-            ),
+            "omnish_get_output" => {
+                let seq = input["seq"].as_u64().unwrap_or(0);
+                let command = input["command"].as_str().unwrap_or("");
+                if command.is_empty() {
+                    format!("获取命令输出 [{}]...", seq)
+                } else {
+                    format!("获取命令输出 [{}] {}...", seq, command)
+                }
+            }
             _ => "查询命令...".to_string(),
         }
     }
