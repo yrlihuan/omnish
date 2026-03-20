@@ -472,8 +472,6 @@ async fn handle_message(
             Message::Ack
         }
         Message::ChatStart(cs) => {
-            tracing::debug!("[ChatStart] session={} new_thread={} thread_id={:?}",
-                cs.session_id, cs.new_thread, cs.thread_id);
             let meta = {
                 let host = mgr.get_session_attr(&cs.session_id, "hostname").await;
                 let cwd = mgr.get_session_attr(&cs.session_id, "shell_cwd").await;
@@ -519,8 +517,11 @@ async fn handle_message(
                 }
                 tracing::debug!("[ChatStart] claimed thread={}, reconstructing history", tid);
                 conv_mgr.save_meta(tid, &meta);
-                let history = reconstruct_history(&raw_msgs, plugin_mgr);
-                tracing::debug!("[ChatStart] history reconstructed: {} entries", history.len());
+                let history_vals = reconstruct_history(&raw_msgs, plugin_mgr);
+                tracing::debug!("[ChatStart] history reconstructed: {} entries", history_vals.len());
+                let history: Vec<String> = history_vals.iter()
+                    .map(|v| serde_json::to_string(v).unwrap_or_default())
+                    .collect();
                 // Thread model override
                 let thread_model = {
                     let m = conv_mgr.load_meta(tid);
@@ -531,7 +532,6 @@ async fn handle_message(
                         if is_default { None } else { Some(model_name) }
                     })
                 };
-                tracing::debug!("[ChatStart] sending ChatReady for thread={}", tid);
                 Message::ChatReady(ChatReady {
                     request_id: cs.request_id,
                     thread_id: tid.clone(),
@@ -584,7 +584,6 @@ async fn handle_message(
                         String::new()
                     }
                 };
-                tracing::debug!("[ChatStart] sending ChatReady thread_id={:?}", thread_id);
                 Message::ChatReady(ChatReady {
                     request_id: cs.request_id,
                     thread_id,

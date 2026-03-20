@@ -27,6 +27,7 @@ serde = { workspace = true }
 pulldown-cmark = { version = "0.13", default-features = false }
 serde_json = "1"
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 regex-lite = "0.1"

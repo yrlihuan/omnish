@@ -368,18 +368,16 @@ impl RpcClient {
             payload: msg,
         };
         let (reply_tx, reply_rx) = oneshot::channel();
-
-        let inner = self.inner.lock().await;
-        if !inner.connected.load(Ordering::SeqCst) {
-            return Err(anyhow::anyhow!("not connected"));
-        }
-        inner
-            .tx
-            .send(WriteRequest { frame, reply_tx: ReplyTx::Once(reply_tx) })
+        let tx = {
+            let inner = self.inner.lock().await;
+            if !inner.connected.load(Ordering::SeqCst) {
+                return Err(anyhow::anyhow!("not connected"));
+            }
+            inner.tx.clone()
+        };
+        tx.send(WriteRequest { frame, reply_tx: ReplyTx::Once(reply_tx) })
             .await
             .map_err(|_| anyhow::anyhow!("write task closed"))?;
-        drop(inner);
-
         reply_rx
             .await
             .map_err(|_| anyhow::anyhow!("read task closed before response"))
@@ -394,13 +392,14 @@ impl RpcClient {
             payload: msg,
         };
 
-        let inner = self.inner.lock().await;
-        if !inner.connected.load(Ordering::SeqCst) {
-            return Err(anyhow::anyhow!("not connected"));
-        }
-        inner
-            .tx
-            .send(WriteRequest { frame, reply_tx: ReplyTx::None })
+        let tx = {
+            let inner = self.inner.lock().await;
+            if !inner.connected.load(Ordering::SeqCst) {
+                return Err(anyhow::anyhow!("not connected"));
+            }
+            inner.tx.clone()
+        };
+        tx.send(WriteRequest { frame, reply_tx: ReplyTx::None })
             .await
             .map_err(|_| anyhow::anyhow!("write task closed"))?;
         Ok(())
@@ -412,13 +411,15 @@ impl RpcClient {
         let frame = Frame { request_id, payload: msg };
         let (reply_tx, reply_rx) = mpsc::channel(16);
 
-        let inner = self.inner.lock().await;
-        if !inner.connected.load(Ordering::SeqCst) {
-            return Err(anyhow::anyhow!("not connected"));
-        }
-        inner.tx.send(WriteRequest { frame, reply_tx: ReplyTx::Stream(reply_tx) }).await
+        let tx = {
+            let inner = self.inner.lock().await;
+            if !inner.connected.load(Ordering::SeqCst) {
+                return Err(anyhow::anyhow!("not connected"));
+            }
+            inner.tx.clone()
+        };
+        tx.send(WriteRequest { frame, reply_tx: ReplyTx::Stream(reply_tx) }).await
             .map_err(|_| anyhow::anyhow!("write task closed"))?;
-        drop(inner);
 
         Ok(reply_rx)
     }
@@ -466,15 +467,21 @@ impl RpcClient {
         connected: Arc<AtomicBool>,
         disconnect_tx: Option<oneshot::Sender<()>>,
     ) {
-        while let Ok(len) = reader.read_u32().await {
-            let len = len as usize;
+        loop {
+            let len = match reader.read_u32().await {
+                Ok(l) => l as usize,
+                Err(_) => break,
+            };
             let mut buf = vec![0u8; len];
             if reader.read_exact(&mut buf).await.is_err() {
                 break;
             }
             let frame = match Frame::from_bytes(&buf) {
                 Ok(f) => f,
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::warn!("rpc frame parse error ({} bytes): {}", len, e);
+                    continue;
+                }
             };
             let mut map = pending.lock().await;
             if let Some(tx) = map.get(&frame.request_id) {

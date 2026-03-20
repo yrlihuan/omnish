@@ -1,6 +1,5 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashMap;
 
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
@@ -171,9 +170,11 @@ pub struct CompletionSummary {
     pub dwell_time_ms: Option<u64>,
     /// Current working directory at the time of request
     pub cwd: Option<String>,
-    /// Extra metadata as key-value pairs (stored as JSON in CSV)
+    /// Extra metadata as key-value pairs.
+    /// Stored as `HashMap<String, String>` (not `Value`) because bincode cannot
+    /// serialize/deserialize `serde_json::Value` (it calls `deserialize_any`).
     #[serde(default)]
-    pub extra: HashMap<String, Value>,
+    pub extra: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,8 +203,9 @@ pub struct ChatReady {
     #[serde(default)]
     pub model_name: Option<String>,
     /// Structured conversation history (for resumed threads).
+    /// Each entry is a JSON-encoded string (bincode cannot deserialize serde_json::Value directly).
     #[serde(default)]
-    pub history: Option<Vec<Value>>,
+    pub history: Option<Vec<String>>,
     /// Error key when thread cannot be entered (e.g. "thread_locked").
     #[serde(default)]
     pub error: Option<String>,
@@ -720,5 +722,74 @@ mod tests {
             "Message variant count changed! If you added/removed a variant, \
              update EXPECTED_VARIANT_COUNT and consider bumping PROTOCOL_VERSION."
         );
+    }
+
+    /// Regression test: ChatReady with populated history must survive a bincode round-trip.
+    ///
+    /// Previously, `history` was `Option<Vec<serde_json::Value>>`, which caused
+    /// `bincode` to fail with "does not support deserialize_any", silently dropping
+    /// the ChatReady frame on the client and causing a 15-second timeout on resume.
+    /// `history` is now `Option<Vec<String>>` (JSON-encoded entries). This test
+    /// will fail immediately if someone reverts that change.
+    #[test]
+    fn chat_ready_with_history_round_trips() {
+        let frame = Frame {
+            request_id: 99,
+            payload: Message::ChatReady(ChatReady {
+                request_id: "abc".to_string(),
+                thread_id: "tid-1".to_string(),
+                last_exchange: None,
+                earlier_count: 2,
+                model_name: Some("claude-sonnet".to_string()),
+                history: Some(vec![
+                    r#"{"type":"user_input","text":"hello"}"#.to_string(),
+                    r#"{"type":"response","text":"hi there"}"#.to_string(),
+                ]),
+                error: None,
+                error_display: None,
+            }),
+        };
+        let bytes = frame.to_bytes().unwrap();
+        let decoded = Frame::from_bytes(&bytes).unwrap();
+        if let Message::ChatReady(ready) = decoded.payload {
+            let h = ready.history.expect("history should be Some");
+            assert_eq!(h.len(), 2);
+            assert!(h[0].contains("user_input"));
+            assert!(h[1].contains("hi there"));
+        } else {
+            panic!("expected ChatReady");
+        }
+    }
+
+    /// Regression guard: CompletionSummary.extra must survive a bincode round-trip
+    /// even when non-empty. The field type is `HashMap<String, String>` (not Value)
+    /// for the same reason as ChatReady.history.
+    #[test]
+    fn completion_summary_extra_round_trips() {
+        let mut extra = HashMap::new();
+        extra.insert("model".to_string(), "claude-sonnet".to_string());
+        extra.insert("cache_hit".to_string(), "true".to_string());
+        let frame = Frame {
+            request_id: 1,
+            payload: Message::CompletionSummary(CompletionSummary {
+                session_id: "s1".to_string(),
+                sequence_id: 7,
+                prompt: "cd w".to_string(),
+                completion: "cd workspace".to_string(),
+                accepted: true,
+                latency_ms: 120,
+                dwell_time_ms: Some(500),
+                cwd: Some("/home/user".to_string()),
+                extra,
+            }),
+        };
+        let bytes = frame.to_bytes().unwrap();
+        let decoded = Frame::from_bytes(&bytes).unwrap();
+        if let Message::CompletionSummary(cs) = decoded.payload {
+            assert_eq!(cs.extra.get("model").map(|s| s.as_str()), Some("claude-sonnet"));
+            assert_eq!(cs.extra.len(), 2);
+        } else {
+            panic!("expected CompletionSummary");
+        }
     }
 }

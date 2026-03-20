@@ -300,6 +300,23 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Initialize file-based tracing for debugging (does not write to stderr/stdout to avoid PTY interference)
+    {
+        let log_path = omnish_common::config::omnish_dir().join("client.log");
+        if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+            use tracing_subscriber::layer::SubscriberExt;
+            use tracing_subscriber::util::SubscriberInitExt;
+            let filter = tracing_subscriber::EnvFilter::new("debug");
+            let layer = tracing_subscriber::fmt::layer()
+                .with_writer(std::sync::Mutex::new(file))
+                .with_ansi(false);
+            let _ = tracing_subscriber::registry()
+                .with(filter)
+                .with(layer)
+                .try_init();
+        }
+    }
+
     let config = load_client_config().unwrap_or_default();
     let onboarded = Arc::new(AtomicBool::new(config.onboarded));
     let resume_args = parse_resume_args();

@@ -221,7 +221,7 @@ fn spawn_connection<R, W, F>(
                 let multi = responses.len() > 1;
                 for response_payload in responses {
                     if let Err(e) = write_reply(&writer, frame.request_id, response_payload).await {
-                        tracing::error!("failed to write response: {}", e);
+                        tracing::error!("write_reply failed: {}", e);
                         break;
                     }
                 }

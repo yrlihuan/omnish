@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -28,7 +27,7 @@ pub struct CompletionRecord {
     pub recorded_at: u64,
     /// Extra metadata (stored as JSON string in CSV)
     #[serde(default)]
-    pub extra: HashMap<String, Value>,
+    pub extra: HashMap<String, String>,
 }
 
 impl CompletionRecord {

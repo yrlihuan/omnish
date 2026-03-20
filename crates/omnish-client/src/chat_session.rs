@@ -1076,9 +1076,13 @@ impl ChatSession {
         self.current_thread_id = Some(ready.thread_id);
 
         if let Some(history) = ready.history {
-            // Parse structured history entries
+            // Parse structured history entries (each is a JSON-encoded string)
             let mut all_entries: Vec<ScrollEntry> = Vec::new();
-            for entry in &history {
+            for entry_str in &history {
+                let entry: serde_json::Value = match serde_json::from_str(entry_str) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
                 match entry.get("type").and_then(|t| t.as_str()) {
                     Some("user_input") => {
                         let text = entry["text"].as_str().unwrap_or("");
@@ -1238,7 +1242,8 @@ impl ChatSession {
                 write_stdout(&display::render_error("Failed to resume conversation"));
             }
             Err(_) => {
-                crate::event_log::push("resume_tid: timed out waiting for daemon response");
+                let connected = rpc.is_connected().await;
+                crate::event_log::push(format!("resume_tid: timed out waiting for daemon response (connected={})", connected));
                 write_stdout(&display::render_error("Resume timed out — daemon may be busy"));
             }
         }
