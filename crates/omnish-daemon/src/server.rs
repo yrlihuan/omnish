@@ -108,7 +108,7 @@ async fn thread_locked_error(mgr: &SessionManager, owner_session_id: &str) -> se
     })
 }
 
-type SandboxRules = Arc<HashMap<String, Vec<crate::sandbox_rules::PermitRule>>>;
+type SandboxRules = Arc<std::sync::RwLock<HashMap<String, Vec<crate::sandbox_rules::PermitRule>>>>;
 
 pub struct DaemonServer {
     session_mgr: Arc<SessionManager>,
@@ -241,7 +241,7 @@ impl DaemonServer {
             active_threads: Arc::new(Mutex::new(HashMap::new())),
             chat_model_name,
             tool_params,
-            sandbox_rules: Arc::new(sandbox_rules),
+            sandbox_rules: Arc::new(std::sync::RwLock::new(sandbox_rules)),
         }
     }
 
@@ -1122,11 +1122,14 @@ async fn run_agent_loop(
                             if let Some(config_params) = tool_params.get(&tc.name) {
                                 merge_tool_params(&mut merged_input, config_params);
                             }
-                            let matched_rule = crate::sandbox_rules::check_bypass(
-                                sandbox_rules.get(&tc.name).map(|v| v.as_slice()).unwrap_or(&[]),
-                                &tc.input,
-                            );
-                            if let Some(rule) = matched_rule {
+                            let matched_rule = {
+                                let rules = sandbox_rules.read().unwrap();
+                                crate::sandbox_rules::check_bypass(
+                                    rules.get(&tc.name).map(|v| v.as_slice()).unwrap_or(&[]),
+                                    &tc.input,
+                                ).map(|s| s.to_string())
+                            };
+                            if let Some(ref rule) = matched_rule {
                                 tracing::warn!(
                                     "sandbox bypass: tool={}, rule='{}', input={}",
                                     tc.name, rule,
