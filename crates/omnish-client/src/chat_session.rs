@@ -52,8 +52,6 @@ pub struct ChatSession {
     pending_model: Option<String>,
     /// Non-default model name for resumed thread (shown as ghost hint).
     resumed_model: Option<String>,
-    /// System reminder to inject before the next chat message (e.g., cwd mismatch context).
-    pending_system_reminder: Option<String>,
     /// Shell's current working directory (from /proc/pid/cwd), set at chat entry.
     shell_cwd: Option<String>,
     /// Total terminal lines printed (for tracking tool section position).
@@ -98,7 +96,6 @@ impl ChatSession {
             ghost_hint_shown: false,
             pending_model: None,
             resumed_model: None,
-            pending_system_reminder: None,
             shell_cwd: None,
             lines_printed: 0,
             tool_section_start: None,
@@ -511,16 +508,11 @@ impl ChatSession {
 
             // Send ChatMessage
             let req_id = Uuid::new_v4().to_string()[..8].to_string();
-            let query = if let Some(reminder) = self.pending_system_reminder.take() {
-                format!("<system-reminder>{}</system-reminder>\n{}", reminder, trimmed)
-            } else {
-                trimmed.to_string()
-            };
             let chat_msg = Message::ChatMessage(omnish_protocol::message::ChatMessage {
                 request_id: req_id.clone(),
                 session_id: session_id.to_string(),
                 thread_id: self.current_thread_id.clone().unwrap(),
-                query,
+                query: trimmed.to_string(),
                 model: self.pending_model.take(),
             });
 
@@ -1294,12 +1286,6 @@ impl ChatSession {
                                 return false;
                             }
                             ResumeMismatchAction::CdToOld(old_cwd) => {
-                                self.pending_system_reminder = Some(format!(
-                                    "The user resumed this conversation from a different directory. \
-                                     Previous: {}, Current: {}. They chose to cd to the previous directory.",
-                                    old_cwd,
-                                    self.shell_cwd.as_deref().unwrap_or(""),
-                                ));
                                 // Note: actual cd happens in the shell, not here.
                                 // We inform the user they should cd manually.
                                 write_stdout(&format!(
@@ -1307,26 +1293,8 @@ impl ChatSession {
                                     old_cwd
                                 ));
                             }
-                            ResumeMismatchAction::StayHere(old_cwd) => {
-                                let cur_cwd = self.shell_cwd.as_deref().unwrap_or("");
-                                self.pending_system_reminder = Some(format!(
-                                    "The user resumed this conversation from a different directory. \
-                                     Previous: {}, Current: {}. They chose to stay in the current directory.",
-                                    old_cwd, cur_cwd,
-                                ));
-                            }
-                            ResumeMismatchAction::ContinueDifferentHost => {
-                                let cur_host = nix::unistd::gethostname()
-                                    .ok()
-                                    .and_then(|h| h.into_string().ok())
-                                    .unwrap_or_default();
-                                let old_host = ready.thread_host.as_deref().unwrap_or("unknown");
-                                self.pending_system_reminder = Some(format!(
-                                    "The user resumed this conversation from a different machine. \
-                                     Previous host: {}, Current host: {}.",
-                                    old_host, cur_host,
-                                ));
-                            }
+                            ResumeMismatchAction::StayHere(_old_cwd) => {}
+                            ResumeMismatchAction::ContinueDifferentHost => {}
                         }
                     }
                 }
