@@ -60,16 +60,6 @@ fn write_stdout(s: &str) {
     nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
 }
 
-/// Read a single key from stdin (terminal must already be in raw mode).
-fn read_single_key() -> Option<u8> {
-    let stdin_fd = std::io::stdin().as_raw_fd();
-    let mut buf = [0u8; 1];
-    match nix::unistd::read(stdin_fd, &mut buf) {
-        Ok(1) => Some(buf[0]),
-        _ => None,
-    }
-}
-
 /// Strip `-YYYYMMDD` date suffix from model name for display.
 /// e.g. "claude-sonnet-4-5-20250929" → "claude-sonnet-4-5"
 fn strip_date_suffix(model: &str) -> &str {
@@ -1364,41 +1354,26 @@ impl ChatSession {
 
         if !same_host {
             // Different machine
-            write_stdout(&format!(
-                "\x1b[33mThis conversation was last used on \x1b[1m{}\x1b[22m (current: \x1b[1m{}\x1b[22m)\x1b[0m\r\n",
+            let title = format!(
+                "This conversation was last used on {} (current: {})",
                 thread_host, cur_host,
-            ));
-            write_stdout("\x1b[33mContinue? [Y]es / [C]ancel: \x1b[0m");
-            match read_single_key() {
-                Some(b'y') | Some(b'Y') => {
-                    write_stdout("\r\n");
-                    Some(ResumeMismatchAction::ContinueDifferentHost)
-                }
-                _ => {
-                    write_stdout("\r\n");
-                    Some(ResumeMismatchAction::Cancel)
-                }
+            );
+            let items = &["[Y]es, continue", "[C]ancel"];
+            match widgets::picker::pick_one(&title, items) {
+                Some(0) => Some(ResumeMismatchAction::ContinueDifferentHost),
+                _ => Some(ResumeMismatchAction::Cancel),
             }
         } else {
             // Same machine, different cwd
-            write_stdout(&format!(
-                "\x1b[33mThis conversation was last used in \x1b[1m{}\x1b[22m\x1b[0m\r\n",
+            let title = format!(
+                "This conversation was last used in {}",
                 thread_cwd,
-            ));
-            write_stdout("\x1b[33m[Y] cd to previous dir  [N] stay here  [C] cancel: \x1b[0m");
-            match read_single_key() {
-                Some(b'y') | Some(b'Y') => {
-                    write_stdout("\r\n");
-                    Some(ResumeMismatchAction::CdToOld(thread_cwd.to_string()))
-                }
-                Some(b'n') | Some(b'N') => {
-                    write_stdout("\r\n");
-                    Some(ResumeMismatchAction::StayHere(thread_cwd.to_string()))
-                }
-                _ => {
-                    write_stdout("\r\n");
-                    Some(ResumeMismatchAction::Cancel)
-                }
+            );
+            let items = &["[Y] cd to previous dir", "[N] stay here", "[C]ancel"];
+            match widgets::picker::pick_one(&title, items) {
+                Some(0) => Some(ResumeMismatchAction::CdToOld(thread_cwd.to_string())),
+                Some(1) => Some(ResumeMismatchAction::StayHere(thread_cwd.to_string())),
+                _ => Some(ResumeMismatchAction::Cancel),
             }
         }
     }

@@ -147,6 +147,30 @@ fn redraw_item(text: &str, selected: bool, checked: bool, multi: bool) {
     nix::unistd::write(std::io::stdout(), line.as_bytes()).ok();
 }
 
+/// Extract shortcut key from item text.
+/// Looks for `[X]` pattern where X is a single ASCII letter.
+/// Returns the lowercase byte of the shortcut key.
+fn extract_shortcut(text: &str) -> Option<u8> {
+    let bytes = text.as_bytes();
+    for i in 0..bytes.len().saturating_sub(2) {
+        if bytes[i] == b'[' && bytes[i + 2] == b']' && bytes[i + 1].is_ascii_alphabetic() {
+            return Some(bytes[i + 1].to_ascii_lowercase());
+        }
+    }
+    None
+}
+
+/// Build shortcut key → item index map from items.
+fn build_shortcut_map(items: &[&str]) -> std::collections::HashMap<u8, usize> {
+    let mut map = std::collections::HashMap::new();
+    for (i, item) in items.iter().enumerate() {
+        if let Some(key) = extract_shortcut(item) {
+            map.entry(key).or_insert(i);
+        }
+    }
+    map
+}
+
 /// Core picker loop. Returns selected index(es) or None on ESC.
 fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize) -> Option<Vec<usize>> {
     if items.is_empty() {
@@ -159,6 +183,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize) -
     let max_scroll = items.len().saturating_sub(vis);
     let mut scroll_offset: usize = cursor.saturating_sub(vis / 2).min(max_scroll);
     let mut checked = vec![false; items.len()];
+    let shortcuts = build_shortcut_map(items);
 
     // Hide cursor during picker interaction
     nix::unistd::write(std::io::stdout(), b"\x1b[?25l").ok();
@@ -272,7 +297,25 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize) -
                         return Some(vec![cursor]);
                     }
                 }
-            _ => {} // Ignore other input
+            key => {
+                // Check shortcut keys (e.g., 'y' for [Y]es)
+                if let Some(&idx) = shortcuts.get(&key.to_ascii_lowercase()) {
+                    let cleanup = render_cleanup(items.len());
+                    nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
+                    nix::unistd::write(std::io::stdout(), b"\x1b[?25h").ok();
+                    if multi {
+                        checked[idx] = !checked[idx];
+                        let selected: Vec<usize> = checked.iter()
+                            .enumerate()
+                            .filter(|(_, &c)| c)
+                            .map(|(i, _)| i)
+                            .collect();
+                        return Some(selected);
+                    } else {
+                        return Some(vec![idx]);
+                    }
+                }
+            }
         }
     }
 
@@ -536,5 +579,44 @@ mod tests {
         assert!(!all_text.contains("Title:"), "title should be erased");
         assert!(!all_text.contains("item"), "items should be erased");
         assert!(!all_text.contains("confirm"), "hint should be erased");
+    }
+
+    // -- Shortcut key tests --
+
+    #[test]
+    fn test_extract_shortcut_basic() {
+        assert_eq!(extract_shortcut("[Y]es"), Some(b'y'));
+        assert_eq!(extract_shortcut("[N]o"), Some(b'n'));
+        assert_eq!(extract_shortcut("[C]ancel"), Some(b'c'));
+    }
+
+    #[test]
+    fn test_extract_shortcut_mid_text() {
+        assert_eq!(extract_shortcut("cd to previous dir [Y]"), Some(b'y'));
+        assert_eq!(extract_shortcut("stay [H]ere"), Some(b'h'));
+    }
+
+    #[test]
+    fn test_extract_shortcut_none() {
+        assert_eq!(extract_shortcut("No shortcut"), None);
+        assert_eq!(extract_shortcut("[]empty"), None);
+        assert_eq!(extract_shortcut("[12]digits"), None);
+    }
+
+    #[test]
+    fn test_build_shortcut_map() {
+        let items = vec!["[Y]es", "[N]o", "[C]ancel"];
+        let map = build_shortcut_map(&items);
+        assert_eq!(map.get(&b'y'), Some(&0));
+        assert_eq!(map.get(&b'n'), Some(&1));
+        assert_eq!(map.get(&b'c'), Some(&2));
+        assert_eq!(map.get(&b'x'), None);
+    }
+
+    #[test]
+    fn test_build_shortcut_map_first_wins() {
+        let items = vec!["[A] first", "[A] second"];
+        let map = build_shortcut_map(&items);
+        assert_eq!(map.get(&b'a'), Some(&0));
     }
 }
