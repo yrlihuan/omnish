@@ -1,10 +1,18 @@
 use std::time::Instant;
 
+/// Send up to this many bytes per command without any throttling.
 const DEFAULT_THRESHOLD_BYTES: u64 = 2 * 1024 * 1024; // 2MB
+
+/// Hard stop: never send more than this many bytes for a single command.
+/// Prevents programs like `dstat` from streaming unbounded output to the daemon.
+const DEFAULT_MAX_BYTES: u64 = 4 * 1024 * 1024; // 4MB
+
+/// After crossing the threshold, trickle at this rate (bytes/sec).
 const DEFAULT_THROTTLE_RATE: f64 = 10_240.0; // 10kB/s
 
 pub struct OutputThrottle {
     threshold_bytes: u64,
+    max_bytes: u64,
     throttle_rate: f64,
     command_bytes: u64,
     bucket: f64,
@@ -15,6 +23,7 @@ impl OutputThrottle {
     pub fn new() -> Self {
         Self {
             threshold_bytes: DEFAULT_THRESHOLD_BYTES,
+            max_bytes: DEFAULT_MAX_BYTES,
             throttle_rate: DEFAULT_THROTTLE_RATE,
             command_bytes: 0,
             bucket: 0.0,
@@ -24,9 +33,15 @@ impl OutputThrottle {
 
     /// Check whether a chunk of `chunk_len` bytes should be sent.
     /// Under the threshold: always true.
-    /// Over the threshold: uses token bucket at `throttle_rate` bytes/sec.
+    /// Over the hard cap: always false (hard stop).
+    /// In between: token bucket at `throttle_rate` bytes/sec.
     pub fn should_send(&mut self, chunk_len: usize) -> bool {
         let len = chunk_len as u64;
+
+        // Hard cap: command has generated too much output, stop entirely.
+        if self.command_bytes >= self.max_bytes {
+            return false;
+        }
 
         // Normal phase: under threshold
         if self.command_bytes + len <= self.threshold_bytes {
@@ -123,6 +138,20 @@ mod tests {
         t.record_sent(10240);
         // Immediately after, bucket drained, next 10240 fails
         assert!(!t.should_send(10240));
+    }
+
+    #[test]
+    fn test_hard_cap_stops_sending() {
+        let mut t = OutputThrottle::new();
+        // Exhaust the hard cap by recording max_bytes sent
+        t.command_bytes = DEFAULT_MAX_BYTES;
+        assert!(!t.should_send(1));
+        // Even after time passes, hard cap holds
+        t.last_refill = Instant::now() - std::time::Duration::from_secs(100);
+        assert!(!t.should_send(1));
+        // Reset clears the cap
+        t.reset();
+        assert!(t.should_send(1));
     }
 
     #[test]
