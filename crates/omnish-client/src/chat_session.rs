@@ -1371,10 +1371,10 @@ impl ChatSession {
         } else {
             // Same machine, different cwd
             let title = format!(
-                "This conversation was in {}",
+                "Switch to {} (last conversation path)?",
                 thread_cwd,
             );
-            let items = &["[Y] cd to previous dir", "[N] stay here", "[C]ancel"];
+            let items = &["[Y]es", "[N]o, stay here", "[C]ancel"];
             match widgets::picker::pick_one(&title, items) {
                 Some(0) => Some(ResumeMismatchAction::CdToOld(thread_cwd.to_string())),
                 Some(1) => Some(ResumeMismatchAction::StayHere(thread_cwd.to_string())),
