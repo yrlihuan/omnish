@@ -1073,6 +1073,7 @@ dependencies = [
 name = "omnish-plugin"
 version = "0.8.1"
 dependencies = [
+ "dirs",
  "glob",
  "grep",
  "ignore",

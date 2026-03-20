@@ -1697,7 +1697,7 @@ async fn enter_chat_mode(
     notice_queue::defer();
     let saved_input = shell_input.input().to_string();
 
-    let exit_action = if let Some(ref rpc) = daemon_conn {
+    let (exit_action, pending_cd) = if let Some(ref rpc) = daemon_conn {
         let shell_pid = proxy.child_pid() as u32;
         let dbg_fn = || debug_client_state(
             shell_input, interceptor, shell_completer,
@@ -1705,24 +1705,32 @@ async fn enter_chat_mode(
             shell_pid, col_tracker, locked,
         );
         let action;
+        let pending_cd;
         {
             let mut session = chat_session::ChatSession::new(std::mem::take(chat_history));
             action = session.run(rpc, session_id, proxy, initial_msg, &dbg_fn, auto_update_enabled, onboarded, col_tracker.col, col_tracker.row).await;
             let new_tid = session.thread_id().map(String::from);
             event_log::push(format!("chat exit: last_thread_id {:?} -> {:?}", last_thread_id, new_tid));
             *last_thread_id = new_tid;
+            pending_cd = session.pending_cd().map(String::from);
             *chat_history = session.into_history();
         }
-        action
+        (action, pending_cd)
     } else {
         let err = display::render_error("Daemon not connected");
         nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-        chat_session::ChatExitAction::Normal
+        (chat_session::ChatExitAction::Normal, None)
     };
 
     nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
     notice_queue::flush();
-    proxy.write_all(b"\x15\x0b\r").ok();
+    proxy.write_all(b"\x15\x0b").ok(); // Ctrl-U + Ctrl-K: clear line
+    // Execute pending cd (from resume mismatch) before restoring input
+    if let Some(ref dir) = pending_cd {
+        proxy.write_all(format!("cd {}\r", dir).as_bytes()).ok();
+    } else {
+        proxy.write_all(b"\r").ok();
+    }
     if !saved_input.is_empty() {
         proxy.write_all(saved_input.as_bytes()).ok();
     }

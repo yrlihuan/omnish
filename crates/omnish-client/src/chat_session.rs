@@ -54,6 +54,8 @@ pub struct ChatSession {
     resumed_model: Option<String>,
     /// Shell's current working directory (from /proc/pid/cwd), set at chat entry.
     shell_cwd: Option<String>,
+    /// Directory to cd into after chat mode exits (set by resume mismatch handler).
+    pending_cd: Option<String>,
     /// Total terminal lines printed (for tracking tool section position).
     lines_printed: usize,
     /// Line position where the current batch of tool headers starts.
@@ -97,6 +99,7 @@ impl ChatSession {
             pending_model: None,
             resumed_model: None,
             shell_cwd: None,
+            pending_cd: None,
             lines_printed: 0,
             tool_section_start: None,
             tool_section_hist_idx: None,
@@ -110,6 +113,11 @@ impl ChatSession {
     /// Return the thread ID used in this chat session (if any).
     pub fn thread_id(&self) -> Option<&str> {
         self.current_thread_id.as_deref()
+    }
+
+    /// Return a pending cd path set by resume mismatch handler.
+    pub fn pending_cd(&self) -> Option<&str> {
+        self.pending_cd.as_deref()
     }
 
     fn show_thinking(&mut self) {
@@ -759,6 +767,21 @@ impl ChatSession {
                             if send_failed {
                                 break 'stream;
                             }
+
+                            // Sync shell_cwd after tools execute — tools like glob/read may
+                            // change cwd via picker interaction, and we need the updated cwd
+                            // for the next round of tool calls.
+                            if let Some(cwd) = super::get_shell_cwd(proxy.child_pid() as u32) {
+                                self.shell_cwd = Some(cwd.clone());
+                                let mut attrs = std::collections::HashMap::new();
+                                attrs.insert("shell_cwd".to_string(), cwd);
+                                let msg = Message::SessionUpdate(SessionUpdate {
+                                    session_id: session_id.to_string(),
+                                    timestamp_ms: crate::timestamp_ms(),
+                                    attrs,
+                                });
+                                let _ = rpc.call(msg).await;
+                            }
                         }
                     }
                     Err(_) => {
@@ -1290,10 +1313,17 @@ impl ChatSession {
                                 return false;
                             }
                             ResumeMismatchAction::CdToOld(old_cwd) => {
-                                write_stdout(&format!(
-                                    "\x1b[2;37m(hint: cd {})\x1b[0m\r\n",
-                                    old_cwd
-                                ));
+                                // Update shell_cwd so daemon uses correct cwd for bash tools
+                                self.shell_cwd = Some(old_cwd.clone());
+                                let mut attrs = std::collections::HashMap::new();
+                                attrs.insert("shell_cwd".to_string(), old_cwd.clone());
+                                let msg = Message::SessionUpdate(SessionUpdate {
+                                    session_id: session_id.to_string(),
+                                    timestamp_ms: crate::timestamp_ms(),
+                                    attrs,
+                                });
+                                let _ = rpc.send(msg).await;
+                                self.pending_cd = Some(old_cwd);
                             }
                             ResumeMismatchAction::StayHere(_old_cwd) => {}
                             ResumeMismatchAction::ContinueDifferentHost => {}
