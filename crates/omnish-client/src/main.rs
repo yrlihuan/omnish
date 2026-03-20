@@ -810,7 +810,9 @@ async fn main() -> Result<()> {
                             {
                                 let mut session = chat_session::ChatSession::new(std::mem::take(&mut chat_history));
                                 session.run(rpc, &session_id, &proxy, initial, &dbg_fn, &auto_update_enabled, &onboarded, col_tracker.col, col_tracker.row).await;
-                                last_thread_id = session.thread_id().map(String::from);
+                                let new_tid = session.thread_id().map(String::from);
+                                event_log::push(format!("chat exit: last_thread_id {:?} -> {:?}", last_thread_id, new_tid));
+                                last_thread_id = new_tid;
                                 chat_history = session.into_history();
                             }
                         } else {
@@ -859,9 +861,12 @@ async fn main() -> Result<()> {
                                     Some(ref tid) => format!("/resume_tid {}", tid),
                                     None => "/resume 1".to_string(),
                                 };
+                                event_log::push(format!("resume_chat: last_thread_id={:?} cmd={}", last_thread_id, resume_cmd));
                                 let mut session = chat_session::ChatSession::new(std::mem::take(&mut chat_history));
                                 session.run(rpc, &session_id, &proxy, Some(resume_cmd), &dbg_fn, &auto_update_enabled, &onboarded, col_tracker.col, col_tracker.row).await;
-                                last_thread_id = session.thread_id().map(String::from);
+                                let new_tid = session.thread_id().map(String::from);
+                                event_log::push(format!("resume_chat exit: last_thread_id {:?} -> {:?}", last_thread_id, new_tid));
+                                last_thread_id = new_tid;
                                 chat_history = session.into_history();
                             }
                         } else {
