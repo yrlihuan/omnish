@@ -212,6 +212,26 @@ pub struct PluginsConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Sandbox config
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct SandboxConfig {
+    /// Per-tool permit rules. Key is tool_name (e.g. "bash").
+    /// When any rule matches, the tool runs without Landlock sandbox.
+    #[serde(default)]
+    pub plugins: HashMap<String, SandboxPluginConfig>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct SandboxPluginConfig {
+    /// Rules in format: "<param_field> <operator> <value>"
+    /// Operators: starts_with, contains, equals, matches (regex)
+    #[serde(default)]
+    pub permit_rules: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Daemon config
 // ---------------------------------------------------------------------------
 
@@ -231,6 +251,8 @@ pub struct DaemonConfig {
     /// Example: [tools.web_search] api_key = "..."
     #[serde(default)]
     pub tools: HashMap<String, HashMap<String, serde_json::Value>>,
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
 }
 
 impl Default for DaemonConfig {
@@ -242,6 +264,7 @@ impl Default for DaemonConfig {
             tasks: TasksConfig::default(),
             plugins: PluginsConfig::default(),
             tools: HashMap::new(),
+            sandbox: SandboxConfig::default(),
         }
     }
 }

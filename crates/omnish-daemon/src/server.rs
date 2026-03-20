@@ -108,6 +108,8 @@ async fn thread_locked_error(mgr: &SessionManager, owner_session_id: &str) -> se
     })
 }
 
+type SandboxRules = Arc<HashMap<String, Vec<crate::sandbox_rules::PermitRule>>>;
+
 pub struct DaemonServer {
     session_mgr: Arc<SessionManager>,
     llm_backend: Option<Arc<dyn LlmBackend>>,
@@ -118,6 +120,7 @@ pub struct DaemonServer {
     active_threads: ActiveThreads,
     chat_model_name: Option<String>,
     tool_params: HashMap<String, HashMap<String, serde_json::Value>>,
+    sandbox_rules: SandboxRules,
 }
 
 /// Shallow-merge params into a JSON object. Source keys overwrite target keys.
@@ -226,6 +229,7 @@ impl DaemonServer {
         plugin_mgr: Arc<PluginManager>,
         chat_model_name: Option<String>,
         tool_params: HashMap<String, HashMap<String, serde_json::Value>>,
+        sandbox_rules: HashMap<String, Vec<crate::sandbox_rules::PermitRule>>,
     ) -> Self {
         Self {
             session_mgr,
@@ -237,6 +241,7 @@ impl DaemonServer {
             active_threads: Arc::new(Mutex::new(HashMap::new())),
             chat_model_name,
             tool_params,
+            sandbox_rules: Arc::new(sandbox_rules),
         }
     }
 
@@ -258,6 +263,7 @@ impl DaemonServer {
         let active_threads = self.active_threads.clone();
         let chat_model_name = self.chat_model_name.clone();
         let tool_params = Arc::new(self.tool_params.clone());
+        let sandbox_rules = self.sandbox_rules.clone();
 
         // Periodically sweep stale pending agent loop entries
         let pending_cleanup = self.pending_agent_loops.clone();
@@ -319,9 +325,10 @@ impl DaemonServer {
                     let active_threads = active_threads.clone();
                     let chat_model_name = chat_model_name.clone();
                     let tool_params = tool_params.clone();
+                    let sandbox_rules = sandbox_rules.clone();
                     let io_requests = io_requests_handler.clone();
                     let io_bytes = io_bytes_handler.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &pending_loops, &active_threads, &chat_model_name, &tool_params, &io_requests, &io_bytes).await })
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &pending_loops, &active_threads, &chat_model_name, &tool_params, &sandbox_rules, &io_requests, &io_bytes).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -342,6 +349,7 @@ async fn handle_message(
     active_threads: &ActiveThreads,
     chat_model_name: &Option<String>,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
+    sandbox_rules: &SandboxRules,
     io_requests: &Arc<AtomicU64>,
     io_bytes: &Arc<AtomicU64>,
 ) -> Vec<Message> {
@@ -699,11 +707,11 @@ async fn handle_message(
         }
         Message::ChatMessage(cm) => {
             touch_thread(active_threads, &cm.thread_id, conv_mgr).await;
-            return handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, pending_loops, tool_params).await;
+            return handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, pending_loops, tool_params, sandbox_rules).await;
         }
         Message::ChatToolResult(tr) => {
             touch_thread(active_threads, &tr.thread_id, conv_mgr).await;
-            return handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, pending_loops, tool_params).await;
+            return handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, pending_loops, tool_params, sandbox_rules).await;
         }
         Message::ChatInterrupt(ci) => {
             // Clean up pending agent loop and store partial results
@@ -816,6 +824,7 @@ async fn handle_chat_message(
     plugin_mgr: &Arc<PluginManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
+    sandbox_rules: &SandboxRules,
 ) -> Vec<Message> {
     if llm.is_none() {
         return vec![Message::ChatResponse(ChatResponse {
@@ -891,7 +900,7 @@ async fn handle_chat_message(
         effective_backend,
     };
 
-    run_agent_loop(state, conv_mgr, plugin_mgr, pending_loops, tool_params).await
+    run_agent_loop(state, conv_mgr, plugin_mgr, pending_loops, tool_params, sandbox_rules).await
 }
 
 /// Handle a ChatToolResult from the client — accumulate results, resume when all are received.
@@ -902,6 +911,7 @@ async fn handle_tool_result(
     plugin_mgr: &Arc<PluginManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
+    sandbox_rules: &SandboxRules,
 ) -> Vec<Message> {
     let mut map = pending_loops.lock().await;
     let state = match map.get_mut(&tr.request_id) {
@@ -1007,7 +1017,7 @@ async fn handle_tool_result(
     state.iteration += 1;
 
     // Prepend update messages before agent loop continuation messages
-    let mut loop_messages = run_agent_loop(state, conv_mgr, plugin_mgr, pending_loops, tool_params).await;
+    let mut loop_messages = run_agent_loop(state, conv_mgr, plugin_mgr, pending_loops, tool_params, sandbox_rules).await;
     update_messages.append(&mut loop_messages);
     update_messages
 }
@@ -1020,6 +1030,7 @@ async fn run_agent_loop(
     plugin_mgr: &Arc<PluginManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
+    sandbox_rules: &SandboxRules,
 ) -> Vec<Message> {
     let backend = &state.effective_backend;
 
@@ -1111,6 +1122,17 @@ async fn run_agent_loop(
                             if let Some(config_params) = tool_params.get(&tc.name) {
                                 merge_tool_params(&mut merged_input, config_params);
                             }
+                            let matched_rule = crate::sandbox_rules::check_bypass(
+                                sandbox_rules.get(&tc.name).map(|v| v.as_slice()).unwrap_or(&[]),
+                                &tc.input,
+                            );
+                            if let Some(rule) = matched_rule {
+                                tracing::warn!(
+                                    "sandbox bypass: tool={}, rule='{}', input={}",
+                                    tc.name, rule,
+                                    serde_json::to_string(&tc.input).unwrap_or_default(),
+                                );
+                            }
                             messages.push(Message::ChatToolCall(ChatToolCall {
                                 request_id: state.cm.request_id.clone(),
                                 thread_id: state.cm.thread_id.clone(),
@@ -1118,7 +1140,7 @@ async fn run_agent_loop(
                                 tool_call_id: tc.id.clone(),
                                 input: serde_json::to_string(&merged_input).unwrap_or_default(),
                                 plugin_name: plugin_mgr.tool_plugin_name(&tc.name).unwrap_or("builtin").to_string(),
-                                sandboxed: plugin_mgr.tool_sandboxed(&tc.name).unwrap_or(true),
+                                sandboxed: matched_rule.is_none(),
                             }));
                             has_client_tools = true;
                         } else {

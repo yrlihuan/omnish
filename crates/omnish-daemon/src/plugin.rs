@@ -339,13 +339,6 @@ impl PluginManager {
             .map(|&(pi, _)| self.plugins[pi].dir_name.as_str())
     }
 
-    /// Return whether the tool should be sandboxed. Always true — plugins cannot opt out.
-    pub fn tool_sandboxed(&self, tool_name: &str) -> Option<bool> {
-        self.tool_index
-            .get(tool_name)
-            .map(|_| true)
-    }
-
     /// Return the display name for the given tool.
     pub fn tool_display_name(&self, tool_name: &str) -> Option<&str> {
         self.tool_index
@@ -762,17 +755,6 @@ mod tests {
         let mgr = PluginManager::load(tmp.path());
         let desc = get_description(&mgr, "bash");
         assert!(desc.contains("bash"));  // embedded description mentions bash
-    }
-
-    #[test]
-    fn test_tool_sandboxed() {
-        let tmp = tempfile::tempdir().unwrap();
-        // All tools are always sandboxed
-        let mgr = PluginManager::load(tmp.path());
-        assert_eq!(mgr.tool_sandboxed("bash"), Some(true));
-        assert_eq!(mgr.tool_sandboxed("edit"), Some(true));
-        assert_eq!(mgr.tool_sandboxed("write"), Some(true));
-        assert_eq!(mgr.tool_sandboxed("nonexistent"), None);
     }
 
     #[test]

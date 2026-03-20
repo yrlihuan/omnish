@@ -641,6 +641,12 @@ impl ChatSession {
                                 let tool_name = tc.tool_name.clone();
                                 let plugin_name = tc.plugin_name.clone();
                                 let sandboxed = tc.sandboxed;
+                                if !sandboxed {
+                                    crate::event_log::push(format!(
+                                        "tool '{}' running without sandbox (permit rule match)",
+                                        tc.tool_name,
+                                    ));
+                                }
                                 let tool_input: serde_json::Value =
                                     serde_json::from_str(&tc.input).unwrap_or_default();
                                 let cwd = shell_cwd.clone();
