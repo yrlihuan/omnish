@@ -1271,12 +1271,16 @@ impl ChatSession {
         match result {
             Ok(Ok(Message::ChatReady(ready))) if ready.request_id == rid => {
                 crate::event_log::push(format!("resume_tid: got ChatReady error={:?}", ready.error));
-                // Check cwd/host mismatch before applying
+                // Render history first, then check mismatch
+                self.apply_chat_ready(ready.clone());
+                crate::event_log::push("resume_tid: apply_chat_ready done");
+
                 if ready.error.is_none() && !ready.thread_id.is_empty() {
                     if let Some(action) = self.check_resume_mismatch(&ready) {
                         match action {
                             ResumeMismatchAction::Cancel => {
                                 crate::event_log::push("resume_tid: user cancelled due to cwd/host mismatch");
+                                write_stdout("\x1b[2;37m(User canceled)\x1b[0m\r\n");
                                 // Release the thread claim
                                 let end_msg = Message::ChatEnd(ChatEnd {
                                     session_id: session_id.to_string(),
@@ -1286,8 +1290,6 @@ impl ChatSession {
                                 return false;
                             }
                             ResumeMismatchAction::CdToOld(old_cwd) => {
-                                // Note: actual cd happens in the shell, not here.
-                                // We inform the user they should cd manually.
                                 write_stdout(&format!(
                                     "\x1b[2;37m(hint: cd {})\x1b[0m\r\n",
                                     old_cwd
@@ -1298,8 +1300,6 @@ impl ChatSession {
                         }
                     }
                 }
-                self.apply_chat_ready(ready);
-                crate::event_log::push("resume_tid: apply_chat_ready done");
                 crate::event_log::push("resume_tid: done");
                 return true;
             }
