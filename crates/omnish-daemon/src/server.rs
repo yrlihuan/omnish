@@ -8,6 +8,7 @@ use omnish_llm::backend::{ContentBlock, LlmBackend, LlmRequest, StopReason, Trig
 use omnish_protocol::message::*;
 use omnish_transport::rpc_server::RpcServer;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_rustls::TlsAcceptor;
@@ -268,8 +269,14 @@ impl DaemonServer {
             }
         });
 
-        // Periodically release idle thread claims (safety net: 30m10s)
+        // Counters for IoData traffic over the last minute.
+        let io_requests = Arc::new(AtomicU64::new(0));
+        let io_bytes = Arc::new(AtomicU64::new(0));
+
+        // Periodically release idle thread claims (safety net: 30m10s) and log IoData stats.
         let idle_threads = self.active_threads.clone();
+        let stats_requests = io_requests.clone();
+        let stats_bytes = io_bytes.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             let max_idle = std::time::Duration::from_secs(30 * 60 + 10);
@@ -284,9 +291,14 @@ impl DaemonServer {
                         true
                     }
                 });
+                let reqs = stats_requests.swap(0, Ordering::Relaxed);
+                let bytes = stats_bytes.swap(0, Ordering::Relaxed);
+                tracing::debug!("IoData last 60s: {} requests, {} bytes", reqs, bytes);
             }
         });
 
+        let io_requests_handler = io_requests.clone();
+        let io_bytes_handler = io_bytes.clone();
         server
             .serve(
                 move |msg| {
@@ -299,7 +311,9 @@ impl DaemonServer {
                     let active_threads = active_threads.clone();
                     let chat_model_name = chat_model_name.clone();
                     let tool_params = tool_params.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &pending_loops, &active_threads, &chat_model_name, &tool_params).await })
+                    let io_requests = io_requests_handler.clone();
+                    let io_bytes = io_bytes_handler.clone();
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &pending_loops, &active_threads, &chat_model_name, &tool_params, &io_requests, &io_bytes).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -320,6 +334,8 @@ async fn handle_message(
     active_threads: &ActiveThreads,
     chat_model_name: &Option<String>,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
+    io_requests: &Arc<AtomicU64>,
+    io_bytes: &Arc<AtomicU64>,
 ) -> Vec<Message> {
     // Shadow with reference for existing code; use mgr_arc for spawned tasks
     let mgr_arc = mgr;
@@ -349,6 +365,8 @@ async fn handle_message(
             Message::Ack
         }
         Message::IoData(io) => {
+            io_requests.fetch_add(1, Ordering::Relaxed);
+            io_bytes.fetch_add(io.data.len() as u64, Ordering::Relaxed);
             let dir = match io.direction {
                 IoDirection::Input => 0,
                 IoDirection::Output => 1,
