@@ -140,7 +140,7 @@ async fn async_main() -> Result<i32> {
     let periodic_summary_config = config.tasks.periodic_summary.clone();
     let disk_cleanup_config = config.tasks.disk_cleanup.clone();
     let auto_update_config = config.tasks.auto_update.clone();
-    let session_mgr = Arc::new(SessionManager::new(omnish_dir.clone(), config.context));
+    let session_mgr = Arc::new(SessionManager::new(omnish_dir.clone(), config.context.clone()));
     match session_mgr.load_existing().await {
         Ok(count) if count > 0 => tracing::info!("loaded {} existing session(s)", count),
         Ok(_) => {}
@@ -257,6 +257,21 @@ async fn async_main() -> Result<i32> {
     let plugins_dir = omnish_dir.join("plugins");
     let plugin_mgr = Arc::new(omnish_daemon::plugin::PluginManager::load(&plugins_dir));
 
+    // Shared file watcher for config and plugin hot-reload
+    let file_watcher = Arc::new(file_watcher::FileWatcher::new());
+    let fw = Arc::clone(&file_watcher);
+    tokio::spawn(async move { fw.run().await });
+
+    // Config watcher: monitors daemon.toml, notifies subscribers on section changes
+    let config_path = std::env::var("OMNISH_DAEMON_CONFIG")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| omnish_dir.join("daemon.toml"));
+    let config_watcher = config_watcher::ConfigWatcher::new(
+        config_path,
+        config.clone(),
+        &file_watcher,
+    );
+
     // Watch tool.override.json files for hot-reload
     let plugin_mgr_watcher = Arc::clone(&plugin_mgr);
     tokio::spawn(async move { plugin_mgr_watcher.watch_overrides().await });
@@ -268,7 +283,26 @@ async fn async_main() -> Result<i32> {
         .map(|bc| bc.model.clone());
 
     let sandbox_rules = sandbox_rules::compile_config(&config.sandbox);
-    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, chat_model_name, config.tools, sandbox_rules);
+    let server_sandbox_rules: Arc<std::sync::RwLock<_>> = Arc::new(std::sync::RwLock::new(sandbox_rules));
+
+    // Hot-reload sandbox rules on config change
+    {
+        let sandbox_rx = config_watcher.subscribe(config_watcher::ConfigSection::Sandbox);
+        let sr = Arc::clone(&server_sandbox_rules);
+        tokio::spawn(async move {
+            let mut rx = sandbox_rx;
+            while rx.changed().await.is_ok() {
+                let config = rx.borrow_and_update().clone();
+                let new_rules = crate::sandbox_rules::compile_config(&config.sandbox);
+                let rule_count: usize = new_rules.values().map(|v| v.len()).sum();
+                let tool_count = new_rules.len();
+                *sr.write().unwrap() = new_rules;
+                tracing::info!("sandbox rules reloaded: {} rules for {} tools", rule_count, tool_count);
+            }
+        });
+    }
+
+    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, chat_model_name, config.tools, Arc::clone(&server_sandbox_rules));
 
     tracing::info!("starting omnishd at {}", socket_path);
 

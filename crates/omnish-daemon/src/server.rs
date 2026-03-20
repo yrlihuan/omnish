@@ -229,7 +229,7 @@ impl DaemonServer {
         plugin_mgr: Arc<PluginManager>,
         chat_model_name: Option<String>,
         tool_params: HashMap<String, HashMap<String, serde_json::Value>>,
-        sandbox_rules: HashMap<String, Vec<crate::sandbox_rules::PermitRule>>,
+        sandbox_rules: SandboxRules,
     ) -> Self {
         Self {
             session_mgr,
@@ -241,7 +241,7 @@ impl DaemonServer {
             active_threads: Arc::new(Mutex::new(HashMap::new())),
             chat_model_name,
             tool_params,
-            sandbox_rules: Arc::new(std::sync::RwLock::new(sandbox_rules)),
+            sandbox_rules,
         }
     }
 
