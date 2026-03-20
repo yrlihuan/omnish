@@ -580,31 +580,12 @@ async fn main() -> Result<()> {
                     if matches!(action, InterceptAction::Chat(_)) {
                         // notice_queue::push(&format!(": timeout ({}ms)", t.elapsed().as_millis()));
                         event_log::push("chat mode enter (timeout)");
-                        notice_queue::defer();
-                        completer.clear();
-                        let saved_input = shell_input.input().to_string();
-                        if let Some(ref rpc) = daemon_conn {
-                            let shell_pid = proxy.child_pid() as u32;
-                            let dbg_fn = || debug_client_state(
-                                &shell_input, &interceptor, &shell_completer,
-                                &daemon_conn, &osc133_detector, &last_readline_content,
-                                shell_pid, &col_tracker,
-                            );
-                            {
-                                let mut session = chat_session::ChatSession::new(std::mem::take(&mut chat_history));
-                                session.run(rpc, &session_id, &proxy, None, &dbg_fn, &auto_update_enabled, &onboarded, col_tracker.col, col_tracker.row).await;
-                                chat_history = session.into_history();
-                            }
-                        } else {
-                            let err = display::render_error("Daemon not connected");
-                            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                        }
-                        nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
-                        notice_queue::flush();
-                        proxy.write_all(b"\x15\x0b\r").ok();
-                        if !saved_input.is_empty() {
-                            proxy.write_all(saved_input.as_bytes()).ok();
-                        }
+                        enter_chat_mode(
+                            None, &daemon_conn, &mut chat_history, &mut last_thread_id,
+                            &session_id, &proxy, &shell_input, &interceptor, &shell_completer,
+                            &osc133_detector, &last_readline_content, &col_tracker,
+                            &auto_update_enabled, &onboarded,
+                        ).await;
                     }
                 }
             }
@@ -788,98 +769,30 @@ async fn main() -> Result<()> {
                     InterceptAction::Chat(msg) => {
                         prefix_match_time = None;
                         event_log::push("chat mode enter");
-                        notice_queue::defer();
                         completer.clear();
-                        // Save pre-chat input to restore after chat (issue #24)
-                        let saved_input = shell_input.input().to_string();
-
-                        // Enter chat mode loop (pass initial message if any)
-                        if let Some(ref rpc) = daemon_conn {
-                            let initial = if msg.trim().is_empty() { None } else { Some(msg) };
-                            let shell_pid = proxy.child_pid() as u32;
-                            let dbg_fn = || debug_client_state(
-                                &shell_input,
-                                &interceptor,
-                                &shell_completer,
-                                &daemon_conn,
-                                &osc133_detector,
-                                &last_readline_content,
-                                shell_pid,
-                                &col_tracker,
-                            );
-                            {
-                                let mut session = chat_session::ChatSession::new(std::mem::take(&mut chat_history));
-                                session.run(rpc, &session_id, &proxy, initial, &dbg_fn, &auto_update_enabled, &onboarded, col_tracker.col, col_tracker.row).await;
-                                let new_tid = session.thread_id().map(String::from);
-                                event_log::push(format!("chat exit: last_thread_id {:?} -> {:?}", last_thread_id, new_tid));
-                                last_thread_id = new_tid;
-                                chat_history = session.into_history();
-                            }
-                        } else {
-                            let err = display::render_error("Daemon not connected");
-                            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                        }
-
-                        // Immediately erase the chat "> " prompt for instant feedback
-                        nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
-
-                        // Flush deferred notices now that we're back in command mode
-                        notice_queue::flush();
-
-                        // Clear bash readline before restoring.
-                        // Ctrl-U (kill backward) + Ctrl-K (kill forward) + Enter
-                        // to clear regardless of cursor position (issue #125).
-                        proxy.write_all(b"\x15\x0b\r").ok();
-                        // Restore pre-chat input so user doesn't lose their work (issue #24)
-                        if !saved_input.is_empty() {
-                            proxy.write_all(saved_input.as_bytes()).ok();
-                        }
+                        let initial = if msg.trim().is_empty() { None } else { Some(msg) };
+                        enter_chat_mode(
+                            initial, &daemon_conn, &mut chat_history, &mut last_thread_id,
+                            &session_id, &proxy, &shell_input, &interceptor, &shell_completer,
+                            &osc133_detector, &last_readline_content, &col_tracker,
+                            &auto_update_enabled, &onboarded,
+                        ).await;
                     }
                     InterceptAction::ResumeChat => {
                         let gap_ms = prefix_match_time.map(|t| t.elapsed().as_millis()).unwrap_or(0);
                         prefix_match_time = None;
-                        // notice_queue::push(&format!(":: detected (gap {}ms)", gap_ms));
                         event_log::push(format!("chat mode resume (double-prefix, gap {}ms)", gap_ms));
-                        notice_queue::defer();
                         completer.clear();
-                        let saved_input = shell_input.input().to_string();
-
-                        if let Some(ref rpc) = daemon_conn {
-                            let shell_pid = proxy.child_pid() as u32;
-                            let dbg_fn = || debug_client_state(
-                                &shell_input,
-                                &interceptor,
-                                &shell_completer,
-                                &daemon_conn,
-                                &osc133_detector,
-                                &last_readline_content,
-                                shell_pid,
-                                &col_tracker,
-                            );
-                            {
-                                let resume_cmd = match last_thread_id {
-                                    Some(ref tid) => format!("/resume_tid {}", tid),
-                                    None => "/resume 1".to_string(),
-                                };
-                                event_log::push(format!("resume_chat: last_thread_id={:?} cmd={}", last_thread_id, resume_cmd));
-                                let mut session = chat_session::ChatSession::new(std::mem::take(&mut chat_history));
-                                session.run(rpc, &session_id, &proxy, Some(resume_cmd), &dbg_fn, &auto_update_enabled, &onboarded, col_tracker.col, col_tracker.row).await;
-                                let new_tid = session.thread_id().map(String::from);
-                                event_log::push(format!("resume_chat exit: last_thread_id {:?} -> {:?}", last_thread_id, new_tid));
-                                last_thread_id = new_tid;
-                                chat_history = session.into_history();
-                            }
-                        } else {
-                            let err = display::render_error("Daemon not connected");
-                            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
-                        }
-
-                        nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
-                        notice_queue::flush();
-                        proxy.write_all(b"\x15\x0b\r").ok();
-                        if !saved_input.is_empty() {
-                            proxy.write_all(saved_input.as_bytes()).ok();
-                        }
+                        let resume_cmd = match last_thread_id {
+                            Some(ref tid) => format!("/resume_tid {}", tid),
+                            None => "/resume 1".to_string(),
+                        };
+                        enter_chat_mode(
+                            Some(resume_cmd), &daemon_conn, &mut chat_history, &mut last_thread_id,
+                            &session_id, &proxy, &shell_input, &interceptor, &shell_completer,
+                            &osc133_detector, &last_readline_content, &col_tracker,
+                            &auto_update_enabled, &onboarded,
+                        ).await;
                     }
                     InterceptAction::Tab(_buf) => {
                         // Check if completer has a suggestion to accept
@@ -1692,6 +1605,55 @@ fn tmux_title(name: &str, in_tmux: bool) -> Option<String> {
 /// Extract the command basename (first whitespace-delimited token) for tmux title.
 fn command_basename(cmd: &str) -> &str {
     cmd.split_whitespace().next().unwrap_or(cmd)
+}
+
+/// Unified entry point for chat mode (new chat, resume, or timeout).
+#[allow(clippy::too_many_arguments)]
+async fn enter_chat_mode(
+    initial_msg: Option<String>,
+    daemon_conn: &Option<RpcClient>,
+    chat_history: &mut VecDeque<String>,
+    last_thread_id: &mut Option<String>,
+    session_id: &str,
+    proxy: &PtyProxy,
+    shell_input: &shell_input::ShellInputTracker,
+    interceptor: &interceptor::InputInterceptor,
+    shell_completer: &completion::ShellCompleter,
+    osc133_detector: &omnish_tracker::osc133_detector::Osc133Detector,
+    last_readline_content: &Option<String>,
+    col_tracker: &CursorTracker,
+    auto_update_enabled: &AtomicBool,
+    onboarded: &AtomicBool,
+) {
+    notice_queue::defer();
+    let saved_input = shell_input.input().to_string();
+
+    if let Some(ref rpc) = daemon_conn {
+        let shell_pid = proxy.child_pid() as u32;
+        let dbg_fn = || debug_client_state(
+            shell_input, interceptor, shell_completer,
+            daemon_conn, osc133_detector, last_readline_content,
+            shell_pid, col_tracker,
+        );
+        {
+            let mut session = chat_session::ChatSession::new(std::mem::take(chat_history));
+            session.run(rpc, session_id, proxy, initial_msg, &dbg_fn, auto_update_enabled, onboarded, col_tracker.col, col_tracker.row).await;
+            let new_tid = session.thread_id().map(String::from);
+            event_log::push(format!("chat exit: last_thread_id {:?} -> {:?}", last_thread_id, new_tid));
+            *last_thread_id = new_tid;
+            *chat_history = session.into_history();
+        }
+    } else {
+        let err = display::render_error("Daemon not connected");
+        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+    }
+
+    nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
+    notice_queue::flush();
+    proxy.write_all(b"\x15\x0b\r").ok();
+    if !saved_input.is_empty() {
+        proxy.write_all(saved_input.as_bytes()).ok();
+    }
 }
 
 /// Collect client debug state for /debug client command
