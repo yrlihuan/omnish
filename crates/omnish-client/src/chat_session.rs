@@ -351,7 +351,10 @@ impl ChatSession {
 
             // /resume_tid <thread_id> (internal — used by :: resume shortcut)
             if let Some(tid) = trimmed.strip_prefix("/resume_tid ") {
-                if !self.handle_resume_tid(tid.trim(), session_id, rpc).await {
+                let ok = self.handle_resume_tid(tid.trim(), session_id, rpc).await;
+                crate::event_log::push(format!("resume_tid dispatch: ok={}", ok));
+                if !ok {
+                    crate::event_log::push("resume_tid: breaking out of chat loop");
                     break; // cancelled or failed — exit chat mode entirely
                 }
                 continue;
