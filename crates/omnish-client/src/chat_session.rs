@@ -429,7 +429,7 @@ impl ChatSession {
                             display_text
                         };
                         if let Some(path) = redirect {
-                            super::handle_command_result(&display_text, Some(path), proxy.child_pid() as u32);
+                            super::handle_command_result(&display_text, Some(path), proxy.child_pid() as u32, self.shell_cwd.as_deref());
                         } else {
                             let output = display::render_response(&display_text);
                             write_stdout(&output);
@@ -472,7 +472,7 @@ impl ChatSession {
                     result
                 };
                 if let Some(path) = redirect {
-                    super::handle_command_result(&display_result, Some(path), proxy.child_pid() as u32);
+                    super::handle_command_result(&display_result, Some(path), proxy.child_pid() as u32, self.shell_cwd.as_deref());
                 } else {
                     write_stdout(&display::render_response(&display_result));
                 }
@@ -1324,7 +1324,8 @@ impl ChatSession {
                                     attrs,
                                 });
                                 let _ = rpc.send(msg).await;
-                                self.pending_cd = Some(old_cwd);
+                                self.pending_cd = Some(old_cwd.clone());
+                                write_stdout(&format!("\x1b[2;37mcwd changed: {}\x1b[0m\r\n", old_cwd));
                             }
                             ResumeMismatchAction::StayHere(_old_cwd) => {}
                             ResumeMismatchAction::ContinueDifferentHost => {}

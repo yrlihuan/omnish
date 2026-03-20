@@ -2010,13 +2010,16 @@ pub(crate) fn cmd_display_str(json: &serde_json::Value) -> String {
 }
 
 /// Display a command result or write to file if redirected.
-pub(crate) fn handle_command_result(content: &str, redirect: Option<&str>, shell_pid: u32) {
+/// `cwd_override` overrides the shell process cwd for resolving relative paths
+/// (e.g. when chat session has pending_cd that hasn't been applied to the shell yet).
+pub(crate) fn handle_command_result(content: &str, redirect: Option<&str>, shell_pid: u32, cwd_override: Option<&str>) {
     if let Some(path) = redirect {
-        // Resolve relative paths against shell's current working directory
+        // Resolve relative paths against cwd_override (if set) or shell's current working directory
         let resolved_path = if std::path::Path::new(path).is_relative() {
-            match get_shell_cwd(shell_pid) {
-                Some(shell_cwd) => std::path::Path::new(&shell_cwd).join(path),
-                None => std::path::Path::new(path).to_path_buf(), // Fallback to relative to session cwd
+            let base = cwd_override.map(String::from).or_else(|| get_shell_cwd(shell_pid));
+            match base {
+                Some(cwd) => std::path::Path::new(&cwd).join(path),
+                None => std::path::Path::new(path).to_path_buf(),
             }
         } else {
             std::path::Path::new(path).to_path_buf()
@@ -2076,7 +2079,7 @@ async fn send_daemon_query(
                 std::fs::write("/tmp/omnish_last_response.txt", &display).ok();
                 nix::unistd::write(std::io::stdout(), status.clear().as_bytes()).ok();
             }
-            handle_command_result(&display, redirect, shell_pid);
+            handle_command_result(&display, redirect, shell_pid, None);
             if show_thinking {
                 let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
                 let separator = display::render_separator(cols);
@@ -2114,7 +2117,7 @@ pub(crate) async fn handle_slash_command(
                 result
             };
             if let Some(path) = redirect.as_deref() {
-                handle_command_result(&display_result, Some(path), proxy.child_pid() as u32);
+                handle_command_result(&display_result, Some(path), proxy.child_pid() as u32, None);
             } else {
                 // Command output is plain text — skip markdown rendering
                 // Single-line output: no leading blank line; multi-line: add one for readability
@@ -2135,7 +2138,7 @@ pub(crate) async fn handle_slash_command(
                     result
                 };
                 if let Some(path) = redirect.as_deref() {
-                    handle_command_result(&display_result, Some(path), proxy.child_pid() as u32);
+                    handle_command_result(&display_result, Some(path), proxy.child_pid() as u32, None);
                 } else {
                     // Plain text output — skip markdown rendering to preserve blank lines
                     let output = format!("\r\n{}\r\n", display_result.replace('\n', "\r\n"));
