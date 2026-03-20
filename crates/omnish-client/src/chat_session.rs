@@ -1360,10 +1360,10 @@ impl ChatSession {
         if !same_host {
             // Different machine
             let title = format!(
-                "This conversation was on {} (current: {})",
+                "This conversation was on {} (current: {}). Proceed?",
                 thread_host, cur_host,
             );
-            let items = &["[Y]es, continue", "[C]ancel"];
+            let items = &["[Y]es", "[C]ancel"];
             match widgets::picker::pick_one(&title, items) {
                 Some(0) => Some(ResumeMismatchAction::ContinueDifferentHost),
                 _ => Some(ResumeMismatchAction::Cancel),
