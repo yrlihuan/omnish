@@ -39,14 +39,18 @@ fn render_item(text: &str, selected: bool, checked: bool, multi: bool) -> String
     }
 }
 
-/// Render the hint line at the bottom.
-fn render_hint(multi: bool) -> String {
+/// Render the hint line at the bottom, with optional scroll-down indicator.
+fn render_hint(multi: bool, remaining_below: usize) -> String {
     let hint = if multi {
         "\u{2191}\u{2193} move  Space select  Enter confirm  ESC cancel"
     } else {
         "\u{2191}\u{2193} move  Enter confirm  ESC cancel"
     };
-    format!("\r\x1b[2m{}\x1b[0m\x1b[K", hint)
+    if remaining_below > 0 {
+        format!("\r\x1b[2m{}  (\u{25bc} {} more)\x1b[0m\x1b[K", hint, remaining_below)
+    } else {
+        format!("\r\x1b[2m{}\x1b[0m\x1b[K", hint)
+    }
 }
 
 /// Number of items visible in the viewport.
@@ -100,21 +104,13 @@ fn render_full(
     }
     out.push_str("\r\n");
 
-    // Bottom separator (with scroll indicator if applicable)
+    // Bottom separator (always full-width)
     let remaining_below = items.len().saturating_sub(end);
-    if remaining_below > 0 {
-        out.push_str(&format!(
-            "\r\x1b[2m{} (\u{25bc} {} more)\x1b[0m\x1b[K",
-            "\u{2500}".repeat((cols as usize).saturating_sub(12)),
-            remaining_below
-        ));
-    } else {
-        out.push_str(&render_separator(cols));
-    }
+    out.push_str(&render_separator(cols));
     out.push_str("\r\n");
 
-    // Hint
-    out.push_str(&render_hint(multi));
+    // Hint (with scroll-down indicator if applicable)
+    out.push_str(&render_hint(multi, remaining_below));
 
     out
 }
@@ -352,16 +348,24 @@ mod tests {
 
     #[test]
     fn test_render_hint_single() {
-        let output = render_hint(false);
+        let output = render_hint(false, 0);
         assert!(output.contains("Enter confirm"), "single mode hint should contain 'Enter confirm'");
         assert!(!output.contains("Space"), "single mode hint should NOT contain 'Space'");
+        assert!(!output.contains("more"), "no scroll indicator when remaining_below=0");
     }
 
     #[test]
     fn test_render_hint_multi() {
-        let output = render_hint(true);
+        let output = render_hint(true, 0);
         assert!(output.contains("Space select"), "multi mode hint should contain 'Space select'");
         assert!(output.contains("Enter confirm"), "multi mode hint should contain 'Enter confirm'");
+    }
+
+    #[test]
+    fn test_render_hint_with_scroll_indicator() {
+        let output = render_hint(false, 5);
+        assert!(output.contains("ESC cancel"), "should contain hint text");
+        assert!(output.contains("\u{25bc} 5 more"), "should show scroll-down indicator");
     }
 
     #[test]
