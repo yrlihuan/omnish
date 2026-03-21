@@ -226,6 +226,7 @@ async fn execute_daemon_plugin(
 }
 
 impl DaemonServer {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         session_mgr: Arc<SessionManager>,
         llm_backend: Option<Arc<dyn LlmBackend>>,
@@ -838,6 +839,7 @@ async fn build_chat_setup(mgr: &SessionManager, tool_registry: &omnish_daemon::t
     ChatSetup { command_query_tool, tools, system_prompt }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_chat_message(
     cm: ChatMessage,
     mgr: &SessionManager,
@@ -930,6 +932,7 @@ async fn handle_chat_message(
 }
 
 /// Handle a ChatToolResult from the client — accumulate results, resume when all are received.
+#[allow(clippy::too_many_arguments)]
 async fn handle_tool_result(
     tr: ChatToolResult,
     _mgr: &SessionManager,
@@ -1052,6 +1055,7 @@ async fn handle_tool_result(
 /// Core agent loop: calls LLM, executes tools, pauses on client-side tools.
 /// Used by both `handle_chat_message` (initial) and `handle_tool_result` (resumption).
 /// Messages are sent incrementally through `tx` as they're produced (streaming).
+#[allow(clippy::too_many_arguments)]
 async fn run_agent_loop(
     mut state: AgentLoopState,
     conv_mgr: &Arc<ConversationManager>,
@@ -1105,8 +1109,8 @@ async fn run_agent_loop(
                     // Send LLM's text blocks to client immediately
                     for block in &response.content {
                         if let ContentBlock::Text(text) = block {
-                            if !text.trim().is_empty() {
-                                if tx.send(Message::ChatToolStatus(ChatToolStatus {
+                            if !text.trim().is_empty()
+                                && tx.send(Message::ChatToolStatus(ChatToolStatus {
                                     request_id: state.cm.request_id.clone(),
                                     thread_id: state.cm.thread_id.clone(),
                                     tool_name: String::new(),
@@ -1118,7 +1122,6 @@ async fn run_agent_loop(
                                     result_compact: None,
                                     result_full: None,
                                 })).await.is_err() { return; }
-                            }
                         }
                     }
 

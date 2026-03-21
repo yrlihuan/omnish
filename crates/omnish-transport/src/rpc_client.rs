@@ -467,11 +467,8 @@ impl RpcClient {
         connected: Arc<AtomicBool>,
         disconnect_tx: Option<oneshot::Sender<()>>,
     ) {
-        loop {
-            let len = match reader.read_u32().await {
-                Ok(l) => l as usize,
-                Err(_) => break,
-            };
+        while let Ok(l) = reader.read_u32().await {
+            let len = l as usize;
             let mut buf = vec![0u8; len];
             if reader.read_exact(&mut buf).await.is_err() {
                 break;

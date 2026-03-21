@@ -85,6 +85,7 @@ fn visible_count(total: usize) -> usize {
 }
 
 /// Render the full picker widget (initial draw or full redraw after scroll).
+#[allow(clippy::too_many_arguments)]
 fn render_full(
     title: &str,
     items: &[&str],

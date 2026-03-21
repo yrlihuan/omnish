@@ -2096,6 +2096,7 @@ async fn send_daemon_query(
 }
 
 /// Handle a /command in chat mode. Returns true if the command was handled.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_slash_command(
     trimmed: &str,
     session_id: &str,

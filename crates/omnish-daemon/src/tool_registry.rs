@@ -30,15 +30,21 @@ pub struct ToolRegistry {
     override_params: RwLock<HashMap<String, HashMap<String, Value>>>,
 }
 
-impl ToolRegistry {
-    /// Create a new empty registry.
-    pub fn new() -> Self {
+impl Default for ToolRegistry {
+    fn default() -> Self {
         Self {
             tools: HashMap::new(),
             defs: HashMap::new(),
             descriptions: RwLock::new(HashMap::new()),
             override_params: RwLock::new(HashMap::new()),
         }
+    }
+}
+
+impl ToolRegistry {
+    /// Create a new empty registry.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Register tool metadata. Called at startup before the registry is shared.
