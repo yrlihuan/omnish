@@ -281,7 +281,8 @@ async fn async_main() -> Result<i32> {
     // Watch tool.override.json files for hot-reload via shared file watcher
     let plugin_mgr_watcher = Arc::clone(&plugin_mgr);
     let plugin_rx = file_watcher.watch(plugins_dir.clone());
-    tokio::spawn(async move { plugin_mgr_watcher.watch_with(plugin_rx).await });
+    let tool_registry_watcher = Arc::clone(&tool_registry);
+    tokio::spawn(async move { plugin_mgr_watcher.watch_with(plugin_rx, tool_registry_watcher).await });
 
     // Extract chat model name for ghost hint
     let chat_model_name = config.llm.use_cases.get("chat")

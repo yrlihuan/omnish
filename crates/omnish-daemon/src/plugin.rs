@@ -250,7 +250,8 @@ impl PluginManager {
     }
 
     /// Re-read all tool.override.json files and update the prompt cache.
-    pub fn reload_overrides(&self) {
+    /// Returns the computed (descriptions, override_params) so callers can propagate them.
+    pub fn reload_overrides(&self) -> (HashMap<String, String>, HashMap<String, HashMap<String, serde_json::Value>>) {
         let mut descriptions = HashMap::new();
         let mut override_params = HashMap::new();
 
@@ -296,8 +297,9 @@ impl PluginManager {
         tracing::info!("Reloaded tool overrides ({} tools)", descriptions.len());
 
         let mut cache = self.prompt_cache.write().unwrap();
-        cache.descriptions = descriptions;
-        cache.override_params = override_params;
+        cache.descriptions = descriptions.clone();
+        cache.override_params = override_params.clone();
+        (descriptions, override_params)
     }
 
     /// Collect all tool definitions from all plugins (with prompt overrides applied).
@@ -398,11 +400,12 @@ impl PluginManager {
     }
 
     /// Start watching plugin overrides using a shared file watcher receiver.
-    pub async fn watch_with(self: &Arc<Self>, mut rx: tokio::sync::watch::Receiver<()>) {
+    pub async fn watch_with(self: &Arc<Self>, mut rx: tokio::sync::watch::Receiver<()>, registry: std::sync::Arc<crate::tool_registry::ToolRegistry>) {
         tracing::info!("watching plugin overrides via shared file watcher: {}", self.plugins_dir.display());
         while rx.changed().await.is_ok() {
             tracing::info!("tool.override.json changed, reloading...");
-            self.reload_overrides();
+            let (descs, params) = self.reload_overrides();
+            registry.update_overrides(descs, params);
         }
     }
 }
