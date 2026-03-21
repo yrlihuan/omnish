@@ -234,19 +234,30 @@ impl CommandQueryTool {
         }
     }
 
+    pub fn display_name(tool_name: &str) -> &'static str {
+        match tool_name {
+            "omnish_list_history" => "History",
+            "omnish_get_output" => "GetOutput",
+            _ => "CommandQuery",
+        }
+    }
+
     pub fn status_text(&self, tool_name: &str, input: &serde_json::Value) -> String {
         match tool_name {
-            "omnish_list_history" => "查询命令历史...".to_string(),
+            "omnish_list_history" => {
+                let count = input["count"].as_u64().unwrap_or(20);
+                format!("last {}", count)
+            }
             "omnish_get_output" => {
                 let seq = input["seq"].as_u64().unwrap_or(0);
                 let command = input["command"].as_str().unwrap_or("");
                 if command.is_empty() {
-                    format!("获取命令输出 [{}]...", seq)
+                    format!("[{}]", seq)
                 } else {
-                    format!("获取命令输出 [{}] {}...", seq, command)
+                    format!("[{}] {}", seq, command)
                 }
             }
-            _ => "查询命令...".to_string(),
+            _ => String::new(),
         }
     }
 }

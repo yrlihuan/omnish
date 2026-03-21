@@ -1128,8 +1128,12 @@ async fn run_agent_loop(
                             break;
                         }
                         let is_command_query = tc.name == "omnish_list_history" || tc.name == "omnish_get_output";
-                        let display_name = plugin_mgr.tool_display_name(&tc.name)
-                            .unwrap_or(&tc.name).to_string();
+                        let display_name = if is_command_query {
+                            omnish_daemon::tools::command_query::CommandQueryTool::display_name(&tc.name).to_string()
+                        } else {
+                            plugin_mgr.tool_display_name(&tc.name)
+                                .unwrap_or(&tc.name).to_string()
+                        };
                         let formatter_name = plugin_mgr.tool_formatter(&tc.name)
                             .unwrap_or("default");
                         let status_template = plugin_mgr.tool_status_template(&tc.name)
@@ -1222,8 +1226,12 @@ async fn run_agent_loop(
                             let post_fmt = formatter::get_formatter(
                                 plugin_mgr.tool_formatter(&tc.name).unwrap_or("default")
                             );
-                            let post_display = plugin_mgr.tool_display_name(&tc.name)
-                                .unwrap_or(&tc.name).to_string();
+                            let post_display = if is_command_query {
+                                omnish_daemon::tools::command_query::CommandQueryTool::display_name(&tc.name).to_string()
+                            } else {
+                                plugin_mgr.tool_display_name(&tc.name)
+                                    .unwrap_or(&tc.name).to_string()
+                            };
                             let post_template = plugin_mgr.tool_status_template(&tc.name)
                                 .unwrap_or("").to_string();
                             let mut post_out = post_fmt.format(&FormatInput {
