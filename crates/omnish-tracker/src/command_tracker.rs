@@ -6,7 +6,6 @@ const SUMMARY_HEAD_LINES: usize = 5;
 const SUMMARY_TAIL_LINES: usize = 5;
 
 struct PendingCommand {
-    seq: u32,
     started_at: u64,
     stream_offset: u64,
     input_buf: Vec<u8>,
@@ -63,12 +62,14 @@ impl CommandTracker {
     }
 
     fn finalize_command(
-        &self,
+        &mut self,
         pending: PendingCommand,
         timestamp_ms: u64,
         stream_pos: u64,
         exit_code: Option<i32>,
     ) -> CommandRecord {
+        let seq = self.next_seq;
+        self.next_seq += 1;
         let command_line = pending
             .osc_original_input
             .or(pending.osc_command_line)
@@ -78,7 +79,7 @@ impl CommandTracker {
         let output_summary = make_summary(&pending.output_lines);
         let stream_length = stream_pos - pending.stream_offset;
         CommandRecord {
-            command_id: format!("{}:{}", self.session_id, pending.seq),
+            command_id: format!("{}:{}", self.session_id, seq),
             session_id: self.session_id.clone(),
             command_line,
             cwd,
@@ -126,7 +127,6 @@ impl CommandTracker {
                 // First prompt: start tracking, create initial pending command
                 self.seen_first_prompt = true;
                 self.pending = Some(PendingCommand {
-                    seq: self.next_seq,
                     started_at: timestamp_ms,
                     stream_offset: stream_pos,
                     input_buf: Vec::new(),
@@ -136,7 +136,6 @@ impl CommandTracker {
                     osc_original_input: None,
                     osc_cwd: None,
                 });
-                self.next_seq += 1;
             } else {
                 // Subsequent prompt: finalize pending command, start new one
                 if let Some(pending) = self.pending.take() {
@@ -144,7 +143,6 @@ impl CommandTracker {
                 }
 
                 self.pending = Some(PendingCommand {
-                    seq: self.next_seq,
                     started_at: timestamp_ms,
                     stream_offset: stream_pos,
                     input_buf: Vec::new(),
@@ -154,7 +152,6 @@ impl CommandTracker {
                     osc_original_input: None,
                     osc_cwd: None,
                 });
-                self.next_seq += 1;
             }
         }
 
@@ -180,7 +177,6 @@ impl CommandTracker {
                 }
                 self.seen_first_prompt = true;
                 self.pending = Some(PendingCommand {
-                    seq: self.next_seq,
                     started_at: timestamp_ms,
                     stream_offset: stream_pos,
                     input_buf: Vec::new(),
@@ -190,7 +186,6 @@ impl CommandTracker {
                     osc_original_input: None,
                     osc_cwd: None,
                 });
-                self.next_seq += 1;
             }
             Osc133EventKind::CommandStart { command, cwd, original } => {
                 if self.pending.is_none() {
@@ -201,7 +196,6 @@ impl CommandTracker {
                         self.session_id, self.next_seq
                     );
                     self.pending = Some(PendingCommand {
-                        seq: self.next_seq,
                         started_at: timestamp_ms,
                         stream_offset: stream_pos,
                         input_buf: Vec::new(),
@@ -211,7 +205,6 @@ impl CommandTracker {
                         osc_original_input: None,
                         osc_cwd: None,
                     });
-                    self.next_seq += 1;
                 }
                 if let Some(ref mut pending) = self.pending {
                     pending.entered = true;
