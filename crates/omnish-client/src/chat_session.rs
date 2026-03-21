@@ -1318,9 +1318,6 @@ impl ChatSession {
 
                 // If thread is locked, show picker to let user choose another thread
                 if ready.error.as_deref() == Some("thread_locked") {
-                    if let Some(ref err_display) = ready.error_display {
-                        write_stdout(&display::render_error(err_display));
-                    }
                     crate::event_log::push("resume_tid: thread locked, showing picker");
                     if let Some(alt_tid) = self.show_resume_picker(session_id, rpc).await {
                         // Resume the selected thread (locked items are disabled in picker,
