@@ -53,6 +53,19 @@ fn all_lines(text: &str) -> Vec<String> {
     text.lines().map(|l| l.to_string()).collect()
 }
 
+/// Truncate output to head + tail if it exceeds `max` lines.
+/// Keeps the first `keep` and last `keep` lines with a separator in between.
+fn truncate_lines(lines: Vec<String>, max: usize, keep: usize) -> Vec<String> {
+    if lines.len() <= max {
+        return lines;
+    }
+    let mut out = Vec::with_capacity(keep * 2 + 1);
+    out.extend_from_slice(&lines[..keep]);
+    out.push(format!("... ({} lines omitted) ...", lines.len() - keep * 2));
+    out.extend_from_slice(&lines[lines.len() - keep..]);
+    out
+}
+
 // --- DefaultFormatter ---
 
 struct DefaultFormatter;
@@ -63,7 +76,7 @@ impl ToolFormatter for DefaultFormatter {
         let icon = status_icon(&input.output, &input.is_error);
         let (result_compact, result_full) = match &input.output {
             None => (vec![], vec![]),
-            Some(text) => (head_lines(text, 5), all_lines(text)),
+            Some(text) => (head_lines(text, 5), truncate_lines(all_lines(text), 50, 20)),
         };
         FormatOutput {
             status_icon: icon,
@@ -368,6 +381,27 @@ mod tests {
         let out = DefaultFormatter.format(&input);
         assert_eq!(out.result_compact.len(), 5);
         assert_eq!(out.result_full.len(), 20);
+    }
+
+    #[test]
+    fn default_formatter_truncates_full_over_50_lines() {
+        let lines: Vec<String> = (1..=80).map(|i| format!("line{}", i)).collect();
+        let text = lines.join("\n");
+        let input = make_input(
+            "command_query",
+            "",
+            json!({}),
+            Some(&text),
+            Some(false),
+        );
+        let out = DefaultFormatter.format(&input);
+        // 20 head + 1 separator + 20 tail = 41
+        assert_eq!(out.result_full.len(), 41);
+        assert_eq!(out.result_full[0], "line1");
+        assert_eq!(out.result_full[19], "line20");
+        assert!(out.result_full[20].contains("40 lines omitted"));
+        assert_eq!(out.result_full[21], "line61");
+        assert_eq!(out.result_full[40], "line80");
     }
 
     #[test]
