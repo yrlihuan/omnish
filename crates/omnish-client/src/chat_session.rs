@@ -429,7 +429,7 @@ impl ChatSession {
                             display_text
                         };
                         if let Some(path) = redirect {
-                            super::handle_command_result(&display_text, Some(path), proxy.child_pid() as u32, self.shell_cwd.as_deref());
+                            super::handle_command_result(&display_text, Some(path), self.shell_cwd.as_deref());
                         } else {
                             let output = display::render_response(&display_text);
                             write_stdout(&output);
@@ -472,7 +472,7 @@ impl ChatSession {
                     result
                 };
                 if let Some(path) = redirect {
-                    super::handle_command_result(&display_result, Some(path), proxy.child_pid() as u32, self.shell_cwd.as_deref());
+                    super::handle_command_result(&display_result, Some(path), self.shell_cwd.as_deref());
                 } else {
                     write_stdout(&display::render_response(&display_result));
                 }
@@ -483,7 +483,7 @@ impl ChatSession {
             // Other /commands
             if trimmed.starts_with('/')
                 && super::handle_slash_command(
-                    trimmed, session_id, rpc, proxy, client_debug_fn, cursor_col, cursor_row,
+                    trimmed, session_id, rpc, proxy, self.shell_cwd.as_deref(), client_debug_fn, cursor_col, cursor_row,
                 )
                 .await
             {

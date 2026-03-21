@@ -2010,15 +2010,12 @@ pub(crate) fn cmd_display_str(json: &serde_json::Value) -> String {
 }
 
 /// Display a command result or write to file if redirected.
-/// `cwd_override` overrides the shell process cwd for resolving relative paths
-/// (e.g. when chat session has pending_cd that hasn't been applied to the shell yet).
-pub(crate) fn handle_command_result(content: &str, redirect: Option<&str>, shell_pid: u32, cwd_override: Option<&str>) {
+/// `cwd` is used to resolve relative redirect paths.
+pub(crate) fn handle_command_result(content: &str, redirect: Option<&str>, cwd: Option<&str>) {
     if let Some(path) = redirect {
-        // Resolve relative paths against cwd_override (if set) or shell's current working directory
         let resolved_path = if std::path::Path::new(path).is_relative() {
-            let base = cwd_override.map(String::from).or_else(|| get_shell_cwd(shell_pid));
-            match base {
-                Some(cwd) => std::path::Path::new(&cwd).join(path),
+            match cwd {
+                Some(cwd) => std::path::Path::new(cwd).join(path),
                 None => std::path::Path::new(path).to_path_buf(),
             }
         } else {
@@ -2052,7 +2049,7 @@ async fn send_daemon_query(
     rpc: &RpcClient,
     redirect: Option<&str>,
     show_thinking: bool,
-    shell_pid: u32,
+    cwd: Option<&str>,
 ) {
     let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
     let mut status = LineStatus::new(cols as usize, 5);
@@ -2079,7 +2076,7 @@ async fn send_daemon_query(
                 std::fs::write("/tmp/omnish_last_response.txt", &display).ok();
                 nix::unistd::write(std::io::stdout(), status.clear().as_bytes()).ok();
             }
-            handle_command_result(&display, redirect, shell_pid, None);
+            handle_command_result(&display, redirect, cwd);
             if show_thinking {
                 let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
                 let separator = display::render_separator(cols);
@@ -2101,6 +2098,7 @@ pub(crate) async fn handle_slash_command(
     session_id: &str,
     rpc: &RpcClient,
     proxy: &PtyProxy,
+    cwd: Option<&str>,
     client_debug_fn: &dyn Fn() -> String,
     cursor_col: u16,
     cursor_row: u16,
@@ -2117,7 +2115,7 @@ pub(crate) async fn handle_slash_command(
                 result
             };
             if let Some(path) = redirect.as_deref() {
-                handle_command_result(&display_result, Some(path), proxy.child_pid() as u32, None);
+                handle_command_result(&display_result, Some(path), cwd);
             } else {
                 // Command output is plain text — skip markdown rendering
                 // Single-line output: no leading blank line; multi-line: add one for readability
@@ -2138,7 +2136,7 @@ pub(crate) async fn handle_slash_command(
                     result
                 };
                 if let Some(path) = redirect.as_deref() {
-                    handle_command_result(&display_result, Some(path), proxy.child_pid() as u32, None);
+                    handle_command_result(&display_result, Some(path), cwd);
                 } else {
                     // Plain text output — skip markdown rendering to preserve blank lines
                     let output = format!("\r\n{}\r\n", display_result.replace('\n', "\r\n"));
@@ -2150,7 +2148,7 @@ pub(crate) async fn handle_slash_command(
                 return true; // Only reached if exec failed
             }
             if let Some(path) = redirect.as_deref() {
-                send_daemon_query(&query, session_id, rpc, Some(path), false, proxy.child_pid() as u32).await;
+                send_daemon_query(&query, session_id, rpc, Some(path), false, cwd).await;
             } else {
                 let request_id = Uuid::new_v4().to_string()[..8].to_string();
                 let request = Message::Request(Request {
