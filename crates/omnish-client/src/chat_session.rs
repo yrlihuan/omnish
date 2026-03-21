@@ -135,7 +135,14 @@ impl ChatSession {
     fn print_line(&mut self, line: &str) {
         write_stdout(line);
         write_stdout("\r\n");
-        self.lines_printed += 1;
+        let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
+        self.lines_printed += Self::visual_rows(line, cols as usize);
+    }
+
+    /// How many terminal rows a line occupies (accounting for wrapping).
+    fn visual_rows(line: &str, cols: usize) -> usize {
+        let w = display::display_width(line);
+        if w == 0 || cols == 0 { 1 } else { ((w - 1) / cols) + 1 }
     }
 
     /// Re-render the tool section from tool_section_start.
@@ -157,6 +164,7 @@ impl ChatSession {
         write_stdout("\r\x1b[J"); // erase from cursor to end of screen
 
         let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
+        let cols = cols as usize;
         let mut count = 0usize;
 
         for entry in &self.scroll_history[hist_start..] {
@@ -164,16 +172,16 @@ impl ChatSession {
                 let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
                 let param_desc = cts.param_desc.as_deref().unwrap_or("");
                 let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Running);
-                let header = display::render_tool_header(icon, display_name, param_desc, cols as usize);
+                let header = display::render_tool_header(icon, display_name, param_desc, cols);
                 write_stdout(&header);
                 write_stdout("\r\n");
-                count += 1;
+                count += Self::visual_rows(&header, cols);
                 if let Some(ref lines) = cts.result_compact {
-                    let rendered = display::render_tool_output(lines);
+                    let rendered = display::render_tool_output_with_cols(lines, cols);
                     for line in &rendered {
                         write_stdout(line);
                         write_stdout("\r\n");
-                        count += 1;
+                        count += Self::visual_rows(line, cols);
                     }
                 }
             }
@@ -1230,7 +1238,7 @@ impl ChatSession {
                         let header = display::render_tool_header(icon, display_name, param_desc, cols as usize);
                         self.print_line(&header);
                         if let Some(ref lines) = cts.result_compact {
-                            let rendered = display::render_tool_output(lines);
+                            let rendered = display::render_tool_output_with_cols(lines, cols as usize);
                             for line in &rendered {
                                 self.print_line(line);
                             }

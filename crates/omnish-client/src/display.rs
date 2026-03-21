@@ -164,12 +164,26 @@ pub fn render_tool_header_full(icon: &omnish_protocol::message::StatusIcon, disp
 }
 
 pub fn render_tool_output(lines: &[String]) -> Vec<String> {
+    render_tool_output_with_cols(lines, 0)
+}
+
+/// Render tool output lines with optional column-width limit.
+/// If `max_cols > 0`, content that would exceed 3 terminal rows is truncated with "…".
+pub fn render_tool_output_with_cols(lines: &[String], max_cols: usize) -> Vec<String> {
+    let prefix_width = 5; // "  ⎿  " or "     "
     let mut out = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        if i == 0 {
-            out.push(format!("  \x1b[2m⎿  {}\x1b[0m", line));
+        let content = if max_cols > 0 {
+            let avail = max_cols.saturating_sub(prefix_width);
+            let max_content = avail * 3; // 3 terminal rows
+            truncate_cols(line, max_content)
         } else {
-            out.push(format!("  \x1b[2m   {}\x1b[0m", line));
+            line.clone()
+        };
+        if i == 0 {
+            out.push(format!("  \x1b[2m⎿  {}\x1b[0m", content));
+        } else {
+            out.push(format!("  \x1b[2m   {}\x1b[0m", content));
         }
     }
     out
