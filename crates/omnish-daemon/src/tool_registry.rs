@@ -19,7 +19,6 @@ pub struct ToolMeta {
 }
 
 /// Unified registry for tool metadata, definitions, and runtime overrides.
-#[derive(Default)]
 pub struct ToolRegistry {
     /// Static tool metadata, set at startup.
     tools: HashMap<String, ToolMeta>,
