@@ -145,6 +145,37 @@ impl CommandQueryTool {
         }
     }
 
+    /// Full detail view of a single command for `/debug command <seq>`.
+    pub fn get_command_detail(&self, seq: usize) -> String {
+        let commands = &self.commands;
+        if seq == 0 || seq > commands.len() {
+            return format!("Error: seq {} out of range (1-{})", seq, commands.len());
+        }
+        let cmd = &commands[seq - 1];
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let mut lines = Vec::new();
+        lines.push(format!("[seq={}] {}", seq, cmd.command_line.as_deref().unwrap_or("(none)")));
+        lines.push(format!("  cwd:    {}", cmd.cwd.as_deref().unwrap_or("(unknown)")));
+        lines.push(format!("  exit:   {}", cmd.exit_code.map(|c| c.to_string()).unwrap_or("(none)".into())));
+        lines.push(format!("  time:   {}", format_ago(now_ms, cmd.started_at)));
+        if let Some(ended) = cmd.ended_at {
+            let dur_ms = ended.saturating_sub(cmd.started_at);
+            if dur_ms < 1000 {
+                lines.push(format!("  dur:    {}ms", dur_ms));
+            } else {
+                lines.push(format!("  dur:    {:.1}s", dur_ms as f64 / 1000.0));
+            }
+        }
+        lines.push(format!("  id:     {}", cmd.command_id));
+        lines.push(String::new());
+        lines.push("--- output ---".to_string());
+        lines.push(self.get_output(seq));
+        lines.join("\n")
+    }
+
     pub fn definitions(&self) -> Vec<ToolDef> {
         vec![
             ToolDef {

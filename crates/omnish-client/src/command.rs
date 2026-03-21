@@ -212,6 +212,11 @@ const COMMANDS: &[CommandEntry] = &[
         help: "Show recent shell commands (default 30)",
     },
     CommandEntry {
+        path: "/debug command",
+        kind: CommandKind::Daemon("command"),
+        help: "Show full details of a command by seq number",
+    },
+    CommandEntry {
         path: "/sessions",
         kind: CommandKind::Daemon("sessions"),
         help: "List sessions",

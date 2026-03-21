@@ -1759,6 +1759,13 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             let count: usize = args.parse().unwrap_or(30);
             cmd_display(command_query_tool.list_history(count))
         }
+        "command" => {
+            let args = req.query.strip_prefix("__cmd:command").unwrap_or("").trim();
+            match args.parse::<usize>() {
+                Ok(seq) => cmd_display(command_query_tool.get_command_detail(seq)),
+                Err(_) => cmd_display("Usage: /debug command <seq>".to_string()),
+            }
+        }
         "daemon" => {
             let mut lines = vec![format!("omnish-daemon {}", omnish_common::VERSION)];
             lines.push(String::new());
