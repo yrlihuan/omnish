@@ -1427,11 +1427,6 @@ impl ChatSession {
             return None;
         }
 
-        // Show summary if available
-        if let Some(ref summary) = ready.thread_summary {
-            write_stdout(&format!("\x1b[2;37m{}\x1b[0m\r\n", summary));
-        }
-
         if !same_host {
             // Different machine
             let title = format!(
