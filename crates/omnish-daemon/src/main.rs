@@ -257,6 +257,12 @@ async fn async_main() -> Result<i32> {
     let plugins_dir = omnish_dir.join("plugins");
     let plugin_mgr = Arc::new(omnish_daemon::plugin::PluginManager::load(&plugins_dir));
 
+    // Build unified tool registry from plugins + built-in tools
+    let mut tool_registry = omnish_daemon::tool_registry::ToolRegistry::new();
+    plugin_mgr.register_all(&mut tool_registry);
+    omnish_daemon::tools::command_query::CommandQueryTool::register(&mut tool_registry);
+    let tool_registry = Arc::new(tool_registry);
+
     // Shared file watcher for config and plugin hot-reload
     let file_watcher = Arc::new(file_watcher::FileWatcher::new());
     let fw = Arc::clone(&file_watcher);
@@ -303,7 +309,7 @@ async fn async_main() -> Result<i32> {
         });
     }
 
-    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, chat_model_name, config.tools, Arc::clone(&server_sandbox_rules));
+    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, tool_registry, chat_model_name, config.tools, Arc::clone(&server_sandbox_rules));
 
     tracing::info!("starting omnishd at {}", socket_path);
 
