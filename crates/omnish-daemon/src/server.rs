@@ -1061,7 +1061,7 @@ async fn run_agent_loop(
 ) {
     let backend = &state.effective_backend;
 
-    let max_iterations = 30;
+    let max_iterations = 100;
 
     for iteration in state.iteration..max_iterations {
         // Check if user interrupted (Ctrl+C)
