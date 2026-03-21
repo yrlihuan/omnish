@@ -374,6 +374,29 @@ impl PluginManager {
         })
     }
 
+    /// Register all plugin tools into a ToolRegistry.
+    /// Includes tool metadata (display_name, formatter, status_template)
+    /// and tool definitions (for LLM prompt construction).
+    pub fn register_all(&self, registry: &mut crate::tool_registry::ToolRegistry) {
+        for plugin in &self.plugins {
+            for te in &plugin.tools {
+                registry.register(crate::tool_registry::ToolMeta {
+                    name: te.def.name.clone(),
+                    display_name: te.display_name.clone(),
+                    formatter: te.formatter.clone(),
+                    status_template: te.status_template.clone(),
+                    custom_status: None,
+                    plugin_type: Some(plugin.plugin_type),
+                    plugin_name: Some(plugin.dir_name.clone()),
+                });
+                registry.register_def(te.def.clone());
+            }
+        }
+        // Apply current overrides
+        let cache = self.prompt_cache.read().unwrap();
+        registry.update_overrides(cache.descriptions.clone(), cache.override_params.clone());
+    }
+
     /// Start watching plugin overrides using a shared file watcher receiver.
     pub async fn watch_with(self: &Arc<Self>, mut rx: tokio::sync::watch::Receiver<()>) {
         tracing::info!("watching plugin overrides via shared file watcher: {}", self.plugins_dir.display());
@@ -702,5 +725,34 @@ mod tests {
         write_tool_override(tmp.path(), "builtin", r#"{ "tools": {} }"#);
         mgr.reload_overrides();
         assert_eq!(get_description(&mgr, "bash"), original);
+    }
+
+    #[test]
+    fn test_register_all_populates_registry() {
+        use crate::tool_registry::ToolRegistry;
+        let tmp = tempfile::tempdir().unwrap();
+        write_tool_json(tmp.path(), "myplugin", r#"{
+            "plugin_type": "daemon_tool",
+            "tools": [{
+                "name": "my_tool",
+                "description": "My tool",
+                "input_schema": {"type": "object"},
+                "status_template": "run: {arg}",
+                "display_name": "MyTool",
+                "formatter": "default"
+            }]
+        }"#);
+        let mgr = PluginManager::load(tmp.path());
+        let mut reg = ToolRegistry::new();
+        mgr.register_all(&mut reg);
+        // Custom plugin tool
+        assert_eq!(reg.display_name("my_tool"), "MyTool");
+        assert_eq!(reg.formatter_name("my_tool"), "default");
+        // Built-in tool (from embedded tool.json — "bash" has display_name "Bash")
+        assert_eq!(reg.display_name("bash"), "Bash");
+        // Definitions should be registered
+        let defs = reg.all_defs();
+        assert!(defs.iter().any(|d| d.name == "bash"));
+        assert!(defs.iter().any(|d| d.name == "my_tool"));
     }
 }
