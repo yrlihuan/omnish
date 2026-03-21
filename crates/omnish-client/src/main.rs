@@ -462,7 +462,7 @@ async fn main() -> Result<()> {
     let mut input_buf = [0u8; 4096];
     let mut output_buf = [0u8; 4096];
     let guard = TimeGapGuard::new(std::time::Duration::from_millis(config.shell.intercept_gap_ms));
-    let mut interceptor = InputInterceptor::new(&config.shell.command_prefix, &config.shell.resume_prefix, Box::new(guard));
+    let mut interceptor = InputInterceptor::new(&config.shell.command_prefix, &config.shell.resume_prefix, Box::new(guard), config.shell.developer_mode);
     let prefix_bytes = config.shell.command_prefix.as_bytes();
     let mut alt_screen_detector = AltScreenDetector::new();
     let mut col_tracker = if let Some(ref r) = resume_args {
@@ -989,6 +989,7 @@ async fn main() -> Result<()> {
                                     content, point
                                 ));
                                 shell_input.set_readline(content, *point);
+                                interceptor.update_readline(content);
                                 last_readline_content = Some(content.to_string());
 
                                 // Process any pending completion responses now that we have latest input
@@ -2251,7 +2252,7 @@ mod tests {
     fn test_alt_screen_integration_with_interceptor() {
         use interceptor::AlwaysIntercept;
 
-        let mut interceptor = InputInterceptor::new(":", "::", Box::new(AlwaysIntercept));
+        let mut interceptor = InputInterceptor::new(":", "::", Box::new(AlwaysIntercept), false);
         let mut detector = AltScreenDetector::new();
 
         // Normal mode: ":" matches prefix → Buffering (awaiting timeout)

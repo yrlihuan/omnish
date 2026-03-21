@@ -298,6 +298,9 @@ pub struct ShellConfig {
     pub intercept_gap_ms: u64,
     #[serde(default = "default_ghost_timeout_ms")]
     pub ghost_timeout_ms: u64,
+    /// When true, prevents : and :: from triggering chat mode when command line already has content
+    #[serde(default = "default_developer_mode")]
+    pub developer_mode: bool,
 }
 
 impl Default for ShellConfig {
@@ -308,6 +311,7 @@ impl Default for ShellConfig {
             resume_prefix: default_resume_prefix(),
             intercept_gap_ms: default_intercept_gap_ms(),
             ghost_timeout_ms: default_ghost_timeout_ms(),
+            developer_mode: default_developer_mode(),
         }
     }
 }
@@ -330,6 +334,10 @@ fn default_intercept_gap_ms() -> u64 {
 
 fn default_ghost_timeout_ms() -> u64 {
     10_000
+}
+
+fn default_developer_mode() -> bool {
+    false
 }
 
 #[derive(Debug, Deserialize, Clone)]

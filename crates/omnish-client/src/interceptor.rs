@@ -268,10 +268,14 @@ pub struct InputInterceptor {
     guard: Box<dyn InterceptGuard>,
     /// Active ESC sequence filter (only while in chat/buffering mode).
     esc_filter: Option<EscSeqFilter>,
+    /// When true, prevents : and :: from triggering chat mode when command line already has content
+    developer_mode: bool,
+    /// Tracks whether command line already has content (based on forwarded input since last shell output)
+    command_line_has_content: bool,
 }
 
 impl InputInterceptor {
-    pub fn new(prefix: &str, resume_prefix: &str, guard: Box<dyn InterceptGuard>) -> Self {
+    pub fn new(prefix: &str, resume_prefix: &str, guard: Box<dyn InterceptGuard>, developer_mode: bool) -> Self {
         Self {
             prefix: prefix.as_bytes().to_vec(),
             resume_prefix: resume_prefix.as_bytes().to_vec(),
@@ -280,6 +284,8 @@ impl InputInterceptor {
             suppressed: false,
             guard,
             esc_filter: None,
+            developer_mode,
+            command_line_has_content: false,
         }
     }
 
@@ -302,6 +308,14 @@ impl InputInterceptor {
             self.in_chat = false;
             self.buffer.clear();
         }
+        // Shell output indicates prompt is displayed, command line is empty
+        self.command_line_has_content = false;
+    }
+
+    /// Update command_line_has_content based on readline report from shell.
+    /// This corrects the state after Ctrl+U, Ctrl+W, etc.
+    pub fn update_readline(&mut self, content: &str) {
+        self.command_line_has_content = !content.is_empty();
     }
 
     /// Call after processing all bytes from one `read()` batch.
@@ -452,7 +466,9 @@ impl InputInterceptor {
         if !self.in_chat && self.buffer.len() <= self.prefix.len() {
             if self.buffer.iter().copied().collect::<Vec<_>>() == self.prefix[..self.buffer.len()] {
                 // On first prefix byte, check guard
-                if self.buffer.len() == 1 && !self.guard.should_intercept() {
+                if self.buffer.len() == 1 && (!self.guard.should_intercept()
+                    || (self.developer_mode && self.command_line_has_content))
+                {
                     let flushed: Vec<u8> = self.buffer.iter().copied().collect();
                     self.buffer.clear();
                     return self.forward(flushed);
@@ -512,6 +528,7 @@ impl InputInterceptor {
     /// Forward bytes and record input activity for the guard.
     fn forward(&mut self, bytes: Vec<u8>) -> InterceptAction {
         self.guard.note_input();
+        self.command_line_has_content = true;
         InterceptAction::Forward(bytes)
     }
 
@@ -584,7 +601,7 @@ mod tests {
 
     fn new_interceptor(prefix: &str) -> InputInterceptor {
         let resume = prefix.repeat(2);
-        InputInterceptor::new(prefix, &resume, Box::new(AlwaysIntercept))
+        InputInterceptor::new(prefix, &resume, Box::new(AlwaysIntercept), false)
     }
 
     #[test]
@@ -802,7 +819,7 @@ mod tests {
         let mut guard = TimeGapGuard::new(Duration::from_secs(1));
         guard.note_input(); // just typed something
 
-        let mut interceptor = InputInterceptor::new(":", "::", Box::new(guard));
+        let mut interceptor = InputInterceptor::new(":", "::", Box::new(guard), false);
 
         // ":" right after other input → guard blocks → Forward
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Forward(vec![b':']));
@@ -812,7 +829,7 @@ mod tests {
     fn test_guard_allows_prefix_after_gap() {
         // No prior input → guard allows interception
         let guard = TimeGapGuard::new(Duration::from_secs(1));
-        let mut interceptor = InputInterceptor::new(":", "::", Box::new(guard));
+        let mut interceptor = InputInterceptor::new(":", "::", Box::new(guard), false);
 
         // ":" with no prior input → guard allows → Buffering (awaiting timeout)
         assert_eq!(interceptor.feed_byte(b':'), InterceptAction::Buffering(vec![b':']));
@@ -823,7 +840,7 @@ mod tests {
     #[test]
     fn test_guard_forward_updates_timestamp() {
         let guard = TimeGapGuard::new(Duration::from_secs(1));
-        let mut interceptor = InputInterceptor::new(":", "::", Box::new(guard));
+        let mut interceptor = InputInterceptor::new(":", "::", Box::new(guard), false);
 
         // 'x' doesn't match prefix → forwarded → guard.note_input() called
         assert_eq!(interceptor.feed_byte(b'x'), InterceptAction::Forward(vec![b'x']));
@@ -1386,7 +1403,7 @@ mod tests {
         let mut guard = TimeGapGuard::new(Duration::from_secs(1));
         guard.note_input(); // just typed something
         let mut sim = MainLoopSim {
-            ic: InputInterceptor::new(":", "::", Box::new(guard)),
+            ic: InputInterceptor::new(":", "::", Box::new(guard), false),
             prefix: b":".to_vec(),
             timer_active: false,
         };

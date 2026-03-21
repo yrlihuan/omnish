@@ -154,6 +154,15 @@ send_enter() {
     sleep "$wait"
 }
 
+# enter_chat [wait_before=1]
+#   Wait for intercept gap then send ":" to enter chat mode.
+enter_chat() {
+    local wait="${1:-1}"
+    sleep "$wait"
+    send_keys ":" 0.5
+    wait_for_prompt
+}
+
 # send_special <tmux-key-name> [wait_seconds=0.5]
 #   e.g. send_special BSpace, send_special Escape, send_special C-d
 send_special() {

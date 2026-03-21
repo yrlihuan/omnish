@@ -14,6 +14,7 @@
 #   8. Shell prompt preserved when entering chat mode (#279)
 #   9. ESC dismisses ghost completion (#259)
 #  10. Ghost text completion via omnish_debug (#328)
+#  11. developer_mode blocks : when command line has content (#393)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -31,6 +32,7 @@ Test cases:
   8. Shell prompt preserved when entering chat (#279)
   9. ESC dismisses ghost completion (#259)
  10. Ghost text completion via omnish_debug (#328)
+ 11. developer_mode blocks : when command line has content (#393)
 EOF
 }
 
@@ -539,5 +541,70 @@ test_10() {
     fi
 }
 
-echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history, cursor, ghost-dismiss, completion${NC}"
-run_tests 10
+# ── Test 11: developer_mode blocks : when command line has content (#393) ──
+test_11() {
+    echo -e "\n${YELLOW}=== Test 11: developer_mode blocks : when command line has content (#393) ===${NC}"
+
+    # Create a temp config with developer_mode enabled
+    local dev_config
+    dev_config=$(mktemp /tmp/omnish-test-dev-config.XXXXXX.toml)
+    cat > "$dev_config" <<'TOML'
+[shell]
+developer_mode = true
+TOML
+
+    # Start client with developer_mode config
+    _tmux kill-session -t "$SESSION" 2>/dev/null || true
+    _tmux new -d -s "$SESSION" -n test "OMNISH_CLIENT_CONFIG=$dev_config $CLIENT"
+    wait_for_client
+
+    # Type "echo " then ":" — should NOT trigger chat mode
+    send_keys "echo " 0.3
+    send_keys ":" 0.5
+
+    local content
+    content=$(capture_pane -10)
+    show_capture "After 'echo :'" "$content" 5
+
+    local last_line
+    last_line=$(last_nonempty_line "$content")
+
+    # ":" should be forwarded to shell (visible on command line), not trigger chat
+    if is_chat_prompt "$content"; then
+        assert_fail "Chat mode triggered despite developer_mode + content on line"
+        send_special C-c 0.5
+        rm -f "$dev_config"
+        return 1
+    fi
+
+    if echo "$last_line" | grep -q 'echo :'; then
+        echo -e "  ${GREEN}':' forwarded to shell as expected${NC}"
+    else
+        assert_fail "Expected 'echo :' on command line, got: $last_line"
+        send_special C-c 0.5
+        rm -f "$dev_config"
+        return 1
+    fi
+
+    # Clear line and type ":" alone — SHOULD trigger chat mode
+    send_special C-c 0.5
+    enter_chat
+
+    content=$(capture_pane -10)
+    show_capture "After bare ':'" "$content" 5
+
+    if echo "$content" | grep -q '> '; then
+        assert_pass "developer_mode: ':' blocked with content, allowed when empty (#393)"
+        send_special Escape 0.5
+        sleep 1.5
+        rm -f "$dev_config"
+        return 0
+    else
+        assert_fail "Chat mode not triggered on bare ':' with empty command line"
+        rm -f "$dev_config"
+        return 1
+    fi
+}
+
+echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history, cursor, ghost-dismiss, completion, developer_mode${NC}"
+run_tests 11
