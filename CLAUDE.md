@@ -1,6 +1,9 @@
 ## About integration test
 Integration tests are under tools/integration_tests. To understand how integration test works, read lib.sh and test_basic.sh.
 
+## About build
+ALWAYS do release build.
+
 ## Useful glab comments:
 
 ### view issue with comments
