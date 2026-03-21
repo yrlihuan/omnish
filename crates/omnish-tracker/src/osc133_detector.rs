@@ -137,12 +137,14 @@ impl Osc133Detector {
                     return Some(Osc133EventKind::ReadlineLine { content, point });
                 }
                 if payload.len() >= 2 && payload[0] == b'B' && payload[1] == b';' {
-                    // B;command_text;cwd:/path
+                    // B;command_text;cwd:/path;orig:original_text
+                    // Semicolons inside values are escaped as \; by the shell hook.
+                    // Split on unescaped ';' only, then unescape \; → ; in each part.
                     let rest = &payload[2..];
-                    let parts: Vec<&[u8]> = rest.split(|&b| b == b';').collect();
+                    let parts = split_unescaped_semicolon(rest);
 
                     let command = if !parts.is_empty() && !parts[0].is_empty() {
-                        std::str::from_utf8(parts[0]).ok().map(|s| s.trim().to_string())
+                        Some(parts[0].trim().to_string())
                     } else {
                         None
                     };
@@ -150,16 +152,12 @@ impl Osc133Detector {
                     let mut cwd = None;
                     let mut original = None;
                     for part in parts.iter().skip(1) {
-                        if part.starts_with(b"cwd:") {
-                            cwd = std::str::from_utf8(&part[4..])
-                                .ok()
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty());
-                        } else if part.starts_with(b"orig:") {
-                            original = std::str::from_utf8(&part[5..])
-                                .ok()
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty());
+                        if let Some(v) = part.strip_prefix("cwd:") {
+                            let v = v.trim();
+                            if !v.is_empty() { cwd = Some(v.to_string()); }
+                        } else if let Some(v) = part.strip_prefix("orig:") {
+                            let v = v.trim();
+                            if !v.is_empty() { original = Some(v.to_string()); }
                         }
                     }
 
@@ -176,6 +174,29 @@ impl Osc133Detector {
             }
         }
     }
+}
+
+/// Split a byte slice on unescaped ';' (backslash-semicolon is treated as literal).
+/// Returns unescaped String parts.
+fn split_unescaped_semicolon(data: &[u8]) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = Vec::new();
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] == b'\\' && i + 1 < data.len() && data[i + 1] == b';' {
+            current.push(b';');
+            i += 2;
+        } else if data[i] == b';' {
+            parts.push(String::from_utf8_lossy(&current).into_owned());
+            current.clear();
+            i += 1;
+        } else {
+            current.push(data[i]);
+            i += 1;
+        }
+    }
+    parts.push(String::from_utf8_lossy(&current).into_owned());
+    parts
 }
 
 /// Strip all OSC 133 sequences from a byte buffer.
@@ -431,5 +452,33 @@ mod tests {
         let events = detector.feed(b"\x1b]133;NO_READLINE\x07");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, Osc133EventKind::NoReadline);
+    }
+
+    #[test]
+    fn test_command_with_escaped_semicolons() {
+        let mut detector = Osc133Detector::new();
+        // Shell hook escapes ; as \; in command, cwd, orig
+        let events = detector.feed(b"\x1b]133;B;for i in {1..6}\\; do echo \"ab\"\\; done;cwd:/home/user;orig:for i in {1..6}\\; do echo \"ab\"\\; done\x07");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].kind,
+            Osc133EventKind::CommandStart {
+                command: Some("for i in {1..6}; do echo \"ab\"; done".into()),
+                cwd: Some("/home/user".into()),
+                original: Some("for i in {1..6}; do echo \"ab\"; done".into())
+            }
+        );
+    }
+
+    #[test]
+    fn test_split_unescaped_semicolon() {
+        let parts = split_unescaped_semicolon(b"a\\;b;c\\;d;e");
+        assert_eq!(parts, vec!["a;b", "c;d", "e"]);
+
+        let parts = split_unescaped_semicolon(b"no semicolons");
+        assert_eq!(parts, vec!["no semicolons"]);
+
+        let parts = split_unescaped_semicolon(b"a;b;c");
+        assert_eq!(parts, vec!["a", "b", "c"]);
     }
 }
