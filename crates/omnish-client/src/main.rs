@@ -952,6 +952,9 @@ async fn main() -> Result<()> {
                             // use them to detect "user pressed Enter". Instead,
                             // at_prompt=false is set by feed_forwarded on Enter key.
                             Osc133EventKind::CommandStart { command, original, .. } => {
+                                if !command_tracker.has_pending() {
+                                    event_log::push("WARNING: CommandStart without pending (recovery will create one)");
+                                }
                                 event_log::push(format!(
                                     "osc133 CommandStart cmd={} orig={}",
                                     command.as_deref().unwrap_or("(none)"),

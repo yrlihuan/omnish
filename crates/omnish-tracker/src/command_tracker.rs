@@ -49,6 +49,10 @@ impl CommandTracker {
         self.seen_first_prompt
     }
 
+    pub fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
     pub fn feed_input(&mut self, data: &[u8], _timestamp_ms: u64) {
         if let Some(ref mut pending) = self.pending {
             pending.input_buf.extend_from_slice(data);
@@ -189,6 +193,26 @@ impl CommandTracker {
                 self.next_seq += 1;
             }
             Osc133EventKind::CommandStart { command, cwd, original } => {
+                if self.pending.is_none() {
+                    // Defensive: PromptStart was lost (e.g. during idle).
+                    // Create a pending so the command is not silently dropped.
+                    tracing::warn!(
+                        "CommandStart without pending (session={}), creating recovery pending seq={}",
+                        self.session_id, self.next_seq
+                    );
+                    self.pending = Some(PendingCommand {
+                        seq: self.next_seq,
+                        started_at: timestamp_ms,
+                        stream_offset: stream_pos,
+                        input_buf: Vec::new(),
+                        output_lines: Vec::new(),
+                        entered: false,
+                        osc_command_line: None,
+                        osc_original_input: None,
+                        osc_cwd: None,
+                    });
+                    self.next_seq += 1;
+                }
                 if let Some(ref mut pending) = self.pending {
                     pending.entered = true;
                     pending.osc_command_line = command;
@@ -764,5 +788,49 @@ mod tests {
             Some("ll"),
             "original user input should be preferred over alias-expanded $BASH_COMMAND"
         );
+    }
+
+    /// Regression: after idle, pending may be None when CommandStart arrives.
+    /// The tracker should create a recovery pending so the command is not lost.
+    #[test]
+    fn test_command_start_without_pending_recovers() {
+        use crate::osc133_detector::*;
+        let mut tracker = make_tracker();
+
+        // Simulate: PromptStart happened (creates pending), then pending was
+        // somehow consumed (simulated by directly taking it).
+        tracker.feed_osc133(
+            Osc133Event { kind: Osc133EventKind::PromptStart, start: 0, end: 8 },
+            1000, 0,
+        );
+        // Simulate pending being consumed: send a CommandEnd to take it
+        let _ = tracker.feed_osc133(
+            Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 0 }, start: 0, end: 10 },
+            1001, 10,
+        );
+        // Now pending is None
+
+        // CommandStart arrives without a pending — should recover
+        tracker.feed_osc133(
+            Osc133Event {
+                kind: Osc133EventKind::CommandStart {
+                    command: Some("echo 12".into()),
+                    cwd: Some("/home/user".into()),
+                    original: Some("echo 12".into()),
+                },
+                start: 0, end: 20,
+            },
+            2000, 50,
+        );
+
+        // CommandEnd should produce a valid record
+        let cmds = tracker.feed_osc133(
+            Osc133Event { kind: Osc133EventKind::CommandEnd { exit_code: 0 }, start: 0, end: 10 },
+            2001, 100,
+        );
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].command_line.as_deref(), Some("echo 12"));
+        assert_eq!(cmds[0].cwd.as_deref(), Some("/home/user"));
+        assert_eq!(cmds[0].exit_code, Some(0));
     }
 }

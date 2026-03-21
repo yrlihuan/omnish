@@ -1123,6 +1123,7 @@ version = "0.8.1"
 dependencies = [
  "omnish-store",
  "regex",
+ "tracing",
 ]
 
 [[package]]
