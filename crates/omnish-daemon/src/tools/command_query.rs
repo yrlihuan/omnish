@@ -265,6 +265,88 @@ impl CommandQueryTool {
         }
     }
 
+    /// Register command query tool metadata and definitions with a ToolRegistry.
+    /// This is a static method — it doesn't need a CommandQueryTool instance.
+    pub fn register(registry: &mut crate::tool_registry::ToolRegistry) {
+        use crate::tool_registry::{ToolMeta, CustomStatusFn};
+        use std::sync::Arc;
+
+        let status_fn: CustomStatusFn = Arc::new(|tool_name, input| {
+            match tool_name {
+                "omnish_list_history" => {
+                    let count = input["count"].as_u64().unwrap_or(20);
+                    format!("last {}", count)
+                }
+                "omnish_get_output" => {
+                    let seq = input["seq"].as_u64().unwrap_or(0);
+                    let command = input["command"].as_str().unwrap_or("");
+                    if command.is_empty() {
+                        format!("[{}]", seq)
+                    } else {
+                        format!("[{}] {}", seq, command)
+                    }
+                }
+                _ => String::new(),
+            }
+        });
+
+        registry.register(ToolMeta {
+            name: "omnish_list_history".to_string(),
+            display_name: "History".to_string(),
+            formatter: "default".to_string(),
+            status_template: String::new(),
+            custom_status: Some(status_fn.clone()),
+            plugin_type: None,
+            plugin_name: None,
+        });
+
+        registry.register(ToolMeta {
+            name: "omnish_get_output".to_string(),
+            display_name: "GetOutput".to_string(),
+            formatter: "default".to_string(),
+            status_template: String::new(),
+            custom_status: Some(status_fn),
+            plugin_type: None,
+            plugin_name: None,
+        });
+
+        registry.register_def(omnish_llm::tool::ToolDef {
+            name: "omnish_list_history".to_string(),
+            description: "List recent shell command history. \
+                The last 5 commands are provided in <system-reminder> at the end of each user message, \
+                so you do NOT need to call this unless you need older commands.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "count": {
+                        "type": "integer",
+                        "description": "Number of recent commands to list (default 20)"
+                    }
+                }
+            }),
+        });
+
+        registry.register_def(omnish_llm::tool::ToolDef {
+            name: "omnish_get_output".to_string(),
+            description: "Get the full output of a specific shell command by its sequence number. \
+                Use omnish_list_history to find the sequence number first.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "seq": {
+                        "type": "integer",
+                        "description": "Command sequence number (from omnish_list_history or <system-reminder>)"
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "The command string at that seq (must match the recorded command)"
+                    }
+                },
+                "required": ["seq", "command"]
+            }),
+        });
+    }
+
     pub fn display_name(tool_name: &str) -> &'static str {
         match tool_name {
             "omnish_list_history" => "History",
@@ -401,5 +483,28 @@ mod tests {
         assert!(reminder.contains("TIME: "));
         assert!(reminder.contains("WORKING DIR: /tmp"));
         assert!(reminder.contains("LAST 5 COMMANDS:"));
+    }
+
+    #[test]
+    fn test_register_command_query_tools() {
+        use crate::tool_registry::ToolRegistry;
+        let mut reg = ToolRegistry::new();
+        CommandQueryTool::register(&mut reg);
+        assert_eq!(reg.display_name("omnish_list_history"), "History");
+        assert_eq!(reg.display_name("omnish_get_output"), "GetOutput");
+        let defs = reg.all_defs();
+        assert!(defs.iter().any(|d| d.name == "omnish_list_history"));
+        assert!(defs.iter().any(|d| d.name == "omnish_get_output"));
+    }
+
+    #[test]
+    fn test_register_custom_status_text() {
+        use crate::tool_registry::ToolRegistry;
+        let mut reg = ToolRegistry::new();
+        CommandQueryTool::register(&mut reg);
+        let input = serde_json::json!({"seq": 3, "command": "git status"});
+        assert_eq!(reg.status_text("omnish_get_output", &input), "[3] git status");
+        let input2 = serde_json::json!({"count": 10});
+        assert_eq!(reg.status_text("omnish_list_history", &input2), "last 10");
     }
 }
