@@ -1121,7 +1121,12 @@ async fn run_agent_loop(
                     // Execute daemon-side tools immediately, forward all client-side tools
                     let mut tool_results = Vec::new();
                     let mut has_client_tools = false;
+                    let mut cancelled = false;
                     for tc in &tool_calls {
+                        if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                            cancelled = true;
+                            break;
+                        }
                         let is_command_query = tc.name == "omnish_list_history" || tc.name == "omnish_get_output";
                         let display_name = plugin_mgr.tool_display_name(&tc.name)
                             .unwrap_or(&tc.name).to_string();
@@ -1247,6 +1252,46 @@ async fn run_agent_loop(
 
                             tool_results.push(result);
                         }
+                    }
+
+                    if cancelled {
+                        // Cancelled mid-tool-execution — store partial state
+                        tracing::info!("Agent loop cancelled during tool execution (thread={})", state.cm.thread_id);
+                        // Build tool results for completed tools + "user interrupted" for the rest
+                        let completed_ids: std::collections::HashSet<&str> = tool_results
+                            .iter()
+                            .map(|r| r.tool_use_id.as_str())
+                            .collect();
+                        let mut result_content: Vec<serde_json::Value> = tool_results
+                            .iter()
+                            .map(|r| serde_json::json!({
+                                "type": "tool_result",
+                                "tool_use_id": r.tool_use_id,
+                                "content": r.content,
+                                "is_error": r.is_error,
+                            }))
+                            .collect();
+                        for tc in &tool_calls {
+                            if !completed_ids.contains(tc.id.as_str()) {
+                                result_content.push(serde_json::json!({
+                                    "type": "tool_result",
+                                    "tool_use_id": tc.id,
+                                    "content": "user interrupted",
+                                    "is_error": true,
+                                }));
+                            }
+                        }
+                        state.llm_req.extra_messages.push(serde_json::json!({
+                            "role": "user",
+                            "content": result_content,
+                        }));
+                        let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
+                        if !to_store.is_empty() {
+                            to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
+                        }
+                        to_store.push(serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}));
+                        conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+                        return;
                     }
 
                     if has_client_tools {
