@@ -25,14 +25,18 @@ fn render_separator(cols: u16) -> String {
 /// - `selected`: this is the cursor row (render with `> ` prefix + bold + reverse video)
 /// - `checked`: only used in multi mode (render `[x]` or `[ ]`)
 /// - `multi`: whether to show checkboxes
-fn render_item(text: &str, selected: bool, checked: bool, multi: bool) -> String {
+/// - `disabled`: render dim with lock icon, not selectable
+fn render_item(text: &str, selected: bool, checked: bool, multi: bool, disabled: bool) -> String {
     let prefix = if selected { "> " } else { "  " };
     let checkbox = if multi {
         if checked { "[x] " } else { "[ ] " }
     } else {
         ""
     };
-    if selected {
+    if disabled {
+        // Dim style with lock icon, no reverse video even when cursor is on it
+        format!("\r\x1b[2m{}{}\u{1f512} {}\x1b[0m\x1b[K", prefix, checkbox, text)
+    } else if selected {
         format!("\r\x1b[1;7m{}{}{}\x1b[0m\x1b[K", prefix, checkbox, text)
     } else {
         format!("\r{}{}{}\x1b[K", prefix, checkbox, text)
@@ -64,6 +68,7 @@ fn render_full(
     items: &[&str],
     cursor: usize,
     checked: &[bool],
+    disabled: &[bool],
     multi: bool,
     cols: u16,
     scroll_offset: usize,
@@ -97,7 +102,7 @@ fn render_full(
     // Visible items
     let end = (scroll_offset + vis).min(items.len());
     for i in scroll_offset..end {
-        out.push_str(&render_item(items[i], i == cursor, checked[i], multi));
+        out.push_str(&render_item(items[i], i == cursor, checked[i], multi, disabled[i]));
         if i < end - 1 {
             out.push_str("\r\n");
         }
@@ -142,8 +147,8 @@ fn parse_esc_seq(stdin_fd: i32) -> Option<[u8; 2]> {
 }
 
 /// Rewrite a single item line in-place (cursor must already be on that line).
-fn redraw_item(text: &str, selected: bool, checked: bool, multi: bool) {
-    let line = render_item(text, selected, checked, multi);
+fn redraw_item(text: &str, selected: bool, checked: bool, multi: bool, disabled: bool) {
+    let line = render_item(text, selected, checked, multi, disabled);
     nix::unistd::write(std::io::stdout(), line.as_bytes()).ok();
 }
 
@@ -172,7 +177,8 @@ fn build_shortcut_map(items: &[&str]) -> std::collections::HashMap<u8, usize> {
 }
 
 /// Core picker loop. Returns selected index(es) or None on ESC.
-fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize) -> Option<Vec<usize>> {
+/// `disabled_items` marks items that cannot be selected (shown dim with lock icon).
+fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, disabled_items: &[bool]) -> Option<Vec<usize>> {
     if items.is_empty() {
         return None;
     }
@@ -184,12 +190,16 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize) -
     let mut scroll_offset: usize = cursor.saturating_sub(vis / 2).min(max_scroll);
     let mut checked = vec![false; items.len()];
     let shortcuts = build_shortcut_map(items);
+    // Pad disabled to match items length
+    let disabled: Vec<bool> = (0..items.len())
+        .map(|i| disabled_items.get(i).copied().unwrap_or(false))
+        .collect();
 
     // Hide cursor during picker interaction
     nix::unistd::write(std::io::stdout(), b"\x1b[?25l").ok();
 
     // Initial render
-    let full = render_full(title, items, cursor, &checked, multi, cols, scroll_offset);
+    let full = render_full(title, items, cursor, &checked, &disabled, multi, cols, scroll_offset);
     nix::unistd::write(std::io::stdout(), full.as_bytes()).ok();
 
     let stdin_fd = std::io::stdin().as_raw_fd();
@@ -208,7 +218,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize) -
                                     if cursor < scroll_offset {
                                         // Need to scroll up — full redraw
                                         scroll_offset = cursor;
-                                        let full = render_full(title, items, cursor, &checked, multi, cols, scroll_offset);
+                                        let full = render_full(title, items, cursor, &checked, &disabled, multi, cols, scroll_offset);
                                         // Move up to title line first
                                         let total_lines = 1 + 1 + vis + 1 + 1;
                                         let s = format!("\x1b[{}A", total_lines - 1);
@@ -221,9 +231,9 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize) -
                                         let up_to_old = (vis - old_vis_pos) + 1; // +1 for bottom separator
                                         let s = format!("\x1b[{}A", up_to_old);
                                         nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
-                                        redraw_item(items[old], false, checked[old], multi);
+                                        redraw_item(items[old], false, checked[old], multi, disabled[old]);
                                         nix::unistd::write(std::io::stdout(), b"\x1b[1A").ok();
-                                        redraw_item(items[cursor], true, checked[cursor], multi);
+                                        redraw_item(items[cursor], true, checked[cursor], multi, disabled[cursor]);
                                         let new_vis_pos = cursor - scroll_offset;
                                         let down = (vis - new_vis_pos) + 1;
                                         let s = format!("\x1b[{}B", down);
@@ -237,7 +247,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize) -
                                     if cursor >= scroll_offset + vis {
                                         // Need to scroll down — full redraw
                                         scroll_offset = cursor - vis + 1;
-                                        let full = render_full(title, items, cursor, &checked, multi, cols, scroll_offset);
+                                        let full = render_full(title, items, cursor, &checked, &disabled, multi, cols, scroll_offset);
                                         let total_lines = 1 + 1 + vis + 1 + 1;
                                         let s = format!("\x1b[{}A", total_lines - 1);
                                         nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
@@ -249,9 +259,9 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize) -
                                         let up_to_old = (vis - old_vis_pos) + 1;
                                         let s = format!("\x1b[{}A", up_to_old);
                                         nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
-                                        redraw_item(items[old], false, checked[old], multi);
+                                        redraw_item(items[old], false, checked[old], multi, disabled[old]);
                                         nix::unistd::write(std::io::stdout(), b"\x1b[1B").ok();
-                                        redraw_item(items[cursor], true, checked[cursor], multi);
+                                        redraw_item(items[cursor], true, checked[cursor], multi, disabled[cursor]);
                                         let new_vis_pos = cursor - scroll_offset;
                                         let down = (vis - new_vis_pos) + 1;
                                         let s = format!("\x1b[{}B", down);
@@ -269,20 +279,20 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize) -
                         return None;
                     }
                 }
-                b' ' if multi => {
-                    // Toggle check on current item
+                b' ' if multi && !disabled[cursor] => {
+                    // Toggle check on current item (skip if disabled)
                     checked[cursor] = !checked[cursor];
                     let vis_pos = cursor - scroll_offset;
                     let up = (vis - vis_pos) + 1;
                     let s = format!("\x1b[{}A", up);
                     nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
-                    redraw_item(items[cursor], true, checked[cursor], multi);
+                    redraw_item(items[cursor], true, checked[cursor], multi, disabled[cursor]);
                     let down = (vis - vis_pos) + 1;
                     let s = format!("\x1b[{}B", down);
                     nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
                 }
-                b'\r' | b'\n' => {
-                    // Confirm selection
+                b'\r' | b'\n' if !disabled[cursor] => {
+                    // Confirm selection (skip if cursor is on disabled item)
                     let cleanup = render_cleanup(items.len());
                     nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
                     nix::unistd::write(std::io::stdout(), b"\x1b[?25h").ok();
@@ -298,21 +308,23 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize) -
                     }
                 }
             key => {
-                // Check shortcut keys (e.g., 'y' for [Y]es)
+                // Check shortcut keys (e.g., 'y' for [Y]es) — skip disabled items
                 if let Some(&idx) = shortcuts.get(&key.to_ascii_lowercase()) {
-                    let cleanup = render_cleanup(items.len());
-                    nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
-                    nix::unistd::write(std::io::stdout(), b"\x1b[?25h").ok();
-                    if multi {
-                        checked[idx] = !checked[idx];
-                        let selected: Vec<usize> = checked.iter()
-                            .enumerate()
-                            .filter(|(_, &c)| c)
-                            .map(|(i, _)| i)
-                            .collect();
-                        return Some(selected);
-                    } else {
-                        return Some(vec![idx]);
+                    if !disabled[idx] {
+                        let cleanup = render_cleanup(items.len());
+                        nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
+                        nix::unistd::write(std::io::stdout(), b"\x1b[?25h").ok();
+                        if multi {
+                            checked[idx] = !checked[idx];
+                            let selected: Vec<usize> = checked.iter()
+                                .enumerate()
+                                .filter(|(_, &c)| c)
+                                .map(|(i, _)| i)
+                                .collect();
+                            return Some(selected);
+                        } else {
+                            return Some(vec![idx]);
+                        }
                     }
                 }
             }
@@ -327,17 +339,23 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize) -
 
 /// Single select: returns the selected index (0-based), or None on ESC.
 pub fn pick_one(title: &str, items: &[&str]) -> Option<usize> {
-    run_picker(title, items, false, 0).map(|v| v[0])
+    run_picker(title, items, false, 0, &[]).map(|v| v[0])
 }
 
 /// Single select with pre-selected index: returns the selected index (0-based), or None on ESC.
 pub fn pick_one_at(title: &str, items: &[&str], initial: usize) -> Option<usize> {
-    run_picker(title, items, false, initial).map(|v| v[0])
+    run_picker(title, items, false, initial, &[]).map(|v| v[0])
+}
+
+/// Single select with disabled items: disabled items are shown dim with lock icon
+/// and cannot be selected. Returns the selected index (0-based), or None on ESC.
+pub fn pick_one_with_disabled(title: &str, items: &[&str], disabled: &[bool]) -> Option<usize> {
+    run_picker(title, items, false, 0, disabled).map(|v| v[0])
 }
 
 /// Multi select: returns selected indices (0-based), or None on ESC.
 pub fn pick_many(title: &str, items: &[&str]) -> Option<Vec<usize>> {
-    run_picker(title, items, true, 0)
+    run_picker(title, items, true, 0, &[])
 }
 
 #[cfg(test)]
@@ -358,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_render_item_normal() {
-        let output = render_item("Option A", false, false, false);
+        let output = render_item("Option A", false, false, false, false);
         assert!(output.contains("  "), "non-selected item should have '  ' prefix");
         assert!(output.contains("Option A"), "should contain the item text");
         // Should NOT contain bold/reverse escape
@@ -367,7 +385,7 @@ mod tests {
 
     #[test]
     fn test_render_item_selected() {
-        let output = render_item("Option B", true, false, false);
+        let output = render_item("Option B", true, false, false, false);
         assert!(output.contains("> "), "selected item should have '> ' prefix");
         assert!(output.contains("Option B"), "should contain the item text");
         // Should contain bold+reverse escape
@@ -376,14 +394,14 @@ mod tests {
 
     #[test]
     fn test_render_item_multi_checked() {
-        let output = render_item("Checked item", false, true, true);
+        let output = render_item("Checked item", false, true, true, false);
         assert!(output.contains("[x]"), "checked item in multi mode should show [x]");
         assert!(output.contains("Checked item"), "should contain the item text");
     }
 
     #[test]
     fn test_render_item_multi_unchecked() {
-        let output = render_item("Unchecked item", true, false, true);
+        let output = render_item("Unchecked item", true, false, true, false);
         assert!(output.contains("[ ]"), "unchecked item in multi mode should show [ ]");
         assert!(output.contains("> "), "selected item should have '> ' prefix");
         assert!(output.contains("Unchecked item"), "should contain the item text");
@@ -416,7 +434,8 @@ mod tests {
         let cols: u16 = 60;
         let items = vec!["Alpha", "Beta", "Gamma"];
         let checked = vec![false, false, false];
-        let output = render_full("Pick one:", &items, 1, &checked, false, cols, 0);
+        let disabled = vec![false, false, false];
+        let output = render_full("Pick one:", &items, 1, &checked, &disabled, false, cols, 0);
 
         // Use a tall terminal to accommodate the blank lines pushed by render_full
         let total_lines = 1 + 1 + items.len() + 1 + 1; // 7
@@ -460,7 +479,8 @@ mod tests {
         let cols: u16 = 60;
         let items = vec!["First", "Second"];
         let checked = vec![true, false];
-        let output = render_full("Select items:", &items, 0, &checked, true, cols, 0);
+        let disabled = vec![false, false];
+        let output = render_full("Select items:", &items, 0, &checked, &disabled, true, cols, 0);
 
         let rows = 20u16;
         let parser = parse_ansi(&output, cols, rows);
@@ -479,9 +499,10 @@ mod tests {
         let cols: u16 = 60;
         let items = vec!["One", "Two", "Three"];
         let checked = vec![false, false, false];
+        let disabled = vec![false, false, false];
 
         // Render the full picker, then clean it up
-        let mut output = render_full("Title:", &items, 0, &checked, false, cols, 0);
+        let mut output = render_full("Title:", &items, 0, &checked, &disabled, false, cols, 0);
         output.push_str(&render_cleanup(items.len()));
 
         let rows = 20u16;
@@ -522,9 +543,10 @@ mod tests {
             _ => unreachable!(),
         }).collect();
         let checked = vec![false; 15];
+        let disabled = vec![false; 15];
 
         // Render with scroll_offset=0, cursor=0
-        let output = render_full("Pick:", &items, 0, &checked, false, cols, 0);
+        let output = render_full("Pick:", &items, 0, &checked, &disabled, false, cols, 0);
         let rows = 30u16;
         let parser = parse_ansi(&output, cols, rows);
         let all_text = parser.screen().contents();
@@ -548,9 +570,10 @@ mod tests {
             _ => unreachable!(),
         }).collect();
         let checked = vec![false; 15];
+        let disabled = vec![false; 15];
 
         // Render with scroll_offset=5, cursor=10
-        let output = render_full("Pick:", &items, 10, &checked, false, cols, 5);
+        let output = render_full("Pick:", &items, 10, &checked, &disabled, false, cols, 5);
         let rows = 30u16;
         let parser = parse_ansi(&output, cols, rows);
         let all_text = parser.screen().contents();
@@ -568,8 +591,9 @@ mod tests {
         let cols: u16 = 60;
         let items: Vec<&str> = (0..15).map(|_| "item").collect();
         let checked = vec![false; 15];
+        let disabled = vec![false; 15];
 
-        let mut output = render_full("Title:", &items, 0, &checked, false, cols, 0);
+        let mut output = render_full("Title:", &items, 0, &checked, &disabled, false, cols, 0);
         output.push_str(&render_cleanup(items.len()));
 
         let rows = 30u16;
@@ -618,5 +642,41 @@ mod tests {
         let items = vec!["[A] first", "[A] second"];
         let map = build_shortcut_map(&items);
         assert_eq!(map.get(&b'a'), Some(&0));
+    }
+
+    // -- Disabled item tests --
+
+    #[test]
+    fn test_render_item_disabled() {
+        let output = render_item("Locked thread", false, false, false, true);
+        assert!(output.contains("\u{1f512}"), "disabled item should show lock icon");
+        assert!(output.contains("\x1b[2m"), "disabled item should be dim");
+        assert!(!output.contains("\x1b[1;7m"), "disabled item should NOT be bold+reverse");
+    }
+
+    #[test]
+    fn test_render_item_disabled_selected() {
+        // Even when cursor is on a disabled item, it should be dim (no reverse video)
+        let output = render_item("Locked thread", true, false, false, true);
+        assert!(output.contains("\u{1f512}"), "disabled selected item should show lock icon");
+        assert!(output.contains("\x1b[2m"), "disabled selected item should be dim");
+        assert!(!output.contains("\x1b[1;7m"), "disabled selected item should NOT be bold+reverse");
+    }
+
+    #[test]
+    fn test_render_full_with_disabled() {
+        let cols: u16 = 60;
+        let items = vec!["Active", "Locked", "Active2"];
+        let checked = vec![false, false, false];
+        let disabled = vec![false, true, false];
+        let output = render_full("Pick:", &items, 0, &checked, &disabled, false, cols, 0);
+
+        let rows = 20u16;
+        let parser = parse_ansi(&output, cols, rows);
+        let all_text = parser.screen().contents();
+
+        assert!(all_text.contains("Active"), "should display active item");
+        // The lock icon 🔒 is a multi-byte character; check the text contains "Locked"
+        assert!(all_text.contains("Locked"), "should display locked item text");
     }
 }

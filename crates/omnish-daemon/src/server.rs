@@ -421,7 +421,7 @@ async fn handle_message(
         }
         Message::Request(req) => {
             if req.query.starts_with("__cmd:") {
-                let result = handle_builtin_command(&req, mgr, task_mgr, llm, conv_mgr, plugin_mgr).await;
+                let result = handle_builtin_command(&req, mgr, task_mgr, llm, conv_mgr, plugin_mgr, active_threads).await;
                 let content = serde_json::to_string(&result).unwrap_or_else(|_| {
                     r#"{"display":"(serialization error)"}"#.to_string()
                 });
@@ -1620,7 +1620,7 @@ fn build_resume_response(
     json
 }
 
-async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>, plugin_mgr: &PluginManager) -> serde_json::Value {
+async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>, plugin_mgr: &PluginManager, active_threads: &ActiveThreads) -> serde_json::Value {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
 
     // Build system-reminder for context display
@@ -1741,7 +1741,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             }
         }
         "sessions" => cmd_display(mgr.format_sessions_list(&req.session_id).await),
-        "conversations" => format_conversations_json(conv_mgr),
+        "conversations" => format_conversations_json(conv_mgr, active_threads).await,
         "session" => match get_session_debug_info(&req.session_id, mgr).await {
             Ok(info) => cmd_display(info),
             Err(e) => cmd_display(format!("Error: {}", e)),
@@ -1803,19 +1803,26 @@ async fn handle_template(name: &str, mgr: &SessionManager, plugin_mgr: &PluginMa
     }
 }
 
-/// Format the list of conversations as JSON with display string and thread_ids.
-fn format_conversations_json(conv_mgr: &Arc<ConversationManager>) -> serde_json::Value {
+/// Format the list of conversations as JSON with display string, thread_ids, and locked status.
+async fn format_conversations_json(conv_mgr: &Arc<ConversationManager>, active_threads: &ActiveThreads) -> serde_json::Value {
     let conversations = conv_mgr.list_conversations();
     if conversations.is_empty() {
         return cmd_display("No conversations yet. Start a chat with :");
     }
 
+    let locked_set: std::collections::HashSet<String> = {
+        let threads = active_threads.lock().await;
+        threads.keys().cloned().collect()
+    };
+
     let mut output = String::from("Conversations:\n");
     let mut thread_ids = Vec::new();
+    let mut locked_threads = Vec::new();
     for (i, (thread_id, modified, exchange_count, last_question)) in conversations.into_iter().enumerate() {
         let time_ago = format_relative_time(modified);
 
         let meta = conv_mgr.load_meta(&thread_id);
+        let is_locked = locked_set.contains(&thread_id);
 
         let truncate_display = |s: &str, max: usize| -> String {
             let single_line = s.replace('\n', " ");
@@ -1847,10 +1854,12 @@ fn format_conversations_json(conv_mgr: &Arc<ConversationManager>) -> serde_json:
         }
 
         thread_ids.push(thread_id);
+        locked_threads.push(is_locked);
     }
     serde_json::json!({
         "display": output,
         "thread_ids": thread_ids,
+        "locked_threads": locked_threads,
     })
 }
 

@@ -1051,52 +1051,8 @@ impl ChatSession {
                 }
             }
         } else {
-            // /resume without index — picker
-            self.fetch_thread_ids(session_id, rpc).await;
-            if self.cached_thread_ids.is_empty() {
-                write_stdout(&display::render_error("No conversations to resume"));
-                None
-            } else {
-                let rid = Uuid::new_v4().to_string()[..8].to_string();
-                let req = Message::Request(Request {
-                    request_id: rid.clone(),
-                    session_id: session_id.to_string(),
-                    query: "__cmd:conversations".to_string(),
-                    scope: RequestScope::AllSessions,
-                });
-                match rpc.call(req).await {
-                    Ok(Message::Response(resp)) if resp.request_id == rid => {
-                        if let Some(json) = super::parse_cmd_response(&resp.content) {
-                            let display_str = super::cmd_display_str(&json);
-                            let item_strings: Vec<String> = display_str
-                                .lines()
-                                .filter(|l| l.trim_start().starts_with('['))
-                                .map(|l| l.trim_start().to_string())
-                                .collect();
-                            let items: Vec<&str> =
-                                item_strings.iter().map(|s| s.as_str()).collect();
-                            if items.is_empty() {
-                                write_stdout(&display::render_error("No conversations to resume"));
-                                None
-                            } else {
-                                match widgets::picker::pick_one("Resume conversation:", &items) {
-                                    Some(idx) if idx < self.cached_thread_ids.len() => {
-                                        Some(self.cached_thread_ids[idx].clone())
-                                    }
-                                    _ => None,
-                                }
-                            }
-                        } else {
-                            write_stdout(&display::render_error("No conversations to resume"));
-                            None
-                        }
-                    }
-                    _ => {
-                        write_stdout(&display::render_error("Failed to list conversations"));
-                        None
-                    }
-                }
-            }
+            // /resume without index — picker (with lock-aware disabled items)
+            self.show_resume_picker(session_id, rpc).await
         };
 
         if let Some(tid) = tid {
@@ -1125,6 +1081,59 @@ impl ChatSession {
                             .collect();
                     }
                 }
+            }
+        }
+    }
+
+    /// Show the resume picker with lock-aware disabled items.
+    /// Returns the selected thread_id, or None on ESC/cancel.
+    async fn show_resume_picker(&mut self, session_id: &str, rpc: &RpcClient) -> Option<String> {
+        self.fetch_thread_ids(session_id, rpc).await;
+        if self.cached_thread_ids.is_empty() {
+            write_stdout(&display::render_error("No conversations to resume"));
+            return None;
+        }
+        let rid = Uuid::new_v4().to_string()[..8].to_string();
+        let req = Message::Request(Request {
+            request_id: rid.clone(),
+            session_id: session_id.to_string(),
+            query: "__cmd:conversations".to_string(),
+            scope: RequestScope::AllSessions,
+        });
+        match rpc.call(req).await {
+            Ok(Message::Response(resp)) if resp.request_id == rid => {
+                if let Some(json) = super::parse_cmd_response(&resp.content) {
+                    let display_str = super::cmd_display_str(&json);
+                    let item_strings: Vec<String> = display_str
+                        .lines()
+                        .filter(|l| l.trim_start().starts_with('['))
+                        .map(|l| l.trim_start().to_string())
+                        .collect();
+                    let items: Vec<&str> =
+                        item_strings.iter().map(|s| s.as_str()).collect();
+                    if items.is_empty() {
+                        write_stdout(&display::render_error("No conversations to resume"));
+                        return None;
+                    }
+                    // Build disabled flags from locked_threads
+                    let disabled: Vec<bool> = json.get("locked_threads")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.iter().map(|v| v.as_bool().unwrap_or(false)).collect())
+                        .unwrap_or_else(|| vec![false; items.len()]);
+                    match widgets::picker::pick_one_with_disabled("Resume conversation:", &items, &disabled) {
+                        Some(idx) if idx < self.cached_thread_ids.len() => {
+                            Some(self.cached_thread_ids[idx].clone())
+                        }
+                        _ => None,
+                    }
+                } else {
+                    write_stdout(&display::render_error("No conversations to resume"));
+                    None
+                }
+            }
+            _ => {
+                write_stdout(&display::render_error("Failed to list conversations"));
+                None
             }
         }
     }
@@ -1303,6 +1312,37 @@ impl ChatSession {
         match result {
             Ok(Ok(Message::ChatReady(ready))) if ready.request_id == rid => {
                 crate::event_log::push(format!("resume_tid: got ChatReady error={:?}", ready.error));
+
+                // If thread is locked, show picker to let user choose another thread
+                if ready.error.as_deref() == Some("thread_locked") {
+                    if let Some(ref err_display) = ready.error_display {
+                        write_stdout(&display::render_error(err_display));
+                    }
+                    crate::event_log::push("resume_tid: thread locked, showing picker");
+                    if let Some(alt_tid) = self.show_resume_picker(session_id, rpc).await {
+                        // Resume the selected thread (locked items are disabled in picker,
+                        // so this should not hit thread_locked again)
+                        let rid2 = Uuid::new_v4().to_string()[..8].to_string();
+                        let start2 = Message::ChatStart(ChatStart {
+                            request_id: rid2.clone(),
+                            session_id: session_id.to_string(),
+                            new_thread: false,
+                            thread_id: Some(alt_tid),
+                        });
+                        if let Ok(Ok(Message::ChatReady(r2))) = tokio::time::timeout(
+                            std::time::Duration::from_secs(15),
+                            rpc.call(start2),
+                        ).await {
+                            if r2.request_id == rid2 {
+                                self.apply_chat_ready(r2);
+                                return true;
+                            }
+                        }
+                        write_stdout(&display::render_error("Failed to resume conversation"));
+                    }
+                    return false;
+                }
+
                 // Render history first, then check mismatch
                 self.apply_chat_ready(ready.clone());
                 crate::event_log::push("resume_tid: apply_chat_ready done");
