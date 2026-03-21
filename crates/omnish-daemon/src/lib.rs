@@ -9,4 +9,5 @@ pub mod plugin;
 pub mod session_mgr;
 pub mod task_mgr;
 pub mod thread_summary;
+pub mod tool_registry;
 pub mod tools;
