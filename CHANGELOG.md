@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.8.2 (2026-03-21)
+
+### Features
+- **daemon**: ToolRegistry for unified tool metadata management — replaces scattered display_name/status_text methods
+- **daemon**: PluginManager.register_all() and CommandQueryTool::register() for ToolRegistry population
+- **client**: `/debug commands` to show recent shell command history
+- **client**: `/debug command <seq>` to show full command details and output
+- **client**: Improve thread resume UX with lock-aware picker and configurable disabled icon
+- **client**: Truncate long tool results to head 20 + tail 20 when >50 lines (#387)
+- **client**: Stream agent loop messages and add daemon-side cancel (#384)
+- **client**: Improve Ctrl+C interrupt display and resume cd (#384, #372, #383)
+- **client**: Completion cursor awareness — suppress ghost text when cursor not at end of line (#66)
+- **daemon**: Increase agent tool call limit from 30 to 100
+- **plugin**: Add well-known writable paths to sandbox (#383)
+
+### Fixes
+- **tracker**: Recover pending command when CommandStart arrives without PromptStart (#392)
+- **tracker**: Use CommandStart timestamp for started_at instead of PromptStart
+- **tracker**: Assign seq at finalize time so unused prompts don't consume seq numbers
+- **tracker**: Handle escaped semicolons in OSC 133;B command parsing (#391)
+- **client**: Fix tool display corruption when output exceeds terminal width (#386)
+- **client**: Skip technical error message when `::` resume hits locked thread
+- **client**: Check cancel flag between daemon tool executions (#384)
+- **client**: Resolve file redirects against intended cwd during chat (#372)
+- **client**: Filter empty/unknown commands from system-reminder and history (#385)
+- **daemon**: Improve omnish_get_output display to match bash tool style
+
+### Refactoring
+- **daemon**: Agent loop uses ToolRegistry for all tool metadata
+- **daemon**: Override reload and reconstruct_history flow through ToolRegistry
+- **daemon**: Remove redundant metadata methods from PluginManager and CommandQueryTool
+
+---
+
 ## v0.8.1 (2026-03-19)
 
 ### Features
