@@ -302,72 +302,6 @@ impl PluginManager {
         (descriptions, override_params)
     }
 
-    /// Collect all tool definitions from all plugins (with prompt overrides applied).
-    pub fn all_tools(&self) -> Vec<ToolDef> {
-        let cache = self.prompt_cache.read().unwrap();
-        self.plugins
-            .iter()
-            .flat_map(|p| p.tools.iter().map(|t| {
-                let mut def = t.def.clone();
-                if let Some(desc) = cache.descriptions.get(&def.name) {
-                    def.description = desc.clone();
-                }
-                def
-            }))
-            .collect()
-    }
-
-    /// Get the status text for a tool call, interpolating {field} from input.
-    pub fn tool_status_text(&self, tool_name: &str, input: &serde_json::Value) -> String {
-        if let Some(&(pi, ti)) = self.tool_index.get(tool_name) {
-            let template = &self.plugins[pi].tools[ti].status_template;
-            interpolate_template(template, input)
-        } else {
-            format!("执行 {}...", tool_name)
-        }
-    }
-
-    /// Return the plugin type that owns the given tool.
-    pub fn tool_plugin_type(&self, tool_name: &str) -> Option<PluginType> {
-        self.tool_index
-            .get(tool_name)
-            .map(|&(pi, _)| self.plugins[pi].plugin_type)
-    }
-
-    /// Return the plugin directory name for the given tool.
-    pub fn tool_plugin_name(&self, tool_name: &str) -> Option<&str> {
-        self.tool_index
-            .get(tool_name)
-            .map(|&(pi, _)| self.plugins[pi].dir_name.as_str())
-    }
-
-    /// Return the display name for the given tool.
-    pub fn tool_display_name(&self, tool_name: &str) -> Option<&str> {
-        self.tool_index
-            .get(tool_name)
-            .map(|&(pi, ti)| self.plugins[pi].tools[ti].display_name.as_str())
-    }
-
-    /// Return the formatter name for the given tool.
-    pub fn tool_formatter(&self, tool_name: &str) -> Option<&str> {
-        self.tool_index
-            .get(tool_name)
-            .map(|&(pi, ti)| self.plugins[pi].tools[ti].formatter.as_str())
-    }
-
-    /// Return the status template for the given tool.
-    pub fn tool_status_template(&self, tool_name: &str) -> Option<&str> {
-        self.tool_index
-            .get(tool_name)
-            .map(|&(pi, ti)| self.plugins[pi].tools[ti].status_template.as_str())
-    }
-
-    /// Return override params for the given tool (from tool.override.json).
-    pub fn tool_override_params(&self, tool_name: &str) -> Option<HashMap<String, serde_json::Value>> {
-        let cache = self.prompt_cache.read().unwrap();
-        cache.override_params.get(tool_name).cloned()
-    }
-
     /// Return the executable path for the plugin that owns the given tool.
     pub fn plugin_executable(&self, tool_name: &str) -> Option<std::path::PathBuf> {
         self.tool_index.get(tool_name).map(|&(pi, _)| {
@@ -410,22 +344,6 @@ impl PluginManager {
     }
 }
 
-/// Replace `{field_name}` in template with values from the JSON input.
-fn interpolate_template(template: &str, input: &serde_json::Value) -> String {
-    let mut result = template.to_string();
-    if let Some(obj) = input.as_object() {
-        for (key, value) in obj {
-            let placeholder = format!("{{{}}}", key);
-            let replacement = match value {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            result = result.replace(&placeholder, &replacement);
-        }
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,12 +366,28 @@ mod tests {
     /// Number of tools embedded in BUILTIN_TOOL_JSON.
     const BUILTIN_COUNT: usize = 6;
 
+    /// Helper: register all tools from a PluginManager and return the count of defs.
+    fn count_registered_defs(mgr: &PluginManager) -> usize {
+        use crate::tool_registry::ToolRegistry;
+        let mut reg = ToolRegistry::new();
+        mgr.register_all(&mut reg);
+        reg.all_defs().len()
+    }
+
+    /// Helper: get description for a tool via ToolRegistry (after register_all + overrides).
+    fn get_description(mgr: &PluginManager, name: &str) -> String {
+        use crate::tool_registry::ToolRegistry;
+        let mut reg = ToolRegistry::new();
+        mgr.register_all(&mut reg);
+        reg.all_defs().into_iter().find(|t| t.name == name).unwrap().description
+    }
+
     #[test]
     fn test_load_empty_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let mgr = PluginManager::load(tmp.path());
         // Only embedded builtin tools
-        assert_eq!(mgr.all_tools().len(), BUILTIN_COUNT);
+        assert_eq!(count_registered_defs(&mgr), BUILTIN_COUNT);
     }
 
     #[test]
@@ -470,50 +404,11 @@ mod tests {
             }]
         }"#);
         let mgr = PluginManager::load(tmp.path());
-        assert_eq!(mgr.all_tools().len(), BUILTIN_COUNT + 1);
-        assert!(mgr.all_tools().iter().any(|t| t.name == "my_tool"));
-    }
-
-    #[test]
-    fn test_tool_plugin_name() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mgr = PluginManager::load(tmp.path());
-        // "bash" comes from embedded builtin
-        assert_eq!(mgr.tool_plugin_name("bash"), Some("builtin"));
-    }
-
-    #[test]
-    fn test_tool_plugin_type() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_tool_json(tmp.path(), "myplugin", r#"{
-            "plugin_type": "daemon_tool",
-            "tools": [{
-                "name": "query",
-                "description": "Query stuff",
-                "input_schema": {"type": "object"},
-                "status_template": "",
-                "sandboxed": false
-            }]
-        }"#);
-        let mgr = PluginManager::load(tmp.path());
-        assert_eq!(mgr.tool_plugin_type("query"), Some(PluginType::DaemonTool));
-    }
-
-    #[test]
-    fn test_status_text_interpolation() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mgr = PluginManager::load(tmp.path());
-        // Embedded builtin "bash" has status_template "{command}"
-        let input = serde_json::json!({"command": "ls -la"});
-        assert_eq!(mgr.tool_status_text("bash", &input), "ls -la");
-    }
-
-    #[test]
-    fn test_status_text_missing_field() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mgr = PluginManager::load(tmp.path());
-        let input = serde_json::json!({"timeout": 30});
-        assert_eq!(mgr.tool_status_text("bash", &input), "{command}");
+        let mut reg = crate::tool_registry::ToolRegistry::new();
+        mgr.register_all(&mut reg);
+        let defs = reg.all_defs();
+        assert_eq!(defs.len(), BUILTIN_COUNT + 1);
+        assert!(defs.iter().any(|t| t.name == "my_tool"));
     }
 
     #[test]
@@ -531,8 +426,11 @@ mod tests {
             }]
         }"#);
         let mgr = PluginManager::load(tmp.path());
-        assert_eq!(mgr.all_tools().len(), BUILTIN_COUNT + 1);
-        assert!(mgr.all_tools().iter().any(|t| t.name == "custom_read"));
+        let mut reg = crate::tool_registry::ToolRegistry::new();
+        mgr.register_all(&mut reg);
+        let defs = reg.all_defs();
+        assert_eq!(defs.len(), BUILTIN_COUNT + 1);
+        assert!(defs.iter().any(|t| t.name == "custom_read"));
     }
 
     #[test]
@@ -560,11 +458,7 @@ mod tests {
         }"#);
         let mgr = PluginManager::load(tmp.path());
         // BUILTIN_COUNT + 1 (only first dup_tool loaded, second skipped)
-        assert_eq!(mgr.all_tools().len(), BUILTIN_COUNT + 1);
-    }
-
-    fn get_description(mgr: &PluginManager, name: &str) -> String {
-        mgr.all_tools().into_iter().find(|t| t.name == name).unwrap().description
+        assert_eq!(count_registered_defs(&mgr), BUILTIN_COUNT + 1);
     }
 
     #[test]
@@ -633,41 +527,6 @@ mod tests {
         let mgr = PluginManager::load(tmp.path());
         let desc = get_description(&mgr, "bash");
         assert!(desc.contains("bash"));  // embedded description mentions bash
-    }
-
-    #[test]
-    fn test_override_params() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_tool_json(tmp.path(), "myplugin", r#"{
-            "plugin_type": "daemon_tool",
-            "tools": [{
-                "name": "my_tool",
-                "description": "My tool",
-                "input_schema": {"type": "object"},
-                "status_template": ""
-            }]
-        }"#);
-        write_tool_override(tmp.path(), "myplugin", r#"{
-            "tools": {
-                "my_tool": {
-                    "params": {
-                        "api_key": "test123",
-                        "count": 10
-                    }
-                }
-            }
-        }"#);
-        let mgr = PluginManager::load(tmp.path());
-        let params = mgr.tool_override_params("my_tool").unwrap();
-        assert_eq!(params["api_key"], serde_json::json!("test123"));
-        assert_eq!(params["count"], serde_json::json!(10));
-    }
-
-    #[test]
-    fn test_no_override_params() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mgr = PluginManager::load(tmp.path());
-        assert!(mgr.tool_override_params("bash").is_none());
     }
 
     #[test]

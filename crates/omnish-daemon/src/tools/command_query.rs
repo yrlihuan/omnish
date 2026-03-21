@@ -1,5 +1,5 @@
 use omnish_context::StreamReader;
-use omnish_llm::tool::{ToolDef, ToolResult};
+use omnish_llm::tool::ToolResult;
 use omnish_store::command::CommandRecord;
 use std::sync::Arc;
 
@@ -176,45 +176,6 @@ impl CommandQueryTool {
         lines.join("\n")
     }
 
-    pub fn definitions(&self) -> Vec<ToolDef> {
-        vec![
-            ToolDef {
-                name: "omnish_list_history".to_string(),
-                description: "List recent shell command history. \
-                    The last 5 commands are provided in <system-reminder> at the end of each user message, \
-                    so you do NOT need to call this unless you need older commands.".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "count": {
-                            "type": "integer",
-                            "description": "Number of recent commands to list (default 20)"
-                        }
-                    }
-                }),
-            },
-            ToolDef {
-                name: "omnish_get_output".to_string(),
-                description: "Get the full output of a specific shell command by its sequence number. \
-                    Use omnish_list_history to find the sequence number first.".to_string(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "seq": {
-                            "type": "integer",
-                            "description": "Command sequence number (from omnish_list_history or <system-reminder>)"
-                        },
-                        "command": {
-                            "type": "string",
-                            "description": "The command string at that seq (must match the recorded command)"
-                        }
-                    },
-                    "required": ["seq", "command"]
-                }),
-            },
-        ]
-    }
-
     pub fn execute(&self, tool_name: &str, input: &serde_json::Value) -> ToolResult {
         let tool_use_id = String::new(); // Filled by caller
         match tool_name {
@@ -347,32 +308,6 @@ impl CommandQueryTool {
         });
     }
 
-    pub fn display_name(tool_name: &str) -> &'static str {
-        match tool_name {
-            "omnish_list_history" => "History",
-            "omnish_get_output" => "GetOutput",
-            _ => "CommandQuery",
-        }
-    }
-
-    pub fn status_text(&self, tool_name: &str, input: &serde_json::Value) -> String {
-        match tool_name {
-            "omnish_list_history" => {
-                let count = input["count"].as_u64().unwrap_or(20);
-                format!("last {}", count)
-            }
-            "omnish_get_output" => {
-                let seq = input["seq"].as_u64().unwrap_or(0);
-                let command = input["command"].as_str().unwrap_or("");
-                if command.is_empty() {
-                    format!("[{}]", seq)
-                } else {
-                    format!("[{}] {}", seq, command)
-                }
-            }
-            _ => String::new(),
-        }
-    }
 }
 
 fn format_ago(now_ms: u64, started_at: u64) -> String {
