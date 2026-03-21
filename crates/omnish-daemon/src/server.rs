@@ -581,7 +581,7 @@ async fn handle_message(
                     if let Some(claim) = active_threads.lock().await.get_mut(tid) {
                         claim.pending_meta = Some(merged_meta);
                     }
-                    let history_vals = reconstruct_history(&raw_msgs, plugin_mgr);
+                    let history_vals = reconstruct_history(&raw_msgs, tool_registry);
                     tracing::debug!("[ChatStart] history reconstructed: {} entries", history_vals.len());
                     let history: Vec<String> = history_vals.iter()
                         .map(|v| serde_json::to_string(v).unwrap_or_default())
@@ -656,7 +656,7 @@ async fn handle_message(
                                 claim.pending_meta = Some(merged_meta);
                             }
                             let raw_msgs = conv_mgr.load_raw_messages(&tid);
-                            let history_vals = reconstruct_history(&raw_msgs, plugin_mgr);
+                            let history_vals = reconstruct_history(&raw_msgs, tool_registry);
                             let history: Vec<String> = history_vals.iter()
                                 .map(|v| serde_json::to_string(v).unwrap_or_default())
                                 .collect();
@@ -1469,7 +1469,7 @@ fn cmd_display(s: impl Into<String>) -> serde_json::Value {
 /// - `separator`: marks end of an exchange
 fn reconstruct_history(
     raw_messages: &[serde_json::Value],
-    plugin_mgr: &PluginManager,
+    tool_registry: &omnish_daemon::tool_registry::ToolRegistry,
 ) -> Vec<serde_json::Value> {
     use std::collections::HashMap as HM;
 
@@ -1496,21 +1496,19 @@ fn reconstruct_history(
                             let is_error = block["is_error"].as_bool().unwrap_or(false);
 
                             if let Some((tool_name, input)) = pending_tools.remove(&tool_use_id) {
-                                let formatter_name = plugin_mgr.tool_formatter(&tool_name)
-                                    .unwrap_or("default");
-                                let fmt = formatter::get_formatter(formatter_name);
-                                let display_name = plugin_mgr.tool_display_name(&tool_name)
-                                    .unwrap_or(&tool_name).to_string();
-                                let status_template = plugin_mgr.tool_status_template(&tool_name)
-                                    .unwrap_or("").to_string();
+                                let fmt = formatter::get_formatter(tool_registry.formatter_name(&tool_name));
+                                let display_name = tool_registry.display_name(&tool_name).to_string();
+                                let status_template = tool_registry.status_template(&tool_name).to_string();
                                 let fmt_out = fmt.format(&FormatInput {
                                     tool_name: tool_name.clone(),
                                     display_name: display_name.clone(),
                                     status_template,
-                                    params: input,
+                                    params: input.clone(),
                                     output: Some(output),
                                     is_error: Some(is_error),
                                 });
+                                let param_desc = tool_registry.status_text(&tool_name, &input);
+                                let param_desc = if param_desc.is_empty() { fmt_out.param_desc } else { param_desc };
                                 let icon_str = match fmt_out.status_icon {
                                     omnish_protocol::message::StatusIcon::Running => "running",
                                     omnish_protocol::message::StatusIcon::Success => "success",
@@ -1522,7 +1520,7 @@ fn reconstruct_history(
                                     "tool_call_id": tool_use_id,
                                     "status_icon": icon_str,
                                     "display_name": display_name,
-                                    "param_desc": fmt_out.param_desc,
+                                    "param_desc": param_desc,
                                     "result_compact": fmt_out.result_compact,
                                     "result_full": fmt_out.result_full,
                                 }));
@@ -1598,11 +1596,11 @@ fn reconstruct_history(
 fn build_resume_response(
     thread_id: &str,
     conv_mgr: &ConversationManager,
-    plugin_mgr: &PluginManager,
+    tool_registry: &omnish_daemon::tool_registry::ToolRegistry,
     llm_backend: &Option<Arc<dyn LlmBackend>>,
 ) -> serde_json::Value {
     let raw_msgs = conv_mgr.load_raw_messages(thread_id);
-    let history = reconstruct_history(&raw_msgs, plugin_mgr);
+    let history = reconstruct_history(&raw_msgs, tool_registry);
     let mut json = serde_json::json!({
         "thread_id": thread_id,
         "history": history,
@@ -1666,14 +1664,14 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             Err(_) => return cmd_display("Invalid index: not a number"),
         };
         return match conv_mgr.get_thread_by_index(idx) {
-            Some(thread_id) => build_resume_response(&thread_id, conv_mgr, plugin_mgr, llm_backend),
+            Some(thread_id) => build_resume_response(&thread_id, conv_mgr, tool_registry, llm_backend),
             None => cmd_display("Invalid index: out of bounds"),
         };
     }
     // Handle /resume without index (resume latest = /resume 1)
     if sub == "resume" {
         return match conv_mgr.get_thread_by_index(0) {
-            Some(thread_id) => build_resume_response(&thread_id, conv_mgr, plugin_mgr, llm_backend),
+            Some(thread_id) => build_resume_response(&thread_id, conv_mgr, tool_registry, llm_backend),
             None => cmd_display("No conversations yet. Start a chat with :"),
         };
     }
