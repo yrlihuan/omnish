@@ -10,6 +10,7 @@ use std::os::unix::io::AsRawFd;
 const MAX_VISIBLE: usize = 10;
 
 /// Icon style for disabled items in the picker.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisabledIcon {
     /// 🔒 (U+1F512) — padlock emoji
