@@ -9,6 +9,27 @@ use std::os::unix::io::AsRawFd;
 /// Maximum number of items visible in the picker viewport.
 const MAX_VISIBLE: usize = 10;
 
+/// Icon style for disabled items in the picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisabledIcon {
+    /// 🔒 (U+1F512) — padlock emoji
+    Lock,
+    /// ⚿ (U+26BF) — squared key
+    Key,
+    /// ⊘ (U+2298) — circled division slash
+    Forbidden,
+}
+
+impl DisabledIcon {
+    fn as_str(self) -> &'static str {
+        match self {
+            DisabledIcon::Lock => "\u{1f512}",
+            DisabledIcon::Key => "\u{26bf}",
+            DisabledIcon::Forbidden => "\u{2298}",
+        }
+    }
+}
+
 /// Get terminal width, fallback to 80.
 fn terminal_cols() -> u16 {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
@@ -25,17 +46,17 @@ fn render_separator(cols: u16) -> String {
 /// - `selected`: this is the cursor row (render with `> ` prefix + bold + reverse video)
 /// - `checked`: only used in multi mode (render `[x]` or `[ ]`)
 /// - `multi`: whether to show checkboxes
-/// - `disabled`: render dim with lock icon, not selectable
-fn render_item(text: &str, selected: bool, checked: bool, multi: bool, disabled: bool) -> String {
+/// - `disabled_icon`: if Some, render dim with icon and block selection
+fn render_item(text: &str, selected: bool, checked: bool, multi: bool, disabled_icon: Option<DisabledIcon>) -> String {
     let prefix = if selected { "> " } else { "  " };
     let checkbox = if multi {
         if checked { "[x] " } else { "[ ] " }
     } else {
         ""
     };
-    if disabled {
-        // Dim style with lock icon, no reverse video even when cursor is on it
-        format!("\r\x1b[2m{}{}\u{1f512} {}\x1b[0m\x1b[K", prefix, checkbox, text)
+    if let Some(icon) = disabled_icon {
+        // Dim style with icon, no reverse video even when cursor is on it
+        format!("\r\x1b[2m{}{}{} {}\x1b[0m\x1b[K", prefix, checkbox, icon.as_str(), text)
     } else if selected {
         format!("\r\x1b[1;7m{}{}{}\x1b[0m\x1b[K", prefix, checkbox, text)
     } else {
@@ -68,7 +89,7 @@ fn render_full(
     items: &[&str],
     cursor: usize,
     checked: &[bool],
-    disabled: &[bool],
+    disabled: &[Option<DisabledIcon>],
     multi: bool,
     cols: u16,
     scroll_offset: usize,
@@ -147,8 +168,8 @@ fn parse_esc_seq(stdin_fd: i32) -> Option<[u8; 2]> {
 }
 
 /// Rewrite a single item line in-place (cursor must already be on that line).
-fn redraw_item(text: &str, selected: bool, checked: bool, multi: bool, disabled: bool) {
-    let line = render_item(text, selected, checked, multi, disabled);
+fn redraw_item(text: &str, selected: bool, checked: bool, multi: bool, disabled_icon: Option<DisabledIcon>) {
+    let line = render_item(text, selected, checked, multi, disabled_icon);
     nix::unistd::write(std::io::stdout(), line.as_bytes()).ok();
 }
 
@@ -177,8 +198,8 @@ fn build_shortcut_map(items: &[&str]) -> std::collections::HashMap<u8, usize> {
 }
 
 /// Core picker loop. Returns selected index(es) or None on ESC.
-/// `disabled_items` marks items that cannot be selected (shown dim with lock icon).
-fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, disabled_items: &[bool]) -> Option<Vec<usize>> {
+/// `disabled_items` marks items that cannot be selected (shown dim with icon).
+fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, disabled_items: &[Option<DisabledIcon>]) -> Option<Vec<usize>> {
     if items.is_empty() {
         return None;
     }
@@ -191,8 +212,8 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
     let mut checked = vec![false; items.len()];
     let shortcuts = build_shortcut_map(items);
     // Pad disabled to match items length
-    let disabled: Vec<bool> = (0..items.len())
-        .map(|i| disabled_items.get(i).copied().unwrap_or(false))
+    let disabled: Vec<Option<DisabledIcon>> = (0..items.len())
+        .map(|i| disabled_items.get(i).copied().flatten())
         .collect();
 
     // Hide cursor during picker interaction
@@ -279,7 +300,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
                         return None;
                     }
                 }
-                b' ' if multi && !disabled[cursor] => {
+                b' ' if multi && disabled[cursor].is_none() => {
                     // Toggle check on current item (skip if disabled)
                     checked[cursor] = !checked[cursor];
                     let vis_pos = cursor - scroll_offset;
@@ -291,7 +312,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
                     let s = format!("\x1b[{}B", down);
                     nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
                 }
-                b'\r' | b'\n' if !disabled[cursor] => {
+                b'\r' | b'\n' if disabled[cursor].is_none() => {
                     // Confirm selection (skip if cursor is on disabled item)
                     let cleanup = render_cleanup(items.len());
                     nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
@@ -310,7 +331,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
             key => {
                 // Check shortcut keys (e.g., 'y' for [Y]es) — skip disabled items
                 if let Some(&idx) = shortcuts.get(&key.to_ascii_lowercase()) {
-                    if !disabled[idx] {
+                    if disabled[idx].is_none() {
                         let cleanup = render_cleanup(items.len());
                         nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
                         nix::unistd::write(std::io::stdout(), b"\x1b[?25h").ok();
@@ -347,9 +368,9 @@ pub fn pick_one_at(title: &str, items: &[&str], initial: usize) -> Option<usize>
     run_picker(title, items, false, initial, &[]).map(|v| v[0])
 }
 
-/// Single select with disabled items: disabled items are shown dim with lock icon
+/// Single select with disabled items: disabled items are shown dim with the given icon
 /// and cannot be selected. Returns the selected index (0-based), or None on ESC.
-pub fn pick_one_with_disabled(title: &str, items: &[&str], disabled: &[bool]) -> Option<usize> {
+pub fn pick_one_with_disabled(title: &str, items: &[&str], disabled: &[Option<DisabledIcon>]) -> Option<usize> {
     run_picker(title, items, false, 0, disabled).map(|v| v[0])
 }
 
@@ -376,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_render_item_normal() {
-        let output = render_item("Option A", false, false, false, false);
+        let output = render_item("Option A", false, false, false, None);
         assert!(output.contains("  "), "non-selected item should have '  ' prefix");
         assert!(output.contains("Option A"), "should contain the item text");
         // Should NOT contain bold/reverse escape
@@ -385,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_render_item_selected() {
-        let output = render_item("Option B", true, false, false, false);
+        let output = render_item("Option B", true, false, false, None);
         assert!(output.contains("> "), "selected item should have '> ' prefix");
         assert!(output.contains("Option B"), "should contain the item text");
         // Should contain bold+reverse escape
@@ -394,14 +415,14 @@ mod tests {
 
     #[test]
     fn test_render_item_multi_checked() {
-        let output = render_item("Checked item", false, true, true, false);
+        let output = render_item("Checked item", false, true, true, None);
         assert!(output.contains("[x]"), "checked item in multi mode should show [x]");
         assert!(output.contains("Checked item"), "should contain the item text");
     }
 
     #[test]
     fn test_render_item_multi_unchecked() {
-        let output = render_item("Unchecked item", true, false, true, false);
+        let output = render_item("Unchecked item", true, false, true, None);
         assert!(output.contains("[ ]"), "unchecked item in multi mode should show [ ]");
         assert!(output.contains("> "), "selected item should have '> ' prefix");
         assert!(output.contains("Unchecked item"), "should contain the item text");
@@ -434,7 +455,7 @@ mod tests {
         let cols: u16 = 60;
         let items = vec!["Alpha", "Beta", "Gamma"];
         let checked = vec![false, false, false];
-        let disabled = vec![false, false, false];
+        let disabled: Vec<Option<DisabledIcon>> = vec![None, None, None];
         let output = render_full("Pick one:", &items, 1, &checked, &disabled, false, cols, 0);
 
         // Use a tall terminal to accommodate the blank lines pushed by render_full
@@ -479,7 +500,7 @@ mod tests {
         let cols: u16 = 60;
         let items = vec!["First", "Second"];
         let checked = vec![true, false];
-        let disabled = vec![false, false];
+        let disabled: Vec<Option<DisabledIcon>> = vec![None, None];
         let output = render_full("Select items:", &items, 0, &checked, &disabled, true, cols, 0);
 
         let rows = 20u16;
@@ -499,7 +520,7 @@ mod tests {
         let cols: u16 = 60;
         let items = vec!["One", "Two", "Three"];
         let checked = vec![false, false, false];
-        let disabled = vec![false, false, false];
+        let disabled: Vec<Option<DisabledIcon>> = vec![None, None, None];
 
         // Render the full picker, then clean it up
         let mut output = render_full("Title:", &items, 0, &checked, &disabled, false, cols, 0);
@@ -543,7 +564,7 @@ mod tests {
             _ => unreachable!(),
         }).collect();
         let checked = vec![false; 15];
-        let disabled = vec![false; 15];
+        let disabled: Vec<Option<DisabledIcon>> = vec![None; 15];
 
         // Render with scroll_offset=0, cursor=0
         let output = render_full("Pick:", &items, 0, &checked, &disabled, false, cols, 0);
@@ -570,7 +591,7 @@ mod tests {
             _ => unreachable!(),
         }).collect();
         let checked = vec![false; 15];
-        let disabled = vec![false; 15];
+        let disabled: Vec<Option<DisabledIcon>> = vec![None; 15];
 
         // Render with scroll_offset=5, cursor=10
         let output = render_full("Pick:", &items, 10, &checked, &disabled, false, cols, 5);
@@ -591,7 +612,7 @@ mod tests {
         let cols: u16 = 60;
         let items: Vec<&str> = (0..15).map(|_| "item").collect();
         let checked = vec![false; 15];
-        let disabled = vec![false; 15];
+        let disabled: Vec<Option<DisabledIcon>> = vec![None; 15];
 
         let mut output = render_full("Title:", &items, 0, &checked, &disabled, false, cols, 0);
         output.push_str(&render_cleanup(items.len()));
@@ -647,17 +668,31 @@ mod tests {
     // -- Disabled item tests --
 
     #[test]
-    fn test_render_item_disabled() {
-        let output = render_item("Locked thread", false, false, false, true);
-        assert!(output.contains("\u{1f512}"), "disabled item should show lock icon");
+    fn test_render_item_disabled_lock() {
+        let output = render_item("Locked thread", false, false, false, Some(DisabledIcon::Lock));
+        assert!(output.contains("\u{1f512}"), "Lock icon should show 🔒");
         assert!(output.contains("\x1b[2m"), "disabled item should be dim");
         assert!(!output.contains("\x1b[1;7m"), "disabled item should NOT be bold+reverse");
     }
 
     #[test]
+    fn test_render_item_disabled_key() {
+        let output = render_item("Locked thread", false, false, false, Some(DisabledIcon::Key));
+        assert!(output.contains("\u{26bf}"), "Key icon should show ⚿");
+        assert!(output.contains("\x1b[2m"), "disabled item should be dim");
+    }
+
+    #[test]
+    fn test_render_item_disabled_forbidden() {
+        let output = render_item("Locked thread", false, false, false, Some(DisabledIcon::Forbidden));
+        assert!(output.contains("\u{2298}"), "Forbidden icon should show ⊘");
+        assert!(output.contains("\x1b[2m"), "disabled item should be dim");
+    }
+
+    #[test]
     fn test_render_item_disabled_selected() {
         // Even when cursor is on a disabled item, it should be dim (no reverse video)
-        let output = render_item("Locked thread", true, false, false, true);
+        let output = render_item("Locked thread", true, false, false, Some(DisabledIcon::Lock));
         assert!(output.contains("\u{1f512}"), "disabled selected item should show lock icon");
         assert!(output.contains("\x1b[2m"), "disabled selected item should be dim");
         assert!(!output.contains("\x1b[1;7m"), "disabled selected item should NOT be bold+reverse");
@@ -668,7 +703,7 @@ mod tests {
         let cols: u16 = 60;
         let items = vec!["Active", "Locked", "Active2"];
         let checked = vec![false, false, false];
-        let disabled = vec![false, true, false];
+        let disabled = vec![None, Some(DisabledIcon::Key), None];
         let output = render_full("Pick:", &items, 0, &checked, &disabled, false, cols, 0);
 
         let rows = 20u16;
@@ -676,7 +711,6 @@ mod tests {
         let all_text = parser.screen().contents();
 
         assert!(all_text.contains("Active"), "should display active item");
-        // The lock icon 🔒 is a multi-byte character; check the text contains "Locked"
         assert!(all_text.contains("Locked"), "should display locked item text");
     }
 }

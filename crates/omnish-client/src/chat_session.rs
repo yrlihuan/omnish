@@ -1116,10 +1116,13 @@ impl ChatSession {
                         return None;
                     }
                     // Build disabled flags from locked_threads
-                    let disabled: Vec<bool> = json.get("locked_threads")
+                    use widgets::picker::DisabledIcon;
+                    let disabled: Vec<Option<DisabledIcon>> = json.get("locked_threads")
                         .and_then(|v| v.as_array())
-                        .map(|arr| arr.iter().map(|v| v.as_bool().unwrap_or(false)).collect())
-                        .unwrap_or_else(|| vec![false; items.len()]);
+                        .map(|arr| arr.iter().map(|v| {
+                            if v.as_bool().unwrap_or(false) { Some(DisabledIcon::Key) } else { None }
+                        }).collect())
+                        .unwrap_or_else(|| vec![None; items.len()]);
                     match widgets::picker::pick_one_with_disabled("Resume conversation:", &items, &disabled) {
                         Some(idx) if idx < self.cached_thread_ids.len() => {
                             Some(self.cached_thread_ids[idx].clone())
