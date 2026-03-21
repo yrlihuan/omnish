@@ -215,6 +215,7 @@ impl CommandTracker {
                 }
                 if let Some(ref mut pending) = self.pending {
                     pending.entered = true;
+                    pending.started_at = timestamp_ms;
                     pending.osc_command_line = command;
                     pending.osc_original_input = original;
                     pending.osc_cwd = cwd;
@@ -655,7 +656,7 @@ mod tests {
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].command_line.as_deref(), Some("ls"));
         assert_eq!(cmds[0].exit_code, Some(0));
-        assert_eq!(cmds[0].started_at, 1000);
+        assert_eq!(cmds[0].started_at, 1001); // CommandStart time, not PromptStart
         assert_eq!(cmds[0].ended_at, Some(1003));
     }
 
