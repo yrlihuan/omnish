@@ -10,7 +10,7 @@ use omnish_transport::rpc_server::RpcServer;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 use tokio_rustls::TlsAcceptor;
 
 /// Load chat system prompt: base from embedded JSON, with optional user overrides
@@ -39,7 +39,6 @@ struct AgentLoopState {
     prior_len: usize,
     pending_tool_calls: Vec<omnish_llm::tool::ToolCall>,
     completed_results: Vec<omnish_llm::tool::ToolResult>,
-    messages: Vec<Message>,
     iteration: usize,
     cm: ChatMessage,
     start: std::time::Instant,
@@ -110,6 +109,8 @@ async fn thread_locked_error(mgr: &SessionManager, owner_session_id: &str) -> se
 
 type SandboxRules = Arc<std::sync::RwLock<HashMap<String, Vec<crate::sandbox_rules::PermitRule>>>>;
 
+type CancelFlags = Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>;
+
 pub struct DaemonServer {
     session_mgr: Arc<SessionManager>,
     llm_backend: Option<Arc<dyn LlmBackend>>,
@@ -117,6 +118,9 @@ pub struct DaemonServer {
     conv_mgr: Arc<ConversationManager>,
     plugin_mgr: Arc<PluginManager>,
     pending_agent_loops: Arc<Mutex<HashMap<String, AgentLoopState>>>,
+    /// Cancel flags for running agent loops (keyed by request_id).
+    /// Set to true by ChatInterrupt to signal daemon-side loops to stop.
+    cancel_flags: CancelFlags,
     active_threads: ActiveThreads,
     chat_model_name: Option<String>,
     tool_params: HashMap<String, HashMap<String, serde_json::Value>>,
@@ -238,6 +242,7 @@ impl DaemonServer {
             conv_mgr,
             plugin_mgr,
             pending_agent_loops: Arc::new(Mutex::new(HashMap::new())),
+            cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             active_threads: Arc::new(Mutex::new(HashMap::new())),
             chat_model_name,
             tool_params,
@@ -260,6 +265,7 @@ impl DaemonServer {
         let conv_mgr = self.conv_mgr.clone();
         let plugin_mgr = self.plugin_mgr.clone();
         let pending_loops = self.pending_agent_loops.clone();
+        let cancel_flags = self.cancel_flags.clone();
         let active_threads = self.active_threads.clone();
         let chat_model_name = self.chat_model_name.clone();
         let tool_params = Arc::new(self.tool_params.clone());
@@ -315,20 +321,21 @@ impl DaemonServer {
         let io_bytes_handler = io_bytes.clone();
         server
             .serve(
-                move |msg| {
+                move |msg, tx| {
                     let mgr = mgr.clone();
                     let llm = llm.clone();
                     let task_mgr = task_mgr.clone();
                     let conv_mgr = conv_mgr.clone();
                     let plugin_mgr = plugin_mgr.clone();
                     let pending_loops = pending_loops.clone();
+                    let cancel_flags = cancel_flags.clone();
                     let active_threads = active_threads.clone();
                     let chat_model_name = chat_model_name.clone();
                     let tool_params = tool_params.clone();
                     let sandbox_rules = sandbox_rules.clone();
                     let io_requests = io_requests_handler.clone();
                     let io_bytes = io_bytes_handler.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &pending_loops, &active_threads, &chat_model_name, &tool_params, &sandbox_rules, &io_requests, &io_bytes).await })
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &pending_loops, &cancel_flags, &active_threads, &chat_model_name, &tool_params, &sandbox_rules, &io_requests, &io_bytes, tx).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -346,17 +353,19 @@ async fn handle_message(
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
+    cancel_flags: &CancelFlags,
     active_threads: &ActiveThreads,
     chat_model_name: &Option<String>,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
     sandbox_rules: &SandboxRules,
     io_requests: &Arc<AtomicU64>,
     io_bytes: &Arc<AtomicU64>,
-) -> Vec<Message> {
+    tx: mpsc::Sender<Message>,
+) {
     // Shadow with reference for existing code; use mgr_arc for spawned tasks
     let mgr_arc = mgr;
     let mgr = &*mgr_arc;
-    vec![match msg {
+    match msg {
         Message::SessionStart(s) => {
             if let Err(e) = mgr
                 .register(&s.session_id, s.parent_session_id, s.attrs)
@@ -364,7 +373,7 @@ async fn handle_message(
             {
                 tracing::error!("register error: {}", e);
             }
-            Message::Ack
+            let _ = tx.send(Message::Ack).await;
         }
         Message::SessionEnd(s) => {
             if let Err(e) = mgr.end_session(&s.session_id).await {
@@ -372,13 +381,13 @@ async fn handle_message(
             }
             // Release any threads held by this session
             active_threads.lock().await.retain(|_, c| c.session_id != s.session_id);
-            Message::Ack
+            let _ = tx.send(Message::Ack).await;
         }
         Message::SessionUpdate(su) => {
             if let Err(e) = mgr.update_attrs(&su.session_id, su.timestamp_ms, su.attrs).await {
                 tracing::error!("update_attrs error: {}", e);
             }
-            Message::Ack
+            let _ = tx.send(Message::Ack).await;
         }
         Message::IoData(io) => {
             io_requests.fetch_add(1, Ordering::Relaxed);
@@ -393,7 +402,7 @@ async fn handle_message(
             {
                 tracing::error!("write_io error: {}", e);
             }
-            Message::Ack
+            let _ = tx.send(Message::Ack).await;
         }
         Message::CommandComplete(cc) => {
             if let Err(e) = mgr.receive_command(&cc.session_id, cc.record).await {
@@ -408,7 +417,7 @@ async fn handle_message(
                     try_warmup_kv_cache(&sid, &mgr, &llm).await;
                 });
             }
-            Message::Ack
+            let _ = tx.send(Message::Ack).await;
         }
         Message::Request(req) => {
             if req.query.starts_with("__cmd:") {
@@ -416,12 +425,13 @@ async fn handle_message(
                 let content = serde_json::to_string(&result).unwrap_or_else(|_| {
                     r#"{"display":"(serialization error)"}"#.to_string()
                 });
-                return vec![Message::Response(Response {
+                let _ = tx.send(Message::Response(Response {
                     request_id: req.request_id,
                     content,
                     is_streaming: false,
                     is_final: true,
-                })];
+                })).await;
+                return;
             }
 
             let content = if let Some(ref backend) = llm {
@@ -436,12 +446,12 @@ async fn handle_message(
                 "(LLM backend not configured)".to_string()
             };
 
-            Message::Response(Response {
+            let _ = tx.send(Message::Response(Response {
                 request_id: req.request_id,
                 content,
                 is_streaming: false,
                 is_final: true,
-            })
+            })).await;
         }
         Message::CompletionRequest(req) => {
             tracing::debug!(
@@ -451,7 +461,7 @@ async fn handle_message(
             );
             // Debug shortcut: return canned suggestions for testing
             if req.input.trim() == "omnish_debug" {
-                return vec![Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
+                let _ = tx.send(Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
                     sequence_id: req.sequence_id,
                     suggestions: vec![
                         omnish_protocol::message::CompletionSuggestion {
@@ -463,9 +473,10 @@ async fn handle_message(
                             confidence: 0.9,
                         },
                     ],
-                })];
+                })).await;
+                return;
             }
-            if let Some(ref backend) = llm {
+            let reply = if let Some(ref backend) = llm {
                 match handle_completion_request(&req, mgr, backend).await {
                     Ok(suggestions) => {
                         Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
@@ -486,7 +497,8 @@ async fn handle_message(
                     sequence_id: req.sequence_id,
                     suggestions: vec![],
                 })
-            }
+            };
+            let _ = tx.send(reply).await;
         }
         Message::CompletionSummary(summary) => {
             // Update pending sample's accepted flag (issue #101)
@@ -503,7 +515,7 @@ async fn handle_message(
                 summary.latency_ms,
                 summary.dwell_time_ms
             );
-            Message::Ack
+            let _ = tx.send(Message::Ack).await;
         }
         Message::ChatStart(cs) => {
             let meta = {
@@ -516,14 +528,14 @@ async fn handle_message(
             //  1. thread_id provided → resume that specific thread
             //  2. new_thread = true   → create a new thread
             //  3. otherwise           → resume latest thread
-            if let Some(ref tid) = cs.thread_id {
+            let ready = if let Some(ref tid) = cs.thread_id {
                 // Resume specific thread
                 tracing::debug!("[ChatStart] resuming thread={}", tid);
                 let raw_msgs = conv_mgr.load_raw_messages(tid);
                 tracing::debug!("[ChatStart] loaded {} raw messages for thread={}", raw_msgs.len(), tid);
                 if raw_msgs.is_empty() {
                     tracing::debug!("[ChatStart] thread not found, returning error");
-                    return vec![Message::ChatReady(ChatReady {
+                    Message::ChatReady(ChatReady {
                         request_id: cs.request_id,
                         thread_id: String::new(),
                         last_exchange: None,
@@ -535,13 +547,11 @@ async fn handle_message(
                         thread_summary: None,
                         error: Some("not_found".to_string()),
                         error_display: Some("Conversation not found".to_string()),
-                    })];
-                }
-                tracing::debug!("[ChatStart] trying to claim thread={}", tid);
-                if let Err(owner) = try_claim_thread(active_threads, tid, &cs.session_id).await {
+                    })
+                } else if let Err(owner) = try_claim_thread(active_threads, tid, &cs.session_id).await {
                     tracing::debug!("[ChatStart] thread locked by session={}", owner);
                     let err = thread_locked_error(mgr, &owner).await;
-                    return vec![Message::ChatReady(ChatReady {
+                    Message::ChatReady(ChatReady {
                         request_id: cs.request_id,
                         thread_id: String::new(),
                         last_exchange: None,
@@ -553,48 +563,43 @@ async fn handle_message(
                         thread_summary: None,
                         error: Some("thread_locked".to_string()),
                         error_display: err.get("display").and_then(|d| d.as_str()).map(String::from),
-                    })];
+                    })
+                } else {
+                    tracing::debug!("[ChatStart] claimed thread={}, reconstructing history", tid);
+                    let old_meta = conv_mgr.load_meta(tid);
+                    let merged_meta = ThreadMeta {
+                        host: meta.host.clone(),
+                        cwd: meta.cwd.clone(),
+                        ..old_meta.clone()
+                    };
+                    if let Some(claim) = active_threads.lock().await.get_mut(tid) {
+                        claim.pending_meta = Some(merged_meta);
+                    }
+                    let history_vals = reconstruct_history(&raw_msgs, plugin_mgr);
+                    tracing::debug!("[ChatStart] history reconstructed: {} entries", history_vals.len());
+                    let history: Vec<String> = history_vals.iter()
+                        .map(|v| serde_json::to_string(v).unwrap_or_default())
+                        .collect();
+                    let thread_model = old_meta.model.and_then(|model_name| {
+                        let is_default = llm.as_ref()
+                            .map(|b| b.chat_default_name() == model_name)
+                            .unwrap_or(true);
+                        if is_default { None } else { Some(model_name) }
+                    });
+                    Message::ChatReady(ChatReady {
+                        request_id: cs.request_id,
+                        thread_id: tid.clone(),
+                        last_exchange: None,
+                        earlier_count: 0,
+                        model_name: thread_model.or_else(|| chat_model_name.clone()),
+                        history: Some(history),
+                        thread_host: old_meta.host,
+                        thread_cwd: old_meta.cwd,
+                        thread_summary: old_meta.summary,
+                        error: None,
+                        error_display: None,
+                    })
                 }
-                tracing::debug!("[ChatStart] claimed thread={}, reconstructing history", tid);
-                // Load old meta before updating — we need old host/cwd for the
-                // mismatch check, and must preserve summary/model fields.
-                let old_meta = conv_mgr.load_meta(tid);
-                // Defer save_meta to first ChatMessage — if the user cancels the
-                // resume (e.g. cwd mismatch), the old meta is preserved (#376).
-                // Merge: only update host/cwd, preserve summary/summary_rounds/model.
-                let merged_meta = ThreadMeta {
-                    host: meta.host.clone(),
-                    cwd: meta.cwd.clone(),
-                    ..old_meta.clone()
-                };
-                if let Some(claim) = active_threads.lock().await.get_mut(tid) {
-                    claim.pending_meta = Some(merged_meta);
-                }
-                let history_vals = reconstruct_history(&raw_msgs, plugin_mgr);
-                tracing::debug!("[ChatStart] history reconstructed: {} entries", history_vals.len());
-                let history: Vec<String> = history_vals.iter()
-                    .map(|v| serde_json::to_string(v).unwrap_or_default())
-                    .collect();
-                // Thread model override
-                let thread_model = old_meta.model.and_then(|model_name| {
-                    let is_default = llm.as_ref()
-                        .map(|b| b.chat_default_name() == model_name)
-                        .unwrap_or(true);
-                    if is_default { None } else { Some(model_name) }
-                });
-                Message::ChatReady(ChatReady {
-                    request_id: cs.request_id,
-                    thread_id: tid.clone(),
-                    last_exchange: None,
-                    earlier_count: 0,
-                    model_name: thread_model.or_else(|| chat_model_name.clone()),
-                    history: Some(history),
-                    thread_host: old_meta.host,
-                    thread_cwd: old_meta.cwd,
-                    thread_summary: old_meta.summary,
-                    error: None,
-                    error_display: None,
-                })
             } else if cs.new_thread {
                 let tid = conv_mgr.create_thread(meta);
                 tracing::debug!("[ChatStart] created new thread={}", tid);
@@ -621,7 +626,7 @@ async fn handle_message(
                         if let Err(owner) = try_claim_thread(active_threads, &tid, &cs.session_id).await {
                             tracing::debug!("[ChatStart] latest thread locked by session={}", owner);
                             let err = thread_locked_error(mgr, &owner).await;
-                            return vec![Message::ChatReady(ChatReady {
+                            Message::ChatReady(ChatReady {
                                 request_id: cs.request_id,
                                 thread_id: String::new(),
                                 last_exchange: None,
@@ -633,41 +638,42 @@ async fn handle_message(
                                 thread_summary: None,
                                 error: Some("thread_locked".to_string()),
                                 error_display: err.get("display").and_then(|d| d.as_str()).map(String::from),
-                            })];
+                            })
+                        } else {
+                            let old_meta = conv_mgr.load_meta(&tid);
+                            let merged_meta = ThreadMeta {
+                                host: meta.host.clone(),
+                                cwd: meta.cwd.clone(),
+                                ..old_meta.clone()
+                            };
+                            if let Some(claim) = active_threads.lock().await.get_mut(tid.as_str()) {
+                                claim.pending_meta = Some(merged_meta);
+                            }
+                            let raw_msgs = conv_mgr.load_raw_messages(&tid);
+                            let history_vals = reconstruct_history(&raw_msgs, plugin_mgr);
+                            let history: Vec<String> = history_vals.iter()
+                                .map(|v| serde_json::to_string(v).unwrap_or_default())
+                                .collect();
+                            let thread_model = old_meta.model.and_then(|model_name| {
+                                let is_default = llm.as_ref()
+                                    .map(|b| b.chat_default_name() == model_name)
+                                    .unwrap_or(true);
+                                if is_default { None } else { Some(model_name) }
+                            });
+                            Message::ChatReady(ChatReady {
+                                request_id: cs.request_id,
+                                thread_id: tid,
+                                last_exchange: None,
+                                earlier_count: 0,
+                                model_name: thread_model.or_else(|| chat_model_name.clone()),
+                                history: Some(history),
+                                thread_host: old_meta.host,
+                                thread_cwd: old_meta.cwd,
+                                thread_summary: old_meta.summary,
+                                error: None,
+                                error_display: None,
+                            })
                         }
-                        let old_meta = conv_mgr.load_meta(&tid);
-                        let merged_meta = ThreadMeta {
-                            host: meta.host.clone(),
-                            cwd: meta.cwd.clone(),
-                            ..old_meta.clone()
-                        };
-                        if let Some(claim) = active_threads.lock().await.get_mut(tid.as_str()) {
-                            claim.pending_meta = Some(merged_meta);
-                        }
-                        let raw_msgs = conv_mgr.load_raw_messages(&tid);
-                        let history_vals = reconstruct_history(&raw_msgs, plugin_mgr);
-                        let history: Vec<String> = history_vals.iter()
-                            .map(|v| serde_json::to_string(v).unwrap_or_default())
-                            .collect();
-                        let thread_model = old_meta.model.and_then(|model_name| {
-                            let is_default = llm.as_ref()
-                                .map(|b| b.chat_default_name() == model_name)
-                                .unwrap_or(true);
-                            if is_default { None } else { Some(model_name) }
-                        });
-                        Message::ChatReady(ChatReady {
-                            request_id: cs.request_id,
-                            thread_id: tid,
-                            last_exchange: None,
-                            earlier_count: 0,
-                            model_name: thread_model.or_else(|| chat_model_name.clone()),
-                            history: Some(history),
-                            thread_host: old_meta.host,
-                            thread_cwd: old_meta.cwd,
-                            thread_summary: old_meta.summary,
-                            error: None,
-                            error_display: None,
-                        })
                     }
                     None => {
                         tracing::debug!("[ChatStart] no threads found");
@@ -686,7 +692,8 @@ async fn handle_message(
                         })
                     }
                 }
-            }
+            };
+            let _ = tx.send(ready).await;
         }
         Message::ChatEnd(ce) => {
             tracing::debug!("[ChatEnd] session={} thread={}", ce.session_id, ce.thread_id);
@@ -703,15 +710,19 @@ async fn handle_message(
             } else {
                 tracing::debug!("[ChatEnd] thread={} not in active_threads", ce.thread_id);
             }
-            Message::Ack
+            let _ = tx.send(Message::Ack).await;
         }
         Message::ChatMessage(cm) => {
             touch_thread(active_threads, &cm.thread_id, conv_mgr).await;
-            return handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, pending_loops, tool_params, sandbox_rules).await;
+            let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let req_id = cm.request_id.clone();
+            cancel_flags.lock().await.insert(req_id.clone(), flag.clone());
+            handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, pending_loops, tool_params, sandbox_rules, tx, &flag).await;
+            cancel_flags.lock().await.remove(&req_id);
         }
         Message::ChatToolResult(tr) => {
             touch_thread(active_threads, &tr.thread_id, conv_mgr).await;
-            return handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, pending_loops, tool_params, sandbox_rules).await;
+            handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, pending_loops, cancel_flags, tool_params, sandbox_rules, tx).await;
         }
         Message::ChatInterrupt(ci) => {
             // Clean up pending agent loop and store partial results
@@ -762,8 +773,12 @@ async fn handle_message(
                     "content": result_content,
                 }));
                 conv_mgr.append_messages(&ci.thread_id, &to_store);
+            } else if let Some(flag) = cancel_flags.lock().await.get(&ci.request_id) {
+                // Agent loop is running daemon-side tools — signal it to stop.
+                // The loop will store partial state to conversation when it detects the flag.
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
             } else {
-                // No pending loop — just record the interrupt
+                // Loop already finished — just record the interrupt
                 conv_mgr.append_messages(&ci.thread_id, &[
                     serde_json::json!({"role": "user", "content": ci.query}),
                     serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
@@ -771,10 +786,12 @@ async fn handle_message(
             }
 
             tracing::info!("Chat interrupted by user (thread={}, request={})", ci.thread_id, ci.request_id);
-            Message::Ack
+            let _ = tx.send(Message::Ack).await;
         }
-        _ => Message::Ack,
-    }]
+        _ => {
+            let _ = tx.send(Message::Ack).await;
+        }
+    }
 }
 
 /// Shared chat setup: builds tools list and system prompt from plugins.
@@ -825,13 +842,16 @@ async fn handle_chat_message(
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
     sandbox_rules: &SandboxRules,
-) -> Vec<Message> {
+    tx: mpsc::Sender<Message>,
+    cancel_flag: &Arc<std::sync::atomic::AtomicBool>,
+) {
     if llm.is_none() {
-        return vec![Message::ChatResponse(ChatResponse {
+        let _ = tx.send(Message::ChatResponse(ChatResponse {
             request_id: cm.request_id,
             thread_id: cm.thread_id,
             content: "(LLM backend not configured)".to_string(),
-        })];
+        })).await;
+        return;
     }
     let backend = llm.as_ref().unwrap();
 
@@ -844,7 +864,8 @@ async fn handle_chat_message(
 
     // Model-only message (no query) — just acknowledge
     if cm.query.is_empty() {
-        return vec![Message::Ack];
+        let _ = tx.send(Message::Ack).await;
+        return;
     }
 
     // Resolve per-thread model override for backend selection
@@ -892,7 +913,6 @@ async fn handle_chat_message(
         prior_len,
         pending_tool_calls: vec![],
         completed_results: vec![],
-        messages: vec![],
         iteration: 0,
         cm,
         start: std::time::Instant::now(),
@@ -900,7 +920,7 @@ async fn handle_chat_message(
         effective_backend,
     };
 
-    run_agent_loop(state, conv_mgr, plugin_mgr, pending_loops, tool_params, sandbox_rules).await
+    run_agent_loop(state, conv_mgr, plugin_mgr, pending_loops, tool_params, sandbox_rules, tx, cancel_flag).await;
 }
 
 /// Handle a ChatToolResult from the client — accumulate results, resume when all are received.
@@ -910,15 +930,18 @@ async fn handle_tool_result(
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
+    cancel_flags: &CancelFlags,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
     sandbox_rules: &SandboxRules,
-) -> Vec<Message> {
+    tx: mpsc::Sender<Message>,
+) {
     let mut map = pending_loops.lock().await;
     let state = match map.get_mut(&tr.request_id) {
         Some(s) => s,
         None => {
             tracing::warn!("No pending agent loop for request_id={}", tr.request_id);
-            return vec![Message::Ack];
+            let _ = tx.send(Message::Ack).await;
+            return;
         }
     };
 
@@ -927,11 +950,12 @@ async fn handle_tool_result(
         map.remove(&tr.request_id);
         drop(map);
         tracing::warn!("Agent loop timed out for request_id={}", tr.request_id);
-        return vec![Message::ChatResponse(ChatResponse {
+        let _ = tx.send(Message::ChatResponse(ChatResponse {
             request_id: tr.request_id,
             thread_id: tr.thread_id,
             content: "Error: client-side tool execution timed out".to_string(),
-        })];
+        })).await;
+        return;
     }
 
     // Add the received client-side tool result
@@ -943,7 +967,6 @@ async fn handle_tool_result(
     });
 
     // Generate immediate ChatToolStatus for this result
-    let mut update_messages = Vec::new();
     if let Some(result) = state.completed_results.iter().find(|r| r.tool_use_id == tool_call_id) {
         if let Some(tc) = state.pending_tool_calls.iter().find(|tc| tc.id == tool_call_id) {
             let fmt = formatter::get_formatter(
@@ -961,7 +984,7 @@ async fn handle_tool_result(
                 output: Some(result.content.clone()),
                 is_error: Some(result.is_error),
             });
-            update_messages.push(Message::ChatToolStatus(ChatToolStatus {
+            let _ = tx.send(Message::ChatToolStatus(ChatToolStatus {
                 request_id: state.cm.request_id.clone(),
                 thread_id: state.cm.thread_id.clone(),
                 tool_name: tc.name.clone(),
@@ -972,7 +995,7 @@ async fn handle_tool_result(
                 param_desc: Some(fmt_out.param_desc),
                 result_compact: Some(fmt_out.result_compact),
                 result_full: Some(fmt_out.result_full),
-            }));
+            })).await;
         }
     }
 
@@ -985,9 +1008,8 @@ async fn handle_tool_result(
     let all_complete = state.pending_tool_calls.iter().all(|tc| completed_ids.contains(&tc.id));
 
     if !all_complete {
-        // More results expected — send status update for this tool, keep waiting
-        drop(map);
-        return update_messages;
+        // More results expected — keep waiting (status already sent via tx)
+        return;
     }
 
     // All tool calls complete — remove state and continue agent loop
@@ -1016,14 +1038,17 @@ async fn handle_tool_result(
     state.completed_results.clear();
     state.iteration += 1;
 
-    // Prepend update messages before agent loop continuation messages
-    let mut loop_messages = run_agent_loop(state, conv_mgr, plugin_mgr, pending_loops, tool_params, sandbox_rules).await;
-    update_messages.append(&mut loop_messages);
-    update_messages
+    // Continue agent loop — register cancel flag so ChatInterrupt can signal it
+    let req_id = state.cm.request_id.clone();
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    cancel_flags.lock().await.insert(req_id.clone(), flag.clone());
+    run_agent_loop(state, conv_mgr, plugin_mgr, pending_loops, tool_params, sandbox_rules, tx, &flag).await;
+    cancel_flags.lock().await.remove(&req_id);
 }
 
 /// Core agent loop: calls LLM, executes tools, pauses on client-side tools.
 /// Used by both `handle_chat_message` (initial) and `handle_tool_result` (resumption).
+/// Messages are sent incrementally through `tx` as they're produced (streaming).
 async fn run_agent_loop(
     mut state: AgentLoopState,
     conv_mgr: &Arc<ConversationManager>,
@@ -1031,13 +1056,28 @@ async fn run_agent_loop(
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
     sandbox_rules: &SandboxRules,
-) -> Vec<Message> {
+    tx: mpsc::Sender<Message>,
+    cancel_flag: &Arc<std::sync::atomic::AtomicBool>,
+) {
     let backend = &state.effective_backend;
 
     let max_iterations = 30;
-    let mut messages = std::mem::take(&mut state.messages);
 
     for iteration in state.iteration..max_iterations {
+        // Check if user interrupted (Ctrl+C)
+        if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!("Agent loop cancelled by user at iteration {} (thread={})", iteration, state.cm.thread_id);
+            // Store partial state: everything from this exchange so far
+            let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
+            if !to_store.is_empty() {
+                to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
+            }
+            // Append event marker so LLM knows the user interrupted
+            to_store.push(serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}));
+            conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+            return;
+        }
+
         match backend.complete(&state.llm_req).await {
             Ok(response) => {
                 if response.stop_reason == StopReason::ToolUse {
@@ -1058,11 +1098,11 @@ async fn run_agent_loop(
                         "content": assistant_content,
                     }));
 
-                    // Send LLM's text blocks to client (e.g., "I'll run this command")
+                    // Send LLM's text blocks to client immediately
                     for block in &response.content {
                         if let ContentBlock::Text(text) = block {
                             if !text.trim().is_empty() {
-                                messages.push(Message::ChatToolStatus(ChatToolStatus {
+                                if tx.send(Message::ChatToolStatus(ChatToolStatus {
                                     request_id: state.cm.request_id.clone(),
                                     thread_id: state.cm.thread_id.clone(),
                                     tool_name: String::new(),
@@ -1073,7 +1113,7 @@ async fn run_agent_loop(
                                     param_desc: None,
                                     result_compact: None,
                                     result_full: None,
-                                }));
+                                })).await.is_err() { return; }
                             }
                         }
                     }
@@ -1102,7 +1142,8 @@ async fn run_agent_loop(
                             fmt_out.param_desc = state.command_query_tool.status_text(&tc.name, &tc.input);
                         }
 
-                        messages.push(Message::ChatToolStatus(ChatToolStatus {
+                        // Send pre-execution tool status immediately
+                        if tx.send(Message::ChatToolStatus(ChatToolStatus {
                             request_id: state.cm.request_id.clone(),
                             thread_id: state.cm.thread_id.clone(),
                             tool_name: tc.name.clone(),
@@ -1113,12 +1154,11 @@ async fn run_agent_loop(
                             param_desc: Some(fmt_out.param_desc),
                             result_compact: None,
                             result_full: None,
-                        }));
+                        })).await.is_err() { return; }
 
                         let ptype = plugin_mgr.tool_plugin_type(&tc.name);
                         if ptype == Some(PluginType::ClientTool) {
                             // Client-side tool: forward to client for parallel execution
-                            // Merge params for client-side tools too
                             let mut merged_input = tc.input.clone();
                             if let Some(override_params) = plugin_mgr.tool_override_params(&tc.name) {
                                 merge_tool_params(&mut merged_input, &override_params);
@@ -1140,7 +1180,7 @@ async fn run_agent_loop(
                                     serde_json::to_string(&tc.input).unwrap_or_default(),
                                 );
                             }
-                            messages.push(Message::ChatToolCall(ChatToolCall {
+                            if tx.send(Message::ChatToolCall(ChatToolCall {
                                 request_id: state.cm.request_id.clone(),
                                 thread_id: state.cm.thread_id.clone(),
                                 tool_name: tc.name.clone(),
@@ -1148,11 +1188,10 @@ async fn run_agent_loop(
                                 input: serde_json::to_string(&merged_input).unwrap_or_default(),
                                 plugin_name: plugin_mgr.tool_plugin_name(&tc.name).unwrap_or("builtin").to_string(),
                                 sandboxed: matched_rule.is_none(),
-                            }));
+                            })).await.is_err() { return; }
                             has_client_tools = true;
                         } else {
                             // Daemon-side tool: execute directly
-                            // Merge params: override.json defaults, then daemon.toml overrides
                             let mut merged_input = tc.input.clone();
                             if let Some(override_params) = plugin_mgr.tool_override_params(&tc.name) {
                                 merge_tool_params(&mut merged_input, &override_params);
@@ -1174,7 +1213,7 @@ async fn run_agent_loop(
                             };
                             result.tool_use_id = tc.id.clone();
 
-                            // Post-execution: send update ChatToolStatus with formatted results
+                            // Post-execution: send update ChatToolStatus with formatted results immediately
                             let post_fmt = formatter::get_formatter(
                                 plugin_mgr.tool_formatter(&tc.name).unwrap_or("default")
                             );
@@ -1193,7 +1232,7 @@ async fn run_agent_loop(
                             if is_command_query {
                                 post_out.param_desc = state.command_query_tool.status_text(&tc.name, &tc.input);
                             }
-                            messages.push(Message::ChatToolStatus(ChatToolStatus {
+                            if tx.send(Message::ChatToolStatus(ChatToolStatus {
                                 request_id: state.cm.request_id.clone(),
                                 thread_id: state.cm.thread_id.clone(),
                                 tool_name: tc.name.clone(),
@@ -1204,7 +1243,7 @@ async fn run_agent_loop(
                                 param_desc: Some(post_out.param_desc),
                                 result_compact: Some(post_out.result_compact),
                                 result_full: Some(post_out.result_full),
-                            }));
+                            })).await.is_err() { return; }
 
                             tool_results.push(result);
                         }
@@ -1214,11 +1253,10 @@ async fn run_agent_loop(
                         // Pause loop — client will execute tools in parallel and send results back
                         state.pending_tool_calls = tool_calls.iter().map(|tc| (*tc).clone()).collect();
                         state.completed_results = tool_results;
-                        state.messages = vec![];
                         state.iteration = iteration;
                         let request_id = state.cm.request_id.clone();
                         pending_loops.lock().await.insert(request_id, state);
-                        return messages;
+                        return; // tx dropped → Ack sent by spawn_connection
                     }
 
                     // All tools were daemon-side — build tool_result and continue
@@ -1264,21 +1302,21 @@ async fn run_agent_loop(
                 let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
                 to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
                 conv_mgr.append_messages(&state.cm.thread_id, &to_store);
-                messages.push(Message::ChatResponse(ChatResponse {
+                let _ = tx.send(Message::ChatResponse(ChatResponse {
                     request_id: state.cm.request_id.clone(),
                     thread_id: state.cm.thread_id.clone(),
                     content: text,
-                }));
-                return messages;
+                })).await;
+                return;
             }
             Err(e) => {
                 tracing::error!("Chat LLM failed: {}", e);
-                messages.push(Message::ChatResponse(ChatResponse {
+                let _ = tx.send(Message::ChatResponse(ChatResponse {
                     request_id: state.cm.request_id.clone(),
                     thread_id: state.cm.thread_id.clone(),
                     content: format!("Error: {}", e),
-                }));
-                return messages;
+                })).await;
+                return;
             }
         }
     }
@@ -1297,12 +1335,11 @@ async fn run_agent_loop(
     let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
     to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
     conv_mgr.append_messages(&state.cm.thread_id, &to_store);
-    messages.push(Message::ChatResponse(ChatResponse {
+    let _ = tx.send(Message::ChatResponse(ChatResponse {
         request_id: state.cm.request_id,
         thread_id: state.cm.thread_id,
         content: text,
-    }));
-    messages
+    })).await;
 }
 
 async fn try_warmup_kv_cache(
