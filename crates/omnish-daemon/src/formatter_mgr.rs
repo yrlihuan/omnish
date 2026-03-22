@@ -112,6 +112,12 @@ pub struct FormatterManager {
     externals: HashMap<String, ExternalFormatter>,
 }
 
+impl Default for FormatterManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FormatterManager {
     pub fn new() -> Self {
         let mut builtins: HashMap<String, Box<dyn ToolFormatter>> = HashMap::new();
