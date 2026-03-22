@@ -51,9 +51,7 @@ impl CommandQueryTool {
     pub fn build_system_reminder(&self, count: usize, session_attrs: &std::collections::HashMap<String, String>) -> String {
         let commands = &self.commands;
 
-        // Current time with timezone
         let now = chrono::Local::now();
-        let time_str = now.format("%Y-%m-%d %H:%M:%S %z").to_string();
         let today = now.format("%Y-%m-%d").to_string();
 
         // Current directory: prefer live cwd from client probe, fall back to last command's cwd
@@ -103,8 +101,8 @@ impl CommandQueryTool {
         };
 
         format!(
-            "<system-reminder>\nTIME: {}\n\nWORKING DIR: {}\n\nIs directory a git repo: {}\n\nPlatform: {}\n\nOS Version: {}\n\nToday's date: {}\n\nLAST {} COMMANDS:\n{}\n</system-reminder>",
-            time_str, cwd, is_git_repo_str, platform, os_version, today, count, cmds
+            "<system-reminder>\nWORKING DIR: {}\n\nIs directory a git repo: {}\n\nPlatform: {}\n\nOS Version: {}\n\nToday's date: {}\n\nLAST {} COMMANDS:\n{}\n</system-reminder>",
+            cwd, is_git_repo_str, platform, os_version, today, count, cmds
         )
     }
 
@@ -425,7 +423,6 @@ mod tests {
         let reminder = tool.build_system_reminder(5, &make_attrs(None));
         assert!(reminder.starts_with("<system-reminder>"));
         assert!(reminder.ends_with("</system-reminder>"));
-        assert!(reminder.contains("TIME: "));
         assert!(reminder.contains("WORKING DIR: /tmp"));
         assert!(reminder.contains("LAST 5 COMMANDS:"));
     }
