@@ -112,6 +112,47 @@ struct ToolOverrideEntry {
 /// Guarantees tools are always available even without on-disk assets.
 const BUILTIN_TOOL_JSON: &str = include_str!("../../omnish-plugin/assets/tool.json");
 
+/// Bundled plugin: web_search
+const BUNDLED_WEB_SEARCH_TOOL_JSON: &str = include_str!("../../../plugins/web_search/tool.json");
+const BUNDLED_WEB_SEARCH_SCRIPT: &str = include_str!("../../../plugins/web_search/web_search");
+
+/// Auto-install bundled plugins when their tool config is present in daemon.toml.
+/// For example, if `[tools.web_search]` contains `api_key`, install the web_search
+/// plugin to `~/.omnish/plugins/web_search/` so it's available without manual setup.
+pub fn auto_install_bundled_plugins(
+    plugins_dir: &Path,
+    tools_config: &HashMap<String, HashMap<String, serde_json::Value>>,
+) {
+    // web_search: install if [tools.web_search] has api_key
+    if let Some(ws_config) = tools_config.get("web_search") {
+        if ws_config.contains_key("api_key") {
+            let plugin_dir = plugins_dir.join("web_search");
+            let tool_json = plugin_dir.join("tool.json");
+            let script = plugin_dir.join("web_search");
+            if !tool_json.exists() {
+                if let Err(e) = std::fs::create_dir_all(&plugin_dir) {
+                    tracing::warn!("Failed to create web_search plugin dir: {}", e);
+                    return;
+                }
+                if let Err(e) = std::fs::write(&tool_json, BUNDLED_WEB_SEARCH_TOOL_JSON) {
+                    tracing::warn!("Failed to write web_search tool.json: {}", e);
+                    return;
+                }
+                if let Err(e) = std::fs::write(&script, BUNDLED_WEB_SEARCH_SCRIPT) {
+                    tracing::warn!("Failed to write web_search script: {}", e);
+                    return;
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
+                }
+                tracing::info!("Auto-installed bundled web_search plugin");
+            }
+        }
+    }
+}
+
 impl PluginManager {
     /// Load all plugins from the given directory.
     /// Each subdirectory containing a `tool.json` is treated as a plugin.
@@ -616,5 +657,53 @@ mod tests {
         let defs = reg.all_defs();
         assert!(defs.iter().any(|d| d.name == "bash"));
         assert!(defs.iter().any(|d| d.name == "my_tool"));
+    }
+
+    #[test]
+    fn test_auto_install_web_search_when_api_key_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut tools_config = HashMap::new();
+        let mut ws = HashMap::new();
+        ws.insert("api_key".to_string(), serde_json::json!("test-key"));
+        tools_config.insert("web_search".to_string(), ws);
+
+        auto_install_bundled_plugins(tmp.path(), &tools_config);
+
+        assert!(tmp.path().join("web_search/tool.json").exists());
+        assert!(tmp.path().join("web_search/web_search").exists());
+
+        // Should be loadable
+        let mgr = PluginManager::load(tmp.path());
+        assert!(mgr.plugin_executable("web_search").is_some());
+    }
+
+    #[test]
+    fn test_auto_install_skipped_without_api_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tools_config = HashMap::new();
+
+        auto_install_bundled_plugins(tmp.path(), &tools_config);
+
+        assert!(!tmp.path().join("web_search").exists());
+    }
+
+    #[test]
+    fn test_auto_install_skipped_if_already_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut tools_config = HashMap::new();
+        let mut ws = HashMap::new();
+        ws.insert("api_key".to_string(), serde_json::json!("test-key"));
+        tools_config.insert("web_search".to_string(), ws);
+
+        // Pre-create with custom content
+        let plugin_dir = tmp.path().join("web_search");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("tool.json"), "custom").unwrap();
+
+        auto_install_bundled_plugins(tmp.path(), &tools_config);
+
+        // Should not overwrite
+        let content = std::fs::read_to_string(plugin_dir.join("tool.json")).unwrap();
+        assert_eq!(content, "custom");
     }
 }

@@ -253,8 +253,11 @@ async fn async_main() -> Result<i32> {
         None
     };
 
-    // Initialize plugin manager — loads tool definitions from JSON files
+    // Auto-install bundled plugins when their tool config is present
     let plugins_dir = omnish_dir.join("plugins");
+    omnish_daemon::plugin::auto_install_bundled_plugins(&plugins_dir, &config.tools);
+
+    // Initialize plugin manager — loads tool definitions from JSON files
     let plugin_mgr = Arc::new(omnish_daemon::plugin::PluginManager::load(&plugins_dir));
 
     // Build unified tool registry from plugins + built-in tools
