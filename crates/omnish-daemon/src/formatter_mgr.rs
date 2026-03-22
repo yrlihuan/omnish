@@ -16,7 +16,7 @@ struct ExternalResponse {
 }
 
 impl ExternalFormatter {
-    async fn start(binary: &str) -> Self {
+    async fn start(binary: &str) -> Result<Self, std::io::Error> {
         use std::process::Stdio;
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -27,8 +27,7 @@ impl ExternalFormatter {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()
-            .expect("failed to start formatter process");
+            .spawn()?;
 
         let mut stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
@@ -67,7 +66,7 @@ impl ExternalFormatter {
             let _ = child.kill().await;
         });
 
-        Self { tx }
+        Ok(Self { tx })
     }
 
     async fn format(&self, formatter_name: &str, input: &FormatInput) -> FormatOutput {
@@ -127,8 +126,14 @@ impl FormatterManager {
     }
 
     pub async fn register_external(&mut self, name: &str, binary: &str) {
-        let ext = ExternalFormatter::start(binary).await;
-        self.externals.insert(name.to_string(), ext);
+        match ExternalFormatter::start(binary).await {
+            Ok(ext) => {
+                self.externals.insert(name.to_string(), ext);
+            }
+            Err(e) => {
+                tracing::warn!("failed to start formatter '{}' ({}): {}", name, binary, e);
+            }
+        }
     }
 
     pub async fn format(&self, formatter_name: &str, input: &FormatInput) -> FormatOutput {
