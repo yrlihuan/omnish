@@ -1,6 +1,5 @@
 use anyhow::Result;
 use omnish_daemon::conversation_mgr::{ConversationManager, ThreadMeta};
-use omnish_daemon::formatter::{self, FormatInput};
 use omnish_daemon::plugin::{PluginManager, PluginType};
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_daemon::task_mgr::TaskManager;
@@ -125,6 +124,7 @@ pub struct DaemonServer {
     conv_mgr: Arc<ConversationManager>,
     plugin_mgr: Arc<PluginManager>,
     tool_registry: Arc<omnish_daemon::tool_registry::ToolRegistry>,
+    formatter_mgr: Arc<omnish_daemon::formatter_mgr::FormatterManager>,
     pending_agent_loops: Arc<Mutex<HashMap<String, AgentLoopState>>>,
     /// Cancel flags for running agent loops (keyed by request_id).
     /// Set to true by ChatInterrupt to signal daemon-side loops to stop.
@@ -256,6 +256,7 @@ impl DaemonServer {
         chat_model_name: Option<String>,
         tool_params: HashMap<String, HashMap<String, serde_json::Value>>,
         opts: Arc<ServerOpts>,
+        formatter_mgr: Arc<omnish_daemon::formatter_mgr::FormatterManager>,
     ) -> Self {
         Self {
             session_mgr,
@@ -264,6 +265,7 @@ impl DaemonServer {
             conv_mgr,
             plugin_mgr,
             tool_registry,
+            formatter_mgr,
             pending_agent_loops: Arc::new(Mutex::new(HashMap::new())),
             cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             active_threads: Arc::new(Mutex::new(HashMap::new())),
@@ -288,6 +290,7 @@ impl DaemonServer {
         let conv_mgr = self.conv_mgr.clone();
         let plugin_mgr = self.plugin_mgr.clone();
         let tool_registry = self.tool_registry.clone();
+        let formatter_mgr = self.formatter_mgr.clone();
         let pending_loops = self.pending_agent_loops.clone();
         let cancel_flags = self.cancel_flags.clone();
         let active_threads = self.active_threads.clone();
@@ -352,6 +355,7 @@ impl DaemonServer {
                     let conv_mgr = conv_mgr.clone();
                     let plugin_mgr = plugin_mgr.clone();
                     let tool_registry = tool_registry.clone();
+                    let formatter_mgr = formatter_mgr.clone();
                     let pending_loops = pending_loops.clone();
                     let cancel_flags = cancel_flags.clone();
                     let active_threads = active_threads.clone();
@@ -360,7 +364,7 @@ impl DaemonServer {
                     let opts = opts.clone();
                     let io_requests = io_requests_handler.clone();
                     let io_bytes = io_bytes_handler.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &tool_registry, &pending_loops, &cancel_flags, &active_threads, &chat_model_name, &tool_params, &opts, &io_requests, &io_bytes, tx).await })
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &tool_registry, &formatter_mgr, &pending_loops, &cancel_flags, &active_threads, &chat_model_name, &tool_params, &opts, &io_requests, &io_bytes, tx).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -378,6 +382,7 @@ async fn handle_message(
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
     tool_registry: &Arc<omnish_daemon::tool_registry::ToolRegistry>,
+    formatter_mgr: &Arc<omnish_daemon::formatter_mgr::FormatterManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     cancel_flags: &CancelFlags,
     active_threads: &ActiveThreads,
@@ -447,7 +452,7 @@ async fn handle_message(
         }
         Message::Request(req) => {
             if req.query.starts_with("__cmd:") {
-                let result = handle_builtin_command(&req, mgr, task_mgr, llm, conv_mgr, tool_registry, active_threads).await;
+                let result = handle_builtin_command(&req, mgr, task_mgr, llm, conv_mgr, tool_registry, formatter_mgr, active_threads).await;
                 let content = serde_json::to_string(&result).unwrap_or_else(|_| {
                     r#"{"display":"(serialization error)"}"#.to_string()
                 });
@@ -601,7 +606,7 @@ async fn handle_message(
                     if let Some(claim) = active_threads.lock().await.get_mut(tid) {
                         claim.pending_meta = Some(merged_meta);
                     }
-                    let history_vals = reconstruct_history(&raw_msgs, tool_registry);
+                    let history_vals = reconstruct_history(&raw_msgs, tool_registry, formatter_mgr).await;
                     tracing::debug!("[ChatStart] history reconstructed: {} entries", history_vals.len());
                     let history: Vec<String> = history_vals.iter()
                         .map(|v| serde_json::to_string(v).unwrap_or_default())
@@ -676,7 +681,7 @@ async fn handle_message(
                                 claim.pending_meta = Some(merged_meta);
                             }
                             let raw_msgs = conv_mgr.load_raw_messages(&tid);
-                            let history_vals = reconstruct_history(&raw_msgs, tool_registry);
+                            let history_vals = reconstruct_history(&raw_msgs, tool_registry, formatter_mgr).await;
                             let history: Vec<String> = history_vals.iter()
                                 .map(|v| serde_json::to_string(v).unwrap_or_default())
                                 .collect();
@@ -743,12 +748,12 @@ async fn handle_message(
             let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let req_id = cm.request_id.clone();
             cancel_flags.lock().await.insert(req_id.clone(), flag.clone());
-            handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, tool_registry, pending_loops, tool_params, opts, tx, &flag).await;
+            handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, tool_params, opts, tx, &flag).await;
             cancel_flags.lock().await.remove(&req_id);
         }
         Message::ChatToolResult(tr) => {
             touch_thread(active_threads, &tr.thread_id, conv_mgr).await;
-            handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, tool_registry, pending_loops, cancel_flags, tool_params, opts, tx).await;
+            handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, cancel_flags, tool_params, opts, tx).await;
         }
         Message::ChatInterrupt(ci) => {
             // Clean up pending agent loop and store partial results
@@ -866,6 +871,7 @@ async fn handle_chat_message(
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
     tool_registry: &Arc<omnish_daemon::tool_registry::ToolRegistry>,
+    formatter_mgr: &Arc<omnish_daemon::formatter_mgr::FormatterManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
     opts: &Arc<ServerOpts>,
@@ -947,7 +953,7 @@ async fn handle_chat_message(
         effective_backend,
     };
 
-    run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, pending_loops, tool_params, opts, tx, cancel_flag).await;
+    run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, tool_params, opts, tx, cancel_flag).await;
 }
 
 /// Handle a ChatToolResult from the client — accumulate results, resume when all are received.
@@ -958,6 +964,7 @@ async fn handle_tool_result(
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
     tool_registry: &Arc<omnish_daemon::tool_registry::ToolRegistry>,
+    formatter_mgr: &Arc<omnish_daemon::formatter_mgr::FormatterManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     cancel_flags: &CancelFlags,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
@@ -998,26 +1005,24 @@ async fn handle_tool_result(
     // Generate immediate ChatToolStatus for this result
     if let Some(result) = state.completed_results.iter().find(|r| r.tool_use_id == tool_call_id) {
         if let Some(tc) = state.pending_tool_calls.iter().find(|tc| tc.id == tool_call_id) {
-            let fmt = formatter::get_formatter(tool_registry.formatter_name(&tc.name));
+            let formatter_name = tool_registry.formatter_name(&tc.name);
             let display_name = tool_registry.display_name(&tc.name).to_string();
-            let status_template = tool_registry.status_template(&tc.name).to_string();
-            let fmt_out = fmt.format(&FormatInput {
+            let fmt_out = formatter_mgr.format(formatter_name, &omnish_plugin::formatter::FormatInput {
                 tool_name: tc.name.clone(),
-                display_name: display_name.clone(),
-                status_template,
                 params: tc.input.clone(),
-                output: Some(result.content.clone()),
-                is_error: Some(result.is_error),
-            });
+                output: result.content.clone(),
+                is_error: result.is_error,
+            }).await;
+            let status_icon = if result.is_error { StatusIcon::Error } else { StatusIcon::Success };
             let _ = tx.send(Message::ChatToolStatus(ChatToolStatus {
                 request_id: state.cm.request_id.clone(),
                 thread_id: state.cm.thread_id.clone(),
                 tool_name: tc.name.clone(),
                 tool_call_id: Some(tc.id.clone()),
                 status: String::new(),
-                status_icon: Some(fmt_out.status_icon),
+                status_icon: Some(status_icon),
                 display_name: Some(display_name),
-                param_desc: Some(fmt_out.param_desc),
+                param_desc: Some(tool_registry.status_text(&tc.name, &tc.input)),
                 result_compact: Some(fmt_out.result_compact),
                 result_full: Some(fmt_out.result_full),
             })).await;
@@ -1067,7 +1072,7 @@ async fn handle_tool_result(
     let req_id = state.cm.request_id.clone();
     let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     cancel_flags.lock().await.insert(req_id.clone(), flag.clone());
-    run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, pending_loops, tool_params, opts, tx, &flag).await;
+    run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, tool_params, opts, tx, &flag).await;
     cancel_flags.lock().await.remove(&req_id);
 }
 
@@ -1080,6 +1085,7 @@ async fn run_agent_loop(
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
     tool_registry: &Arc<omnish_daemon::tool_registry::ToolRegistry>,
+    formatter_mgr: &Arc<omnish_daemon::formatter_mgr::FormatterManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
     opts: &Arc<ServerOpts>,
@@ -1154,18 +1160,7 @@ async fn run_agent_loop(
                             break;
                         }
                         let display_name = tool_registry.display_name(&tc.name).to_string();
-                        let formatter_name = tool_registry.formatter_name(&tc.name);
-                        let status_template = tool_registry.status_template(&tc.name).to_string();
-                        let fmt = formatter::get_formatter(formatter_name);
-                        let mut fmt_out = fmt.format(&FormatInput {
-                            tool_name: tc.name.clone(),
-                            display_name: display_name.clone(),
-                            status_template,
-                            params: tc.input.clone(),
-                            output: None,
-                            is_error: None,
-                        });
-                        fmt_out.param_desc = tool_registry.status_text(&tc.name, &tc.input);
+                        let param_desc = tool_registry.status_text(&tc.name, &tc.input);
 
                         // Send pre-execution tool status immediately
                         if tx.send(Message::ChatToolStatus(ChatToolStatus {
@@ -1174,9 +1169,9 @@ async fn run_agent_loop(
                             tool_name: tc.name.clone(),
                             tool_call_id: Some(tc.id.clone()),
                             status: String::new(),
-                            status_icon: Some(fmt_out.status_icon),
+                            status_icon: Some(StatusIcon::Running),
                             display_name: Some(display_name),
-                            param_desc: Some(fmt_out.param_desc),
+                            param_desc: Some(param_desc),
                             result_compact: None,
                             result_full: None,
                         })).await.is_err() { return; }
@@ -1247,27 +1242,23 @@ async fn run_agent_loop(
                             result.tool_use_id = tc.id.clone();
 
                             // Post-execution: send update ChatToolStatus with formatted results immediately
-                            let post_fmt = formatter::get_formatter(tool_registry.formatter_name(&tc.name));
                             let post_display = tool_registry.display_name(&tc.name).to_string();
-                            let post_template = tool_registry.status_template(&tc.name).to_string();
-                            let mut post_out = post_fmt.format(&FormatInput {
+                            let post_out = formatter_mgr.format(tool_registry.formatter_name(&tc.name), &omnish_plugin::formatter::FormatInput {
                                 tool_name: tc.name.clone(),
-                                display_name: post_display.clone(),
-                                status_template: post_template,
                                 params: tc.input.clone(),
-                                output: Some(result.content.clone()),
-                                is_error: Some(result.is_error),
-                            });
-                            post_out.param_desc = tool_registry.status_text(&tc.name, &tc.input);
+                                output: result.content.clone(),
+                                is_error: result.is_error,
+                            }).await;
+                            let post_icon = if result.is_error { StatusIcon::Error } else { StatusIcon::Success };
                             if tx.send(Message::ChatToolStatus(ChatToolStatus {
                                 request_id: state.cm.request_id.clone(),
                                 thread_id: state.cm.thread_id.clone(),
                                 tool_name: tc.name.clone(),
                                 tool_call_id: Some(tc.id.clone()),
                                 status: String::new(),
-                                status_icon: Some(post_out.status_icon),
+                                status_icon: Some(post_icon),
                                 display_name: Some(post_display),
-                                param_desc: Some(post_out.param_desc),
+                                param_desc: Some(tool_registry.status_text(&tc.name, &tc.input)),
                                 result_compact: Some(post_out.result_compact),
                                 result_full: Some(post_out.result_full),
                             })).await.is_err() { return; }
@@ -1489,9 +1480,10 @@ fn cmd_display(s: impl Into<String>) -> serde_json::Value {
 /// - `tool_status`: a formatted tool call + result pair
 /// - `response`: assistant final text-only response
 /// - `separator`: marks end of an exchange
-fn reconstruct_history(
+async fn reconstruct_history(
     raw_messages: &[serde_json::Value],
     tool_registry: &omnish_daemon::tool_registry::ToolRegistry,
+    formatter_mgr: &omnish_daemon::formatter_mgr::FormatterManager,
 ) -> Vec<serde_json::Value> {
     use std::collections::HashMap as HM;
 
@@ -1518,24 +1510,15 @@ fn reconstruct_history(
                             let is_error = block["is_error"].as_bool().unwrap_or(false);
 
                             if let Some((tool_name, input)) = pending_tools.remove(&tool_use_id) {
-                                let fmt = formatter::get_formatter(tool_registry.formatter_name(&tool_name));
                                 let display_name = tool_registry.display_name(&tool_name).to_string();
-                                let status_template = tool_registry.status_template(&tool_name).to_string();
-                                let fmt_out = fmt.format(&FormatInput {
+                                let fmt_out = formatter_mgr.format(tool_registry.formatter_name(&tool_name), &omnish_plugin::formatter::FormatInput {
                                     tool_name: tool_name.clone(),
-                                    display_name: display_name.clone(),
-                                    status_template,
                                     params: input.clone(),
-                                    output: Some(output),
-                                    is_error: Some(is_error),
-                                });
+                                    output,
+                                    is_error,
+                                }).await;
                                 let param_desc = tool_registry.status_text(&tool_name, &input);
-                                let param_desc = if param_desc.is_empty() { fmt_out.param_desc } else { param_desc };
-                                let icon_str = match fmt_out.status_icon {
-                                    omnish_protocol::message::StatusIcon::Running => "running",
-                                    omnish_protocol::message::StatusIcon::Success => "success",
-                                    omnish_protocol::message::StatusIcon::Error => "error",
-                                };
+                                let icon_str = if is_error { "error" } else { "success" };
                                 entries.push(serde_json::json!({
                                     "type": "tool_status",
                                     "tool_name": tool_name,
@@ -1615,14 +1598,15 @@ fn reconstruct_history(
 }
 
 /// Build JSON response for /resume, including thread model if non-default.
-fn build_resume_response(
+async fn build_resume_response(
     thread_id: &str,
     conv_mgr: &ConversationManager,
     tool_registry: &omnish_daemon::tool_registry::ToolRegistry,
+    formatter_mgr: &omnish_daemon::formatter_mgr::FormatterManager,
     llm_backend: &Option<Arc<dyn LlmBackend>>,
 ) -> serde_json::Value {
     let raw_msgs = conv_mgr.load_raw_messages(thread_id);
-    let history = reconstruct_history(&raw_msgs, tool_registry);
+    let history = reconstruct_history(&raw_msgs, tool_registry, formatter_mgr).await;
     let mut json = serde_json::json!({
         "thread_id": thread_id,
         "history": history,
@@ -1640,7 +1624,7 @@ fn build_resume_response(
     json
 }
 
-async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>, tool_registry: &omnish_daemon::tool_registry::ToolRegistry, active_threads: &ActiveThreads) -> serde_json::Value {
+async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>, tool_registry: &omnish_daemon::tool_registry::ToolRegistry, formatter_mgr: &omnish_daemon::formatter_mgr::FormatterManager, active_threads: &ActiveThreads) -> serde_json::Value {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
 
     // Build system-reminder for context display
@@ -1686,14 +1670,14 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             Err(_) => return cmd_display("Invalid index: not a number"),
         };
         return match conv_mgr.get_thread_by_index(idx) {
-            Some(thread_id) => build_resume_response(&thread_id, conv_mgr, tool_registry, llm_backend),
+            Some(thread_id) => build_resume_response(&thread_id, conv_mgr, tool_registry, formatter_mgr, llm_backend).await,
             None => cmd_display("Invalid index: out of bounds"),
         };
     }
     // Handle /resume without index (resume latest = /resume 1)
     if sub == "resume" {
         return match conv_mgr.get_thread_by_index(0) {
-            Some(thread_id) => build_resume_response(&thread_id, conv_mgr, tool_registry, llm_backend),
+            Some(thread_id) => build_resume_response(&thread_id, conv_mgr, tool_registry, formatter_mgr, llm_backend).await,
             None => cmd_display("No conversations yet. Start a chat with :"),
         };
     }
