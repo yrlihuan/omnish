@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.8.3 (2026-03-22)
+
+### Features
+- **daemon**: Custom plugin formatter support via long-running subprocess binaries (#404)
+- **daemon**: FormatterManager for unified built-in and external formatter registry
+- **daemon**: External formatters communicate via newline-delimited JSON on stdin/stdout with mpsc queue
+- **daemon**: Plugins can declare `formatter_binary` in tool.json for custom formatters
+- **daemon**: Compact result hint shows (+N more lines) for truncated output (#403)
+
+### Fixes
+- **daemon**: System-reminder uses client platform/OS info instead of daemon's (#402)
+- **daemon**: Edit tool diff shows only changed lines, not full old/new string (#400)
+- **daemon**: Remove TIME field from system-reminder
+- **client**: `/debug commands` argument parsing (#396)
+- **client**: DEBUG trap moved after bind-x to avoid recording init commands (#395)
+- **client**: Developer mode prevents `:` and `::` when command line has content (#393)
+
+### Refactoring
+- **plugin**: Move ToolFormatter trait and built-in formatters (Default, Read, Edit) to omnish-plugin
+- **daemon**: Simplify FormatInput/FormatOutput — remove fields handled by caller (status_icon, param_desc, display_name, status_template)
+- **daemon**: Replace formatter.rs with FormatterManager, decouple StatusIcon from formatters
+
+### Other
+- Increase plugin timeout from 30s to 600s
+- Add global proxy/no_proxy support for outbound requests (#359)
+- Auto-install bundled plugins when tool config has api_key (#397)
+- Improve /resume prompt UX with colored host/path display
+
+---
+
 ## v0.8.2 (2026-03-21)
 
 ### Features
