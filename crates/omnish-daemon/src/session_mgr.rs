@@ -549,6 +549,19 @@ impl SessionManager {
         }
     }
 
+    pub async fn get_session_attrs(&self, session_id: &str) -> std::collections::HashMap<String, String> {
+        let session = {
+            let sessions = self.sessions.read().await;
+            sessions.get(session_id).cloned()
+        };
+        if let Some(session) = session {
+            let meta = session.meta.read().await;
+            meta.attrs.clone()
+        } else {
+            std::collections::HashMap::new()
+        }
+    }
+
     /// Get session debug information including metadata, commands count, last active time, and last update timestamp
     pub async fn get_session_debug_info(&self, session_id: &str) -> Result<(SessionMeta, usize, Duration, Option<u64>)> {
         let session = {

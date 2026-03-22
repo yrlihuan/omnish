@@ -180,6 +180,24 @@ impl Probe for ChildProcessProbe {
     }
 }
 
+pub struct PlatformProbe;
+impl Probe for PlatformProbe {
+    fn key(&self) -> &str { "platform" }
+    fn collect(&self) -> Option<String> { Some(std::env::consts::OS.to_string()) }
+}
+
+pub struct OsVersionProbe;
+impl Probe for OsVersionProbe {
+    fn key(&self) -> &str { "os_version" }
+    fn collect(&self) -> Option<String> {
+        std::process::Command::new("uname")
+            .arg("-r")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    }
+}
+
 pub fn default_session_probes(child_pid: u32) -> ProbeSet {
     let mut set = ProbeSet::new();
     set.add(Box::new(ShellProbe));
@@ -187,6 +205,8 @@ pub fn default_session_probes(child_pid: u32) -> ProbeSet {
     set.add(Box::new(TtyProbe));
     set.add(Box::new(CwdProbe));
     set.add(Box::new(HostnameProbe));
+    set.add(Box::new(PlatformProbe));
+    set.add(Box::new(OsVersionProbe));
     set
 }
 

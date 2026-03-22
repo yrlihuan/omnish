@@ -907,11 +907,11 @@ async fn handle_chat_message(
     let ChatSetup { command_query_tool, tools, system_prompt } =
         build_chat_setup(mgr, tool_registry).await;
 
-    // Get live cwd from session probe (if available)
-    let live_cwd = mgr.get_session_attr(&cm.session_id, "shell_cwd").await;
+    // Get session attrs from client probes (cwd, platform, os_version, etc.)
+    let session_attrs = mgr.get_session_attrs(&cm.session_id).await;
 
     // Build system-reminder with time, cwd, and last 5 commands
-    let reminder = command_query_tool.build_system_reminder(5, live_cwd.as_deref());
+    let reminder = command_query_tool.build_system_reminder(5, &session_attrs);
 
     // Load prior conversation history as raw JSON
     let mut extra_messages = conv_mgr.load_raw_messages(&cm.thread_id);
@@ -1646,8 +1646,8 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
     // Build system-reminder for context display
     let (commands, stream_reader) = mgr.get_all_commands_with_reader().await;
     let command_query_tool = omnish_daemon::tools::command_query::CommandQueryTool::new(commands, stream_reader);
-    let live_cwd = mgr.get_session_attr(&req.session_id, "shell_cwd").await;
-    let reminder = command_query_tool.build_system_reminder(5, live_cwd.as_deref());
+    let session_attrs = mgr.get_session_attrs(&req.session_id).await;
+    let reminder = command_query_tool.build_system_reminder(5, &session_attrs);
 
     // Handle /context chat:<thread_id> — show conversation context + system-reminder
     if let Some(thread_id) = sub.strip_prefix("context chat:") {

@@ -47,8 +47,8 @@ impl CommandQueryTool {
 
     /// Build a system-reminder string for the chat user message.
     /// Includes current time, working directory, git status, platform info, and last N commands.
-    /// `live_cwd` overrides the command-record cwd (from session probe).
-    pub fn build_system_reminder(&self, count: usize, live_cwd: Option<&str>) -> String {
+    /// Session attrs (from client probes) provide live_cwd, platform, and os_version.
+    pub fn build_system_reminder(&self, count: usize, session_attrs: &std::collections::HashMap<String, String>) -> String {
         let commands = &self.commands;
 
         // Current time with timezone
@@ -56,8 +56,8 @@ impl CommandQueryTool {
         let time_str = now.format("%Y-%m-%d %H:%M:%S %z").to_string();
         let today = now.format("%Y-%m-%d").to_string();
 
-        // Current directory: prefer live cwd from session probe, fall back to last command's cwd
-        let cwd = live_cwd
+        // Current directory: prefer live cwd from client probe, fall back to last command's cwd
+        let cwd = session_attrs.get("shell_cwd").map(|s| s.as_str())
             .or_else(|| commands.last().and_then(|c| c.cwd.as_deref()))
             .unwrap_or("(unknown)");
 
@@ -70,13 +70,15 @@ impl CommandQueryTool {
             .unwrap_or(false);
         let is_git_repo_str = if is_git_repo { "Yes" } else { "No" };
 
-        // Platform info
-        let platform = std::env::consts::OS;
-        let os_version = std::process::Command::new("uname")
+        // Platform info: prefer client-reported values, fall back to daemon's own
+        let default_platform = std::env::consts::OS.to_string();
+        let platform = session_attrs.get("platform").unwrap_or(&default_platform);
+        let default_os_version = std::process::Command::new("uname")
             .arg("-r")
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
+        let os_version = session_attrs.get("os_version").unwrap_or(&default_os_version);
 
         // Last N commands (skip entries with no command_line)
         let start = commands.len().saturating_sub(count);
@@ -349,12 +351,20 @@ mod tests {
         CommandQueryTool::new(commands, Arc::new(DummyReader))
     }
 
+    fn make_attrs(cwd: Option<&str>) -> std::collections::HashMap<String, String> {
+        let mut attrs = std::collections::HashMap::new();
+        if let Some(cwd) = cwd {
+            attrs.insert("shell_cwd".to_string(), cwd.to_string());
+        }
+        attrs
+    }
+
     #[test]
     fn test_cwd_prefers_live_cwd_over_command_record() {
         let tool = make_tool(vec![
             make_cmd("ls", Some("/home/user/old"), Some(0)),
         ]);
-        let reminder = tool.build_system_reminder(5, Some("/home/user/live"));
+        let reminder = tool.build_system_reminder(5, &make_attrs(Some("/home/user/live")));
         assert!(reminder.contains("WORKING DIR: /home/user/live"));
         assert!(!reminder.contains("/home/user/old"));
     }
@@ -365,7 +375,7 @@ mod tests {
             make_cmd("cd /tmp", Some("/tmp"), Some(0)),
             make_cmd("ls", Some("/home/user/proj"), Some(0)),
         ]);
-        let reminder = tool.build_system_reminder(5, None);
+        let reminder = tool.build_system_reminder(5, &make_attrs(None));
         assert!(reminder.contains("WORKING DIR: /home/user/proj"));
     }
 
@@ -374,14 +384,14 @@ mod tests {
         let tool = make_tool(vec![
             make_cmd("ls", None, Some(0)),
         ]);
-        let reminder = tool.build_system_reminder(5, None);
+        let reminder = tool.build_system_reminder(5, &make_attrs(None));
         assert!(reminder.contains("WORKING DIR: (unknown)"));
     }
 
     #[test]
     fn test_cwd_unknown_when_no_commands_and_no_live() {
         let tool = make_tool(vec![]);
-        let reminder = tool.build_system_reminder(5, None);
+        let reminder = tool.build_system_reminder(5, &make_attrs(None));
         assert!(reminder.contains("WORKING DIR: (unknown)"));
     }
 
@@ -391,7 +401,7 @@ mod tests {
             make_cmd("cargo build", None, Some(0)),
             make_cmd("cargo test", None, Some(1)),
         ]);
-        let reminder = tool.build_system_reminder(5, None);
+        let reminder = tool.build_system_reminder(5, &make_attrs(None));
         assert!(reminder.contains("[seq=1] cargo build\n"));
         assert!(reminder.contains("[seq=2] cargo test [FAILED]"));
     }
@@ -402,7 +412,7 @@ mod tests {
             .map(|i| make_cmd(&format!("cmd{}", i), None, Some(0)))
             .collect();
         let tool = make_tool(commands);
-        let reminder = tool.build_system_reminder(3, None);
+        let reminder = tool.build_system_reminder(3, &make_attrs(None));
         assert!(!reminder.contains("cmd7"));
         assert!(reminder.contains("[seq=8] cmd8"));
         assert!(reminder.contains("[seq=9] cmd9"));
@@ -412,12 +422,23 @@ mod tests {
     #[test]
     fn test_reminder_contains_time_and_structure() {
         let tool = make_tool(vec![make_cmd("ls", Some("/tmp"), Some(0))]);
-        let reminder = tool.build_system_reminder(5, None);
+        let reminder = tool.build_system_reminder(5, &make_attrs(None));
         assert!(reminder.starts_with("<system-reminder>"));
         assert!(reminder.ends_with("</system-reminder>"));
         assert!(reminder.contains("TIME: "));
         assert!(reminder.contains("WORKING DIR: /tmp"));
         assert!(reminder.contains("LAST 5 COMMANDS:"));
+    }
+
+    #[test]
+    fn test_reminder_uses_client_platform_info() {
+        let tool = make_tool(vec![]);
+        let mut attrs = std::collections::HashMap::new();
+        attrs.insert("platform".to_string(), "macos".to_string());
+        attrs.insert("os_version".to_string(), "23.1.0".to_string());
+        let reminder = tool.build_system_reminder(5, &attrs);
+        assert!(reminder.contains("Platform: macos"), "reminder: {}", reminder);
+        assert!(reminder.contains("OS Version: 23.1.0"), "reminder: {}", reminder);
     }
 
     #[test]
