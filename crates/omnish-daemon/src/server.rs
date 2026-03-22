@@ -196,7 +196,7 @@ async fn execute_daemon_plugin(
     }
 
     // Wait with timeout
-    let timeout = std::time::Duration::from_secs(30);
+    let timeout = std::time::Duration::from_secs(600);
     match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(output)) => {
             if !output.status.success() {
@@ -237,7 +237,7 @@ async fn execute_daemon_plugin(
             // killing the process. Return error.
             omnish_llm::tool::ToolResult {
                 tool_use_id: String::new(),
-                content: "Plugin timed out (30s)".to_string(),
+                content: "Plugin timed out (600s)".to_string(),
                 is_error: true,
             }
         }
