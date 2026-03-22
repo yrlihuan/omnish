@@ -37,7 +37,6 @@ __omnish_preexec() {
   printf '\033]133;B;%s;cwd:%s;orig:%s\007' "$cmd_esc" "$pwd_esc" "$orig_esc"
   printf '\033]133;C\007'
 }
-trap '__omnish_preexec' DEBUG
 
 __omnish_rl_report() {
     printf '\033]133;RL;%s;%s\007' "$READLINE_LINE" "$READLINE_POINT"
@@ -49,6 +48,9 @@ if bind -x '"\e[13337~": __omnish_rl_report' 2>/dev/null; then
 else
   printf '\033]133;NO_READLINE\007'
 fi
+
+# DEBUG trap set last so hook init commands (bind etc.) are not recorded (#395)
+trap '__omnish_preexec' DEBUG
 "#;
 
 /// Generate an rcfile that sources the user's original bashrc then loads the OSC 133 hook.
