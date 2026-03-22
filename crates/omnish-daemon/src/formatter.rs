@@ -46,7 +46,14 @@ fn status_icon(output: &Option<String>, is_error: &Option<bool>) -> StatusIcon {
 }
 
 fn head_lines(text: &str, n: usize) -> Vec<String> {
-    text.lines().take(n).map(|l| l.to_string()).collect()
+    let lines: Vec<&str> = text.lines().collect();
+    let total = lines.len();
+    let mut result = Vec::with_capacity(n + 1);
+    result.extend(lines.iter().take(n).map(|&l| l.to_string()));
+    if total > n {
+        result.push(format!("(+{} more lines)", total - n));
+    }
+    result
 }
 
 fn all_lines(text: &str) -> Vec<String> {
@@ -396,7 +403,8 @@ mod tests {
             Some(false),
         );
         let out = DefaultFormatter.format(&input);
-        assert_eq!(out.result_compact.len(), 5);
+        assert_eq!(out.result_compact.len(), 6);
+        assert_eq!(out.result_compact[5], "(+15 more lines)");
         assert_eq!(out.result_full.len(), 20);
     }
 
