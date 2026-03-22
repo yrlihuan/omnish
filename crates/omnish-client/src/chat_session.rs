@@ -1430,7 +1430,7 @@ impl ChatSession {
         if !same_host {
             // Different machine
             let title = format!(
-                "This conversation was on \x1b[36m{}\x1b[0m (current: \x1b[33m{}\x1b[0m). Proceed?",
+                "This conversation was on \x1b[36m{}\x1b[0m (current: \x1b[36m{}\x1b[0m). Proceed?",
                 thread_host, cur_host,
             );
             let items = &["[Y]es", "[C]ancel"];
