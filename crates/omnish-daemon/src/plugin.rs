@@ -26,6 +26,7 @@ struct PluginInfo {
     dir_name: String,
     plugin_type: PluginType,
     tools: Vec<ToolEntry>,
+    formatter_binary: Option<String>,
 }
 
 /// Cached tool.override.json overrides, updated on file changes.
@@ -50,6 +51,8 @@ pub struct PluginManager {
 #[derive(Deserialize)]
 struct ToolJsonFile {
     plugin_type: String,
+    #[serde(default)]
+    formatter_binary: Option<String>,
     tools: Vec<ToolJsonEntry>,
 }
 
@@ -197,6 +200,7 @@ impl PluginManager {
                     dir_name: "builtin".to_string(),
                     plugin_type,
                     tools,
+                    formatter_binary: None,
                 });
             }
             Err(e) => {
@@ -274,6 +278,7 @@ impl PluginManager {
                 dir_name,
                 plugin_type,
                 tools,
+                formatter_binary: parsed.formatter_binary,
             });
         }
 
@@ -349,6 +354,26 @@ impl PluginManager {
             let dir_name = &self.plugins[pi].dir_name;
             self.plugins_dir.join(dir_name).join(dir_name)
         })
+    }
+
+    /// Return (formatter_name, binary_path) pairs for external formatters.
+    /// Only returns entries where a tool has a non-default formatter AND the plugin has a formatter_binary.
+    pub fn formatter_binaries(&self) -> Vec<(String, PathBuf)> {
+        let mut result = Vec::new();
+        for plugin in &self.plugins {
+            if let Some(ref binary) = plugin.formatter_binary {
+                let binary_path = self.plugins_dir.join(&plugin.dir_name).join(binary);
+                for tool in &plugin.tools {
+                    if tool.formatter != "default" {
+                        // Avoid duplicate registrations for the same formatter name
+                        if !result.iter().any(|(name, _): &(String, PathBuf)| name == &tool.formatter) {
+                            result.push((tool.formatter.clone(), binary_path.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        result
     }
 
     /// Register all plugin tools into a ToolRegistry.

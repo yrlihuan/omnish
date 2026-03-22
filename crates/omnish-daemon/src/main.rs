@@ -318,7 +318,12 @@ async fn async_main() -> Result<i32> {
         no_proxy: config.no_proxy,
         sandbox_rules: Arc::clone(&server_sandbox_rules),
     });
-    let formatter_mgr = Arc::new(omnish_daemon::formatter_mgr::FormatterManager::new());
+    // Create formatter manager and register external formatters from plugins
+    let mut formatter_mgr = omnish_daemon::formatter_mgr::FormatterManager::new();
+    for (name, binary) in plugin_mgr.formatter_binaries() {
+        formatter_mgr.register_external(&name, binary.to_str().unwrap_or_default()).await;
+    }
+    let formatter_mgr = Arc::new(formatter_mgr);
     let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, tool_registry, chat_model_name, config.tools, server_opts, formatter_mgr);
 
     tracing::info!("starting omnishd at {}", socket_path);
