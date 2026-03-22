@@ -1,5 +1,6 @@
 //! Shared plugin infrastructure: Landlock sandbox and tool implementations.
 
+pub mod formatter;
 pub mod tools;
 
 #[cfg(target_os = "linux")]
