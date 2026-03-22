@@ -41,47 +41,59 @@ fn build_context_snippet(
         .min(remaining_old)
         .min(remaining_new);
 
-    let ctx_start = edit_start_line.saturating_sub(ctx);
-    let ctx_after_end = (new_end + ctx).min(new_lines.len());
+    // Limit common prefix/suffix context to `ctx` lines each to avoid noise
+    let shown_prefix = common_prefix.min(ctx);
+    let shown_suffix = common_suffix.min(ctx);
+
+    let old_changed_end = old_edit.len() - common_suffix;
+    let new_changed_end = new_edit.len() - common_suffix;
+    let suffix_ctx_start = new_changed_end; // first common suffix line index
+    let ctx_after_end = (new_end - common_suffix + shown_suffix + ctx).min(new_lines.len());
 
     let mut lines = Vec::new();
 
-    // Context before (same in old and new)
-    for i in ctx_start..edit_start_line {
+    // Context before (from file, before the edit region + common prefix)
+    let file_ctx_start = (edit_start_line + common_prefix - shown_prefix).saturating_sub(ctx);
+    let file_ctx_end = edit_start_line + common_prefix - shown_prefix;
+    for i in file_ctx_start..file_ctx_end {
         if i < new_lines.len() {
             lines.push(format!("{}:  {}", i + 1, new_lines[i]));
         }
     }
 
-    // Common prefix lines (shown as context)
-    for i in 0..common_prefix {
+    // Tail of common prefix (up to `ctx` lines before the change)
+    let prefix_start = common_prefix - shown_prefix;
+    for i in prefix_start..common_prefix {
         let line_idx = edit_start_line + i;
         lines.push(format!("{}:  {}", line_idx + 1, new_edit[i]));
     }
 
     // Changed old lines (removed)
-    let old_changed_end = old_edit.len() - common_suffix;
     for i in common_prefix..old_changed_end {
         let line_idx = edit_start_line + i;
         lines.push(format!("{}:-{}", line_idx + 1, old_edit[i]));
     }
 
     // Changed new lines (added) — use new line numbers
-    let new_changed_end = new_edit.len() - common_suffix;
     for i in common_prefix..new_changed_end {
         let line_idx = edit_start_line + i;
         lines.push(format!("{}:+{}", line_idx + 1, new_edit[i]));
     }
 
-    // Common suffix lines (shown as context, using new line numbers)
-    for i in new_changed_end..new_edit.len() {
+    // Head of common suffix (up to `ctx` lines after the change)
+    for i in suffix_ctx_start..(suffix_ctx_start + shown_suffix) {
         let line_idx = edit_start_line + i;
-        lines.push(format!("{}:  {}", line_idx + 1, new_edit[i]));
+        if i < new_edit.len() {
+            lines.push(format!("{}:  {}", line_idx + 1, new_edit[i]));
+        }
     }
 
-    // Context after (from new content)
-    for i in new_end..ctx_after_end {
-        lines.push(format!("{}:  {}", i + 1, new_lines[i]));
+    // Context after (from file, after the edit region + common suffix)
+    let after_start = new_end - common_suffix + shown_suffix;
+    for i in after_start..ctx_after_end {
+        if i < new_lines.len() {
+            lines.push(format!("{}:  {}", i + 1, new_lines[i]));
+        }
     }
 
     lines.join("\n")
@@ -438,5 +450,40 @@ mod tests {
         // No -/+ for shared lines
         assert!(!snippet.contains(":-shared_a"), "shared_a should NOT be removed: {}", snippet);
         assert!(!snippet.contains(":+shared_a"), "shared_a should NOT be added: {}", snippet);
+    }
+
+    #[test]
+    fn test_large_common_suffix_is_truncated() {
+        // When old_string/new_string have many common suffix lines,
+        // only a few should be shown (ctx=3), not all of them.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.txt");
+        let mut file_lines: Vec<String> = (1..=50).map(|i| format!("line{}", i)).collect();
+        fs::write(&path, file_lines.join("\n")).unwrap();
+
+        // old_string: lines 5-45 (line5 through line45 = 41 lines)
+        // new_string: change only "line5" to "modified5", rest identical
+        let old_str: String = (5..=45).map(|i| format!("line{}", i)).collect::<Vec<_>>().join("\n");
+        let new_str = format!("modified5\n{}", (6..=45).map(|i| format!("line{}", i)).collect::<Vec<_>>().join("\n"));
+
+        let tool = EditTool::new();
+        let result = tool.execute(&serde_json::json!({
+            "file_path": path.to_str().unwrap(),
+            "old_string": old_str,
+            "new_string": new_str,
+        }));
+        assert!(!result.is_error, "{}", result.content);
+        let snippet = result.content.split("\n---\n").nth(1).unwrap();
+
+        // Should have: context before (3) + changed line (-/+) (2) + limited suffix context (3) + context after (3) = ~11
+        let line_count = snippet.lines().count();
+        assert!(line_count <= 15, "snippet should be compact but has {} lines:\n{}", line_count, snippet);
+
+        // The changed line should be shown
+        assert!(snippet.contains("5:-line5"), "should show old line5: {}", snippet);
+        assert!(snippet.contains("5:+modified5"), "should show new modified5: {}", snippet);
+
+        // Common suffix lines far from the change (e.g., line30) should NOT appear
+        assert!(!snippet.contains("line30"), "line30 should not appear in snippet: {}", snippet);
     }
 }

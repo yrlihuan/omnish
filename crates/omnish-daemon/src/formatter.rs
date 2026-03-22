@@ -140,11 +140,28 @@ impl ToolFormatter for ReadFormatter {
 
 struct EditFormatter;
 
-/// Compute edit summary line from old/new string line counts.
+/// Compute edit summary line from actual changed lines (excluding common prefix/suffix).
 fn edit_summary(old: &str, new: &str) -> String {
-    let old_n = if old.is_empty() { 0 } else { old.lines().count() };
-    let new_n = if new.is_empty() { 0 } else { new.lines().count() };
-    match (old_n, new_n) {
+    let old_lines: Vec<&str> = if old.is_empty() { vec![] } else { old.lines().collect() };
+    let new_lines: Vec<&str> = if new.is_empty() { vec![] } else { new.lines().collect() };
+
+    // Find common prefix/suffix to count only truly changed lines
+    let common_prefix = old_lines.iter().zip(new_lines.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let remaining_old = old_lines.len() - common_prefix;
+    let remaining_new = new_lines.len() - common_prefix;
+    let common_suffix = old_lines[common_prefix..].iter().rev()
+        .zip(new_lines[common_prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(remaining_old)
+        .min(remaining_new);
+
+    let removed = old_lines.len() - common_prefix - common_suffix;
+    let added = new_lines.len() - common_prefix - common_suffix;
+
+    match (removed, added) {
         (0, n) => format!("Added {} line{}", n, if n == 1 { "" } else { "s" }),
         (n, 0) => format!("Removed {} line{}", n, if n == 1 { "" } else { "s" }),
         (o, n) if o == n => format!("Edited {} line{}", o, if o == 1 { "" } else { "s" }),
@@ -635,5 +652,15 @@ mod tests {
         // "... and 4 more places"
         let last = out.result_full.last().unwrap();
         assert!(last.contains("4 more places"), "got: {}", last);
+    }
+
+    #[test]
+    fn edit_summary_counts_only_changed_lines() {
+        // When old/new strings share many common lines, summary should reflect actual changes
+        assert_eq!(edit_summary("line1\nline2\nold\nline4", "line1\nline2\nnew\nline4"), "Edited 1 line");
+        assert_eq!(edit_summary("a\nb\nc", "a\nX\nY\nc"), "Added 2 lines, removed 1 line");
+        assert_eq!(edit_summary("hello", "goodbye"), "Edited 1 line");
+        assert_eq!(edit_summary("a\nb\nc", ""), "Removed 3 lines");
+        assert_eq!(edit_summary("", "a\nb"), "Added 2 lines");
     }
 }
