@@ -458,7 +458,7 @@ mod tests {
         // only a few should be shown (ctx=3), not all of them.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("large.txt");
-        let mut file_lines: Vec<String> = (1..=50).map(|i| format!("line{}", i)).collect();
+        let file_lines: Vec<String> = (1..=50).map(|i| format!("line{}", i)).collect();
         fs::write(&path, file_lines.join("\n")).unwrap();
 
         // old_string: lines 5-45 (line5 through line45 = 41 lines)

@@ -1624,6 +1624,7 @@ async fn build_resume_response(
     json
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>, tool_registry: &omnish_daemon::tool_registry::ToolRegistry, formatter_mgr: &omnish_daemon::formatter_mgr::FormatterManager, active_threads: &ActiveThreads) -> serde_json::Value {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
 
