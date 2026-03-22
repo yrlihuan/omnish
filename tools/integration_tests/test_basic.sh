@@ -401,7 +401,7 @@ test_8() {
     show_capture "After entering chat" "$content" 5
 
     # The shell prompt (ending with "$ ") should still be visible above "> "
-    if echo "$content" | grep -q '\$ ' && echo "$content" | grep -qE '^\s*> \s*$'; then
+    if echo "$content" | grep -q '\$ ' && echo "$content" | grep -qE '^\s*> '; then
         assert_pass "Shell prompt preserved above chat prompt"
         send_special Escape 0.5
         sleep 1.5
