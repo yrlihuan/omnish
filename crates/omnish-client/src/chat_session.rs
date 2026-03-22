@@ -1430,7 +1430,7 @@ impl ChatSession {
         if !same_host {
             // Different machine
             let title = format!(
-                "This conversation was on \x1b[32m{}\x1b[0m (current: \x1b[33m{}\x1b[0m). Proceed?",
+                "This conversation was on \x1b[36m{}\x1b[0m (current: \x1b[33m{}\x1b[0m). Proceed?",
                 thread_host, cur_host,
             );
             let items = &["[Y]es", "[C]ancel"];
@@ -1441,7 +1441,7 @@ impl ChatSession {
         } else {
             // Same machine, different cwd
             let title = format!(
-                "Switch to \x1b[33m{}\x1b[0m (last conversation path)?",
+                "Switch to \x1b[34m{}\x1b[0m (last conversation path)?",
                 thread_cwd,
             );
             let items = &["[Y]es", "[N]o, stay here", "[C]ancel"];
