@@ -239,6 +239,14 @@ pub struct SandboxPluginConfig {
 pub struct DaemonConfig {
     #[serde(default = "default_socket_path")]
     pub listen_addr: String,
+    /// Global HTTP/SOCKS proxy for outbound requests (LLM backends, tool subprocesses).
+    /// Supports http://, https://, socks5://. Not used for daemon-client communication.
+    #[serde(default)]
+    pub proxy: Option<String>,
+    /// Comma-separated list of hosts/domains/CIDRs that bypass the proxy.
+    /// Example: "localhost,127.0.0.1,10.0.0.0/8,*.internal.com"
+    #[serde(default)]
+    pub no_proxy: Option<String>,
     #[serde(default)]
     pub llm: LlmConfig,
     #[serde(default)]
@@ -259,6 +267,8 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             listen_addr: default_socket_path(),
+            proxy: None,
+            no_proxy: None,
             llm: LlmConfig::default(),
             context: ContextConfig::default(),
             tasks: TasksConfig::default(),

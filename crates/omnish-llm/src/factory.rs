@@ -39,18 +39,32 @@ fn resolve_api_key(api_key_cmd: &Option<String>) -> Result<String> {
     }
 }
 
+/// Build a reqwest client with optional proxy support.
+fn build_http_client(proxy: Option<&str>, no_proxy: Option<&str>) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .pool_max_idle_per_host(10);
+    if let Some(proxy_url) = proxy {
+        let mut p = reqwest::Proxy::all(proxy_url)?;
+        if let Some(no_proxy_str) = no_proxy {
+            p = p.no_proxy(reqwest::NoProxy::from_string(no_proxy_str));
+        }
+        builder = builder.proxy(p);
+    }
+    Ok(builder.build()?)
+}
+
 /// Create LLM backend from config
 pub fn create_backend(
     _name: &str,
     config: &LlmBackendConfig,
+    proxy: Option<&str>,
+    no_proxy: Option<&str>,
 ) -> Result<Arc<dyn LlmBackend>> {
     let api_key = resolve_api_key(&config.api_key_cmd)?;
 
     match config.backend_type.as_str() {
         "anthropic" => {
-            let client = reqwest::Client::builder()
-                .pool_max_idle_per_host(10)
-                .build()?;
+            let client = build_http_client(proxy, no_proxy)?;
             let base_url = config
                 .base_url
                 .clone()
@@ -67,9 +81,7 @@ pub fn create_backend(
                 .base_url
                 .clone()
                 .ok_or_else(|| anyhow!("openai-compat requires base_url"))?;
-            let client = reqwest::Client::builder()
-                .pool_max_idle_per_host(10)
-                .build()?;
+            let client = build_http_client(proxy, no_proxy)?;
             Ok(Arc::new(OpenAiCompatBackend {
                 api_key,
                 model: config.model.clone(),
@@ -82,14 +94,14 @@ pub fn create_backend(
 }
 
 /// Create default LLM backend from config
-pub fn create_default_backend(llm_config: &LlmConfig) -> Result<Arc<dyn LlmBackend>> {
+pub fn create_default_backend(llm_config: &LlmConfig, proxy: Option<&str>, no_proxy: Option<&str>) -> Result<Arc<dyn LlmBackend>> {
     let backend_name = &llm_config.default;
     let backend_config = llm_config
         .backends
         .get(backend_name)
         .ok_or_else(|| anyhow!("default backend '{}' not found in config", backend_name))?;
 
-    create_backend(backend_name, backend_config)
+    create_backend(backend_name, backend_config, proxy, no_proxy)
 }
 
 /// MultiBackend routes LLM requests to different backends based on use case
@@ -110,15 +122,15 @@ pub struct MultiBackend {
 
 impl MultiBackend {
     /// Create a MultiBackend from LLM config
-    pub fn new(llm_config: &LlmConfig) -> Result<Self> {
+    pub fn new(llm_config: &LlmConfig, proxy: Option<&str>, no_proxy: Option<&str>) -> Result<Self> {
         // Resolve Langfuse config if present
-        let langfuse_config = resolve_langfuse_config(llm_config);
+        let langfuse_config = resolve_langfuse_config(llm_config, proxy, no_proxy);
 
         // First pass: create all backends by config name
         let mut named_backends = HashMap::new();
         let mut backend_configs = Vec::new();
         for (name, cfg) in &llm_config.backends {
-            match create_backend(name, cfg) {
+            match create_backend(name, cfg, proxy, no_proxy) {
                 Ok(backend) => {
                     let backend = maybe_wrap_langfuse(backend, &langfuse_config);
                     named_backends.insert(name.clone(), backend);
@@ -236,7 +248,7 @@ impl LlmBackend for MultiBackend {
 }
 
 /// Resolve Langfuse configuration, returning None if not configured or key missing.
-fn resolve_langfuse_config(llm_config: &LlmConfig) -> Option<LangfuseConfig> {
+fn resolve_langfuse_config(llm_config: &LlmConfig, proxy: Option<&str>, no_proxy: Option<&str>) -> Option<LangfuseConfig> {
     let cfg = llm_config.langfuse.as_ref()?;
     let secret_key = match &cfg.secret_key {
         Some(key) if !key.is_empty() => key.clone(),
@@ -250,6 +262,8 @@ fn resolve_langfuse_config(llm_config: &LlmConfig) -> Option<LangfuseConfig> {
         public_key: cfg.public_key.clone(),
         secret_key,
         host: cfg.base_url.clone(),
+        proxy: proxy.map(|s| s.to_string()),
+        no_proxy: no_proxy.map(|s| s.to_string()),
     })
 }
 
@@ -292,7 +306,7 @@ mod tests {
             max_content_chars: None,
         };
 
-        let backend = create_backend("test", &config).unwrap();
+        let backend = create_backend("test", &config, None, None).unwrap();
         assert_eq!(backend.name(), "anthropic");
     }
 
@@ -306,7 +320,7 @@ mod tests {
             max_content_chars: None,
         };
 
-        let backend = create_backend("test", &config).unwrap();
+        let backend = create_backend("test", &config, None, None).unwrap();
         assert_eq!(backend.name(), "openai_compat");
     }
 
@@ -320,7 +334,7 @@ mod tests {
             max_content_chars: None,
         };
 
-        let result = create_backend("test", &config);
+        let result = create_backend("test", &config, None, None);
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("base_url"));
@@ -336,7 +350,7 @@ mod tests {
             max_content_chars: None,
         };
 
-        let result = create_backend("test", &config);
+        let result = create_backend("test", &config, None, None);
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("unknown backend"));

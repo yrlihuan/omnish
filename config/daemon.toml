@@ -5,6 +5,12 @@
 #   Unix socket:  listen_addr = "~/.omnish/omnish.sock"   (default)
 #   TCP:          listen_addr = "tcp://0.0.0.0:9500"
 
+# Global proxy for outbound HTTP requests (LLM backends, tool subprocesses).
+# Supports http://, https://, socks5://. Not used for daemon-client communication.
+# proxy = "http://proxy.company.com:8080"
+# proxy = "socks5://127.0.0.1:1080"
+# no_proxy = "localhost,127.0.0.1,10.0.0.0/8"
+
 [llm]
 default = "claude"
 

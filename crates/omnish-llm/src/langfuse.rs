@@ -17,6 +17,8 @@ pub struct LangfuseConfig {
     pub public_key: String,
     pub secret_key: String,
     pub host: String,
+    pub proxy: Option<String>,
+    pub no_proxy: Option<String>,
 }
 
 /// Wrapper backend that sends traces to Langfuse after each LLM call.
@@ -28,7 +30,16 @@ pub struct LangfuseBackend {
 
 impl LangfuseBackend {
     pub fn wrap(inner: Arc<dyn LlmBackend>, config: LangfuseConfig) -> Arc<dyn LlmBackend> {
-        let client = Client::new();
+        let mut builder = Client::builder();
+        if let Some(ref proxy_url) = config.proxy {
+            if let Ok(mut proxy) = reqwest::Proxy::all(proxy_url) {
+                if let Some(ref no_proxy_str) = config.no_proxy {
+                    proxy = proxy.no_proxy(reqwest::NoProxy::from_string(no_proxy_str));
+                }
+                builder = builder.proxy(proxy);
+            }
+        }
+        let client = builder.build().unwrap_or_else(|_| Client::new());
         Arc::new(Self {
             inner,
             config,

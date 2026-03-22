@@ -123,7 +123,7 @@ async fn async_main() -> Result<i32> {
 
     // Create LLM backend if configured
     let llm_backend: Option<Arc<dyn omnish_llm::backend::LlmBackend>> =
-        match MultiBackend::new(&config.llm) {
+        match MultiBackend::new(&config.llm, config.proxy.as_deref(), config.no_proxy.as_deref()) {
             Ok(backend) => {
                 let backend: Arc<dyn omnish_llm::backend::LlmBackend> = Arc::new(backend);
                 tracing::info!("LLM backend initialized: {}", backend.name());
@@ -313,7 +313,12 @@ async fn async_main() -> Result<i32> {
         });
     }
 
-    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, tool_registry, chat_model_name, config.tools, Arc::clone(&server_sandbox_rules));
+    let server_opts = Arc::new(server::ServerOpts {
+        proxy: config.proxy,
+        no_proxy: config.no_proxy,
+        sandbox_rules: Arc::clone(&server_sandbox_rules),
+    });
+    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, tool_registry, chat_model_name, config.tools, server_opts);
 
     tracing::info!("starting omnishd at {}", socket_path);
 

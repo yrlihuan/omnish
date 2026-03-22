@@ -111,6 +111,13 @@ type SandboxRules = Arc<std::sync::RwLock<HashMap<String, Vec<crate::sandbox_rul
 
 type CancelFlags = Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>;
 
+/// Shared runtime options threaded through request handlers.
+pub struct ServerOpts {
+    pub proxy: Option<String>,
+    pub no_proxy: Option<String>,
+    pub sandbox_rules: SandboxRules,
+}
+
 pub struct DaemonServer {
     session_mgr: Arc<SessionManager>,
     llm_backend: Option<Arc<dyn LlmBackend>>,
@@ -125,7 +132,7 @@ pub struct DaemonServer {
     active_threads: ActiveThreads,
     chat_model_name: Option<String>,
     tool_params: HashMap<String, HashMap<String, serde_json::Value>>,
-    sandbox_rules: SandboxRules,
+    opts: Arc<ServerOpts>,
 }
 
 /// Shallow-merge params into a JSON object. Source keys overwrite target keys.
@@ -143,6 +150,8 @@ async fn execute_daemon_plugin(
     executable: &std::path::Path,
     tool_name: &str,
     input: &serde_json::Value,
+    proxy: Option<&str>,
+    no_proxy: Option<&str>,
 ) -> omnish_llm::tool::ToolResult {
     use tokio::process::Command;
     use tokio::io::AsyncWriteExt;
@@ -152,11 +161,21 @@ async fn execute_daemon_plugin(
         "input": input,
     });
 
-    let mut child = match Command::new(executable)
-        .stdin(std::process::Stdio::piped())
+    let mut cmd = Command::new(executable);
+    cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+        .stderr(std::process::Stdio::piped());
+    if let Some(proxy_url) = proxy {
+        cmd.env("HTTP_PROXY", proxy_url)
+            .env("HTTPS_PROXY", proxy_url)
+            .env("http_proxy", proxy_url)
+            .env("https_proxy", proxy_url);
+    }
+    if let Some(no_proxy_str) = no_proxy {
+        cmd.env("NO_PROXY", no_proxy_str)
+            .env("no_proxy", no_proxy_str);
+    }
+    let mut child = match cmd.spawn()
     {
         Ok(c) => c,
         Err(e) => {
@@ -236,7 +255,7 @@ impl DaemonServer {
         tool_registry: Arc<omnish_daemon::tool_registry::ToolRegistry>,
         chat_model_name: Option<String>,
         tool_params: HashMap<String, HashMap<String, serde_json::Value>>,
-        sandbox_rules: SandboxRules,
+        opts: Arc<ServerOpts>,
     ) -> Self {
         Self {
             session_mgr,
@@ -250,7 +269,7 @@ impl DaemonServer {
             active_threads: Arc::new(Mutex::new(HashMap::new())),
             chat_model_name,
             tool_params,
-            sandbox_rules,
+            opts,
         }
     }
 
@@ -274,7 +293,7 @@ impl DaemonServer {
         let active_threads = self.active_threads.clone();
         let chat_model_name = self.chat_model_name.clone();
         let tool_params = Arc::new(self.tool_params.clone());
-        let sandbox_rules = self.sandbox_rules.clone();
+        let opts = self.opts.clone();
 
         // Periodically sweep stale pending agent loop entries
         let pending_cleanup = self.pending_agent_loops.clone();
@@ -338,10 +357,10 @@ impl DaemonServer {
                     let active_threads = active_threads.clone();
                     let chat_model_name = chat_model_name.clone();
                     let tool_params = tool_params.clone();
-                    let sandbox_rules = sandbox_rules.clone();
+                    let opts = opts.clone();
                     let io_requests = io_requests_handler.clone();
                     let io_bytes = io_bytes_handler.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &tool_registry, &pending_loops, &cancel_flags, &active_threads, &chat_model_name, &tool_params, &sandbox_rules, &io_requests, &io_bytes, tx).await })
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &tool_registry, &pending_loops, &cancel_flags, &active_threads, &chat_model_name, &tool_params, &opts, &io_requests, &io_bytes, tx).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -364,7 +383,7 @@ async fn handle_message(
     active_threads: &ActiveThreads,
     chat_model_name: &Option<String>,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
-    sandbox_rules: &SandboxRules,
+    opts: &Arc<ServerOpts>,
     io_requests: &Arc<AtomicU64>,
     io_bytes: &Arc<AtomicU64>,
     tx: mpsc::Sender<Message>,
@@ -724,12 +743,12 @@ async fn handle_message(
             let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let req_id = cm.request_id.clone();
             cancel_flags.lock().await.insert(req_id.clone(), flag.clone());
-            handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, tool_registry, pending_loops, tool_params, sandbox_rules, tx, &flag).await;
+            handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, tool_registry, pending_loops, tool_params, opts, tx, &flag).await;
             cancel_flags.lock().await.remove(&req_id);
         }
         Message::ChatToolResult(tr) => {
             touch_thread(active_threads, &tr.thread_id, conv_mgr).await;
-            handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, tool_registry, pending_loops, cancel_flags, tool_params, sandbox_rules, tx).await;
+            handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, tool_registry, pending_loops, cancel_flags, tool_params, opts, tx).await;
         }
         Message::ChatInterrupt(ci) => {
             // Clean up pending agent loop and store partial results
@@ -849,7 +868,7 @@ async fn handle_chat_message(
     tool_registry: &Arc<omnish_daemon::tool_registry::ToolRegistry>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
-    sandbox_rules: &SandboxRules,
+    opts: &Arc<ServerOpts>,
     tx: mpsc::Sender<Message>,
     cancel_flag: &Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -928,7 +947,7 @@ async fn handle_chat_message(
         effective_backend,
     };
 
-    run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, pending_loops, tool_params, sandbox_rules, tx, cancel_flag).await;
+    run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, pending_loops, tool_params, opts, tx, cancel_flag).await;
 }
 
 /// Handle a ChatToolResult from the client — accumulate results, resume when all are received.
@@ -942,7 +961,7 @@ async fn handle_tool_result(
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     cancel_flags: &CancelFlags,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
-    sandbox_rules: &SandboxRules,
+    opts: &Arc<ServerOpts>,
     tx: mpsc::Sender<Message>,
 ) {
     let mut map = pending_loops.lock().await;
@@ -1048,7 +1067,7 @@ async fn handle_tool_result(
     let req_id = state.cm.request_id.clone();
     let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     cancel_flags.lock().await.insert(req_id.clone(), flag.clone());
-    run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, pending_loops, tool_params, sandbox_rules, tx, &flag).await;
+    run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, pending_loops, tool_params, opts, tx, &flag).await;
     cancel_flags.lock().await.remove(&req_id);
 }
 
@@ -1063,7 +1082,7 @@ async fn run_agent_loop(
     tool_registry: &Arc<omnish_daemon::tool_registry::ToolRegistry>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
-    sandbox_rules: &SandboxRules,
+    opts: &Arc<ServerOpts>,
     tx: mpsc::Sender<Message>,
     cancel_flag: &Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -1173,7 +1192,7 @@ async fn run_agent_loop(
                                 merge_tool_params(&mut merged_input, config_params);
                             }
                             let matched_rule = {
-                                let rules = sandbox_rules.read().unwrap();
+                                let rules = opts.sandbox_rules.read().unwrap();
                                 crate::sandbox_rules::check_bypass(
                                     rules.get(&tc.name).map(|v| v.as_slice()).unwrap_or(&[]),
                                     &tc.input,
@@ -1208,7 +1227,7 @@ async fn run_agent_loop(
 
                             let mut result = if tool_registry.plugin_type(&tc.name).is_some() {
                                 if let Some(exe) = plugin_mgr.plugin_executable(&tc.name) {
-                                    execute_daemon_plugin(&exe, &tc.name, &merged_input).await
+                                    execute_daemon_plugin(&exe, &tc.name, &merged_input, opts.proxy.as_deref(), opts.no_proxy.as_deref()).await
                                 } else {
                                     omnish_llm::tool::ToolResult {
                                         tool_use_id: String::new(),
