@@ -494,10 +494,12 @@ test_10() {
     send_keys "omnish_debug" 0.3
 
     # Poll for ghost text to appear (debounce ~500ms + round trip)
+    # Wait a bit first for the completion request to be sent
+    sleep 0.5
     local ghost_appeared=false
     local content
-    for attempt in $(seq 1 15); do
-        sleep 1
+    for attempt in $(seq 1 20); do
+        sleep 0.5
         content=$(capture_pane -5)
         local last
         last=$(last_nonempty_line "$content")
@@ -511,7 +513,17 @@ test_10() {
     done
 
     if ! $ghost_appeared; then
-        show_capture "No ghost text" "$content" 5
+        show_capture "No ghost text" "$content" 10
+        # Debug: show the last line content
+        local debug_last
+        debug_last=$(last_nonempty_line "$content")
+        echo -e "  ${YELLOW}Debug: last line was: '${debug_last}'${NC}"
+        # Debug: check if daemon is responding
+        local pane_all
+        pane_all=$(capture_pane -50)
+        if echo "$pane_all" | grep -qi "omnish_debug"; then
+            echo -e "  ${YELLOW}Debug: 'omnish_debug' found somewhere in pane${NC}"
+        fi
         assert_fail "Ghost text did not appear for omnish_debug"
         send_special C-c 0.5
         return 1
