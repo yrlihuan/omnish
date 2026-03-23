@@ -30,7 +30,7 @@ while IFS= read -r line; do
     is_error=$(echo "$line" | jq -r '.is_error // false')
 
     if [ "$is_error" = "true" ]; then
-        jq -n --arg o "$output" '{"summary": $o, "compact": [$o], "full": [$o]}'
+        jq -cn --arg o "$output" '{"summary": $o, "compact": [$o], "full": [$o]}'
         continue
     fi
 
@@ -74,7 +74,7 @@ while IFS= read -r line; do
     count=${#titles[@]}
 
     if [ "$count" -eq 0 ]; then
-        jq -n --arg o "$cleaned" '{"summary": $o, "compact": [$o], "full": [$o]}'
+        jq -cn --arg o "$cleaned" '{"summary": $o, "compact": [$o], "full": [$o]}'
         continue
     fi
 
@@ -103,7 +103,7 @@ while IFS= read -r line; do
     fi
 
     # Output JSON
-    jq -n --jsonargs \
+    jq -cn --jsonargs \
         '{"summary": null, "compact": $ARGS.positional[0], "full": $ARGS.positional[1]}' \
         "$(printf '%s\n' "${compact_lines[@]}" | jq -R . | jq -s .)" \
         "$(printf '%s\n' "${full_lines[@]}" | jq -R . | jq -s .)"
