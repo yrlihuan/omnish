@@ -197,10 +197,13 @@ last_nonempty_line() {
 
 # is_chat_prompt <content>
 #   Returns 0 if the last non-empty line looks like a chat prompt "> ".
+#   Matches both plain "> " and "> " with hint text (e.g., "> type to start...")
 is_chat_prompt() {
     local last
     last=$(last_nonempty_line "$1")
-    echo "$last" | grep -qE '^\s*((\[36m)?> (\[0m)?|> )$'
+    # Match "> " at start of line, optionally with ANSI color codes
+    # Allow any text after "> " (e.g., hint text)
+    echo "$last" | grep -qE '^\s*(\[36m)?> (\[0m)?'
 }
 
 # is_shell_prompt <content>

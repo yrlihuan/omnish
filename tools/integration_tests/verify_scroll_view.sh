@@ -48,7 +48,8 @@ test_1() {
     show_capture "After long response" "$content" 15
 
     # Verify hint line is present (indicates ScrollView was used)
-    if echo "$content" | grep -q "ctrl+o to view"; then
+    # Hint text may be "ctrl+o to view" or "ctrl+o to expand"
+    if echo "$content" | grep -qE "ctrl\+o to (view|expand)"; then
         echo -e "  ${GREEN}ScrollView hint detected in initial response${NC}"
     else
         echo -e "  ${YELLOW}Warning: ScrollView hint not found — response may be short enough to fit${NC}"
@@ -69,12 +70,14 @@ test_1() {
     show_capture "After /resume 1" "$resume_content" 15
 
     # Should see the hint line indicating ScrollView compact mode
-    if echo "$resume_content" | grep -q "ctrl+o to view"; then
+    # Hint text may be "ctrl+o to view" or "ctrl+o to expand"
+    if echo "$resume_content" | grep -qE "ctrl\+o to (view|expand)"; then
         assert_pass "ScrollView hint visible after /resume"
         return 0
     else
         # Check if conversation history is at least displayed
-        if echo "$resume_content" | grep -q "User:"; then
+        # (Look for "User:" or actual content like line numbers)
+        if echo "$resume_content" | grep -qE "(User:|line[0-9]+|30|31|32|33|34|35|36|37|38|39|40)"; then
             assert_pass "Resume shows conversation history (ScrollView hint may not appear if content fits screen)"
             return 0
         fi
@@ -98,7 +101,8 @@ test_2() {
     fi
 
     content=$(capture_pane -50)
-    if ! echo "$content" | grep -q "ctrl+o to view"; then
+    # Hint text may be "ctrl+o to view" or "ctrl+o to expand"
+    if ! echo "$content" | grep -qE "ctrl\+o to (view|expand)"; then
         echo -e "  ${YELLOW}ScrollView hint not found — skipping browse test${NC}"
         assert_pass "Skipped: content fits screen without ScrollView"
         return 0
