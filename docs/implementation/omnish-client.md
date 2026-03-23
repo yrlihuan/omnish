@@ -681,9 +681,9 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 - `last_thread_id` 在所有聊天退出路径上持久保存（commit 81c84f1）
 - 单次前缀在250ms超时后进入新聊天
 
-**developer_mode 防误触 (commit 6d2794a, #393):**
-- 在 `[shell]` 配置中启用 `developer_mode = true` 后，当命令行已有内容时输入 `:` 或 `::` 直接转发给 shell，不进入聊天模式
-- 防止开发时在管道或参数中误触发聊天模式
+**developer_mode 聊天触发策略 (commit 6d2794a, #393):**
+- 默认（`developer_mode = false`）：命令行已有内容时 `:` 或 `::` 直接转发给 shell，仅在空命令行触发聊天
+- 启用 `developer_mode = true` 后：即使命令行有内容也允许进入聊天模式
 - Readline 报告（`RL;content;point`）实时刷新命令行内容状态，Ctrl+U/Ctrl+W 清空后恢复正常拦截
 
 **线程绑定与多会话保护 (commit 7ab2968, 43004b3, f820330, #357, #367):**
@@ -1322,7 +1322,7 @@ cargo build --release
    - 等待250ms后进入新聊天
    - 显示`> `提示符等待输入（使用LineEditor）
    - 双前缀（如`::`）快速恢复上次使用的线程（`last_thread_id`）；若无记录则恢复最新线程
-   - `developer_mode = true` 时，命令行有内容则 `:` 直接转发给 shell 不触发聊天
+   - 默认模式下命令行有内容时 `:` 直接转发给 shell；`developer_mode = true` 时允许有内容也触发聊天
 3. **多轮对话**:
    - 直接输入问题即可开始对话（自动懒创建线程）
    - 支持多行输入（Shift+Enter / Ctrl+J）
@@ -1620,8 +1620,8 @@ auto_update = true
 **系统提示平台/OS信息来自客户端 (commit d83b63b, #402):**
 - `system-reminder` 中的平台和 OS 版本信息改由客户端 Probe（`PlatformProbe`、`OsVersionProbe`）上报到 `session_attrs`，守护进程从 `session_attrs` 读取，不再使用守护进程自身运行环境信息
 
-**developer_mode 防误触 (commit 6d2794a, #393):**
-- `[shell] developer_mode = true` 时，命令行有内容时输入 `:` 或 `::` 直接转发 shell 不进入聊天模式
+**developer_mode 聊天触发策略 (commit 6d2794a, #393):**
+- 默认仅空命令行触发聊天；`developer_mode = true` 允许有内容时也触发
 
 **`/debug commands` 和 `/debug command` 命令:**
 - `/debug commands [N]` — 显示最近 N 条 shell 命令历史（commit 27d19a2）

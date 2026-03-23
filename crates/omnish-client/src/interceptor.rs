@@ -268,7 +268,7 @@ pub struct InputInterceptor {
     guard: Box<dyn InterceptGuard>,
     /// Active ESC sequence filter (only while in chat/buffering mode).
     esc_filter: Option<EscSeqFilter>,
-    /// When true, prevents : and :: from triggering chat mode when command line already has content
+    /// When false (default), : and :: only trigger chat on empty command line; when true, allows chat even with existing content
     developer_mode: bool,
     /// Tracks whether command line already has content (based on forwarded input since last shell output)
     command_line_has_content: bool,
@@ -467,7 +467,7 @@ impl InputInterceptor {
             if self.buffer.iter().copied().collect::<Vec<_>>() == self.prefix[..self.buffer.len()] {
                 // On first prefix byte, check guard
                 if self.buffer.len() == 1 && (!self.guard.should_intercept()
-                    || (self.developer_mode && self.command_line_has_content))
+                    || (!self.developer_mode && self.command_line_has_content))
                 {
                     let flushed: Vec<u8> = self.buffer.iter().copied().collect();
                     self.buffer.clear();

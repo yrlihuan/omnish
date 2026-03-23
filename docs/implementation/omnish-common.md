@@ -35,7 +35,7 @@ Shell相关配置，包含：
 - `resume_prefix`: 恢复上次聊天线程的前缀（默认`::`）
 - `intercept_gap_ms`: 命令拦截间隔毫秒数（默认：1000ms）
 - `ghost_timeout_ms`: ghost-text超时毫秒数（默认：10000ms）
-- `developer_mode`: 开发者模式，启用后当命令行已有内容时 `:` 和 `::` 不触发聊天模式，字符直接传递给 shell（默认：`false`）
+- `developer_mode`: 开发者模式。默认关闭时命令行有内容则 `:` 和 `::` 不触发聊天模式；启用后即使有内容也允许进入聊天（默认：`false`）
 
 ### `LlmConfig`
 LLM配置结构，包含：
