@@ -393,18 +393,31 @@ impl ChatSession {
                 continue;
             }
 
-            // /test picker [N] — hidden test command (not in /help)
-            if trimmed == "/test picker" || trimmed.starts_with("/test picker ") {
-                let idx: usize = trimmed.strip_prefix("/test picker ")
-                    .and_then(|s| s.trim().parse().ok())
-                    .unwrap_or(0);
-                self.handle_test_picker(idx);
-                continue;
-            }
-
-            // /test multi_level_picker — hidden test: multi-level option menu
-            if trimmed == "/test multi_level_picker" {
-                self.handle_test_multi_level_picker();
+            // /test — hidden test commands
+            if trimmed == "/test" || trimmed.starts_with("/test ") {
+                let arg = trimmed.strip_prefix("/test").unwrap().trim();
+                match arg {
+                    "" => {
+                        write_stdout("\x1b[2;90mAvailable /test commands:\x1b[0m\r\n");
+                        write_stdout("\x1b[2;90m  /test picker [N]          — flat picker (N = initial index)\x1b[0m\r\n");
+                        write_stdout("\x1b[2;90m  /test multi_level_picker  — cascading picker (3 levels)\x1b[0m\r\n");
+                        write_stdout("\x1b[2;90m  /test menu                — multi-level menu widget\x1b[0m\r\n");
+                    }
+                    "multi_level_picker" => self.handle_test_multi_level_picker(),
+                    "menu" => self.handle_test_menu(),
+                    other => {
+                        if other == "picker" || other.starts_with("picker ") {
+                            let idx: usize = other.strip_prefix("picker")
+                                .unwrap().trim().parse().unwrap_or(0);
+                            self.handle_test_picker(idx);
+                        } else {
+                            write_stdout(&format!(
+                                "\x1b[2;90mUnknown test: {}. Run /test for a list.\x1b[0m\r\n",
+                                other
+                            ));
+                        }
+                    }
+                }
                 continue;
             }
 
@@ -1554,6 +1567,92 @@ impl ChatSession {
             None => "Cancelled".to_string(),
         };
         write_stdout(&format!("\x1b[2;90m{}\x1b[0m\r\n", msg));
+    }
+
+    fn handle_test_menu(&self) {
+        use widgets::menu::{MenuItem, MenuResult};
+
+        let mut items = vec![
+            MenuItem::Submenu {
+                label: "LLM".to_string(),
+                children: vec![
+                    MenuItem::Select {
+                        label: "Default backend".to_string(),
+                        options: vec![
+                            "claude".to_string(),
+                            "openai".to_string(),
+                            "local".to_string(),
+                        ],
+                        selected: 0,
+                    },
+                    MenuItem::Toggle {
+                        label: "Streaming".to_string(),
+                        value: true,
+                    },
+                    MenuItem::TextInput {
+                        label: "API key".to_string(),
+                        value: "sk-***".to_string(),
+                    },
+                    MenuItem::TextInput {
+                        label: "Proxy URL".to_string(),
+                        value: String::new(),
+                    },
+                ],
+            },
+            MenuItem::Submenu {
+                label: "Shell".to_string(),
+                children: vec![
+                    MenuItem::Toggle {
+                        label: "Developer mode".to_string(),
+                        value: false,
+                    },
+                    MenuItem::Toggle {
+                        label: "Completion enabled".to_string(),
+                        value: true,
+                    },
+                    MenuItem::Select {
+                        label: "Theme".to_string(),
+                        options: vec![
+                            "default".to_string(),
+                            "minimal".to_string(),
+                            "compact".to_string(),
+                        ],
+                        selected: 0,
+                    },
+                ],
+            },
+            MenuItem::Toggle {
+                label: "Telemetry".to_string(),
+                value: false,
+            },
+            MenuItem::TextInput {
+                label: "Username".to_string(),
+                value: "user".to_string(),
+            },
+        ];
+
+        let result = widgets::menu::run_menu("Config", &mut items);
+        match result {
+            MenuResult::Done(changes) => {
+                if changes.is_empty() {
+                    write_stdout("\x1b[2;90mNo changes made.\x1b[0m\r\n");
+                } else {
+                    write_stdout(&format!(
+                        "\x1b[2;90mChanges ({}):\x1b[0m\r\n",
+                        changes.len()
+                    ));
+                    for c in &changes {
+                        write_stdout(&format!(
+                            "\x1b[2;90m  {} = {}\x1b[0m\r\n",
+                            c.path, c.value
+                        ));
+                    }
+                }
+            }
+            MenuResult::Cancelled => {
+                write_stdout("\x1b[2;90mCancelled.\x1b[0m\r\n");
+            }
+        }
     }
 
     fn handle_test_multi_level_picker(&self) {
