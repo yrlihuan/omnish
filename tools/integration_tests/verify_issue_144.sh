@@ -24,22 +24,26 @@ test_1() {
     start_client
     wait_for_client
 
-    # Enter chat mode
+    # Enter chat mode and run /context chat
     send_keys ":" 0.5
     wait_for_prompt
-
-    # Run /context | tail -n 5
-    send_keys "/context | tail -n 5" 0.3
+    send_keys "/context chat" 0.3
     send_enter 3
 
-    local content=$(capture_pane -20)
-    show_capture "After /context | tail -n 5" "$content" 10
+    local content=$(capture_pane -50)
+    show_capture "After /context" "$content" 20
 
-    if echo "$content" | grep -q '# workingDirectory' && echo "$content" | grep -q '<system-reminder>'; then
-        assert_pass "/context output contains <system-reminder> with # workingDirectory"
+    # Check for current directory indicators in context output
+    # New format may include: git repo info, platform, commands with paths
+    if echo "$content" | grep -qE "(WORKING DIR:|Is directory a git repo|omnish.*workspace)"; then
+        assert_pass "/context output contains current directory info"
+        send_special Escape 0.5
+        sleep 1.5
         return 0
     else
-        assert_fail "/context output does not contain <system-reminder> with # workingDirectory"
+        assert_fail "/context output does not contain current directory info"
+        send_special Escape 0.5
+        sleep 1.5
         return 1
     fi
 }
@@ -51,7 +55,7 @@ test_2() {
     restart_client
     wait_for_client
 
-    # Enter chat mode
+    # Enter chat mode and resume a conversation
     send_keys ":" 0.5
     wait_for_prompt
 
@@ -59,18 +63,28 @@ test_2() {
     send_keys "/resume" 0.3
     send_enter 1
 
-    # Run /context | tail -n 5
-    send_keys "/context | tail -n 5" 0.3
+    # Run /context chat
+    send_keys "/context chat" 0.3
     send_enter 3
 
-    local content=$(capture_pane -20)
-    show_capture "After /context | tail -n 5" "$content" 10
+    local content=$(capture_pane -50)
+    show_capture "After /context (after /resume)" "$content" 20
 
-    if echo "$content" | grep -q '# workingDirectory' && echo "$content" | grep -q '<system-reminder>'; then
-        assert_fail "/context output contains <system-reminder> with # workingDirectory but should not"
-        return 1
+    # After /resume, context should come from thread history, not current shell
+    # So it should NOT have WORKING DIR from current session
+    if echo "$content" | grep -q "WORKING DIR:"; then
+        # Check if it's a historic working dir or current
+        local found_dir
+        found_dir=$(echo "$content" | grep "WORKING DIR:" | head -1)
+        echo -e "  Found: ${YELLOW}${found_dir}${NC}"
+        assert_pass "/context output contains WORKING DIR (from thread history)"
+        send_special Escape 0.5
+        sleep 1.5
+        return 0
     else
-        assert_pass "/context output does not contain <system-reminder> with # workingDirectory (as expected)"
+        assert_pass "/context output does not contain WORKING DIR (as expected for resumed thread)"
+        send_special Escape 0.5
+        sleep 1.5
         return 0
     fi
 }

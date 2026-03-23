@@ -268,6 +268,54 @@ show_capture() {
     echo "$content" | tail -"$lines" | sed 's/^/    /'
 }
 
+# ── Context helpers ──────────────────────────────────────────────────────
+
+# dump_context_to_file [type="chat"] [timeout=10]
+#   Runs /context [type] in chat mode, captures output to a temp file.
+#   Must be called when already in chat mode (after send_keys ":").
+#   Usage: local ctx_file; ctx_file=$(dump_context_to_file); content=$(cat "$ctx_file")
+dump_context_to_file() {
+    local ctx_type="${1:-chat}"
+    local timeout="${2:-10}"
+    local out_file="/tmp/omnish_ctx_${ctx_type}_$$.txt"
+
+    # Clear any existing output file
+    rm -f "$out_file"
+
+    # Run /context command in chat mode
+    send_keys "/context $ctx_type" 0.3
+    send_enter 3
+
+    # Wait for output to appear (look for system-reminder end tag or WORKING DIR)
+    local waited=0
+    local content=""
+    while [[ $waited -lt $timeout ]]; do
+        content=$(capture_pane -50)
+        # Check if context output is complete (has WORKING DIR or system-reminder)
+        if echo "$content" | grep -q "WORKING DIR:" || echo "$content" | grep -q '</system-reminder>'; then
+            break
+        fi
+        sleep 0.5
+        waited=$((waited + 1))
+    done
+
+    # Save captured content to file
+    echo "$content" > "$out_file"
+
+    # Exit chat mode (auto-exits after /context command)
+    send_special Escape 0.3
+
+    echo "$out_file"
+}
+
+# get_working_dir_from_context <context_content>
+#   Extracts WORKING DIR value from context output.
+#   Usage: local cwd; cwd=$(get_working_dir_from_context "$ctx_content")
+get_working_dir_from_context() {
+    local content="$1"
+    echo "$content" | grep "WORKING DIR:" | sed 's/.*WORKING DIR: *//' | tr -d '[:space:]' | head -1
+}
+
 # ── Thread cleanup ───────────────────────────────────────────────────────
 # Uses a separate tmux window ("cleanup") with its own omnish-client
 # so thread operations don't interfere with the test pane.
