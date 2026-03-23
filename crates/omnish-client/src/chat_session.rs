@@ -402,6 +402,12 @@ impl ChatSession {
                 continue;
             }
 
+            // /test multi_level_picker — hidden test: multi-level option menu
+            if trimmed == "/test multi_level_picker" {
+                self.handle_test_multi_level_picker();
+                continue;
+            }
+
             // /context
             if trimmed == "/context" || trimmed.starts_with("/context ") {
                 let (without_redirect, redirect) = command::parse_redirect_pub(trimmed);
@@ -1548,6 +1554,58 @@ impl ChatSession {
             None => "Cancelled".to_string(),
         };
         write_stdout(&format!("\x1b[2;90m{}\x1b[0m\r\n", msg));
+    }
+
+    fn handle_test_multi_level_picker(&self) {
+        // Level 1: category selection
+        let categories = &["Fruits", "Vegetables", "Drinks"];
+        let cat_idx = match widgets::picker::pick_one("Select category:", categories) {
+            Some(idx) => idx,
+            None => {
+                write_stdout("\x1b[2;90mCancelled at level 1\x1b[0m\r\n");
+                return;
+            }
+        };
+        write_stdout(&format!(
+            "\x1b[2;90mCategory: {}\x1b[0m\r\n",
+            categories[cat_idx]
+        ));
+
+        // Level 2: item selection within category
+        let items: &[&[&str]] = &[
+            &["Apple", "Banana", "Cherry", "Durian"],
+            &["Carrot", "Broccoli", "Spinach"],
+            &["Water", "Coffee", "Tea", "Juice", "Milk"],
+        ];
+        let title = format!("Select {} item:", categories[cat_idx].to_lowercase());
+        let item_idx = match widgets::picker::pick_one(&title, items[cat_idx]) {
+            Some(idx) => idx,
+            None => {
+                write_stdout("\x1b[2;90mCancelled at level 2\x1b[0m\r\n");
+                return;
+            }
+        };
+        let selected = items[cat_idx][item_idx];
+        write_stdout(&format!(
+            "\x1b[2;90mItem: {}\x1b[0m\r\n",
+            selected
+        ));
+
+        // Level 3: action selection
+        let actions = &["[A]dd to cart", "[V]iew details", "[C]ancel"];
+        let action_idx = match widgets::picker::pick_one("Action:", actions) {
+            Some(idx) => idx,
+            None => {
+                write_stdout("\x1b[2;90mCancelled at level 3\x1b[0m\r\n");
+                return;
+            }
+        };
+
+        let result = format!(
+            "Result: {} > {} > {}",
+            categories[cat_idx], selected, actions[action_idx]
+        );
+        write_stdout(&format!("\x1b[2;90m{}\x1b[0m\r\n", result));
     }
 
     // ── Input handling ───────────────────────────────────────────────────

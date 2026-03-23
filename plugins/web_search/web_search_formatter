@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# web_search_formatter - External formatter for web_search plugin.
+#
+# Protocol: newline-delimited JSON on stdin/stdout (long-running).
+# Input:  {"formatter":"...","tool_name":"...","params":{...},"output":"...","is_error":bool}
+# Output: {"summary":"...","compact":[...],"full":[...]}
+#
+# Strips HTML tags from search result descriptions.
+# Compact: first 5 results as "[Title](URL)", then (+N more results).
+# Full:    first 5 results as "[Title](URL)\n  Description", then (+N more results).
+
+set -uo pipefail
+
+MAX_SHOW=5
+
+strip_html() {
+    sed -e 's/<[^>]*>//g' \
+        -e 's/&amp;/\&/g' \
+        -e 's/&lt;/</g' \
+        -e 's/&gt;/>/g' \
+        -e 's/&quot;/"/g' \
+        -e 's/&#39;/'"'"'/g' \
+        -e 's/&apos;/'"'"'/g' \
+        -e 's/&nbsp;/ /g' \
+        -e 's/  */ /g'
+}
+
+while IFS= read -r line; do
+    output=$(echo "$line" | jq -r '.output // ""')
+    is_error=$(echo "$line" | jq -r '.is_error // false')
+
+    if [ "$is_error" = "true" ]; then
+        jq -n --arg o "$output" '{"summary": $o, "compact": [$o], "full": [$o]}'
+        continue
+    fi
+
+    # Clean the output: strip HTML from descriptions
+    cleaned=$(echo "$output" | strip_html)
+
+    # Parse results into parallel arrays: title_link[i] and description[i]
+    # Input format: "N. [Title](URL)\n   Description\n\n..."
+    titles=()
+    descs=()
+    current_desc=""
+    current_title=""
+
+    while IFS= read -r rline; do
+        if echo "$rline" | grep -qE '^\s*[0-9]+\.\s+\['; then
+            # Save previous result
+            if [ -n "$current_title" ]; then
+                titles+=("$current_title")
+                descs+=("$(echo "$current_desc" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')")
+            fi
+            # Extract [Title](URL) part
+            current_title=$(echo "$rline" | sed 's/^\s*[0-9]*\.\s*//')
+            current_desc=""
+        elif [ -n "$current_title" ]; then
+            # Continuation line = description
+            if [ -n "$rline" ]; then
+                if [ -n "$current_desc" ]; then
+                    current_desc="$current_desc $rline"
+                else
+                    current_desc="$rline"
+                fi
+            fi
+        fi
+    done <<< "$cleaned"
+    # Save last result
+    if [ -n "$current_title" ]; then
+        titles+=("$current_title")
+        descs+=("$(echo "$current_desc" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')")
+    fi
+
+    count=${#titles[@]}
+
+    if [ "$count" -eq 0 ]; then
+        jq -n --arg o "$cleaned" '{"summary": $o, "compact": [$o], "full": [$o]}'
+        continue
+    fi
+
+    # Build compact: "N. [Title](URL)" for first MAX_SHOW
+    compact_lines=()
+    show=$((count < MAX_SHOW ? count : MAX_SHOW))
+    for ((i = 0; i < show; i++)); do
+        compact_lines+=("$((i + 1)). ${titles[$i]}")
+    done
+    if [ "$count" -gt "$MAX_SHOW" ]; then
+        more=$((count - MAX_SHOW))
+        compact_lines+=("(+${more} more results)")
+    fi
+
+    # Build full: "N. [Title](URL)\n   Description" for first MAX_SHOW
+    full_lines=()
+    for ((i = 0; i < show; i++)); do
+        full_lines+=("$((i + 1)). ${titles[$i]}")
+        if [ -n "${descs[$i]}" ]; then
+            full_lines+=("   ${descs[$i]}")
+        fi
+    done
+    if [ "$count" -gt "$MAX_SHOW" ]; then
+        more=$((count - MAX_SHOW))
+        full_lines+=("(+${more} more results)")
+    fi
+
+    # Output JSON
+    jq -n --jsonargs \
+        '{"summary": null, "compact": $ARGS.positional[0], "full": $ARGS.positional[1]}' \
+        "$(printf '%s\n' "${compact_lines[@]}" | jq -R . | jq -s .)" \
+        "$(printf '%s\n' "${full_lines[@]}" | jq -R . | jq -s .)"
+done

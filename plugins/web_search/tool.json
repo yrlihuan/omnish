@@ -1,5 +1,6 @@
 {
   "plugin_type": "daemon_tool",
+  "formatter_binary": "web_search_formatter",
   "tools": [
     {
       "name": "web_search",
@@ -37,7 +38,7 @@
       "status_template": "搜索: {query}",
       "sandboxed": false,
       "display_name": "Web Search",
-      "formatter": "default"
+      "formatter": "web_search"
     }
   ]
 }
