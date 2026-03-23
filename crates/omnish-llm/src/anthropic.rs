@@ -109,17 +109,35 @@ impl LlmBackend for AnthropicBackend {
         let body = serde_json::Value::Object(body_map);
         crate::message_log::log_request(&body, req.use_case);
 
-        // Retry loop for 429 (rate limit) and 529 (overloaded) errors
+        // Retry loop for connection errors, 429 (rate limit) and 529 (overloaded)
         let mut last_error = None;
         for attempt in 0..=MAX_RETRIES {
-            let resp = client
+            let resp = match client
                 .post(format!("{}/v1/messages", self.base_url))
                 .header("x-api-key", &self.api_key)
                 .header("anthropic-version", "2024-04-04")
                 .header("content-type", "application/json")
                 .json(&body)
                 .send()
-                .await?;
+                .await
+            {
+                Ok(r) => r,
+                Err(e) if e.is_connect() || e.is_request() => {
+                    let backoff = DEFAULT_BACKOFF * 2u32.pow(attempt);
+                    let backoff = backoff.min(MAX_BACKOFF);
+                    tracing::warn!(
+                        "Anthropic API connection error (attempt {}/{}): {} — retrying in {:.1}s",
+                        attempt + 1, MAX_RETRIES + 1, e, backoff.as_secs_f64()
+                    );
+                    last_error = Some(anyhow::anyhow!("Anthropic API connection error: {}", e));
+                    if attempt < MAX_RETRIES {
+                        tokio::time::sleep(backoff).await;
+                        continue;
+                    }
+                    return Err(last_error.unwrap());
+                }
+                Err(e) => return Err(e.into()),
+            };
 
             let status = resp.status();
             let status_code = status.as_u16();

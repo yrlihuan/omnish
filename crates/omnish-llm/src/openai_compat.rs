@@ -207,16 +207,34 @@ impl LlmBackend for OpenAiCompatBackend {
             Some(Duration::from_secs_f64(secs.min(MAX_BACKOFF.as_secs_f64())))
         }
 
-        // Retry loop for 429 (rate limit) errors
+        // Retry loop for connection errors and 429 (rate limit) errors
         let mut last_error = None;
         for attempt in 0..=MAX_RETRIES {
-            let resp = client
+            let resp = match client
                 .post(format!("{}/chat/completions", self.base_url))
                 .header("Authorization", format!("Bearer {}", self.api_key))
                 .header("Content-Type", "application/json")
                 .json(&body)
                 .send()
-                .await?;
+                .await
+            {
+                Ok(r) => r,
+                Err(e) if e.is_connect() || e.is_request() => {
+                    let backoff = DEFAULT_BACKOFF * 2u32.pow(attempt);
+                    let backoff = backoff.min(MAX_BACKOFF);
+                    tracing::warn!(
+                        "OpenAI API connection error (attempt {}/{}): {} — retrying in {:.1}s",
+                        attempt + 1, MAX_RETRIES + 1, e, backoff.as_secs_f64()
+                    );
+                    last_error = Some(anyhow::anyhow!("OpenAI API connection error: {}", e));
+                    if attempt < MAX_RETRIES {
+                        tokio::time::sleep(backoff).await;
+                        continue;
+                    }
+                    return Err(last_error.unwrap());
+                }
+                Err(e) => return Err(e.into()),
+            };
 
             let status = resp.status();
             let status_code = status.as_u16();

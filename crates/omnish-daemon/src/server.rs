@@ -44,6 +44,8 @@ struct AgentLoopState {
     command_query_tool: omnish_daemon::tools::command_query::CommandQueryTool,
     /// The resolved backend for this agent loop (preserves per-thread model override).
     effective_backend: Arc<dyn LlmBackend>,
+    /// Number of LLM connection retries used in this agent loop.
+    llm_retries: u32,
 }
 
 /// Tracks which session is actively using each thread.
@@ -954,6 +956,7 @@ async fn handle_chat_message(
         start: std::time::Instant::now(),
         command_query_tool,
         effective_backend,
+        llm_retries: 0,
     };
 
     run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, tool_params, opts, tx, cancel_flag).await;
@@ -1116,6 +1119,7 @@ async fn run_agent_loop(
 
         match backend.complete(&state.llm_req).await {
             Ok(response) => {
+                state.llm_retries = 0;
                 if response.stop_reason == StopReason::ToolUse {
                     let tool_calls = response.tool_calls();
                     if tool_calls.is_empty() {
@@ -1371,12 +1375,52 @@ async fn run_agent_loop(
                 return;
             }
             Err(e) => {
+                let err_str = e.to_string();
+                let is_connection = err_str.contains("connection")
+                    || err_str.contains("tls")
+                    || err_str.contains("close_notify")
+                    || err_str.contains("UnexpectedEof")
+                    || err_str.contains("reset by peer")
+                    || err_str.contains("broken pipe");
+
+                if is_connection && state.llm_retries < 2 {
+                    state.llm_retries += 1;
+                    let backoff = std::time::Duration::from_secs(5 * state.llm_retries as u64);
+                    tracing::warn!(
+                        "LLM connection error (retry {}/2, thread={}): {} — retrying in {}s",
+                        state.llm_retries, state.cm.thread_id, err_str, backoff.as_secs()
+                    );
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+
                 tracing::error!("Chat LLM failed: {}", e);
-                let _ = tx.send(Message::ChatResponse(ChatResponse {
-                    request_id: state.cm.request_id.clone(),
-                    thread_id: state.cm.thread_id.clone(),
-                    content: format!("Error: {}", e),
-                })).await;
+
+                // Save progress so the conversation can be continued
+                let has_progress = state.llm_req.extra_messages.len() > state.prior_len + 1;
+                if has_progress {
+                    let error_note = "Connection to the AI service was lost. Your previous tool results have been saved — you can continue by sending another message.";
+                    state.llm_req.extra_messages.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": error_note,
+                    }));
+                    let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
+                    to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
+                    conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+
+                    let _ = tx.send(Message::ChatResponse(ChatResponse {
+                        request_id: state.cm.request_id.clone(),
+                        thread_id: state.cm.thread_id.clone(),
+                        content: error_note.to_string(),
+                    })).await;
+                } else {
+                    let user_msg = format!("Failed to reach the AI service: {}. Please try again.", err_str);
+                    let _ = tx.send(Message::ChatResponse(ChatResponse {
+                        request_id: state.cm.request_id.clone(),
+                        thread_id: state.cm.thread_id.clone(),
+                        content: user_msg,
+                    })).await;
+                }
                 return;
             }
         }
