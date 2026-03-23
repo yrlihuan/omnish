@@ -15,7 +15,7 @@ omnish-client 是终端用户直接交互的客户端程序，作为PTY代理运
 7. **会话管理**: 跟踪shell会话状态和命令历史
 8. **命令跟踪**: 通过OSC 133协议实时跟踪命令执行、CWD（当前工作目录）和退出码
 9. **Agent工具使用**: 支持工具调用的Agent循环，实时显示工具执行状态，客户端本地执行工具
-10. **客户端插件系统**: 通过omnish-plugin子进程执行客户端侧工具，支持Landlock沙箱
+10. **客户端插件系统**: 通过omnish-plugin子进程执行客户端侧工具，支持Landlock沙箱；`/lock on/off` 命令控制整个 shell 的沙箱状态；可配置沙箱放行规则绕过特定工具的沙箱
 11. **自更新**: `/update`命令透明自重启，支持检测磁盘二进制变更后自动更新
 12. **粘贴支持**: 括号粘贴模式、快速粘贴检测、多行粘贴折叠显示
 13. **Markdown渲染**: LLM响应使用pulldown-cmark解析并渲染为ANSI终端样式
@@ -423,7 +423,7 @@ omnish-client 提供了一个交互式选择器组件，用于在终端中进行
 
 #### 滚动视口
 - 超过10项时启用滚动视口（`MAX_VISIBLE = 10`）
-- 滚动时标题行显示 `(N more above)` 或 `(N more below)` 提示
+- 滚动提示 `(▼ N more)` 显示在 hint 行（"ESC cancel" 之后），分隔线始终保持全宽（commit f333e28，#371）
 - 光标移出视口时自动滚动
 - `scroll_offset` 溢出修复（commit 81d0a6b）：`max_scroll` 使用 `items.len().saturating_sub(vis)` 计算，防止当 `initial >= items.len()` 时 `scroll_offset` 超出合法范围
 
@@ -456,6 +456,21 @@ Title text
 ↑↓ move  Space select  Enter confirm  ESC cancel
 ```
 
+#### 快捷键支持 (commit 75f71bc, #374)
+
+picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注册为快捷键：
+- 按对应字母（大小写不敏感）直接选中并确认该项
+- 禁用项的快捷键被忽略
+- `extract_shortcut(text)` 解析 `[单字母]` 模式；`build_shortcut_map(items)` 构建映射表
+- 用于 resume 不匹配提示的 `[Y]es / [N]o / [C]ancel` 选项
+
+#### 禁用项支持 (commit bebbcc3)
+
+- `pick_one_with_disabled(title, items, disabled)` 接受 `&[Option<DisabledIcon>]` 数组
+- `DisabledIcon` 枚举：`Lock`（🔒）、`Key`（⚿）、`Forbidden`（⊘）
+- 禁用项显示为 dim 样式并附加对应图标，Enter/Space/快捷键均不可选中
+- 用于 `/resume` picker 中显示已被其他会话占用的线程
+
 #### 交互键位
 
 | 按键 | 单选模式 | 多选模式 |
@@ -464,6 +479,7 @@ Title text
 | Enter | 确认选择，返回当前项索引 | 确认选择，返回所有已选中项索引 |
 | ESC | 取消，返回None | 取消，返回None |
 | Space | 无效 | 切换当前项的选中状态 |
+| 快捷键字母 | 直接确认对应项 | 直接确认对应项 |
 
 #### 视觉效果
 
@@ -571,6 +587,18 @@ Title text
 - 使用 `omnish_plugin::apply_sandbox(data_dir, cwd)` 限制文件系统访问
 - 工具只能访问自己的数据目录（`~/.omnish/data/{plugin_name}/`）和可选的CWD目录
 - 特权模式工具（如write和edit）可以访问CWD进行文件写入（issue #219）
+- 沙箱内部重构：`apply_sandbox` 拆分为 `apply_landlock` + `common_writable_paths`，新增 `apply_lock_sandbox`（不含插件数据目录，用于 `/lock on`）（commit c73013e）
+
+**可配置沙箱放行规则 (commit f4a4c77, #379):**
+- Snap 安装的二进制（如 glab、docker）因 `PR_SET_NO_NEW_PRIVS` 阻断 setuid 导致 Landlock 下失败
+- 在 `daemon.toml` 中配置 `[sandbox_permit]` 规则，可按工具名和输入字段匹配（`starts_with`、`contains`、`equals`、`matches`）有选择地绕过沙箱
+- 规则引擎在 `omnish-daemon/src/sandbox_rules.rs`，守护进程发送 `ChatToolCall` 时携带 `sandboxed` 字段
+
+**`/lock on/off` 命令 (commit c73013e, #378):**
+- `/lock on` — 使用 Landlock 沙箱重启 shell；`/lock off` — 不使用沙箱重启 shell
+- 通过 `PtyProxy::respawn(pre_exec, cwd)` 在原地重启 shell 进程
+- `ChatExitAction` 枚举信号主循环执行 shell 重启
+- 当前锁定状态在 `/debug client` 输出中显示
 
 **协议格式:**
 - 请求: `{"name": "tool_name", "input": {...}}`
@@ -616,7 +644,8 @@ Title text
 连接守护进程认证时：
 - `Auth` 消息携带客户端 `PROTOCOL_VERSION`
 - `AuthOk` 响应携带守护进程 `protocol_version`
-- 版本不匹配时通过 `notice()` 显示警告：`[omnish] Warning: protocol mismatch (client=N, daemon=N), please upgrade`
+- 版本不匹配时立即断开连接（不再仅警告），使重连循环能以指数退避持续重试，直到守护进程升级后版本一致（commit d8c340a，#369）
+- 旧行为（仅警告继续连接）已改为立即bail，确保自动重连机制能正常工作
 
 ## 多轮聊天模式 (Multi-turn Chat)
 
@@ -646,10 +675,48 @@ Title text
 - resume显示历史后的分隔线改用 `render_separator()`（含 "ctrl+o to expand" 提示）
 - 之前误用了 `render_separator_plain()`，没有提示
 
-**双前缀快速恢复 (issue #261):**
+**双前缀快速恢复 (issue #261, #361):**
 - 连续快速输入两次前缀（如`::`）在250ms内触发 `InterceptAction::ResumeChat`
-- 自动恢复最近的对话线程（等价于 `/resume 1`）
+- `::` 优先恢复当前会话上一次使用的线程（`last_thread_id`，通过 `handle_resume_tid` 直接恢复指定线程ID），而非总是取最新线程（commit bd6898f）
+- `last_thread_id` 在所有聊天退出路径上持久保存（commit 81c84f1）
 - 单次前缀在250ms超时后进入新聊天
+
+**developer_mode 防误触 (commit 6d2794a, #393):**
+- 在 `[shell]` 配置中启用 `developer_mode = true` 后，当命令行已有内容时输入 `:` 或 `::` 直接转发给 shell，不进入聊天模式
+- 防止开发时在管道或参数中误触发聊天模式
+- Readline 报告（`RL;content;point`）实时刷新命令行内容状态，Ctrl+U/Ctrl+W 清空后恢复正常拦截
+
+**线程绑定与多会话保护 (commit 7ab2968, 43004b3, f820330, #357, #367):**
+- 守护进程维护 `ActiveThreads` 映射（thread_id → session_id），防止两个会话同时进入同一线程
+- `try_claim_thread()` 原子检查所有权并释放之前持有的线程
+- 所有恢复路径（`/resume`、`/resume N`、`ChatStart.thread_id`）均先检查该映射
+- 退出聊天模式时发送 `ChatEnd` 消息，守护进程释放线程绑定，其他会话可立即进入该线程
+- 尝试进入已锁定线程时显示错误，跳过技术错误消息（commit 27e811d）
+- 会话结束时（`SessionEnd`）自动释放持有的线程
+- 协议升级到 v8：`ChatStart.thread_id`（恢复指定线程）、`ChatReady.history/error/error_display`（结构化恢复响应）、`ChatEnd`（释放绑定）
+
+**自动关闭空闲聊天会话 (commit 65b6b15, #360):**
+- 客户端以30分钟超时轮询stdin；超时后自动退出聊天模式，显示 "(chat closed due to inactivity)"
+- 守护进程后台任务每60秒清理超过30分10秒未活动的线程绑定，作为崩溃客户端的安全网
+- `ChatMessage` 和 `ChatToolResult` 消息刷新线程活跃时间戳
+
+**线程恢复 UX 改进 (commit d497b68, bd9eb7f, 82382eb, bebbcc3, 75f71bc, 344eec7, #372, #374):**
+- 恢复对话时检测上次使用的 host 和 cwd，若不同则弹出提示
+  - 不同主机：选择继续 `[Y]es` 或取消 `[C]ancel`
+  - 相同主机、不同 cwd：选择切换到原目录 `[Y]` / 留在当前目录 `[N]` / 取消 `[C]`
+- 提示转换为带快捷键的 picker（commit 75f71bc）：picker 项目中的 `[X]` 模式（如 `[Y]es`）可直接按对应字母选择
+- 选择切换目录时实际在 shell 中执行 `cd /path`，并立即更新守护进程的 `shell_cwd`（commit bd9eb7f）
+- 恢复时先渲染历史再显示不匹配提示（commit 436b410）
+- 恢复时不注入 system-reminder（commit f12fb7d，#382）
+- 发生 host/cwd 不匹配时跳过线程摘要显示（commit fb69c9f）
+- 锁定线程在 picker 中显示为 dim + 🔒 图标且不可选择；进入被锁定线程时回退到 picker 选择其他线程（commit bebbcc3）
+
+**`::` auto-resume 取消退出聊天模式 (commit eac5984, b3e8f72, #377):**
+- `::` 触发的 auto-resume 在 cwd/host 不匹配提示中取消时，完全退出聊天模式而非停留在 `>` 提示符
+- 使用 `is_fast_resume` 标志区分自动触发（pending_input）和手动 `/resume` 命令
+
+**Ctrl+C 中断显示改进 (commit 82382eb, #384):**
+- Ctrl+C 中断 LLM 响应后显示 "User interrupted. What should I do instead?" 作为普通响应行，替代原来的 dim "(interrupted)" 文本
 
 **聊天模式退出改进 (issue #148, #151):**
 - **自动退出** (issue #148): 检查命令（如 `/debug client`, `/context`, `/sessions`）作为首个动作执行后自动退出聊天模式，回到shell
@@ -668,6 +735,10 @@ Title text
 - 支持Shift+Enter / Ctrl+J插入换行（多行输入）
 - 支持Delete键向前删除
 - 更快的ESC检测和即时退出反馈（issue #222）
+
+**进入聊天模式时立即更新 CWD (commit 61c1dc4, #354):**
+- `ChatSession::run()` 开始时立即发送 `SessionUpdate`，包含从 `/proc/pid/cwd` 读取的最新 shell cwd
+- 消除轮询延迟（最长60秒退避）导致的守护进程 cwd 陈旧问题，确保聊天上下文中 cwd 信息准确
 
 **Markdown渲染:**
 - LLM响应通过 `markdown::render()` 渲染为ANSI样式（issue #272）
@@ -727,6 +798,11 @@ Title text
 3. 发送 `\x1b[J` 擦除光标到屏幕底部的全部内容
 4. 重新渲染 `scroll_history[tool_section_hist_idx..]` 中所有 `ToolStatus` 条目
 5. 更新 `lines_printed` 为重绘后的实际行数
+
+**工具输出超出终端宽度时的渲染修复 (commit 225b451, #386):**
+- 原实现按逻辑行（`\r\n`）统计 `lines_printed`，但终端会对超宽行自动换行，导致光标数学计算偏低、遗留孤立工具头行
+- 修复：使用 `display_width()` 计算每行实际占用的终端行数（逻辑行宽 / 终端列数，向上取整）
+- 同时截断 `result_compact` 输出最多 3 个终端行，防止过多换行
 
 **触发时机:**
 - 流式消息中收到带 `result_compact` 的第二次 `ChatToolStatus`（工具完成）
@@ -904,6 +980,8 @@ Probe 集合容器，管理多个 Probe 实例。
 - `TtyProbe` - 获取终端设备路径（环境变量 `TTY`）
 - `CwdProbe` - 获取客户端启动时的工作目录
 - `HostnameProbe` - 获取主机名
+- `PlatformProbe` - 获取客户端平台（如 "linux"、"macos"）（commit d83b63b，#402）
+- `OsVersionProbe` - 获取客户端操作系统版本（commit d83b63b，#402）
 
 **动态 Probe (定期轮询收集):**
 - `ShellCwdProbe(pid: u32)` - 获取 shell 进程当前工作目录
@@ -927,6 +1005,10 @@ Probe 集合容器，管理多个 Probe 实例。
 - `TtyProbe` - 终端设备路径（环境变量 `TTY`）
 - `CwdProbe` - 客户端启动时的工作目录
 - `HostnameProbe` - 主机名（通过 `gethostname()` 系统调用获取）
+- `PlatformProbe` - 客户端平台（commit d83b63b）
+- `OsVersionProbe` - 客户端操作系统版本（commit d83b63b）
+
+**注意 (commit d83b63b, #402):** `system-reminder` 中的平台/OS 信息现在来自客户端 Probe 上报的 `session_attrs`，而非守护进程自身运行环境，确保远程连接等场景下信息准确。
 
 **轮询探测 (`default_polling_probes`)**: 动态 Probe 集合，用于定期轮询
 - `HostnameProbe` - 主机名（定期轮询以检测集群环境中的变化）
@@ -1156,19 +1238,24 @@ omnish-client 包含客户端事件日志系统，用于调试和监控异步事
 - `/template <name>` - 显示LLM提示模板（转发到守护进程，commit 5a0f0f9，显示实际工具定义）
 - `/debug` - 显示调试子命令用法
 - `/debug events [num]` - 显示最近的客户端事件（默认20条）
-- `/debug client` - 显示客户端调试状态（通过闭包在客户端本地生成，issue #115），支持重定向和管道限制（issue #239）
+- `/debug client` - 显示客户端调试状态（通过闭包在客户端本地生成，issue #115），支持重定向和管道限制（issue #239）；新增显示 Landlock 锁定状态
 - `/debug session` - 显示当前会话调试信息（转发到守护进程）
+- `/debug commands [N]` - 显示最近 N 条 shell 命令历史（默认30条，转发到守护进程，commit 27d19a2）
+- `/debug command <seq>` - 显示指定序号命令的完整详情和输出（转发到守护进程，commit 35542da）
 - `/sessions` - 列出所有会话（转发到守护进程）
 - `/thread list` - 列出所有对话线程（转发到守护进程，映射到 `__cmd:conversations`）
 - `/thread del` - 删除对话线程（转发到守护进程，映射到 `__cmd:conversations del`）
 - `/tasks [disable <name>]` - 查看或管理定时任务（转发到守护进程）
 - `/update` - 透明自重启到磁盘最新版本（issue #217）
 - `/update auto` - 切换运行时自动更新开关（不持久化）
+- `/lock on` - 使用 Landlock 文件系统沙箱重启 shell（限制写入 /tmp、/dev/null、cwd、git repo根目录）
+- `/lock off` - 不使用沙箱重启 shell（移除 Landlock 限制）
 - `> file.txt` - 重定向输出到文件（后缀支持）
 - `| head [-n] [N]` / `| tail [-n] [N]` - 限制输出行数（默认10行），支持 `-nN` 紧凑语法
 
 **聊天模式专用命令（`CHAT_ONLY_COMMANDS`）:**
 - `/resume [N]` - 恢复对话（无参数时使用picker选择，带编号时使用缓存索引）
+- `/lock on|off` - Landlock 沙箱开关（重启 shell）
 
 ### Agent工具调用循环 (commit 5f439c8)
 
@@ -1234,7 +1321,8 @@ cargo build --release
 2. **进入聊天模式**: 输入配置的前缀（默认`:`）
    - 等待250ms后进入新聊天
    - 显示`> `提示符等待输入（使用LineEditor）
-   - 双前缀（如`::`）快速恢复最近对话
+   - 双前缀（如`::`）快速恢复上次使用的线程（`last_thread_id`）；若无记录则恢复最新线程
+   - `developer_mode = true` 时，命令行有内容则 `:` 直接转发给 shell 不触发聊天
 3. **多轮对话**:
    - 直接输入问题即可开始对话（自动懒创建线程）
    - 支持多行输入（Shift+Enter / Ctrl+J）
@@ -1253,10 +1341,14 @@ cargo build --release
    - 长响应使用ScrollView，Ctrl+O浏览完整内容
 4. **使用聊天命令**: 在聊天模式下，支持以下命令：
    - `/context` - 查看当前线程的对话上下文，支持 `| head 5` 或 `| tail 10`
-   - `/debug client` - 查看客户端调试状态（包含shell CWD、输入跟踪器、补全器等）
+   - `/debug client` - 查看客户端调试状态（包含shell CWD、输入跟踪器、补全器、Landlock锁定状态等）
    - `/debug events` - 查看最近事件日志
+   - `/debug commands [N]` - 查看最近 N 条 shell 命令历史
+   - `/debug command <seq>` - 查看指定序号命令的完整详情和输出
    - `/template <name>` - 显示LLM提示模板（包含实际工具定义）
    - `/sessions` - 列出所有活动会话
+   - `/lock on` - 使用 Landlock 沙箱重启 shell
+   - `/lock off` - 不使用沙箱重启 shell
    - `/update` - 更新到磁盘最新版本
    - `/update auto` - 切换自动更新
    - `> file.txt` - 重定向输出到文件（如`/context > context.txt`）
@@ -1513,11 +1605,71 @@ auto_update = true
 
 ### I/O效率
 - 批量处理输入字节
-- 输出数据节流发送
+- 输出数据节流发送（`OutputThrottle`）：每条命令默认最多发送 **4MB** 数据（`DEFAULT_MAX_BYTES`），超出后 `should_send()` 返回 false，直到下一个提示符重置（commit 4e437cc, 28aed34, ed4d6ad，#370）；同时限制最多 1000 次请求（`DEFAULT_MAX_REQUESTS`）
 - 使用原始模式减少系统调用
 - 编辑器重绘使用相对光标移动代替layout.update()（issue #278）
 
 ## 更新历史
+
+### 2026-03-23（56个commit自cb68db4起）
+
+**Web Search 格式化器 (commit 9aed75c, #405):**
+- 新增 `web_search_formatter` 插件脚本：剥离HTML标签，compact视图显示前5条结果的 `[Title](URL)`，full视图附加描述
+- 新增 `/test multi_level_picker` 隐藏测试命令：3级级联picker演示（类别→条目→操作），测试快捷键和多级picker链式调用
+
+**系统提示平台/OS信息来自客户端 (commit d83b63b, #402):**
+- `system-reminder` 中的平台和 OS 版本信息改由客户端 Probe（`PlatformProbe`、`OsVersionProbe`）上报到 `session_attrs`，守护进程从 `session_attrs` 读取，不再使用守护进程自身运行环境信息
+
+**developer_mode 防误触 (commit 6d2794a, #393):**
+- `[shell] developer_mode = true` 时，命令行有内容时输入 `:` 或 `::` 直接转发 shell 不进入聊天模式
+
+**`/debug commands` 和 `/debug command` 命令:**
+- `/debug commands [N]` — 显示最近 N 条 shell 命令历史（commit 27d19a2）
+- `/debug command <seq>` — 显示指定序号命令的完整详情和输出（commit 35542da）
+
+**线程恢复 UX 全面改进 (commit d497b68~82382eb, bebbcc3, 75f71bc, #372, #374):**
+- cwd/host 不匹配时弹出带快捷键的 picker 提示
+- 锁定线程在 picker 中显示 dim + 🔒，被锁时自动回退到其他线程选择
+- `::` auto-resume 取消时退出聊天模式
+- 实际执行 `cd` 切换目录并立即更新守护进程 cwd
+
+**工具输出超宽渲染修复 (commit 225b451, #386):**
+- `lines_printed` 改用终端实际行数计算，修复 `redraw_tool_section()` 光标偏移错误
+- `result_compact` 截断为最多3个终端行
+
+**`/lock on/off` Landlock 沙箱命令 (commit c73013e, #378):**
+- 重启 shell 开启/关闭 Landlock 文件系统沙箱
+- `apply_sandbox` 重构为 `apply_landlock` + `common_writable_paths`
+
+**可配置沙箱放行规则 (commit f4a4c77, #379):**
+- `daemon.toml [sandbox_permit]` 规则引擎，按工具和输入字段匹配有选择绕过沙箱
+
+**`::` resume 优先恢复上次线程 (commit bd6898f, #361):**
+- 跟踪 `last_thread_id`，`::` 触发时直接恢复而非总取最新线程
+
+**自动关闭空闲聊天会话 (commit 65b6b15, #360):**
+- 客户端30分钟无操作自动退出聊天，守护进程后台清理孤立线程绑定
+
+**防止两个会话进入同一线程 (commit 7ab2968, #357):**
+- `ActiveThreads` 映射保证独占，被占用时显示错误
+
+**进入聊天模式时立即更新 CWD (commit 61c1dc4, #354):**
+- `ChatSession::run()` 开始时立即发送 `SessionUpdate` 消除轮询延迟
+
+**协议版本不匹配立即断连 (commit d8c340a, #369):**
+- 版本不匹配时立即 bail 使重连循环能持续重试
+
+**线程绑定退出时释放 (commit 43004b3, #367):**
+- 退出聊天模式发送 `ChatEnd` 消息，守护进程释放线程绑定
+
+**协议重构：typed messages (commit f820330):**
+- `ChatStart.thread_id` 替代 `__cmd:resume_tid`，`ChatEnd` 替代 `__cmd:release_thread`，协议升级到 v8
+
+**Picker 滚动提示移至 hint 行 (commit f333e28, #371):**
+- `(▼ N more)` 移至 hint 行，分隔线保持全宽
+
+**OutputThrottle 每命令 4MB 上限 (commit 4e437cc, 28aed34, ed4d6ad, #370):**
+- 硬性上限防止 dstat 等持续输出程序无限积累；同时新增每命令最多 1000 次请求限制
 
 ### 2026-03-18（当前，约60个commit自feeb741起）
 

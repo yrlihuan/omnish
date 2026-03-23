@@ -92,6 +92,30 @@ PTY代理，负责：
 **实现细节:** 使用`FromRawFd`将原始文件描述符转换为`OwnedFd`，结合已知的子进程PID重建代理对象
 **安全性:** 调用者必须确保`fd`是有效的PTY主端文件描述符，且`pid`对应正确的子进程
 
+### `PtyProxy::respawn()`
+终止当前子进程并在新PTY中重新启动shell。
+
+**参数:**
+- `cmd: &str` - 要执行的命令
+- `args: &[&str]` - 命令参数
+- `env: HashMap<String, String>` - 环境变量
+- `cwd: Option<&std::path::Path>` - 可选的工作目录
+- `pre_exec: Option<Box<dyn FnOnce() -> Result<(), String> + Send>>` - 可选的子进程exec前回调（用于Landlock沙箱等）
+
+**返回:** `Result<RawFd>`（新的主端文件描述符原始值）
+**用途:** 支持`/lock on/off`命令，在启用或关闭Landlock沙箱时重新启动shell
+**实现细节:**
+1. 向旧子进程发送`SIGKILL`信号并以`WNOHANG`方式回收僵尸进程
+2. 使用`openpty`创建新的伪终端对
+3. `fork`创建子进程：
+   - 设置控制终端，重定向标准I/O
+   - 切换到指定工作目录（如有）
+   - 设置环境变量
+   - 执行`pre_exec`回调（如Landlock沙箱配置），失败则以退出码126退出
+   - 执行目标命令
+4. 父进程更新`self.master_fd`和`self.child_pid`，返回新主端fd
+**注意:** 调用者在获得新fd后需自行更新poll fd和SIGWINCH处理
+
 ### `RawModeGuard::enter()`
 创建原始模式守卫。
 
@@ -161,6 +185,8 @@ let exit_code = proxy.wait()?;
 5. **错误处理**: 所有操作都可能失败，需要适当处理错误
 6. **TIOCSCTTY ioctl**: 在不同平台上TIOCSCTTY常数的定义可能不同，需使用`as _`进行类型转换以保证兼容性
 7. **exec边界PTY恢复**: `from_raw_fd()`用于`/update`自重启场景，调用者必须确保传入的文件描述符有效且未被关闭
+8. **shell重生**: `respawn()`会销毁当前PTY并创建全新PTY，调用者需在返回后更新所有持有旧fd的数据结构（poll fd、SIGWINCH等）
+9. **Landlock沙箱**: `respawn()`的`pre_exec`回调在子进程exec前运行，适合配置Landlock规则；回调失败会导致子进程以退出码126退出
 
 ## 平台支持
 

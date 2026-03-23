@@ -19,10 +19,14 @@ omnish-common 包含客户端和守护进程共享的配置结构和工具函数
 ### `DaemonConfig`
 守护进程配置结构，包含：
 - `listen_addr`: 监听地址（默认：`~/.omnish/omnish.sock`）
+- `proxy`: 全局出站 HTTP/SOCKS 代理（可选，格式如 `http://...`、`https://...`、`socks5://...`）
+- `no_proxy`: 逗号分隔的不走代理的主机/域名/CIDR（可选，如 `"localhost,127.0.0.1,*.internal.com"`）
 - `llm`: LLM后端配置（`LlmConfig`类型）
 - `context`: 上下文构建配置（`ContextConfig`类型）
 - `tasks`: 定时任务配置（`TasksConfig`类型）
 - `plugins`: 插件系统配置（`PluginsConfig`类型）
+- `tools`: 每个工具的参数注入配置（`HashMap<String, HashMap<String, serde_json::Value>>`）
+- `sandbox`: 沙箱规则配置（`SandboxConfig`类型）
 
 ### `ShellConfig`
 Shell相关配置，包含：
@@ -31,6 +35,7 @@ Shell相关配置，包含：
 - `resume_prefix`: 恢复上次聊天线程的前缀（默认`::`）
 - `intercept_gap_ms`: 命令拦截间隔毫秒数（默认：1000ms）
 - `ghost_timeout_ms`: ghost-text超时毫秒数（默认：10000ms）
+- `developer_mode`: 开发者模式，启用后当命令行已有内容时 `:` 和 `::` 不触发聊天模式，字符直接传递给 shell（默认：`false`）
 
 ### `LlmConfig`
 LLM配置结构，包含：
@@ -67,8 +72,13 @@ Langfuse可观测性集成配置，包含：
 定时任务配置，包含：
 - `eviction`: 会话淘汰配置（`EvictionConfig`，`session_evict_hours` 默认：48小时）
 - `daily_notes`: 日报生成配置（`DailyNotesConfig`，`enabled`默认`false`，`schedule_hour`默认23）
+- `periodic_summary`: 周期性摘要配置（`PeriodicSummaryConfig`类型）
 - `disk_cleanup`: 磁盘清理配置（`DiskCleanupConfig`，`schedule` cron表达式，默认`"0 0 */6 * * *"`）
 - `auto_update`: 自动更新配置（`AutoUpdateConfig`类型）
+
+### `PeriodicSummaryConfig`
+周期性摘要任务配置，包含：
+- `interval_hours`: 每隔多少小时生成一次摘要（默认：`4`）；时间窗口、cron计划和 LLM 提示词均基于此值动态计算。输出文件路径保持在 `notes/hourly/` 以兼容每日日报。
 
 ### `AutoUpdateConfig`
 周期性自动更新配置，包含：
@@ -83,6 +93,16 @@ Langfuse可观测性集成配置，包含：
   - 每个插件对应 `~/.omnish/plugins/{name}/` 目录下的 `{name}` 可执行文件
   - 插件通过 JSON-RPC 协议与守护进程通信
   - 插件在守护进程启动时加载并初始化
+
+### `SandboxConfig`
+沙箱规则配置，包含：
+- `plugins`: 每个工具的沙箱豁免规则（`HashMap<String, SandboxPluginConfig>`，键为工具名如 `"bash"`）
+
+### `SandboxPluginConfig`
+单个工具的沙箱豁免配置，包含：
+- `permit_rules`: 规则字符串列表，格式为 `"<param_field> <operator> <value>"`；当任意规则命中时，该工具调用跳过 Landlock 沙箱。支持的运算符：`starts_with`、`contains`、`equals`、`matches`（正则）。
+
+**背景：** Snap 安装的二进制（如 `glab`、`docker`）在 Landlock 沙箱下因 `PR_SET_NO_NEW_PRIVS` 阻止 setuid 提权而失败，需通过此机制选择性豁免。
 
 ### `LlmBackendConfig`
 LLM后端具体配置，包含：
@@ -177,6 +197,7 @@ command = "/bin/bash"
 command_prefix = ":"
 resume_prefix = "::"
 intercept_gap_ms = 500
+# developer_mode = false
 
 daemon_addr = "/tmp/omnish.sock"
 auto_update = true
@@ -186,6 +207,10 @@ onboarded = false
 ### 配置文件示例 (daemon.toml)
 ```toml
 listen_addr = "/tmp/omnish.sock"
+
+# 全局出站代理（可选）
+# proxy = "http://proxy.example.com:8080"
+# no_proxy = "localhost,127.0.0.1,*.internal.com"
 
 [llm]
 default = "claude"
@@ -201,6 +226,9 @@ public_key = "pk-lf-..."
 secret_key = "sk-lf-..."
 base_url = "https://cloud.langfuse.com"
 
+[tasks.periodic_summary]
+interval_hours = 4
+
 [tasks.auto_update]
 enabled = true
 schedule = "0 0 4 * * *"
@@ -209,6 +237,14 @@ clients = ["user@host1", "user@host2"]
 
 [plugins]
 enabled = ["example_plugin", "another_plugin"]
+
+# 每个工具的参数注入
+[tools.web_search]
+api_key = "my-search-api-key"
+
+# 沙箱豁免规则（用于 snap 安装的工具等）
+[sandbox.plugins.bash]
+permit_rules = ["command starts_with glab", "command starts_with docker"]
 ```
 
 ## auth 模块
@@ -246,6 +282,7 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 - `dirs`: 获取标准目录路径（如用户主目录）
 - `rand`: 随机令牌生成
 - `hex`: 令牌hex编码
+- `serde_json`: 工具参数注入的值类型支持（`tools` 配置节）
 
 ## 配置加载优先级
 1. 环境变量指定的配置文件路径（`OMNISH_CLIENT_CONFIG`/`OMNISH_DAEMON_CONFIG`）
@@ -258,6 +295,7 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 - Shell命令: `$SHELL`环境变量或`/bin/sh`
 - 命令前缀: `:`
 - 恢复线程前缀: `::`
+- 开发者模式: `false`
 - 守护进程socket路径: `~/.omnish/omnish.sock`（或 `$OMNISH_HOME/omnish.sock`）
 - 默认LLM后端: `"claude"`
 - 拦截间隔: 1000ms
@@ -266,5 +304,7 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 - 自动更新: `false`
 - Langfuse base_url: `https://cloud.langfuse.com`
 - 会话淘汰时间: 48小时
+- 周期性摘要间隔: 4小时
 - 磁盘清理计划: `"0 0 */6 * * *"`（每6小时）
 - 自动更新检查计划: `"0 0 4 * * *"`（每日04:00）
+- 全局代理: 无（`proxy` 和 `no_proxy` 均为 `None`）

@@ -171,17 +171,17 @@ pub struct Frame {
 开始处理客户端连接。
 
 **参数:**
-- `handler: Fn(Message) -> Future<Output = Vec<Message>>` - 消息处理回调，返回响应消息列表
+- `handler: Fn(Message, mpsc::Sender<Message>) -> Future<Output = ()>` - 消息处理回调，通过 `mpsc::Sender<Message>` 发送响应消息
 - `auth_token: Option<String>` - 认证令牌（Some时启用认证）
 - `tls_acceptor: Option<TlsAcceptor>` - TLS接受器（Some时启用TLS，仅TCP）
 
 **返回:** `Result<()>`
 **用途:** 循环接受连接并为每个连接生成处理任务
 
-**多消息响应支持:**
-- 处理器可以返回多个消息（如agent循环中的工具状态更新和最终响应）
-- 当返回多个消息时，服务器会自动发送Ack作为流结束标记
-- 单消息响应不发送额外的Ack标记
+**真正的流式传输支持:**
+- 处理器接收一个 `mpsc::Sender<Message>`，可在任意时刻通过 `tx.send(msg).await` 发送消息，实现真正的流式传输
+- 服务器在处理器完成（`tx` 被 drop）后统计已发送消息数量：若发送了多条消息（`count > 1`），自动追加一个 `Message::Ack` 作为流结束标记
+- 单消息响应不发送额外的 Ack 标记
 
 **安全机制:**
 - **Unix socket**: 绑定时设置权限0600，接受连接时验证peer UID必须与服务器进程相同
@@ -269,11 +269,11 @@ if let Some(addr) = server.local_tcp_addr() {
 }
 
 // 启动服务器处理连接（单消息响应）
-server.serve(|msg| {
+server.serve(|msg, tx| {
     Box::pin(async move {
-        vec![match msg {
+        let reply = match msg {
             Message::Request(req) => {
-                // 处理请求并返回单个响应
+                // 处理请求并发送单个响应
                 Message::Response(Response {
                     request_id: req.request_id.clone(),
                     content: format!("Echo: {}", req.query),
@@ -282,30 +282,28 @@ server.serve(|msg| {
                 })
             }
             _ => Message::Ack,
-        }]
+        };
+        let _ = tx.send(reply).await;
     })
 }).await?;
 
-// 启动服务器处理连接（多消息响应，如agent循环）
-server.serve(|msg| {
+// 启动服务器处理连接（流式多消息响应，如agent循环）
+server.serve(|msg, tx| {
     Box::pin(async move {
-        match msg {
-            Message::Request(req) => {
-                // 返回多个消息：状态更新和最终响应
-                vec![
-                    Message::ChatToolStatus(ToolStatus {
-                        tool_name: "calculator".to_string(),
-                        status: "running".to_string(),
-                    }),
-                    Message::Response(Response {
-                        request_id: req.request_id.clone(),
-                        content: "Calculation complete".to_string(),
-                        is_streaming: false,
-                        is_final: true,
-                    }),
-                ]
-            }
-            _ => vec![Message::Ack],
+        if let Message::Request(req) = msg {
+            // 立即发送工具状态更新
+            let _ = tx.send(Message::ChatToolStatus(ToolStatus {
+                tool_name: "calculator".to_string(),
+                status: "running".to_string(),
+            })).await;
+            // 处理完成后发送最终响应
+            let _ = tx.send(Message::Response(Response {
+                request_id: req.request_id.clone(),
+                content: "Calculation complete".to_string(),
+                is_streaming: false,
+                is_final: true,
+            })).await;
+            // tx 在此处 drop，服务器自动追加 Ack 作为流结束标记
         }
     })
 }).await?;
@@ -328,27 +326,30 @@ let addr4 = parse_addr("./local.sock");          // 相对路径Unix socket
 2. **读写分离**: 连接被拆分为独立的读取器和写入器
 3. **后台任务**:
    - `write_loop`: 处理发送队列，序列化并发送消息
-   - `read_loop`: 接收响应，根据请求ID分发到对应的oneshot或mpsc通道
+   - `read_loop`: 接收响应，根据请求 ID 分发到对应的 oneshot 或 mpsc 通道；帧解析失败时记录 warning 并跳过
 4. **请求ID管理**: 使用原子计数器生成唯一请求ID
 5. **重连机制**: 使用指数退避算法自动重连，支持重连回调和重连成功通知
 6. **响应分发**: 使用`ReplyTx`枚举支持单响应（oneshot）和多响应流（mpsc）两种模式
+7. **锁作用域优化**: `call()`、`send()`、`call_stream()` 方法在持有内部锁期间仅检查连接状态并克隆 `tx`，随后立即释放锁，再执行可能阻塞的 `tx.send()` 操作，避免锁持有期间阻塞
 
 ### 服务器内部结构
 1. **连接接受**: 循环接受新连接
 2. **任务生成**: 为每个连接生成独立的异步任务
-3. **消息处理**: 读取消息帧，调用用户处理器，发送响应列表
-4. **并发支持**: 每个连接独立处理，互不干扰
-5. **多消息响应**: 处理器返回`Vec<Message>`，服务器依次发送所有消息，多消息响应（`Vec.len() > 1`）后自动追加Ack作为流结束标记
+3. **消息处理**: 读取消息帧，创建内部 `mpsc` 通道，将 `tx` 传给处理器，处理器通过 `tx` 异步发送消息
+4. **并发支持**: 每个连接独立处理，互不干扰；每个请求另起独立任务运行处理器，网络写入循环与处理器并发执行
+5. **流式写入**: 服务器不等待处理器完成，而是边接收边写入——处理器通过 `tx` 发出的消息立即转发给客户端
+6. **流结束标记**: 处理器完成后（`tx` drop），统计已发送消息数，若 `count > 1` 则追加 `Message::Ack` 作为流结束标记
 
 ### 消息传输协议
 1. **帧格式**: `[长度: u32][序列化帧数据]`
 2. **请求-响应匹配**: 使用`request_id`关联请求和响应
 3. **多消息流式传输**:
-   - 服务器处理器可返回多个消息（`Vec<Message>`）
-   - 所有消息使用相同的`request_id`发送
-   - 多消息响应后，服务器自动发送Ack作为流结束标记
-   - 客户端接收到Ack时，从pending映射中移除该请求ID，结束流接收
-4. **错误处理**: 连接断开时清理挂起的请求
+   - 服务器通过 `mpsc::Sender<Message>` 实时发送消息
+   - 所有消息使用相同的 `request_id` 发送
+   - 多消息响应后，服务器自动发送 Ack 作为流结束标记
+   - 客户端接收到 Ack 时，从 pending 映射中移除该请求 ID，结束流接收
+4. **帧解析错误处理**: 帧反序列化失败时记录 warning 日志（含帧长度和错误信息）并跳过该帧，不断开连接
+5. **错误处理**: 连接断开时清理挂起的请求
 
 ### 连接断开处理
 当守护进程意外断开连接或网络故障导致连接中断时，必须防止客户端的`call()`方法永久挂起。这是通过显式清空待处理的请求映射来实现的。
@@ -373,31 +374,37 @@ let addr4 = parse_addr("./local.sock");          // 相对路径Unix socket
 
 ### 多消息流式传输机制
 
-从commit 6700a42开始，omnish-transport支持服务器返回多个响应消息的流式传输，主要用于agent循环等需要发送连续消息的场景。
+omnish-transport 支持服务器向客户端推送多个响应消息的真正流式传输，主要用于 agent 循环等需要发送连续消息的场景。
 
-**关键变更:**
-1. **服务器处理器签名变更**: `Fn(Message) -> Future<Output = Message>` → `Fn(Message) -> Future<Output = Vec<Message>>`
-2. **新增客户端API**: `RpcClient::call_stream()` 返回 `mpsc::Receiver<Message>`，用于接收多个响应
-3. **ReplyTx枚举**: 内部使用枚举支持两种模式：
-   - `Once(oneshot::Sender)`: 用于`call()`的单响应模式
-   - `Stream(mpsc::Sender)`: 用于`call_stream()`的多响应流模式
+**处理器签名演进:**
+1. 初始版本：`Fn(Message) -> Future<Output = Message>`（单消息）
+2. 中间版本（commit 6700a42）：`Fn(Message) -> Future<Output = Vec<Message>>`（批量多消息）
+3. **当前版本（commit 09ed9ea）**：`Fn(Message, mpsc::Sender<Message>) -> Future<Output = ()>`（真正流式）
 
-**流结束标记（commit b8827d9）:**
-- 问题：多消息响应时，客户端无法判断何时结束接收，导致pending映射中的流条目无法清理，造成内存泄漏
-- 解决：服务器在发送完所有响应消息后（当`Vec.len() > 1`时），自动追加一个`Message::Ack`作为流结束标记
-- 客户端接收到Ack时，从pending映射中移除该请求ID的流条目，关闭mpsc发送端，使`call_stream()`返回的接收器结束
+当前版本的关键改进在于：处理器不再需要等待全部工作完成后才返回结果列表，而是在产生每条消息时立即通过 `tx.send()` 发送，客户端能实时收到每条消息，无需等待整个 agent 循环结束。
+
+**客户端 API:**
+- `RpcClient::call_stream()` 返回 `mpsc::Receiver<Message>`，用于接收多个响应
+- **ReplyTx枚举**: 内部使用枚举支持两种模式：
+  - `Once(oneshot::Sender)`: 用于`call()`的单响应模式
+  - `Stream(mpsc::Sender)`: 用于`call_stream()`的多响应流模式
+
+**流结束标记:**
+- 服务器在处理器完成（`tx` drop）后，若 `count > 1` 则自动追加一个 `Message::Ack` 作为流结束标记
+- 客户端接收到 Ack 时，从 pending 映射中移除该请求 ID 的流条目，关闭 mpsc 发送端，使 `call_stream()` 返回的接收器结束
 
 **工作流程:**
-1. 客户端调用`call_stream(msg)`，创建mpsc通道，将请求ID和发送端存入pending映射
-2. 服务器处理器返回`Vec<Message>`（如`[ToolStatus, Response]`）
-3. 服务器依次发送所有消息，每个消息使用相同的`request_id`
-4. 如果返回消息数量>1，服务器自动发送`Message::Ack`作为结束标记
-5. 客户端read_loop接收到每个消息，通过mpsc发送端转发给调用者
-6. 接收到Ack时，客户端移除pending映射条目，关闭发送端
-7. 调用者的`stream.recv()`返回`None`，结束循环
+1. 客户端调用 `call_stream(msg)`，创建 mpsc 通道，将请求 ID 和发送端存入 pending 映射
+2. 服务器为每个请求创建内部 `mpsc::channel`，将 `tx` 传给处理器并独立 spawn
+3. 服务器写入循环通过 `rx.recv()` 接收消息，有消息立即写入连接（真正流式）
+4. 处理器通过 `tx.send()` 依次发送消息（如 `ToolStatus`、`Response`）
+5. 处理器完成，`tx` drop，写入循环结束，若 `count > 1` 追加 `Ack`
+6. 客户端 read_loop 接收到每个消息，通过 mpsc 发送端转发给调用者
+7. 接收到 Ack 时，客户端移除 pending 映射条目，关闭发送端
+8. 调用者的 `stream.recv()` 返回 `None`，结束循环
 
 **使用场景:**
-- agent循环：发送工具执行状态（`ChatToolStatus`）和最终响应（`Response`）
+- agent 循环：工具执行时立即发送 `ChatToolStatus`，完成后发送 `Response`
 - 长时间操作的进度更新：先发送进度消息，最后发送完成消息
 - 批量数据传输：分多次发送大量数据
 
@@ -473,6 +480,19 @@ pub struct AuthOk {
 - **rcgen**: 自签名证书生成
 - **std::sync**: 原子操作和同步原语
 
+## 已知问题与修复
+
+### ChatReady 反序列化失败导致 15 秒超时（已修复）
+
+**问题根因:** `ChatReady.history` 字段原类型为 `Option<Vec<serde_json::Value>>`，而 bincode 不支持反序列化 `serde_json::Value`（该类型调用 `deserialize_any`）。帧反序列化失败后被静默丢弃，客户端等待响应直到 15 秒超时。
+
+**修复方案:**
+- 将 `ChatReady.history` 改为 `Vec<String>`，每个元素为 JSON 编码的字符串，客户端接收后再解码
+- 同样的修复应用于 `CompletionSummary.extra` 和 `CompletionRecord.extra`（`HashMap<String,Value>` → `HashMap<String,String>`）
+- transport 层增加了帧解析错误日志：解析失败时记录 warning（含帧长度和错误信息），不再静默丢弃
+
+**影响范围:** 此修复涉及 omnish-protocol 中的数据结构变更，transport 层的改进（错误日志）确保类似问题未来能被及时发现。
+
 ## 测试覆盖
 模块包含全面的测试用例：
 - 基本请求-响应测试
@@ -483,3 +503,4 @@ pub struct AuthOk {
 - 多客户端并发测试
 - 认证成功/失败/超时测试
 - TLS连接测试
+- bincode 往返测试（`ChatReady` 含历史记录、`CompletionSummary` 含非空 extra 映射）

@@ -4,7 +4,7 @@
 
 ## 模块概述
 
-omnish-llm 提供LLM后端抽象，支持多种LLM提供商，包括Anthropic、OpenAI兼容API。模块通过统一的接口封装不同LLM提供商的API调用，提供一致的LLM交互体验。从v0.5.0开始，支持工具调用（tool-use）功能，使LLM能够主动调用外部工具完成任务。v0.6.0新增了Langfuse可观测性集成、可组合的系统提示词管理（PromptManager）、请求日志记录、429/529重试机制等功能。
+omnish-llm 提供LLM后端抽象，支持多种LLM提供商，包括Anthropic、OpenAI兼容API。模块通过统一的接口封装不同LLM提供商的API调用，提供一致的LLM交互体验。从v0.5.0开始，支持工具调用（tool-use）功能，使LLM能够主动调用外部工具完成任务。v0.6.0新增了Langfuse可观测性集成、可组合的系统提示词管理（PromptManager）、请求日志记录、429/529重试机制等功能。v0.7.x支持全局代理（proxy/no_proxy）配置、可配置的定期总结间隔（默认4小时），以及在每日笔记中包含对话记录。
 
 ## 重要数据结构
 
@@ -207,6 +207,8 @@ Langfuse可观测性配置结构体：
 - `public_key`: Langfuse公钥
 - `secret_key`: Langfuse密钥（直接值，非命令）（可选，未设置时禁用Langfuse）
 - `base_url`: Langfuse服务地址（默认`https://cloud.langfuse.com`）
+- `proxy`: 可选，发送Langfuse事件使用的代理URL（继承自全局proxy配置）
+- `no_proxy`: 可选，不走代理的主机列表（继承自全局no_proxy配置）
 
 ## 关键函数说明
 
@@ -223,14 +225,20 @@ Langfuse可观测性配置结构体：
 **参数:**
 - `_name: &str` - 后端名称（当前未使用）
 - `config: &LlmBackendConfig` - 后端配置
+- `proxy: Option<&str>` - 全局代理URL（可选，支持http/https/socks5）
+- `no_proxy: Option<&str>` - 不走代理的主机列表（逗号分隔，可选）
 
 **返回:** `Result<Arc<dyn LlmBackend>>` - 装箱的LLM后端实例
-**用途:** 工厂函数，根据配置类型创建对应的后端实现
+**用途:** 工厂函数，根据配置类型创建对应的后端实现。若配置了proxy，HTTP客户端会自动使用该代理。
 
 ### `create_default_backend()`
 从完整LLM配置创建默认后端。
 
-**参数:** `llm_config: &LlmConfig` - 完整的LLM配置
+**参数:**
+- `llm_config: &LlmConfig` - 完整的LLM配置
+- `proxy: Option<&str>` - 全局代理URL（可选）
+- `no_proxy: Option<&str>` - 不走代理的主机列表（可选）
+
 **返回:** `Result<Arc<dyn LlmBackend>>` - 默认后端实例
 **用途:** 简化后端创建，自动使用配置中的默认后端
 
@@ -285,8 +293,8 @@ Langfuse可观测性配置结构体：
 
 ### 常量
 
-- `DAILY_NOTES_PROMPT` — 每日工作总结的LLM提示（中文），使用XML标签 `<commands>` 包裹上下文，输出bullet列表格式
-- `HOURLY_NOTES_PROMPT` — 每小时工作总结的LLM提示（中文），使用XML标签 `<commands>`、`<hourly_summaries>` 包裹上下文（issue #96）
+- `DAILY_NOTES_PROMPT` — 每日工作总结的LLM提示（中文），使用XML标签 `<commands>`、`<conversations>`（对话记录）、`<hourly_summaries>` 包裹上下文，输出bullet列表格式
+- `HOURLY_NOTES_PROMPT` — 定期总结的LLM提示模板（中文），提示中用"N小时"占位（实际间隔由配置决定），使用XML标签 `<commands>`、`<conversations>` 包裹上下文（issue #96）
 - `CHAT_PROMPT_JSON` — 编译内嵌的chat提示词JSON（来自`assets/chat.json`），通过`include_str!`编译到二进制
 - `CHAT_OVERRIDE_EXAMPLE` — `chat.override.json`示例文件内容（来自`assets/chat.override.json.example`）
 - `TEMPLATE_NAMES` — 已知模板名列表：`["chat", "chat-system", "auto-complete", "daily-notes", "hourly-notes"]`
@@ -478,6 +486,14 @@ let completion_content = template::build_simple_completion_content(
 
 ## 配置示例
 ```toml
+# daemon.toml 中的全局代理配置（可选）
+proxy = "http://proxy.example.com:8080"    # 支持 http://、https://、socks5://
+no_proxy = "localhost,127.0.0.1,*.internal.com"
+
+# 定期总结间隔配置（可选，默认4小时）
+[tasks.periodic_summary]
+interval_hours = 4
+
 # omnish.toml 中的LLM配置
 [llm]
 default = "anthropic"
@@ -565,6 +581,25 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
    - 新增 `THREAD_SUMMARY_PROMPT` 常量，为对话线程生成≤20字的中文标题
 
 **相关issue:** #154 (per-thread model), #335 (thinking block order), #339 (OpenAI thinking in tool loop), #315 (backend init tolerance)
+
+8. **每日笔记包含对话记录** (commit 621c262):
+   - `DAILY_NOTES_PROMPT` 新增 `<conversations>` 上下文标签，每日总结时一并发送过去24小时的对话记录
+   - `ConversationManager` 提取共用的 `collect_recent_conversations_md()` 方法，供每日笔记和定期总结复用
+
+9. **定期总结间隔可配置** (commit a716007):
+   - 新增 `PeriodicSummaryConfig` 配置结构体，字段 `interval_hours`（默认4）
+   - 配置路径：`[tasks.periodic_summary]` in daemon.toml
+   - `HOURLY_NOTES_PROMPT` 从固定"1小时"改为"N小时"占位，实际间隔由配置注入
+   - 文件输出路径保持 `notes/hourly/` 不变（向后兼容）
+
+10. **全局proxy/no_proxy支持** (commit 0ee32f9):
+    - `DaemonConfig` 新增 `proxy`（可选，支持http/https/socks5）和 `no_proxy`（逗号分隔主机列表）字段
+    - `create_backend()`、`create_default_backend()`、`MultiBackend::new()` 签名新增 `proxy`/`no_proxy` 参数
+    - 新增 `build_http_client()` 内部辅助函数，统一构建带代理配置的 reqwest 客户端
+    - `LangfuseConfig` 新增 `proxy`/`no_proxy` 字段，`LangfuseBackend` 初始化时应用代理
+    - 工具子进程自动继承 `HTTP_PROXY`/`NO_PROXY` 环境变量
+
+**相关issue:** #349 (daily notes conversations), #353 (configurable summary interval), #359 (global proxy support)
 
 ### v0.6.0 - 可观测性、提示词管理和健壮性改进
 
