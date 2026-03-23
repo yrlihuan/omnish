@@ -145,7 +145,7 @@ test_4() {
     local shell_content=$(capture_pane -5)
     local last_line
     last_line=$(last_nonempty_line "$shell_content")
-    if ! echo "$last_line" | grep -q '\$ '; then
+    if ! echo "$last_line" | grep -qE '[\$#] '; then
         show_capture "Expected shell prompt" "$shell_content" 5
         assert_fail "Not at shell prompt after Escape"
         return 1

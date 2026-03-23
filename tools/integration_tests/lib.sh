@@ -207,11 +207,11 @@ is_chat_prompt() {
 }
 
 # is_shell_prompt <content>
-#   Returns 0 if the last non-empty line looks like a shell prompt ending in $.
+#   Returns 0 if the last non-empty line looks like a shell prompt ending in $ or #.
 is_shell_prompt() {
     local last
     last=$(last_nonempty_line "$1")
-    echo "$last" | grep -q '\$ $\|\$$'
+    echo "$last" | grep -qE '[\$#] $|\$$|\#$'
 }
 
 # ── Waiting helpers ──────────────────────────────────────────────────────
