@@ -796,7 +796,7 @@ async fn main() -> Result<()> {
                         completer.clear();
                         let resume_cmd = match last_thread_id {
                             Some(ref tid) => format!("/resume_tid {}", tid),
-                            None => "/resume 1".to_string(),
+                            None => "/resume".to_string(),
                         };
                         let exit_action = enter_chat_mode(
                             Some(resume_cmd), &daemon_conn, &mut chat_history, &mut last_thread_id,
