@@ -185,18 +185,18 @@ test_3() {
     local visible=$(_tmux capture-pane -p -J -t "$PANE")
     show_capture "Visible screen after 3 short rounds" "$visible" 30
 
-    # Count "● bash(" lines on the visible screen
+    # Count "● Bash(" lines on the visible screen (case-insensitive for compatibility)
     local bash_count
-    bash_count=$(echo "$visible" | grep -c '● bash(' || true)
-    echo -e "  '● bash(' lines on screen: $bash_count"
+    bash_count=$(echo "$visible" | grep -ic '● bash(' || true)
+    echo -e "  '● Bash(' lines on screen: $bash_count"
 
     if [[ $bash_count -ge 3 ]]; then
-        assert_pass "All three '● bash(' visible on screen ($bash_count found)"
+        assert_pass "All three '● Bash(' visible on screen ($bash_count found)"
         send_special Escape 0.5
         sleep 1.5
         return 0
     else
-        assert_fail "Expected at least 3 '● bash(' on screen, got $bash_count"
+        assert_fail "Expected at least 3 '● Bash(' on screen, got $bash_count"
         send_special Escape 0.5
         sleep 1.5
         return 1
