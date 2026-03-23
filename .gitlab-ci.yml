@@ -31,6 +31,8 @@ integration-test:
   image: docker.nv/ubuntu_2404_runner:latest
   script:
     - apt-get update -qq && apt-get install -y -qq tmux >/dev/null 2>&1
+    # Clean daemon to ensure fresh build with latest fixes
+    - cargo clean -p omnish-daemon
     - cargo build --release
     # Setup omnish environment
     - mkdir -p ~/.omnish
