@@ -40,10 +40,12 @@ integration-test:
     - cp -r plugins/ ~/.omnish/plugins/
     - ./target/release/omnish-daemon --init
     # Start daemon in background and wait for socket
+    # OMNISH_SOCKET overrides listen_addr from daemon.toml (~ is not expanded by Rust)
+    - export OMNISH_SOCKET="$HOME/.omnish/omnish.sock"
     - ./target/release/omnish-daemon &
     - |
       for i in $(seq 1 10); do
-        [ -S ~/.omnish/daemon.sock ] && break
+        [ -S "$OMNISH_SOCKET" ] && break
         sleep 1
       done
     # Run integration tests
