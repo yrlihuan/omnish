@@ -35,6 +35,9 @@ integration-test:
     # Setup omnish environment
     - mkdir -p ~/.omnish
     - echo "$DAEMON_TOML" > ~/.omnish/daemon.toml
+    - mkdir -p ~/.omnish/bin
+    - cp target/release/omnish-plugin ~/.omnish/bin/
+    - cp -r plugins/ ~/.omnish/plugins/
     - ./target/release/omnish-daemon --init
     # Start daemon in background and wait for socket
     - ./target/release/omnish-daemon &
