@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.8.4 (2026-03-23)
+
+### Features
+- **plugin**: Web search formatter — strips HTML tags, shows clean `[Title](URL)` with descriptions (#405)
+- **client**: `/test multi_level_picker` — 3-level cascading picker for testing menu interactions
+
+### Fixes
+- **plugin**: Formatter must output single-line JSON (`jq -c`) to match daemon's line-based protocol
+- **ci**: Fix daemon socket path (`~` not expanded by Rust), use `OMNISH_SOCKET` with absolute path
+- **ci**: Copy omnish-plugin binary and plugins dir before starting daemon
+- **ci**: Add scheduled integration tests on GitLab CI
+- **daemon**: Improve omnish_debug completion matching
+
+### Tests
+- Fix CWD detection, chat prompt detection, tool header display, and ScrollView hint matching in integration tests
+- Enhance clippy check with stricter warnings
+- Fix shell prompt detection for root user in CI
+
 ## v0.8.3 (2026-03-22)
 
 ### Features
