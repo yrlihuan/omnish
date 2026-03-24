@@ -1,3 +1,4 @@
+mod config_schema;
 mod config_watcher;
 mod file_watcher;
 mod sandbox_rules;
