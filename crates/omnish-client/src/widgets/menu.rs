@@ -338,10 +338,15 @@ fn run_text_edit(
                     char_cursor -= 1;
                 }
             }
-            b if n == 1 && b >= 0x20 && b < 0x80 => {
-                // Single-byte ASCII printable
-                chars.insert(char_cursor, b as char);
-                char_cursor += 1;
+            b if b >= 0x20 && b < 0x80 => {
+                // Printable ASCII — process all bytes from this read
+                // (handles paste / fast typing where multiple chars arrive at once)
+                for j in 0..n {
+                    if buf[j] >= 0x20 && buf[j] < 0x80 {
+                        chars.insert(char_cursor, buf[j] as char);
+                        char_cursor += 1;
+                    }
+                }
             }
             b if b >= 0x80 => {
                 // Multi-byte UTF-8: decode from buf[0..n]
