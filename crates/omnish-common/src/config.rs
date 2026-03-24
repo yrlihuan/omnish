@@ -1,5 +1,5 @@
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -71,7 +71,7 @@ pub fn load_client_config() -> Result<ClientConfig> {
 // Daily notes config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DailyNotesConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -100,7 +100,7 @@ fn default_disk_cleanup_schedule() -> String {
 // Tasks config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EvictionConfig {
     /// Evict sessions from memory after this many hours of inactivity.
     #[serde(default = "default_session_evict_hours")]
@@ -119,7 +119,7 @@ fn default_session_evict_hours() -> u64 {
     48
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DiskCleanupConfig {
     #[serde(default = "default_disk_cleanup_schedule")]
     pub schedule: String,
@@ -133,7 +133,7 @@ impl Default for DiskCleanupConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AutoUpdateConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -166,7 +166,7 @@ fn default_auto_update_schedule() -> String {
     "0 0 4 * * *".to_string()
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PeriodicSummaryConfig {
     /// Interval in hours between periodic summaries. Default: 4.
     #[serde(default = "default_summary_interval_hours")]
@@ -185,7 +185,7 @@ fn default_summary_interval_hours() -> u8 {
     4
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct TasksConfig {
     #[serde(default)]
     pub eviction: EvictionConfig,
@@ -203,7 +203,7 @@ pub struct TasksConfig {
 // Plugins config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PluginsConfig {
     /// List of enabled plugin names. Each corresponds to a directory
     /// under ~/.omnish/plugins/{name}/ containing a {name} executable.
@@ -215,7 +215,7 @@ pub struct PluginsConfig {
 // Sandbox config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct SandboxConfig {
     /// Per-tool permit rules. Key is tool_name (e.g. "bash").
     /// When any rule matches, the tool runs without Landlock sandbox.
@@ -223,7 +223,7 @@ pub struct SandboxConfig {
     pub plugins: HashMap<String, SandboxPluginConfig>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct SandboxPluginConfig {
     /// Rules in format: "<param_field> <operator> <value>"
     /// Operators: starts_with, contains, equals, matches (regex)
@@ -235,7 +235,7 @@ pub struct SandboxPluginConfig {
 // Daemon config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DaemonConfig {
     #[serde(default = "default_socket_path")]
     pub listen_addr: String,
@@ -258,6 +258,7 @@ pub struct DaemonConfig {
     /// Per-tool parameter overrides.
     /// Example: [tools.web_search] api_key = "..."
     #[serde(default)]
+    #[serde(skip_serializing)]
     pub tools: HashMap<String, HashMap<String, serde_json::Value>>,
     #[serde(default)]
     pub sandbox: SandboxConfig,
@@ -350,7 +351,7 @@ fn default_developer_mode() -> bool {
     false
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LlmConfig {
     #[serde(default = "default_llm_name")]
     pub default: String,
@@ -387,7 +388,7 @@ impl Default for LlmConfig {
 ///   public_key = "pk-..."
 ///   secret_key = "sk-lf-..."
 ///   base_url = "https://cloud.langfuse.com"
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LangfuseConfig {
     pub public_key: String,
     #[serde(default)]
@@ -404,7 +405,7 @@ fn default_llm_name() -> String {
     "claude".to_string()
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LlmBackendConfig {
     pub backend_type: String,
     pub model: String,
@@ -422,7 +423,7 @@ pub struct LlmBackendConfig {
 // ---------------------------------------------------------------------------
 
 /// Completion-specific context configuration
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CompletionContextConfig {
     /// Number of recent commands shown with full detail (output, timing, exit code).
     #[serde(default = "default_detailed_commands")]
@@ -473,7 +474,7 @@ impl Default for CompletionContextConfig {
 // ---------------------------------------------------------------------------
 
 /// Hourly summary context configuration
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HourlySummaryConfig {
     /// Number of lines to keep from the start of each command output.
     #[serde(default = "default_hourly_head_lines")]
@@ -513,7 +514,7 @@ fn default_hourly_max_line_width() -> usize {
 // ---------------------------------------------------------------------------
 
 /// Daily summary context configuration
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DailySummaryConfig {
     /// Number of lines to keep from the start of each command output.
     #[serde(default = "default_daily_head_lines")]
@@ -548,7 +549,7 @@ fn default_daily_max_line_width() -> usize {
     128
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ContextConfig {
     #[serde(default)]
     pub completion: CompletionContextConfig,
@@ -592,4 +593,18 @@ fn default_detailed_min() -> usize {
 
 fn default_detailed_max() -> usize {
     30
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_daemon_config_serializes_to_toml() {
+        let config = DaemonConfig::default();
+        let value = toml::Value::try_from(&config).unwrap();
+        assert!(value.get("llm").is_some());
+        assert!(value.get("llm").unwrap().get("backends").is_some());
+        assert!(value.get("proxy").is_some() || value.get("proxy").is_none());
+    }
 }
