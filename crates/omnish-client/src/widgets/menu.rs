@@ -175,8 +175,8 @@ fn render_full(
 
     // Visible items
     let end = (scroll_offset + vis).min(items.len());
-    for i in scroll_offset..end {
-        out.push_str(&render_menu_item(&items[i], i == cursor));
+    for (i, item) in items.iter().enumerate().take(end).skip(scroll_offset) {
+        out.push_str(&render_menu_item(item, i == cursor));
         if i < end - 1 {
             out.push_str("\r\n");
         }
@@ -333,10 +333,10 @@ fn run_text_edit(
                     char_cursor -= 1;
                 }
             }
-            b if b >= 0x20 && b < 0x80 => {
-                for j in 0..n {
-                    if buf[j] >= 0x20 && buf[j] < 0x80 {
-                        chars.insert(char_cursor, buf[j] as char);
+            b if (0x20..0x80).contains(&b) => {
+                for &byte in buf.iter().take(n) {
+                    if (0x20..0x80).contains(&byte) {
+                        chars.insert(char_cursor, byte as char);
                         char_cursor += 1;
                     }
                 }
