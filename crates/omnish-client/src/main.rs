@@ -1060,6 +1060,13 @@ async fn main() -> Result<()> {
                     if !completed.is_empty() {
                         throttle.reset();
                     }
+
+                    // Flush deferred ghost if set during this PTY read's OSC processing.
+                    // When the readline report and bash's redraw arrive in the same read,
+                    // there won't be a subsequent read to trigger the flush at line 891.
+                    if let Some(ghost_render) = deferred_ghost.take() {
+                        nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                    }
                 }
                 Err(_) => break,
             }
