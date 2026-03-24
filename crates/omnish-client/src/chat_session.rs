@@ -1598,6 +1598,7 @@ impl ChatSession {
                         value: String::new(),
                     },
                 ],
+                handler: None,
             },
             MenuItem::Submenu {
                 label: "Shell".to_string(),
@@ -1620,6 +1621,7 @@ impl ChatSession {
                         selected: 0,
                     },
                 ],
+                handler: None,
             },
             MenuItem::Toggle {
                 label: "Telemetry".to_string(),
@@ -1631,7 +1633,7 @@ impl ChatSession {
             },
         ];
 
-        let result = widgets::menu::run_menu("Config", &mut items);
+        let result = widgets::menu::run_menu("Config", &mut items, None);
         match result {
             MenuResult::Done(changes) => {
                 if changes.is_empty() {

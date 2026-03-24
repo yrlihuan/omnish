@@ -31,6 +31,7 @@ pub enum MenuItem {
     Submenu {
         label: String,
         children: Vec<MenuItem>,
+        handler: Option<String>,
     },
     /// Choose from a fixed set of options.
     Select {
@@ -421,7 +422,11 @@ fn resolve_level<'a>(items: &'a mut [MenuItem], nav_stack: &[NavEntry]) -> &'a m
 // ── Main menu loop ──────────────────────────────────────────────────────
 
 /// Run the multi-level menu widget. Returns changes made or Cancelled.
-pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
+pub fn run_menu(
+    title: &str,
+    items: &mut Vec<MenuItem>,
+    mut on_handler_exit: Option<&mut dyn FnMut(&str, Vec<MenuChange>) -> Option<Vec<MenuItem>>>,
+) -> MenuResult {
     if items.is_empty() {
         return MenuResult::Done(vec![]);
     }
@@ -432,7 +437,6 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
     let mut breadcrumb_parts: Vec<String> = vec![title.to_string()];
 
     // Current level state
-    let mut current_items: &mut [MenuItem] = items;
     let mut cursor: usize = 0;
     let mut scroll_offset: usize = 0;
 
@@ -440,16 +444,49 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
     common::write_stdout(b"\x1b[?25l");
 
     // Initial render
-    let bc = breadcrumb_parts.join(" > ");
-    let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
-    common::write_stdout(full.as_bytes());
+    {
+        let current_items = resolve_level(items.as_mut_slice(), &nav_stack);
+        let bc = breadcrumb_parts.join(" > ");
+        let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
+        common::write_stdout(full.as_bytes());
+    }
 
     let stdin_fd = std::io::stdin().as_raw_fd();
     let mut byte = [0u8; 1];
 
-    let mut last_item_count = current_items.len();
+    let mut last_item_count = items.len();
 
     loop {
+        // 1. Read handler name FIRST (immutable borrow of items).
+        let current_handler: Option<String> = if !nav_stack.is_empty() {
+            let last = nav_stack.last().unwrap();
+            let mut node: &[MenuItem] = items.as_slice();
+            for entry in &nav_stack[..nav_stack.len() - 1] {
+                match &node[entry.parent_index] {
+                    MenuItem::Submenu { children, .. } => node = children,
+                    _ => break,
+                }
+            }
+            match &node[last.parent_index] {
+                MenuItem::Submenu { handler: Some(h), .. } => Some(h.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        // 2. Re-derive current_items (mutable borrow of items).
+        let current_items: &mut [MenuItem] = {
+            let mut slice = items.as_mut_slice();
+            for entry in &nav_stack {
+                match &mut slice[entry.parent_index] {
+                    MenuItem::Submenu { children, .. } => slice = children.as_mut_slice(),
+                    _ => unreachable!(),
+                }
+            }
+            slice
+        };
+
         if nix::unistd::read(stdin_fd, &mut byte) != Ok(1) {
             break;
         }
@@ -499,20 +536,41 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
                         return MenuResult::Done(changes);
                     }
 
-                    let cleanup = render_cleanup(last_item_count);
-                    common::write_stdout(cleanup.as_bytes());
+                    // Handler detection: when leaving a handler submenu, call the callback
+                    if let Some(ref handler_name) = current_handler {
+                        if let Some(ref mut callback) = on_handler_exit {
+                            let handler_prefix = breadcrumb_parts[1..].join(".");
+                            let handler_changes: Vec<MenuChange> = changes.iter()
+                                .filter(|c| c.path.starts_with(&handler_prefix))
+                                .cloned()
+                                .collect();
 
-                    breadcrumb_parts.pop();
+                            // Remove handler changes from main changes vec
+                            changes.retain(|c| !c.path.starts_with(&handler_prefix));
+
+                            if !handler_changes.is_empty() {
+                                if let Some(new_items) = callback(handler_name, handler_changes) {
+                                    *items = new_items;
+                                    nav_stack.clear();
+                                    breadcrumb_parts.truncate(1);
+                                    cursor = 0;
+                                    scroll_offset = 0;
+                                    let cleanup = render_cleanup(last_item_count);
+                                    common::write_stdout(cleanup.as_bytes());
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
+                    // Normal pop
                     let entry = nav_stack.pop().unwrap();
-
-                    current_items = resolve_level(items, &nav_stack);
                     cursor = entry.cursor;
                     scroll_offset = entry.scroll_offset;
-                    last_item_count = current_items.len();
-
-                    let bc = breadcrumb_parts.join(" > ");
-                    let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
-                    common::write_stdout(full.as_bytes());
+                    breadcrumb_parts.pop();
+                    let cleanup = render_cleanup(last_item_count);
+                    common::write_stdout(cleanup.as_bytes());
+                    continue;
                 }
             }
             b'\r' | b'\n' => {
@@ -521,7 +579,7 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
                 let row_from_bottom = lines_below_cursor(vis, cursor_vis_pos);
 
                 match &mut current_items[cursor] {
-                    MenuItem::Submenu { label, children } => {
+                    MenuItem::Submenu { label, children, .. } => {
                         if children.is_empty() {
                             continue;
                         }
@@ -537,15 +595,9 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
                         });
                         breadcrumb_parts.push(label_clone);
 
-                        current_items = resolve_level(items, &nav_stack);
-
                         cursor = 0;
                         scroll_offset = 0;
-                        last_item_count = current_items.len();
-
-                        let bc = breadcrumb_parts.join(" > ");
-                        let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
-                        common::write_stdout(full.as_bytes());
+                        continue;
                     }
                     MenuItem::Toggle { label, value } => {
                         *value = !*value;
@@ -603,6 +655,9 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
             }
             _ => {}
         }
+
+        // Update last_item_count for next iteration
+        last_item_count = current_items.len();
     }
 
     let cleanup = render_cleanup(last_item_count);
@@ -688,6 +743,7 @@ mod tests {
         let item = MenuItem::Submenu {
             label: "LLM".to_string(),
             children: vec![],
+            handler: None,
         };
         assert_eq!(item.label(), "LLM");
     }
@@ -697,6 +753,7 @@ mod tests {
         let item = MenuItem::Submenu {
             label: "LLM".to_string(),
             children: vec![],
+            handler: None,
         };
         let line = render_menu_item(&item, false);
         let text = common::strip_ansi(&line);
@@ -772,7 +829,7 @@ mod tests {
 
     #[test]
     fn test_render_hint_submenu() {
-        let item = MenuItem::Submenu { label: "X".to_string(), children: vec![] };
+        let item = MenuItem::Submenu { label: "X".to_string(), children: vec![], handler: None };
         let hint = render_hint(0, Some(&item));
         assert!(hint.contains("open"));
     }
@@ -816,6 +873,7 @@ mod tests {
             MenuItem::Submenu {
                 label: "LLM".to_string(),
                 children: vec![],
+                handler: None,
             },
         ];
         let output = render_full("Config", &items, 0, 60, 0);
@@ -827,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_empty_menu_returns_done() {
-        let result = run_menu("Empty", &mut []);
+        let result = run_menu("Empty", &mut vec![], None);
         match result {
             MenuResult::Done(changes) => assert!(changes.is_empty()),
             MenuResult::Cancelled => panic!("Expected Done"),
