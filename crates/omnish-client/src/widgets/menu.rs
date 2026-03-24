@@ -84,61 +84,73 @@ fn visible_count(total: usize) -> usize {
     total.min(MAX_VISIBLE)
 }
 
-/// Render a menu item line with right-aligned value/indicator.
+/// Render a menu item line.
+/// Toggle: label followed by [ON]/[OFF] inline.
+/// Others: value/indicator right-aligned.
 fn render_menu_item(item: &MenuItem, selected: bool, cols: u16) -> String {
-    let prefix = if selected { "> " } else { "  " };
+    let indent = "  ";
     let label = item.label();
 
-    let right = match item {
-        MenuItem::Submenu { .. } => "\x1b[2m>\x1b[0m".to_string(),
-        MenuItem::Select { options, selected: idx, .. } => {
-            let val = options.get(*idx).map(|s| s.as_str()).unwrap_or("");
-            format!("\x1b[2m{}\x1b[0m", val)
-        }
+    // Inline suffix: value shown right after label
+    let suffix = match item {
         MenuItem::Toggle { value, .. } => {
             if *value {
-                "\x1b[32mON\x1b[0m".to_string()
+                " \x1b[32m[ON]\x1b[0m".to_string()
             } else {
-                "\x1b[2mOFF\x1b[0m".to_string()
+                " \x1b[90m[OFF]\x1b[0m".to_string()
             }
         }
         MenuItem::TextInput { value, .. } => {
             if value.is_empty() {
-                "\x1b[2m(empty)\x1b[0m".to_string()
+                " \x1b[90m(empty)\x1b[0m".to_string()
             } else {
-                format!("\x1b[2m{}\x1b[0m", value)
+                format!(" \x1b[90m{}\x1b[0m", value)
             }
         }
+        _ => String::new(),
     };
 
-    // Calculate visible widths (strip ANSI for measurement)
-    let right_text = common::strip_ansi(&right);
-    let left_len = prefix.len() + label.len();
-    let right_len = right_text.len();
-    let total_width = cols as usize;
-
-    let padding = if left_len + right_len + 2 < total_width {
-        total_width - left_len - right_len
-    } else {
-        2
+    // Right-aligned indicator (Submenu >, Select value)
+    let right = match item {
+        MenuItem::Submenu { .. } => "\x1b[90m>\x1b[0m".to_string(),
+        MenuItem::Select { options, selected: idx, .. } => {
+            let val = options.get(*idx).map(|s| s.as_str()).unwrap_or("");
+            format!("\x1b[90m{}\x1b[0m", val)
+        }
+        _ => String::new(),
     };
 
-    if selected {
-        format!(
-            "\r\x1b[1;7m{}{}{}\x1b[0m{}\x1b[K",
-            prefix,
-            label,
-            " ".repeat(padding),
-            right,
-        )
+    if right.is_empty() {
+        // Toggle / TextInput: label + inline suffix, no right-align
+        if selected {
+            format!("\r{}\x1b[1;7m{}\x1b[0m{}\x1b[K", indent, label, suffix)
+        } else {
+            format!("\r{}{}{}\x1b[K", indent, label, suffix)
+        }
     } else {
-        format!(
-            "\r{}{}{}{}\x1b[K",
-            prefix,
-            label,
-            " ".repeat(padding),
-            right,
-        )
+        // Submenu / Select: label + right-aligned value
+        let right_text = common::strip_ansi(&right);
+        let left_len = indent.len() + label.len();
+        let right_len = right_text.len();
+        let total_width = cols as usize;
+
+        let padding = if left_len + right_len + 2 < total_width {
+            total_width - left_len - right_len
+        } else {
+            2
+        };
+
+        if selected {
+            format!(
+                "\r{}\x1b[1;7m{}\x1b[0m{}{}\x1b[K",
+                indent, label, " ".repeat(padding), right,
+            )
+        } else {
+            format!(
+                "\r{}{}{}{}\x1b[K",
+                indent, label, " ".repeat(padding), right,
+            )
+        }
     }
 }
 
@@ -220,10 +232,11 @@ fn render_cleanup(total_items: usize) -> String {
 // ── Text editing (char-aware) ───────────────────────────────────────────
 
 /// Render a text input line in edit mode.
+/// Keeps the same layout as the menu item: `  {label} {value}` with value highlighted.
 fn render_edit_line(label: &str, text: &str, cols: u16) -> String {
-    let prefix = "> ";
-    let label_len = prefix.len() + label.len();
-    let available = (cols as usize).saturating_sub(label_len + 2);
+    let indent = "  ";
+    let prefix_len = indent.len() + label.len() + 1; // "  " + label + " "
+    let available = (cols as usize).saturating_sub(prefix_len + 1);
 
     let chars: Vec<char> = text.chars().collect();
     let display_text: String = if chars.len() > available {
@@ -231,31 +244,35 @@ fn render_edit_line(label: &str, text: &str, cols: u16) -> String {
     } else {
         text.to_string()
     };
-    let padding = (cols as usize).saturating_sub(label_len + display_text.chars().count());
 
+    // Use inverse video (same as selected item highlight)
     format!(
-        "\r{}{}{}{}\x1b[K",
-        prefix, label, " ".repeat(padding), display_text,
+        "\r{}{} \x1b[7m{}\x1b[0m\x1b[K",
+        indent, label, display_text,
     )
 }
 
 /// Compute terminal column for the cursor within the edit line.
 fn edit_cursor_col(label: &str, text: &str, char_cursor: usize, cols: u16) -> usize {
-    let prefix_len = 2 + label.len(); // "> " + label
-    let available = (cols as usize).saturating_sub(prefix_len + 2);
+    let prefix_len = 2 + label.len() + 1; // "  " + label + " "
+    let available = (cols as usize).saturating_sub(prefix_len + 1);
     let chars: Vec<char> = text.chars().collect();
     let display_offset = if chars.len() > available {
         chars.len() - available
     } else {
         0
     };
-    let display_len = chars.len() - display_offset;
     let visual_pos = char_cursor.saturating_sub(display_offset);
-    let padding = (cols as usize).saturating_sub(prefix_len + display_len);
-    prefix_len + padding + visual_pos
+    prefix_len + visual_pos
 }
 
 /// Run inline text editor. Returns Some(new_value) on Enter, None on ESC/Ctrl-C.
+///
+/// Cursor starts at the hint line (bottom of widget). We:
+/// 1. Update hint to "Enter confirm  ESC cancel"
+/// 2. Move up to the edit line and redraw it with highlight
+/// 3. Keep cursor on the edit line throughout editing
+/// 4. On exit, move cursor back to the hint line
 fn run_text_edit(
     label: &str,
     initial: &str,
@@ -266,53 +283,61 @@ fn run_text_edit(
     let mut chars: Vec<char> = initial.chars().collect();
     let mut char_cursor = chars.len();
     let mut buf = [0u8; 4];
+    let rfb = cursor_row_from_bottom;
 
-    // Show cursor during editing
-    common::write_stdout(b"\x1b[?25h");
+    // -- Phase 1: Setup (cursor starts at hint line) --
 
-    let move_to_edit_line = |row_from_bottom: usize| {
-        if row_from_bottom > 0 {
-            common::write_stdout(format!("\x1b[{}A", row_from_bottom).as_bytes());
-        }
-    };
-    let move_back_to_bottom = |row_from_bottom: usize| {
-        if row_from_bottom > 0 {
-            common::write_stdout(format!("\x1b[{}B", row_from_bottom).as_bytes());
-        }
-    };
-
-    let redraw = |chars: &[char], char_cursor: usize, row_from_bottom: usize| {
-        let text: String = chars.iter().collect();
-        move_to_edit_line(row_from_bottom);
-        let line = render_edit_line(label, &text, cols);
-        common::write_stdout(line.as_bytes());
-        let col = edit_cursor_col(label, &text, char_cursor, cols);
-        common::write_stdout(format!("\r\x1b[{}C", col).as_bytes());
-        move_back_to_bottom(row_from_bottom);
-    };
-
-    // Initial draw of edit line
-    redraw(&chars, char_cursor, cursor_row_from_bottom);
-
-    // Update hint line to show edit hints
+    // Update hint line in place (cursor is already there)
     let hint = render_hint(0, true);
     common::write_stdout(b"\r");
     common::write_stdout(hint.as_bytes());
 
-    // Move back and position cursor
-    redraw(&chars, char_cursor, cursor_row_from_bottom);
+    // Move up to the edit line
+    if rfb > 0 {
+        common::write_stdout(format!("\x1b[{}A", rfb).as_bytes());
+    }
+
+    // Draw edit line content
+    let text: String = chars.iter().collect();
+    let line = render_edit_line(label, &text, cols);
+    common::write_stdout(line.as_bytes());
+
+    // Position cursor within the value
+    let col = edit_cursor_col(label, &text, char_cursor, cols);
+    common::write_stdout(format!("\r\x1b[{}C", col).as_bytes());
+
+    // Show cursor
+    common::write_stdout(b"\x1b[?25h");
+
+    // -- Phase 2: Edit loop (cursor stays on edit line) --
+
+    // Helper: redraw current line and reposition cursor (no vertical movement)
+    let redraw_in_place = |chars: &[char], char_cursor: usize| {
+        let text: String = chars.iter().collect();
+        let line = render_edit_line(label, &text, cols);
+        common::write_stdout(line.as_bytes());
+        let col = edit_cursor_col(label, &text, char_cursor, cols);
+        common::write_stdout(format!("\r\x1b[{}C", col).as_bytes());
+    };
+
+    // Helper: exit edit — move back to hint line, hide cursor
+    let exit_edit = |rfb: usize| {
+        if rfb > 0 {
+            common::write_stdout(format!("\x1b[{}B", rfb).as_bytes());
+        }
+        common::write_stdout(b"\x1b[?25l");
+    };
 
     while let Ok(n) = nix::unistd::read(stdin_fd, &mut buf) {
         if n == 0 { break; }
 
         match buf[0] {
             b'\r' | b'\n' => {
-                common::write_stdout(b"\x1b[?25l");
+                exit_edit(rfb);
                 return Some(chars.into_iter().collect());
             }
             0x03 => {
-                // Ctrl-C
-                common::write_stdout(b"\x1b[?25l");
+                exit_edit(rfb);
                 return None;
             }
             0x1b => {
@@ -327,8 +352,7 @@ fn run_text_edit(
                         }
                     }
                 } else {
-                    // Bare ESC: cancel edit
-                    common::write_stdout(b"\x1b[?25l");
+                    exit_edit(rfb);
                     return None;
                 }
             }
@@ -339,8 +363,6 @@ fn run_text_edit(
                 }
             }
             b if b >= 0x20 && b < 0x80 => {
-                // Printable ASCII — process all bytes from this read
-                // (handles paste / fast typing where multiple chars arrive at once)
                 for j in 0..n {
                     if buf[j] >= 0x20 && buf[j] < 0x80 {
                         chars.insert(char_cursor, buf[j] as char);
@@ -349,7 +371,6 @@ fn run_text_edit(
                 }
             }
             b if b >= 0x80 => {
-                // Multi-byte UTF-8: decode from buf[0..n]
                 if let Ok(s) = std::str::from_utf8(&buf[..n]) {
                     for ch in s.chars() {
                         chars.insert(char_cursor, ch);
@@ -360,10 +381,10 @@ fn run_text_edit(
             _ => {}
         }
 
-        redraw(&chars, char_cursor, cursor_row_from_bottom);
+        redraw_in_place(&chars, char_cursor);
     }
 
-    common::write_stdout(b"\x1b[?25l");
+    exit_edit(rfb);
     None
 }
 
@@ -382,6 +403,36 @@ struct NavEntry {
     parent_index: usize,
     cursor: usize,
     scroll_offset: usize,
+}
+
+/// Handle TextInput edit: enters inline editor, applies result, records change.
+/// Returns true if value was changed.
+fn handle_text_edit(
+    item: &mut MenuItem,
+    breadcrumb_parts: &[String],
+    changes: &mut Vec<MenuChange>,
+    row_from_bottom: usize,
+    cols: u16,
+) -> bool {
+    let MenuItem::TextInput { label, value } = item else { return false };
+    let label_clone = label.clone();
+    let old_value = value.clone();
+
+    let result = run_text_edit(&label_clone, &old_value, row_from_bottom, cols);
+    match result {
+        Some(new_val) => {
+            *value = new_val.clone();
+            if new_val != old_value {
+                let path = build_path(breadcrumb_parts, &label_clone);
+                changes.push(MenuChange { path, value: new_val });
+                return true;
+            }
+        }
+        None => {
+            *value = old_value;
+        }
+    }
+    false
 }
 
 /// Rebuild `current_items` pointer by traversing nav_stack from root.
@@ -562,28 +613,14 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
                         let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
                         common::write_stdout(full.as_bytes());
                     }
-                    MenuItem::TextInput { label, value } => {
-                        let label_clone = label.clone();
-                        let old_value = value.clone();
-
-                        let result = run_text_edit(&label_clone, &old_value, row_from_bottom, cols);
-
-                        match result {
-                            Some(new_val) => {
-                                *value = new_val.clone();
-                                if new_val != old_value {
-                                    let path = build_path(&breadcrumb_parts, &label_clone);
-                                    changes.push(MenuChange {
-                                        path,
-                                        value: new_val,
-                                    });
-                                }
-                            }
-                            None => {
-                                *value = old_value;
-                            }
-                        }
-
+                    MenuItem::TextInput { .. } => {
+                        handle_text_edit(
+                            &mut current_items[cursor],
+                            &breadcrumb_parts,
+                            &mut changes,
+                            row_from_bottom,
+                            cols,
+                        );
                         // Full redraw to restore hint and clean up
                         let bc = breadcrumb_parts.join(" > ");
                         let tl = total_lines(current_items.len());
@@ -702,7 +739,7 @@ mod tests {
         let line = render_menu_item(&item, false, 40);
         let text = common::strip_ansi(&line);
         assert!(text.contains("Enabled"));
-        assert!(text.contains("ON"));
+        assert!(text.contains("[ON]"));
     }
 
     #[test]
@@ -713,7 +750,7 @@ mod tests {
         };
         let line = render_menu_item(&item, false, 40);
         let text = common::strip_ansi(&line);
-        assert!(text.contains("OFF"));
+        assert!(text.contains("[OFF]"));
     }
 
     #[test]
@@ -819,14 +856,15 @@ mod tests {
 
     #[test]
     fn test_edit_cursor_col() {
-        // label "Proxy" with prefix "> " = 7 chars, cols=40, text="hello", cursor at end
+        // layout: "  Proxy hello" — indent(2) + label(5) + space(1) + text
+        // cursor at end of "hello" (pos 5)
         let col = edit_cursor_col("Proxy", "hello", 5, 40);
-        // prefix(2) + label(5) + padding(40-7-5=28) + 5 = 40
-        assert_eq!(col, 40);
+        // 2 + 5 + 1 + 5 = 13
+        assert_eq!(col, 13);
 
-        // cursor at start
+        // cursor at start of text (pos 0)
         let col = edit_cursor_col("Proxy", "hello", 0, 40);
-        // prefix(2) + label(5) + padding(28) + 0 = 35
-        assert_eq!(col, 35);
+        // 2 + 5 + 1 + 0 = 8
+        assert_eq!(col, 8);
     }
 }

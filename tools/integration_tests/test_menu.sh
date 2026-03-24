@@ -72,6 +72,24 @@ test_1() {
         return 1
     fi
 
+    # Check TextInput shows current value after label
+    if ! echo "$content" | grep "Username" | grep -q "user"; then
+        assert_fail "TextInput 'Username' does not show current value 'user'"
+        return 1
+    fi
+
+    # Check Toggle shows [OFF] after label
+    if ! echo "$content" | grep "Telemetry" | grep -q "\[OFF\]"; then
+        assert_fail "Toggle 'Telemetry' does not show [OFF]"
+        return 1
+    fi
+
+    # Check SubMenu shows > indicator
+    if ! echo "$content" | grep "LLM" | grep -q ">"; then
+        assert_fail "SubMenu 'LLM' does not show > indicator"
+        return 1
+    fi
+
     # Check hint line
     if ! echo "$content" | grep -q "move"; then
         assert_fail "Hint line not found"
@@ -142,7 +160,7 @@ test_3() {
     show_capture "Before toggle" "$content" 10
 
     # Telemetry starts as OFF — press Enter to toggle ON
-    if ! echo "$content" | grep -q "OFF"; then
+    if ! echo "$content" | grep -q "\[OFF\]"; then
         assert_fail "Telemetry initial value not OFF"
         send_special Escape 0.5
         return 1
@@ -152,7 +170,7 @@ test_3() {
     content=$(capture_pane -20)
     show_capture "After toggle" "$content" 10
 
-    if echo "$content" | grep "Telemetry" | grep -q "ON"; then
+    if echo "$content" | grep "Telemetry" | grep -q "\[ON\]"; then
         echo -e "  ${GREEN}Toggled OFF→ON${NC}"
     else
         assert_fail "Toggle did not change to ON"
@@ -164,7 +182,7 @@ test_3() {
     send_enter 0.5
     content=$(capture_pane -20)
 
-    if echo "$content" | grep "Telemetry" | grep -q "OFF"; then
+    if echo "$content" | grep "Telemetry" | grep -q "\[OFF\]"; then
         assert_pass "Toggle flips value correctly (OFF→ON→OFF)"
         send_special Escape 0.5
         return 0
@@ -211,6 +229,22 @@ test_4() {
 
     if ! echo "$content" | grep -q "Streaming"; then
         assert_fail "'Streaming' not found in LLM submenu"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Select item should show current value (#4)
+    if ! echo "$content" | grep "Default backend" | grep -q "claude"; then
+        assert_fail "Select 'Default backend' does not show current value 'claude'"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # TextInput should show current value (#1)
+    if ! echo "$content" | grep "API key" | grep -q "sk-"; then
+        assert_fail "TextInput 'API key' does not show current value"
         send_special Escape 0.5
         send_special Escape 0.5
         return 1
@@ -388,5 +422,113 @@ test_7() {
     fi
 }
 
+# ── Test 8: TextInput edit state verification ───────────────────────────
+test_8() {
+    echo -e "\n${YELLOW}=== Test 8: TextInput edit state verification ===${NC}"
+
+    restart_client
+    wait_for_client
+    open_test_menu
+
+    # Navigate to Username (4th item: Down x3)
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    sleep 0.3
+
+    # Record cursor Y before entering edit
+    local cursor_y_before
+    cursor_y_before=$(_tmux display-message -p -t "$PANE" '#{cursor_y}')
+    echo -e "  Cursor Y before edit: $cursor_y_before"
+
+    # Get the Username line number in visible area
+    local content
+    content=$(capture_pane -20)
+    local username_line
+    username_line=$(echo "$content" | grep -n "Username" | tail -1 | cut -d: -f1)
+    echo -e "  Username at capture line: $username_line"
+
+    # Press Enter to enter edit mode
+    send_enter 0.5
+
+    content=$(capture_pane -20)
+    show_capture "Edit mode state" "$content" 15
+
+    # 1. Verify hint line changed to edit mode
+    if ! echo "$content" | grep -q "confirm"; then
+        assert_fail "Edit hint 'confirm' not shown"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}Edit hint shown correctly${NC}"
+
+    # 2. Verify cursor Y is on the edit line (Username row), not at bottom
+    local cursor_y_edit
+    cursor_y_edit=$(_tmux display-message -p -t "$PANE" '#{cursor_y}')
+    local cursor_x_edit
+    cursor_x_edit=$(_tmux display-message -p -t "$PANE" '#{cursor_x}')
+    echo -e "  Cursor position in edit mode: x=$cursor_x_edit y=$cursor_y_edit"
+
+    # Cursor should NOT be on the hint line (last line).
+    # Get pane height to determine hint line position
+    local pane_height
+    pane_height=$(_tmux display-message -p -t "$PANE" '#{pane_height}')
+    local hint_y=$((pane_height - 1))
+    echo -e "  Pane height: $pane_height, hint line Y: $hint_y"
+
+    if [[ "$cursor_y_edit" -ge "$hint_y" ]]; then
+        assert_fail "Cursor is at bottom (y=$cursor_y_edit) instead of edit line"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}Cursor is on edit line, not at bottom${NC}"
+
+    # 3. Verify the Username line shows the value (should still show "user")
+    if ! echo "$content" | grep "Username" | grep -q "user"; then
+        assert_fail "Username value 'user' not visible in edit mode"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}Value 'user' visible in edit mode${NC}"
+
+    # 4. Type a character and verify it appears on the edit line
+    send_keys "X" 0.3
+    content=$(capture_pane -20)
+    show_capture "After typing X" "$content" 15
+
+    if echo "$content" | grep "Username" | grep -q "X"; then
+        echo -e "  ${GREEN}Typed character 'X' appears on edit line${NC}"
+    else
+        assert_fail "Typed character 'X' not on Username edit line"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # 5. Verify cursor X moved forward after typing
+    local cursor_x_after
+    cursor_x_after=$(_tmux display-message -p -t "$PANE" '#{cursor_x}')
+    echo -e "  Cursor X after typing: $cursor_x_after (was $cursor_x_edit)"
+
+    if [[ "$cursor_x_after" -gt "$cursor_x_edit" ]]; then
+        echo -e "  ${GREEN}Cursor X advanced after typing${NC}"
+    else
+        assert_fail "Cursor X did not advance after typing (before=$cursor_x_edit, after=$cursor_x_after)"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # ESC to cancel, ESC to exit menu
+    send_special Escape 0.5
+    send_special Escape 0.5
+
+    assert_pass "TextInput edit state: cursor on edit line, typing works, hint correct"
+    return 0
+}
+
 echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input${NC}"
-run_tests 7
+run_tests 8
