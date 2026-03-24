@@ -36,6 +36,8 @@ pub enum MenuItem {
         label: String,
         children: Vec<MenuItem>,
         handler: Option<String>,
+        /// When true, TextInput items auto-enter edit on focus and Enter advances to next item.
+        form_mode: bool,
     },
     /// Choose from a fixed set of options.
     Select {
@@ -460,10 +462,11 @@ pub fn run_menu(
 
     let mut last_item_count = items.len();
     let mut needs_redraw = false;
+    let mut pending_auto_edit = false; // form_mode: auto-enter text edit after redraw
 
     loop {
-        // 1. Read handler name FIRST (immutable borrow of items).
-        let current_handler: Option<String> = if !nav_stack.is_empty() {
+        // 1. Read handler name and form_mode FIRST (immutable borrow of items).
+        let (current_handler, in_form_mode): (Option<String>, bool) = if !nav_stack.is_empty() {
             let last = nav_stack.last().unwrap();
             let mut node: &[MenuItem] = items.as_slice();
             for entry in &nav_stack[..nav_stack.len() - 1] {
@@ -473,11 +476,14 @@ pub fn run_menu(
                 }
             }
             match &node[last.parent_index] {
-                MenuItem::Submenu { handler: Some(h), .. } => Some(h.clone()),
-                _ => None,
+                MenuItem::Submenu { handler, form_mode, .. } => (
+                    handler.clone(),
+                    *form_mode,
+                ),
+                _ => (None, false),
             }
         } else {
-            None
+            (None, false)
         };
 
         // 2. Re-derive current_items (mutable borrow of items).
@@ -499,6 +505,42 @@ pub fn run_menu(
             let bc = breadcrumb_parts.join(" > ");
             let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
             common::write_stdout(full.as_bytes());
+        }
+
+        // 3b. Form mode: auto-enter text edit after redraw
+        if pending_auto_edit && in_form_mode {
+            pending_auto_edit = false;
+            if cursor < current_items.len() && matches!(current_items[cursor], MenuItem::TextInput { .. }) {
+                let vis = visible_count(current_items.len());
+                let cursor_vis_pos = cursor - scroll_offset;
+                let rfb = lines_below_cursor(vis, cursor_vis_pos);
+                handle_text_edit(
+                    &mut current_items[cursor],
+                    &breadcrumb_parts,
+                    &mut changes,
+                    rfb,
+                    cols,
+                );
+                // After text edit returns, advance cursor in form mode
+                if cursor < current_items.len() - 1 {
+                    cursor += 1;
+                    if cursor >= scroll_offset + vis {
+                        scroll_offset = cursor - vis + 1;
+                    }
+                    // Chain: if next item is also TextInput, set pending again
+                    if matches!(current_items[cursor], MenuItem::TextInput { .. }) {
+                        pending_auto_edit = true;
+                    }
+                }
+                // Redraw
+                let bc = breadcrumb_parts.join(" > ");
+                let tl = total_lines(current_items.len());
+                common::write_stdout(format!("\x1b[{}A\r\x1b[J", tl - 1).as_bytes());
+                let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
+                common::write_stdout(full.as_bytes());
+                last_item_count = current_items.len();
+                continue;
+            }
         }
 
         if nix::unistd::read(stdin_fd, &mut byte) != Ok(1) {
@@ -527,6 +569,9 @@ pub fn run_menu(
                                 } else {
                                     incremental_redraw(current_items, cursor, cursor + 1, vis, scroll_offset);
                                 }
+                                if in_form_mode && matches!(current_items[cursor], MenuItem::TextInput { .. }) {
+                                    pending_auto_edit = true;
+                                }
                             }
                             b'B' if cursor < current_items.len().saturating_sub(1) => {
                                 cursor += 1;
@@ -536,6 +581,9 @@ pub fn run_menu(
                                     full_redraw(&bc, current_items, cursor, cols, scroll_offset, vis);
                                 } else {
                                     incremental_redraw(current_items, cursor, cursor - 1, vis, scroll_offset);
+                                }
+                                if in_form_mode && matches!(current_items[cursor], MenuItem::TextInput { .. }) {
+                                    pending_auto_edit = true;
                                 }
                             }
                             _ => {}
@@ -595,11 +643,12 @@ pub fn run_menu(
                 let row_from_bottom = lines_below_cursor(vis, cursor_vis_pos);
 
                 match &mut current_items[cursor] {
-                    MenuItem::Submenu { label, children, .. } => {
+                    MenuItem::Submenu { label, children, form_mode, .. } => {
                         if children.is_empty() {
                             continue;
                         }
                         let label_clone = label.clone();
+                        let entering_form = *form_mode;
 
                         let cleanup = render_cleanup(last_item_count);
                         common::write_stdout(cleanup.as_bytes());
@@ -614,6 +663,7 @@ pub fn run_menu(
                         cursor = 0;
                         scroll_offset = 0;
                         needs_redraw = true;
+                        pending_auto_edit = entering_form;
                         continue;
                     }
                     MenuItem::Toggle { label, value } => {
@@ -623,11 +673,26 @@ pub fn run_menu(
                             path,
                             value: value.to_string(),
                         });
-                        // Redraw just the current item
-                        common::write_stdout(format!("\x1b[{}A", row_from_bottom).as_bytes());
-                        let line = render_menu_item(&current_items[cursor], true);
-                        common::write_stdout(line.as_bytes());
-                        common::write_stdout(format!("\x1b[{}B", row_from_bottom).as_bytes());
+
+                        if in_form_mode && cursor < current_items.len() - 1 {
+                            // Form mode: advance to next item
+                            cursor += 1;
+                            if cursor >= scroll_offset + vis {
+                                scroll_offset = cursor - vis + 1;
+                            }
+                            pending_auto_edit = matches!(current_items[cursor], MenuItem::TextInput { .. });
+                            let bc = breadcrumb_parts.join(" > ");
+                            let tl = total_lines(current_items.len());
+                            common::write_stdout(format!("\x1b[{}A\r\x1b[J", tl - 1).as_bytes());
+                            let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
+                            common::write_stdout(full.as_bytes());
+                        } else {
+                            // Normal mode: redraw just the current item
+                            common::write_stdout(format!("\x1b[{}A", row_from_bottom).as_bytes());
+                            let line = render_menu_item(&current_items[cursor], true);
+                            common::write_stdout(line.as_bytes());
+                            common::write_stdout(format!("\x1b[{}B", row_from_bottom).as_bytes());
+                        }
                     }
                     MenuItem::Select { label, options, selected } => {
                         let label_clone = label.clone();
@@ -649,6 +714,14 @@ pub fn run_menu(
                             }
                         }
 
+                        if in_form_mode && cursor < current_items.len() - 1 {
+                            cursor += 1;
+                            if cursor >= scroll_offset + vis {
+                                scroll_offset = cursor - vis + 1;
+                            }
+                            pending_auto_edit = matches!(current_items[cursor], MenuItem::TextInput { .. });
+                        }
+
                         let bc = breadcrumb_parts.join(" > ");
                         let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
                         common::write_stdout(full.as_bytes());
@@ -661,6 +734,15 @@ pub fn run_menu(
                             row_from_bottom,
                             cols,
                         );
+
+                        if in_form_mode && cursor < current_items.len() - 1 {
+                            cursor += 1;
+                            if cursor >= scroll_offset + vis {
+                                scroll_offset = cursor - vis + 1;
+                            }
+                            pending_auto_edit = matches!(current_items[cursor], MenuItem::TextInput { .. });
+                        }
+
                         // Full redraw to restore hint and clean up
                         let bc = breadcrumb_parts.join(" > ");
                         let tl = total_lines(current_items.len());
@@ -771,6 +853,7 @@ mod tests {
             label: "LLM".to_string(),
             children: vec![],
             handler: None,
+            form_mode: false,
         };
         assert_eq!(item.label(), "LLM");
     }
@@ -781,6 +864,7 @@ mod tests {
             label: "LLM".to_string(),
             children: vec![],
             handler: None,
+            form_mode: false,
         };
         let line = render_menu_item(&item, false);
         let text = common::strip_ansi(&line);
@@ -856,7 +940,7 @@ mod tests {
 
     #[test]
     fn test_render_hint_submenu() {
-        let item = MenuItem::Submenu { label: "X".to_string(), children: vec![], handler: None };
+        let item = MenuItem::Submenu { label: "X".to_string(), children: vec![], handler: None, form_mode: false };
         let hint = render_hint(0, Some(&item));
         assert!(hint.contains("open"));
     }
@@ -901,6 +985,7 @@ mod tests {
                 label: "LLM".to_string(),
                 children: vec![],
                 handler: None,
+                form_mode: false,
             },
         ];
         let output = render_full("Config", &items, 0, 60, 0);

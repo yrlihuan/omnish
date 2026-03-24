@@ -173,6 +173,7 @@ fn build_menu_tree(
                             label: label.clone(),
                             children: Vec::new(),
                             handler,
+                            form_mode: seg == "__new__",
                         });
                         current.len() - 1
                     }
@@ -1721,6 +1722,7 @@ impl ChatSession {
                 },
             ],
             handler: Some("add_item".to_string()),
+            form_mode: true,
         };
 
         let mut items = vec![
@@ -1750,6 +1752,7 @@ impl ChatSession {
                     },
                 ],
                 handler: None,
+                form_mode: false,
             },
             MenuItem::Submenu {
                 label: "Shell".to_string(),
@@ -1773,6 +1776,7 @@ impl ChatSession {
                     },
                 ],
                 handler: None,
+                form_mode: false,
             },
             MenuItem::Toggle {
                 label: "Telemetry".to_string(),

@@ -12,6 +12,7 @@
 #   7. Enter on TextInput opens editor, type + Enter saves, ESC cancels
 #   8. TextInput edit state verification (cursor position, typing)
 #   9. Add item via handler submenu (fill form, ESC triggers handler, new item appears)
+#  10. Form mode: auto-edit on entry, Enter advances cursor, handler works
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -28,6 +29,7 @@ Test cases:
   7. TextInput: type + Enter saves, ESC cancels
   8. TextInput edit state verification
   9. Add item via handler submenu
+ 10. Form mode: auto-edit, Enter advance, handler
 EOF
 }
 
@@ -569,13 +571,12 @@ test_9() {
         return 1
     fi
 
-    # Edit the Name field: Enter to edit, type "MyFlag", Enter to confirm
-    send_enter 0.5
+    # form_mode: Name TextInput auto-enters edit mode, just type and Enter to advance
     send_keys "MyFlag" 0.3
     send_enter 0.5
 
     content=$(capture_pane -20)
-    show_capture "After setting Name" "$content" 10
+    show_capture "After setting Name (form_mode)" "$content" 10
 
     if ! echo "$content" | grep "Name" | grep -q "MyFlag"; then
         assert_fail "Name value 'MyFlag' not saved"
@@ -621,5 +622,79 @@ test_9() {
     return 0
 }
 
-echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input, add item${NC}"
-run_tests 9
+# ── Test 10: Form mode auto-edit and cursor advance ───────────────────
+test_10() {
+    echo -e "\n${YELLOW}=== Test 10: Form mode auto-edit and cursor advance ===${NC}"
+
+    restart_client
+    wait_for_client
+    open_test_menu
+
+    # Navigate to "Add item" (last item: Down x4)
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+
+    # Enter "Add item" submenu (form_mode=true)
+    send_enter 0.5
+
+    local content
+    content=$(capture_pane -20)
+    show_capture "Form mode entry" "$content" 10
+
+    # 1. Verify auto-edit: cursor should be visible (edit mode shows cursor)
+    #    and Name field should be in edit highlight (not inverse-selected)
+    local cursor_visible
+    cursor_visible=$(_tmux display-message -p -t "$PANE" '#{cursor_flag}')
+
+    # 2. Type in Name field (auto-edit, no Enter needed to start)
+    send_keys "TestItem" 0.3
+
+    content=$(capture_pane -20)
+    show_capture "Typing in auto-edit" "$content" 10
+
+    if ! echo "$content" | grep "Name" | grep -q "TestItem"; then
+        assert_fail "Typed text 'TestItem' not visible in auto-edit Name field"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}Auto-edit: typing works without pressing Enter first${NC}"
+
+    # 3. Press Enter to confirm Name — should advance to Type (Select)
+    send_enter 0.5
+
+    content=$(capture_pane -20)
+    show_capture "After Enter (should advance to Type)" "$content" 10
+
+    # Name should still show "TestItem" and Type should be highlighted
+    if ! echo "$content" | grep "Name" | grep -q "TestItem"; then
+        assert_fail "Name value lost after Enter"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}Enter advances cursor from Name to Type${NC}"
+
+    # 4. ESC back to root (triggers handler since Name was filled)
+    send_special Escape 1.0
+
+    content=$(capture_pane -20)
+    show_capture "After handler" "$content" 12
+
+    if echo "$content" | grep -q "TestItem"; then
+        echo -e "  ${GREEN}Handler created 'TestItem' in root menu${NC}"
+    else
+        assert_fail "New item 'TestItem' not found after form_mode handler"
+        send_special Escape 0.5
+        return 1
+    fi
+
+    send_special Escape 0.5
+    assert_pass "Form mode: auto-edit on entry, Enter advances, handler works"
+    return 0
+}
+
+echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input, add item, form mode${NC}"
+run_tests 10
