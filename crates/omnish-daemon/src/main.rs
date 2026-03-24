@@ -277,7 +277,7 @@ async fn async_main() -> Result<i32> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| omnish_dir.join("daemon.toml"));
     let config_watcher = config_watcher::ConfigWatcher::new(
-        config_path,
+        config_path.clone(),
         config.clone(),
         &file_watcher,
     );
@@ -314,10 +314,13 @@ async fn async_main() -> Result<i32> {
         });
     }
 
+    let daemon_config_arc = std::sync::Arc::new(std::sync::RwLock::new(config.clone()));
     let server_opts = Arc::new(server::ServerOpts {
         proxy: config.proxy,
         no_proxy: config.no_proxy,
         sandbox_rules: Arc::clone(&server_sandbox_rules),
+        config_path: config_path.clone(),
+        daemon_config: daemon_config_arc,
     });
     // Create formatter manager and register external formatters from plugins
     let mut formatter_mgr = omnish_daemon::formatter_mgr::FormatterManager::new();

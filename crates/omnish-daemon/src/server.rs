@@ -117,6 +117,8 @@ pub struct ServerOpts {
     pub proxy: Option<String>,
     pub no_proxy: Option<String>,
     pub sandbox_rules: SandboxRules,
+    pub config_path: std::path::PathBuf,
+    pub daemon_config: std::sync::Arc<std::sync::RwLock<omnish_common::config::DaemonConfig>>,
 }
 
 pub struct DaemonServer {
@@ -822,6 +824,33 @@ async fn handle_message(
             }
 
             tracing::info!("Chat interrupted by user (thread={}, request={})", ci.thread_id, ci.request_id);
+            let _ = tx.send(Message::Ack).await;
+        }
+        Message::ConfigQuery => {
+            let config = opts.daemon_config.read().unwrap().clone();
+            let (items, handlers) = crate::config_schema::build_config_items(&config);
+            let _ = tx.send(Message::ConfigResponse { items, handlers }).await;
+        }
+        Message::ConfigUpdate { changes } => {
+            let result = crate::config_schema::apply_config_changes(&opts.config_path, &changes);
+            match result {
+                Ok(()) => {
+                    // Reload config after successful write
+                    if let Ok(new_config) = omnish_common::config::load_daemon_config() {
+                        *opts.daemon_config.write().unwrap() = new_config;
+                    }
+                    let _ = tx.send(Message::ConfigUpdateResult { ok: true, error: None }).await;
+                }
+                Err(e) => {
+                    let _ = tx.send(Message::ConfigUpdateResult {
+                        ok: false,
+                        error: Some(e.to_string()),
+                    }).await;
+                }
+            }
+        }
+        Message::ConfigResponse { .. } | Message::ConfigUpdateResult { .. } => {
+            // These are daemon→client messages, ignore if received
             let _ = tx.send(Message::Ack).await;
         }
         _ => {
