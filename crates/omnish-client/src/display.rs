@@ -147,9 +147,10 @@ pub fn render_tool_header(icon: &omnish_protocol::message::StatusIcon, display_n
         StatusIcon::Success => "\x1b[38;5;114m●\x1b[0m",
         StatusIcon::Error => "\x1b[38;5;211m●\x1b[0m",
     };
+    let oneline = collapse_newlines(param_desc);
     let name_cols = display_name.len() + 2;
     let available = max_cols.saturating_sub(4 + name_cols);
-    let truncated = truncate_cols(param_desc, available);
+    let truncated = truncate_cols(&oneline, available);
     format!("{} \x1b[1m{}\x1b[0m\x1b[2m({})\x1b[0m", icon_str, display_name, truncated)
 }
 
@@ -160,7 +161,28 @@ pub fn render_tool_header_full(icon: &omnish_protocol::message::StatusIcon, disp
         StatusIcon::Success => "\x1b[38;5;114m●\x1b[0m",
         StatusIcon::Error => "\x1b[38;5;211m●\x1b[0m",
     };
-    format!("{} \x1b[1m{}\x1b[0m\x1b[2m({})\x1b[0m", icon_str, display_name, param_desc)
+    let oneline = collapse_newlines(param_desc);
+    format!("{} \x1b[1m{}\x1b[0m\x1b[2m({})\x1b[0m", icon_str, display_name, oneline)
+}
+
+/// Collapse newlines (and surrounding whitespace) into a single space.
+fn collapse_newlines(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut prev_was_newline = false;
+    for ch in s.chars() {
+        if ch == '\n' || ch == '\r' {
+            if !prev_was_newline && !result.is_empty() {
+                result.push(' ');
+            }
+            prev_was_newline = true;
+        } else if prev_was_newline && ch == ' ' {
+            // skip leading space after newline collapse
+        } else {
+            prev_was_newline = false;
+            result.push(ch);
+        }
+    }
+    result.trim_end().to_string()
 }
 
 pub fn render_tool_output(lines: &[String]) -> Vec<String> {
@@ -225,6 +247,18 @@ mod tests {
     fn truncate_cols_empty() {
         assert_eq!(truncate_cols("hello", 0), "");
         assert_eq!(truncate_cols("", 10), "");
+    }
+
+    #[test]
+    fn collapse_newlines_multiline_command() {
+        assert_eq!(
+            collapse_newlines("git add file && git commit -m \"fix\n\nIssue #414\""),
+            "git add file && git commit -m \"fix Issue #414\""
+        );
+        assert_eq!(collapse_newlines("single line"), "single line");
+        assert_eq!(collapse_newlines("line1\n  line2"), "line1 line2");
+        assert_eq!(collapse_newlines("a\n\n\nb"), "a b");
+        assert_eq!(collapse_newlines(""), "");
     }
 
     /// Helper: feed bytes into a vt100 parser and return the parser for inspection.
