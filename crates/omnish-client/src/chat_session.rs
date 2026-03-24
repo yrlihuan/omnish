@@ -276,22 +276,39 @@ impl ChatSession {
         let mut count = 0usize;
 
         for entry in &self.scroll_history[hist_start..] {
-            if let ScrollEntry::ToolStatus(cts) = entry {
-                let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
-                let param_desc = cts.param_desc.as_deref().unwrap_or("");
-                let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Running);
-                let header = display::render_tool_header(icon, display_name, param_desc, cols);
-                write_stdout(&header);
-                write_stdout("\r\n");
-                count += Self::visual_rows(&header, cols);
-                if let Some(ref lines) = cts.result_compact {
-                    let rendered = display::render_tool_output_with_cols(lines, cols);
-                    for line in &rendered {
-                        write_stdout(line);
-                        write_stdout("\r\n");
-                        count += Self::visual_rows(line, cols);
+            match entry {
+                ScrollEntry::ToolStatus(cts) => {
+                    let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
+                    let param_desc = cts.param_desc.as_deref().unwrap_or("");
+                    let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Running);
+                    let header = display::render_tool_header(icon, display_name, param_desc, cols);
+                    write_stdout(&header);
+                    write_stdout("\r\n");
+                    count += Self::visual_rows(&header, cols);
+                    if let Some(ref lines) = cts.result_compact {
+                        let rendered = display::render_tool_output_with_cols(lines, cols);
+                        for line in &rendered {
+                            write_stdout(line);
+                            write_stdout("\r\n");
+                            count += Self::visual_rows(line, cols);
+                        }
                     }
                 }
+                ScrollEntry::LlmText(text) => {
+                    write_stdout("\r\n");
+                    count += 1;
+                    for (i, line) in text.split('\n').enumerate() {
+                        let formatted = if i == 0 {
+                            format!("\x1b[97m●\x1b[0m {}", line)
+                        } else {
+                            format!("  {}", line)
+                        };
+                        write_stdout(&formatted);
+                        write_stdout("\r\n");
+                        count += Self::visual_rows(&formatted, cols);
+                    }
+                }
+                _ => {}
             }
         }
 
