@@ -10,6 +10,8 @@
 #   5. ESC at top level exits menu with "No changes" or change summary
 #   6. Ctrl-C cancels menu (shows "Cancelled")
 #   7. Enter on TextInput opens editor, type + Enter saves, ESC cancels
+#   8. TextInput edit state verification (cursor position, typing)
+#   9. Add item via handler submenu (fill form, ESC triggers handler, new item appears)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -24,6 +26,8 @@ Test cases:
   5. ESC at top level exits menu, shows changes or "No changes"
   6. Ctrl-C cancels menu (shows "Cancelled")
   7. TextInput: type + Enter saves, ESC cancels
+  8. TextInput edit state verification
+  9. Add item via handler submenu
 EOF
 }
 
@@ -530,5 +534,92 @@ test_8() {
     return 0
 }
 
-echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input${NC}"
-run_tests 8
+# ── Test 9: Add item handler submenu ──────────────────────────────────
+test_9() {
+    echo -e "\n${YELLOW}=== Test 9: Add item via handler submenu ===${NC}"
+
+    restart_client
+    wait_for_client
+    open_test_menu
+
+    # Navigate to "Add item" (last item: Down x4)
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+
+    # Enter "Add item" submenu
+    send_enter 0.5
+
+    local content
+    content=$(capture_pane -20)
+    show_capture "Add item submenu" "$content" 10
+
+    # Should see breadcrumb "Config > Add item" and fields Name, Type
+    if ! echo "$content" | grep -q "Add item"; then
+        assert_fail "Not inside Add item submenu"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    if ! echo "$content" | grep -q "Name"; then
+        assert_fail "Name field not found in Add item submenu"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Edit the Name field: Enter to edit, type "MyFlag", Enter to confirm
+    send_enter 0.5
+    send_keys "MyFlag" 0.3
+    send_enter 0.5
+
+    content=$(capture_pane -20)
+    show_capture "After setting Name" "$content" 10
+
+    if ! echo "$content" | grep "Name" | grep -q "MyFlag"; then
+        assert_fail "Name value 'MyFlag' not saved"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # ESC back triggers handler — should return to root with new item
+    send_special Escape 1.0
+
+    content=$(capture_pane -20)
+    show_capture "After handler (root)" "$content" 12
+
+    # New item "MyFlag" should appear in root menu as a Toggle [OFF]
+    if echo "$content" | grep -q "MyFlag"; then
+        echo -e "  ${GREEN}New item 'MyFlag' appears in root menu${NC}"
+    else
+        assert_fail "New item 'MyFlag' not found in root menu after handler"
+        send_special Escape 0.5
+        return 1
+    fi
+
+    if echo "$content" | grep "MyFlag" | grep -q "\[OFF\]"; then
+        echo -e "  ${GREEN}New item shows as Toggle [OFF]${NC}"
+    else
+        assert_fail "New item 'MyFlag' not showing as Toggle [OFF]"
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # "Add item" should still be present
+    if echo "$content" | grep -q "Add item"; then
+        echo -e "  ${GREEN}'Add item' still present in menu${NC}"
+    else
+        assert_fail "'Add item' disappeared after handler"
+        send_special Escape 0.5
+        return 1
+    fi
+
+    send_special Escape 0.5
+    assert_pass "Add item via handler submenu works"
+    return 0
+}
+
+echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input, add item${NC}"
+run_tests 9

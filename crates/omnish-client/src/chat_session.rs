@@ -1684,7 +1684,27 @@ impl ChatSession {
     }
 
     fn handle_test_menu(&self) {
-        use widgets::menu::{MenuItem, MenuResult};
+        use std::cell::RefCell;
+        use widgets::menu::{MenuChange, MenuItem, MenuResult};
+
+        let make_add_item = || MenuItem::Submenu {
+            label: "Add item".to_string(),
+            children: vec![
+                MenuItem::TextInput {
+                    label: "Name".to_string(),
+                    value: String::new(),
+                },
+                MenuItem::Select {
+                    label: "Type".to_string(),
+                    options: vec![
+                        "toggle".to_string(),
+                        "text".to_string(),
+                    ],
+                    selected: 0,
+                },
+            ],
+            handler: Some("add_item".to_string()),
+        };
 
         let mut items = vec![
             MenuItem::Submenu {
@@ -1745,9 +1765,54 @@ impl ChatSession {
                 label: "Username".to_string(),
                 value: "user".to_string(),
             },
+            make_add_item(),
         ];
 
-        let result = widgets::menu::run_menu("Config", &mut items, None);
+        // Shadow copy tracks current items for the handler callback
+        let items_shadow = RefCell::new(items.clone());
+
+        let mut handler_callback = |_handler_name: &str, changes: Vec<MenuChange>| -> Option<Vec<MenuItem>> {
+            let name = changes.iter()
+                .find(|c| c.path.ends_with(".Name"))
+                .map(|c| c.value.clone())
+                .unwrap_or_default();
+            if name.is_empty() {
+                return None;
+            }
+            let kind = changes.iter()
+                .find(|c| c.path.ends_with(".Type"))
+                .map(|c| c.value.as_str())
+                .unwrap_or("toggle");
+
+            let new_item = match kind {
+                "text" => MenuItem::TextInput {
+                    label: name,
+                    value: String::new(),
+                },
+                _ => MenuItem::Toggle {
+                    label: name,
+                    value: false,
+                },
+            };
+
+            let mut current = items_shadow.borrow().clone();
+            // Insert new item before "Add item" (last element)
+            current.insert(current.len() - 1, new_item);
+            // Reset the "Add item" form
+            if let Some(MenuItem::Submenu { children, .. }) = current.last_mut() {
+                for child in children.iter_mut() {
+                    match child {
+                        MenuItem::TextInput { value, .. } => *value = String::new(),
+                        MenuItem::Select { selected, .. } => *selected = 0,
+                        _ => {}
+                    }
+                }
+            }
+            *items_shadow.borrow_mut() = current.clone();
+            Some(current)
+        };
+
+        let result = widgets::menu::run_menu("Config", &mut items, Some(&mut handler_callback));
         match result {
             MenuResult::Done(changes) => {
                 if changes.is_empty() {

@@ -26,6 +26,7 @@ fn lines_below_cursor(vis: usize, cursor_vis_pos: usize) -> usize {
 // ── Public types ────────────────────────────────────────────────────────
 
 /// A single menu item.
+#[derive(Clone)]
 pub enum MenuItem {
     /// Navigate into a child menu.
     Submenu {
