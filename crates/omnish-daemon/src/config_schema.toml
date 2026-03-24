@@ -1,0 +1,81 @@
+# Config schema: maps menu items to daemon.toml keys.
+# Embedded via include_str!() — changes require recompilation.
+#
+# Fields:
+#   path         — dot-separated menu hierarchy (e.g., "proxy.http_proxy")
+#   label        — display name in menu
+#   kind         — text | select | toggle | submenu
+#   toml_key     — actual daemon.toml key path (leaf items without handler)
+#   options_from — (select) TOML table whose keys become options at runtime
+#   options      — (select) static option list
+#   handler      — (submenu) Rust function name for grouped change handling
+
+# ── Proxy ──────────────────────────────────────────────
+[[items]]
+path = "proxy.http_proxy"
+label = "HTTP proxy"
+kind = "text"
+toml_key = "proxy"
+
+[[items]]
+path = "proxy.no_proxy"
+label = "No proxy"
+kind = "text"
+toml_key = "no_proxy"
+
+# ── LLM use cases ─────────────────────────────────────
+[[items]]
+path = "llm.use_cases.completion"
+label = "Completion backend"
+kind = "select"
+toml_key = "llm.use_cases.completion"
+options_from = "llm.backends"
+
+[[items]]
+path = "llm.use_cases.analysis"
+label = "Analysis backend"
+kind = "select"
+toml_key = "llm.use_cases.analysis"
+options_from = "llm.backends"
+
+[[items]]
+path = "llm.use_cases.chat"
+label = "Chat backend"
+kind = "select"
+toml_key = "llm.use_cases.chat"
+options_from = "llm.backends"
+
+# ── Add new LLM backend ───────────────────────────────
+# handler on submenu node: all child changes are grouped
+# and passed to the handler function on ESC back
+[[items]]
+path = "llm.backends.__new__"
+label = "Add backend"
+kind = "submenu"
+handler = "add_backend"
+
+[[items]]
+path = "llm.backends.__new__.name"
+label = "Name"
+kind = "text"
+
+[[items]]
+path = "llm.backends.__new__.backend_type"
+label = "Backend type"
+kind = "select"
+options = ["anthropic", "openai_compat"]
+
+[[items]]
+path = "llm.backends.__new__.model"
+label = "Model"
+kind = "text"
+
+[[items]]
+path = "llm.backends.__new__.api_key_cmd"
+label = "API key command"
+kind = "text"
+
+[[items]]
+path = "llm.backends.__new__.base_url"
+label = "Base URL"
+kind = "text"
