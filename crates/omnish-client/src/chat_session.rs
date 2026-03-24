@@ -1911,16 +1911,22 @@ impl ChatSession {
                     write_stdout("\x1b[2;90mNo changes made.\x1b[0m\r\n");
                     return;
                 }
-                let pm = path_map.borrow();
-                let config_changes: Vec<ConfigChange> = changes.iter()
-                    .map(|mc| {
-                        let schema_path = pm.get(&mc.path)
-                            .cloned()
-                            .unwrap_or_else(|| mc.path.clone());
-                        ConfigChange { path: schema_path, value: mc.value.clone() }
-                    })
-                    .collect();
-                drop(pm);
+                // Clone path_map contents inside a block to ensure RefCell borrow
+                // is fully released before entering async code
+                let config_changes: Vec<ConfigChange> = {
+                    let pm = path_map.borrow();
+                    let path_map_clone = pm.clone();
+                    drop(pm);
+
+                    changes.iter()
+                        .map(|mc| {
+                            let schema_path = path_map_clone.get(&mc.path)
+                                .cloned()
+                                .unwrap_or_else(|| mc.path.clone());
+                            ConfigChange { path: schema_path, value: mc.value.clone() }
+                        })
+                        .collect()
+                };
 
                 match rpc.call(Message::ConfigUpdate { changes: config_changes }).await {
                     Ok(Message::ConfigUpdateResult { ok: true, .. }) => {

@@ -280,8 +280,10 @@ mod tests {
 
     #[test]
     fn test_resolve_value_top_level() {
-        let mut config = DaemonConfig::default();
-        config.proxy = Some("http://proxy:8080".to_string());
+        let config = DaemonConfig {
+            proxy: Some("http://proxy:8080".to_string()),
+            ..Default::default()
+        };
         let val = toml::Value::try_from(&config).unwrap();
         assert_eq!(resolve_value(&val, "proxy"), Some("http://proxy:8080".to_string()));
     }

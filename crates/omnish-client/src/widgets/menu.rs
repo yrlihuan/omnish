@@ -25,6 +25,9 @@ fn lines_below_cursor(vis: usize, cursor_vis_pos: usize) -> usize {
 
 // ── Public types ────────────────────────────────────────────────────────
 
+/// Callback type for handling menu exit events.
+type MenuExitHandler<'a> = Option<&'a mut dyn FnMut(&str, Vec<MenuChange>) -> Option<Vec<MenuItem>>>;
+
 /// A single menu item.
 #[derive(Clone)]
 pub enum MenuItem {
@@ -426,7 +429,7 @@ fn resolve_level<'a>(items: &'a mut [MenuItem], nav_stack: &[NavEntry]) -> &'a m
 pub fn run_menu(
     title: &str,
     items: &mut Vec<MenuItem>,
-    mut on_handler_exit: Option<&mut dyn FnMut(&str, Vec<MenuChange>) -> Option<Vec<MenuItem>>>,
+    mut on_handler_exit: MenuExitHandler,
 ) -> MenuResult {
     if items.is_empty() {
         return MenuResult::Done(vec![]);
