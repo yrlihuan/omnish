@@ -1,4 +1,5 @@
 pub mod chat_layout;
+pub mod common;
 pub mod inline_notice;
 pub mod line_editor;
 pub mod line_status;

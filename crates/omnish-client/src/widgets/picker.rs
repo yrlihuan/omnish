@@ -6,8 +6,7 @@
 
 use std::os::unix::io::AsRawFd;
 
-/// Maximum number of items visible in the picker viewport.
-const MAX_VISIBLE: usize = 10;
+use super::common::{self, MAX_VISIBLE};
 
 /// Icon style for disabled items in the picker.
 #[allow(dead_code)]
@@ -31,17 +30,8 @@ impl DisabledIcon {
     }
 }
 
-/// Get terminal width, fallback to 80.
-fn terminal_cols() -> u16 {
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    let ret = unsafe { libc::ioctl(0, libc::TIOCGWINSZ, &mut ws) };
-    if ret == 0 && ws.ws_col > 0 { ws.ws_col } else { 80 }
-}
-
-/// Separator line spanning `cols` columns (dim horizontal-rule characters).
-fn render_separator(cols: u16) -> String {
-    format!("\r\x1b[2m{}\x1b[0m", "\u{2500}".repeat(cols as usize))
-}
+fn terminal_cols() -> u16 { common::terminal_cols() }
+fn render_separator(cols: u16) -> String { common::render_separator(cols) }
 
 /// Render a single item line.
 /// - `selected`: this is the cursor row (render with `> ` prefix + bold + reverse video)
@@ -151,28 +141,12 @@ fn render_cleanup(total_items: usize) -> String {
     format!("\x1b[{}A\r\x1b[J", up)
 }
 
-/// Parse escape sequence after ESC byte.
-/// Uses poll with 50ms timeout to distinguish bare ESC from arrow keys.
-fn parse_esc_seq(stdin_fd: i32) -> Option<[u8; 2]> {
-    let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
-    let ready = unsafe { libc::poll(&mut pfd, 1, 50) };
-    if ready <= 0 {
-        return None;
-    }
-    let mut seq = [0u8; 2];
-    if nix::unistd::read(stdin_fd, &mut seq[0..1]) != Ok(1) {
-        return None;
-    }
-    if seq[0] == b'[' && nix::unistd::read(stdin_fd, &mut seq[1..2]) == Ok(1) {
-        return Some(seq);
-    }
-    None
-}
+fn parse_esc_seq(stdin_fd: i32) -> Option<[u8; 2]> { common::parse_esc_seq(stdin_fd) }
 
 /// Rewrite a single item line in-place (cursor must already be on that line).
 fn redraw_item(text: &str, selected: bool, checked: bool, multi: bool, disabled_icon: Option<DisabledIcon>) {
     let line = render_item(text, selected, checked, multi, disabled_icon);
-    nix::unistd::write(std::io::stdout(), line.as_bytes()).ok();
+    common::write_stdout(line.as_bytes());
 }
 
 /// Extract shortcut key from item text.
@@ -219,11 +193,11 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
         .collect();
 
     // Hide cursor during picker interaction
-    nix::unistd::write(std::io::stdout(), b"\x1b[?25l").ok();
+    common::write_stdout(b"\x1b[?25l");
 
     // Initial render
     let full = render_full(title, items, cursor, &checked, &disabled, multi, cols, scroll_offset);
-    nix::unistd::write(std::io::stdout(), full.as_bytes()).ok();
+    common::write_stdout(full.as_bytes());
 
     let stdin_fd = std::io::stdin().as_raw_fd();
     let mut byte = [0u8; 1];
@@ -245,22 +219,22 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
                                         // Move up to title line first
                                         let total_lines = 1 + 1 + vis + 1 + 1;
                                         let s = format!("\x1b[{}A", total_lines - 1);
-                                        nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
-                                        nix::unistd::write(std::io::stdout(), b"\r\x1b[J").ok();
-                                        nix::unistd::write(std::io::stdout(), full.as_bytes()).ok();
+                                        common::write_stdout(s.as_bytes());
+                                        common::write_stdout(b"\r\x1b[J");
+                                        common::write_stdout(full.as_bytes());
                                     } else {
                                         // Incremental: redraw old and new within viewport
                                         let old_vis_pos = old - scroll_offset; // 0-based position in viewport
                                         let up_to_old = (vis - old_vis_pos) + 1; // +1 for bottom separator
                                         let s = format!("\x1b[{}A", up_to_old);
-                                        nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                                        common::write_stdout(s.as_bytes());
                                         redraw_item(items[old], false, checked[old], multi, disabled[old]);
-                                        nix::unistd::write(std::io::stdout(), b"\x1b[1A").ok();
+                                        common::write_stdout(b"\x1b[1A");
                                         redraw_item(items[cursor], true, checked[cursor], multi, disabled[cursor]);
                                         let new_vis_pos = cursor - scroll_offset;
                                         let down = (vis - new_vis_pos) + 1;
                                         let s = format!("\x1b[{}B", down);
-                                        nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                                        common::write_stdout(s.as_bytes());
                                     }
                                 }
                                 b'B' if cursor < items.len() - 1 => { // Down arrow
@@ -273,22 +247,22 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
                                         let full = render_full(title, items, cursor, &checked, &disabled, multi, cols, scroll_offset);
                                         let total_lines = 1 + 1 + vis + 1 + 1;
                                         let s = format!("\x1b[{}A", total_lines - 1);
-                                        nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
-                                        nix::unistd::write(std::io::stdout(), b"\r\x1b[J").ok();
-                                        nix::unistd::write(std::io::stdout(), full.as_bytes()).ok();
+                                        common::write_stdout(s.as_bytes());
+                                        common::write_stdout(b"\r\x1b[J");
+                                        common::write_stdout(full.as_bytes());
                                     } else {
                                         // Incremental: redraw old and new within viewport
                                         let old_vis_pos = old - scroll_offset;
                                         let up_to_old = (vis - old_vis_pos) + 1;
                                         let s = format!("\x1b[{}A", up_to_old);
-                                        nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                                        common::write_stdout(s.as_bytes());
                                         redraw_item(items[old], false, checked[old], multi, disabled[old]);
-                                        nix::unistd::write(std::io::stdout(), b"\x1b[1B").ok();
+                                        common::write_stdout(b"\x1b[1B");
                                         redraw_item(items[cursor], true, checked[cursor], multi, disabled[cursor]);
                                         let new_vis_pos = cursor - scroll_offset;
                                         let down = (vis - new_vis_pos) + 1;
                                         let s = format!("\x1b[{}B", down);
-                                        nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                                        common::write_stdout(s.as_bytes());
                                     }
                                 }
                                 _ => {} // Ignore other sequences
@@ -297,8 +271,8 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
                     } else {
                         // Bare ESC — cancel
                         let cleanup = render_cleanup(items.len());
-                        nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
-                        nix::unistd::write(std::io::stdout(), b"\x1b[?25h").ok();
+                        common::write_stdout(cleanup.as_bytes());
+                        common::write_stdout(b"\x1b[?25h");
                         return None;
                     }
                 }
@@ -308,17 +282,17 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
                     let vis_pos = cursor - scroll_offset;
                     let up = (vis - vis_pos) + 1;
                     let s = format!("\x1b[{}A", up);
-                    nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                    common::write_stdout(s.as_bytes());
                     redraw_item(items[cursor], true, checked[cursor], multi, disabled[cursor]);
                     let down = (vis - vis_pos) + 1;
                     let s = format!("\x1b[{}B", down);
-                    nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+                    common::write_stdout(s.as_bytes());
                 }
                 b'\r' | b'\n' if disabled[cursor].is_none() => {
                     // Confirm selection (skip if cursor is on disabled item)
                     let cleanup = render_cleanup(items.len());
-                    nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
-                    nix::unistd::write(std::io::stdout(), b"\x1b[?25h").ok();
+                    common::write_stdout(cleanup.as_bytes());
+                    common::write_stdout(b"\x1b[?25h");
                     if multi {
                         let selected: Vec<usize> = checked.iter()
                             .enumerate()
@@ -335,8 +309,8 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
                 if let Some(&idx) = shortcuts.get(&key.to_ascii_lowercase()) {
                     if disabled[idx].is_none() {
                         let cleanup = render_cleanup(items.len());
-                        nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
-                        nix::unistd::write(std::io::stdout(), b"\x1b[?25h").ok();
+                        common::write_stdout(cleanup.as_bytes());
+                        common::write_stdout(b"\x1b[?25h");
                         if multi {
                             checked[idx] = !checked[idx];
                             let selected: Vec<usize> = checked.iter()
@@ -355,8 +329,8 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
     }
 
     let cleanup = render_cleanup(items.len());
-    nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
-    nix::unistd::write(std::io::stdout(), b"\x1b[?25h").ok();
+    common::write_stdout(cleanup.as_bytes());
+    common::write_stdout(b"\x1b[?25h");
     None
 }
 

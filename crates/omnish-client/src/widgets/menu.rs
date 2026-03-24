@@ -2,12 +2,26 @@
 //
 // Multi-level menu widget for hierarchical option navigation.
 // Supports submenu drilling, toggle, select, and text input item types.
-// Reuses picker rendering patterns (separator, viewport scrolling, hint line).
+// Reuses shared terminal utilities from widgets/common.rs.
 
 use std::os::unix::io::AsRawFd;
 
-/// Maximum number of items visible in the menu viewport.
-const MAX_VISIBLE: usize = 10;
+use super::common::{self, MAX_VISIBLE};
+
+// ── Layout constants ────────────────────────────────────────────────────
+
+/// Number of non-item lines in the widget: breadcrumb + sep + sep + hint.
+const CHROME_LINES: usize = 4;
+
+/// Total lines occupied by the widget for a given item count.
+fn total_lines(item_count: usize) -> usize {
+    CHROME_LINES + visible_count(item_count)
+}
+
+/// Lines below the cursor item: remaining visible items + separator + hint.
+fn lines_below_cursor(vis: usize, cursor_vis_pos: usize) -> usize {
+    (vis - 1 - cursor_vis_pos) + 2 // remaining items + separator + hint
+}
 
 // ── Public types ────────────────────────────────────────────────────────
 
@@ -66,16 +80,6 @@ pub struct MenuChange {
 
 // ── Rendering helpers ───────────────────────────────────────────────────
 
-fn terminal_cols() -> u16 {
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    let ret = unsafe { libc::ioctl(0, libc::TIOCGWINSZ, &mut ws) };
-    if ret == 0 && ws.ws_col > 0 { ws.ws_col } else { 80 }
-}
-
-fn render_separator(cols: u16) -> String {
-    format!("\r\x1b[2m{}\x1b[0m", "\u{2500}".repeat(cols as usize))
-}
-
 fn visible_count(total: usize) -> usize {
     total.min(MAX_VISIBLE)
 }
@@ -108,7 +112,7 @@ fn render_menu_item(item: &MenuItem, selected: bool, cols: u16) -> String {
     };
 
     // Calculate visible widths (strip ANSI for measurement)
-    let right_text = strip_ansi(&right);
+    let right_text = common::strip_ansi(&right);
     let left_len = prefix.len() + label.len();
     let right_len = right_text.len();
     let total_width = cols as usize;
@@ -120,7 +124,6 @@ fn render_menu_item(item: &MenuItem, selected: bool, cols: u16) -> String {
     };
 
     if selected {
-        // Bold + reverse for the whole line, but right value uses its own colors
         format!(
             "\r\x1b[1;7m{}{}{}\x1b[0m{}\x1b[K",
             prefix,
@@ -163,14 +166,14 @@ fn render_full(
     scroll_offset: usize,
 ) -> String {
     let vis = visible_count(items.len());
-    let total_lines = 1 + 1 + vis + 1 + 1; // breadcrumb + sep + items + sep + hint
+    let tl = total_lines(items.len());
     let mut out = String::new();
 
     // Push screen content up
-    for _ in 0..total_lines {
+    for _ in 0..tl {
         out.push_str("\r\n");
     }
-    out.push_str(&format!("\x1b[{}A", total_lines));
+    out.push_str(&format!("\x1b[{}A", tl));
 
     // Breadcrumb title (with scroll-up indicator)
     if scroll_offset > 0 {
@@ -184,7 +187,7 @@ fn render_full(
     out.push_str("\r\n");
 
     // Top separator
-    out.push_str(&render_separator(cols));
+    out.push_str(&common::render_separator(cols));
     out.push_str("\r\n");
 
     // Visible items
@@ -199,7 +202,7 @@ fn render_full(
 
     // Bottom separator
     let remaining_below = items.len().saturating_sub(end);
-    out.push_str(&render_separator(cols));
+    out.push_str(&common::render_separator(cols));
     out.push_str("\r\n");
 
     // Hint
@@ -209,84 +212,50 @@ fn render_full(
 }
 
 fn render_cleanup(total_items: usize) -> String {
-    let vis = visible_count(total_items);
-    let total_lines = 1 + 1 + vis + 1 + 1;
-    let up = total_lines - 1;
+    let tl = total_lines(total_items);
+    let up = tl - 1;
     format!("\x1b[{}A\r\x1b[J", up)
 }
 
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut in_esc = false;
-    for ch in s.chars() {
-        if in_esc {
-            if ch.is_ascii_alphabetic() {
-                in_esc = false;
-            }
-        } else if ch == '\x1b' {
-            in_esc = true;
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
-
-fn write_stdout(data: &[u8]) {
-    nix::unistd::write(std::io::stdout(), data).ok();
-}
-
-/// Parse escape sequence after ESC byte.
-fn parse_esc_seq(stdin_fd: i32) -> Option<[u8; 2]> {
-    let mut pfd = libc::pollfd {
-        fd: stdin_fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let ready = unsafe { libc::poll(&mut pfd, 1, 50) };
-    if ready <= 0 {
-        return None;
-    }
-    let mut seq = [0u8; 2];
-    if nix::unistd::read(stdin_fd, &mut seq[0..1]) != Ok(1) {
-        return None;
-    }
-    if seq[0] == b'[' && nix::unistd::read(stdin_fd, &mut seq[1..2]) == Ok(1) {
-        return Some(seq);
-    }
-    None
-}
-
-// ── Text editing ────────────────────────────────────────────────────────
+// ── Text editing (char-aware) ───────────────────────────────────────────
 
 /// Render a text input line in edit mode.
-fn render_edit_line(label: &str, text: &str, cursor_pos: usize, cols: u16, selected: bool) -> String {
-    let prefix = if selected { "> " } else { "  " };
-    let label_part = format!("{}{}", prefix, label);
-    let label_len = label_part.len();
-    // Reserve space: label + 2 spaces minimum + text
+fn render_edit_line(label: &str, text: &str, cols: u16) -> String {
+    let prefix = "> ";
+    let label_len = prefix.len() + label.len();
     let available = (cols as usize).saturating_sub(label_len + 2);
-    let display_text = if text.len() > available {
-        &text[text.len() - available..]
-    } else {
-        text
-    };
-    let padding = (cols as usize).saturating_sub(label_len + display_text.len());
 
-    // Show text in normal color (not dimmed), with cursor positioned
-    let (before, after) = if cursor_pos <= display_text.len() {
-        (&display_text[..cursor_pos], &display_text[cursor_pos..])
+    let chars: Vec<char> = text.chars().collect();
+    let display_text: String = if chars.len() > available {
+        chars[chars.len() - available..].iter().collect()
     } else {
-        (display_text, "")
+        text.to_string()
     };
+    let padding = (cols as usize).saturating_sub(label_len + display_text.chars().count());
 
     format!(
-        "\r{}{}{}{}{}\x1b[K",
-        prefix, label, " ".repeat(padding), before, after,
+        "\r{}{}{}{}\x1b[K",
+        prefix, label, " ".repeat(padding), display_text,
     )
 }
 
-/// Run inline text editor. Returns Some(new_value) on Enter, None on ESC.
+/// Compute terminal column for the cursor within the edit line.
+fn edit_cursor_col(label: &str, text: &str, char_cursor: usize, cols: u16) -> usize {
+    let prefix_len = 2 + label.len(); // "> " + label
+    let available = (cols as usize).saturating_sub(prefix_len + 2);
+    let chars: Vec<char> = text.chars().collect();
+    let display_offset = if chars.len() > available {
+        chars.len() - available
+    } else {
+        0
+    };
+    let display_len = chars.len() - display_offset;
+    let visual_pos = char_cursor.saturating_sub(display_offset);
+    let padding = (cols as usize).saturating_sub(prefix_len + display_len);
+    prefix_len + padding + visual_pos
+}
+
+/// Run inline text editor. Returns Some(new_value) on Enter, None on ESC/Ctrl-C.
 fn run_text_edit(
     label: &str,
     initial: &str,
@@ -294,112 +263,102 @@ fn run_text_edit(
     cols: u16,
 ) -> Option<String> {
     let stdin_fd = std::io::stdin().as_raw_fd();
-    let mut text = initial.to_string();
-    let mut cursor_pos = text.len();
-    let mut byte = [0u8; 1];
+    let mut chars: Vec<char> = initial.chars().collect();
+    let mut char_cursor = chars.len();
+    let mut buf = [0u8; 4];
 
     // Show cursor during editing
-    write_stdout(b"\x1b[?25h");
+    common::write_stdout(b"\x1b[?25h");
 
-    // Move to the item line and redraw in edit mode
-    if cursor_row_from_bottom > 0 {
-        write_stdout(format!("\x1b[{}A", cursor_row_from_bottom).as_bytes());
-    }
-    let line = render_edit_line(label, &text, cursor_pos, cols, true);
-    write_stdout(line.as_bytes());
-
-    // Position terminal cursor within the text
-    let redraw_cursor = |text: &str, cursor_pos: usize, label: &str, cols: u16| {
-        let prefix_len = 2 + label.len(); // "> " + label
-        let available = (cols as usize).saturating_sub(prefix_len + 2);
-        let display_offset = if text.len() > available {
-            text.len() - available
-        } else {
-            0
-        };
-        let visual_pos = cursor_pos - display_offset;
-        let total_offset = (cols as usize).saturating_sub(text.len() - display_offset) + visual_pos;
-        write_stdout(format!("\r\x1b[{}C", total_offset).as_bytes());
+    let move_to_edit_line = |row_from_bottom: usize| {
+        if row_from_bottom > 0 {
+            common::write_stdout(format!("\x1b[{}A", row_from_bottom).as_bytes());
+        }
+    };
+    let move_back_to_bottom = |row_from_bottom: usize| {
+        if row_from_bottom > 0 {
+            common::write_stdout(format!("\x1b[{}B", row_from_bottom).as_bytes());
+        }
     };
 
-    redraw_cursor(&text, cursor_pos, label, cols);
+    let redraw = |chars: &[char], char_cursor: usize, row_from_bottom: usize| {
+        let text: String = chars.iter().collect();
+        move_to_edit_line(row_from_bottom);
+        let line = render_edit_line(label, &text, cols);
+        common::write_stdout(line.as_bytes());
+        let col = edit_cursor_col(label, &text, char_cursor, cols);
+        common::write_stdout(format!("\r\x1b[{}C", col).as_bytes());
+        move_back_to_bottom(row_from_bottom);
+    };
 
-    // Update hint line
-    if cursor_row_from_bottom > 0 {
-        write_stdout(format!("\x1b[{}B", cursor_row_from_bottom).as_bytes());
-    }
-    // Move to hint line (2 down from last visible item = separator + hint)
+    // Initial draw of edit line
+    redraw(&chars, char_cursor, cursor_row_from_bottom);
+
+    // Update hint line to show edit hints
     let hint = render_hint(0, true);
-    write_stdout(b"\r");
-    write_stdout(hint.as_bytes());
-    // Move back to edit line
-    if cursor_row_from_bottom > 0 {
-        write_stdout(format!("\x1b[{}A", cursor_row_from_bottom).as_bytes());
-    }
-    redraw_cursor(&text, cursor_pos, label, cols);
+    common::write_stdout(b"\r");
+    common::write_stdout(hint.as_bytes());
 
-    while let Ok(1) = nix::unistd::read(stdin_fd, &mut byte) {
-        match byte[0] {
+    // Move back and position cursor
+    redraw(&chars, char_cursor, cursor_row_from_bottom);
+
+    while let Ok(n) = nix::unistd::read(stdin_fd, &mut buf) {
+        if n == 0 { break; }
+
+        match buf[0] {
             b'\r' | b'\n' => {
-                // Confirm edit
-                write_stdout(b"\x1b[?25l");
-                return Some(text);
+                common::write_stdout(b"\x1b[?25l");
+                return Some(chars.into_iter().collect());
             }
             0x03 => {
-                // Ctrl-C: cancel entire widget (caller handles)
-                write_stdout(b"\x1b[?25l");
+                // Ctrl-C
+                common::write_stdout(b"\x1b[?25l");
                 return None;
             }
             0x1b => {
-                if let Some(seq) = parse_esc_seq(stdin_fd) {
+                if let Some(seq) = common::parse_esc_seq(stdin_fd) {
                     if seq[0] == b'[' {
                         match seq[1] {
-                            b'D' if cursor_pos > 0 => {
-                                // Left arrow
-                                cursor_pos -= 1;
-                            }
-                            b'C' if cursor_pos < text.len() => {
-                                // Right arrow
-                                cursor_pos += 1;
-                            }
-                            b'H' => cursor_pos = 0, // Home
-                            b'F' => cursor_pos = text.len(), // End
+                            b'D' if char_cursor > 0 => char_cursor -= 1,
+                            b'C' if char_cursor < chars.len() => char_cursor += 1,
+                            b'H' => char_cursor = 0,
+                            b'F' => char_cursor = chars.len(),
                             _ => {}
                         }
                     }
                 } else {
-                    // Bare ESC: cancel edit, restore old value
-                    write_stdout(b"\x1b[?25l");
-                    // We return a special sentinel; caller restores old value
+                    // Bare ESC: cancel edit
+                    common::write_stdout(b"\x1b[?25l");
                     return None;
                 }
             }
             0x7f | 0x08 => {
-                // Backspace
-                if cursor_pos > 0 {
-                    text.remove(cursor_pos - 1);
-                    cursor_pos -= 1;
+                if char_cursor > 0 {
+                    chars.remove(char_cursor - 1);
+                    char_cursor -= 1;
                 }
             }
-            b if b >= 0x20 => {
-                // Printable character
-                text.insert(cursor_pos, b as char);
-                cursor_pos += 1;
+            b if n == 1 && b >= 0x20 && b < 0x80 => {
+                // Single-byte ASCII printable
+                chars.insert(char_cursor, b as char);
+                char_cursor += 1;
+            }
+            b if b >= 0x80 => {
+                // Multi-byte UTF-8: decode from buf[0..n]
+                if let Ok(s) = std::str::from_utf8(&buf[..n]) {
+                    for ch in s.chars() {
+                        chars.insert(char_cursor, ch);
+                        char_cursor += 1;
+                    }
+                }
             }
             _ => {}
         }
 
-        // Redraw edit line
-        if cursor_row_from_bottom > 0 {
-            // Already on the edit line from previous iteration
-        }
-        let line = render_edit_line(label, &text, cursor_pos, cols, true);
-        write_stdout(b"\r");
-        write_stdout(line.as_bytes());
-        redraw_cursor(&text, cursor_pos, label, cols);
+        redraw(&chars, char_cursor, cursor_row_from_bottom);
     }
 
-    write_stdout(b"\x1b[?25l");
+    common::write_stdout(b"\x1b[?25l");
     None
 }
 
@@ -411,17 +370,28 @@ fn run_select(title: &str, options: &[String], initial: usize) -> Option<usize> 
     super::picker::pick_one_at(title, &refs, initial)
 }
 
-// ── Main menu loop ──────────────────────────────────────────────────────
+// ── Navigation helpers ──────────────────────────────────────────────────
 
-/// Navigation stack entry: (index into parent's children, cursor position, scroll offset).
+/// Navigation stack entry.
 struct NavEntry {
-    /// Index of the Submenu item in the parent level.
     parent_index: usize,
-    /// Cursor position when we left this level.
     cursor: usize,
-    /// Scroll offset when we left this level.
     scroll_offset: usize,
 }
+
+/// Rebuild `current_items` pointer by traversing nav_stack from root.
+fn resolve_level<'a>(items: &'a mut [MenuItem], nav_stack: &[NavEntry]) -> &'a mut [MenuItem] {
+    let mut level = items;
+    for nav in nav_stack {
+        level = match &mut level[nav.parent_index] {
+            MenuItem::Submenu { children, .. } => children.as_mut_slice(),
+            _ => unreachable!(),
+        };
+    }
+    level
+}
+
+// ── Main menu loop ──────────────────────────────────────────────────────
 
 /// Run the multi-level menu widget. Returns changes made or Cancelled.
 pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
@@ -429,7 +399,7 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
         return MenuResult::Done(vec![]);
     }
 
-    let cols = terminal_cols();
+    let cols = common::terminal_cols();
     let mut changes: Vec<MenuChange> = Vec::new();
     let mut nav_stack: Vec<NavEntry> = Vec::new();
     let mut breadcrumb_parts: Vec<String> = vec![title.to_string()];
@@ -440,17 +410,16 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
     let mut scroll_offset: usize = 0;
 
     // Hide cursor
-    write_stdout(b"\x1b[?25l");
+    common::write_stdout(b"\x1b[?25l");
 
     // Initial render
     let bc = breadcrumb_parts.join(" > ");
     let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
-    write_stdout(full.as_bytes());
+    common::write_stdout(full.as_bytes());
 
     let stdin_fd = std::io::stdin().as_raw_fd();
     let mut byte = [0u8; 1];
 
-    // We need to track the item count for cleanup before navigation
     let mut last_item_count = current_items.len();
 
     loop {
@@ -462,17 +431,16 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
             0x03 => {
                 // Ctrl-C: quit entirely
                 let cleanup = render_cleanup(last_item_count);
-                write_stdout(cleanup.as_bytes());
-                write_stdout(b"\x1b[?25h");
+                common::write_stdout(cleanup.as_bytes());
+                common::write_stdout(b"\x1b[?25h");
                 return MenuResult::Cancelled;
             }
             0x1b => {
-                if let Some(seq) = parse_esc_seq(stdin_fd) {
+                if let Some(seq) = common::parse_esc_seq(stdin_fd) {
                     if seq[0] == b'[' {
                         let vis = visible_count(current_items.len());
                         match seq[1] {
                             b'A' if cursor > 0 => {
-                                // Up arrow
                                 cursor -= 1;
                                 if cursor < scroll_offset {
                                     scroll_offset = cursor;
@@ -483,7 +451,6 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
                                 }
                             }
                             b'B' if cursor < current_items.len().saturating_sub(1) => {
-                                // Down arrow
                                 cursor += 1;
                                 if cursor >= scroll_offset + vis {
                                     scroll_offset = cursor - vis + 1;
@@ -499,41 +466,32 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
                 } else {
                     // Bare ESC: go back one level or exit
                     if nav_stack.is_empty() {
-                        // Top level: exit
                         let cleanup = render_cleanup(last_item_count);
-                        write_stdout(cleanup.as_bytes());
-                        write_stdout(b"\x1b[?25h");
+                        common::write_stdout(cleanup.as_bytes());
+                        common::write_stdout(b"\x1b[?25h");
                         return MenuResult::Done(changes);
                     }
 
-                    // Pop navigation stack
                     let cleanup = render_cleanup(last_item_count);
-                    write_stdout(cleanup.as_bytes());
+                    common::write_stdout(cleanup.as_bytes());
 
                     breadcrumb_parts.pop();
                     let entry = nav_stack.pop().unwrap();
 
-                    // Navigate back to parent: rebuild pointer
-                    current_items = items;
-                    for nav in &nav_stack {
-                        current_items = match &mut current_items[nav.parent_index] {
-                            MenuItem::Submenu { children, .. } => children.as_mut_slice(),
-                            _ => unreachable!(),
-                        };
-                    }
+                    current_items = resolve_level(items, &nav_stack);
                     cursor = entry.cursor;
                     scroll_offset = entry.scroll_offset;
                     last_item_count = current_items.len();
 
                     let bc = breadcrumb_parts.join(" > ");
                     let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
-                    write_stdout(full.as_bytes());
+                    common::write_stdout(full.as_bytes());
                 }
             }
             b'\r' | b'\n' => {
-                // Enter: action depends on item type
                 let vis = visible_count(current_items.len());
-                let row_from_bottom = (vis - (cursor - scroll_offset)) + 1; // +1 for bottom separator
+                let cursor_vis_pos = cursor - scroll_offset;
+                let row_from_bottom = lines_below_cursor(vis, cursor_vis_pos);
 
                 match &mut current_items[cursor] {
                     MenuItem::Submenu { label, children } => {
@@ -542,11 +500,9 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
                         }
                         let label_clone = label.clone();
 
-                        // Clean up current view
                         let cleanup = render_cleanup(last_item_count);
-                        write_stdout(cleanup.as_bytes());
+                        common::write_stdout(cleanup.as_bytes());
 
-                        // Push nav state
                         nav_stack.push(NavEntry {
                             parent_index: cursor,
                             cursor,
@@ -554,14 +510,7 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
                         });
                         breadcrumb_parts.push(label_clone);
 
-                        // Navigate into submenu: rebuild pointer from root
-                        current_items = items;
-                        for nav in &nav_stack {
-                            current_items = match &mut current_items[nav.parent_index] {
-                                MenuItem::Submenu { children, .. } => children.as_mut_slice(),
-                                _ => unreachable!(),
-                            };
-                        }
+                        current_items = resolve_level(items, &nav_stack);
 
                         cursor = 0;
                         scroll_offset = 0;
@@ -569,31 +518,28 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
 
                         let bc = breadcrumb_parts.join(" > ");
                         let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
-                        write_stdout(full.as_bytes());
+                        common::write_stdout(full.as_bytes());
                     }
                     MenuItem::Toggle { label, value } => {
                         *value = !*value;
-                        // Record change
                         let path = build_path(&breadcrumb_parts, label);
                         changes.push(MenuChange {
                             path,
                             value: value.to_string(),
                         });
                         // Redraw just the current item
-                        let up = row_from_bottom;
-                        write_stdout(format!("\x1b[{}A", up).as_bytes());
+                        common::write_stdout(format!("\x1b[{}A", row_from_bottom).as_bytes());
                         let line = render_menu_item(&current_items[cursor], true, cols);
-                        write_stdout(line.as_bytes());
-                        write_stdout(format!("\x1b[{}B", up).as_bytes());
+                        common::write_stdout(line.as_bytes());
+                        common::write_stdout(format!("\x1b[{}B", row_from_bottom).as_bytes());
                     }
                     MenuItem::Select { label, options, selected } => {
                         let label_clone = label.clone();
                         let options_clone = options.clone();
                         let old_selected = *selected;
 
-                        // Clean current view, run sub-picker
                         let cleanup = render_cleanup(last_item_count);
-                        write_stdout(cleanup.as_bytes());
+                        common::write_stdout(cleanup.as_bytes());
 
                         let select_title = format!("{} > {}", breadcrumb_parts.join(" > "), label_clone);
                         if let Some(idx) = run_select(&select_title, &options_clone, old_selected) {
@@ -607,16 +553,14 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
                             }
                         }
 
-                        // Re-render menu
                         let bc = breadcrumb_parts.join(" > ");
                         let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
-                        write_stdout(full.as_bytes());
+                        common::write_stdout(full.as_bytes());
                     }
                     MenuItem::TextInput { label, value } => {
                         let label_clone = label.clone();
                         let old_value = value.clone();
 
-                        // Run inline text editor
                         let result = run_text_edit(&label_clone, &old_value, row_from_bottom, cols);
 
                         match result {
@@ -631,19 +575,16 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
                                 }
                             }
                             None => {
-                                // ESC or Ctrl-C during edit: restore old value
                                 *value = old_value;
                             }
                         }
 
                         // Full redraw to restore hint and clean up
                         let bc = breadcrumb_parts.join(" > ");
-                        // Move to top of widget area
-                        let vis = visible_count(current_items.len());
-                        let total_lines = 1 + 1 + vis + 1 + 1;
-                        write_stdout(format!("\x1b[{}A\r\x1b[J", total_lines - 1).as_bytes());
+                        let tl = total_lines(current_items.len());
+                        common::write_stdout(format!("\x1b[{}A\r\x1b[J", tl - 1).as_bytes());
                         let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
-                        write_stdout(full.as_bytes());
+                        common::write_stdout(full.as_bytes());
                     }
                 }
             }
@@ -652,8 +593,8 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
     }
 
     let cleanup = render_cleanup(last_item_count);
-    write_stdout(cleanup.as_bytes());
-    write_stdout(b"\x1b[?25h");
+    common::write_stdout(cleanup.as_bytes());
+    common::write_stdout(b"\x1b[?25h");
     MenuResult::Done(changes)
 }
 
@@ -666,10 +607,10 @@ fn full_redraw(
     scroll_offset: usize,
     vis: usize,
 ) {
-    let total_lines = 1 + 1 + vis + 1 + 1;
-    write_stdout(format!("\x1b[{}A\r\x1b[J", total_lines - 1).as_bytes());
+    let tl = CHROME_LINES + vis;
+    common::write_stdout(format!("\x1b[{}A\r\x1b[J", tl - 1).as_bytes());
     let full = render_full(breadcrumb, items, cursor, cols, scroll_offset);
-    write_stdout(full.as_bytes());
+    common::write_stdout(full.as_bytes());
 }
 
 /// Incremental redraw: update only the old and new cursor lines.
@@ -681,26 +622,23 @@ fn incremental_redraw(
     vis: usize,
     scroll_offset: usize,
 ) {
-    // Redraw old position (deselect)
     let old_vis_pos = old_cursor - scroll_offset;
-    let up_to_old = (vis - old_vis_pos) + 1; // +1 for bottom separator
-    write_stdout(format!("\x1b[{}A", up_to_old).as_bytes());
+    let up_to_old = lines_below_cursor(vis, old_vis_pos);
+    common::write_stdout(format!("\x1b[{}A", up_to_old).as_bytes());
     let line = render_menu_item(&items[old_cursor], false, cols);
-    write_stdout(line.as_bytes());
+    common::write_stdout(line.as_bytes());
 
-    // Redraw new position (select)
     if new_cursor < old_cursor {
-        write_stdout(b"\x1b[1A");
+        common::write_stdout(b"\x1b[1A");
     } else {
-        write_stdout(b"\x1b[1B");
+        common::write_stdout(b"\x1b[1B");
     }
     let line = render_menu_item(&items[new_cursor], true, cols);
-    write_stdout(line.as_bytes());
+    common::write_stdout(line.as_bytes());
 
-    // Move back to bottom
     let new_vis_pos = new_cursor - scroll_offset;
-    let down = (vis - new_vis_pos) + 1;
-    write_stdout(format!("\x1b[{}B", down).as_bytes());
+    let down = lines_below_cursor(vis, new_vis_pos);
+    common::write_stdout(format!("\x1b[{}B", down).as_bytes());
 }
 
 /// Build dot-separated path from breadcrumb parts and current label.
@@ -713,13 +651,6 @@ fn build_path(breadcrumb: &[String], label: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_strip_ansi() {
-        assert_eq!(strip_ansi("\x1b[2mhello\x1b[0m"), "hello");
-        assert_eq!(strip_ansi("no escape"), "no escape");
-        assert_eq!(strip_ansi("\x1b[32mON\x1b[0m"), "ON");
-    }
 
     #[test]
     fn test_build_path() {
@@ -752,7 +683,7 @@ mod tests {
             children: vec![],
         };
         let line = render_menu_item(&item, false, 40);
-        let text = strip_ansi(&line);
+        let text = common::strip_ansi(&line);
         assert!(text.contains("LLM"));
         assert!(text.contains(">"));
     }
@@ -764,7 +695,7 @@ mod tests {
             value: true,
         };
         let line = render_menu_item(&item, false, 40);
-        let text = strip_ansi(&line);
+        let text = common::strip_ansi(&line);
         assert!(text.contains("Enabled"));
         assert!(text.contains("ON"));
     }
@@ -776,7 +707,7 @@ mod tests {
             value: false,
         };
         let line = render_menu_item(&item, false, 40);
-        let text = strip_ansi(&line);
+        let text = common::strip_ansi(&line);
         assert!(text.contains("OFF"));
     }
 
@@ -788,7 +719,7 @@ mod tests {
             selected: 0,
         };
         let line = render_menu_item(&item, false, 40);
-        let text = strip_ansi(&line);
+        let text = common::strip_ansi(&line);
         assert!(text.contains("Backend"));
         assert!(text.contains("claude"));
     }
@@ -800,7 +731,7 @@ mod tests {
             value: "http://proxy:8080".to_string(),
         };
         let line = render_menu_item(&item, false, 60);
-        let text = strip_ansi(&line);
+        let text = common::strip_ansi(&line);
         assert!(text.contains("Proxy"));
         assert!(text.contains("http://proxy:8080"));
     }
@@ -812,7 +743,7 @@ mod tests {
             value: String::new(),
         };
         let line = render_menu_item(&item, false, 40);
-        let text = strip_ansi(&line);
+        let text = common::strip_ansi(&line);
         assert!(text.contains("(empty)"));
     }
 
@@ -852,7 +783,7 @@ mod tests {
             },
         ];
         let output = render_full("Config", &items, 0, 60, 0);
-        let text = strip_ansi(&output);
+        let text = common::strip_ansi(&output);
         assert!(text.contains("Config"));
         assert!(text.contains("Enabled"));
         assert!(text.contains("LLM"));
@@ -865,5 +796,32 @@ mod tests {
             MenuResult::Done(changes) => assert!(changes.is_empty()),
             MenuResult::Cancelled => panic!("Expected Done"),
         }
+    }
+
+    #[test]
+    fn test_total_lines() {
+        assert_eq!(total_lines(3), 7);  // 4 chrome + 3 items
+        assert_eq!(total_lines(15), 14); // 4 chrome + 10 (capped)
+    }
+
+    #[test]
+    fn test_lines_below_cursor() {
+        // 5 visible items, cursor at position 2 (3rd item): 2 remaining + 2 (sep+hint) = 4
+        assert_eq!(lines_below_cursor(5, 2), 4);
+        // cursor at last item: 0 remaining + 2 = 2
+        assert_eq!(lines_below_cursor(5, 4), 2);
+    }
+
+    #[test]
+    fn test_edit_cursor_col() {
+        // label "Proxy" with prefix "> " = 7 chars, cols=40, text="hello", cursor at end
+        let col = edit_cursor_col("Proxy", "hello", 5, 40);
+        // prefix(2) + label(5) + padding(40-7-5=28) + 5 = 40
+        assert_eq!(col, 40);
+
+        // cursor at start
+        let col = edit_cursor_col("Proxy", "hello", 0, 40);
+        // prefix(2) + label(5) + padding(28) + 0 = 35
+        assert_eq!(col, 35);
     }
 }
