@@ -97,7 +97,7 @@ pub fn sandbox_profile(data_dir: &std::path::Path, cwd: Option<&std::path::Path>
 /// Called inside `pre_exec` (between fork and exec), so only affects the child process.
 #[cfg(target_os = "linux")]
 fn apply_landlock(writable_paths: &[&std::path::Path]) -> Result<(), String> {
-    let abi = ABI::V1;
+    let abi = ABI::V5;
     let status = Ruleset::default()
         .handle_access(AccessFs::from_all(abi))
         .map_err(|e| format!("landlock handle_access: {e}"))?
