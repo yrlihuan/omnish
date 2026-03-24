@@ -1016,8 +1016,12 @@ async fn main() -> Result<()> {
                                 }
 
                                 if let Some((input, seq)) = shell_input.take_change() {
+                                    let had_ghost = shell_completer.ghost().is_some();
                                     if shell_completer.on_input_changed(input, seq) {
+                                        event_log::push(format!("on_input_changed cleared ghost input={:?}", input));
                                         nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
+                                    } else if had_ghost {
+                                        event_log::push(format!("on_input_changed kept ghost input={:?}", input));
                                     }
                                 }
                             }
@@ -1065,6 +1069,7 @@ async fn main() -> Result<()> {
                     // When the readline report and bash's redraw arrive in the same read,
                     // there won't be a subsequent read to trigger the flush at line 891.
                     if let Some(ghost_render) = deferred_ghost.take() {
+                        event_log::push("flushing deferred ghost");
                         nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
                     }
                 }

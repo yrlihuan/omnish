@@ -329,6 +329,7 @@ impl ShellCompleter {
                     self.current_ghost = Some(suffix.to_string());
                     self.ghost_input = current_input.to_string();
                     self.ghost_set_at = Some(response_time);
+                    crate::event_log::push(format!("on_response seq={}: ghost set suffix={:?}", response.sequence_id, suffix));
                     return self.current_ghost.as_deref();
                 } else {
                     // Current input is not a prefix of full suggestion
