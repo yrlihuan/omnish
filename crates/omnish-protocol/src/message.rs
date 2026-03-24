@@ -5,7 +5,40 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version — increment on incompatible wire format changes.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigItem {
+    pub path: String,
+    pub label: String,
+    pub kind: ConfigItemKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ConfigItemKind {
+    Toggle { value: bool },
+    Select { options: Vec<String>, selected: usize },
+    TextInput { value: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigChange {
+    pub path: String,
+    pub value: String,
+}
+
+/// Metadata about handler submenus — sent alongside items so the client
+/// knows which submenus trigger handler callbacks and what label to use.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigHandlerInfo {
+    /// Schema path of the handler submenu (e.g., "llm.backends.__new__").
+    pub path: String,
+    /// Display label (e.g., "Add backend"). Used for `__new__` segments
+    /// that can't be auto-labeled from the path.
+    pub label: String,
+    /// Handler function name (e.g., "add_backend").
+    pub handler: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
@@ -33,6 +66,13 @@ pub enum Message {
     Auth(Auth),
     AuthOk(AuthOk),
     AuthFailed,
+    ConfigQuery,
+    ConfigResponse {
+        items: Vec<ConfigItem>,
+        handlers: Vec<ConfigHandlerInfo>,
+    },
+    ConfigUpdate { changes: Vec<ConfigChange> },
+    ConfigUpdateResult { ok: bool, error: Option<String> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -539,7 +579,7 @@ mod tests {
     /// reminding you to bump PROTOCOL_VERSION if the wire format changed.
     #[test]
     fn message_variant_guard() {
-        const EXPECTED_VARIANT_COUNT: usize = 24;
+        const EXPECTED_VARIANT_COUNT: usize = 28;
 
         let variants: Vec<Message> = vec![
             Message::SessionStart(SessionStart {
@@ -696,6 +736,10 @@ mod tests {
                 protocol_version: 0,
             }),
             Message::AuthFailed,
+            Message::ConfigQuery,
+            Message::ConfigResponse { items: vec![], handlers: vec![] },
+            Message::ConfigUpdate { changes: vec![] },
+            Message::ConfigUpdateResult { ok: true, error: None },
         ];
 
         // Exhaustive match — no wildcard. Compiler will error if a variant is missing.
@@ -724,7 +768,11 @@ mod tests {
                 | Message::Ack
                 | Message::Auth(_)
                 | Message::AuthOk(_)
-                | Message::AuthFailed => {}
+                | Message::AuthFailed
+                | Message::ConfigQuery
+                | Message::ConfigResponse { .. }
+                | Message::ConfigUpdate { .. }
+                | Message::ConfigUpdateResult { .. } => {}
             }
         }
 
