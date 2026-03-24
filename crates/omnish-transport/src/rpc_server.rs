@@ -144,9 +144,7 @@ impl RpcServer {
                         Ok(v) => v,
                         Err(e) if is_fd_exhausted(&e) => {
                             dump_fd_stats();
-                            tracing::error!("accept failed: {e} (will retry after 100ms)");
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                            continue;
+                            return Err(e.into());
                         }
                         Err(e) => return Err(e.into()),
                     };
@@ -171,9 +169,7 @@ impl RpcServer {
                         Ok(v) => v,
                         Err(e) if is_fd_exhausted(&e) => {
                             dump_fd_stats();
-                            tracing::error!("accept failed: {e} (will retry after 100ms)");
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                            continue;
+                            return Err(e.into());
                         }
                         Err(e) => return Err(e.into()),
                     };
