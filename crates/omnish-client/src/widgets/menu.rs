@@ -680,7 +680,17 @@ pub fn run_menu(
     let cleanup = render_cleanup(last_item_count);
     common::write_stdout(cleanup.as_bytes());
     common::write_stdout(b"\x1b[?25h");
-    MenuResult::Done(changes)
+
+    // Deduplicate: keep only the last change for each path (#411)
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped = Vec::new();
+    for change in changes.into_iter().rev() {
+        if seen.insert(change.path.clone()) {
+            deduped.push(change);
+        }
+    }
+    deduped.reverse();
+    MenuResult::Done(deduped)
 }
 
 /// Full redraw: move up, clear, re-render.
