@@ -1108,7 +1108,9 @@ async fn main() -> Result<()> {
                 continue;
             }
 
-            event_log::push(format!("completion response seq={}", resp.sequence_id));
+            event_log::push(format!("completion response seq={} suggestions={:?}",
+                resp.sequence_id,
+                resp.suggestions.iter().map(|s| &s.text).collect::<Vec<_>>()));
             // Store response in pending queue for processing after readline report
             let resp_seq = resp.sequence_id;
             pending_completion_responses.push(resp);
