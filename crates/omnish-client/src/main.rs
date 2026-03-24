@@ -887,14 +887,9 @@ async fn main() -> Result<()> {
 
                     nix::unistd::write(std::io::stdout(), display_data)?;
 
-                    // Render deferred ghost text only after visible output (bash's
-                    // readline redraw).  When the RL report arrives alone the OSC is
-                    // stripped and display_data is empty — keep the deferred ghost so
-                    // it renders after the redraw that follows in the next PTY read.
-                    if !display_data.is_empty() {
-                        if let Some(ghost_render) = deferred_ghost.take() {
-                            nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
-                        }
+                    // Render deferred ghost text after bash's readline redraw
+                    if let Some(ghost_render) = deferred_ghost.take() {
+                        nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
                     }
 
                     // Track cursor position on display (stripped) data
