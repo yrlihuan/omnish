@@ -37,6 +37,59 @@ impl From<i64> for TomlValue {
     }
 }
 
+/// Set a potentially nested key in a TOML file, preserving formatting.
+///
+/// `key` is a dot-separated path like `"llm.use_cases.completion"`.
+/// Intermediate tables are created if they don't exist.
+/// Creates the file if it doesn't exist.
+pub fn set_toml_value_nested(path: &Path, key: &str, value: &str) -> anyhow::Result<()> {
+    set_toml_value_nested_inner(path, key, toml_edit::value(value))
+}
+
+/// Set a nested boolean key in a TOML file, preserving formatting.
+pub fn set_toml_value_nested_bool(path: &Path, key: &str, value: bool) -> anyhow::Result<()> {
+    set_toml_value_nested_inner(path, key, toml_edit::value(value))
+}
+
+fn set_toml_value_nested_inner(
+    path: &Path,
+    key: &str,
+    value: toml_edit::Item,
+) -> anyhow::Result<()> {
+    let content = if path.exists() {
+        std::fs::read_to_string(path)?
+    } else {
+        String::new()
+    };
+    let mut doc = content.parse::<toml_edit::DocumentMut>()?;
+
+    let segments: Vec<&str> = key.split('.').collect();
+    if segments.len() == 1 {
+        doc[segments[0]] = value;
+    } else {
+        let (parents, leaf) = segments.split_at(segments.len() - 1);
+        let mut table = doc.as_table_mut();
+        for &seg in parents {
+            if !table.contains_key(seg) {
+                table.insert(seg, toml_edit::Item::Table(toml_edit::Table::new()));
+            }
+            table = table[seg]
+                .as_table_mut()
+                .ok_or_else(|| anyhow::anyhow!("{} is not a table", seg))?;
+        }
+        table[leaf[0]] = value;
+    }
+
+    let output = doc.to_string();
+    let output = if output.ends_with('\n') {
+        output
+    } else {
+        format!("{}\n", output)
+    };
+    std::fs::write(path, output)?;
+    Ok(())
+}
+
 /// Set a top-level key in a TOML file, preserving formatting.
 ///
 /// - Reads the file, parses with `toml_edit`, sets the key, writes back.
@@ -134,6 +187,54 @@ mod tests {
 
         let result = fs::read_to_string(&path).unwrap();
         assert!(result.contains("name = \"new\""));
+    }
+
+    #[test]
+    fn test_set_nested_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.toml");
+        fs::write(&path, "[llm]\ndefault = \"claude\"\n").unwrap();
+
+        set_toml_value_nested(&path, "llm.default", "openai").unwrap();
+
+        let result = fs::read_to_string(&path).unwrap();
+        assert!(result.contains("default = \"openai\""));
+    }
+
+    #[test]
+    fn test_set_deeply_nested_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.toml");
+        fs::write(&path, "").unwrap();
+
+        set_toml_value_nested(&path, "llm.use_cases.completion", "claude-fast").unwrap();
+
+        let result = fs::read_to_string(&path).unwrap();
+        assert!(result.contains("[llm.use_cases]") || result.contains("[llm]"));
+        assert!(result.contains("completion = \"claude-fast\""));
+    }
+
+    #[test]
+    fn test_set_nested_creates_file_if_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.toml");
+
+        set_toml_value_nested(&path, "proxy", "http://proxy:8080").unwrap();
+
+        let result = fs::read_to_string(&path).unwrap();
+        assert!(result.contains("proxy = \"http://proxy:8080\""));
+    }
+
+    #[test]
+    fn test_set_nested_bool_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.toml");
+        fs::write(&path, "[tasks.daily_notes]\nenabled = false\n").unwrap();
+
+        set_toml_value_nested_bool(&path, "tasks.daily_notes.enabled", true).unwrap();
+
+        let result = fs::read_to_string(&path).unwrap();
+        assert!(result.contains("enabled = true"));
     }
 
     #[test]
