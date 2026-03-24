@@ -524,6 +524,14 @@ test_10() {
         if echo "$pane_all" | grep -qi "omnish_debug"; then
             echo -e "  ${YELLOW}Debug: 'omnish_debug' found somewhere in pane${NC}"
         fi
+        # Dump event log for debugging
+        send_special C-c 0.5
+        enter_chat
+        send_keys "/debug events 30" 0.3
+        send_enter 2
+        local debug_events
+        debug_events=$(capture_pane -80)
+        show_capture "Debug events" "$debug_events" 80
         assert_fail "Ghost text did not appear for omnish_debug"
         send_special C-c 0.5
         return 1
