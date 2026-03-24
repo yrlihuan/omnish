@@ -1,4 +1,5 @@
-## About integration test
+## Basic rules
+DO NOT run omnish-daemon via bash tool, ask me to do it.
 Integration tests are under tools/integration_tests. To understand how integration test works, read lib.sh and test_basic.sh.
 
 ## About build
