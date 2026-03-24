@@ -32,10 +32,7 @@ integration-test:
   variables:
     SHELL: /bin/bash
   script:
-    - apt-get update -qq && apt-get install -y -qq tmux bash >/dev/null 2>&1
-    # Ensure bash is properly configured for readline
-    - echo 'set -o emacs' >> ~/.bashrc
-    - export SHELL=/bin/bash
+    - apt-get update -qq && apt-get install -y -qq tmux >/dev/null 2>&1
     - cargo build --release
     # Setup omnish environment
     - mkdir -p ~/.omnish
