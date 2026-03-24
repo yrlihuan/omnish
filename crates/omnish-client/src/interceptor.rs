@@ -296,6 +296,11 @@ impl InputInterceptor {
             self.buffer.clear();
             self.in_chat = false;
             self.esc_filter = None;
+        } else if !suppressed && self.suppressed {
+            // Leaving suppressed mode (e.g. exiting vim): bytes forwarded
+            // during suppression went to the child process, not the shell
+            // command line, so reset content tracking.
+            self.command_line_has_content = false;
         }
         self.suppressed = suppressed;
     }
@@ -537,8 +542,11 @@ impl InputInterceptor {
         self.buffer.clear();
 
         if !self.in_chat {
-            // Not in chat mode, forward to PTY
-            return self.forward(buffered);
+            // Not in chat mode, forward to PTY.
+            // Enter submits the command line, so it becomes empty.
+            let result = self.forward(buffered);
+            self.command_line_has_content = false;
+            return result;
         }
 
         // Extract chat message after prefix
@@ -977,12 +985,14 @@ mod tests {
     fn test_ui_prefix_mismatch_then_retry() {
         let mut ic = new_interceptor("::");
         // First attempt ":x" mismatches prefix "::", then retry "::"
+        // After ":x" is forwarded, command_line_has_content=true, so
+        // subsequent "::" is also forwarded (non-developer-mode blocks
+        // chat when line has content).
         let actions = simulate_main_loop(&mut ic, b":x::");
         assert_eq!(
             actions,
-            vec!["prompt", "forward", "prompt", "echo::"]
+            vec!["prompt", "forward", "forward", "forward"]
         );
-        assert_eq!(ic.expire_prefix(), Some(InterceptAction::Chat(String::new())));
     }
 
     // --- Tab tests ---
