@@ -1249,11 +1249,17 @@ async fn connect_daemon(
                     Message::AuthFailed => anyhow::bail!("authentication failed"),
                     Message::AuthOk(ok) => {
                         if ok.protocol_version != omnish_protocol::message::PROTOCOL_VERSION {
+                            let behind = if omnish_protocol::message::PROTOCOL_VERSION < ok.protocol_version {
+                                "client"
+                            } else {
+                                "daemon"
+                            };
                             notice(&format!(
                                 "[omnish] Protocol mismatch \
-                                 (client={}, daemon={}), waiting for daemon upgrade...",
+                                 (client={}, daemon={}), waiting for {} upgrade...",
                                 omnish_protocol::message::PROTOCOL_VERSION,
-                                ok.protocol_version
+                                ok.protocol_version,
+                                behind
                             ));
                             anyhow::bail!("protocol mismatch (client={}, daemon={})",
                                 omnish_protocol::message::PROTOCOL_VERSION,
