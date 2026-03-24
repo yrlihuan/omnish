@@ -1,4 +1,5 @@
-use std::collections::VecDeque;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -78,6 +79,113 @@ fn strip_date_suffix(model: &str) -> &str {
         }
     }
     model
+}
+
+/// Convert path segment to display label: capitalize first letter, _ -> space.
+fn segment_to_label(seg: &str) -> String {
+    seg.replace('_', " ")
+        .split_whitespace()
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(c) => format!("{}{}", c.to_uppercase(), chars.collect::<String>()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Build MenuItem tree from flat ConfigItems and handler info.
+fn build_menu_tree(
+    items: &[ConfigItem],
+    handlers: &[ConfigHandlerInfo],
+) -> (Vec<widgets::menu::MenuItem>, HashMap<String, String>) {
+    use widgets::menu::MenuItem;
+    let mut root: Vec<MenuItem> = Vec::new();
+    let mut path_map: HashMap<String, String> = HashMap::new();
+
+    let handler_lookup: HashMap<&str, (&str, &str)> = handlers.iter()
+        .map(|h| (h.path.as_str(), (h.handler.as_str(), h.label.as_str())))
+        .collect();
+
+    for item in items {
+        let segments: Vec<&str> = item.path.split('.').collect();
+        let mut current = &mut root;
+        for (i, &seg) in segments.iter().enumerate() {
+            if i == segments.len() - 1 {
+                // Leaf item
+                let menu_item = match &item.kind {
+                    ConfigItemKind::Toggle { value } => MenuItem::Toggle {
+                        label: item.label.clone(),
+                        value: *value,
+                    },
+                    ConfigItemKind::Select { options, selected } => MenuItem::Select {
+                        label: item.label.clone(),
+                        options: options.clone(),
+                        selected: *selected,
+                    },
+                    ConfigItemKind::TextInput { value } => MenuItem::TextInput {
+                        label: item.label.clone(),
+                        value: value.clone(),
+                    },
+                };
+                current.push(menu_item);
+
+                // Build display path for path_map reverse lookup
+                let mut display_parts: Vec<String> = Vec::new();
+                let mut schema_prefix = String::new();
+                for (j, &s) in segments[..i].iter().enumerate() {
+                    if j > 0 { schema_prefix.push('.'); }
+                    schema_prefix.push_str(s);
+                    let label = if s == "__new__" {
+                        handler_lookup.get(schema_prefix.as_str())
+                            .map(|(_, lbl)| lbl.to_string())
+                            .unwrap_or_else(|| segment_to_label(s))
+                    } else {
+                        segment_to_label(s)
+                    };
+                    display_parts.push(label);
+                }
+                display_parts.push(item.label.clone());
+                let display_key = display_parts.join(".");
+                path_map.insert(display_key, item.path.clone());
+            } else {
+                // Intermediate segment — find or create submenu
+                let schema_path_so_far = segments[..=i].join(".");
+                let label = if seg == "__new__" {
+                    handler_lookup.get(schema_path_so_far.as_str())
+                        .map(|(_, lbl)| lbl.to_string())
+                        .unwrap_or_else(|| segment_to_label(seg))
+                } else {
+                    segment_to_label(seg)
+                };
+
+                let pos = current.iter().position(|m| {
+                    matches!(m, MenuItem::Submenu { label: l, .. } if *l == label)
+                });
+                let idx = match pos {
+                    Some(idx) => idx,
+                    None => {
+                        let handler = handler_lookup.get(schema_path_so_far.as_str())
+                            .map(|(name, _)| name.to_string());
+                        current.push(MenuItem::Submenu {
+                            label: label.clone(),
+                            children: Vec::new(),
+                            handler,
+                        });
+                        current.len() - 1
+                    }
+                };
+                current = match &mut current[idx] {
+                    MenuItem::Submenu { children, .. } => children,
+                    _ => unreachable!(),
+                };
+            }
+        }
+    }
+
+    (root, path_map)
 }
 
 impl ChatSession {
@@ -418,6 +526,12 @@ impl ChatSession {
                         }
                     }
                 }
+                continue;
+            }
+
+            // /config
+            if trimmed == "/config" {
+                self.handle_config(session_id, rpc).await;
                 continue;
             }
 
@@ -1652,6 +1766,115 @@ impl ChatSession {
                 }
             }
             MenuResult::Cancelled => {
+                write_stdout("\x1b[2;90mCancelled.\x1b[0m\r\n");
+            }
+        }
+    }
+
+    async fn handle_config(&mut self, _session_id: &str, rpc: &RpcClient) {
+        let (items, handlers) = match rpc.call(Message::ConfigQuery).await {
+            Ok(Message::ConfigResponse { items, handlers }) => (items, handlers),
+            Ok(_) => {
+                write_stdout("\x1b[31mUnexpected response from daemon\x1b[0m\r\n");
+                return;
+            }
+            Err(e) => {
+                write_stdout(&format!("\x1b[31mFailed to query config: {}\x1b[0m\r\n", e));
+                return;
+            }
+        };
+
+        if items.is_empty() {
+            write_stdout("\x1b[2;90mNo configurable items.\x1b[0m\r\n");
+            return;
+        }
+
+        let (mut menu_items, path_map_initial) = build_menu_tree(&items, &handlers);
+        let path_map = RefCell::new(path_map_initial);
+
+        let rpc_ref = rpc;
+        let path_map_ref = &path_map;
+
+        let result = tokio::task::block_in_place(|| {
+            let rt = tokio::runtime::Handle::current();
+
+            let mut handler_callback = |_handler_name: &str, handler_changes: Vec<widgets::menu::MenuChange>| -> Option<Vec<widgets::menu::MenuItem>> {
+                let pm = path_map_ref.borrow();
+                let config_changes: Vec<ConfigChange> = handler_changes.iter()
+                    .map(|mc| {
+                        let schema_path = pm.get(&mc.path)
+                            .cloned()
+                            .unwrap_or_else(|| mc.path.clone());
+                        ConfigChange { path: schema_path, value: mc.value.clone() }
+                    })
+                    .collect();
+                drop(pm);
+
+                let update_result = rt.block_on(async {
+                    rpc_ref.call(Message::ConfigUpdate { changes: config_changes }).await
+                });
+
+                match update_result {
+                    Ok(Message::ConfigUpdateResult { ok: true, .. }) => {
+                        let query_result = rt.block_on(async {
+                            rpc_ref.call(Message::ConfigQuery).await
+                        });
+                        match query_result {
+                            Ok(Message::ConfigResponse { items, handlers: new_handlers }) => {
+                                let (new_tree, new_map) = build_menu_tree(&items, &new_handlers);
+                                *path_map_ref.borrow_mut() = new_map;
+                                Some(new_tree)
+                            }
+                            _ => None,
+                        }
+                    }
+                    Ok(Message::ConfigUpdateResult { ok: false, error }) => {
+                        write_stdout(&format!("\x1b[31mHandler error: {}\x1b[0m\r\n",
+                            error.unwrap_or_default()));
+                        None
+                    }
+                    _ => None,
+                }
+            };
+
+            widgets::menu::run_menu("Config", &mut menu_items, Some(&mut handler_callback))
+        });
+
+        match result {
+            widgets::menu::MenuResult::Done(changes) => {
+                if changes.is_empty() {
+                    write_stdout("\x1b[2;90mNo changes made.\x1b[0m\r\n");
+                    return;
+                }
+                let pm = path_map.borrow();
+                let config_changes: Vec<ConfigChange> = changes.iter()
+                    .map(|mc| {
+                        let schema_path = pm.get(&mc.path)
+                            .cloned()
+                            .unwrap_or_else(|| mc.path.clone());
+                        ConfigChange { path: schema_path, value: mc.value.clone() }
+                    })
+                    .collect();
+                drop(pm);
+
+                match rpc.call(Message::ConfigUpdate { changes: config_changes }).await {
+                    Ok(Message::ConfigUpdateResult { ok: true, .. }) => {
+                        write_stdout(&format!(
+                            "\x1b[2;90mConfig saved ({}). Restart daemon to apply.\x1b[0m\r\n",
+                            changes.len()
+                        ));
+                    }
+                    Ok(Message::ConfigUpdateResult { ok: false, error }) => {
+                        write_stdout(&format!("\x1b[31mFailed to save: {}\x1b[0m\r\n",
+                            error.unwrap_or_default()));
+                    }
+                    Err(e) => {
+                        write_stdout(&format!("\x1b[31mRPC error: {}\x1b[0m\r\n", e));
+                    }
+                    _ => {}
+                }
+            }
+            widgets::menu::MenuResult::Cancelled => {
                 write_stdout("\x1b[2;90mCancelled.\x1b[0m\r\n");
             }
         }
