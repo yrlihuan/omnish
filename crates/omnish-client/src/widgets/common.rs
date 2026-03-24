@@ -45,6 +45,7 @@ pub fn parse_esc_seq(stdin_fd: i32) -> Option<[u8; 2]> {
 }
 
 /// Strip ANSI escape sequences from a string for width measurement.
+#[cfg(test)]
 pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_esc = false;

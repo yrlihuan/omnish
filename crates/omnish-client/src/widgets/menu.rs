@@ -84,10 +84,8 @@ fn visible_count(total: usize) -> usize {
     total.min(MAX_VISIBLE)
 }
 
-/// Render a menu item line.
-/// Toggle: label followed by [ON]/[OFF] inline.
-/// Others: value/indicator right-aligned.
-fn render_menu_item(item: &MenuItem, selected: bool, cols: u16) -> String {
+/// Render a menu item line. All values/indicators shown inline after label.
+fn render_menu_item(item: &MenuItem, selected: bool) -> String {
     let indent = "  ";
     let label = item.label();
 
@@ -104,61 +102,34 @@ fn render_menu_item(item: &MenuItem, selected: bool, cols: u16) -> String {
             if value.is_empty() {
                 " \x1b[90m(empty)\x1b[0m".to_string()
             } else {
-                format!(" \x1b[90m{}\x1b[0m", value)
+                format!(" \x1b[90m\"{}\"\x1b[0m", value)
             }
         }
-        _ => String::new(),
-    };
-
-    // Right-aligned indicator (Submenu >, Select value)
-    let right = match item {
-        MenuItem::Submenu { .. } => "\x1b[90m>\x1b[0m".to_string(),
         MenuItem::Select { options, selected: idx, .. } => {
             let val = options.get(*idx).map(|s| s.as_str()).unwrap_or("");
-            format!("\x1b[90m{}\x1b[0m", val)
+            format!(" \x1b[90m[{}]\x1b[0m", val)
         }
-        _ => String::new(),
+        MenuItem::Submenu { .. } => " \x1b[90m\u{25b8}\x1b[0m".to_string(),
     };
 
-    if right.is_empty() {
-        // Toggle / TextInput: label + inline suffix, no right-align
-        if selected {
-            format!("\r{}\x1b[1;7m{}\x1b[0m{}\x1b[K", indent, label, suffix)
-        } else {
-            format!("\r{}{}{}\x1b[K", indent, label, suffix)
-        }
+    if selected {
+        format!("\r{}\x1b[1;7m{}\x1b[0m{}\x1b[K", indent, label, suffix)
     } else {
-        // Submenu / Select: label + right-aligned value
-        let right_text = common::strip_ansi(&right);
-        let left_len = indent.len() + label.len();
-        let right_len = right_text.len();
-        let total_width = cols as usize;
-
-        let padding = if left_len + right_len + 2 < total_width {
-            total_width - left_len - right_len
-        } else {
-            2
-        };
-
-        if selected {
-            format!(
-                "\r{}\x1b[1;7m{}\x1b[0m{}{}\x1b[K",
-                indent, label, " ".repeat(padding), right,
-            )
-        } else {
-            format!(
-                "\r{}{}{}{}\x1b[K",
-                indent, label, " ".repeat(padding), right,
-            )
-        }
+        format!("\r{}{}{}\x1b[K", indent, label, suffix)
     }
 }
 
-fn render_hint(remaining_below: usize, editing: bool) -> String {
-    let hint = if editing {
-        "Enter confirm  ESC cancel"
-    } else {
-        "\u{2191}\u{2193} move  Enter select  ESC back  ^C quit"
+fn render_hint(remaining_below: usize, item: Option<&MenuItem>) -> String {
+    let action = match item {
+        None => "confirm",  // editing mode
+        Some(MenuItem::Submenu { .. }) => "open",
+        Some(MenuItem::Toggle { .. }) => "toggle",
+        Some(MenuItem::Select { .. }) => "select",
+        Some(MenuItem::TextInput { .. }) => "edit",
+    };
+    let hint = match item {
+        None => format!("Enter {}  ESC cancel", action),
+        Some(_) => format!("\u{2191}\u{2193} move  Enter {}  ESC back  ^C quit", action),
     };
     if remaining_below > 0 {
         format!(
@@ -205,7 +176,7 @@ fn render_full(
     // Visible items
     let end = (scroll_offset + vis).min(items.len());
     for i in scroll_offset..end {
-        out.push_str(&render_menu_item(&items[i], i == cursor, cols));
+        out.push_str(&render_menu_item(&items[i], i == cursor));
         if i < end - 1 {
             out.push_str("\r\n");
         }
@@ -218,7 +189,7 @@ fn render_full(
     out.push_str("\r\n");
 
     // Hint
-    out.push_str(&render_hint(remaining_below, false));
+    out.push_str(&render_hint(remaining_below, Some(&items[cursor])));
 
     out
 }
@@ -245,9 +216,9 @@ fn render_edit_line(label: &str, text: &str, cols: u16) -> String {
         text.to_string()
     };
 
-    // Use inverse video (same as selected item highlight)
+    // Dark background + bright text for edit mode (distinct from bold-inverse selected highlight)
     format!(
-        "\r{}{} \x1b[7m{}\x1b[0m\x1b[K",
+        "\r{}{} \x1b[48;5;236m\x1b[38;5;255m{}\x1b[0m\x1b[K",
         indent, label, display_text,
     )
 }
@@ -288,7 +259,7 @@ fn run_text_edit(
     // -- Phase 1: Setup (cursor starts at hint line) --
 
     // Update hint line in place (cursor is already there)
-    let hint = render_hint(0, true);
+    let hint = render_hint(0, None);
     common::write_stdout(b"\r");
     common::write_stdout(hint.as_bytes());
 
@@ -503,7 +474,7 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
                                     let bc = breadcrumb_parts.join(" > ");
                                     full_redraw(&bc, current_items, cursor, cols, scroll_offset, vis);
                                 } else {
-                                    incremental_redraw(current_items, cursor, cursor + 1, cols, vis, scroll_offset);
+                                    incremental_redraw(current_items, cursor, cursor + 1, vis, scroll_offset);
                                 }
                             }
                             b'B' if cursor < current_items.len().saturating_sub(1) => {
@@ -513,7 +484,7 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
                                     let bc = breadcrumb_parts.join(" > ");
                                     full_redraw(&bc, current_items, cursor, cols, scroll_offset, vis);
                                 } else {
-                                    incremental_redraw(current_items, cursor, cursor - 1, cols, vis, scroll_offset);
+                                    incremental_redraw(current_items, cursor, cursor - 1, vis, scroll_offset);
                                 }
                             }
                             _ => {}
@@ -585,7 +556,7 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult {
                         });
                         // Redraw just the current item
                         common::write_stdout(format!("\x1b[{}A", row_from_bottom).as_bytes());
-                        let line = render_menu_item(&current_items[cursor], true, cols);
+                        let line = render_menu_item(&current_items[cursor], true);
                         common::write_stdout(line.as_bytes());
                         common::write_stdout(format!("\x1b[{}B", row_from_bottom).as_bytes());
                     }
@@ -660,14 +631,13 @@ fn incremental_redraw(
     items: &[MenuItem],
     new_cursor: usize,
     old_cursor: usize,
-    cols: u16,
     vis: usize,
     scroll_offset: usize,
 ) {
     let old_vis_pos = old_cursor - scroll_offset;
     let up_to_old = lines_below_cursor(vis, old_vis_pos);
     common::write_stdout(format!("\x1b[{}A", up_to_old).as_bytes());
-    let line = render_menu_item(&items[old_cursor], false, cols);
+    let line = render_menu_item(&items[old_cursor], false);
     common::write_stdout(line.as_bytes());
 
     if new_cursor < old_cursor {
@@ -675,12 +645,16 @@ fn incremental_redraw(
     } else {
         common::write_stdout(b"\x1b[1B");
     }
-    let line = render_menu_item(&items[new_cursor], true, cols);
+    let line = render_menu_item(&items[new_cursor], true);
     common::write_stdout(line.as_bytes());
 
     let new_vis_pos = new_cursor - scroll_offset;
     let down = lines_below_cursor(vis, new_vis_pos);
+    // Move down to hint line (skip separator) and update hint
     common::write_stdout(format!("\x1b[{}B", down).as_bytes());
+    let remaining = items.len().saturating_sub(scroll_offset + vis);
+    let hint = render_hint(remaining, Some(&items[new_cursor]));
+    common::write_stdout(hint.as_bytes());
 }
 
 /// Build dot-separated path from breadcrumb parts and current label.
@@ -724,10 +698,9 @@ mod tests {
             label: "LLM".to_string(),
             children: vec![],
         };
-        let line = render_menu_item(&item, false, 40);
+        let line = render_menu_item(&item, false);
         let text = common::strip_ansi(&line);
-        assert!(text.contains("LLM"));
-        assert!(text.contains(">"));
+        assert!(text.contains("LLM \u{25b8}"));
     }
 
     #[test]
@@ -736,7 +709,7 @@ mod tests {
             label: "Enabled".to_string(),
             value: true,
         };
-        let line = render_menu_item(&item, false, 40);
+        let line = render_menu_item(&item, false);
         let text = common::strip_ansi(&line);
         assert!(text.contains("Enabled"));
         assert!(text.contains("[ON]"));
@@ -748,7 +721,7 @@ mod tests {
             label: "Enabled".to_string(),
             value: false,
         };
-        let line = render_menu_item(&item, false, 40);
+        let line = render_menu_item(&item, false);
         let text = common::strip_ansi(&line);
         assert!(text.contains("[OFF]"));
     }
@@ -760,10 +733,9 @@ mod tests {
             options: vec!["claude".to_string(), "openai".to_string()],
             selected: 0,
         };
-        let line = render_menu_item(&item, false, 40);
+        let line = render_menu_item(&item, false);
         let text = common::strip_ansi(&line);
-        assert!(text.contains("Backend"));
-        assert!(text.contains("claude"));
+        assert!(text.contains("Backend [claude]"));
     }
 
     #[test]
@@ -772,10 +744,9 @@ mod tests {
             label: "Proxy".to_string(),
             value: "http://proxy:8080".to_string(),
         };
-        let line = render_menu_item(&item, false, 60);
+        let line = render_menu_item(&item, false);
         let text = common::strip_ansi(&line);
-        assert!(text.contains("Proxy"));
-        assert!(text.contains("http://proxy:8080"));
+        assert!(text.contains("Proxy \"http://proxy:8080\""));
     }
 
     #[test]
@@ -784,23 +755,45 @@ mod tests {
             label: "Proxy".to_string(),
             value: String::new(),
         };
-        let line = render_menu_item(&item, false, 40);
+        let line = render_menu_item(&item, false);
         let text = common::strip_ansi(&line);
+        assert!(text.contains("Proxy"));
         assert!(text.contains("(empty)"));
     }
 
     #[test]
-    fn test_render_hint_normal() {
-        let hint = render_hint(0, false);
+    fn test_render_hint_toggle() {
+        let item = MenuItem::Toggle { label: "X".to_string(), value: true };
+        let hint = render_hint(0, Some(&item));
         assert!(hint.contains("move"));
-        assert!(hint.contains("select"));
+        assert!(hint.contains("toggle"));
         assert!(hint.contains("back"));
-        assert!(hint.contains("quit"));
+    }
+
+    #[test]
+    fn test_render_hint_submenu() {
+        let item = MenuItem::Submenu { label: "X".to_string(), children: vec![] };
+        let hint = render_hint(0, Some(&item));
+        assert!(hint.contains("open"));
+    }
+
+    #[test]
+    fn test_render_hint_select() {
+        let item = MenuItem::Select { label: "X".to_string(), options: vec![], selected: 0 };
+        let hint = render_hint(0, Some(&item));
+        assert!(hint.contains("select"));
+    }
+
+    #[test]
+    fn test_render_hint_text_input() {
+        let item = MenuItem::TextInput { label: "X".to_string(), value: String::new() };
+        let hint = render_hint(0, Some(&item));
+        assert!(hint.contains("edit"));
     }
 
     #[test]
     fn test_render_hint_editing() {
-        let hint = render_hint(0, true);
+        let hint = render_hint(0, None);
         assert!(hint.contains("confirm"));
         assert!(hint.contains("cancel"));
         assert!(!hint.contains("move"));
@@ -808,7 +801,8 @@ mod tests {
 
     #[test]
     fn test_render_hint_with_scroll() {
-        let hint = render_hint(5, false);
+        let item = MenuItem::Toggle { label: "X".to_string(), value: true };
+        let hint = render_hint(5, Some(&item));
         assert!(hint.contains("5 more"));
     }
 

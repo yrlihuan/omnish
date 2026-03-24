@@ -84,9 +84,9 @@ test_1() {
         return 1
     fi
 
-    # Check SubMenu shows > indicator
-    if ! echo "$content" | grep "LLM" | grep -q ">"; then
-        assert_fail "SubMenu 'LLM' does not show > indicator"
+    # Check SubMenu shows ▸ indicator
+    if ! echo "$content" | grep "LLM" | grep -q "▸"; then
+        assert_fail "SubMenu 'LLM' does not show ▸ indicator"
         return 1
     fi
 
