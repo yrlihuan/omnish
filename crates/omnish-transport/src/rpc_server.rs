@@ -1,6 +1,7 @@
 use crate::{parse_addr, TransportAddr};
 use anyhow::Result;
 use omnish_protocol::message::{Auth, AuthOk, Frame, Message};
+use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -9,6 +10,73 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixListener as TokioUnixListener};
 use tokio::sync::{mpsc, Mutex};
 use tokio_rustls::TlsAcceptor;
+
+fn is_fd_exhausted(e: &std::io::Error) -> bool {
+    // EMFILE (per-process limit) or ENFILE (system-wide limit)
+    matches!(e.raw_os_error(), Some(24) | Some(23))
+}
+
+/// Read /proc/self/fd and log fd count by type (socket, pipe, file, etc.)
+fn dump_fd_stats() {
+    let fd_dir = match std::fs::read_dir("/proc/self/fd") {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!("cannot read /proc/self/fd: {e}");
+            return;
+        }
+    };
+
+    let mut total = 0u32;
+    let mut by_type: HashMap<String, u32> = HashMap::new();
+    let mut samples: HashMap<String, Vec<String>> = HashMap::new();
+
+    for entry in fd_dir.flatten() {
+        total += 1;
+        let link = match std::fs::read_link(entry.path()) {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => "(unreadable)".to_string(),
+        };
+
+        let kind = if link.starts_with("socket:") {
+            "socket"
+        } else if link.starts_with("pipe:") {
+            "pipe"
+        } else if link.starts_with("anon_inode:") {
+            "anon_inode"
+        } else if link.starts_with("/dev/") {
+            "device"
+        } else if link.starts_with('/') {
+            "file"
+        } else {
+            "other"
+        }
+        .to_string();
+
+        *by_type.entry(kind.clone()).or_default() += 1;
+        let s = samples.entry(kind).or_default();
+        if s.len() < 5 {
+            s.push(link);
+        }
+    }
+
+    // Get soft/hard limit via nix
+    let (soft, hard) = match nix::sys::resource::getrlimit(nix::sys::resource::Resource::RLIMIT_NOFILE) {
+        Ok((s, h)) => (s, h),
+        Err(_) => (0, 0),
+    };
+
+    tracing::error!("fd stats: total={total} soft_limit={soft} hard_limit={hard}");
+
+    let mut types: Vec<_> = by_type.into_iter().collect();
+    types.sort_by(|a, b| b.1.cmp(&a.1));
+    for (kind, count) in &types {
+        let sample_list = samples
+            .get(kind)
+            .map(|v| v.join(", "))
+            .unwrap_or_default();
+        tracing::error!("  {kind}: {count} (samples: {sample_list})");
+    }
+}
 
 enum Listener {
     Unix(TokioUnixListener),
@@ -72,7 +140,16 @@ impl RpcServer {
         loop {
             match &self.listener {
                 Listener::Unix(l) => {
-                    let (stream, _) = l.accept().await?;
+                    let (stream, _) = match l.accept().await {
+                        Ok(v) => v,
+                        Err(e) if is_fd_exhausted(&e) => {
+                            dump_fd_stats();
+                            tracing::error!("accept failed: {e} (will retry after 100ms)");
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            continue;
+                        }
+                        Err(e) => return Err(e.into()),
+                    };
                     #[cfg(unix)]
                     {
                         let peer_cred = stream.peer_cred()?;
@@ -90,7 +167,16 @@ impl RpcServer {
                     spawn_connection(reader, writer, handler.clone(), auth_token.clone());
                 }
                 Listener::Tcp(l) => {
-                    let (stream, _) = l.accept().await?;
+                    let (stream, _) = match l.accept().await {
+                        Ok(v) => v,
+                        Err(e) if is_fd_exhausted(&e) => {
+                            dump_fd_stats();
+                            tracing::error!("accept failed: {e} (will retry after 100ms)");
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            continue;
+                        }
+                        Err(e) => return Err(e.into()),
+                    };
                     stream.set_nodelay(true)?;
                     if let Some(ref acceptor) = tls_acceptor {
                         match acceptor.accept(stream).await {
