@@ -455,6 +455,7 @@ pub fn run_menu(
     let mut byte = [0u8; 1];
 
     let mut last_item_count = items.len();
+    let mut needs_redraw = false;
 
     loop {
         // 1. Read handler name FIRST (immutable borrow of items).
@@ -486,6 +487,15 @@ pub fn run_menu(
             }
             slice
         };
+
+        // 3. Redraw if nav changed (push/pop/handler reset).
+        if needs_redraw {
+            needs_redraw = false;
+            last_item_count = current_items.len();
+            let bc = breadcrumb_parts.join(" > ");
+            let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
+            common::write_stdout(full.as_bytes());
+        }
 
         if nix::unistd::read(stdin_fd, &mut byte) != Ok(1) {
             break;
@@ -557,6 +567,7 @@ pub fn run_menu(
                                     scroll_offset = 0;
                                     let cleanup = render_cleanup(last_item_count);
                                     common::write_stdout(cleanup.as_bytes());
+                                    needs_redraw = true;
                                     continue;
                                 }
                             }
@@ -570,6 +581,7 @@ pub fn run_menu(
                     breadcrumb_parts.pop();
                     let cleanup = render_cleanup(last_item_count);
                     common::write_stdout(cleanup.as_bytes());
+                    needs_redraw = true;
                     continue;
                 }
             }
@@ -597,6 +609,7 @@ pub fn run_menu(
 
                         cursor = 0;
                         scroll_offset = 0;
+                        needs_redraw = true;
                         continue;
                     }
                     MenuItem::Toggle { label, value } => {
