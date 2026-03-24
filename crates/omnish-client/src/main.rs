@@ -1065,12 +1065,16 @@ async fn main() -> Result<()> {
                         throttle.reset();
                     }
 
-                    // Flush deferred ghost if set during this PTY read's OSC processing.
-                    // When the readline report and bash's redraw arrive in the same read,
-                    // there won't be a subsequent read to trigger the flush at line 891.
-                    if let Some(ghost_render) = deferred_ghost.take() {
-                        event_log::push("flushing deferred ghost");
-                        nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                    // Flush deferred ghost if set during this PTY read's OSC processing,
+                    // but ONLY if display_data was non-empty (meaning the readline
+                    // redraw was included in this read). When display_data is empty
+                    // (RL report arrived alone), defer to the next PTY read where
+                    // the readline redraw will arrive and line 891 will flush it.
+                    if !display_data.is_empty() {
+                        if let Some(ghost_render) = deferred_ghost.take() {
+                            event_log::push("flushing deferred ghost (same read)");
+                            nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                        }
                     }
                 }
                 Err(_) => break,
