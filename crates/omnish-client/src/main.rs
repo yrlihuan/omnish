@@ -300,6 +300,14 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Record version and startup time in env vars (visible in /proc/<pid>/environ)
+    std::env::set_var("OMNISH_VERSION", omnish_common::VERSION);
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_default();
+    std::env::set_var("OMNISH_STARTED", &started);
+
     // Initialize file-based tracing for debugging (does not write to stderr/stdout to avoid PTY interference)
     {
         let log_path = omnish_common::config::omnish_dir().join("client.log");
