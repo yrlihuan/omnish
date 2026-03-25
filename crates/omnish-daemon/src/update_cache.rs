@@ -201,45 +201,55 @@ impl UpdateCache {
     }
 
     /// Download a platform package from a local directory.
-    /// Downloads to a temp file first, then atomically moves to the cache.
+    /// Finds the highest version in the source, then copies it to the cache
+    /// (tmp first, then atomic rename).
     pub fn download_from_local_dir(&self, source_dir: &Path, os: &str, arch: &str) -> Result<bool> {
         let suffix = format!("-{}-{}.tar.gz", os, arch);
+        // Scan all matching files to find the highest version
+        let mut best: Option<(String, PathBuf)> = None;
         let entries = std::fs::read_dir(source_dir)?;
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with("omnish-") && name.ends_with(&suffix) {
-                let version = Self::extract_version(&name, os, arch);
-                let version = match version {
-                    Some(v) => v,
-                    None => continue,
-                };
-                // Check if we already have this version cached
-                if let Some((cached_ver, _)) = self.cached_package(os, arch) {
-                    if Self::compare_versions(&cached_ver, &version) != std::cmp::Ordering::Less {
-                        return Ok(false); // Already have same or newer
+                if let Some(version) = Self::extract_version(&name, os, arch) {
+                    let dominated = best.as_ref().is_some_and(|(v, _)| {
+                        Self::compare_versions(&version, v) != std::cmp::Ordering::Greater
+                    });
+                    if !dominated {
+                        best = Some((version, entry.path()));
                     }
                 }
-                // Copy to tmp, then mv to target
-                let platform_dir = self.platform_dir(os, arch);
-                std::fs::create_dir_all(&platform_dir)?;
-                let tmp_path = platform_dir.join(format!(".tmp-{}", name));
-                std::fs::copy(entry.path(), &tmp_path)?;
-                // Remove old packages
-                if let Ok(old_entries) = std::fs::read_dir(&platform_dir) {
-                    for old in old_entries.flatten() {
-                        let old_name = old.file_name().to_string_lossy().to_string();
-                        if old_name != format!(".tmp-{}", name) && old_name.ends_with(".tar.gz") {
-                            let _ = std::fs::remove_file(old.path());
-                        }
-                    }
-                }
-                let dest = platform_dir.join(&name);
-                std::fs::rename(&tmp_path, &dest)?;
-                tracing::info!("cached update package: {}", dest.display());
-                return Ok(true);
             }
         }
-        Ok(false)
+        let (version, source_path) = match best {
+            Some(b) => b,
+            None => return Ok(false),
+        };
+        // Check if we already have this version cached
+        if let Some((cached_ver, _)) = self.cached_package(os, arch) {
+            if Self::compare_versions(&cached_ver, &version) != std::cmp::Ordering::Less {
+                return Ok(false); // Already have same or newer
+            }
+        }
+        // Copy to tmp, then mv to target
+        let filename = source_path.file_name().unwrap().to_string_lossy().to_string();
+        let platform_dir = self.platform_dir(os, arch);
+        std::fs::create_dir_all(&platform_dir)?;
+        let tmp_path = platform_dir.join(format!(".tmp-{}", filename));
+        std::fs::copy(&source_path, &tmp_path)?;
+        // Remove old packages
+        if let Ok(old_entries) = std::fs::read_dir(&platform_dir) {
+            for old in old_entries.flatten() {
+                let old_name = old.file_name().to_string_lossy().to_string();
+                if old_name != format!(".tmp-{}", filename) && old_name.ends_with(".tar.gz") {
+                    let _ = std::fs::remove_file(old.path());
+                }
+            }
+        }
+        let dest = platform_dir.join(&filename);
+        std::fs::rename(&tmp_path, &dest)?;
+        tracing::info!("cached update package: {}", dest.display());
+        Ok(true)
     }
 }
 
