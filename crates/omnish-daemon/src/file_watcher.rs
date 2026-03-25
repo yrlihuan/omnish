@@ -1,6 +1,6 @@
 #[cfg(not(target_os = "linux"))]
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tokio::sync::watch;
 
@@ -58,7 +58,7 @@ impl FileWatcher {
             let watch_target = if path.is_dir() {
                 path.clone()
             } else {
-                path.parent().unwrap_or(Path::new("/")).to_path_buf()
+                path.parent().unwrap_or(std::path::Path::new("/")).to_path_buf()
             };
             if let Err(e) = self.inotify.add_watch(&watch_target, flags) {
                 tracing::warn!("failed to watch {}: {}", watch_target.display(), e);

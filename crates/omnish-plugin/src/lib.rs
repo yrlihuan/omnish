@@ -117,6 +117,7 @@ fn apply_landlock(writable_paths: &[&std::path::Path]) -> Result<(), String> {
 
 /// Build the common writable paths: /tmp, /dev/null, cwd, git repo root,
 /// and well-known user dotdirs (~/.ssh, ~/.cargo, ~/.config, etc.).
+#[cfg(target_os = "linux")]
 fn common_writable_paths(cwd: Option<&std::path::Path>) -> (Vec<std::path::PathBuf>, Option<std::path::PathBuf>) {
     let mut paths: Vec<std::path::PathBuf> = [
         "/tmp", "/dev/null", "/home/linuxbrew/.linuxbrew", "/var/spool/cron",
