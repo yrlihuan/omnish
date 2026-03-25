@@ -28,6 +28,9 @@ pulldown-cmark = { version = "0.13", default-features = false }
 serde_json = "1"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
 
 [dev-dependencies]
 regex-lite = "0.1"

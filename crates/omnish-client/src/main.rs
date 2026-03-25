@@ -328,6 +328,137 @@ fn exec_update(proxy: &PtyProxy, session_id: &str, cursor_col: u16, cursor_row: 
     notice(&format!("[omnish] exec failed: {}", std::io::Error::last_os_error()));
 }
 
+async fn download_and_extract_update(
+    rpc: &RpcClient,
+    os: &str,
+    arch: &str,
+    version: &str,
+) -> anyhow::Result<()> {
+    let mut rx = rpc.call_stream(Message::UpdateRequest {
+        os: os.to_string(),
+        arch: arch.to_string(),
+        version: version.to_string(),
+    }).await?;
+
+    let omnish_dir = omnish_common::config::omnish_dir();
+    let tmp_dir = omnish_dir.join("tmp");
+    std::fs::create_dir_all(&tmp_dir)?;
+    let tmp_file = tmp_dir.join(format!("update-{}.tar.gz", version));
+    let mut file = tokio::fs::File::create(&tmp_file).await?;
+
+    let mut expected_checksum = String::new();
+
+    use tokio::io::AsyncWriteExt;
+    while let Some(msg) = rx.recv().await {
+        match msg {
+            Message::UpdateChunk { seq, total_size: _, checksum, data, done, error } => {
+                if let Some(err) = error {
+                    let _ = tokio::fs::remove_file(&tmp_file).await;
+                    anyhow::bail!("server error: {}", err);
+                }
+                if seq == 0 {
+                    expected_checksum = checksum;
+                }
+                if !data.is_empty() {
+                    file.write_all(&data).await?;
+                }
+                if done {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    file.flush().await?;
+    drop(file);
+
+    // Verify checksum using spawn_blocking (CPU-bound)
+    if !expected_checksum.is_empty() {
+        let tmp_file_clone = tmp_file.clone();
+        let actual = tokio::task::spawn_blocking(move || {
+            use sha2::{Sha256, Digest};
+            use std::io::Read;
+            let mut file = std::fs::File::open(&tmp_file_clone)?;
+            let mut hasher = Sha256::new();
+            let mut buf = [0u8; 65536];
+            loop {
+                let n = file.read(&mut buf)?;
+                if n == 0 { break; }
+                hasher.update(&buf[..n]);
+            }
+            Ok::<String, anyhow::Error>(format!("{:x}", hasher.finalize()))
+        }).await??;
+
+        if actual != expected_checksum {
+            let _ = tokio::fs::remove_file(&tmp_file).await;
+            anyhow::bail!("checksum mismatch: expected={}, actual={}", expected_checksum, actual);
+        }
+    }
+
+    // Extract and replace binary using spawn_blocking (blocking I/O)
+    let tmp_file_for_extract = tmp_file.clone();
+    tokio::task::spawn_blocking(move || extract_and_install(&tmp_file_for_extract))
+        .await
+        .map_err(|e| anyhow::anyhow!("join error: {}", e))??;
+
+    let _ = tokio::fs::remove_file(&tmp_file).await;
+    tracing::info!("update {} installed, mtime polling will trigger restart", version);
+    Ok(())
+}
+
+fn extract_and_install(tar_gz_path: &std::path::Path) -> anyhow::Result<()> {
+    use flate2::read::GzDecoder;
+    use tar::Archive;
+
+    let file = std::fs::File::open(tar_gz_path)?;
+    let decoder = GzDecoder::new(file);
+    let mut archive = Archive::new(decoder);
+
+    let current_exe = std::env::current_exe()?;
+    // Handle " (deleted)" suffix on Linux
+    let exe_path = {
+        let s = current_exe.to_string_lossy().to_string();
+        s.strip_suffix(" (deleted)")
+            .map(std::path::PathBuf::from)
+            .unwrap_or(current_exe)
+    };
+    let exe_name = exe_path.file_name()
+        .ok_or_else(|| anyhow::anyhow!("cannot determine binary name"))?
+        .to_string_lossy();
+
+    let tmp_bin = exe_path.with_extension("new");
+    let mut found = false;
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.to_path_buf();
+        // Look for the client binary in the archive (e.g., omnish-0.5.0/bin/omnish)
+        if let Some(name) = path.file_name() {
+            if name.to_string_lossy() == *exe_name {
+                entry.unpack(&tmp_bin)?;
+                found = true;
+                break;
+            }
+        }
+    }
+
+    if !found {
+        anyhow::bail!("client binary '{}' not found in archive", exe_name);
+    }
+
+    // Make executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp_bin, std::fs::Permissions::from_mode(0o755))?;
+    }
+
+    // Atomic rename
+    std::fs::rename(&tmp_bin, &exe_path)?;
+
+    Ok(())
+}
+
 #[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
@@ -555,6 +686,9 @@ async fn main() -> Result<()> {
     let mut last_update_check = std::time::Instant::now();
     const AUTO_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
     const AUTO_UPDATE_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+    const UPDATE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+    let mut last_update_poll = std::time::Instant::now();
+    let update_in_progress = Arc::new(AtomicBool::new(false));
 
     // Landlock sandbox state
     let mut locked = false;
@@ -608,6 +742,37 @@ async fn main() -> Result<()> {
                     }
                     // Update mtime after check to avoid repeated unnecessary checks
                     exe_mtime = current_mtime;
+                }
+            }
+        }
+
+        // Protocol-based update polling
+        if auto_update_enabled.load(Ordering::Relaxed)
+            && last_update_poll.elapsed() >= UPDATE_POLL_INTERVAL
+            && !update_in_progress.load(Ordering::Relaxed)
+        {
+            last_update_poll = std::time::Instant::now();
+            if let Some(ref rpc) = daemon_conn {
+                let os = std::env::consts::OS.to_string();
+                let arch = std::env::consts::ARCH.to_string();
+                let ver = omnish_common::VERSION.to_string();
+                match rpc.call(Message::UpdateCheck {
+                    os: os.clone(), arch: arch.clone(), current_version: ver,
+                }).await {
+                    Ok(Message::UpdateInfo { latest_version, available: true }) => {
+                        update_in_progress.store(true, Ordering::Relaxed);
+                        let rpc = rpc.clone();
+                        let uip = Arc::clone(&update_in_progress);
+                        tokio::spawn(async move {
+                            if let Err(e) = download_and_extract_update(
+                                &rpc, &os, &arch, &latest_version,
+                            ).await {
+                                tracing::warn!("update download failed: {}", e);
+                            }
+                            uip.store(false, Ordering::Relaxed);
+                        });
+                    }
+                    _ => {} // No update or error, ignore
                 }
             }
         }
