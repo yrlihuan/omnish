@@ -278,7 +278,12 @@ fn exec_update(proxy: &PtyProxy, session_id: &str, cursor_col: u16, cursor_row: 
         }
     }
 
-    // Pass transient state via env vars (survives exec)
+    // Pass transient state via env vars (survives exec, visible in /proc/<pid>/environ)
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_default();
+    std::env::set_var("OMNISH_STARTED", &started);
     std::env::set_var("OMNISH_CURSOR_COL", cursor_col.to_string());
     std::env::set_var("OMNISH_CURSOR_ROW", cursor_row.to_string());
     if let Some(tid) = last_thread_id {
@@ -308,14 +313,6 @@ async fn main() -> Result<()> {
         println!("omnish {}", omnish_common::VERSION);
         return Ok(());
     }
-
-    // Record version and startup time in env vars (visible in /proc/<pid>/environ)
-    std::env::set_var("OMNISH_VERSION", omnish_common::VERSION);
-    let started = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_default();
-    std::env::set_var("OMNISH_STARTED", &started);
 
     // Initialize file-based tracing for debugging (does not write to stderr/stdout to avoid PTY interference)
     {
