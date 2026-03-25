@@ -887,9 +887,21 @@ async fn main() -> Result<()> {
 
                     nix::unistd::write(std::io::stdout(), display_data)?;
 
-                    // Render deferred ghost text after bash's readline redraw
+                    // Render ghost text after display_data write.
+                    // Priority 1: deferred ghost (just set during this or prior RL processing).
+                    // Priority 2: re-render active ghost — handles the case where bash's
+                    // readline redraw is split across multiple PTY reads and a trailing
+                    // fragment overwrites the previously-rendered ghost.
                     if let Some(ghost_render) = deferred_ghost.take() {
                         nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                    } else if !display_data.is_empty()
+                        && shell_input.at_prompt()
+                        && shell_input.cursor_at_end()
+                    {
+                        if let Some(suffix) = shell_completer.ghost() {
+                            let ghost_render = display::render_ghost_text(suffix);
+                            nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                        }
                     }
 
                     // Track cursor position on display (stripped) data
