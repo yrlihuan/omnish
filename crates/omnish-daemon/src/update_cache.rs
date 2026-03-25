@@ -195,6 +195,164 @@ impl UpdateCache {
         omnish_common::update::prune_packages(&platform_dir, os, arch, omnish_common::update::MAX_CACHED_PACKAGES);
         Ok(true)
     }
+
+    /// Download platform packages from a GitHub releases API endpoint.
+    ///
+    /// `api_url` should be e.g. `https://api.github.com/repos/owner/repo/releases/latest`.
+    /// Fetches the release JSON, finds matching assets for each (os, arch) pair,
+    /// and downloads them to the cache.
+    pub async fn download_from_github(
+        &self,
+        api_url: &str,
+        platforms: &[(String, String)],
+        client: &reqwest::Client,
+    ) -> Vec<(String, String, anyhow::Result<bool>)> {
+        let mut results = Vec::new();
+
+        // Fetch release metadata
+        let resp = match client
+            .get(api_url)
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "omnish-daemon")
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                for (os, arch) in platforms {
+                    results.push((os.clone(), arch.clone(), Err(anyhow::anyhow!("request failed: {}", e))));
+                }
+                return results;
+            }
+        };
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            for (os, arch) in platforms {
+                results.push((os.clone(), arch.clone(), Err(anyhow::anyhow!("HTTP {}", status))));
+            }
+            return results;
+        }
+
+        let body: serde_json::Value = match resp.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                for (os, arch) in platforms {
+                    results.push((os.clone(), arch.clone(), Err(anyhow::anyhow!("json parse: {}", e))));
+                }
+                return results;
+            }
+        };
+
+        // Extract version from tag_name (strip leading 'v')
+        let tag = body["tag_name"].as_str().unwrap_or("");
+        let version = tag.strip_prefix('v').unwrap_or(tag);
+        if version.is_empty() {
+            for (os, arch) in platforms {
+                results.push((os.clone(), arch.clone(), Err(anyhow::anyhow!("no tag_name in release"))));
+            }
+            return results;
+        }
+
+        let assets = match body["assets"].as_array() {
+            Some(a) => a,
+            None => {
+                for (os, arch) in platforms {
+                    results.push((os.clone(), arch.clone(), Err(anyhow::anyhow!("no assets in release"))));
+                }
+                return results;
+            }
+        };
+
+        // Map platform names to GitHub asset OS names
+        fn github_os(os: &str) -> &str {
+            match os {
+                "macos" => "macos",
+                _ => os,
+            }
+        }
+
+        for (os, arch) in platforms {
+            let suffix = format!("-{}-{}.tar.gz", github_os(os), arch);
+            // Find matching asset
+            let asset = assets.iter().find(|a| {
+                a["name"].as_str().is_some_and(|n| n.starts_with("omnish-") && n.ends_with(&suffix))
+            });
+            let asset = match asset {
+                Some(a) => a,
+                None => {
+                    // No asset for this platform — not an error
+                    results.push((os.clone(), arch.clone(), Ok(false)));
+                    continue;
+                }
+            };
+
+            let asset_name = asset["name"].as_str().unwrap_or("");
+            let asset_version = match Self::extract_version(asset_name, &github_os(os), arch) {
+                Some(v) => v,
+                None => {
+                    results.push((os.clone(), arch.clone(), Err(anyhow::anyhow!("cannot parse version from {}", asset_name))));
+                    continue;
+                }
+            };
+
+            // Check if we already have this version cached
+            if let Some((cached_ver, _)) = self.cached_package(os, arch) {
+                if Self::compare_versions(&cached_ver, &asset_version) != std::cmp::Ordering::Less {
+                    results.push((os.clone(), arch.clone(), Ok(false)));
+                    continue;
+                }
+            }
+
+            let download_url = match asset["browser_download_url"].as_str() {
+                Some(u) => u,
+                None => {
+                    results.push((os.clone(), arch.clone(), Err(anyhow::anyhow!("no download URL for {}", asset_name))));
+                    continue;
+                }
+            };
+
+            // Download to tmp, then atomic rename
+            let platform_dir = self.platform_dir(os, arch);
+            if let Err(e) = std::fs::create_dir_all(&platform_dir) {
+                results.push((os.clone(), arch.clone(), Err(e.into())));
+                continue;
+            }
+            let tmp_path = platform_dir.join(format!(".tmp-{}", asset_name));
+
+            let dl_result: anyhow::Result<bool> = async {
+                let resp = client.get(download_url)
+                    .header("User-Agent", "omnish-daemon")
+                    .send()
+                    .await?;
+                if !resp.status().is_success() {
+                    anyhow::bail!("download HTTP {}", resp.status());
+                }
+                let bytes = resp.bytes().await?;
+                tokio::fs::write(&tmp_path, &bytes).await?;
+                // Remove old packages
+                if let Ok(old_entries) = std::fs::read_dir(&platform_dir) {
+                    for old in old_entries.flatten() {
+                        let old_name = old.file_name().to_string_lossy().to_string();
+                        if old_name != format!(".tmp-{}", asset_name) && old_name.ends_with(".tar.gz") {
+                            let _ = std::fs::remove_file(old.path());
+                        }
+                    }
+                }
+                let dest = platform_dir.join(asset_name);
+                std::fs::rename(&tmp_path, &dest)?;
+                tracing::info!("cached update package: {}", dest.display());
+                Ok(true)
+            }.await;
+
+            if dl_result.is_err() {
+                let _ = std::fs::remove_file(&tmp_path);
+            }
+            results.push((os.clone(), arch.clone(), dl_result));
+        }
+
+        results
+    }
 }
 
 #[cfg(test)]

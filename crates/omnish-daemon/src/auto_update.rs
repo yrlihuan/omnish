@@ -16,6 +16,8 @@ pub fn create_auto_update_job(
     check_url: Option<String>,
     restart_signal: Arc<Notify>,
     update_cache: Arc<crate::update_cache::UpdateCache>,
+    proxy: Option<String>,
+    no_proxy: Option<String>,
 ) -> Result<Job> {
     Ok(Job::new_async(schedule, move |_uuid, _lock| {
         let omnish_dir = omnish_dir.clone();
@@ -23,24 +25,63 @@ pub fn create_auto_update_job(
         let check_url = check_url.clone();
         let restart_signal = restart_signal.clone();
         let update_cache = update_cache.clone();
+        let proxy = proxy.clone();
+        let no_proxy = no_proxy.clone();
         Box::pin(async move {
             tracing::debug!("task [auto_update] started");
 
             // Phase 0: Download packages from check_url to OMNISH_HOME/updates/
             // for daemon's own platform + all known client platforms
             if let Some(ref url) = check_url {
-                if !url.starts_with("http://") && !url.starts_with("https://") {
+                let mut platforms = update_cache.known_platforms();
+                platforms.insert((std::env::consts::OS.to_string(), std::env::consts::ARCH.to_string()));
+
+                if url.starts_with("http://") || url.starts_with("https://") {
+                    // GitHub release API
+                    let mut builder = reqwest::Client::builder();
+                    if let Some(ref proxy_url) = proxy {
+                        if let Ok(mut p) = reqwest::Proxy::all(proxy_url) {
+                            if let Some(ref np) = no_proxy {
+                                p = p.no_proxy(reqwest::NoProxy::from_string(np));
+                            }
+                            builder = builder.proxy(p);
+                        }
+                    }
+                    if let Ok(client) = builder.build() {
+                        let platform_list: Vec<_> = platforms.into_iter().collect();
+                        let results = update_cache.download_from_github(url, &platform_list, &client).await;
+                        let mut any_updated = false;
+                        for (os, arch, result) in results {
+                            match result {
+                                Ok(true) => {
+                                    tracing::info!("task [auto_update] cached package for {}-{}", os, arch);
+                                    any_updated = true;
+                                }
+                                Ok(false) => {} // already up to date
+                                Err(e) => tracing::warn!("task [auto_update] failed to cache {}-{}: {}", os, arch, e),
+                            }
+                        }
+                        if any_updated {
+                            update_cache.scan_updates();
+                        }
+                    }
+                } else {
+                    // Local directory
                     let source_dir = std::path::Path::new(url.as_str());
-                    let mut platforms = update_cache.known_platforms();
-                    platforms.insert((std::env::consts::OS.to_string(), std::env::consts::ARCH.to_string()));
+                    let mut any_updated = false;
                     for (os, arch) in &platforms {
                         match update_cache.download_from_local_dir(source_dir, os, arch) {
-                            Ok(true) => tracing::info!("task [auto_update] cached package for {}-{}", os, arch),
+                            Ok(true) => {
+                                tracing::info!("task [auto_update] cached package for {}-{}", os, arch);
+                                any_updated = true;
+                            }
                             Ok(false) => {} // already up to date
                             Err(e) => tracing::warn!("task [auto_update] failed to cache {}-{}: {}", os, arch, e),
                         }
                     }
-                    update_cache.scan_updates();
+                    if any_updated {
+                        update_cache.scan_updates();
+                    }
                 }
             }
 

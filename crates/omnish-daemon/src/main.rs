@@ -236,6 +236,8 @@ async fn async_main() -> Result<i32> {
             auto_update_config.check_url.clone(),
             Arc::clone(&restart_signal),
             Arc::clone(&update_cache),
+            config.proxy.clone(),
+            config.no_proxy.clone(),
         )?;
         task_mgr
             .register("auto_update", &auto_update_config.schedule, job)
