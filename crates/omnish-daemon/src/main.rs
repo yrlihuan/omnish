@@ -213,6 +213,18 @@ async fn async_main() -> Result<i32> {
     // Update cache: stores downloaded packages for distribution to clients
     let update_cache = Arc::new(omnish_daemon::update_cache::UpdateCache::new(&omnish_dir));
 
+    // Periodic scan of updates directory (every 60s) to refresh cached versions
+    {
+        let uc = Arc::clone(&update_cache);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                uc.scan_updates();
+            }
+        });
+    }
+
     // Register auto-update job if enabled
     if auto_update_config.enabled {
         let job = omnish_daemon::auto_update::create_auto_update_job(

@@ -860,14 +860,10 @@ async fn handle_message(
             let _ = tx.send(Message::Ack).await;
         }
         Message::UpdateCheck { os, arch, current_version } => {
+            update_cache.register_platform(&os, &arch);
             let reply = if let Some(latest) = update_cache.check_update(&os, &arch, &current_version) {
                 Message::UpdateInfo { latest_version: latest, available: true }
             } else {
-                // Kick off background download if not already downloading
-                if !update_cache.is_downloading(&os, &arch) {
-                    let check_url = opts.daemon_config.read().unwrap().tasks.auto_update.check_url.clone();
-                    update_cache.start_background_download(os, arch, check_url);
-                }
                 Message::UpdateInfo { latest_version: String::new(), available: false }
             };
             let _ = tx.send(reply).await;
@@ -891,6 +887,7 @@ async fn handle_message(
             let cached = update_cache.cached_package(&os, &arch);
             match cached {
                 Some((cached_ver, path)) if cached_ver == version => {
+                    tracing::info!("streaming update package {}-{} v{} to client", os, arch, version);
                     match tokio::fs::File::open(&path).await {
                         Ok(mut file) => {
                             use tokio::io::AsyncReadExt;

@@ -71,30 +71,21 @@ pub fn create_auto_update_job(
                 }
             }
 
-            // Cache own platform package for protocol-channel distribution
-            {
-                let os = std::env::consts::OS;
-                let arch = std::env::consts::ARCH;
-                if let Some(ref url) = check_url {
-                    if !url.starts_with("http://") && !url.starts_with("https://") {
-                        // Local directory — find the matching tar.gz
-                        let dir = std::path::Path::new(url);
-                        if let Ok(entries) = std::fs::read_dir(dir) {
-                            for entry in entries.flatten() {
-                                let name = entry.file_name().to_string_lossy().to_string();
-                                if name.ends_with(&format!("-{}-{}.tar.gz", os, arch)) {
-                                    if let Err(e) = update_cache.cache_package(
-                                        os, arch,
-                                        omnish_common::VERSION,
-                                        &entry.path(),
-                                    ) {
-                                        tracing::warn!("failed to cache own platform package: {}", e);
-                                    }
-                                    break;
-                                }
-                            }
+            // Cache packages for daemon's own platform + all known client platforms
+            if let Some(ref url) = check_url {
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    let source_dir = std::path::Path::new(url.as_str());
+                    // Collect platforms: daemon's own + all known clients
+                    let mut platforms = update_cache.known_platforms();
+                    platforms.insert((std::env::consts::OS.to_string(), std::env::consts::ARCH.to_string()));
+                    for (os, arch) in &platforms {
+                        match update_cache.download_from_local_dir(source_dir, os, arch) {
+                            Ok(true) => tracing::info!("task [auto_update] cached package for {}-{}", os, arch),
+                            Ok(false) => {} // already up to date
+                            Err(e) => tracing::warn!("task [auto_update] failed to cache {}-{}: {}", os, arch, e),
                         }
                     }
+                    update_cache.scan_updates();
                 }
             }
 

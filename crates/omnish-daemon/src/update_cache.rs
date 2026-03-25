@@ -1,26 +1,28 @@
 use anyhow::Result;
 use sha2::{Sha256, Digest};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 /// Manages the package cache at ~/.omnish/updates/{os}-{arch}/
 pub struct UpdateCache {
-    omnish_dir: PathBuf,
     cache_dir: PathBuf,
-    /// Tracks in-flight background downloads to deduplicate.
-    /// Uses Arc so tokio tasks can hold a reference.
-    downloading: Arc<Mutex<HashSet<(String, String)>>>,
+    /// Cached latest version per platform — refreshed by `scan_updates()`
+    latest_versions: Mutex<HashMap<(String, String), String>>,
+    /// Known client platforms — populated by UpdateCheck messages
+    known_platforms: Mutex<HashSet<(String, String)>>,
 }
 
 impl UpdateCache {
     pub fn new(omnish_dir: &Path) -> Self {
         let cache_dir = omnish_dir.join("updates");
-        Self {
-            omnish_dir: omnish_dir.to_path_buf(),
+        let cache = Self {
             cache_dir,
-            downloading: Arc::new(Mutex::new(HashSet::new())),
-        }
+            latest_versions: Mutex::new(HashMap::new()),
+            known_platforms: Mutex::new(HashSet::new()),
+        };
+        cache.scan_updates();
+        cache
     }
 
     /// Return the directory for a given platform
@@ -85,14 +87,45 @@ impl UpdateCache {
         a_parts.len().cmp(&b_parts.len())
     }
 
-    /// Check if the cached version is newer than the client's version
+    /// Check if a newer version is available (uses cached scan results).
     pub fn check_update(&self, os: &str, arch: &str, current_version: &str) -> Option<String> {
-        let (cached_version, _) = self.cached_package(os, arch)?;
-        if Self::compare_versions(&cached_version, current_version) == std::cmp::Ordering::Greater {
-            Some(cached_version)
+        let versions = self.latest_versions.lock().unwrap();
+        let cached_version = versions.get(&(os.to_string(), arch.to_string()))?;
+        if Self::compare_versions(cached_version, current_version) == std::cmp::Ordering::Greater {
+            Some(cached_version.clone())
         } else {
             None
         }
+    }
+
+    /// Record a client platform from an UpdateCheck message.
+    pub fn register_platform(&self, os: &str, arch: &str) {
+        self.known_platforms.lock().unwrap().insert((os.to_string(), arch.to_string()));
+    }
+
+    /// Return all known client platforms (for the auto-update task to download).
+    pub fn known_platforms(&self) -> HashSet<(String, String)> {
+        self.known_platforms.lock().unwrap().clone()
+    }
+
+    /// Scan the updates directory and refresh the latest version per platform.
+    pub fn scan_updates(&self) {
+        let mut versions = HashMap::new();
+        if let Ok(entries) = std::fs::read_dir(&self.cache_dir) {
+            for entry in entries.flatten() {
+                if !entry.file_type().map_or(false, |t| t.is_dir()) {
+                    continue;
+                }
+                let dir_name = entry.file_name().to_string_lossy().to_string();
+                // Parse "{os}-{arch}" directory name
+                if let Some((os, arch)) = dir_name.split_once('-') {
+                    if let Some((version, _)) = self.cached_package(os, arch) {
+                        versions.insert((os.to_string(), arch.to_string()), version);
+                    }
+                }
+            }
+        }
+        *self.latest_versions.lock().unwrap() = versions;
     }
 
     /// Cache a package file for the daemon's own platform after self-update.
@@ -126,61 +159,46 @@ impl UpdateCache {
         Ok(format!("{:x}", hasher.finalize()))
     }
 
-    /// Start a background download for a platform if not already in progress.
-    /// Returns true if a download was kicked off, false if already in progress.
-    pub fn start_background_download(
-        &self,
-        os: String,
-        arch: String,
-        check_url: Option<String>,
-    ) -> bool {
-        let key = (os.clone(), arch.clone());
-        {
-            let mut dl = self.downloading.lock().unwrap();
-            if dl.contains(&key) {
-                return false;
+    /// Download a platform package from a local directory.
+    /// Downloads to a temp file first, then atomically moves to the cache.
+    pub fn download_from_local_dir(&self, source_dir: &Path, os: &str, arch: &str) -> Result<bool> {
+        let suffix = format!("-{}-{}.tar.gz", os, arch);
+        let entries = std::fs::read_dir(source_dir)?;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("omnish-") && name.ends_with(&suffix) {
+                let version = Self::extract_version(&name, os, arch);
+                let version = match version {
+                    Some(v) => v,
+                    None => continue,
+                };
+                // Check if we already have this version cached
+                if let Some((cached_ver, _)) = self.cached_package(os, arch) {
+                    if Self::compare_versions(&cached_ver, &version) != std::cmp::Ordering::Less {
+                        return Ok(false); // Already have same or newer
+                    }
+                }
+                // Copy to tmp, then mv to target
+                let platform_dir = self.platform_dir(os, arch);
+                std::fs::create_dir_all(&platform_dir)?;
+                let tmp_path = platform_dir.join(format!(".tmp-{}", name));
+                std::fs::copy(entry.path(), &tmp_path)?;
+                // Remove old packages
+                if let Ok(old_entries) = std::fs::read_dir(&platform_dir) {
+                    for old in old_entries.flatten() {
+                        let old_name = old.file_name().to_string_lossy().to_string();
+                        if old_name != format!(".tmp-{}", name) && old_name.ends_with(".tar.gz") {
+                            let _ = std::fs::remove_file(old.path());
+                        }
+                    }
+                }
+                let dest = platform_dir.join(&name);
+                std::fs::rename(&tmp_path, &dest)?;
+                tracing::info!("cached update package: {}", dest.display());
+                return Ok(true);
             }
-            dl.insert(key.clone());
         }
-
-        let downloading = Arc::clone(&self.downloading);
-        let omnish_dir = self.omnish_dir.clone();
-        let cache_dir = self.cache_dir.clone();
-        tokio::spawn(async move {
-            let result = Self::download_package(&omnish_dir, &cache_dir, &os, &arch, check_url.as_deref()).await;
-            match result {
-                Ok(()) => tracing::info!("background download complete: {}-{}", os, arch),
-                Err(e) => tracing::warn!("background download failed for {}-{}: {}", os, arch, e),
-            }
-            downloading.lock().unwrap().remove(&key);
-        });
-        true
-    }
-
-    async fn download_package(
-        _omnish_dir: &Path,
-        _cache_dir: &Path,
-        _os: &str,
-        _arch: &str,
-        _check_url: Option<&str>,
-    ) -> Result<()> {
-        // Use install.sh with --dir (local) or fetch from GitHub releases
-        // For cross-platform: construct URL like
-        //   https://github.com/{repo}/releases/download/{version}/omnish-{version}-{os}-{arch}.tar.gz
-        // For local dir: look for omnish-*-{os}-{arch}.tar.gz
-        //
-        // First, determine latest version from check_url or GitHub API
-        // Then download the tar.gz for the target platform
-        // Save to cache_dir/{os}-{arch}/omnish-{version}-{os}-{arch}.tar.gz
-        //
-        // Placeholder — actual implementation depends on release infrastructure
-        anyhow::bail!("cross-platform download not yet implemented")
-    }
-
-    /// Check if a platform download is in progress
-    pub fn is_downloading(&self, os: &str, arch: &str) -> bool {
-        let dl = self.downloading.lock().unwrap();
-        dl.contains(&(os.to_string(), arch.to_string()))
+        Ok(false)
     }
 }
 
@@ -216,13 +234,13 @@ mod tests {
     #[test]
     fn check_update_newer() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = UpdateCache::new(dir.path());
 
-        // Create a fake cached package
+        // Create a fake cached package before constructing cache (scan runs in new())
         let platform_dir = dir.path().join("updates/linux-x86_64");
         std::fs::create_dir_all(&platform_dir).unwrap();
         std::fs::write(platform_dir.join("omnish-0.5.0-linux-x86_64.tar.gz"), b"fake").unwrap();
 
+        let cache = UpdateCache::new(dir.path());
         assert_eq!(cache.check_update("linux", "x86_64", "0.4.0"), Some("0.5.0".to_string()));
         assert_eq!(cache.check_update("linux", "x86_64", "0.5.0"), None);
         assert_eq!(cache.check_update("linux", "x86_64", "0.6.0"), None);
