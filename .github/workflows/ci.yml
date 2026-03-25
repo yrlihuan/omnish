@@ -148,13 +148,7 @@ jobs:
         run: |
           cargo build --release --target ${{ matrix.target }} -p omnish-client -p omnish-plugin
           VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c "import sys,json; print(json.load(sys.stdin)['packages'][0]['version'])")
-          STAGING="dist/omnish-${VERSION}-macos-${{ matrix.arch }}"
-          mkdir -p "$STAGING/bin"
-          cp "target/${{ matrix.target }}/release/omnish" "$STAGING/bin/"
-          cp "target/${{ matrix.target }}/release/omnish-plugin" "$STAGING/bin/"
-          mkdir -p "$STAGING/plugins"
-          tar -czf "${STAGING}.tar.gz" -C dist "omnish-${VERSION}-macos-${{ matrix.arch }}"
-          echo "Created ${STAGING}.tar.gz"
+          bash scripts/build-tar.sh "$VERSION" "target/${{ matrix.target }}/release" "${{ matrix.arch }}" macos
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

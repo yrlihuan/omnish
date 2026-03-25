@@ -71,8 +71,13 @@ else
     TARGET_DIR="target/release"
 fi
 
+# ── Platform ───────────────────────────────────────────────────────────────
+
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+[[ "$OS" == "darwin" ]] && OS="macos"
+
 # ── Package (delegate to build-tar.sh) ──────────────────────────────────────
 
-bash "$REPO_ROOT/scripts/build-tar.sh" "$VERSION" "$TARGET_DIR" "$ARCH"
+bash "$REPO_ROOT/scripts/build-tar.sh" "$VERSION" "$TARGET_DIR" "$ARCH" "$OS"
 echo ""
 echo "To install: bash install.sh --dir=dist"

@@ -185,6 +185,16 @@ normalize_version() {
     echo "${v//-/.}"
 }
 
+# Check if version $1 is newer than version $2 (using normalized versions).
+# Returns 0 (true) if $1 > $2, 1 (false) otherwise.
+is_newer_version() {
+    local a="$(normalize_version "$1")"
+    local b="$(normalize_version "$2")"
+    [[ "$a" == "$b" ]] && return 1
+    # sort -V puts the smaller version first; if $a comes second, it's newer
+    [[ "$(printf '%s\n%s' "$a" "$b" | sort -V | tail -1)" == "$a" ]]
+}
+
 # ── Platform detection ───────────────────────────────────────────────────────
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -322,13 +332,13 @@ elif [[ -z "${EXTRACTED:-}" ]] && [[ -n "$FROM_DIR" ]]; then
     VERSION="v${BEST_VERSION}"
     info "Found: $(basename "$TAR_FILE")"
 
-    # In upgrade mode, skip if already up to date
+    # In upgrade mode, skip if already up to date or package is older
     if [[ "$UPGRADE" == true ]]; then
         CURRENT_VERSION=""
         if [[ -x "$BIN_DIR/omnish-daemon" ]]; then
             CURRENT_VERSION=$("$BIN_DIR/omnish-daemon" --version 2>/dev/null | awk '{print $2}' || echo "")
         fi
-        if [[ "$(normalize_version "$CURRENT_VERSION")" == "$(normalize_version "$VERSION")" ]]; then
+        if [[ -n "$CURRENT_VERSION" ]] && ! is_newer_version "$VERSION" "$CURRENT_VERSION"; then
             info "Already up to date ($(normalize_version "$CURRENT_VERSION"))"
             exit 2
         fi
@@ -350,13 +360,13 @@ elif [[ -z "${EXTRACTED:-}" ]]; then
 
     info "Version: $VERSION"
 
-    # In upgrade mode, skip if already up to date
+    # In upgrade mode, skip if already up to date or package is older
     if [[ "$UPGRADE" == true ]]; then
         CURRENT_VERSION=""
         if [[ -x "$BIN_DIR/omnish-daemon" ]]; then
             CURRENT_VERSION=$("$BIN_DIR/omnish-daemon" --version 2>/dev/null | awk '{print $2}' || echo "")
         fi
-        if [[ "$(normalize_version "$CURRENT_VERSION")" == "$(normalize_version "$VERSION")" ]]; then
+        if [[ -n "$CURRENT_VERSION" ]] && ! is_newer_version "$VERSION" "$CURRENT_VERSION"; then
             info "Already up to date ($(normalize_version "$CURRENT_VERSION"))"
             exit 2  # No update needed — daemon skips deploy
         fi
