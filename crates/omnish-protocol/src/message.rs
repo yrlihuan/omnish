@@ -5,7 +5,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version — increment on incompatible wire format changes.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigItem {
@@ -73,6 +73,28 @@ pub enum Message {
     },
     ConfigUpdate { changes: Vec<ConfigChange> },
     ConfigUpdateResult { ok: bool, error: Option<String> },
+    UpdateCheck {
+        os: String,
+        arch: String,
+        current_version: String,
+    },
+    UpdateInfo {
+        latest_version: String,
+        available: bool,
+    },
+    UpdateRequest {
+        os: String,
+        arch: String,
+        version: String,
+    },
+    UpdateChunk {
+        seq: u32,
+        total_size: u64,
+        checksum: String,
+        data: Vec<u8>,
+        done: bool,
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -579,7 +601,7 @@ mod tests {
     /// reminding you to bump PROTOCOL_VERSION if the wire format changed.
     #[test]
     fn message_variant_guard() {
-        const EXPECTED_VARIANT_COUNT: usize = 28;
+        const EXPECTED_VARIANT_COUNT: usize = 32;
 
         let variants: Vec<Message> = vec![
             Message::SessionStart(SessionStart {
@@ -740,6 +762,10 @@ mod tests {
             Message::ConfigResponse { items: vec![], handlers: vec![] },
             Message::ConfigUpdate { changes: vec![] },
             Message::ConfigUpdateResult { ok: true, error: None },
+            Message::UpdateCheck { os: "linux".into(), arch: "x86_64".into(), current_version: "0.1.0".into() },
+            Message::UpdateInfo { latest_version: "0.2.0".into(), available: true },
+            Message::UpdateRequest { os: "linux".into(), arch: "x86_64".into(), version: "0.2.0".into() },
+            Message::UpdateChunk { seq: 0, total_size: 1024, checksum: "abc".into(), data: vec![1,2,3], done: false, error: None },
         ];
 
         // Exhaustive match — no wildcard. Compiler will error if a variant is missing.
@@ -772,7 +798,11 @@ mod tests {
                 | Message::ConfigQuery
                 | Message::ConfigResponse { .. }
                 | Message::ConfigUpdate { .. }
-                | Message::ConfigUpdateResult { .. } => {}
+                | Message::ConfigUpdateResult { .. }
+                | Message::UpdateCheck { .. }
+                | Message::UpdateInfo { .. }
+                | Message::UpdateRequest { .. }
+                | Message::UpdateChunk { .. } => {}
             }
         }
 
