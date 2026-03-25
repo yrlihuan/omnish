@@ -111,6 +111,8 @@ async fn async_main() -> Result<i32> {
         )
         .init();
 
+    tracing::info!("omnish-daemon {}", omnish_common::VERSION);
+
     // Load configuration
     let config = load_daemon_config()?;
 

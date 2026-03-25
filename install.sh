@@ -174,6 +174,17 @@ setup_plugin() {
     info "Plugin $plugin_name configured and enabled"
 }
 
+# ── Version normalization ────────────────────────────────────────────────────
+# Strips git commit hash and replaces '-' with '.' for numeric comparison.
+# e.g. "0.8.4-71-gdf067f6" → "0.8.4.71", "v0.8.4.71" → "0.8.4.71"
+normalize_version() {
+    local v="${1#v}"
+    # Strip -g<hex> suffix
+    v="$(echo "$v" | sed 's/-g[0-9a-f]*$//')"
+    # Replace remaining dashes with dots
+    echo "${v//-/.}"
+}
+
 # ── Platform detection ───────────────────────────────────────────────────────
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -317,11 +328,11 @@ elif [[ -z "${EXTRACTED:-}" ]] && [[ -n "$FROM_DIR" ]]; then
         if [[ -x "$BIN_DIR/omnish-daemon" ]]; then
             CURRENT_VERSION=$("$BIN_DIR/omnish-daemon" --version 2>/dev/null | awk '{print $2}' || echo "")
         fi
-        if [[ "$CURRENT_VERSION" == "${VERSION#v}" ]]; then
-            info "Already up to date (v${CURRENT_VERSION})"
+        if [[ "$(normalize_version "$CURRENT_VERSION")" == "$(normalize_version "$VERSION")" ]]; then
+            info "Already up to date ($(normalize_version "$CURRENT_VERSION"))"
             exit 2
         fi
-        info "Update available: v${CURRENT_VERSION:-unknown} -> ${VERSION}"
+        info "Update available: $(normalize_version "${CURRENT_VERSION:-unknown}") -> $(normalize_version "$VERSION")"
     fi
 
     tar -xzf "$TAR_FILE" -C "$TMPDIR"
@@ -345,11 +356,11 @@ elif [[ -z "${EXTRACTED:-}" ]]; then
         if [[ -x "$BIN_DIR/omnish-daemon" ]]; then
             CURRENT_VERSION=$("$BIN_DIR/omnish-daemon" --version 2>/dev/null | awk '{print $2}' || echo "")
         fi
-        if [[ "$CURRENT_VERSION" == "${VERSION#v}" ]]; then
-            info "Already up to date (v${CURRENT_VERSION})"
+        if [[ "$(normalize_version "$CURRENT_VERSION")" == "$(normalize_version "$VERSION")" ]]; then
+            info "Already up to date ($(normalize_version "$CURRENT_VERSION"))"
             exit 2  # No update needed — daemon skips deploy
         fi
-        info "Update available: v${CURRENT_VERSION:-unknown} -> ${VERSION}"
+        info "Update available: $(normalize_version "${CURRENT_VERSION:-unknown}") -> $(normalize_version "$VERSION")"
     fi
 
     TAR_URL="https://github.com/${REPO}/releases/download/${VERSION}/omnish-${VERSION#v}-linux-${ARCH}.tar.gz"
