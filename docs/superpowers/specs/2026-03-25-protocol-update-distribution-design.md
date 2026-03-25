@@ -18,9 +18,9 @@ Client                              Daemon
   |<-- UpdateInfo {ver, available} -- |
   |                                   |
   | (if available:)                   |
-  |-- UpdateRequest {os, arch} -----> |
+  |-- UpdateRequest {os, arch, ver} -> |
   |                                   |  (read cached package)
-  |<-- UpdateChunk {seq=0, meta} ---- |
+  |<-- UpdateChunk {seq=0, meta+data}  |
   |<-- UpdateChunk {seq=1, data} ---- |
   |<-- UpdateChunk {seq=N, done} ---- |
   |                                   |
@@ -51,17 +51,21 @@ UpdateInfo {
 UpdateRequest {
     os: String,
     arch: String,
+    version: String,  // the specific version to download (from UpdateInfo)
 }
 
 /// Daemon → Client: binary chunk stream
 UpdateChunk {
-    seq: u32,           // 0-based sequence number
-    total_size: u64,    // total package size in bytes (repeated in every chunk for simplicity)
-    checksum: String,   // SHA-256 of the full package (repeated in every chunk)
-    data: Vec<u8>,      // chunk payload (empty in final chunk if done)
-    done: bool,         // true on last chunk
+    seq: u32,              // 0-based sequence number
+    total_size: u64,       // total package size (set in seq=0, 0 in subsequent chunks)
+    checksum: String,      // SHA-256 hex digest (set in seq=0, empty in subsequent chunks)
+    data: Vec<u8>,         // chunk payload (64KB max)
+    done: bool,            // true on last chunk
+    error: Option<String>, // set if an error occurred (aborts transfer)
 }
 ```
+
+The first chunk (`seq=0`) carries metadata (`total_size`, `checksum`) plus the first data payload. Subsequent chunks carry only `data`, `seq`, and `done`. If `error` is set on any chunk, the transfer is aborted and the client discards the temp file.
 
 Protocol version bumped to 10.
 
@@ -85,7 +89,7 @@ Cached packages persist until replaced by a newer version.
 
 ### Download deduplication
 
-A `HashMap<(String, String), ()>` (or `HashSet`) tracks in-flight downloads by `(os, arch)`. When an `UpdateCheck` triggers a download:
+A `HashSet<(String, String)>` tracks in-flight downloads by `(os, arch)`. When an `UpdateCheck` triggers a download:
 - If already downloading for that platform → skip, reply `available: false`.
 - If not → insert entry, spawn download task.
 - On download complete → remove entry.
@@ -94,13 +98,25 @@ This prevents multiple clients of the same platform from triggering redundant do
 
 ### UpdateRequest handler
 
-1. Open the cached package file for the requested `(os, arch)`.
-2. Stream the file in 64KB chunks as `UpdateChunk` messages.
-3. If no cached package exists: send a single `UpdateChunk { done: true, total_size: 0 }` to signal "not available."
+1. Verify the requested `version` matches the cached package version. If mismatched (race — package was replaced between check and request), send `UpdateChunk { error: Some("version mismatch"), done: true, .. }`.
+2. Open the cached package file for the requested `(os, arch)`.
+3. Stream the file in 64KB chunks as `UpdateChunk` messages. First chunk includes `total_size` and `checksum`; subsequent chunks only carry `data`.
+4. If no cached package exists: send `UpdateChunk { error: Some("not available"), done: true, .. }`.
+5. If a read error occurs mid-stream: send `UpdateChunk { error: Some(msg), done: true, .. }`.
+
+All chunks must be sent within a single handler invocation (the RPC server sends an `Ack` end-of-stream sentinel when the handler returns).
 
 Multiple concurrent `UpdateRequest`s from different clients each get their own read stream — no conflict since the file is read-only.
 
 ## Client Side
+
+### Threading model
+
+The client's main loop is a synchronous `libc::poll()` loop on raw fds (stdin + PTY master). The update download must not block PTY I/O.
+
+The client already has an `RpcClient` that uses tokio internally. The update flow uses `call_stream()` for `UpdateRequest`, which returns a `tokio::sync::mpsc::Receiver`. A dedicated background thread (or tokio task spawned on the RPC client's runtime) drains the chunk receiver and writes to disk. The main loop only issues the `UpdateCheck` call (single request/response, fast) and fires off the download in the background.
+
+A flag (e.g., `update_in_progress: AtomicBool`) prevents concurrent downloads.
 
 ### Polling
 
@@ -108,11 +124,14 @@ Simple periodic timer (e.g., every 60 seconds). Sends `UpdateCheck { os, arch, c
 
 ### Download flow
 
-1. Receive `UpdateInfo { available: true }` → send `UpdateRequest { os, arch }`.
-2. Receive `UpdateChunk` stream → write sequentially to a temp file (e.g., `~/.omnish/tmp/update-{version}.tar.gz`).
-3. On final chunk (`done: true`): verify SHA-256 checksum against `checksum` field.
-4. Extract the package (tar.gz containing both daemon and client binaries).
-5. Copy the client binary to the correct path (overwriting current binary via atomic temp-write + rename).
+1. Receive `UpdateInfo { available: true, latest_version }` → send `UpdateRequest { os, arch, version }` via `call_stream()`.
+2. Spawn background task to drain the chunk stream:
+   - Write chunks sequentially to a temp file (e.g., `~/.omnish/tmp/update-{version}.tar.gz`).
+   - If any chunk has `error` set: log, discard temp file, clear `update_in_progress`.
+   - On final chunk (`done: true`): verify SHA-256 checksum from first chunk.
+3. Extract the package (tar.gz containing both daemon and client binaries).
+4. Copy the client binary to the correct path (overwriting current binary via atomic temp-write + rename).
+5. Clear `update_in_progress`.
 6. Existing mtime polling detects the change → `execvp()`.
 
 ### Package extraction
@@ -133,10 +152,14 @@ If the daemon is unreachable, doesn't support update messages (old daemon), or r
 | `/update` command (client) | Manual trigger | No |
 | **Protocol distribution (new)** | Get binary onto client disk via daemon | **New** |
 
+## Deployment Ordering
+
+Protocol version is bumped to 10. If a v10 client connects to a v9 daemon, the client detects the mismatch and enters a reconnect loop (existing behavior). Therefore the daemon must be upgraded before clients. This is the normal deployment order since the daemon's cron job self-updates first.
+
 ## Files to Modify
 
 - `crates/omnish-protocol/src/message.rs` — add 4 new message variants, bump protocol version
 - `crates/omnish-daemon/src/auto_update.rs` — package caching after self-update, background download for other platforms
 - `crates/omnish-daemon/src/server.rs` — handle `UpdateCheck` and `UpdateRequest` messages
-- `crates/omnish-client/src/main.rs` — periodic `UpdateCheck` polling, download/extract flow
+- `crates/omnish-client/src/main.rs` — periodic `UpdateCheck` polling, background download/extract flow
 - `crates/omnish-common/src/config.rs` — no changes expected (reuses existing `auto_update` config)
