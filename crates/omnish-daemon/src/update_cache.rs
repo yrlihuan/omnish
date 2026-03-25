@@ -154,7 +154,7 @@ impl UpdateCache {
         let mut versions = HashMap::new();
         if let Ok(entries) = std::fs::read_dir(&self.cache_dir) {
             for entry in entries.flatten() {
-                if !entry.file_type().map_or(false, |t| t.is_dir()) {
+                if !entry.file_type().is_ok_and(|t| t.is_dir()) {
                     continue;
                 }
                 let dir_name = entry.file_name().to_string_lossy().to_string();

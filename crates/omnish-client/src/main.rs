@@ -343,7 +343,7 @@ fn local_cached_version(os: &str, arch: &str) -> Option<String> {
         if name.starts_with(prefix) && name.ends_with(&suffix) {
             let ver = &name[prefix.len()..name.len() - suffix.len()];
             if ver.is_empty() { continue; }
-            let dominated = best.as_ref().map_or(false, |b| {
+            let dominated = best.as_ref().is_some_and(|b| {
                 compare_versions(ver, b) != std::cmp::Ordering::Greater
             });
             if !dominated {
@@ -828,24 +828,21 @@ async fn main() -> Result<()> {
                     .ok()
                     .and_then(|h| h.into_string().ok())
                     .unwrap_or_default();
-                match rpc.call(Message::UpdateCheck {
+                if let Ok(Message::UpdateInfo { latest_version, available: true }) = rpc.call(Message::UpdateCheck {
                     os: os.clone(), arch: arch.clone(), current_version: ver,
                     hostname: hostname.clone(),
                 }).await {
-                    Ok(Message::UpdateInfo { latest_version, available: true }) => {
-                        update_in_progress.store(true, Ordering::Relaxed);
-                        let rpc = rpc.clone();
-                        let uip = Arc::clone(&update_in_progress);
-                        tokio::spawn(async move {
-                            if let Err(e) = download_and_extract_update(
-                                &rpc, &os, &arch, &latest_version, &hostname,
-                            ).await {
-                                tracing::warn!("update download failed: {}", e);
-                            }
-                            uip.store(false, Ordering::Relaxed);
-                        });
-                    }
-                    _ => {} // No update or error, ignore
+                    update_in_progress.store(true, Ordering::Relaxed);
+                    let rpc = rpc.clone();
+                    let uip = Arc::clone(&update_in_progress);
+                    tokio::spawn(async move {
+                        if let Err(e) = download_and_extract_update(
+                            &rpc, &os, &arch, &latest_version, &hostname,
+                        ).await {
+                            tracing::warn!("update download failed: {}", e);
+                        }
+                        uip.store(false, Ordering::Relaxed);
+                    });
                 }
             }
         }
