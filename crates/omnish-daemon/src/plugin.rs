@@ -296,8 +296,8 @@ impl PluginManager {
     }
 
     /// Re-read all tool.override.json files and update the prompt cache.
-    /// Returns the computed (descriptions, override_params) so callers can propagate them.
-    pub fn reload_overrides(&self) -> (HashMap<String, String>, HashMap<String, HashMap<String, serde_json::Value>>) {
+    /// Returns (changed, descriptions, override_params).
+    pub fn reload_overrides(&self) -> (bool, HashMap<String, String>, HashMap<String, HashMap<String, serde_json::Value>>) {
         let mut descriptions = HashMap::new();
         let mut override_params = HashMap::new();
 
@@ -340,12 +340,14 @@ impl PluginManager {
             }
         }
 
-        tracing::info!("Reloaded tool overrides ({} tools)", descriptions.len());
-
         let mut cache = self.prompt_cache.write().unwrap();
-        cache.descriptions = descriptions.clone();
-        cache.override_params = override_params.clone();
-        (descriptions, override_params)
+        let changed = cache.descriptions != descriptions || cache.override_params != override_params;
+        if changed {
+            tracing::info!("Reloaded tool overrides ({} tools)", descriptions.len());
+            cache.descriptions = descriptions.clone();
+            cache.override_params = override_params.clone();
+        }
+        (changed, descriptions, override_params)
     }
 
     /// Return the executable path for the plugin that owns the given tool.
@@ -403,9 +405,15 @@ impl PluginManager {
     pub async fn watch_with(self: &Arc<Self>, mut rx: tokio::sync::watch::Receiver<()>, registry: std::sync::Arc<crate::tool_registry::ToolRegistry>) {
         tracing::info!("watching plugin overrides via shared file watcher: {}", self.plugins_dir.display());
         while rx.changed().await.is_ok() {
-            tracing::info!("tool.override.json changed, reloading...");
-            let (descs, params) = self.reload_overrides();
-            registry.update_overrides(descs, params);
+            // Debounce: wait for rapid inotify events to settle
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            // Drain events accumulated during debounce
+            let _ = rx.borrow_and_update();
+
+            let (changed, descs, params) = self.reload_overrides();
+            if changed {
+                registry.update_overrides(descs, params);
+            }
         }
     }
 }
