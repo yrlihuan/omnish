@@ -163,6 +163,7 @@ mod notice_queue {
     use std::sync::Mutex;
 
     static DEFERRED: AtomicBool = AtomicBool::new(false);
+    static ALT_SCREEN: AtomicBool = AtomicBool::new(false);
     static QUEUE: Mutex<Vec<String>> = Mutex::new(Vec::new());
     /// Current cursor row, updated by CursorTracker.
     static CURSOR_ROW: AtomicU16 = AtomicU16::new(0);
@@ -172,9 +173,26 @@ mod notice_queue {
         CURSOR_ROW.store(row, Ordering::Relaxed);
     }
 
-    /// Queue a notice. If deferred mode is on, store it; otherwise display immediately.
+    /// Set alternate screen state. When active, notices are queued.
+    pub fn set_alt_screen(active: bool) {
+        ALT_SCREEN.store(active, Ordering::Relaxed);
+        if !active {
+            // Leaving alt screen — flush queued notices
+            let msgs: Vec<String> = {
+                match QUEUE.lock() {
+                    Ok(mut q) => q.drain(..).collect(),
+                    Err(_) => return,
+                }
+            };
+            for msg in msgs {
+                render(&msg);
+            }
+        }
+    }
+
+    /// Queue a notice. If deferred or alt-screen mode is on, store it; otherwise display immediately.
     pub fn push(msg: &str) {
-        if DEFERRED.load(Ordering::Relaxed) {
+        if DEFERRED.load(Ordering::Relaxed) || ALT_SCREEN.load(Ordering::Relaxed) {
             if let Ok(mut q) = QUEUE.lock() {
                 q.push(msg.to_string());
             }
@@ -191,6 +209,9 @@ mod notice_queue {
     /// Disable deferred mode and flush all queued notices.
     pub fn flush() {
         DEFERRED.store(false, Ordering::Relaxed);
+        if ALT_SCREEN.load(Ordering::Relaxed) {
+            return; // Still in alt screen, keep queued
+        }
         let msgs: Vec<String> = {
             match QUEUE.lock() {
                 Ok(mut q) => q.drain(..).collect(),
@@ -925,6 +946,7 @@ async fn main() -> Result<()> {
                     // Detect alternate screen transitions
                     if let Some(active) = alt_screen_detector.feed(display_data) {
                         interceptor.set_suppressed(active);
+                        notice_queue::set_alt_screen(active);
                     }
 
                     // Notify interceptor of output (resets chat state)
