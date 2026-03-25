@@ -137,6 +137,7 @@ pub struct DaemonServer {
     chat_model_name: Option<String>,
     tool_params: HashMap<String, HashMap<String, serde_json::Value>>,
     opts: Arc<ServerOpts>,
+    update_cache: Arc<omnish_daemon::update_cache::UpdateCache>,
 }
 
 /// Shallow-merge params into a JSON object. Source keys overwrite target keys.
@@ -261,6 +262,7 @@ impl DaemonServer {
         tool_params: HashMap<String, HashMap<String, serde_json::Value>>,
         opts: Arc<ServerOpts>,
         formatter_mgr: Arc<omnish_daemon::formatter_mgr::FormatterManager>,
+        update_cache: Arc<omnish_daemon::update_cache::UpdateCache>,
     ) -> Self {
         Self {
             session_mgr,
@@ -276,6 +278,7 @@ impl DaemonServer {
             chat_model_name,
             tool_params,
             opts,
+            update_cache,
         }
     }
 
@@ -301,6 +304,7 @@ impl DaemonServer {
         let chat_model_name = self.chat_model_name.clone();
         let tool_params = Arc::new(self.tool_params.clone());
         let opts = self.opts.clone();
+        let update_cache = self.update_cache.clone();
 
         // Periodically sweep stale pending agent loop entries
         let pending_cleanup = self.pending_agent_loops.clone();
@@ -366,9 +370,10 @@ impl DaemonServer {
                     let chat_model_name = chat_model_name.clone();
                     let tool_params = tool_params.clone();
                     let opts = opts.clone();
+                    let update_cache = update_cache.clone();
                     let io_requests = io_requests_handler.clone();
                     let io_bytes = io_bytes_handler.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &tool_registry, &formatter_mgr, &pending_loops, &cancel_flags, &active_threads, &chat_model_name, &tool_params, &opts, &io_requests, &io_bytes, tx).await })
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &tool_registry, &formatter_mgr, &pending_loops, &cancel_flags, &active_threads, &chat_model_name, &tool_params, &opts, &update_cache, &io_requests, &io_bytes, tx).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -393,6 +398,7 @@ async fn handle_message(
     chat_model_name: &Option<String>,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
     opts: &Arc<ServerOpts>,
+    update_cache: &Arc<omnish_daemon::update_cache::UpdateCache>,
     io_requests: &Arc<AtomicU64>,
     io_bytes: &Arc<AtomicU64>,
     tx: mpsc::Sender<Message>,
@@ -852,6 +858,84 @@ async fn handle_message(
         Message::ConfigResponse { .. } | Message::ConfigUpdateResult { .. } => {
             // These are daemon→client messages, ignore if received
             let _ = tx.send(Message::Ack).await;
+        }
+        Message::UpdateCheck { os, arch, current_version } => {
+            let reply = if let Some(latest) = update_cache.check_update(&os, &arch, &current_version) {
+                Message::UpdateInfo { latest_version: latest, available: true }
+            } else {
+                // Kick off background download if not already downloading
+                if !update_cache.is_downloading(&os, &arch) {
+                    let check_url = opts.daemon_config.read().unwrap().tasks.auto_update.check_url.clone();
+                    update_cache.start_background_download(os, arch, check_url);
+                }
+                Message::UpdateInfo { latest_version: String::new(), available: false }
+            };
+            let _ = tx.send(reply).await;
+        }
+        Message::UpdateRequest { os, arch, version } => {
+            // Helper: send error + done (2 messages) so call_stream Ack sentinel is sent
+            macro_rules! send_update_error {
+                ($tx:expr, $seq:expr, $msg:expr) => {{
+                    let _ = $tx.send(Message::UpdateChunk {
+                        seq: $seq, total_size: 0, checksum: String::new(),
+                        data: vec![], done: false,
+                        error: Some($msg),
+                    }).await;
+                    let _ = $tx.send(Message::UpdateChunk {
+                        seq: $seq + 1, total_size: 0, checksum: String::new(),
+                        data: vec![], done: true, error: None,
+                    }).await;
+                }};
+            }
+
+            let cached = update_cache.cached_package(&os, &arch);
+            match cached {
+                Some((cached_ver, path)) if cached_ver == version => {
+                    match tokio::fs::File::open(&path).await {
+                        Ok(mut file) => {
+                            use tokio::io::AsyncReadExt;
+                            let total_size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+                            let path_for_checksum = path.clone();
+                            let checksum = match tokio::task::spawn_blocking(move || {
+                                omnish_daemon::update_cache::UpdateCache::checksum(&path_for_checksum)
+                            }).await {
+                                Ok(Ok(c)) => c,
+                                Ok(Err(e)) => { send_update_error!(tx, 0, format!("checksum error: {}", e)); return; }
+                                Err(e) => { send_update_error!(tx, 0, format!("join error: {}", e)); return; }
+                            };
+                            let mut seq = 0u32;
+                            let mut buf = vec![0u8; 65536];
+                            loop {
+                                let n = match file.read(&mut buf).await {
+                                    Ok(n) => n,
+                                    Err(e) => {
+                                        send_update_error!(tx, seq, format!("read error: {}", e));
+                                        return;
+                                    }
+                                };
+                                let done = n == 0;
+                                let chunk = Message::UpdateChunk {
+                                    seq,
+                                    total_size: if seq == 0 { total_size } else { 0 },
+                                    checksum: if seq == 0 { checksum.clone() } else { String::new() },
+                                    data: if done { vec![] } else { buf[..n].to_vec() },
+                                    done,
+                                    error: None,
+                                };
+                                let _ = tx.send(chunk).await;
+                                if done { break; }
+                                seq += 1;
+                            }
+                        }
+                        Err(e) => {
+                            send_update_error!(tx, 0, format!("open error: {}", e));
+                        }
+                    }
+                }
+                _ => {
+                    send_update_error!(tx, 0, "not available or version mismatch".into());
+                }
+            }
         }
         _ => {
             let _ = tx.send(Message::Ack).await;

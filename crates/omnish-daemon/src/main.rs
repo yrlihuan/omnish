@@ -332,7 +332,8 @@ async fn async_main() -> Result<i32> {
         formatter_mgr.register_external(&name, path).await;
     }
     let formatter_mgr = Arc::new(formatter_mgr);
-    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, tool_registry, chat_model_name, config.tools, server_opts, formatter_mgr);
+    let update_cache = Arc::new(omnish_daemon::update_cache::UpdateCache::new(&omnish_dir));
+    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, tool_registry, chat_model_name, config.tools, server_opts, formatter_mgr, update_cache);
 
     tracing::info!("starting omnishd at {}", socket_path);
 

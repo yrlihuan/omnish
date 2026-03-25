@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 /// Manages the package cache at ~/.omnish/updates/{os}-{arch}/
 pub struct UpdateCache {
+    omnish_dir: PathBuf,
     cache_dir: PathBuf,
     /// Tracks in-flight background downloads to deduplicate.
     /// Uses Arc so tokio tasks can hold a reference.
@@ -16,6 +17,7 @@ impl UpdateCache {
     pub fn new(omnish_dir: &Path) -> Self {
         let cache_dir = omnish_dir.join("updates");
         Self {
+            omnish_dir: omnish_dir.to_path_buf(),
             cache_dir,
             downloading: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -131,7 +133,6 @@ impl UpdateCache {
         os: String,
         arch: String,
         check_url: Option<String>,
-        omnish_dir: PathBuf,
     ) -> bool {
         let key = (os.clone(), arch.clone());
         {
@@ -143,6 +144,7 @@ impl UpdateCache {
         }
 
         let downloading = Arc::clone(&self.downloading);
+        let omnish_dir = self.omnish_dir.clone();
         let cache_dir = self.cache_dir.clone();
         tokio::spawn(async move {
             let result = Self::download_package(&omnish_dir, &cache_dir, &os, &arch, check_url.as_deref()).await;
