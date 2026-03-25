@@ -262,10 +262,12 @@ fn spawn_connection<R, W, F>(
                 Message::Auth(Auth { ref token, protocol_version }) if token == expected_token.as_str() => {
                     if protocol_version != omnish_protocol::message::PROTOCOL_VERSION {
                         tracing::warn!(
-                            "protocol version mismatch: client={}, server={}",
+                            "rejecting client: protocol version mismatch (client={}, server={})",
                             protocol_version,
                             omnish_protocol::message::PROTOCOL_VERSION
                         );
+                        let _ = write_reply(&writer, frame.request_id, Message::AuthFailed).await;
+                        return;
                     }
                     let reply = Message::AuthOk(AuthOk {
                         protocol_version: omnish_protocol::message::PROTOCOL_VERSION,
@@ -289,14 +291,10 @@ fn spawn_connection<R, W, F>(
             let frame = match read_frame(&mut reader).await {
                 Ok(f) => f,
                 Err(e) => {
-                    // EOF is normal (client disconnected); only warn on parse errors
-                    if !e.to_string().contains("unexpected eof")
-                        && !e.to_string().contains("early eof")
-                    {
-                        let msg = e.to_string();
-                        if !msg.contains("eof") {
-                            tracing::warn!("failed to read frame: {}", e);
-                        }
+                    // EOF is normal (client disconnected); only warn on real errors
+                    let msg = e.to_string().to_lowercase();
+                    if !msg.contains("eof") && !msg.contains("end of file") {
+                        tracing::warn!("failed to read frame: {}", e);
                     }
                     break;
                 }
