@@ -196,7 +196,21 @@ impl RpcClient {
             + 'static,
         on_reconnect_notify: Option<impl Fn() + Send + Sync + 'static>,
     ) -> Result<Self> {
+        Self::connect_with_reconnect_full(addr, tls_connector, on_reconnect, on_reconnect_notify, None::<fn()>).await
+    }
+
+    pub async fn connect_with_reconnect_full(
+        addr: &str,
+        tls_connector: Option<TlsConnector>,
+        on_reconnect: impl Fn(&RpcClient) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>
+            + Send
+            + Sync
+            + 'static,
+        on_reconnect_notify: Option<impl Fn() + Send + Sync + 'static>,
+        on_disconnect: Option<impl Fn() + Send + Sync + 'static>,
+    ) -> Result<Self> {
         let notify_fn: Option<NotifyFn> = on_reconnect_notify.map(|f| Arc::new(f) as NotifyFn);
+        let disconnect_fn: Option<NotifyFn> = on_disconnect.map(|f| Arc::new(f) as NotifyFn);
         let connector = make_connector(addr, tls_connector);
 
         // Try initial connection
@@ -227,6 +241,7 @@ impl RpcClient {
                     connector,
                     on_reconnect,
                     notify_fn.clone(),
+                    disconnect_fn.clone(),
                     disc_rx,
                 ));
 
@@ -269,6 +284,7 @@ impl RpcClient {
                     connector,
                     on_reconnect,
                     notify_fn,
+                    disconnect_fn,
                     disc_rx,
                 ));
 
@@ -283,11 +299,17 @@ impl RpcClient {
         connector: ConnectorFn,
         on_reconnect: ReconnectFn,
         on_notify: Option<NotifyFn>,
+        on_disconnect: Option<NotifyFn>,
         mut disc_rx: oneshot::Receiver<()>,
     ) {
         loop {
             // Wait for disconnect notification
             let _ = (&mut disc_rx).await;
+
+            // Notify caller of disconnect
+            if let Some(ref disc_fn) = on_disconnect {
+                disc_fn();
+            }
 
             // Mark as disconnected
             {

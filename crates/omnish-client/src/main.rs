@@ -828,21 +828,40 @@ async fn main() -> Result<()> {
                     .ok()
                     .and_then(|h| h.into_string().ok())
                     .unwrap_or_default();
-                if let Ok(Message::UpdateInfo { latest_version, available: true }) = rpc.call(Message::UpdateCheck {
+                event_log::push(format!("update_check: v={} connected={}", ver, rpc.is_connected().await));
+                let check_result = rpc.call(Message::UpdateCheck {
                     os: os.clone(), arch: arch.clone(), current_version: ver,
                     hostname: hostname.clone(),
-                }).await {
-                    update_in_progress.store(true, Ordering::Relaxed);
-                    let rpc = rpc.clone();
-                    let uip = Arc::clone(&update_in_progress);
-                    tokio::spawn(async move {
-                        if let Err(e) = download_and_extract_update(
-                            &rpc, &os, &arch, &latest_version, &hostname,
-                        ).await {
-                            tracing::warn!("update download failed: {}", e);
-                        }
-                        uip.store(false, Ordering::Relaxed);
-                    });
+                }).await;
+                match &check_result {
+                    Ok(Message::UpdateInfo { latest_version, available: true }) => {
+                        event_log::push(format!("update_check: available v={}", latest_version));
+                        update_in_progress.store(true, Ordering::Relaxed);
+                        let latest_version = latest_version.clone();
+                        let rpc = rpc.clone();
+                        let uip = Arc::clone(&update_in_progress);
+                        tokio::spawn(async move {
+                            event_log::push(format!("update_download: start v={}", latest_version));
+                            if let Err(e) = download_and_extract_update(
+                                &rpc, &os, &arch, &latest_version, &hostname,
+                            ).await {
+                                event_log::push(format!("update_download: failed {}", e));
+                                tracing::warn!("update download failed: {}", e);
+                            } else {
+                                event_log::push(format!("update_download: done v={}", latest_version));
+                            }
+                            uip.store(false, Ordering::Relaxed);
+                        });
+                    }
+                    Ok(Message::UpdateInfo { available: false, .. }) => {
+                        event_log::push("update_check: up to date");
+                    }
+                    Ok(other) => {
+                        event_log::push(format!("update_check: unexpected {:?}", std::mem::discriminant(other)));
+                    }
+                    Err(e) => {
+                        event_log::push(format!("update_check: error {}", e));
+                    }
                 }
             }
         }
@@ -1531,7 +1550,7 @@ async fn connect_daemon(
         None
     };
 
-    match RpcClient::connect_with_reconnect_notify(
+    match RpcClient::connect_with_reconnect_full(
         &socket_path,
         tls_connector,
         move |rpc| {
@@ -1541,14 +1560,26 @@ async fn connect_daemon(
             let buffer = buffer.clone();
             let token = auth_token.clone();
             Box::pin(async move {
+                event_log::push("reconnect_cb: authenticating");
                 // Authenticate first
                 let auth_resp = rpc.call(Message::Auth(Auth {
                     token,
                     protocol_version: omnish_protocol::message::PROTOCOL_VERSION,
-                })).await?;
+                })).await;
+                let auth_resp = match auth_resp {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        event_log::push(format!("reconnect_cb: auth call failed: {}", e));
+                        anyhow::bail!("auth call failed: {}", e);
+                    }
+                };
                 match &auth_resp {
-                    Message::AuthFailed => anyhow::bail!("authentication failed"),
+                    Message::AuthFailed => {
+                        event_log::push("reconnect_cb: auth failed (rejected)");
+                        anyhow::bail!("authentication failed");
+                    }
                     Message::AuthOk(ok) => {
+                        event_log::push(format!("reconnect_cb: auth ok proto={}", ok.protocol_version));
                         if ok.protocol_version != omnish_protocol::message::PROTOCOL_VERSION {
                             let behind = if omnish_protocol::message::PROTOCOL_VERSION < ok.protocol_version {
                                 "client"
@@ -1568,11 +1599,14 @@ async fn connect_daemon(
                         }
                     }
                     // Old daemon that responds with Ack (no version info)
-                    _ => {}
+                    other => {
+                        event_log::push(format!("reconnect_cb: auth unexpected {:?}", std::mem::discriminant(other)));
+                    }
                 }
 
                 // Then register session
                 let attrs = probe::default_session_probes(child_pid).collect_all();
+                event_log::push("reconnect_cb: sending SessionStart");
                 rpc.call(Message::SessionStart(SessionStart {
                     session_id: sid,
                     parent_session_id: psid,
@@ -1584,16 +1618,25 @@ async fn connect_daemon(
                 let buffered: Vec<Message> = {
                     buffer.lock().await.drain(..).collect()
                 };
+                if !buffered.is_empty() {
+                    event_log::push(format!("reconnect_cb: replaying {} buffered msgs", buffered.len()));
+                }
                 for msg in buffered {
                     if rpc.call(msg).await.is_err() {
+                        event_log::push("reconnect_cb: replay failed");
                         break; // Connection broke again during replay
                     }
                 }
+                event_log::push("reconnect_cb: done");
                 Ok(())
             })
         },
         Some(|| {
+            event_log::push("reconnect: connection restored");
             notice("[omnish] reconnected to daemon");
+        }),
+        Some(|| {
+            event_log::push("disconnect: connection lost to daemon");
         }),
     ).await {
         Ok(client) => {
