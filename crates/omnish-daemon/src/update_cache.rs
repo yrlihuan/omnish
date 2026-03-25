@@ -40,7 +40,7 @@ impl UpdateCache {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if let Some(version) = Self::extract_version(&name, os, arch) {
-                    let dominated = best.as_ref().map_or(false, |(v, _)| {
+                    let dominated = best.as_ref().is_some_and(|(v, _)| {
                         Self::compare_versions(&version, v) != std::cmp::Ordering::Greater
                     });
                     if !dominated {

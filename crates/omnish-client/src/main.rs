@@ -756,23 +756,20 @@ async fn main() -> Result<()> {
                 let os = std::env::consts::OS.to_string();
                 let arch = std::env::consts::ARCH.to_string();
                 let ver = omnish_common::VERSION.to_string();
-                match rpc.call(Message::UpdateCheck {
+                if let Ok(Message::UpdateInfo { latest_version, available: true }) = rpc.call(Message::UpdateCheck {
                     os: os.clone(), arch: arch.clone(), current_version: ver,
                 }).await {
-                    Ok(Message::UpdateInfo { latest_version, available: true }) => {
-                        update_in_progress.store(true, Ordering::Relaxed);
-                        let rpc = rpc.clone();
-                        let uip = Arc::clone(&update_in_progress);
-                        tokio::spawn(async move {
-                            if let Err(e) = download_and_extract_update(
-                                &rpc, &os, &arch, &latest_version,
-                            ).await {
-                                tracing::warn!("update download failed: {}", e);
-                            }
-                            uip.store(false, Ordering::Relaxed);
-                        });
-                    }
-                    _ => {} // No update or error, ignore
+                    update_in_progress.store(true, Ordering::Relaxed);
+                    let rpc = rpc.clone();
+                    let uip = Arc::clone(&update_in_progress);
+                    tokio::spawn(async move {
+                        if let Err(e) = download_and_extract_update(
+                            &rpc, &os, &arch, &latest_version,
+                        ).await {
+                            tracing::warn!("update download failed: {}", e);
+                        }
+                        uip.store(false, Ordering::Relaxed);
+                    });
                 }
             }
         }
