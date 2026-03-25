@@ -252,6 +252,24 @@ impl ToolFormatter for EditFormatter {
             }
             let compact = head_lines(&input.output, 5);
             (compact, full)
+        } else if input.tool_name == "write" {
+            // Write tool: use content param for line count
+            let content = input
+                .params
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let line_count = if content.is_empty() {
+                0
+            } else {
+                content.lines().count()
+            };
+            let summary = format!(
+                "Wrote {} line{}",
+                line_count,
+                if line_count == 1 { "" } else { "s" }
+            );
+            (vec![summary.clone()], vec![summary])
         } else {
             let old = input
                 .params
@@ -611,6 +629,43 @@ mod tests {
         // "... and 4 more places"
         let last = out.result_full.last().unwrap();
         assert!(last.contains("4 more places"), "got: {}", last);
+    }
+
+    #[test]
+    fn write_formatter_line_count() {
+        let input = make_input(
+            "write",
+            json!({"file_path": "/tmp/test.txt", "content": "line1\nline2\nline3"}),
+            "Wrote 18 bytes (3 lines) to /tmp/test.txt",
+            false,
+        );
+        let out = EditFormatter.format(&input);
+        assert_eq!(out.result_compact[0], "Wrote 3 lines");
+        assert_eq!(out.result_full[0], "Wrote 3 lines");
+    }
+
+    #[test]
+    fn write_formatter_single_line() {
+        let input = make_input(
+            "write",
+            json!({"file_path": "/tmp/test.txt", "content": "hello"}),
+            "Wrote 5 bytes (1 lines) to /tmp/test.txt",
+            false,
+        );
+        let out = EditFormatter.format(&input);
+        assert_eq!(out.result_compact[0], "Wrote 1 line");
+    }
+
+    #[test]
+    fn write_formatter_empty() {
+        let input = make_input(
+            "write",
+            json!({"file_path": "/tmp/test.txt", "content": ""}),
+            "Wrote 0 bytes (0 lines) to /tmp/test.txt",
+            false,
+        );
+        let out = EditFormatter.format(&input);
+        assert_eq!(out.result_compact[0], "Wrote 0 lines");
     }
 
     #[test]
