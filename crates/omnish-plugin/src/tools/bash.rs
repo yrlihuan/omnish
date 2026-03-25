@@ -92,7 +92,6 @@ impl BashTool {
             if !content.is_empty() {
                 content.push('\n');
             }
-            content.push_str("[stderr]\n");
             content.push_str(&truncate_output(&stderr));
         }
 
@@ -169,7 +168,6 @@ mod tests {
         let tool = BashTool::new();
         let result = tool.execute(&serde_json::json!({"command": "echo err >&2"}));
         assert!(!result.is_error);
-        assert!(result.content.contains("[stderr]"));
         assert!(result.content.contains("err"));
     }
 
