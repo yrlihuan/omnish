@@ -1,6 +1,20 @@
 use crate::{parse_addr, TransportAddr};
 use anyhow::Result;
 use omnish_protocol::message::{Frame, Message};
+
+/// Return this error from the `on_reconnect` callback to signal a permanent
+/// failure (e.g. auth rejected, protocol mismatch).  After several consecutive
+/// permanent failures the reconnect loop gives up.
+#[derive(Debug)]
+pub struct PermanentFailure(pub String);
+
+impl std::fmt::Display for PermanentFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for PermanentFailure {}
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -320,6 +334,8 @@ impl RpcClient {
             // Exponential backoff reconnection
             let mut backoff_ms: u64 = 1000;
             let max_backoff_ms: u64 = 30_000;
+            let mut consecutive_auth_failures: u32 = 0;
+            const MAX_AUTH_FAILURES: u32 = 5;
 
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
@@ -328,6 +344,8 @@ impl RpcClient {
                 let (reader, writer) = match connector().await {
                     Ok(rw) => rw,
                     Err(_) => {
+                        // Connection failure resets auth failure counter (daemon may be down)
+                        consecutive_auth_failures = 0;
                         backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
                         continue;
                     }
@@ -343,11 +361,21 @@ impl RpcClient {
                 };
 
                 // Call on_reconnect with the temp client
-                if on_reconnect(&temp_client).await.is_err() {
-                    // Callback failed, retry
+                if let Err(e) = on_reconnect(&temp_client).await {
+                    if e.downcast_ref::<PermanentFailure>().is_some() {
+                        consecutive_auth_failures += 1;
+                        if consecutive_auth_failures >= MAX_AUTH_FAILURES {
+                            tracing::warn!(
+                                "giving up reconnection after {} consecutive auth failures",
+                                consecutive_auth_failures
+                            );
+                            return;
+                        }
+                    }
                     backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
                     continue;
                 }
+                consecutive_auth_failures = 0;
 
                 // Success - swap the inner
                 let temp_inner_arc = temp_client.inner.clone();

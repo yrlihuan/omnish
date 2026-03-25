@@ -23,7 +23,7 @@ use widgets::line_status::LineStatus;
 use omnish_protocol::message::*;
 use omnish_pty::proxy::PtyProxy;
 use omnish_pty::raw_mode::RawModeGuard;
-use omnish_transport::rpc_client::RpcClient;
+use omnish_transport::rpc_client::{PermanentFailure, RpcClient};
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
@@ -1564,7 +1564,7 @@ async fn connect_daemon(
                 match &auth_resp {
                     Message::AuthFailed => {
                         event_log::push("reconnect_cb: auth failed (rejected)");
-                        anyhow::bail!("authentication failed");
+                        return Err(PermanentFailure("authentication failed".into()).into());
                     }
                     Message::AuthOk(ok) => {
                         event_log::push(format!("reconnect_cb: auth ok proto={}", ok.protocol_version));
@@ -1581,9 +1581,11 @@ async fn connect_daemon(
                                 ok.protocol_version,
                                 behind
                             ));
-                            anyhow::bail!("protocol mismatch (client={}, daemon={})",
+                            return Err(PermanentFailure(format!(
+                                "protocol mismatch (client={}, daemon={})",
                                 omnish_protocol::message::PROTOCOL_VERSION,
-                                ok.protocol_version);
+                                ok.protocol_version,
+                            )).into());
                         }
                     }
                     // Old daemon that responds with Ack (no version info)
