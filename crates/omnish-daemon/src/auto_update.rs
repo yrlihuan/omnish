@@ -26,7 +26,26 @@ pub fn create_auto_update_job(
         Box::pin(async move {
             tracing::debug!("task [auto_update] started");
 
-            // Phase 1: Update server
+            // Phase 0: Download packages from check_url to OMNISH_HOME/updates/
+            // for daemon's own platform + all known client platforms
+            if let Some(ref url) = check_url {
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    let source_dir = std::path::Path::new(url.as_str());
+                    let mut platforms = update_cache.known_platforms();
+                    platforms.insert((std::env::consts::OS.to_string(), std::env::consts::ARCH.to_string()));
+                    for (os, arch) in &platforms {
+                        match update_cache.download_from_local_dir(source_dir, os, arch) {
+                            Ok(true) => tracing::info!("task [auto_update] cached package for {}-{}", os, arch),
+                            Ok(false) => {} // already up to date
+                            Err(e) => tracing::warn!("task [auto_update] failed to cache {}-{}: {}", os, arch, e),
+                        }
+                    }
+                    update_cache.scan_updates();
+                }
+            }
+
+            // Phase 1: Update server via install.sh
+            // Prefer locally cached package if available
             let install_script = omnish_dir.join("install.sh");
             if !install_script.exists() {
                 tracing::warn!("task [auto_update] install.sh not found: {}", install_script.display());
@@ -37,14 +56,19 @@ pub fn create_auto_update_job(
             cmd.arg(&install_script)
                 .arg("--upgrade")
                 .env("OMNISH_HOME", &omnish_dir);
-            if let Some(ref url) = check_url {
+
+            let os = std::env::consts::OS;
+            let arch = std::env::consts::ARCH;
+            let local_cache_dir = omnish_dir.join(format!("updates/{}-{}", os, arch));
+            if local_cache_dir.is_dir() {
+                // Use locally cached package for install
+                cmd.arg(format!("--dir={}", local_cache_dir.display()));
+            } else if let Some(ref url) = check_url {
                 if !url.starts_with("http://") && !url.starts_with("https://") {
-                    // Local directory path
                     cmd.arg(format!("--dir={}", url));
                 }
-                // For HTTP URLs, install.sh uses GitHub by default — no extra arg needed
-                // (custom GitHub URL support can be added later)
             }
+
             let output = cmd.output().await;
 
             match output {
@@ -68,24 +92,6 @@ pub fn create_auto_update_job(
                 Err(e) => {
                     tracing::warn!("task [auto_update] failed to run install.sh: {}", e);
                     return;
-                }
-            }
-
-            // Cache packages for daemon's own platform + all known client platforms
-            if let Some(ref url) = check_url {
-                if !url.starts_with("http://") && !url.starts_with("https://") {
-                    let source_dir = std::path::Path::new(url.as_str());
-                    // Collect platforms: daemon's own + all known clients
-                    let mut platforms = update_cache.known_platforms();
-                    platforms.insert((std::env::consts::OS.to_string(), std::env::consts::ARCH.to_string()));
-                    for (os, arch) in &platforms {
-                        match update_cache.download_from_local_dir(source_dir, os, arch) {
-                            Ok(true) => tracing::info!("task [auto_update] cached package for {}-{}", os, arch),
-                            Ok(false) => {} // already up to date
-                            Err(e) => tracing::warn!("task [auto_update] failed to cache {}-{}: {}", os, arch, e),
-                        }
-                    }
-                    update_cache.scan_updates();
                 }
             }
 
