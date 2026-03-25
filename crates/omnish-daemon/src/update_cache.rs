@@ -8,6 +8,7 @@ use std::time::Instant;
 /// Per-platform transfer cooldown (5 minutes).
 const TRANSFER_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
 
+
 /// Manages the package cache at ~/.omnish/updates/{os}-{arch}/
 pub struct UpdateCache {
     cache_dir: PathBuf,
@@ -61,57 +62,12 @@ impl UpdateCache {
         best
     }
 
-    /// Extract version from filename: omnish-{version}-{os}-{arch}.tar.gz
     fn extract_version(filename: &str, os: &str, arch: &str) -> Option<String> {
-        let suffix = format!("-{}-{}.tar.gz", os, arch);
-        let prefix = "omnish-";
-        if filename.starts_with(prefix) && filename.ends_with(&suffix) {
-            let version = &filename[prefix.len()..filename.len() - suffix.len()];
-            if !version.is_empty() {
-                return Some(version.to_string());
-            }
-        }
-        None
+        omnish_common::update::extract_version(filename, os, arch)
     }
 
-    /// Normalize a version string for comparison.
-    /// Strips git commit hash suffix (e.g. "0.8.4-71-gdf067f6" → "0.8.4.71")
-    /// and replaces '-' with '.' so all components are dot-separated.
-    fn normalize_version(v: &str) -> String {
-        // Strip "-g<hex>" suffix from git describe output
-        let v = if let Some(pos) = v.rfind("-g") {
-            let suffix = &v[pos + 2..];
-            if suffix.chars().all(|c| c.is_ascii_hexdigit()) {
-                &v[..pos]
-            } else {
-                v
-            }
-        } else {
-            v
-        };
-        v.replace('-', ".")
-    }
-
-    /// Compare two version strings using numeric tuple comparison.
-    /// Normalizes first (strips git hash, replaces '-' with '.').
     fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
-        let a_norm = Self::normalize_version(a);
-        let b_norm = Self::normalize_version(b);
-        let a_parts: Vec<&str> = a_norm.split('.').collect();
-        let b_parts: Vec<&str> = b_norm.split('.').collect();
-        for (ap, bp) in a_parts.iter().zip(b_parts.iter()) {
-            match (ap.parse::<u64>(), bp.parse::<u64>()) {
-                (Ok(an), Ok(bn)) => match an.cmp(&bn) {
-                    std::cmp::Ordering::Equal => continue,
-                    ord => return ord,
-                },
-                _ => match ap.cmp(bp) {
-                    std::cmp::Ordering::Equal => continue,
-                    ord => return ord,
-                },
-            }
-        }
-        a_parts.len().cmp(&b_parts.len())
+        omnish_common::update::compare_versions(a, b)
     }
 
     /// Check if a newer version is available (uses cached scan results).
@@ -171,18 +127,14 @@ impl UpdateCache {
 
     /// Cache a package file for the daemon's own platform after self-update.
     /// Copies the tar.gz from the source path into the cache directory.
+    /// Keeps the latest `MAX_CACHED_PACKAGES` versions, removing older ones.
     pub fn cache_package(&self, os: &str, arch: &str, version: &str, source: &Path) -> Result<()> {
         let dir = self.platform_dir(os, arch);
         std::fs::create_dir_all(&dir)?;
-        // Remove old packages for this platform
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
         let dest = dir.join(format!("omnish-{}-{}-{}.tar.gz", version, os, arch));
         std::fs::copy(source, &dest)?;
         tracing::info!("cached update package: {}", dest.display());
+        omnish_common::update::prune_packages(&dir, os, arch, omnish_common::update::MAX_CACHED_PACKAGES);
         Ok(())
     }
 
@@ -237,18 +189,10 @@ impl UpdateCache {
         std::fs::create_dir_all(&platform_dir)?;
         let tmp_path = platform_dir.join(format!(".tmp-{}", filename));
         std::fs::copy(&source_path, &tmp_path)?;
-        // Remove old packages
-        if let Ok(old_entries) = std::fs::read_dir(&platform_dir) {
-            for old in old_entries.flatten() {
-                let old_name = old.file_name().to_string_lossy().to_string();
-                if old_name != format!(".tmp-{}", filename) && old_name.ends_with(".tar.gz") {
-                    let _ = std::fs::remove_file(old.path());
-                }
-            }
-        }
         let dest = platform_dir.join(&filename);
         std::fs::rename(&tmp_path, &dest)?;
         tracing::info!("cached update package: {}", dest.display());
+        omnish_common::update::prune_packages(&platform_dir, os, arch, omnish_common::update::MAX_CACHED_PACKAGES);
         Ok(true)
     }
 }
@@ -275,23 +219,25 @@ mod tests {
 
     #[test]
     fn normalize_version_strips_hash() {
-        assert_eq!(UpdateCache::normalize_version("0.8.4-71-gdf067f6"), "0.8.4.71");
-        assert_eq!(UpdateCache::normalize_version("0.5.0"), "0.5.0");
-        assert_eq!(UpdateCache::normalize_version("0.8.4-71"), "0.8.4.71");
-        assert_eq!(UpdateCache::normalize_version("1.0.0-3-gabcdef0"), "1.0.0.3");
+        use omnish_common::update::normalize_version;
+        assert_eq!(normalize_version("0.8.4-71-gdf067f6"), "0.8.4.71");
+        assert_eq!(normalize_version("0.5.0"), "0.5.0");
+        assert_eq!(normalize_version("0.8.4-71"), "0.8.4.71");
+        assert_eq!(normalize_version("1.0.0-3-gabcdef0"), "1.0.0.3");
     }
 
     #[test]
     fn compare_versions_semver() {
         use std::cmp::Ordering;
-        assert_eq!(UpdateCache::compare_versions("0.10.0", "0.9.0"), Ordering::Greater);
-        assert_eq!(UpdateCache::compare_versions("0.5.0", "0.5.0"), Ordering::Equal);
-        assert_eq!(UpdateCache::compare_versions("1.0.0", "0.99.99"), Ordering::Greater);
-        assert_eq!(UpdateCache::compare_versions("0.4.0", "0.5.0"), Ordering::Less);
+        use omnish_common::update::compare_versions;
+        assert_eq!(compare_versions("0.10.0", "0.9.0"), Ordering::Greater);
+        assert_eq!(compare_versions("0.5.0", "0.5.0"), Ordering::Equal);
+        assert_eq!(compare_versions("1.0.0", "0.99.99"), Ordering::Greater);
+        assert_eq!(compare_versions("0.4.0", "0.5.0"), Ordering::Less);
         // git describe versions
-        assert_eq!(UpdateCache::compare_versions("0.8.4-71-gdf067f6", "0.8.4"), Ordering::Greater);
-        assert_eq!(UpdateCache::compare_versions("0.8.4-71-gdf067f6", "0.8.4-72-gabcdef0"), Ordering::Less);
-        assert_eq!(UpdateCache::compare_versions("0.8.4-71-gdf067f6", "0.8.5"), Ordering::Less);
+        assert_eq!(compare_versions("0.8.4-71-gdf067f6", "0.8.4"), Ordering::Greater);
+        assert_eq!(compare_versions("0.8.4-71-gdf067f6", "0.8.4-72-gabcdef0"), Ordering::Less);
+        assert_eq!(compare_versions("0.8.4-71-gdf067f6", "0.8.5"), Ordering::Less);
     }
 
     #[test]

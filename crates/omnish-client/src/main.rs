@@ -331,61 +331,28 @@ fn exec_update(proxy: &PtyProxy, session_id: &str, cursor_col: u16, cursor_row: 
 /// Check ~/.omnish/updates/{os}-{arch}/ for the latest cached package version.
 /// Returns the highest version found, or None.
 fn local_cached_version(os: &str, arch: &str) -> Option<String> {
+    use omnish_common::update::{extract_version, compare_versions};
     let dir = omnish_common::config::omnish_dir()
         .join("updates")
         .join(format!("{}-{}", os, arch));
     let entries = std::fs::read_dir(&dir).ok()?;
-    let prefix = "omnish-";
-    let suffix = format!("-{}-{}.tar.gz", os, arch);
     let mut best: Option<String> = None;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(prefix) && name.ends_with(&suffix) {
-            let ver = &name[prefix.len()..name.len() - suffix.len()];
-            if ver.is_empty() { continue; }
+        if let Some(ver) = extract_version(&name, os, arch) {
             let dominated = best.as_ref().is_some_and(|b| {
-                compare_versions(ver, b) != std::cmp::Ordering::Greater
+                compare_versions(&ver, b) != std::cmp::Ordering::Greater
             });
             if !dominated {
-                best = Some(ver.to_string());
+                best = Some(ver);
             }
         }
     }
     best
 }
 
-fn normalize_version(v: &str) -> String {
-    let v = if let Some(pos) = v.rfind("-g") {
-        let suffix = &v[pos + 2..];
-        if suffix.chars().all(|c| c.is_ascii_hexdigit()) {
-            &v[..pos]
-        } else {
-            v
-        }
-    } else {
-        v
-    };
-    v.replace('-', ".")
-}
-
 fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
-    let a_norm = normalize_version(a);
-    let b_norm = normalize_version(b);
-    let a_parts: Vec<&str> = a_norm.split('.').collect();
-    let b_parts: Vec<&str> = b_norm.split('.').collect();
-    for (ap, bp) in a_parts.iter().zip(b_parts.iter()) {
-        match (ap.parse::<u64>(), bp.parse::<u64>()) {
-            (Ok(an), Ok(bn)) => match an.cmp(&bn) {
-                std::cmp::Ordering::Equal => continue,
-                ord => return ord,
-            },
-            _ => match ap.cmp(bp) {
-                std::cmp::Ordering::Equal => continue,
-                ord => return ord,
-            },
-        }
-    }
-    a_parts.len().cmp(&b_parts.len())
+    omnish_common::update::compare_versions(a, b)
 }
 
 async fn download_and_extract_update(
@@ -403,10 +370,13 @@ async fn download_and_extract_update(
     }).await?;
 
     let omnish_dir = omnish_common::config::omnish_dir();
-    let tmp_dir = omnish_dir.join("tmp");
-    std::fs::create_dir_all(&tmp_dir)?;
-    let tmp_file = tmp_dir.join(format!("update-{}.tar.gz", version));
-    let mut file = tokio::fs::File::create(&tmp_file).await?;
+
+    // Save to updates/{os}-{arch}/ (same layout as daemon cache)
+    let updates_dir = omnish_dir.join("updates").join(format!("{}-{}", os, arch));
+    std::fs::create_dir_all(&updates_dir)?;
+    let pkg_file = updates_dir.join(format!("omnish-{}-{}-{}.tar.gz", version, os, arch));
+    let tmp_download = updates_dir.join(format!(".tmp-omnish-{}-{}-{}.tar.gz", version, os, arch));
+    let mut file = tokio::fs::File::create(&tmp_download).await?;
 
     let mut expected_checksum = String::new();
 
@@ -415,7 +385,7 @@ async fn download_and_extract_update(
         match msg {
             Message::UpdateChunk { seq, total_size: _, checksum, data, done, error } => {
                 if let Some(err) = error {
-                    let _ = tokio::fs::remove_file(&tmp_file).await;
+                    let _ = tokio::fs::remove_file(&tmp_download).await;
                     anyhow::bail!("server error: {}", err);
                 }
                 if seq == 0 {
@@ -436,11 +406,11 @@ async fn download_and_extract_update(
 
     // Verify checksum using spawn_blocking (CPU-bound)
     if !expected_checksum.is_empty() {
-        let tmp_file_clone = tmp_file.clone();
+        let tmp_clone = tmp_download.clone();
         let actual = tokio::task::spawn_blocking(move || {
             use sha2::{Sha256, Digest};
             use std::io::Read;
-            let mut file = std::fs::File::open(&tmp_file_clone)?;
+            let mut file = std::fs::File::open(&tmp_clone)?;
             let mut hasher = Sha256::new();
             let mut buf = [0u8; 65536];
             loop {
@@ -452,23 +422,37 @@ async fn download_and_extract_update(
         }).await??;
 
         if actual != expected_checksum {
-            let _ = tokio::fs::remove_file(&tmp_file).await;
+            let _ = tokio::fs::remove_file(&tmp_download).await;
             anyhow::bail!("checksum mismatch: expected={}, actual={}", expected_checksum, actual);
         }
     }
 
+    // Move temp file to final location in updates cache
+    tokio::fs::rename(&tmp_download, &pkg_file).await?;
+    tracing::info!("cached update package: {}", pkg_file.display());
+
     // Extract and replace binary using spawn_blocking (blocking I/O)
-    let tmp_file_for_extract = tmp_file.clone();
-    tokio::task::spawn_blocking(move || extract_and_install(&tmp_file_for_extract))
+    let pkg_for_extract = pkg_file.clone();
+    let omnish_dir_clone = omnish_dir.clone();
+    tokio::task::spawn_blocking(move || extract_and_install(&pkg_for_extract, &omnish_dir_clone))
         .await
         .map_err(|e| anyhow::anyhow!("join error: {}", e))??;
 
-    let _ = tokio::fs::remove_file(&tmp_file).await;
+    // Prune old packages, keeping the latest 3
+    let os_owned = os.to_string();
+    let arch_owned = arch.to_string();
+    let updates_dir_clone = updates_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        omnish_common::update::prune_packages(&updates_dir_clone, &os_owned, &arch_owned, omnish_common::update::MAX_CACHED_PACKAGES);
+    })
+        .await
+        .map_err(|e| anyhow::anyhow!("join error: {}", e))?;
+
     tracing::info!("update {} installed, mtime polling will trigger restart", version);
     Ok(())
 }
 
-fn extract_and_install(tar_gz_path: &std::path::Path) -> anyhow::Result<()> {
+fn extract_and_install(tar_gz_path: &std::path::Path, omnish_dir: &std::path::Path) -> anyhow::Result<()> {
     use flate2::read::GzDecoder;
     use tar::Archive;
 
@@ -488,7 +472,10 @@ fn extract_and_install(tar_gz_path: &std::path::Path) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("cannot determine binary name"))?
         .to_string_lossy();
 
-    let tmp_bin = exe_path.with_extension("new");
+    // Extract to ~/.omnish/tmp/
+    let tmp_dir = omnish_dir.join("tmp");
+    std::fs::create_dir_all(&tmp_dir)?;
+    let tmp_bin = tmp_dir.join(format!("{}.new", exe_name));
     let mut found = false;
 
     for entry in archive.entries()? {
@@ -505,6 +492,7 @@ fn extract_and_install(tar_gz_path: &std::path::Path) -> anyhow::Result<()> {
     }
 
     if !found {
+        let _ = std::fs::remove_file(&tmp_bin);
         anyhow::bail!("client binary '{}' not found in archive", exe_name);
     }
 
@@ -515,7 +503,7 @@ fn extract_and_install(tar_gz_path: &std::path::Path) -> anyhow::Result<()> {
         std::fs::set_permissions(&tmp_bin, std::fs::Permissions::from_mode(0o755))?;
     }
 
-    // Atomic rename
+    // Atomic rename from tmp to target
     std::fs::rename(&tmp_bin, &exe_path)?;
 
     Ok(())
