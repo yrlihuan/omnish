@@ -174,6 +174,11 @@ const COMMANDS: &[CommandEntry] = &[
         help: "Show prompt template",
     },
     CommandEntry {
+        path: "/config",
+        kind: CommandKind::Daemon("config"),
+        help: "Open settings menu (in chat mode)",
+    },
+    CommandEntry {
         path: "/help",
         kind: CommandKind::Local(help_command),
         help: "Show available commands",
