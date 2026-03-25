@@ -129,6 +129,7 @@ struct ResumeArgs {
     session_id: String,
     cursor_col: u16,
     cursor_row: u16,
+    last_thread_id: Option<String>,
 }
 
 fn parse_resume_args() -> Option<ResumeArgs> {
@@ -145,15 +146,16 @@ fn parse_resume_args() -> Option<ResumeArgs> {
     let sid = args.iter()
         .find_map(|a| a.strip_prefix("--session-id="))?
         .to_string();
-    let cursor_col = args.iter()
-        .find_map(|a| a.strip_prefix("--cursor-col="))
+    // cursor-col, cursor-row, last-thread-id passed via env vars
+    let cursor_col = std::env::var("OMNISH_CURSOR_COL").ok()
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(0);
-    let cursor_row = args.iter()
-        .find_map(|a| a.strip_prefix("--cursor-row="))
+    let cursor_row = std::env::var("OMNISH_CURSOR_ROW").ok()
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(0);
-    Some(ResumeArgs { master_fd: fd, child_pid: pid, session_id: sid, cursor_col, cursor_row })
+    let last_thread_id = std::env::var("OMNISH_LAST_THREAD_ID").ok()
+        .filter(|s| !s.is_empty());
+    Some(ResumeArgs { master_fd: fd, child_pid: pid, session_id: sid, cursor_col, cursor_row, last_thread_id })
 }
 
 mod notice_queue {
@@ -213,7 +215,7 @@ fn notice(msg: &str) {
     notice_queue::push(msg);
 }
 
-fn exec_update(proxy: &PtyProxy, session_id: &str, cursor_col: u16, cursor_row: u16) {
+fn exec_update(proxy: &PtyProxy, session_id: &str, cursor_col: u16, cursor_row: u16, last_thread_id: Option<&str>) {
     let current_exe = match std::env::current_exe() {
         Ok(p) => {
             // On Linux, /proc/self/exe appends " (deleted)" when the binary was replaced on disk.
@@ -276,7 +278,16 @@ fn exec_update(proxy: &PtyProxy, session_id: &str, cursor_col: u16, cursor_row: 
         }
     }
 
-    // Build args for the new process
+    // Pass transient state via env vars (survives exec)
+    std::env::set_var("OMNISH_CURSOR_COL", cursor_col.to_string());
+    std::env::set_var("OMNISH_CURSOR_ROW", cursor_row.to_string());
+    if let Some(tid) = last_thread_id {
+        std::env::set_var("OMNISH_LAST_THREAD_ID", tid);
+    } else {
+        std::env::remove_var("OMNISH_LAST_THREAD_ID");
+    }
+
+    // Build args for the new process (fd, pid, session-id stay as CLI args)
     let exe_cstr = std::ffi::CString::new(current_exe.to_string_lossy().as_bytes()).unwrap();
     let args = [
         exe_cstr.clone(),
@@ -284,8 +295,6 @@ fn exec_update(proxy: &PtyProxy, session_id: &str, cursor_col: u16, cursor_row: 
         std::ffi::CString::new(format!("--fd={}", master_fd)).unwrap(),
         std::ffi::CString::new(format!("--pid={}", proxy.child_pid())).unwrap(),
         std::ffi::CString::new(format!("--session-id={}", session_id)).unwrap(),
-        std::ffi::CString::new(format!("--cursor-col={}", cursor_col)).unwrap(),
-        std::ffi::CString::new(format!("--cursor-row={}", cursor_row)).unwrap(),
     ];
 
     // execvp replaces this process — only returns on error
@@ -513,7 +522,7 @@ async fn main() -> Result<()> {
     >(4);
     // Chat command history persists across chat sessions within same client
     let mut chat_history: VecDeque<String> = VecDeque::with_capacity(100);
-    let mut last_thread_id: Option<String> = None;
+    let mut last_thread_id: Option<String> = resume_args.as_ref().and_then(|r| r.last_thread_id.clone());
 
     // Auto-update state
     let auto_update_enabled = Arc::new(AtomicBool::new(config.auto_update));
@@ -576,7 +585,7 @@ async fn main() -> Result<()> {
                     });
                 if let Some(current) = current_mtime {
                     if current != *startup_mtime {
-                        exec_update(&proxy, &session_id, col_tracker.col, col_tracker.row);
+                        exec_update(&proxy, &session_id, col_tracker.col, col_tracker.row, last_thread_id.as_deref());
                         // exec_update only returns on error — reset timer
                     }
                     // Update mtime after check to avoid repeated unnecessary checks
@@ -1760,6 +1769,12 @@ async fn enter_chat_mode(
             let new_tid = session.thread_id().map(String::from);
             event_log::push(format!("chat exit: last_thread_id {:?} -> {:?}", last_thread_id, new_tid));
             *last_thread_id = new_tid;
+            // Keep env var in sync for exec_update
+            if let Some(ref tid) = last_thread_id {
+                std::env::set_var("OMNISH_LAST_THREAD_ID", tid);
+            } else {
+                std::env::remove_var("OMNISH_LAST_THREAD_ID");
+            }
             pending_cd = session.pending_cd().map(String::from);
             *chat_history = session.into_history();
         }
@@ -2193,7 +2208,8 @@ pub(crate) async fn handle_slash_command(
                 }
                 return true;
             } else if query == "__cmd:update" {
-                exec_update(proxy, session_id, cursor_col, cursor_row);
+                let tid = std::env::var("OMNISH_LAST_THREAD_ID").ok().filter(|s| !s.is_empty());
+                exec_update(proxy, session_id, cursor_col, cursor_row, tid.as_deref());
                 return true; // Only reached if exec failed
             }
             if let Some(path) = redirect.as_deref() {
