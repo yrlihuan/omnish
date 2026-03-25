@@ -4,6 +4,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+/// Return type for `reload_overrides`: (changed, descriptions, override_params).
+pub type OverrideReloadResult = (bool, HashMap<String, String>, HashMap<String, HashMap<String, serde_json::Value>>);
+
 /// Classifies whether a plugin's tools run on the daemon or the client side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginType {
@@ -297,7 +300,7 @@ impl PluginManager {
 
     /// Re-read all tool.override.json files and update the prompt cache.
     /// Returns (changed, descriptions, override_params).
-    pub fn reload_overrides(&self) -> (bool, HashMap<String, String>, HashMap<String, HashMap<String, serde_json::Value>>) {
+    pub fn reload_overrides(&self) -> OverrideReloadResult {
         let mut descriptions = HashMap::new();
         let mut override_params = HashMap::new();
 
