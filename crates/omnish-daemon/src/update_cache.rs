@@ -3,6 +3,10 @@ use sha2::{Sha256, Digest};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Instant;
+
+/// Per-platform transfer cooldown (5 minutes).
+const TRANSFER_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Manages the package cache at ~/.omnish/updates/{os}-{arch}/
 pub struct UpdateCache {
@@ -11,6 +15,8 @@ pub struct UpdateCache {
     latest_versions: Mutex<HashMap<(String, String), String>>,
     /// Known client platforms — populated by UpdateCheck messages
     known_platforms: Mutex<HashSet<(String, String)>>,
+    /// Per-host transfer lock: only one transfer per host within cooldown period
+    transfer_locks: Mutex<HashMap<String, Instant>>,
 }
 
 impl UpdateCache {
@@ -20,6 +26,7 @@ impl UpdateCache {
             cache_dir,
             latest_versions: Mutex::new(HashMap::new()),
             known_platforms: Mutex::new(HashSet::new()),
+            transfer_locks: Mutex::new(HashMap::new()),
         };
         cache.scan_updates();
         cache
@@ -67,11 +74,31 @@ impl UpdateCache {
         None
     }
 
-    /// Compare two version strings using semver-style numeric comparison.
-    /// Falls back to lexicographic comparison for non-numeric components.
+    /// Normalize a version string for comparison.
+    /// Strips git commit hash suffix (e.g. "0.8.4-71-gdf067f6" → "0.8.4.71")
+    /// and replaces '-' with '.' so all components are dot-separated.
+    fn normalize_version(v: &str) -> String {
+        // Strip "-g<hex>" suffix from git describe output
+        let v = if let Some(pos) = v.rfind("-g") {
+            let suffix = &v[pos + 2..];
+            if suffix.chars().all(|c| c.is_ascii_hexdigit()) {
+                &v[..pos]
+            } else {
+                v
+            }
+        } else {
+            v
+        };
+        v.replace('-', ".")
+    }
+
+    /// Compare two version strings using numeric tuple comparison.
+    /// Normalizes first (strips git hash, replaces '-' with '.').
     fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
-        let a_parts: Vec<&str> = a.split('.').collect();
-        let b_parts: Vec<&str> = b.split('.').collect();
+        let a_norm = Self::normalize_version(a);
+        let b_norm = Self::normalize_version(b);
+        let a_parts: Vec<&str> = a_norm.split('.').collect();
+        let b_parts: Vec<&str> = b_norm.split('.').collect();
         for (ap, bp) in a_parts.iter().zip(b_parts.iter()) {
             match (ap.parse::<u64>(), bp.parse::<u64>()) {
                 (Ok(an), Ok(bn)) => match an.cmp(&bn) {
@@ -106,6 +133,20 @@ impl UpdateCache {
     /// Return all known client platforms (for the auto-update task to download).
     pub fn known_platforms(&self) -> HashSet<(String, String)> {
         self.known_platforms.lock().unwrap().clone()
+    }
+
+    /// Try to acquire transfer lock for a host.
+    /// Returns true if this host may proceed (no other transfer in the last 5 minutes).
+    pub fn try_acquire_transfer(&self, hostname: &str) -> bool {
+        let now = Instant::now();
+        let mut locks = self.transfer_locks.lock().unwrap();
+        if let Some(last) = locks.get(hostname) {
+            if now.duration_since(*last) < TRANSFER_COOLDOWN {
+                return false;
+            }
+        }
+        locks.insert(hostname.to_string(), now);
+        true
     }
 
     /// Scan the updates directory and refresh the latest version per platform.
@@ -223,12 +264,24 @@ mod tests {
     }
 
     #[test]
+    fn normalize_version_strips_hash() {
+        assert_eq!(UpdateCache::normalize_version("0.8.4-71-gdf067f6"), "0.8.4.71");
+        assert_eq!(UpdateCache::normalize_version("0.5.0"), "0.5.0");
+        assert_eq!(UpdateCache::normalize_version("0.8.4-71"), "0.8.4.71");
+        assert_eq!(UpdateCache::normalize_version("1.0.0-3-gabcdef0"), "1.0.0.3");
+    }
+
+    #[test]
     fn compare_versions_semver() {
         use std::cmp::Ordering;
         assert_eq!(UpdateCache::compare_versions("0.10.0", "0.9.0"), Ordering::Greater);
         assert_eq!(UpdateCache::compare_versions("0.5.0", "0.5.0"), Ordering::Equal);
         assert_eq!(UpdateCache::compare_versions("1.0.0", "0.99.99"), Ordering::Greater);
         assert_eq!(UpdateCache::compare_versions("0.4.0", "0.5.0"), Ordering::Less);
+        // git describe versions
+        assert_eq!(UpdateCache::compare_versions("0.8.4-71-gdf067f6", "0.8.4"), Ordering::Greater);
+        assert_eq!(UpdateCache::compare_versions("0.8.4-71-gdf067f6", "0.8.4-72-gabcdef0"), Ordering::Less);
+        assert_eq!(UpdateCache::compare_versions("0.8.4-71-gdf067f6", "0.8.5"), Ordering::Less);
     }
 
     #[test]

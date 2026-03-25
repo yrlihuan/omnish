@@ -77,6 +77,7 @@ pub enum Message {
         os: String,
         arch: String,
         current_version: String,
+        hostname: String,
     },
     UpdateInfo {
         latest_version: String,
@@ -86,6 +87,7 @@ pub enum Message {
         os: String,
         arch: String,
         version: String,
+        hostname: String,
     },
     UpdateChunk {
         seq: u32,
@@ -762,9 +764,9 @@ mod tests {
             Message::ConfigResponse { items: vec![], handlers: vec![] },
             Message::ConfigUpdate { changes: vec![] },
             Message::ConfigUpdateResult { ok: true, error: None },
-            Message::UpdateCheck { os: "linux".into(), arch: "x86_64".into(), current_version: "0.1.0".into() },
+            Message::UpdateCheck { os: "linux".into(), arch: "x86_64".into(), current_version: "0.1.0".into(), hostname: "host1".into() },
             Message::UpdateInfo { latest_version: "0.2.0".into(), available: true },
-            Message::UpdateRequest { os: "linux".into(), arch: "x86_64".into(), version: "0.2.0".into() },
+            Message::UpdateRequest { os: "linux".into(), arch: "x86_64".into(), version: "0.2.0".into(), hostname: "host1".into() },
             Message::UpdateChunk { seq: 0, total_size: 1024, checksum: "abc".into(), data: vec![1,2,3], done: false, error: None },
         ];
 

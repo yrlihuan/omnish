@@ -859,7 +859,7 @@ async fn handle_message(
             // These are daemon→client messages, ignore if received
             let _ = tx.send(Message::Ack).await;
         }
-        Message::UpdateCheck { os, arch, current_version } => {
+        Message::UpdateCheck { os, arch, current_version, .. } => {
             update_cache.register_platform(&os, &arch);
             let reply = if let Some(latest) = update_cache.check_update(&os, &arch, &current_version) {
                 Message::UpdateInfo { latest_version: latest, available: true }
@@ -868,7 +868,7 @@ async fn handle_message(
             };
             let _ = tx.send(reply).await;
         }
-        Message::UpdateRequest { os, arch, version } => {
+        Message::UpdateRequest { os, arch, version, hostname } => {
             // Helper: send error + done (2 messages) so call_stream Ack sentinel is sent
             macro_rules! send_update_error {
                 ($tx:expr, $seq:expr, $msg:expr) => {{
@@ -882,6 +882,11 @@ async fn handle_message(
                         data: vec![], done: true, error: None,
                     }).await;
                 }};
+            }
+
+            if !update_cache.try_acquire_transfer(&hostname) {
+                send_update_error!(tx, 0, "transfer already in progress for this platform, retry later".into());
+                return;
             }
 
             let cached = update_cache.cached_package(&os, &arch);

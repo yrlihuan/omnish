@@ -328,16 +328,78 @@ fn exec_update(proxy: &PtyProxy, session_id: &str, cursor_col: u16, cursor_row: 
     notice(&format!("[omnish] exec failed: {}", std::io::Error::last_os_error()));
 }
 
+/// Check ~/.omnish/updates/{os}-{arch}/ for the latest cached package version.
+/// Returns the highest version found, or None.
+fn local_cached_version(os: &str, arch: &str) -> Option<String> {
+    let dir = omnish_common::config::omnish_dir()
+        .join("updates")
+        .join(format!("{}-{}", os, arch));
+    let entries = std::fs::read_dir(&dir).ok()?;
+    let prefix = "omnish-";
+    let suffix = format!("-{}-{}.tar.gz", os, arch);
+    let mut best: Option<String> = None;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with(prefix) && name.ends_with(&suffix) {
+            let ver = &name[prefix.len()..name.len() - suffix.len()];
+            if ver.is_empty() { continue; }
+            let dominated = best.as_ref().map_or(false, |b| {
+                compare_versions(ver, b) != std::cmp::Ordering::Greater
+            });
+            if !dominated {
+                best = Some(ver.to_string());
+            }
+        }
+    }
+    best
+}
+
+fn normalize_version(v: &str) -> String {
+    let v = if let Some(pos) = v.rfind("-g") {
+        let suffix = &v[pos + 2..];
+        if suffix.chars().all(|c| c.is_ascii_hexdigit()) {
+            &v[..pos]
+        } else {
+            v
+        }
+    } else {
+        v
+    };
+    v.replace('-', ".")
+}
+
+fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let a_norm = normalize_version(a);
+    let b_norm = normalize_version(b);
+    let a_parts: Vec<&str> = a_norm.split('.').collect();
+    let b_parts: Vec<&str> = b_norm.split('.').collect();
+    for (ap, bp) in a_parts.iter().zip(b_parts.iter()) {
+        match (ap.parse::<u64>(), bp.parse::<u64>()) {
+            (Ok(an), Ok(bn)) => match an.cmp(&bn) {
+                std::cmp::Ordering::Equal => continue,
+                ord => return ord,
+            },
+            _ => match ap.cmp(bp) {
+                std::cmp::Ordering::Equal => continue,
+                ord => return ord,
+            },
+        }
+    }
+    a_parts.len().cmp(&b_parts.len())
+}
+
 async fn download_and_extract_update(
     rpc: &RpcClient,
     os: &str,
     arch: &str,
     version: &str,
+    hostname: &str,
 ) -> anyhow::Result<()> {
     let mut rx = rpc.call_stream(Message::UpdateRequest {
         os: os.to_string(),
         arch: arch.to_string(),
         version: version.to_string(),
+        hostname: hostname.to_string(),
     }).await?;
 
     let omnish_dir = omnish_common::config::omnish_dir();
@@ -755,21 +817,35 @@ async fn main() -> Result<()> {
             if let Some(ref rpc) = daemon_conn {
                 let os = std::env::consts::OS.to_string();
                 let arch = std::env::consts::ARCH.to_string();
-                let ver = omnish_common::VERSION.to_string();
-                if let Ok(Message::UpdateInfo { latest_version, available: true }) = rpc.call(Message::UpdateCheck {
+                let mut ver = omnish_common::VERSION.to_string();
+                // Use local cached package version if newer than compile-time version
+                if let Some(local) = local_cached_version(&os, &arch) {
+                    if compare_versions(&local, &ver) == std::cmp::Ordering::Greater {
+                        ver = local;
+                    }
+                }
+                let hostname = nix::unistd::gethostname()
+                    .ok()
+                    .and_then(|h| h.into_string().ok())
+                    .unwrap_or_default();
+                match rpc.call(Message::UpdateCheck {
                     os: os.clone(), arch: arch.clone(), current_version: ver,
+                    hostname: hostname.clone(),
                 }).await {
-                    update_in_progress.store(true, Ordering::Relaxed);
-                    let rpc = rpc.clone();
-                    let uip = Arc::clone(&update_in_progress);
-                    tokio::spawn(async move {
-                        if let Err(e) = download_and_extract_update(
-                            &rpc, &os, &arch, &latest_version,
-                        ).await {
-                            tracing::warn!("update download failed: {}", e);
-                        }
-                        uip.store(false, Ordering::Relaxed);
-                    });
+                    Ok(Message::UpdateInfo { latest_version, available: true }) => {
+                        update_in_progress.store(true, Ordering::Relaxed);
+                        let rpc = rpc.clone();
+                        let uip = Arc::clone(&update_in_progress);
+                        tokio::spawn(async move {
+                            if let Err(e) = download_and_extract_update(
+                                &rpc, &os, &arch, &latest_version, &hostname,
+                            ).await {
+                                tracing::warn!("update download failed: {}", e);
+                            }
+                            uip.store(false, Ordering::Relaxed);
+                        });
+                    }
+                    _ => {} // No update or error, ignore
                 }
             }
         }
