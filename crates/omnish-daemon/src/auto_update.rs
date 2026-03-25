@@ -15,12 +15,14 @@ pub fn create_auto_update_job(
     clients: Vec<String>,
     check_url: Option<String>,
     restart_signal: Arc<Notify>,
+    update_cache: Arc<crate::update_cache::UpdateCache>,
 ) -> Result<Job> {
     Ok(Job::new_async(schedule, move |_uuid, _lock| {
         let omnish_dir = omnish_dir.clone();
         let clients = clients.clone();
         let check_url = check_url.clone();
         let restart_signal = restart_signal.clone();
+        let update_cache = update_cache.clone();
         Box::pin(async move {
             tracing::debug!("task [auto_update] started");
 
@@ -66,6 +68,33 @@ pub fn create_auto_update_job(
                 Err(e) => {
                     tracing::warn!("task [auto_update] failed to run install.sh: {}", e);
                     return;
+                }
+            }
+
+            // Cache own platform package for protocol-channel distribution
+            {
+                let os = std::env::consts::OS;
+                let arch = std::env::consts::ARCH;
+                if let Some(ref url) = check_url {
+                    if !url.starts_with("http://") && !url.starts_with("https://") {
+                        // Local directory — find the matching tar.gz
+                        let dir = std::path::Path::new(url);
+                        if let Ok(entries) = std::fs::read_dir(dir) {
+                            for entry in entries.flatten() {
+                                let name = entry.file_name().to_string_lossy().to_string();
+                                if name.ends_with(&format!("-{}-{}.tar.gz", os, arch)) {
+                                    if let Err(e) = update_cache.cache_package(
+                                        os, arch,
+                                        omnish_common::VERSION,
+                                        &entry.path(),
+                                    ) {
+                                        tracing::warn!("failed to cache own platform package: {}", e);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
             }
 

@@ -210,6 +210,9 @@ async fn async_main() -> Result<i32> {
     // Restart signal: notified when auto-update installs a new binary
     let restart_signal = Arc::new(tokio::sync::Notify::new());
 
+    // Update cache: stores downloaded packages for distribution to clients
+    let update_cache = Arc::new(omnish_daemon::update_cache::UpdateCache::new(&omnish_dir));
+
     // Register auto-update job if enabled
     if auto_update_config.enabled {
         let job = omnish_daemon::auto_update::create_auto_update_job(
@@ -218,6 +221,7 @@ async fn async_main() -> Result<i32> {
             auto_update_config.clients.clone(),
             auto_update_config.check_url.clone(),
             Arc::clone(&restart_signal),
+            Arc::clone(&update_cache),
         )?;
         task_mgr
             .register("auto_update", &auto_update_config.schedule, job)
@@ -332,8 +336,7 @@ async fn async_main() -> Result<i32> {
         formatter_mgr.register_external(&name, path).await;
     }
     let formatter_mgr = Arc::new(formatter_mgr);
-    let update_cache = Arc::new(omnish_daemon::update_cache::UpdateCache::new(&omnish_dir));
-    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, tool_registry, chat_model_name, config.tools, server_opts, formatter_mgr, update_cache);
+    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, tool_registry, chat_model_name, config.tools, server_opts, formatter_mgr, Arc::clone(&update_cache));
 
     tracing::info!("starting omnishd at {}", socket_path);
 
