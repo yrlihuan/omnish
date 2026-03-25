@@ -112,10 +112,16 @@ release:
       artifacts: true
   script:
     - echo "Creating release for ${CI_COMMIT_TAG} (version ${VERSION})"
+    - |
+      # Extract changelog for this release
+      TAG_VERSION="${CI_COMMIT_TAG#v}"
+      sed -n "/^## v${TAG_VERSION} /,/^---$/p" CHANGELOG.md | sed '1d;$d' > release-notes.md
+      echo "Release notes extracted:"
+      cat release-notes.md
   release:
     tag_name: ${CI_COMMIT_TAG}
     name: "omnish ${CI_COMMIT_TAG}"
-    description: "Release ${CI_COMMIT_TAG}"
+    description_path: release-notes.md
     assets:
       links:
         - name: "omnish-linux-x86_64.tar.gz"
