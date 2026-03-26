@@ -96,6 +96,14 @@ pub fn create_auto_update_job(
             }
             let (version, tar_gz_path) = cached.unwrap();
 
+            // Skip if cached version is not newer than the running daemon
+            if omnish_common::update::compare_versions(&version, omnish_common::VERSION)
+                != std::cmp::Ordering::Greater
+            {
+                tracing::debug!("task [auto_update] cached {} <= running {}, skipping", version, omnish_common::VERSION);
+                return;
+            }
+
             let ver = version.clone();
             let result = tokio::task::spawn_blocking(move || {
                 omnish_common::update::extract_and_run_installer(&tar_gz_path, &ver, false)
