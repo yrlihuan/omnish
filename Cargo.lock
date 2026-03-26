@@ -1103,13 +1103,17 @@ version = "0.8.4"
 dependencies = [
  "anyhow",
  "dirs",
+ "flate2",
  "hex",
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "sha2",
+ "tar",
  "tempfile",
  "toml",
  "toml_edit",
+ "tracing",
 ]
 
 [[package]]
@@ -1142,7 +1146,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "tokio",
  "tokio-cron-scheduler",

@@ -9,6 +9,7 @@ use tokio_cron_scheduler::Job;
 ///
 /// When an upgrade succeeds, `restart_signal` is notified so the daemon can
 /// shut down gracefully and let systemd restart it with the new binary.
+#[allow(clippy::too_many_arguments)]
 pub fn create_auto_update_job(
     omnish_dir: PathBuf,
     schedule: &str,
@@ -85,53 +86,29 @@ pub fn create_auto_update_job(
                 }
             }
 
-            // Phase 1: Update server via install.sh
-            // Prefer locally cached package if available
-            let install_script = omnish_dir.join("install.sh");
-            if !install_script.exists() {
-                tracing::warn!("task [auto_update] install.sh not found: {}", install_script.display());
-                return;
-            }
-
-            let mut cmd = tokio::process::Command::new("bash");
-            cmd.arg(&install_script)
-                .arg("--upgrade")
-                .env("OMNISH_HOME", &omnish_dir);
-
+            // Phase 1: Extract cached package and run its install.sh --upgrade
             let os = std::env::consts::OS;
             let arch = std::env::consts::ARCH;
-            let local_cache_dir = omnish_dir.join(format!("updates/{}-{}", os, arch));
-            if local_cache_dir.is_dir() {
-                // Use locally cached package for install
-                cmd.arg(format!("--dir={}", local_cache_dir.display()));
-            } else if let Some(ref url) = check_url {
-                if !url.starts_with("http://") && !url.starts_with("https://") {
-                    cmd.arg(format!("--dir={}", url));
-                }
+            let cached = update_cache.cached_package(os, arch);
+            if cached.is_none() {
+                tracing::debug!("task [auto_update] no cached package for {}-{}, skipping", os, arch);
+                return;
             }
+            let (version, tar_gz_path) = cached.unwrap();
 
-            let output = cmd.output().await;
+            let ver = version.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                omnish_common::update::extract_and_run_installer(&tar_gz_path, &ver, false)
+            }).await;
 
-            match output {
-                Ok(output) => {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    for line in stdout.lines() {
-                        tracing::info!("task [auto_update] {}", line);
-                    }
-                    let code = output.status.code().unwrap_or(-1);
-                    if code == 2 {
-                        // Exit 2 = already up to date, skip deploy
-                        tracing::debug!("task [auto_update] already up to date, skipping deploy");
-                        return;
-                    }
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        tracing::warn!("task [auto_update] install.sh --upgrade failed: {}{}", stdout, stderr);
-                        return;
-                    }
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!("task [auto_update] install failed: {}", e);
+                    return;
                 }
                 Err(e) => {
-                    tracing::warn!("task [auto_update] failed to run install.sh: {}", e);
+                    tracing::warn!("task [auto_update] install task panicked: {}", e);
                     return;
                 }
             }

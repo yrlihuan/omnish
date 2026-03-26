@@ -1,6 +1,6 @@
 use crate::{parse_addr, TransportAddr};
 use anyhow::Result;
-use omnish_protocol::message::{Auth, AuthOk, Frame, Message};
+use omnish_protocol::message::{Auth, AuthResult, Frame, Message};
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -260,17 +260,18 @@ fn spawn_connection<R, W, F>(
 
             match frame.payload {
                 Message::Auth(Auth { ref token, protocol_version }) if token == expected_token.as_str() => {
-                    if protocol_version != omnish_protocol::message::PROTOCOL_VERSION {
+                    let ok = protocol_version == omnish_protocol::message::PROTOCOL_VERSION;
+                    if !ok {
                         tracing::warn!(
-                            "rejecting client: protocol version mismatch (client={}, server={})",
+                            "protocol mismatch (client={}, server={})",
                             protocol_version,
                             omnish_protocol::message::PROTOCOL_VERSION
                         );
-                        let _ = write_reply(&writer, frame.request_id, Message::AuthFailed).await;
-                        return;
                     }
-                    let reply = Message::AuthOk(AuthOk {
+                    let reply = Message::AuthResult(AuthResult {
+                        ok,
                         protocol_version: omnish_protocol::message::PROTOCOL_VERSION,
+                        daemon_version: omnish_common::VERSION.to_string(),
                     });
                     if write_reply(&writer, frame.request_id, reply)
                         .await
@@ -278,9 +279,15 @@ fn spawn_connection<R, W, F>(
                     {
                         return;
                     }
+                    // Protocol mismatch: keep connection open for update messages
                 }
                 _ => {
-                    let _ = write_reply(&writer, frame.request_id, Message::AuthFailed).await;
+                    let reply = Message::AuthResult(AuthResult {
+                        ok: false,
+                        protocol_version: omnish_protocol::message::PROTOCOL_VERSION,
+                        daemon_version: omnish_common::VERSION.to_string(),
+                    });
+                    let _ = write_reply(&writer, frame.request_id, reply).await;
                     return;
                 }
             }
@@ -639,7 +646,7 @@ mod tests {
             }))
             .await
             .unwrap();
-        assert!(matches!(resp, Message::AuthOk(_)));
+        assert!(matches!(resp, Message::AuthResult(ref r) if r.ok));
 
         // Normal messages should work after auth
         let resp = client
@@ -684,9 +691,9 @@ mod tests {
                 protocol_version: omnish_protocol::message::PROTOCOL_VERSION,
             }))
             .await;
-        // Should get AuthFailed or connection closed
+        // Should get AuthResult(ok=false) or connection closed
         match resp {
-            Ok(Message::AuthFailed) => {} // expected
+            Ok(Message::AuthResult(ref r)) if !r.ok => {} // expected
             Err(_) => {}                  // also acceptable (server closes connection)
             other => panic!("expected AuthFailed or error, got {:?}", other),
         }

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version — increment on incompatible wire format changes.
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigItem {
@@ -64,8 +64,7 @@ pub enum Message {
     ChatToolResult(ChatToolResult),
     Ack,
     Auth(Auth),
-    AuthOk(AuthOk),
-    AuthFailed,
+    AuthResult(AuthResult),
     ConfigQuery,
     ConfigResponse {
         items: Vec<ConfigItem>,
@@ -81,6 +80,7 @@ pub enum Message {
     },
     UpdateInfo {
         latest_version: String,
+        checksum: String,
         available: bool,
     },
     UpdateRequest {
@@ -107,8 +107,11 @@ pub struct Auth {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuthOk {
+pub struct AuthResult {
+    pub ok: bool,
     pub protocol_version: u32,
+    #[serde(default)]
+    pub daemon_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -603,7 +606,7 @@ mod tests {
     /// reminding you to bump PROTOCOL_VERSION if the wire format changed.
     #[test]
     fn message_variant_guard() {
-        const EXPECTED_VARIANT_COUNT: usize = 32;
+        const EXPECTED_VARIANT_COUNT: usize = 31;
 
         let variants: Vec<Message> = vec![
             Message::SessionStart(SessionStart {
@@ -756,16 +759,17 @@ mod tests {
                 token: String::new(),
                 protocol_version: 0,
             }),
-            Message::AuthOk(AuthOk {
+            Message::AuthResult(AuthResult {
+                ok: true,
                 protocol_version: 0,
+                daemon_version: String::new(),
             }),
-            Message::AuthFailed,
             Message::ConfigQuery,
             Message::ConfigResponse { items: vec![], handlers: vec![] },
             Message::ConfigUpdate { changes: vec![] },
             Message::ConfigUpdateResult { ok: true, error: None },
             Message::UpdateCheck { os: "linux".into(), arch: "x86_64".into(), current_version: "0.1.0".into(), hostname: "host1".into() },
-            Message::UpdateInfo { latest_version: "0.2.0".into(), available: true },
+            Message::UpdateInfo { latest_version: "0.2.0".into(), checksum: "abc123".into(), available: true },
             Message::UpdateRequest { os: "linux".into(), arch: "x86_64".into(), version: "0.2.0".into(), hostname: "host1".into() },
             Message::UpdateChunk { seq: 0, total_size: 1024, checksum: "abc".into(), data: vec![1,2,3], done: false, error: None },
         ];
@@ -795,8 +799,7 @@ mod tests {
                 | Message::ChatToolResult(_)
                 | Message::Ack
                 | Message::Auth(_)
-                | Message::AuthOk(_)
-                | Message::AuthFailed
+                | Message::AuthResult(_)
                 | Message::ConfigQuery
                 | Message::ConfigResponse { .. }
                 | Message::ConfigUpdate { .. }

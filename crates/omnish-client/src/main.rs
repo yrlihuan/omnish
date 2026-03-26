@@ -23,7 +23,7 @@ use widgets::line_status::LineStatus;
 use omnish_protocol::message::*;
 use omnish_pty::proxy::PtyProxy;
 use omnish_pty::raw_mode::RawModeGuard;
-use omnish_transport::rpc_client::{PermanentFailure, RpcClient};
+use omnish_transport::rpc_client::RpcClient;
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
@@ -328,29 +328,6 @@ fn exec_update(proxy: &PtyProxy, session_id: &str, cursor_col: u16, cursor_row: 
     notice(&format!("[omnish] exec failed: {}", std::io::Error::last_os_error()));
 }
 
-/// Check ~/.omnish/updates/{os}-{arch}/ for the latest cached package version.
-/// Returns the highest version found, or None.
-fn local_cached_version(os: &str, arch: &str) -> Option<String> {
-    use omnish_common::update::{extract_version, compare_versions};
-    let dir = omnish_common::config::omnish_dir()
-        .join("updates")
-        .join(format!("{}-{}", os, arch));
-    let entries = std::fs::read_dir(&dir).ok()?;
-    let mut best: Option<String> = None;
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if let Some(ver) = extract_version(&name, os, arch) {
-            let dominated = best.as_ref().is_some_and(|b| {
-                compare_versions(&ver, b) != std::cmp::Ordering::Greater
-            });
-            if !dominated {
-                best = Some(ver);
-            }
-        }
-    }
-    best
-}
-
 fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     omnish_common::update::compare_versions(a, b)
 }
@@ -431,10 +408,12 @@ async fn download_and_extract_update(
     tokio::fs::rename(&tmp_download, &pkg_file).await?;
     tracing::info!("cached update package: {}", pkg_file.display());
 
-    // Extract and replace binary using spawn_blocking (blocking I/O)
+    // Extract and run install.sh --upgrade --client-only
     let pkg_for_extract = pkg_file.clone();
-    let omnish_dir_clone = omnish_dir.clone();
-    tokio::task::spawn_blocking(move || extract_and_install(&pkg_for_extract, &omnish_dir_clone))
+    let version_for_extract = version.to_string();
+    tokio::task::spawn_blocking(move || {
+        omnish_common::update::extract_and_run_installer(&pkg_for_extract, &version_for_extract, true)
+    })
         .await
         .map_err(|e| anyhow::anyhow!("join error: {}", e))??;
 
@@ -452,62 +431,7 @@ async fn download_and_extract_update(
     Ok(())
 }
 
-fn extract_and_install(tar_gz_path: &std::path::Path, omnish_dir: &std::path::Path) -> anyhow::Result<()> {
-    use flate2::read::GzDecoder;
-    use tar::Archive;
-
-    let file = std::fs::File::open(tar_gz_path)?;
-    let decoder = GzDecoder::new(file);
-    let mut archive = Archive::new(decoder);
-
-    let current_exe = std::env::current_exe()?;
-    // Handle " (deleted)" suffix on Linux
-    let exe_path = {
-        let s = current_exe.to_string_lossy().to_string();
-        s.strip_suffix(" (deleted)")
-            .map(std::path::PathBuf::from)
-            .unwrap_or(current_exe)
-    };
-    let exe_name = exe_path.file_name()
-        .ok_or_else(|| anyhow::anyhow!("cannot determine binary name"))?
-        .to_string_lossy();
-
-    // Extract to ~/.omnish/tmp/
-    let tmp_dir = omnish_dir.join("tmp");
-    std::fs::create_dir_all(&tmp_dir)?;
-    let tmp_bin = tmp_dir.join(format!("{}.new", exe_name));
-    let mut found = false;
-
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.to_path_buf();
-        // Look for the client binary in the archive (e.g., omnish-0.5.0/bin/omnish)
-        if let Some(name) = path.file_name() {
-            if name.to_string_lossy() == *exe_name {
-                entry.unpack(&tmp_bin)?;
-                found = true;
-                break;
-            }
-        }
-    }
-
-    if !found {
-        let _ = std::fs::remove_file(&tmp_bin);
-        anyhow::bail!("client binary '{}' not found in archive", exe_name);
-    }
-
-    // Make executable
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp_bin, std::fs::Permissions::from_mode(0o755))?;
-    }
-
-    // Atomic rename from tmp to target
-    std::fs::rename(&tmp_bin, &exe_path)?;
-
-    Ok(())
-}
+// extract_and_run_installer moved to omnish_common::update
 
 #[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
@@ -590,7 +514,8 @@ async fn main() -> Result<()> {
 
     // Connect to daemon (graceful degradation)
     let pending_buffer: MessageBuffer = Arc::new(Mutex::new(VecDeque::new()));
-    let daemon_conn = connect_daemon(&daemon_addr, &session_id, parent_session_id, proxy.child_pid() as u32, pending_buffer.clone()).await;
+    let update_needed = Arc::new(AtomicBool::new(false));
+    let daemon_conn = connect_daemon(&daemon_addr, &session_id, parent_session_id, proxy.child_pid() as u32, pending_buffer.clone(), update_needed.clone()).await;
 
     // Spawn shell info polling task (progressive interval: 1/2/4/8/15/30s, then 60s)
     // Reset to 1s on each command start
@@ -732,12 +657,9 @@ async fn main() -> Result<()> {
             let clean = s.strip_suffix(" (deleted)").map(std::path::PathBuf::from).unwrap_or(p);
             std::fs::metadata(&clean).ok()?.modified().ok()
         });
-    let mut last_keystroke = std::time::Instant::now();
     let mut last_update_check = std::time::Instant::now();
     const AUTO_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
-    const AUTO_UPDATE_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
-    const UPDATE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
-    let mut last_update_poll = std::time::Instant::now();
+    let mut update_check_done = false;
     let update_in_progress = Arc::new(AtomicBool::new(false));
 
     // Landlock sandbox state
@@ -768,13 +690,10 @@ async fn main() -> Result<()> {
             continue;
         }
 
-        // Auto-update check (every 60s, only when idle at prompt for 60s+)
+        // Auto-update check (every 60s, only when not in chat mode)
         if auto_update_enabled.load(Ordering::Relaxed)
             && last_update_check.elapsed() >= AUTO_UPDATE_INTERVAL
-            && shell_input.at_prompt()
-            && last_keystroke.elapsed() >= AUTO_UPDATE_IDLE
             && !interceptor.is_in_chat()
-            && !alt_screen_detector.is_active()
         {
             last_update_check = std::time::Instant::now();
             if let Some(ref startup_mtime) = exe_mtime {
@@ -796,22 +715,17 @@ async fn main() -> Result<()> {
             }
         }
 
-        // Protocol-based update polling
+        // Auth-triggered update check: daemon reported a newer version
         if auto_update_enabled.load(Ordering::Relaxed)
-            && last_update_poll.elapsed() >= UPDATE_POLL_INTERVAL
+            && update_needed.swap(false, Ordering::Relaxed)
+            && !update_check_done
             && !update_in_progress.load(Ordering::Relaxed)
         {
-            last_update_poll = std::time::Instant::now();
+            update_check_done = true;
             if let Some(ref rpc) = daemon_conn {
                 let os = std::env::consts::OS.to_string();
                 let arch = std::env::consts::ARCH.to_string();
-                let mut ver = omnish_common::VERSION.to_string();
-                // Use local cached package version if newer than compile-time version
-                if let Some(local) = local_cached_version(&os, &arch) {
-                    if compare_versions(&local, &ver) == std::cmp::Ordering::Greater {
-                        ver = local;
-                    }
-                }
+                let ver = omnish_common::VERSION.to_string();
                 let hostname = nix::unistd::gethostname()
                     .ok()
                     .and_then(|h| h.into_string().ok())
@@ -822,24 +736,78 @@ async fn main() -> Result<()> {
                     hostname: hostname.clone(),
                 }).await;
                 match &check_result {
-                    Ok(Message::UpdateInfo { latest_version, available: true }) => {
-                        event_log::push(format!("update_check: available v={}", latest_version));
+                    Ok(Message::UpdateInfo { latest_version, checksum: remote_checksum, available: true }) => {
+                        // Check if local cache already has this version with matching checksum
+                        let need_download = if let Some((cached_ver, cached_path)) =
+                            omnish_common::update::local_cached_package(&os, &arch)
+                        {
+                            if compare_versions(latest_version, &cached_ver) == std::cmp::Ordering::Equal {
+                                // Same version — verify checksum
+                                let local_checksum = omnish_common::update::checksum(&cached_path)
+                                    .unwrap_or_default();
+                                if local_checksum == *remote_checksum && !remote_checksum.is_empty() {
+                                    event_log::push(format!("update_check: v={} cached, checksum match", latest_version));
+                                    false // use local cache
+                                } else {
+                                    event_log::push(format!("update_check: v={} cached, checksum mismatch", latest_version));
+                                    true // re-download
+                                }
+                            } else {
+                                true // different version, download
+                            }
+                        } else {
+                            true // no local cache
+                        };
+
+                        event_log::push(format!("update_check: available v={} download={}", latest_version, need_download));
                         update_in_progress.store(true, Ordering::Relaxed);
                         let latest_version = latest_version.clone();
                         let rpc = rpc.clone();
                         let uip = Arc::clone(&update_in_progress);
-                        tokio::spawn(async move {
-                            event_log::push(format!("update_download: start v={}", latest_version));
-                            if let Err(e) = download_and_extract_update(
-                                &rpc, &os, &arch, &latest_version, &hostname,
-                            ).await {
-                                event_log::push(format!("update_download: failed {}", e));
-                                tracing::warn!("update download failed: {}", e);
-                            } else {
-                                event_log::push(format!("update_download: done v={}", latest_version));
-                            }
-                            uip.store(false, Ordering::Relaxed);
-                        });
+                        if need_download {
+                            tokio::spawn(async move {
+                                event_log::push(format!("update_download: start v={}", latest_version));
+                                if let Err(e) = download_and_extract_update(
+                                    &rpc, &os, &arch, &latest_version, &hostname,
+                                ).await {
+                                    event_log::push(format!("update_download: failed {}", e));
+                                    tracing::warn!("update download failed: {}", e);
+                                } else {
+                                    event_log::push(format!("update_download: done v={}", latest_version));
+                                }
+                                uip.store(false, Ordering::Relaxed);
+                            });
+                        } else {
+                            // Install from local cache directly
+                            let os_clone = os.clone();
+                            let arch_clone = arch.clone();
+                            tokio::spawn(async move {
+                                event_log::push(format!("update_install: from cache v={}", latest_version));
+                                let ver = latest_version.clone();
+                                let result = tokio::task::spawn_blocking(move || {
+                                    if let Some((_, cached_path)) =
+                                        omnish_common::update::local_cached_package(&os_clone, &arch_clone)
+                                    {
+                                        omnish_common::update::extract_and_run_installer(&cached_path, &ver, true)
+                                    } else {
+                                        anyhow::bail!("cached package disappeared")
+                                    }
+                                }).await;
+                                match result {
+                                    Ok(Ok(())) => {
+                                        event_log::push(format!("update_install: done v={}", latest_version));
+                                    }
+                                    Ok(Err(e)) => {
+                                        event_log::push(format!("update_install: failed {}", e));
+                                        tracing::warn!("update install from cache failed: {}", e);
+                                    }
+                                    Err(e) => {
+                                        event_log::push(format!("update_install: panic {}", e));
+                                    }
+                                }
+                                uip.store(false, Ordering::Relaxed);
+                            });
+                        }
                     }
                     Ok(Message::UpdateInfo { available: false, .. }) => {
                         event_log::push("update_check: up to date");
@@ -882,7 +850,6 @@ async fn main() -> Result<()> {
             if n == 0 {
                 break;
             }
-            last_keystroke = std::time::Instant::now();
             deferred_ghost = None; // User typed — cancel pending ghost render
 
             // Suppress interceptor when not at prompt (child process running:
@@ -1506,6 +1473,7 @@ async fn connect_daemon(
     parent_session_id: Option<String>,
     child_pid: u32,
     buffer: MessageBuffer,
+    update_needed: Arc<AtomicBool>,
 ) -> Option<RpcClient> {
     let socket_path = daemon_addr.to_string();
     let sid = session_id.to_string();
@@ -1547,6 +1515,7 @@ async fn connect_daemon(
             let rpc = rpc.clone();
             let buffer = buffer.clone();
             let token = auth_token.clone();
+            let update_needed = update_needed.clone();
             Box::pin(async move {
                 event_log::push("reconnect_cb: authenticating");
                 // Authenticate first
@@ -1562,14 +1531,26 @@ async fn connect_daemon(
                     }
                 };
                 match &auth_resp {
-                    Message::AuthFailed => {
-                        event_log::push("reconnect_cb: auth failed (rejected)");
-                        return Err(PermanentFailure("authentication failed".into()).into());
-                    }
-                    Message::AuthOk(ok) => {
-                        event_log::push(format!("reconnect_cb: auth ok proto={}", ok.protocol_version));
-                        if ok.protocol_version != omnish_protocol::message::PROTOCOL_VERSION {
-                            let behind = if omnish_protocol::message::PROTOCOL_VERSION < ok.protocol_version {
+                    Message::AuthResult(result) => {
+                        event_log::push(format!(
+                            "reconnect_cb: auth ok={} proto={} daemon={}",
+                            result.ok, result.protocol_version, result.daemon_version
+                        ));
+
+                        // Check if daemon has a newer version → trigger update
+                        if !result.daemon_version.is_empty()
+                            && compare_versions(&result.daemon_version, omnish_common::VERSION)
+                                == std::cmp::Ordering::Greater
+                        {
+                            event_log::push(format!(
+                                "reconnect_cb: daemon newer ({}), triggering update",
+                                result.daemon_version
+                            ));
+                            update_needed.store(true, Ordering::Relaxed);
+                        }
+
+                        if !result.ok {
+                            let behind = if omnish_protocol::message::PROTOCOL_VERSION < result.protocol_version {
                                 "client"
                             } else {
                                 "daemon"
@@ -1578,23 +1559,20 @@ async fn connect_daemon(
                                 "[omnish] Protocol mismatch \
                                  (client={}, daemon={}), waiting for {} upgrade...",
                                 omnish_protocol::message::PROTOCOL_VERSION,
-                                ok.protocol_version,
+                                result.protocol_version,
                                 behind
                             ));
-                            return Err(PermanentFailure(format!(
-                                "protocol mismatch (client={}, daemon={})",
-                                omnish_protocol::message::PROTOCOL_VERSION,
-                                ok.protocol_version,
-                            )).into());
+                            // Don't fail — keep connection alive for update messages
+                            return Ok(());
                         }
                     }
-                    // Old daemon that responds with Ack (no version info)
+                    // Old daemon that responds with Ack or unexpected message
                     other => {
                         event_log::push(format!("reconnect_cb: auth unexpected {:?}", std::mem::discriminant(other)));
                     }
                 }
 
-                // Then register session
+                // Then register session (only if auth succeeded)
                 let attrs = probe::default_session_probes(child_pid).collect_all();
                 event_log::push("reconnect_cb: sending SessionStart");
                 rpc.call(Message::SessionStart(SessionStart {

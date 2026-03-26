@@ -211,6 +211,7 @@ esac
 FORCE=false
 DRY_RUN=false
 UPGRADE=false
+CLIENT_ONLY=false
 VERSION=""
 FROM_DIR=""
 SETUP_PLUGIN=""
@@ -219,6 +220,7 @@ for arg in "$@"; do
         --upgrade)     UPGRADE=true ;;
         --force)       FORCE=true ;;
         --dry-run)     DRY_RUN=true ;;
+        --client-only) CLIENT_ONLY=true ;;
         --version=*)   VERSION="${arg#*=}"
                        [[ "$VERSION" == v* ]] || VERSION="v${VERSION}" ;;
         --dir=*)       FROM_DIR="${arg#*=}" ;;
@@ -251,6 +253,7 @@ for arg in "$@"; do
             echo "  --version=vX.Y.Z  Install specific version (default: latest)"
             echo "  --dir=<path>      Install from local directory containing tar.gz files"
             echo "  --upgrade         Non-interactive upgrade (download + install only)"
+            echo "  --client-only     Skip installing omnish-daemon (for client-side updates)"
             echo "  --force           Overwrite existing daemon.toml"
             echo "  --dry-run         Run config wizard but skip download/install/credentials"
             echo "  --uninstall       Remove omnish, systemd service, and PATH entries"
@@ -397,9 +400,20 @@ if [[ "$DRY_RUN" != true ]]; then
     mkdir -p "$BIN_DIR" "$OMNISH_DIR/plugins"
 
     # Remove old binaries first (running binaries can't be overwritten: "Text file busy")
-    rm -f "$BIN_DIR"/omnish "$BIN_DIR"/omnish-daemon "$BIN_DIR"/omnish-plugin
-    cp "$EXTRACTED/bin/"* "$BIN_DIR/"
-    chmod 755 "$BIN_DIR"/*
+    if [[ "$CLIENT_ONLY" == true ]]; then
+        # Client-only mode: skip daemon binary
+        for f in "$EXTRACTED/bin/"*; do
+            fname=$(basename "$f")
+            [[ "$fname" == "omnish-daemon" ]] && continue
+            rm -f "$BIN_DIR/$fname"
+            cp "$f" "$BIN_DIR/"
+            chmod 755 "$BIN_DIR/$fname"
+        done
+    else
+        rm -f "$BIN_DIR"/omnish "$BIN_DIR"/omnish-daemon "$BIN_DIR"/omnish-plugin
+        cp "$EXTRACTED/bin/"* "$BIN_DIR/"
+        chmod 755 "$BIN_DIR"/*
+    fi
 
     # Install assets (plugin configs, prompts, scripts)
     if [[ -d "$EXTRACTED/assets" ]]; then

@@ -861,10 +861,13 @@ async fn handle_message(
         }
         Message::UpdateCheck { os, arch, current_version, .. } => {
             update_cache.register_platform(&os, &arch);
-            let reply = if let Some(latest) = update_cache.check_update(&os, &arch, &current_version) {
-                Message::UpdateInfo { latest_version: latest, available: true }
-            } else {
-                Message::UpdateInfo { latest_version: String::new(), available: false }
+            let reply = match update_cache.check_update_with_checksum(&os, &arch, &current_version) {
+                Some((version, checksum)) => {
+                    Message::UpdateInfo { latest_version: version, checksum, available: true }
+                }
+                None => {
+                    Message::UpdateInfo { latest_version: String::new(), checksum: String::new(), available: false }
+                }
             };
             let _ = tx.send(reply).await;
         }
@@ -899,7 +902,7 @@ async fn handle_message(
                             let total_size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
                             let path_for_checksum = path.clone();
                             let checksum = match tokio::task::spawn_blocking(move || {
-                                omnish_daemon::update_cache::UpdateCache::checksum(&path_for_checksum)
+                                omnish_common::update::checksum(&path_for_checksum)
                             }).await {
                                 Ok(Ok(c)) => c,
                                 Ok(Err(e)) => { send_update_error!(tx, 0, format!("checksum error: {}", e)); return; }

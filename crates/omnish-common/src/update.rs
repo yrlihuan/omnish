@@ -1,7 +1,45 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use sha2::{Sha256, Digest};
 
 /// Maximum number of update packages to keep per platform.
 pub const MAX_CACHED_PACKAGES: usize = 3;
+
+/// Compute SHA-256 checksum of a file.
+pub fn checksum(path: &Path) -> anyhow::Result<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 { break; }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Find the latest cached package for a platform under `~/.omnish/updates/{os}-{arch}/`.
+/// Returns `(version, path)` if found.
+pub fn local_cached_package(os: &str, arch: &str) -> Option<(String, PathBuf)> {
+    let dir = crate::config::omnish_dir()
+        .join("updates")
+        .join(format!("{}-{}", os, arch));
+    let entries = std::fs::read_dir(&dir).ok()?;
+    let mut best: Option<(String, PathBuf)> = None;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(ver) = extract_version(&name, os, arch) {
+            let dominated = best.as_ref().is_some_and(|(b, _)| {
+                compare_versions(&ver, b) != std::cmp::Ordering::Greater
+            });
+            if !dominated {
+                best = Some((ver, entry.path()));
+            }
+        }
+    }
+    best
+}
 
 /// Remove old update packages in `dir`, keeping the latest `keep` versions.
 /// Package filenames must match `omnish-{version}-{os}-{arch}.tar.gz`.
@@ -72,6 +110,92 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
         }
     }
     a_parts.len().cmp(&b_parts.len())
+}
+
+/// Extract a tar.gz update package and run its bundled `install.sh --upgrade`.
+///
+/// When `client_only` is true, passes `--client-only` to skip installing
+/// omnish-daemon (used by client-side updates).
+///
+/// Logs are saved to `~/.omnish/logs/updates/update-{version}-{timestamp}.log`.
+pub fn extract_and_run_installer(
+    tar_gz_path: &Path,
+    version: &str,
+    client_only: bool,
+) -> anyhow::Result<()> {
+    use flate2::read::GzDecoder;
+    use tar::Archive;
+
+    // Extract to a temp directory next to the tar.gz
+    let extract_dir = tar_gz_path.with_extension("extracted");
+    if extract_dir.exists() {
+        std::fs::remove_dir_all(&extract_dir)?;
+    }
+    std::fs::create_dir_all(&extract_dir)?;
+
+    let file = std::fs::File::open(tar_gz_path)?;
+    let decoder = GzDecoder::new(file);
+    let mut archive = Archive::new(decoder);
+    archive.unpack(&extract_dir)?;
+
+    // Find inner directory (e.g. omnish-0.8.4.80-linux-x86_64/)
+    let inner_dir = std::fs::read_dir(&extract_dir)?
+        .filter_map(|e| e.ok())
+        .find(|e| e.path().is_dir())
+        .map(|e| e.path())
+        .unwrap_or_else(|| extract_dir.clone());
+
+    let install_sh = inner_dir.join("install.sh");
+    if !install_sh.exists() {
+        std::fs::remove_dir_all(&extract_dir)?;
+        anyhow::bail!("install.sh not found in update package");
+    }
+
+    // Prepare log file: ~/.omnish/logs/updates/
+    let omnish_dir = crate::config::omnish_dir();
+    let log_dir = omnish_dir.join("logs").join("updates");
+    std::fs::create_dir_all(&log_dir)?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let log_path = log_dir.join(format!("update-{}-{}.log", version, timestamp));
+
+    // Run install.sh --upgrade [--client-only]
+    let mut cmd = Command::new("bash");
+    cmd.arg(&install_sh).arg("--upgrade");
+    if client_only {
+        cmd.arg("--client-only");
+    }
+    let output = cmd.output()?;
+
+    // Save combined stdout+stderr to log file
+    let mut log_content = output.stdout.clone();
+    if !output.stderr.is_empty() {
+        log_content.extend_from_slice(b"\n--- stderr ---\n");
+        log_content.extend_from_slice(&output.stderr);
+    }
+    let _ = std::fs::write(&log_path, &log_content);
+
+    // Clean up extracted directory
+    let _ = std::fs::remove_dir_all(&extract_dir);
+
+    if !output.status.success() {
+        let code = output.status.code().unwrap_or(-1);
+        // Exit 2 = already up to date (not an error)
+        if code == 2 {
+            tracing::info!("install.sh: already up to date, log: {}", log_path.display());
+            return Ok(());
+        }
+        anyhow::bail!(
+            "install.sh failed (exit {}), log: {}",
+            code,
+            log_path.display()
+        );
+    }
+
+    tracing::info!("install.sh completed, log: {}", log_path.display());
+    Ok(())
 }
 
 #[cfg(test)]

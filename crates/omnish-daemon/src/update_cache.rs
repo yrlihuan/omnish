@@ -1,5 +1,4 @@
 use anyhow::Result;
-use sha2::{Sha256, Digest};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -41,17 +40,30 @@ impl UpdateCache {
     /// Find the cached package for a platform, return (version, path) if exists.
     /// When multiple versions are cached, returns the one with the highest semver.
     pub fn cached_package(&self, os: &str, arch: &str) -> Option<(String, PathBuf)> {
+        self.cached_package_best(os, arch, None)
+    }
+
+    /// Find a cached package for a platform.
+    /// If `prefer_version` is set and a matching package exists, return it;
+    /// otherwise return the highest version.
+    fn cached_package_best(&self, os: &str, arch: &str, prefer_version: Option<&str>) -> Option<(String, PathBuf)> {
         let dir = self.platform_dir(os, arch);
         if !dir.exists() {
             return None;
         }
         let mut best: Option<(String, PathBuf)> = None;
+        let mut preferred: Option<(String, PathBuf)> = None;
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if let Some(version) = Self::extract_version(&name, os, arch) {
+                if let Some(version) = omnish_common::update::extract_version(&name, os, arch) {
+                    if let Some(pv) = prefer_version {
+                        if omnish_common::update::compare_versions(&version, pv) == std::cmp::Ordering::Equal {
+                            preferred = Some((version.clone(), entry.path()));
+                        }
+                    }
                     let dominated = best.as_ref().is_some_and(|(v, _)| {
-                        Self::compare_versions(&version, v) != std::cmp::Ordering::Greater
+                        omnish_common::update::compare_versions(&version, v) != std::cmp::Ordering::Greater
                     });
                     if !dominated {
                         best = Some((version, entry.path()));
@@ -59,26 +71,31 @@ impl UpdateCache {
                 }
             }
         }
-        best
+        preferred.or(best)
     }
 
-    fn extract_version(filename: &str, os: &str, arch: &str) -> Option<String> {
-        omnish_common::update::extract_version(filename, os, arch)
-    }
-
-    fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
-        omnish_common::update::compare_versions(a, b)
-    }
 
     /// Check if a newer version is available (uses cached scan results).
     pub fn check_update(&self, os: &str, arch: &str, current_version: &str) -> Option<String> {
         let versions = self.latest_versions.lock().unwrap();
         let cached_version = versions.get(&(os.to_string(), arch.to_string()))?;
-        if Self::compare_versions(cached_version, current_version) == std::cmp::Ordering::Greater {
+        if omnish_common::update::compare_versions(cached_version, current_version) == std::cmp::Ordering::Greater {
             Some(cached_version.clone())
         } else {
             None
         }
+    }
+
+    /// Check if a newer version is available and return (version, checksum).
+    /// Prefers a package matching the daemon's own version; falls back to latest.
+    pub fn check_update_with_checksum(&self, os: &str, arch: &str, current_version: &str) -> Option<(String, String)> {
+        let daemon_version = omnish_common::VERSION;
+        let (version, path) = self.cached_package_best(os, arch, Some(daemon_version))?;
+        if omnish_common::update::compare_versions(&version, current_version) != std::cmp::Ordering::Greater {
+            return None;
+        }
+        let checksum = omnish_common::update::checksum(&path).unwrap_or_default();
+        Some((version, checksum))
     }
 
     /// Record a client platform from an UpdateCheck message.
@@ -138,19 +155,6 @@ impl UpdateCache {
         Ok(())
     }
 
-    /// Compute SHA-256 checksum of a file
-    pub fn checksum(path: &Path) -> Result<String> {
-        use std::io::Read;
-        let mut file = std::fs::File::open(path)?;
-        let mut hasher = Sha256::new();
-        let mut buf = [0u8; 65536];
-        loop {
-            let n = file.read(&mut buf)?;
-            if n == 0 { break; }
-            hasher.update(&buf[..n]);
-        }
-        Ok(format!("{:x}", hasher.finalize()))
-    }
 
     /// Download a platform package from a local directory.
     /// Finds the highest version in the source, then copies it to the cache
@@ -163,9 +167,9 @@ impl UpdateCache {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with("omnish-") && name.ends_with(&suffix) {
-                if let Some(version) = Self::extract_version(&name, os, arch) {
+                if let Some(version) = omnish_common::update::extract_version(&name, os, arch) {
                     let dominated = best.as_ref().is_some_and(|(v, _)| {
-                        Self::compare_versions(&version, v) != std::cmp::Ordering::Greater
+                        omnish_common::update::compare_versions(&version, v) != std::cmp::Ordering::Greater
                     });
                     if !dominated {
                         best = Some((version, entry.path()));
@@ -179,7 +183,7 @@ impl UpdateCache {
         };
         // Check if we already have this version cached
         if let Some((cached_ver, _)) = self.cached_package(os, arch) {
-            if Self::compare_versions(&cached_ver, &version) != std::cmp::Ordering::Less {
+            if omnish_common::update::compare_versions(&cached_ver, &version) != std::cmp::Ordering::Less {
                 return Ok(false); // Already have same or newer
             }
         }
@@ -288,7 +292,7 @@ impl UpdateCache {
             };
 
             let asset_name = asset["name"].as_str().unwrap_or("");
-            let asset_version = match Self::extract_version(asset_name, &github_os(os), arch) {
+            let asset_version = match omnish_common::update::extract_version(asset_name, github_os(os), arch) {
                 Some(v) => v,
                 None => {
                     results.push((os.clone(), arch.clone(), Err(anyhow::anyhow!("cannot parse version from {}", asset_name))));
@@ -298,7 +302,7 @@ impl UpdateCache {
 
             // Check if we already have this version cached
             if let Some((cached_ver, _)) = self.cached_package(os, arch) {
-                if Self::compare_versions(&cached_ver, &asset_version) != std::cmp::Ordering::Less {
+                if omnish_common::update::compare_versions(&cached_ver, &asset_version) != std::cmp::Ordering::Less {
                     results.push((os.clone(), arch.clone(), Ok(false)));
                     continue;
                 }
@@ -362,7 +366,7 @@ mod tests {
     #[test]
     fn extract_version_valid() {
         assert_eq!(
-            UpdateCache::extract_version("omnish-0.5.0-linux-x86_64.tar.gz", "linux", "x86_64"),
+            omnish_common::update::extract_version("omnish-0.5.0-linux-x86_64.tar.gz", "linux", "x86_64"),
             Some("0.5.0".to_string())
         );
     }
@@ -370,7 +374,7 @@ mod tests {
     #[test]
     fn extract_version_invalid() {
         assert_eq!(
-            UpdateCache::extract_version("other-file.tar.gz", "linux", "x86_64"),
+            omnish_common::update::extract_version("other-file.tar.gz", "linux", "x86_64"),
             None
         );
     }
@@ -418,7 +422,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.bin");
         std::fs::write(&path, b"hello world").unwrap();
-        let sum = UpdateCache::checksum(&path).unwrap();
+        let sum = omnish_common::update::checksum(&path).unwrap();
         // SHA-256 of "hello world"
         assert_eq!(sum, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
     }
