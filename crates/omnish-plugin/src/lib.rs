@@ -43,20 +43,16 @@ fn build_sandbox_profile(
     cwd: Option<&std::path::Path>,
     repo_root: Option<&std::path::Path>,
 ) -> String {
+    // Use (allow default) + deny file-write + selective allow file-write.
+    // This matches Landlock semantics: restrict only filesystem writes, allow everything else.
+    // With (deny default) we had to enumerate every sandbox operation class (process*, sysctl*,
+    // mach*, etc.) and kept missing operations needed by tools like ps/top.
+    // In Apple's sandbox evaluation, a more specific subpath wins over a less specific one,
+    // so (allow file-write* (subpath "/tmp")) overrides (deny file-write* (subpath "/")).
     let mut profile = String::from(
         "(version 1)\n\
-         (deny default)\n\
-         (allow process*)\n\
-         (allow signal)\n\
-         (allow sysctl*)\n\
-         (allow mach*)\n\
-         (allow ipc*)\n\
-         (allow network*)\n\
-         (allow file-read*)\n\
-         (allow file-ioctl)\n\
-         (allow pseudo-tty)\n\
-         (allow system-info)\n\
-         (allow user-preference-read)\n\
+         (allow default)\n\
+         (deny file-write* (subpath \"/\"))\n\
          (allow file-write* (subpath \"/tmp\"))\n\
          (allow file-write* (literal \"/dev/null\"))\n\
          (allow file-write* (subpath \"/opt/homebrew\"))\n",
@@ -207,12 +203,8 @@ mod tests {
             None,
             None,
         );
-        assert!(profile.contains("(deny default)"));
-        assert!(profile.contains("(allow file-read*)"));
-        assert!(profile.contains("(allow file-ioctl)"));
-        assert!(profile.contains("(allow pseudo-tty)"));
-        assert!(profile.contains("(allow system-info)"));
-        assert!(profile.contains("(allow user-preference-read)"));
+        assert!(profile.contains("(allow default)"));
+        assert!(profile.contains("(deny file-write* (subpath \"/\"))"));
         assert!(profile.contains("(allow file-write* (subpath \"/tmp\"))"));
         assert!(profile.contains("(allow file-write* (literal \"/dev/null\"))"));
         assert!(profile.contains("(allow file-write* (subpath \"/data/plugin\"))"));
