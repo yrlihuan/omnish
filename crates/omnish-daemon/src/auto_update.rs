@@ -29,8 +29,6 @@ pub fn create_auto_update_job(
         let proxy = proxy.clone();
         let no_proxy = no_proxy.clone();
         Box::pin(async move {
-            tracing::debug!("task [auto_update] started");
-
             // Phase 0: Download packages from check_url to OMNISH_HOME/updates/
             // for daemon's own platform + all known client platforms
             if let Some(ref url) = check_url {
@@ -100,9 +98,12 @@ pub fn create_auto_update_job(
             if omnish_common::update::compare_versions(&version, omnish_common::VERSION)
                 != std::cmp::Ordering::Greater
             {
-                tracing::debug!("task [auto_update] cached {} <= running {}, skipping", version, omnish_common::VERSION);
+                // Silently skip when cached version is not newer
                 return;
             }
+
+            // Log when a newer version is found
+            tracing::info!("task [auto_update] found newer version {} > running {}, proceeding with upgrade", version, omnish_common::VERSION);
 
             let ver = version.clone();
             let result = tokio::task::spawn_blocking(move || {
