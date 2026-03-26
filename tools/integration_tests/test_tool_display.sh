@@ -40,7 +40,7 @@ test_1() {
     send_keys "分别运行5次 echo \"$long_str\", 每次单独调用bash工具, 不要用循环" 0.3
     send_enter 0.3
 
-    if ! wait_for_chat_response 120; then
+    if ! wait_for_chat_response; then
         show_capture "After tool execution" "$(capture_pane -100)" 50
         assert_fail "No chat response after tool execution"
         return 1
@@ -93,7 +93,7 @@ test_2() {
     send_keys "运行 echo \"$long_str\"" 0.3
     send_enter 0.3
 
-    if ! wait_for_chat_response 90; then
+    if ! wait_for_chat_response; then
         show_capture "After tool execution" "$(capture_pane -60)" 30
         assert_fail "No chat response after tool execution"
         return 1

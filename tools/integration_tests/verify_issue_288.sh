@@ -43,7 +43,7 @@ test_1() {
     send_keys "$cmd" 0.3
     send_enter 0.3
 
-    if ! wait_for_chat_response 45; then
+    if ! wait_for_chat_response; then
         show_capture "After send" "$(capture_pane -50)" 15
         assert_fail "No chat prompt after sending command"
         send_special Escape 0.5

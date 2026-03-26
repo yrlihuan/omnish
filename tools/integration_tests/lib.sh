@@ -228,11 +228,11 @@ wait_for_prompt() {
     sleep "${1:-0.5}"
 }
 
-# wait_for_chat_response [timeout=30] [interval=2]
+# wait_for_chat_response [timeout=180] [interval=2]
 #   Poll until chat prompt "> " appears in the pane or timeout.
 #   Returns 0 on success, 1 on timeout.
 wait_for_chat_response() {
-    local timeout="${1:-30}"
+    local timeout="${1:-180}"
     local interval="${2:-2}"
     local elapsed=0
     echo -e "  Waiting up to ${timeout}s for LLM response..."

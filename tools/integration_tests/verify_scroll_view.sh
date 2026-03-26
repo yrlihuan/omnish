@@ -38,7 +38,7 @@ test_1() {
     send_keys "Print the numbers 1 through 40, each on its own line. Just the numbers, nothing else." 0.3
     send_enter 0.3
 
-    if ! wait_for_chat_response 60; then
+    if ! wait_for_chat_response; then
         show_capture "After long response request" "$(capture_pane -50)" 15
         assert_fail "No chat prompt after requesting long response"
         return 1
@@ -155,7 +155,7 @@ test_3() {
     send_keys "What was the last number you printed? Reply with just the number." 0.3
     send_enter 0.3
 
-    if ! wait_for_chat_response 30; then
+    if ! wait_for_chat_response; then
         show_capture "After follow-up" "$(capture_pane -30)" 10
         assert_fail "No response after browse exit follow-up"
         return 1

@@ -60,7 +60,7 @@ test_2() {
     send_enter 0.3
 
     # Wait for LLM response
-    if ! wait_for_chat_response 30; then
+    if ! wait_for_chat_response; then
         show_capture "After inline message" "$(capture_pane -30)" 10
         assert_fail "No chat prompt after inline message"
         return 1
@@ -128,7 +128,7 @@ test_4() {
     # Ask a question to create conversation history
     send_keys "Remember the number 42. Reply with just: OK, remembered 42." 0.3
     send_enter 0.3
-    if ! wait_for_chat_response 30; then
+    if ! wait_for_chat_response; then
         show_capture "After initial question" "$(capture_pane -30)" 10
         assert_fail "No response to initial question"
         return 1
@@ -168,7 +168,7 @@ test_4() {
     # Verify it's a resumed session — ask a follow-up referencing the earlier conversation
     send_keys "What number did I just ask you to remember? Reply with just the number." 0.3
     send_enter 0.3
-    if ! wait_for_chat_response 30; then
+    if ! wait_for_chat_response; then
         show_capture "After resume follow-up" "$(capture_pane -30)" 10
         assert_fail "No response to resume follow-up"
         return 1

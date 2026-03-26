@@ -39,7 +39,7 @@ test_1() {
     echo -e "  ${YELLOW}--- Q1 ---${NC}"
     send_keys "What is 2+2? Reply with just the number." 0.3
     send_enter 0.3
-    if ! wait_for_chat_response 30; then
+    if ! wait_for_chat_response; then
         show_capture "After Q1" "$(capture_pane -50)" 10
         assert_fail "No chat prompt after Q1"
         return 1
@@ -58,7 +58,7 @@ test_1() {
     echo -e "  ${YELLOW}--- Q2 ---${NC}"
     send_keys "What is 3+3? Reply with just the number." 0.3
     send_enter 0.3
-    if ! wait_for_chat_response 30; then
+    if ! wait_for_chat_response; then
         show_capture "After Q2" "$(capture_pane -50)" 10
         assert_fail "No chat prompt after Q2"
         return 1
@@ -100,7 +100,7 @@ test_2() {
         echo -e "  ${YELLOW}--- Round $round ---${NC}"
         send_keys "$cmd" 0.3
         send_enter 0.3
-        if ! wait_for_chat_response 45; then
+        if ! wait_for_chat_response; then
             show_capture "After round $round" "$(capture_pane -50)" 15
             assert_fail "No chat prompt after round $round"
             send_special Escape 0.5
@@ -172,7 +172,7 @@ test_3() {
         echo -e "  ${YELLOW}--- Round $round ---${NC}"
         send_keys "$cmd" 0.3
         send_enter 0.3
-        if ! wait_for_chat_response 30; then
+        if ! wait_for_chat_response; then
             show_capture "After round $round" "$(capture_pane -50)" 15
             assert_fail "No chat prompt after round $round"
             send_special Escape 0.5

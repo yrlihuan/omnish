@@ -72,7 +72,7 @@ test_1() {
 
     send_keys "What is 2+2? Reply with just the number." 0.3
     send_enter 0.3
-    if ! wait_for_chat_response 30; then
+    if ! wait_for_chat_response; then
         show_capture "After Conv1" "$(capture_pane -30)" 10
         assert_fail "No chat prompt after Conv1"
         return 1
@@ -89,7 +89,7 @@ test_1() {
 
     send_keys "Name three primary colors. Be brief." 0.3
     send_enter 0.3
-    if ! wait_for_chat_response 30; then
+    if ! wait_for_chat_response; then
         show_capture "After Conv2" "$(capture_pane -30)" 10
         assert_fail "No chat prompt after Conv2"
         return 1
@@ -106,7 +106,7 @@ test_1() {
 
     send_keys "Name three animals that can fly. Be brief." 0.3
     send_enter 0.3
-    if ! wait_for_chat_response 30; then
+    if ! wait_for_chat_response; then
         show_capture "After Conv3" "$(capture_pane -30)" 10
         assert_fail "No chat prompt after Conv3"
         return 1
@@ -175,7 +175,7 @@ test_1() {
         # Still send a follow-up to confirm we're in the right conversation
         send_keys "What was my previous question?" 0.5
         send_enter 0.5
-        if ! wait_for_chat_response 30; then
+        if ! wait_for_chat_response; then
             show_capture "Follow-up timeout" "$(capture_pane -30)" 10
             assert_fail "Follow-up response timeout"
             return 1
@@ -195,7 +195,7 @@ test_1() {
         # Try sending a message to see which conversation we're in
         send_keys "What was my previous question?" 0.5
         send_enter 0.5
-        if ! wait_for_chat_response 30; then
+        if ! wait_for_chat_response; then
             show_capture "Follow-up timeout" "$(capture_pane -30)" 10
             assert_fail "Follow-up response timeout"
             return 1

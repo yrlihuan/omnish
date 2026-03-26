@@ -43,7 +43,7 @@ test_1() {
     send_enter 0.3
 
     # Wait for LLM to respond (tool calls + final response)
-    if ! wait_for_chat_response 60; then
+    if ! wait_for_chat_response; then
         show_capture "Timeout" "$(capture_pane -50)" 20
         assert_fail "No chat response after parallel tool request"
         return 1

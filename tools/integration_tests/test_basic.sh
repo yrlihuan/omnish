@@ -157,7 +157,7 @@ test_4() {
 
     send_keys "What is 2+2? Reply with just the number." 0.3
     send_enter 0.3
-    if ! wait_for_chat_response 30; then
+    if ! wait_for_chat_response; then
         show_capture "After Conv1 Q1" "$(capture_pane -30)" 10
         assert_fail "No chat prompt after Conv1 Q1"
         return 1
@@ -166,7 +166,7 @@ test_4() {
     echo -e "  ${YELLOW}--- Conv 1, Q2 ---${NC}"
     send_keys "Now multiply that by 3. Reply with just the number." 0.3
     send_enter 0.3
-    if ! wait_for_chat_response 30; then
+    if ! wait_for_chat_response; then
         show_capture "After Conv1 Q2" "$(capture_pane -30)" 10
         assert_fail "No chat prompt after Conv1 Q2"
         return 1
@@ -183,7 +183,7 @@ test_4() {
 
     send_keys "Name three primary colors. Be brief." 0.3
     send_enter 0.3
-    if ! wait_for_chat_response 30; then
+    if ! wait_for_chat_response; then
         show_capture "After Conv2 Q1" "$(capture_pane -30)" 10
         assert_fail "No chat prompt after Conv2 Q1"
         return 1
@@ -192,7 +192,7 @@ test_4() {
     echo -e "  ${YELLOW}--- Conv 2, Q2 ---${NC}"
     send_keys "Which of those has the shortest wavelength? Be brief." 0.3
     send_enter 0.3
-    if ! wait_for_chat_response 30; then
+    if ! wait_for_chat_response; then
         show_capture "After Conv2 Q2" "$(capture_pane -30)" 10
         assert_fail "No chat prompt after Conv2 Q2"
         return 1
