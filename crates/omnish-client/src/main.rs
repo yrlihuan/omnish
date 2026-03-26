@@ -273,22 +273,11 @@ fn exec_update(proxy: &PtyProxy, session_id: &str, cursor_col: u16, cursor_row: 
 
     let running_version = format!("omnish {}", omnish_common::VERSION);
     if disk_version == running_version {
-        notice(&format!("[omnish] Already up to date ({})", omnish_common::VERSION));
+        tracing::debug!("exec_update: binary unchanged ({})", omnish_common::VERSION);
         return;
     }
 
     notice(&format!("[omnish] Updating: {} -> {}", running_version, disk_version));
-
-    // On macOS (especially Apple Silicon), all binaries must be code-signed.
-    // When the binary is copied/replaced on disk, the signature may be lost.
-    // Re-sign with ad-hoc signature before running to avoid SIGKILL ("Killed: 9").
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("codesign")
-            .args(["--force", "--sign", "-"])
-            .arg(&current_exe)
-            .output();
-    }
 
     // Clear FD_CLOEXEC on the PTY master fd so it survives exec
     let master_fd = proxy.master_raw_fd();
