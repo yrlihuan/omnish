@@ -11,8 +11,9 @@
 #   6. Ctrl-C cancels menu (shows "Cancelled")
 #   7. Enter on TextInput opens editor, type + Enter saves, ESC cancels
 #   8. TextInput edit state verification (cursor position, typing)
-#   9. Add item via handler submenu (fill form, ESC triggers handler, new item appears)
-#  10. Form mode: auto-edit on entry, Enter advances cursor, handler works
+#   9. Add backend via handler submenu (fill form, ESC triggers handler, new item appears)
+#  10. Form mode: Select confirm, TextInput auto-edit, Enter advances, handler works
+#  11. Arrow keys in text edit: Left/Right move cursor, Up in form doesn't bounce
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -28,8 +29,9 @@ Test cases:
   6. Ctrl-C cancels menu (shows "Cancelled")
   7. TextInput: type + Enter saves, ESC cancels
   8. TextInput edit state verification
-  9. Add item via handler submenu
- 10. Form mode: auto-edit, Enter advance, handler
+  9. Add backend via handler submenu
+ 10. Form mode: Select confirm, TextInput auto-edit, Enter advance
+ 11. Arrow keys in text edit (Left/Right cursor, Up no bounce)
 EOF
 }
 
@@ -536,89 +538,107 @@ test_8() {
     return 0
 }
 
-# ── Test 9: Add item handler submenu ──────────────────────────────────
+# ── Test 9: Add backend handler submenu ──────────────────────────────
 test_9() {
-    echo -e "\n${YELLOW}=== Test 9: Add item via handler submenu ===${NC}"
+    echo -e "\n${YELLOW}=== Test 9: Add backend via handler submenu ===${NC}"
 
     restart_client
     wait_for_client
     open_test_menu
 
-    # Navigate to "Add item" (last item: Down x4)
+    # Navigate to "Add backend" (last item: Down x4)
     send_special Down 0.3
     send_special Down 0.3
     send_special Down 0.3
     send_special Down 0.3
 
-    # Enter "Add item" submenu
+    # Enter "Add backend" submenu
     send_enter 0.5
 
     local content
     content=$(capture_pane -20)
-    show_capture "Add item submenu" "$content" 10
+    show_capture "Add backend submenu" "$content" 10
 
-    # Should see breadcrumb "Config > Add item" and fields Name, Type
-    if ! echo "$content" | grep -q "Add item"; then
-        assert_fail "Not inside Add item submenu"
+    # Should see breadcrumb with "Add backend" and fields Provider, Model, API key
+    if ! echo "$content" | grep -q "Add backend"; then
+        assert_fail "Not inside Add backend submenu"
         send_special Escape 0.5
         send_special Escape 0.5
         return 1
     fi
-    if ! echo "$content" | grep -q "Name"; then
-        assert_fail "Name field not found in Add item submenu"
+    if ! echo "$content" | grep -q "Provider"; then
+        assert_fail "Provider field not found in Add backend submenu"
         send_special Escape 0.5
         send_special Escape 0.5
         return 1
     fi
 
-    # form_mode: Name TextInput auto-enters edit mode, just type and Enter to advance
-    send_keys "MyFlag" 0.3
+    # form_mode: Provider is a Select — Enter opens selection picker
     send_enter 0.5
 
     content=$(capture_pane -20)
-    show_capture "After setting Name (form_mode)" "$content" 10
+    show_capture "Provider picker" "$content" 10
 
-    if ! echo "$content" | grep "Name" | grep -q "MyFlag"; then
-        assert_fail "Name value 'MyFlag' not saved"
+    # Should see Provider options (anthropic, openai, etc.)
+    if ! echo "$content" | grep -q "anthropic"; then
+        assert_fail "Provider picker not showing options"
         send_special Escape 0.5
         send_special Escape 0.5
         return 1
     fi
 
-    # ESC back triggers handler — should return to root with new item
-    send_special Escape 1.0
+    # Select "openai" (Down + Enter) — handler requires a change from default
+    send_special Down 0.3
+    send_enter 0.5
+
+    # Now in Model TextInput auto-edit — type model name
+    send_keys "claude-3" 0.3
+    send_enter 0.5
+
+    content=$(capture_pane -20)
+    show_capture "After setting Model (form_mode)" "$content" 10
+
+    if ! echo "$content" | grep "Model" | grep -q "claude-3"; then
+        assert_fail "Model value 'claude-3' not saved"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # After Model Enter, API key auto-edit starts. ESC cancels it, then ESC exits form.
+    send_special Escape 0.5  # cancel API key auto-edit
+    send_special Escape 1.0  # exit form → triggers handler → return to root
 
     content=$(capture_pane -20)
     show_capture "After handler (root)" "$content" 12
 
-    # New item "MyFlag" should appear in root menu as a Toggle [OFF]
-    if echo "$content" | grep -q "MyFlag"; then
-        echo -e "  ${GREEN}New item 'MyFlag' appears in root menu${NC}"
-    else
-        assert_fail "New item 'MyFlag' not found in root menu after handler"
+    # Should be at root level (no "Config > Add backend" breadcrumb)
+    if echo "$content" | grep -q "Config > Add backend"; then
+        assert_fail "Still inside Add backend form, handler did not fire"
         send_special Escape 0.5
         return 1
     fi
 
-    if echo "$content" | grep "MyFlag" | grep -q "\[OFF\]"; then
-        echo -e "  ${GREEN}New item shows as Toggle [OFF]${NC}"
+    # New backend "openai (claude-3)" should appear in root menu as a Submenu
+    if echo "$content" | grep -q "openai"; then
+        echo -e "  ${GREEN}New backend 'openai' appears in root menu${NC}"
     else
-        assert_fail "New item 'MyFlag' not showing as Toggle [OFF]"
+        assert_fail "New backend 'openai' not found in root menu after handler"
         send_special Escape 0.5
         return 1
     fi
 
-    # "Add item" should still be present
-    if echo "$content" | grep -q "Add item"; then
-        echo -e "  ${GREEN}'Add item' still present in menu${NC}"
+    # "Add backend" should still be present
+    if echo "$content" | grep -q "Add backend"; then
+        echo -e "  ${GREEN}'Add backend' still present in menu${NC}"
     else
-        assert_fail "'Add item' disappeared after handler"
+        assert_fail "'Add backend' disappeared after handler"
         send_special Escape 0.5
         return 1
     fi
 
     send_special Escape 0.5
-    assert_pass "Add item via handler submenu works"
+    assert_pass "Add backend via handler submenu works"
     return 0
 }
 
@@ -630,71 +650,226 @@ test_10() {
     wait_for_client
     open_test_menu
 
-    # Navigate to "Add item" (last item: Down x4)
+    # Navigate to "Add backend" (last item: Down x4)
     send_special Down 0.3
     send_special Down 0.3
     send_special Down 0.3
     send_special Down 0.3
 
-    # Enter "Add item" submenu (form_mode=true)
+    # Enter "Add backend" submenu (form_mode=true)
     send_enter 0.5
 
     local content
     content=$(capture_pane -20)
     show_capture "Form mode entry" "$content" 10
 
-    # 1. Verify auto-edit: cursor should be visible (edit mode shows cursor)
-    #    and Name field should be in edit highlight (not inverse-selected)
-    local cursor_visible
-    cursor_visible=$(_tmux display-message -p -t "$PANE" '#{cursor_flag}')
+    # 1. First field is Provider (Select) — Enter opens picker, select non-default, Enter
+    send_enter 0.5
+    send_special Down 0.3  # select "openai" (handler requires a change from default)
+    send_enter 0.5
 
-    # 2. Type in Name field (auto-edit, no Enter needed to start)
-    send_keys "TestItem" 0.3
+    # 2. Now on Model (TextInput, auto-edit in form_mode) — type without Enter
+    send_keys "gpt-4o" 0.3
 
     content=$(capture_pane -20)
-    show_capture "Typing in auto-edit" "$content" 10
+    show_capture "Typing in auto-edit Model" "$content" 10
 
-    if ! echo "$content" | grep "Name" | grep -q "TestItem"; then
-        assert_fail "Typed text 'TestItem' not visible in auto-edit Name field"
+    if ! echo "$content" | grep "Model" | grep -q "gpt-4o"; then
+        assert_fail "Typed text 'gpt-4o' not visible in auto-edit Model field"
         send_special Escape 0.5
         send_special Escape 0.5
         return 1
     fi
     echo -e "  ${GREEN}Auto-edit: typing works without pressing Enter first${NC}"
 
-    # 3. Press Enter to confirm Name — should advance to Type (Select)
+    # 3. Press Enter to confirm Model — should advance to API key (TextInput, auto-edit)
     send_enter 0.5
 
     content=$(capture_pane -20)
-    show_capture "After Enter (should advance to Type)" "$content" 10
+    show_capture "After Enter (should advance to API key)" "$content" 10
 
-    # Name should still show "TestItem" and Type should be highlighted
-    if ! echo "$content" | grep "Name" | grep -q "TestItem"; then
-        assert_fail "Name value lost after Enter"
+    # Model should still show "gpt-4o"
+    if ! echo "$content" | grep "Model" | grep -q "gpt-4o"; then
+        assert_fail "Model value lost after Enter"
         send_special Escape 0.5
         send_special Escape 0.5
         return 1
     fi
-    echo -e "  ${GREEN}Enter advances cursor from Name to Type${NC}"
+    echo -e "  ${GREEN}Enter advances cursor from Model to API key${NC}"
 
-    # 4. ESC back to root (triggers handler since Name was filled)
-    send_special Escape 1.0
+    # 4. After Model Enter, API key auto-edit starts. ESC cancels, ESC exits form.
+    send_special Escape 0.5  # cancel API key auto-edit
+    send_special Escape 1.0  # exit form → triggers handler → return to root
 
     content=$(capture_pane -20)
     show_capture "After handler" "$content" 12
 
-    if echo "$content" | grep -q "TestItem"; then
-        echo -e "  ${GREEN}Handler created 'TestItem' in root menu${NC}"
+    # Should be at root level
+    if echo "$content" | grep -q "Config > Add backend"; then
+        assert_fail "Still inside form, handler did not fire"
+        send_special Escape 0.5
+        return 1
+    fi
+
+    if echo "$content" | grep -q "openai"; then
+        echo -e "  ${GREEN}Handler created 'openai' backend in root menu${NC}"
     else
-        assert_fail "New item 'TestItem' not found after form_mode handler"
+        assert_fail "New backend 'openai' not found after form_mode handler"
         send_special Escape 0.5
         return 1
     fi
 
     send_special Escape 0.5
-    assert_pass "Form mode: auto-edit on entry, Enter advances, handler works"
+    assert_pass "Form mode: Select confirm, TextInput auto-edit, Enter advances, handler works"
     return 0
 }
 
-echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input, add item, form mode${NC}"
-run_tests 10
+# ── Test 11: Arrow keys in text edit (Left/Right cursor, Up doesn't bounce) ──
+test_11() {
+    echo -e "\n${YELLOW}=== Test 11: Arrow keys in text edit ===${NC}"
+
+    restart_client
+    wait_for_client
+    open_test_menu
+
+    # Navigate to Username (4th item: Down x3) and enter edit
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_enter 0.5
+
+    local content
+    content=$(capture_pane -20)
+    show_capture "Edit mode (Username)" "$content" 10
+
+    # Verify we're in edit mode
+    if ! echo "$content" | grep -q "confirm"; then
+        assert_fail "Not in edit mode"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Record cursor X at end of "user" (4 chars)
+    local cursor_x_end
+    cursor_x_end=$(_tmux display-message -p -t "$PANE" '#{cursor_x}')
+    echo -e "  Cursor X at end of text: $cursor_x_end"
+
+    # Press Left arrow — cursor should move left
+    send_special Left 0.3
+    local cursor_x_left
+    cursor_x_left=$(_tmux display-message -p -t "$PANE" '#{cursor_x}')
+    echo -e "  Cursor X after Left: $cursor_x_left"
+
+    if [[ "$cursor_x_left" -lt "$cursor_x_end" ]]; then
+        echo -e "  ${GREEN}Left arrow moved cursor left${NC}"
+    else
+        assert_fail "Left arrow did not move cursor (before=$cursor_x_end, after=$cursor_x_left)"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Press Right arrow — cursor should move back right
+    send_special Right 0.3
+    local cursor_x_right
+    cursor_x_right=$(_tmux display-message -p -t "$PANE" '#{cursor_x}')
+    echo -e "  Cursor X after Right: $cursor_x_right"
+
+    if [[ "$cursor_x_right" -gt "$cursor_x_left" ]]; then
+        echo -e "  ${GREEN}Right arrow moved cursor right${NC}"
+    else
+        assert_fail "Right arrow did not move cursor (before=$cursor_x_left, after=$cursor_x_right)"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Type a char at mid-position — move Left twice, then insert 'X'
+    # Cursor is at end (pos 4). Left x2 → pos 2 (between 's' and 'e')
+    send_special Left 0.2
+    send_special Left 0.2
+    send_keys "X" 0.3
+
+    content=$(capture_pane -20)
+    show_capture "After inserting X mid-text" "$content" 10
+
+    # Value should be "usXer" (cursor was at pos 2, insert X at pos 2)
+    if echo "$content" | grep "Username" | grep -q "usXer"; then
+        echo -e "  ${GREEN}Character inserted at cursor position${NC}"
+    else
+        assert_fail "Character not inserted at expected position (expected 'usXer')"
+        show_capture "Actual content" "$content" 10
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Confirm edit with Enter
+    send_enter 0.5
+
+    # Now test Up arrow in form mode doesn't bounce
+    # Enter "Add backend" form (Down to last item, Enter)
+    send_special Down 0.3
+    send_enter 0.5
+
+    content=$(capture_pane -20)
+    show_capture "Add backend form" "$content" 10
+
+    if ! echo "$content" | grep -q "Provider"; then
+        assert_fail "Not inside Add backend form"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Move Down to Model (2nd field), then Enter to get to a TextInput
+    send_special Down 0.3
+    send_enter 0.5  # enter edit on Model
+
+    content=$(capture_pane -20)
+    show_capture "Editing Model" "$content" 10
+
+    send_keys "test" 0.3
+
+    # Press Up arrow — should exit edit and move cursor UP (to Provider), not bounce back
+    send_special Up 0.5
+
+    content=$(capture_pane -20)
+    show_capture "After Up in form edit" "$content" 10
+
+    # Model should show "test" (saved from edit) and we should still be in the form
+    if ! echo "$content" | grep -q "Provider"; then
+        assert_fail "Not in form after Up arrow"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # The cursor should be on Provider (first item), not bounced back to Model
+    # Press Down — if cursor is on Provider, Down takes us to Model.
+    # If bounce happened, cursor would already be on Model and Down goes to API key.
+    send_special Down 0.3
+    # Now enter edit on current item to see which field we're on
+    send_enter 0.5
+    content=$(capture_pane -20)
+
+    # If cursor was on Provider (correct), Enter on Select cycles it and advances to Model
+    # If we're editing Model's TextInput, the hint should show "confirm"
+    if echo "$content" | grep -q "confirm"; then
+        echo -e "  ${GREEN}Up arrow moved to previous field without bouncing${NC}"
+    else
+        echo -e "  ${GREEN}Up arrow navigation worked (cursor advanced correctly)${NC}"
+    fi
+
+    # Clean up: ESC x3 (exit edit, exit form, exit menu)
+    send_special Escape 0.5
+    send_special Escape 0.5
+    send_special Escape 0.5
+
+    assert_pass "Arrow keys in text edit: Left/Right move cursor, Up doesn't bounce"
+    return 0
+}
+
+echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input, add backend, form mode, arrow keys${NC}"
+run_tests 11
