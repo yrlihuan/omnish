@@ -1831,7 +1831,11 @@ impl ChatSession {
                     MenuItem::TextInput {
                         label: "API key".to_string(),
                         value: if api_key.is_empty() { String::new() } else {
-                            format!("{}...{}", &api_key[..4.min(api_key.len())], &api_key[api_key.len().saturating_sub(4)..])
+                            if api_key.len() > 8 {
+                                format!("{}...{}", &api_key[..4], &api_key[api_key.len()-4..])
+                            } else {
+                                "(set)".to_string()
+                            }
                         },
                     },
                 ],

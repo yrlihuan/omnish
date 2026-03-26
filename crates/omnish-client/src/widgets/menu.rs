@@ -470,7 +470,7 @@ pub fn run_menu(
     let mut last_item_count = items.len();
     let mut needs_redraw = false;
     let mut pending_auto_edit = false; // form_mode: auto-enter text edit after redraw
-        let mut auto_edit_advance = false; // true = advance cursor after auto-edit (Down/Enter), false = stay (Up)
+    let mut auto_edit_advance = false; // true = advance cursor after auto-edit (Down/Enter), false = stay (Up)
 
     loop {
         // 1. Read handler name and form_mode FIRST (immutable borrow of items).
