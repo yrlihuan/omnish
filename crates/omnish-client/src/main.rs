@@ -692,6 +692,10 @@ async fn main() -> Result<()> {
         }
 
         // Mtime restart check (every 60s, only when idle at prompt)
+        // WARNING: The UpdateCheck block below must NOT be gated on at_prompt/idle/alt_screen.
+        // Those conditions only guard the mtime restart. If UpdateCheck is blocked by them,
+        // clients that are busy (running commands, in vim, etc.) will never download updates,
+        // creating a chicken-and-egg problem where old clients can't get the new code.
         if auto_update_enabled.load(Ordering::Relaxed)
             && last_update_check.elapsed() >= AUTO_UPDATE_INTERVAL
             && !interceptor.is_in_chat()
