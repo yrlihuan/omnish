@@ -914,6 +914,7 @@ async fn handle_message(
                             };
                             let mut seq = 0u32;
                             let mut buf = vec![0u8; 65536];
+                            let mut send_failed = false;
                             loop {
                                 let n = match file.read(&mut buf).await {
                                     Ok(n) => n,
@@ -931,9 +932,17 @@ async fn handle_message(
                                     done,
                                     error: None,
                                 };
-                                let _ = tx.send(chunk).await;
+                                if tx.send(chunk).await.is_err() {
+                                    send_failed = true;
+                                    break;
+                                }
                                 if done { break; }
                                 seq += 1;
+                            }
+                            if send_failed {
+                                tracing::warn!("streaming {}-{} v{} to {} aborted (client disconnected at chunk {})", os, arch, version, hostname, seq);
+                            } else {
+                                tracing::info!("streaming {}-{} v{} to {} complete ({} chunks)", os, arch, version, hostname, seq + 1);
                             }
                         }
                         Err(e) => {
