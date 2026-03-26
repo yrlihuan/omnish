@@ -204,8 +204,6 @@ case "$ARCH" in
     aarch64|arm64) ARCH="aarch64" ;;
     *) error "Unsupported architecture: $ARCH" ;;
 esac
-[[ "$OS" == "linux" ]] || error "Only Linux is supported currently"
-
 # ── Parse arguments ──────────────────────────────────────────────────────────
 
 FORCE=false
@@ -264,6 +262,13 @@ for arg in "$@"; do
     esac
 done
 
+# ── Platform check ───────────────────────────────────────────────────────────
+if [[ "$OS" != "linux" ]]; then
+    if [[ "$CLIENT_ONLY" != true ]]; then
+        error "Full install requires Linux. Use --client-only on $OS."
+    fi
+fi
+
 # ── Plugin setup (standalone mode) ──────────────────────────────────────────
 if [[ -n "$SETUP_PLUGIN" ]]; then
     DAEMON_TOML="$OMNISH_DIR/daemon.toml"
@@ -301,8 +306,12 @@ fi
 if [[ -n "$SCRIPT_DIR" ]] && [[ -d "$SCRIPT_DIR/bin" ]] && [[ -d "$SCRIPT_DIR/assets" ]]; then
     EXTRACTED="$SCRIPT_DIR"
     # Derive version from binary if not specified
-    if [[ -z "$VERSION" ]] && [[ -x "$EXTRACTED/bin/omnish-daemon" ]]; then
-        VERSION="v$("$EXTRACTED/bin/omnish-daemon" --version 2>/dev/null | awk '{print $2}' || echo "unknown")"
+    if [[ -z "$VERSION" ]]; then
+        if [[ -x "$EXTRACTED/bin/omnish-daemon" ]]; then
+            VERSION="v$("$EXTRACTED/bin/omnish-daemon" --version 2>/dev/null | awk '{print $2}' || echo "unknown")"
+        elif [[ -x "$EXTRACTED/bin/omnish" ]]; then
+            VERSION="v$("$EXTRACTED/bin/omnish" --version 2>/dev/null | awk '{print $NF}' || echo "unknown")"
+        fi
     fi
     info "Installing from local directory: $EXTRACTED"
 fi
@@ -316,12 +325,12 @@ elif [[ -z "${EXTRACTED:-}" ]] && [[ -n "$FROM_DIR" ]]; then
     # Find matching tar.gz files, sort by version (newest first)
     TAR_FILE=""
     BEST_VERSION=""
-    for f in "$FROM_DIR"/omnish-*-linux-${ARCH}.tar.gz; do
+    for f in "$FROM_DIR"/omnish-*-${OS}-${ARCH}.tar.gz; do
         [[ -f "$f" ]] || continue
-        # Extract version from filename: omnish-<version>-linux-<arch>.tar.gz
+        # Extract version from filename: omnish-<version>-<os>-<arch>.tar.gz
         fname="$(basename "$f")"
         ver="${fname#omnish-}"
-        ver="${ver%-linux-*}"
+        ver="${ver%-${OS}-*}"
         if [[ -z "$VERSION" ]] || [[ "v${ver}" == "$VERSION" ]]; then
             # Compare versions: use sort -V to find the latest
             if [[ -z "$BEST_VERSION" ]] || [[ "$(printf '%s\n%s' "$ver" "$BEST_VERSION" | sort -V | tail -1)" == "$ver" ]]; then
@@ -340,6 +349,8 @@ elif [[ -z "${EXTRACTED:-}" ]] && [[ -n "$FROM_DIR" ]]; then
         CURRENT_VERSION=""
         if [[ -x "$BIN_DIR/omnish-daemon" ]]; then
             CURRENT_VERSION=$("$BIN_DIR/omnish-daemon" --version 2>/dev/null | awk '{print $2}' || echo "")
+        elif [[ -x "$BIN_DIR/omnish" ]]; then
+            CURRENT_VERSION=$("$BIN_DIR/omnish" --version 2>/dev/null | awk '{print $NF}' || echo "")
         fi
         if [[ -n "$CURRENT_VERSION" ]] && ! is_newer_version "$VERSION" "$CURRENT_VERSION"; then
             info "Already up to date ($(normalize_version "$CURRENT_VERSION"))"
@@ -368,6 +379,8 @@ elif [[ -z "${EXTRACTED:-}" ]]; then
         CURRENT_VERSION=""
         if [[ -x "$BIN_DIR/omnish-daemon" ]]; then
             CURRENT_VERSION=$("$BIN_DIR/omnish-daemon" --version 2>/dev/null | awk '{print $2}' || echo "")
+        elif [[ -x "$BIN_DIR/omnish" ]]; then
+            CURRENT_VERSION=$("$BIN_DIR/omnish" --version 2>/dev/null | awk '{print $NF}' || echo "")
         fi
         if [[ -n "$CURRENT_VERSION" ]] && ! is_newer_version "$VERSION" "$CURRENT_VERSION"; then
             info "Already up to date ($(normalize_version "$CURRENT_VERSION"))"
@@ -376,7 +389,7 @@ elif [[ -z "${EXTRACTED:-}" ]]; then
         info "Update available: $(normalize_version "${CURRENT_VERSION:-unknown}") -> $(normalize_version "$VERSION")"
     fi
 
-    TAR_URL="https://github.com/${REPO}/releases/download/${VERSION}/omnish-${VERSION#v}-linux-${ARCH}.tar.gz"
+    TAR_URL="https://github.com/${REPO}/releases/download/${VERSION}/omnish-${VERSION#v}-${OS}-${ARCH}.tar.gz"
     curl -fSL "$TAR_URL" -o "$TMPDIR/omnish.tar.gz" || error "Download failed"
     tar -xzf "$TMPDIR/omnish.tar.gz" -C "$TMPDIR"
 
