@@ -861,7 +861,6 @@ async fn handle_message(
         Message::UpdateCheck { os, arch, current_version, .. } => {
             update_cache.register_platform(&os, &arch);
             let reply = if !update_cache.past_startup_grace() {
-                tracing::debug!("UpdateCheck from {}-{} deferred (startup grace period)", os, arch);
                 Message::UpdateInfo { latest_version: String::new(), checksum: String::new(), available: false }
             } else {
                 match update_cache.check_update_with_checksum(&os, &arch, &current_version) {
