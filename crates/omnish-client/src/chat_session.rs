@@ -1706,22 +1706,29 @@ impl ChatSession {
         use widgets::menu::{MenuChange, MenuItem, MenuResult};
 
         let make_add_item = || MenuItem::Submenu {
-            label: "Add item".to_string(),
+            label: "Add backend".to_string(),
             children: vec![
-                MenuItem::TextInput {
-                    label: "Name".to_string(),
-                    value: String::new(),
-                },
                 MenuItem::Select {
-                    label: "Type".to_string(),
+                    label: "Provider".to_string(),
                     options: vec![
-                        "toggle".to_string(),
-                        "text".to_string(),
+                        "anthropic".to_string(),
+                        "openai".to_string(),
+                        "openrouter".to_string(),
+                        "deepseek".to_string(),
+                        "custom".to_string(),
                     ],
                     selected: 0,
                 },
+                MenuItem::TextInput {
+                    label: "Model".to_string(),
+                    value: String::new(),
+                },
+                MenuItem::TextInput {
+                    label: "API key".to_string(),
+                    value: String::new(),
+                },
             ],
-            handler: Some("add_item".to_string()),
+            handler: Some("add_backend".to_string()),
             form_mode: true,
         };
 
@@ -1793,33 +1800,49 @@ impl ChatSession {
         let items_shadow = RefCell::new(items.clone());
 
         let mut handler_callback = |_handler_name: &str, changes: Vec<MenuChange>| -> Option<Vec<MenuItem>> {
-            let name = changes.iter()
-                .find(|c| c.path.ends_with(".Name"))
+            let provider = changes.iter()
+                .find(|c| c.path.ends_with(".Provider"))
                 .map(|c| c.value.clone())
                 .unwrap_or_default();
-            if name.is_empty() {
+            if provider.is_empty() {
                 return None;
             }
-            let kind = changes.iter()
-                .find(|c| c.path.ends_with(".Type"))
-                .map(|c| c.value.as_str())
-                .unwrap_or("toggle");
+            let model = changes.iter()
+                .find(|c| c.path.ends_with(".Model"))
+                .map(|c| c.value.clone())
+                .unwrap_or_default();
+            let api_key = changes.iter()
+                .find(|c| c.path.ends_with(".API key"))
+                .map(|c| c.value.clone())
+                .unwrap_or_default();
 
-            let new_item = match kind {
-                "text" => MenuItem::TextInput {
-                    label: name,
-                    value: String::new(),
-                },
-                _ => MenuItem::Toggle {
-                    label: name,
-                    value: false,
-                },
+            let label = if model.is_empty() {
+                provider.clone()
+            } else {
+                format!("{} ({})", provider, model)
+            };
+            let new_item = MenuItem::Submenu {
+                label,
+                children: vec![
+                    MenuItem::TextInput {
+                        label: "Model".to_string(),
+                        value: model,
+                    },
+                    MenuItem::TextInput {
+                        label: "API key".to_string(),
+                        value: if api_key.is_empty() { String::new() } else {
+                            format!("{}...{}", &api_key[..4.min(api_key.len())], &api_key[api_key.len().saturating_sub(4)..])
+                        },
+                    },
+                ],
+                handler: None,
+                form_mode: false,
             };
 
             let mut current = items_shadow.borrow().clone();
-            // Insert new item before "Add item" (last element)
+            // Insert new backend before "Add backend" (last element)
             current.insert(current.len() - 1, new_item);
-            // Reset the "Add item" form
+            // Reset the "Add backend" form
             if let Some(MenuItem::Submenu { children, .. }) = current.last_mut() {
                 for child in children.iter_mut() {
                     match child {
