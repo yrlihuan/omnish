@@ -502,7 +502,6 @@ async fn handle_message(
             );
             // Debug shortcut: return canned suggestions for testing
             let trimmed = req.input.trim();
-            tracing::debug!("Checking omnish_debug: input={:?}, trimmed={:?}", req.input, trimmed);
             if trimmed == "omnish_debug" || trimmed.starts_with("omnish_debug ") {
                 tracing::info!("omnish_debug matched, returning canned suggestions");
                 let _ = tx.send(Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
