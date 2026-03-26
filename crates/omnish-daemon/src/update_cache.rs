@@ -4,8 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Instant;
 
-/// Per-platform transfer cooldown (5 minutes).
-const TRANSFER_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
+/// Per-host transfer cooldown (60 seconds).
+/// Short enough to allow quick retries on failure, long enough to prevent
+/// multiple clients on the same machine from hammering the daemon concurrently.
+const TRANSFER_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Grace period after daemon startup before responding to UpdateCheck requests.
 /// Gives the daemon time to finish its own update cycle first.

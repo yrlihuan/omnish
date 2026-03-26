@@ -345,6 +345,9 @@ async fn download_and_extract_update(
     let mut file = tokio::fs::File::create(&tmp_download).await?;
 
     let mut expected_checksum = String::new();
+    let mut chunk_count = 0u32;
+    let mut total_bytes = 0u64;
+    let mut got_done = false;
 
     use tokio::io::AsyncWriteExt;
     while let Some(msg) = rx.recv().await {
@@ -358,17 +361,31 @@ async fn download_and_extract_update(
                     expected_checksum = checksum;
                 }
                 if !data.is_empty() {
+                    total_bytes += data.len() as u64;
                     file.write_all(&data).await?;
                 }
+                chunk_count += 1;
                 if done {
+                    got_done = true;
                     break;
                 }
             }
-            _ => break,
+            other => {
+                tracing::warn!("download stream: unexpected message {:?}, aborting after {} chunks",
+                    std::mem::discriminant(&other), chunk_count);
+                break;
+            }
         }
     }
     file.flush().await?;
     drop(file);
+
+    if !got_done {
+        let _ = tokio::fs::remove_file(&tmp_download).await;
+        anyhow::bail!("download stream ended prematurely after {} chunks ({} bytes), no done marker",
+            chunk_count, total_bytes);
+    }
+    tracing::info!("download complete: {} chunks, {} bytes", chunk_count, total_bytes);
 
     // Verify checksum using spawn_blocking (CPU-bound)
     if !expected_checksum.is_empty() {
@@ -762,13 +779,16 @@ async fn main() -> Result<()> {
                             let un = Arc::clone(&update_needed);
                             if need_download {
                                 tokio::spawn(async move {
+                                    notice(&format!("[omnish] Downloading update v{}...", latest_version));
                                     event_log::push(format!("update_download: start v={}", latest_version));
                                     if let Err(e) = download_and_extract_update(
                                         &rpc, &os, &arch, &latest_version, &hostname,
                                     ).await {
+                                        notice(&format!("[omnish] Update download failed: {}", e));
                                         event_log::push(format!("update_download: failed {}", e));
                                         tracing::warn!("update download failed: {}", e);
                                     } else {
+                                        notice(&format!("[omnish] Update v{} installed, will restart when idle", latest_version));
                                         event_log::push(format!("update_download: done v={}", latest_version));
                                         un.store(false, Ordering::Relaxed);
                                     }
