@@ -899,7 +899,7 @@ async fn handle_message(
             let cached = update_cache.cached_package(&os, &arch);
             match cached {
                 Some((cached_ver, path)) if cached_ver == version => {
-                    tracing::info!("streaming update package {}-{} v{} to client", os, arch, version);
+                    tracing::info!("streaming update package {}-{} v{} to {}", os, arch, version, hostname);
                     match tokio::fs::File::open(&path).await {
                         Ok(mut file) => {
                             use tokio::io::AsyncReadExt;
