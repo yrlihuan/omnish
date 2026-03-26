@@ -463,6 +463,7 @@ pub fn run_menu(
     let mut last_item_count = items.len();
     let mut needs_redraw = false;
     let mut pending_auto_edit = false; // form_mode: auto-enter text edit after redraw
+        let mut auto_edit_advance = false; // true = advance cursor after auto-edit (Down/Enter), false = stay (Up)
 
     loop {
         // 1. Read handler name and form_mode FIRST (immutable borrow of items).
@@ -521,8 +522,8 @@ pub fn run_menu(
                     rfb,
                     cols,
                 );
-                // After text edit returns, advance cursor in form mode
-                if cursor < current_items.len() - 1 {
+                // After text edit returns, advance cursor only on Down/Enter (not Up)
+                if auto_edit_advance && cursor < current_items.len() - 1 {
                     cursor += 1;
                     if cursor >= scroll_offset + vis {
                         scroll_offset = cursor - vis + 1;
@@ -571,6 +572,7 @@ pub fn run_menu(
                                 }
                                 if in_form_mode && matches!(current_items[cursor], MenuItem::TextInput { .. }) {
                                     pending_auto_edit = true;
+                                    auto_edit_advance = false;
                                 }
                             }
                             b'B' if cursor < current_items.len().saturating_sub(1) => {
@@ -584,6 +586,7 @@ pub fn run_menu(
                                 }
                                 if in_form_mode && matches!(current_items[cursor], MenuItem::TextInput { .. }) {
                                     pending_auto_edit = true;
+                                    auto_edit_advance = true;
                                 }
                             }
                             _ => {}
@@ -664,6 +667,7 @@ pub fn run_menu(
                         scroll_offset = 0;
                         needs_redraw = true;
                         pending_auto_edit = entering_form;
+                        auto_edit_advance = true;
                         continue;
                     }
                     MenuItem::Toggle { label, value } => {
@@ -681,6 +685,7 @@ pub fn run_menu(
                                 scroll_offset = cursor - vis + 1;
                             }
                             pending_auto_edit = matches!(current_items[cursor], MenuItem::TextInput { .. });
+                            auto_edit_advance = true;
                             let bc = breadcrumb_parts.join(" > ");
                             let tl = total_lines(current_items.len());
                             common::write_stdout(format!("\x1b[{}A\r\x1b[J", tl - 1).as_bytes());
@@ -720,6 +725,7 @@ pub fn run_menu(
                                 scroll_offset = cursor - vis + 1;
                             }
                             pending_auto_edit = matches!(current_items[cursor], MenuItem::TextInput { .. });
+                            auto_edit_advance = true;
                         }
 
                         let bc = breadcrumb_parts.join(" > ");
@@ -741,6 +747,7 @@ pub fn run_menu(
                                 scroll_offset = cursor - vis + 1;
                             }
                             pending_auto_edit = matches!(current_items[cursor], MenuItem::TextInput { .. });
+                            auto_edit_advance = true;
                         }
 
                         // Full redraw to restore hint and clean up
