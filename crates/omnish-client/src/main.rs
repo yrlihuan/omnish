@@ -341,29 +341,37 @@ async fn download_and_extract_update(
     let updates_dir = omnish_dir.join("updates").join(format!("{}-{}", os, arch));
     std::fs::create_dir_all(&updates_dir).context("create updates_dir")?;
     let pkg_file = updates_dir.join(format!("omnish-{}-{}-{}.tar.gz", version, os, arch));
-    let tmp_download = updates_dir.join(format!(".tmp-omnish-{}-{}-{}.tar.gz", version, os, arch));
-    let mut file = tokio::fs::File::create(&tmp_download).await
-        .with_context(|| format!("create tmp file {}", tmp_download.display()))?;
+    let tmp_download = updates_dir.join(format!(".tmp-omnish-{}-{}-{}-{}.tar.gz", version, os, arch, std::process::id()));
 
     let mut expected_checksum = String::new();
     let mut chunk_count = 0u32;
     let mut total_bytes = 0u64;
     let mut got_done = false;
+    // Defer file creation until first valid chunk to avoid creating/deleting
+    // tmp files when the daemon immediately rejects with "transfer in progress".
+    let mut file: Option<tokio::fs::File> = None;
 
     use tokio::io::AsyncWriteExt;
     while let Some(msg) = rx.recv().await {
         match msg {
             Message::UpdateChunk { seq, total_size: _, checksum, data, done, error } => {
                 if let Some(err) = error {
-                    let _ = tokio::fs::remove_file(&tmp_download).await;
+                    if let Some(f) = file.take() {
+                        drop(f);
+                        let _ = tokio::fs::remove_file(&tmp_download).await;
+                    }
                     anyhow::bail!("server error: {}", err);
                 }
                 if seq == 0 {
                     expected_checksum = checksum;
                 }
                 if !data.is_empty() {
+                    if file.is_none() {
+                        file = Some(tokio::fs::File::create(&tmp_download).await
+                            .with_context(|| format!("create tmp file {}", tmp_download.display()))?);
+                    }
                     total_bytes += data.len() as u64;
-                    file.write_all(&data).await.context("write chunk to tmp file")?;
+                    file.as_mut().unwrap().write_all(&data).await.context("write chunk to tmp file")?;
                 }
                 chunk_count += 1;
                 if done {
@@ -378,8 +386,10 @@ async fn download_and_extract_update(
             }
         }
     }
-    file.flush().await.context("flush tmp file")?;
-    drop(file);
+    if let Some(mut f) = file.take() {
+        f.flush().await.context("flush tmp file")?;
+        drop(f);
+    }
 
     if !got_done {
         let _ = tokio::fs::remove_file(&tmp_download).await;
@@ -388,22 +398,11 @@ async fn download_and_extract_update(
     }
     tracing::info!("download complete: {} chunks, {} bytes", chunk_count, total_bytes);
 
-    // Verify checksum using spawn_blocking (CPU-bound)
+    // Verify checksum by re-reading the written file
     if !expected_checksum.is_empty() {
         let tmp_clone = tmp_download.clone();
         let actual = tokio::task::spawn_blocking(move || {
-            use sha2::{Sha256, Digest};
-            use std::io::Read;
-            let mut file = std::fs::File::open(&tmp_clone)
-                .with_context(|| format!("open tmp for checksum: {}", tmp_clone.display()))?;
-            let mut hasher = Sha256::new();
-            let mut buf = [0u8; 65536];
-            loop {
-                let n = file.read(&mut buf).context("read tmp for checksum")?;
-                if n == 0 { break; }
-                hasher.update(&buf[..n]);
-            }
-            Ok::<String, anyhow::Error>(format!("{:x}", hasher.finalize()))
+            omnish_common::update::checksum(&tmp_clone)
         }).await.context("checksum spawn_blocking join")??;
 
         if actual != expected_checksum {
@@ -783,16 +782,13 @@ async fn main() -> Result<()> {
                             let un = Arc::clone(&update_needed);
                             if need_download {
                                 tokio::spawn(async move {
-                                    notice(&format!("[omnish] Downloading update v{}...", latest_version));
                                     event_log::push(format!("update_download: start v={}", latest_version));
                                     if let Err(e) = download_and_extract_update(
                                         &rpc, &os, &arch, &latest_version, &hostname,
                                     ).await {
-                                        notice(&format!("[omnish] Update download failed: {}", e));
                                         event_log::push(format!("update_download: failed {}", e));
                                         tracing::warn!("update download failed: {}", e);
                                     } else {
-                                        notice(&format!("[omnish] Update v{} installed, will restart when idle", latest_version));
                                         event_log::push(format!("update_download: done v={}", latest_version));
                                         un.store(false, Ordering::Relaxed);
                                     }
