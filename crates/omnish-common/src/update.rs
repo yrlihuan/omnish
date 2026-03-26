@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use sha2::{Sha256, Digest};
+use anyhow::Context;
 
 /// Maximum number of update packages to keep per platform.
 pub const MAX_CACHED_PACKAGES: usize = 3;
@@ -129,17 +130,20 @@ pub fn extract_and_run_installer(
     // Extract to a unique temp directory next to the tar.gz (pid avoids races)
     let extract_dir = tar_gz_path.with_extension(format!("extracted.{}", std::process::id()));
     if extract_dir.exists() {
-        std::fs::remove_dir_all(&extract_dir)?;
+        std::fs::remove_dir_all(&extract_dir).context("remove old extract_dir")?;
     }
-    std::fs::create_dir_all(&extract_dir)?;
+    std::fs::create_dir_all(&extract_dir).context("create extract_dir")?;
 
-    let file = std::fs::File::open(tar_gz_path)?;
+    let file = std::fs::File::open(tar_gz_path)
+        .with_context(|| format!("open tar.gz: {}", tar_gz_path.display()))?;
     let decoder = GzDecoder::new(file);
     let mut archive = Archive::new(decoder);
-    archive.unpack(&extract_dir)?;
+    archive.unpack(&extract_dir)
+        .with_context(|| format!("unpack tar.gz to {}", extract_dir.display()))?;
 
     // Find inner directory (e.g. omnish-0.8.4.80-linux-x86_64/)
-    let inner_dir = std::fs::read_dir(&extract_dir)?
+    let inner_dir = std::fs::read_dir(&extract_dir)
+        .context("read extract_dir")?
         .filter_map(|e| e.ok())
         .find(|e| e.path().is_dir())
         .map(|e| e.path())
@@ -154,7 +158,7 @@ pub fn extract_and_run_installer(
     // Prepare log file: ~/.omnish/logs/updates/
     let omnish_dir = crate::config::omnish_dir();
     let log_dir = omnish_dir.join("logs").join("updates");
-    std::fs::create_dir_all(&log_dir)?;
+    std::fs::create_dir_all(&log_dir).context("create log_dir")?;
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -167,7 +171,8 @@ pub fn extract_and_run_installer(
     if client_only {
         cmd.arg("--client-only");
     }
-    let output = cmd.output()?;
+    let output = cmd.output()
+        .with_context(|| format!("run bash {}", install_sh.display()))?;
 
     // Save combined stdout+stderr to log file
     let mut log_content = output.stdout.clone();

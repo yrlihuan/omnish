@@ -16,7 +16,7 @@ mod util;
 mod onboarding;
 mod widgets;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use omnish_common::config::load_client_config;
 use interceptor::{InputInterceptor, InterceptAction, TimeGapGuard};
 use widgets::line_status::LineStatus;
@@ -333,16 +333,17 @@ async fn download_and_extract_update(
         arch: arch.to_string(),
         version: version.to_string(),
         hostname: hostname.to_string(),
-    }).await?;
+    }).await.context("call_stream UpdateRequest")?;
 
     let omnish_dir = omnish_common::config::omnish_dir();
 
     // Save to updates/{os}-{arch}/ (same layout as daemon cache)
     let updates_dir = omnish_dir.join("updates").join(format!("{}-{}", os, arch));
-    std::fs::create_dir_all(&updates_dir)?;
+    std::fs::create_dir_all(&updates_dir).context("create updates_dir")?;
     let pkg_file = updates_dir.join(format!("omnish-{}-{}-{}.tar.gz", version, os, arch));
     let tmp_download = updates_dir.join(format!(".tmp-omnish-{}-{}-{}.tar.gz", version, os, arch));
-    let mut file = tokio::fs::File::create(&tmp_download).await?;
+    let mut file = tokio::fs::File::create(&tmp_download).await
+        .with_context(|| format!("create tmp file {}", tmp_download.display()))?;
 
     let mut expected_checksum = String::new();
     let mut chunk_count = 0u32;
@@ -362,7 +363,7 @@ async fn download_and_extract_update(
                 }
                 if !data.is_empty() {
                     total_bytes += data.len() as u64;
-                    file.write_all(&data).await?;
+                    file.write_all(&data).await.context("write chunk to tmp file")?;
                 }
                 chunk_count += 1;
                 if done {
@@ -377,7 +378,7 @@ async fn download_and_extract_update(
             }
         }
     }
-    file.flush().await?;
+    file.flush().await.context("flush tmp file")?;
     drop(file);
 
     if !got_done {
@@ -393,16 +394,17 @@ async fn download_and_extract_update(
         let actual = tokio::task::spawn_blocking(move || {
             use sha2::{Sha256, Digest};
             use std::io::Read;
-            let mut file = std::fs::File::open(&tmp_clone)?;
+            let mut file = std::fs::File::open(&tmp_clone)
+                .with_context(|| format!("open tmp for checksum: {}", tmp_clone.display()))?;
             let mut hasher = Sha256::new();
             let mut buf = [0u8; 65536];
             loop {
-                let n = file.read(&mut buf)?;
+                let n = file.read(&mut buf).context("read tmp for checksum")?;
                 if n == 0 { break; }
                 hasher.update(&buf[..n]);
             }
             Ok::<String, anyhow::Error>(format!("{:x}", hasher.finalize()))
-        }).await??;
+        }).await.context("checksum spawn_blocking join")??;
 
         if actual != expected_checksum {
             let _ = tokio::fs::remove_file(&tmp_download).await;
@@ -411,7 +413,8 @@ async fn download_and_extract_update(
     }
 
     // Move temp file to final location in updates cache
-    tokio::fs::rename(&tmp_download, &pkg_file).await?;
+    tokio::fs::rename(&tmp_download, &pkg_file).await
+        .with_context(|| format!("rename {} -> {}", tmp_download.display(), pkg_file.display()))?;
     tracing::info!("cached update package: {}", pkg_file.display());
 
     // Extract and run install.sh --upgrade --client-only
@@ -421,7 +424,8 @@ async fn download_and_extract_update(
         omnish_common::update::extract_and_run_installer(&pkg_for_extract, &version_for_extract, true)
     })
         .await
-        .map_err(|e| anyhow::anyhow!("join error: {}", e))??;
+        .context("extract spawn_blocking join")?
+        .context("extract_and_run_installer")?;
 
     // Prune old packages, keeping the latest 3
     let os_owned = os.to_string();
@@ -431,7 +435,7 @@ async fn download_and_extract_update(
         omnish_common::update::prune_packages(&updates_dir_clone, &os_owned, &arch_owned, omnish_common::update::MAX_CACHED_PACKAGES);
     })
         .await
-        .map_err(|e| anyhow::anyhow!("join error: {}", e))?;
+        .context("prune spawn_blocking join")?;
 
     tracing::info!("update {} installed, mtime polling will trigger restart", version);
     Ok(())
