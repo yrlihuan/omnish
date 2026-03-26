@@ -661,7 +661,6 @@ async fn main() -> Result<()> {
     const AUTO_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
     const AUTO_UPDATE_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
     let mut last_keystroke = std::time::Instant::now();
-    let mut update_check_done = false;
     let update_in_progress = Arc::new(AtomicBool::new(false));
 
     // Landlock sandbox state
@@ -692,166 +691,139 @@ async fn main() -> Result<()> {
             continue;
         }
 
-        // Auto-update check (every 60s, only when idle at prompt for 60s+)
+        // Mtime restart check (every 60s, only when idle at prompt)
         if auto_update_enabled.load(Ordering::Relaxed)
             && last_update_check.elapsed() >= AUTO_UPDATE_INTERVAL
-            && shell_input.at_prompt()
-            && last_keystroke.elapsed() >= AUTO_UPDATE_IDLE
             && !interceptor.is_in_chat()
-            && !alt_screen_detector.is_active()
-            && !update_check_done
-            && !update_in_progress.load(Ordering::Relaxed)
         {
             last_update_check = std::time::Instant::now();
-            if let Some(ref startup_mtime) = exe_mtime {
-                let current_mtime = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| {
-                        let s = p.to_string_lossy().to_string();
-                        let clean = s.strip_suffix(" (deleted)").map(std::path::PathBuf::from).unwrap_or(p);
-                        std::fs::metadata(&clean).ok()?.modified().ok()
-                    });
-                if let Some(current) = current_mtime {
-                    if current != *startup_mtime {
-                        exec_update(&proxy, &session_id, col_tracker.col, col_tracker.row, last_thread_id.as_deref());
-                        // exec_update only returns on error — reset timer
+
+            // Restart with new binary: only when user is idle at prompt
+            if shell_input.at_prompt()
+                && last_keystroke.elapsed() >= AUTO_UPDATE_IDLE
+                && !alt_screen_detector.is_active()
+            {
+                if let Some(ref startup_mtime) = exe_mtime {
+                    let current_mtime = std::env::current_exe()
+                        .ok()
+                        .and_then(|p| {
+                            let s = p.to_string_lossy().to_string();
+                            let clean = s.strip_suffix(" (deleted)").map(std::path::PathBuf::from).unwrap_or(p);
+                            std::fs::metadata(&clean).ok()?.modified().ok()
+                        });
+                    if let Some(current) = current_mtime {
+                        if current != *startup_mtime {
+                            exec_update(&proxy, &session_id, col_tracker.col, col_tracker.row, last_thread_id.as_deref());
+                            // exec_update only returns on error — reset timer
+                        }
+                        exe_mtime = current_mtime;
                     }
-                    // Update mtime after check to avoid repeated unnecessary checks
-                    exe_mtime = current_mtime;
                 }
             }
 
-            // Periodic UpdateCheck: daemon reported a newer version at auth
+            // Periodic UpdateCheck: download update when daemon has a newer version
             if update_needed.load(Ordering::Relaxed)
                 && !update_in_progress.load(Ordering::Relaxed)
             {
                 if let Some(ref rpc) = daemon_conn {
-                let os = std::env::consts::OS.to_string();
-                let arch = std::env::consts::ARCH.to_string();
-                let ver = omnish_common::VERSION.to_string();
-                let hostname = nix::unistd::gethostname()
-                    .ok()
-                    .and_then(|h| h.into_string().ok())
-                    .unwrap_or_default();
-                event_log::push(format!("update_check: v={} connected={}", ver, rpc.is_connected().await));
-                let check_result = rpc.call(Message::UpdateCheck {
-                    os: os.clone(), arch: arch.clone(), current_version: ver,
-                    hostname: hostname.clone(),
-                }).await;
-                match &check_result {
-                    Ok(Message::UpdateInfo { latest_version, checksum: remote_checksum, available: true }) => {
-                        // Check if local cache already has this version with matching checksum
-                        let need_download = if let Some((cached_ver, cached_path)) =
-                            omnish_common::update::local_cached_package(&os, &arch)
-                        {
-                            if compare_versions(latest_version, &cached_ver) == std::cmp::Ordering::Equal {
-                                // Same version — verify checksum
-                                let local_checksum = omnish_common::update::checksum(&cached_path)
-                                    .unwrap_or_default();
-                                if local_checksum == *remote_checksum && !remote_checksum.is_empty() {
-                                    event_log::push(format!("update_check: v={} cached, checksum match", latest_version));
-                                    false // use local cache
+                    let os = std::env::consts::OS.to_string();
+                    let arch = std::env::consts::ARCH.to_string();
+                    let ver = omnish_common::VERSION.to_string();
+                    let hostname = nix::unistd::gethostname()
+                        .ok()
+                        .and_then(|h| h.into_string().ok())
+                        .unwrap_or_default();
+                    event_log::push(format!("update_check: v={} connected={}", ver, rpc.is_connected().await));
+                    let check_result = rpc.call(Message::UpdateCheck {
+                        os: os.clone(), arch: arch.clone(), current_version: ver,
+                        hostname: hostname.clone(),
+                    }).await;
+                    match &check_result {
+                        Ok(Message::UpdateInfo { latest_version, checksum: remote_checksum, available: true }) => {
+                            // Check if local cache already has this version with matching checksum
+                            let need_download = if let Some((cached_ver, cached_path)) =
+                                omnish_common::update::local_cached_package(&os, &arch)
+                            {
+                                if compare_versions(latest_version, &cached_ver) == std::cmp::Ordering::Equal {
+                                    let local_checksum = omnish_common::update::checksum(&cached_path)
+                                        .unwrap_or_default();
+                                    if local_checksum == *remote_checksum && !remote_checksum.is_empty() {
+                                        event_log::push(format!("update_check: v={} cached, checksum match", latest_version));
+                                        false
+                                    } else {
+                                        event_log::push(format!("update_check: v={} cached, checksum mismatch", latest_version));
+                                        true
+                                    }
                                 } else {
-                                    event_log::push(format!("update_check: v={} cached, checksum mismatch", latest_version));
-                                    true // re-download
+                                    true
                                 }
                             } else {
-                                true // different version, download
-                            }
-                        } else {
-                            true // no local cache
-                        };
+                                true
+                            };
 
-                        event_log::push(format!("update_check: available v={} download={}", latest_version, need_download));
-                        update_in_progress.store(true, Ordering::Relaxed);
-                        let latest_version = latest_version.clone();
-                        let rpc = rpc.clone();
-                        let uip = Arc::clone(&update_in_progress);
-                        let un = Arc::clone(&update_needed);
-                        if need_download {
-                            tokio::spawn(async move {
-                                event_log::push(format!("update_download: start v={}", latest_version));
-                                if let Err(e) = download_and_extract_update(
-                                    &rpc, &os, &arch, &latest_version, &hostname,
-                                ).await {
-                                    event_log::push(format!("update_download: failed {}", e));
-                                    tracing::warn!("update download failed: {}", e);
-                                } else {
-                                    event_log::push(format!("update_download: done v={}", latest_version));
-                                    un.store(false, Ordering::Relaxed);
-                                }
-                                uip.store(false, Ordering::Relaxed);
-                            });
-                        } else {
-                            // Install from local cache directly
-                            let os_clone = os.clone();
-                            let arch_clone = arch.clone();
-                            tokio::spawn(async move {
-                                event_log::push(format!("update_install: from cache v={}", latest_version));
-                                let ver = latest_version.clone();
-                                let result = tokio::task::spawn_blocking(move || {
-                                    if let Some((_, cached_path)) =
-                                        omnish_common::update::local_cached_package(&os_clone, &arch_clone)
-                                    {
-                                        omnish_common::update::extract_and_run_installer(&cached_path, &ver, true)
+                            event_log::push(format!("update_check: available v={} download={}", latest_version, need_download));
+                            update_in_progress.store(true, Ordering::Relaxed);
+                            let latest_version = latest_version.clone();
+                            let rpc = rpc.clone();
+                            let uip = Arc::clone(&update_in_progress);
+                            let un = Arc::clone(&update_needed);
+                            if need_download {
+                                tokio::spawn(async move {
+                                    event_log::push(format!("update_download: start v={}", latest_version));
+                                    if let Err(e) = download_and_extract_update(
+                                        &rpc, &os, &arch, &latest_version, &hostname,
+                                    ).await {
+                                        event_log::push(format!("update_download: failed {}", e));
+                                        tracing::warn!("update download failed: {}", e);
                                     } else {
-                                        anyhow::bail!("cached package disappeared")
-                                    }
-                                }).await;
-                                match result {
-                                    Ok(Ok(())) => {
-                                        event_log::push(format!("update_install: done v={}", latest_version));
+                                        event_log::push(format!("update_download: done v={}", latest_version));
                                         un.store(false, Ordering::Relaxed);
                                     }
-                                    Ok(Err(e)) => {
-                                        event_log::push(format!("update_install: failed {}", e));
-                                        tracing::warn!("update install from cache failed: {}", e);
+                                    uip.store(false, Ordering::Relaxed);
+                                });
+                            } else {
+                                let os_clone = os.clone();
+                                let arch_clone = arch.clone();
+                                tokio::spawn(async move {
+                                    event_log::push(format!("update_install: from cache v={}", latest_version));
+                                    let ver = latest_version.clone();
+                                    let result = tokio::task::spawn_blocking(move || {
+                                        if let Some((_, cached_path)) =
+                                            omnish_common::update::local_cached_package(&os_clone, &arch_clone)
+                                        {
+                                            omnish_common::update::extract_and_run_installer(&cached_path, &ver, true)
+                                        } else {
+                                            anyhow::bail!("cached package disappeared")
+                                        }
+                                    }).await;
+                                    match result {
+                                        Ok(Ok(())) => {
+                                            event_log::push(format!("update_install: done v={}", latest_version));
+                                            un.store(false, Ordering::Relaxed);
+                                        }
+                                        Ok(Err(e)) => {
+                                            event_log::push(format!("update_install: failed {}", e));
+                                            tracing::warn!("update install from cache failed: {}", e);
+                                        }
+                                        Err(e) => {
+                                            event_log::push(format!("update_install: panic {}", e));
+                                        }
                                     }
-                                    Err(e) => {
-                                        event_log::push(format!("update_install: panic {}", e));
-                                    }
-                                }
-                                uip.store(false, Ordering::Relaxed);
-                            });
+                                    uip.store(false, Ordering::Relaxed);
+                                });
+                            }
+                        }
+                        Ok(Message::UpdateInfo { available: false, .. }) => {
+                            event_log::push("update_check: up to date");
+                        }
+                        Ok(other) => {
+                            event_log::push(format!("update_check: unexpected {:?}", std::mem::discriminant(other)));
+                        }
+                        Err(e) => {
+                            event_log::push(format!("update_check: error {}", e));
                         }
                     }
-                    Ok(Message::UpdateInfo { available: false, .. }) => {
-                        event_log::push("update_check: up to date");
-                    }
-                    Ok(other) => {
-                        event_log::push(format!("update_check: unexpected {:?}", std::mem::discriminant(other)));
-                    }
-                    Err(e) => {
-                        event_log::push(format!("update_check: error {}", e));
-                    }
                 }
-            }
-            }
-        }
-
-        // Auth-triggered update check: daemon reported a newer version
-        if auto_update_enabled.load(Ordering::Relaxed)
-            && update_needed.load(Ordering::Relaxed)
-            && !update_check_done
-            && !update_in_progress.load(Ordering::Relaxed)
-        {
-            update_check_done = true;
-            if let Some(ref rpc) = daemon_conn {
-                let os = std::env::consts::OS.to_string();
-                let arch = std::env::consts::ARCH.to_string();
-                let ver = omnish_common::VERSION.to_string();
-                let hostname = match nix::unistd::gethostname() {
-                    Ok(h) => h.into_string().unwrap_or_else(|_| "unknown".to_string()),
-                    Err(_) => "unknown".to_string(),
-                };
-                let msg = Message::UpdateCheck {
-                    os,
-                    arch,
-                    current_version: ver,
-                    hostname,
-                };
-                event_log::push("update_check: triggered by auth");
-                send_or_buffer(rpc, msg, &pending_buffer).await;
             }
         }
 
