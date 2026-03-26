@@ -659,6 +659,9 @@ async fn main() -> Result<()> {
         });
     let mut last_update_check = std::time::Instant::now();
     const AUTO_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+    const AUTO_UPDATE_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+    let mut last_keystroke = std::time::Instant::now();
+    let mut update_check_done = false;
     let update_in_progress = Arc::new(AtomicBool::new(false));
 
     // Landlock sandbox state
@@ -689,10 +692,15 @@ async fn main() -> Result<()> {
             continue;
         }
 
-        // Auto-update check (every 60s, only when not in chat mode)
+        // Auto-update check (every 60s, only when idle at prompt for 60s+)
         if auto_update_enabled.load(Ordering::Relaxed)
             && last_update_check.elapsed() >= AUTO_UPDATE_INTERVAL
+            && shell_input.at_prompt()
+            && last_keystroke.elapsed() >= AUTO_UPDATE_IDLE
             && !interceptor.is_in_chat()
+            && !alt_screen_detector.is_active()
+            && !update_check_done
+            && !update_in_progress.load(Ordering::Relaxed)
         {
             last_update_check = std::time::Instant::now();
             if let Some(ref startup_mtime) = exe_mtime {
@@ -759,6 +767,7 @@ async fn main() -> Result<()> {
                         let latest_version = latest_version.clone();
                         let rpc = rpc.clone();
                         let uip = Arc::clone(&update_in_progress);
+                        let un = Arc::clone(&update_needed);
                         if need_download {
                             tokio::spawn(async move {
                                 event_log::push(format!("update_download: start v={}", latest_version));
@@ -769,6 +778,7 @@ async fn main() -> Result<()> {
                                     tracing::warn!("update download failed: {}", e);
                                 } else {
                                     event_log::push(format!("update_download: done v={}", latest_version));
+                                    un.store(false, Ordering::Relaxed);
                                 }
                                 uip.store(false, Ordering::Relaxed);
                             });
@@ -791,6 +801,7 @@ async fn main() -> Result<()> {
                                 match result {
                                     Ok(Ok(())) => {
                                         event_log::push(format!("update_install: done v={}", latest_version));
+                                        un.store(false, Ordering::Relaxed);
                                     }
                                     Ok(Err(e)) => {
                                         event_log::push(format!("update_install: failed {}", e));
@@ -815,6 +826,33 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+            }
+        }
+
+        // Auth-triggered update check: daemon reported a newer version
+        if auto_update_enabled.load(Ordering::Relaxed)
+            && update_needed.load(Ordering::Relaxed)
+            && !update_check_done
+            && !update_in_progress.load(Ordering::Relaxed)
+        {
+            update_check_done = true;
+            if let Some(ref rpc) = daemon_conn {
+                let os = std::env::consts::OS.to_string();
+                let arch = std::env::consts::ARCH.to_string();
+                let ver = omnish_common::VERSION.to_string();
+                let hostname = match nix::unistd::gethostname() {
+                    Ok(h) => h.into_string().unwrap_or_else(|_| "unknown".to_string()),
+                    Err(_) => "unknown".to_string(),
+                };
+                let msg = Message::UpdateCheck {
+                    sequence_id: 0,
+                    os,
+                    arch,
+                    current_version: ver,
+                    hostname,
+                };
+                event_log::push("update_check: triggered by auth");
+                send_or_buffer(rpc, msg, &pending_buffer).await;
             }
         }
 
@@ -933,6 +971,8 @@ async fn main() -> Result<()> {
                         } else {
                             // Forward these bytes to PTY
                             proxy.write_all(&bytes)?;
+                            // Track keystroke for auto-update idle detection
+                            last_keystroke = std::time::Instant::now();
 
                             if shell_input.at_prompt() {
                                 if needs_readline_report(&bytes) {
