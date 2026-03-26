@@ -319,7 +319,14 @@ fn run_text_edit(
                 return None;
             }
             0x1b => {
-                if let Some(seq) = common::parse_esc_seq(stdin_fd) {
+                // Arrow keys may arrive as a single 3-byte read (\x1b[A),
+                // so check buf first before reading more from stdin.
+                let seq = if n >= 3 && buf[1] == b'[' {
+                    Some([buf[1], buf[2]])
+                } else {
+                    common::parse_esc_seq(stdin_fd)
+                };
+                if let Some(seq) = seq {
                     if seq[0] == b'[' {
                         match seq[1] {
                             b'D' if char_cursor > 0 => char_cursor -= 1,
