@@ -17,7 +17,7 @@ omnish-common 包含客户端和守护进程共享的配置结构和工具函数
 - `onboarded`: 用户是否已完成新手引导（默认：`false`）；首次进入聊天后自动写入 `true`
 
 ### `DaemonConfig`
-守护进程配置结构，包含：
+守护进程配置结构（派生`Serialize`和`Deserialize`，所有子结构同样），包含：
 - `listen_addr`: 监听地址（默认：`~/.omnish/omnish.sock`）
 - `proxy`: 全局出站 HTTP/SOCKS 代理（可选，格式如 `http://...`、`https://...`、`socks5://...`）
 - `no_proxy`: 逗号分隔的不走代理的主机/域名/CIDR（可选，如 `"localhost,127.0.0.1,*.internal.com"`）
@@ -25,7 +25,7 @@ omnish-common 包含客户端和守护进程共享的配置结构和工具函数
 - `context`: 上下文构建配置（`ContextConfig`类型）
 - `tasks`: 定时任务配置（`TasksConfig`类型）
 - `plugins`: 插件系统配置（`PluginsConfig`类型）
-- `tools`: 每个工具的参数注入配置（`HashMap<String, HashMap<String, serde_json::Value>>`）
+- `tools`: 每个工具的参数注入配置（`HashMap<String, HashMap<String, serde_json::Value>>`，`#[serde(skip_serializing)]` 避免序列化时泄露API密钥）
 - `sandbox`: 沙箱规则配置（`SandboxConfig`类型）
 
 ### `ShellConfig`
@@ -161,6 +161,24 @@ LLM后端具体配置，包含：
 - 首次进入聊天后将 `onboarded = true` 写入 `client.toml`
 - 用户通过 `/auto_update` 命令切换并持久化 `auto_update` 字段
 
+### `set_toml_value_nested()` / `set_toml_value_nested_bool()`
+原地更新 TOML 配置文件中的嵌套键值，支持点分隔路径，保留原有格式。
+
+**参数:**
+- `path: &Path` - 配置文件路径
+- `key: &str` - 点分隔的键路径（如 `"llm.use_cases.completion"`）
+- `value: &str` 或 `bool` - 新值
+
+**返回:** `anyhow::Result<()>`
+
+**行为:**
+- 自动创建不存在的中间表（table）
+- 文件不存在时自动创建
+- 确保文件末尾有换行符
+
+**典型用途:**
+- `/config` 命令修改daemon嵌套配置项（如 `"tasks.daily_notes.enabled"` → `true`）
+
 ## 使用示例
 
 ### 加载客户端配置
@@ -185,9 +203,14 @@ println!("Listening on: {}", daemon_config.listen_addr);
 use omnish_common::config_edit;
 use std::path::Path;
 
+// 顶层键
 let path = Path::new("/home/user/.omnish/client.toml");
 config_edit::set_toml_value(path, "auto_update", true)?;
-config_edit::set_toml_value(path, "onboarded", true)?;
+
+// 嵌套键路径
+let daemon_path = Path::new("/home/user/.omnish/daemon.toml");
+config_edit::set_toml_value_nested(daemon_path, "llm.use_cases.completion", "claude-fast")?;
+config_edit::set_toml_value_nested_bool(daemon_path, "tasks.daily_notes.enabled", true)?;
 ```
 
 ### 配置文件示例 (client.toml)
@@ -247,6 +270,53 @@ api_key = "my-search-api-key"
 permit_rules = ["command starts_with glab", "command starts_with docker"]
 ```
 
+## update 模块
+
+`omnish-common` 包含 `update` 子模块，提供客户端和守护进程共享的更新工具函数。
+
+### 常量
+- `MAX_CACHED_PACKAGES`: 每个平台保留的最大更新包数量（默认：3）
+
+### `checksum()`
+计算文件的 SHA-256 校验和。
+
+**参数:** `path: &Path`
+**返回:** `anyhow::Result<String>`（hex编码的SHA-256值）
+
+### `local_cached_package()`
+查找本地缓存中指定平台的最新更新包。
+
+**参数:** `os: &str`, `arch: &str`
+**返回:** `Option<(String, PathBuf)>`（版本号和文件路径）
+**路径:** `~/.omnish/updates/{os}-{arch}/`
+
+### `prune_packages()`
+清理旧更新包，保留最新的指定数量。
+
+**参数:** `dir: &Path`, `os: &str`, `arch: &str`, `keep: usize`
+**行为:** 按版本降序排列，删除超出 `keep` 数量的旧包
+
+### `extract_version()` / `normalize_version()` / `compare_versions()`
+版本字符串工具函数：
+- `extract_version`: 从包文件名（如 `omnish-0.8.4-linux-x86_64.tar.gz`）提取版本号
+- `normalize_version`: 规范化版本字符串（去除git hash后缀，替换`-`为`.`）
+- `compare_versions`: semver风格的版本比较
+
+### `extract_and_run_installer()`
+解压tar.gz更新包并运行其内置的 `install.sh --upgrade`。
+
+**参数:**
+- `tar_gz_path: &Path` - 更新包路径
+- `version: &str` - 版本号（用于日志文件名）
+- `client_only: bool` - 是否传递 `--client-only` 跳过daemon安装
+
+**行为:**
+- 解压到PID唯一目录（`{path}.extracted.{pid}`）避免daemon和client并行更新时的竞态条件
+- 运行包内的 `install.sh --upgrade [--client-only]`，支持跨版本升级（安装逻辑在包内脚本中）
+- 日志保存到 `~/.omnish/logs/updates/update-{version}-{timestamp}.log`
+- exit code 2 表示已是最新版本（非错误）
+- 完成后自动清理解压目录
+
 ## auth 模块
 
 omnish-common 包含认证令牌管理工具函数，用于客户端和守护进程之间的身份验证。
@@ -283,6 +353,10 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 - `rand`: 随机令牌生成
 - `hex`: 令牌hex编码
 - `serde_json`: 工具参数注入的值类型支持（`tools` 配置节）
+- `sha2`: SHA-256校验和计算（用于 `update` 模块）
+- `flate2`: gzip解压（用于 `update` 模块）
+- `tar`: tar归档解压（用于 `update` 模块）
+- `tracing`: 日志记录（用于 `update` 模块）
 
 ## 配置加载优先级
 1. 环境变量指定的配置文件路径（`OMNISH_CLIENT_CONFIG`/`OMNISH_DAEMON_CONFIG`）

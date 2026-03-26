@@ -9,16 +9,17 @@ omnish-client 是终端用户直接交互的客户端程序，作为PTY代理运
 1. **PTY管理**: 创建伪终端并运行用户指定的shell
 2. **输入拦截**: 检测命令前缀（如`:`）进入聊天模式，支持双前缀快速恢复对话
 3. **多轮聊天**: 支持多轮对话循环，包含线程管理（/resume, /thread list, /thread del）
-4. **交互式界面**: 提供美观的终端界面显示聊天提示、输入回显和LLM响应，支持Widgets系统（Picker、LineEditor、ScrollView、InlineNotice、LineStatus、ChatLayout）
+4. **交互式界面**: 提供美观的终端界面显示聊天提示、输入回显和LLM响应，支持Widgets系统（Picker、LineEditor、ScrollView、InlineNotice、LineStatus、ChatLayout、Menu）
 5. **守护进程通信**: 与omnish-daemon建立连接，发送查询和接收响应，支持协议版本检查
 6. **智能完成**: 提供LLM驱动的shell命令完成建议
 7. **会话管理**: 跟踪shell会话状态和命令历史
 8. **命令跟踪**: 通过OSC 133协议实时跟踪命令执行、CWD（当前工作目录）和退出码
 9. **Agent工具使用**: 支持工具调用的Agent循环，实时显示工具执行状态，客户端本地执行工具
 10. **客户端插件系统**: 通过omnish-plugin子进程执行客户端侧工具，支持Landlock沙箱；`/lock on/off` 命令控制整个 shell 的沙箱状态；可配置沙箱放行规则绕过特定工具的沙箱
-11. **自更新**: `/update`命令透明自重启，支持检测磁盘二进制变更后自动更新
+11. **自更新**: `/update`命令透明自重启，支持检测磁盘二进制变更后自动更新；协议级 `UpdateCheck` 轮询守护进程获取最新版本并后台下载
 12. **粘贴支持**: 括号粘贴模式、快速粘贴检测、多行粘贴折叠显示
 13. **Markdown渲染**: LLM响应使用pulldown-cmark解析并渲染为ANSI终端样式
+14. **守护进程配置**: `/config` 命令通过 Menu widget 交互式编辑 daemon.toml 配置，支持 Toggle、Select、TextInput、Submenu 等项目类型
 
 ## 重要数据结构
 
@@ -234,12 +235,14 @@ omnish-client 的交互式UI组件统一组织在 `widgets` 模块下（`crates/
 ```
 widgets/
   mod.rs            - 模块导出
+  common.rs         - 共享终端工具（terminal_cols、render_separator、parse_esc_seq、write_stdout）
   line_editor.rs    - 行编辑器（光标移动、多行编辑、粘贴块）
   line_status.rs    - 临时状态显示（工具执行进度）
   inline_notice.rs  - 内联通知（重连、更新、错误消息）
   scroll_view.rs    - 可滚动内容查看器（长LLM响应）
   chat_layout.rs    - 聊天区域布局管理器
   picker.rs         - 交互式选择器（单选/多选）
+  menu.rs           - 多级菜单组件（Toggle、Select、TextInput、Submenu）
   text_view.rs      - 静态文本视图
 ```
 
@@ -321,10 +324,11 @@ widgets/
 - 错误消息
 
 **通知队列 (`notice_queue` 模块):**
-- `push(msg)` - 入队通知，立即显示或延迟（聊天模式中）
+- `push(msg)` - 入队通知，立即显示或延迟（聊天模式中或全屏程序中）
 - `defer()` - 进入延迟模式（聊天模式开始时调用）
 - `flush()` - 退出延迟模式，显示所有延迟的通知
 - `set_cursor_row(row)` - 更新光标行位置，决定bottom/top渲染模式
+- 全屏程序检测（vim、less、htop等）：交替屏幕激活时自动抑制通知显示，退出后刷新延迟通知（commit 7eadd8b）
 
 ### ScrollView
 可滚动内容查看器，用于显示长LLM响应。
@@ -506,6 +510,120 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 - 空格切换选中状态时只重绘当前行
 - 避免全屏重绘，提升响应速度
 
+### Common 共享工具 (`common.rs`)
+
+从 picker.rs 中提取的共享终端工具模块，被 picker 和 menu 组件共同使用。
+
+**常量:**
+- `MAX_VISIBLE: usize = 10` - widget视口最大可见项数
+
+**函数:**
+- `terminal_cols() -> u16` - 获取终端宽度，回退到80列
+- `render_separator(cols: u16) -> String` - 渲染dim水平分隔线
+- `write_stdout(data: &[u8])` - 写入原始字节到stdout
+- `parse_esc_seq(stdin_fd: i32) -> Option<[u8; 2]>` - 解析ESC序列（50ms超时区分裸ESC和方向键）
+- `strip_ansi(s: &str) -> String` - 剥离ANSI序列（测试用）
+
+### Menu 多级菜单
+
+多级菜单组件，支持层级导航、Toggle/Select/TextInput/Submenu 等项目类型，用于 `/config` 命令交互式编辑守护进程配置。
+
+#### 模块位置
+`crates/omnish-client/src/widgets/menu.rs`
+
+#### 数据结构
+
+**`MenuItem` 枚举:**
+- `Submenu { label, children: Vec<MenuItem>, handler: Option<String>, form_mode: bool }` - 子菜单。`handler` 标识回调处理器名称，`form_mode` 为true时 TextInput 项自动进入编辑并按Enter后光标自动前进到下一项
+- `Select { label, options: Vec<String>, selected: usize }` - 固定选项选择（Enter 打开 picker 子选择器）
+- `Toggle { label, value: bool }` - 布尔开关（Enter 立即翻转）
+- `TextInput { label, value: String }` - 自由文本输入（Enter 进入内联编辑器）
+
+**`MenuResult` 枚举:**
+- `Done(Vec<MenuChange>)` - 用户正常退出（顶层 ESC），包含所有修改
+- `Cancelled` - 用户按 Ctrl-C 取消，丢弃所有变更
+
+**`MenuChange` 结构体:**
+- `path: String` - 点分路径（如 `"llm.default"` 或 `"shell.developer_mode"`）
+- `value: String` - 新值的字符串表示
+
+#### 公共 API
+
+**`run_menu(title: &str, items: &mut Vec<MenuItem>, on_handler_exit: MenuExitHandler) -> MenuResult`**
+- 运行多级菜单组件，返回所有修改或取消
+- `on_handler_exit` 可选回调：离开带 `handler` 的子菜单时调用，可动态刷新菜单树（用于 "Add item" 等动态子菜单）
+
+#### 导航机制
+
+- 使用 `nav_stack: Vec<NavEntry>` 维护导航历史栈
+- 进入 Submenu 时 push 当前光标和滚动状态
+- ESC 返回上一级时 pop 并恢复状态
+- 面包屑路径（`breadcrumb_parts`）显示当前层级位置，格式为 `"Config > LLM > Backends"`
+
+#### Handler 子菜单
+
+- Submenu 可设置 `handler: Some("handler_name")`，标记为"处理器子菜单"
+- 离开处理器子菜单时（ESC 返回），调用 `on_handler_exit` 回调，传递该子菜单内的所有变更
+- 回调可返回 `Some(new_items)` 刷新整个菜单树（导航栈重置到根级）
+- 用于 `/config` 中 "Add item" 等需要动态更新菜单的场景
+
+#### Form Mode
+
+- Submenu 设置 `form_mode: true` 后，TextInput 项获得焦点时自动进入编辑模式
+- Enter 确认后光标自动前进到下一项，若下一项也是 TextInput 则链式自动编辑
+- Toggle 和 Select 项在 form_mode 下也会自动前进
+- 适用于"添加新项"等表单式子菜单
+
+#### 内联文本编辑器 (`run_text_edit`)
+
+- TextInput 项按 Enter 后在原地进入编辑模式
+- 编辑区使用暗灰背景+亮白文字样式（区别于选中项的粗体反显）
+- 支持左右光标、Home/End、退格删除
+- 长文本自动左滚显示尾部
+- Enter 确认，ESC 取消恢复原值
+- 编辑期间光标可见（`\x1b[?25h`），退出后隐藏
+
+#### 渲染布局
+
+```
+Config > LLM                          ← 面包屑（带层级指示）
+──────────────────────────────────────
+  default [claude-sonnet-4-5]         ← Select 项
+> developer_mode [ON]                 ← Toggle 项（当前光标）
+  proxy "http://proxy:8080"           ← TextInput 项
+  Backends ▸                          ← Submenu 项
+──────────────────────────────────────
+↑↓ move  Enter toggle  ESC back  ^C quit
+```
+
+**上下文敏感提示行:**
+- 根据当前光标项类型显示不同操作提示：Submenu→"open"、Toggle→"toggle"、Select→"select"、TextInput→"edit"
+- 编辑模式下显示 "Enter confirm  ESC cancel"
+- 有更多项时附加 `(▼ N more)` 或面包屑行附加 `(▲ N more)`
+
+#### 变更去重
+
+- 退出时对 `changes` 列表按路径去重，仅保留每个路径的最后一次修改
+
+#### 交互键位
+
+| 按键 | 导航模式 | 编辑模式 (TextInput) |
+|-----|---------|---------------------|
+| ↑/↓ | 移动光标 | - |
+| Enter | 执行操作（open/toggle/select/edit） | 确认编辑 |
+| ESC | 返回上一级（顶层退出） | 取消编辑 |
+| Ctrl-C | 取消全部变更并退出 | 取消编辑 |
+| ←/→ | - | 光标移动 |
+| Home/End | - | 行首/行尾 |
+| Backspace | - | 删除前一字符 |
+
+#### 增量渲染
+
+- 上下移动光标时仅重绘旧、新两行（`incremental_redraw`）
+- Toggle 翻转时仅重绘当前行
+- 滚动视口变化时全量重绘
+- 编辑模式仅重绘编辑行（无垂直移动）
+
 ### TextView
 静态文本视图组件，存储预样式化的行列表。
 
@@ -630,22 +748,54 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 - 新进程接收PTY master fd和子进程PID，重建 `PtyProxy`
 - 保留session_id确保守护进程连接的连续性
 - 恢复光标位置（`CursorColTracker`）（issue #234）
+- 光标位置和 last_thread_id 通过环境变量 `OMNISH_CURSOR_COL`、`OMNISH_CURSOR_ROW`、`OMNISH_LAST_THREAD_ID` 传递（commit 2e521d6）
 - 显示InlineNotice通知恢复成功
 
-### 自动更新 (`auto_update`)
+### 自动更新 — mtime 检测 (`auto_update`)
 - 每60秒检查磁盘二进制的修改时间
-- 仅在以下条件全部满足时触发：at_prompt、空闲超过60秒、不在聊天模式
+- **mtime 重启** 仅在以下条件全部满足时触发：at_prompt、空闲超过60秒、不在聊天模式、不在全屏程序中
 - 检测到mtime变化后自动执行 `exec_update()`
 - 检查后更新mtime缓存，避免重复检查（issue #223）
 - `/update auto` 命令可运行时切换自动更新开关（不持久化）
+
+### 协议级更新轮询 (`UpdateCheck`)
+
+客户端通过协议消息向守护进程查询最新版本，并在后台下载更新包。
+
+**触发条件（commit c21174b, defdb57）:**
+- `UpdateCheck` 与 mtime 重启共享60秒间隔计时器，但 **不受** at_prompt、idle、alt_screen 条件限制
+- 仅要求：auto_update 启用 + 不在聊天模式 + `update_needed` 标志为 true + 无进行中的下载
+- 设计原则：繁忙客户端（运行命令、在vim中）也必须能下载更新，否则形成"鸡生蛋"死锁——旧客户端拿不到新代码
+
+**`update_needed` 标志:**
+- 初始为 false
+- 在重连回调中，若守护进程版本比客户端新则设为 true（`reconnect_cb: daemon newer`）
+- 更新下载/安装成功后重置为 false
+
+**流程:**
+1. 客户端发送 `UpdateCheck { os, arch, current_version, hostname }` 到守护进程
+2. 守护进程返回 `UpdateInfo { available: bool, latest_version, checksum }`
+3. 若 available 且本地缓存存在且 checksum 匹配：直接从缓存运行 `install.sh` 安装（commit 941ffd6）
+4. 若需下载：`tokio::spawn` 后台任务调用 `download_and_extract_update()` 下载 + 解压 + 安装
+5. 下载使用 per-host 传输锁（`hostname` 字段），防止同一主机多客户端并发下载（commit 0c06d51）
+6. 安装完成后 mtime 变化会触发 mtime 重启路径，实际执行 `exec_update()`
+
+**版本比较 (`compare_versions`):**
+- 支持语义版本和带 `-YYYYMMDD` 后缀的版本号规范化比较（commit 0c06d51）
+
+**缓存机制（commit b3e6ac6）:**
+- 更新包缓存在 `~/.omnish/cache/{os}-{arch}/` 目录
+- `local_cached_package()` 查找本地缓存包
+- checksum 校验避免重复下载
 
 ## 协议版本不匹配警告 (issue #117)
 
 连接守护进程认证时：
 - `Auth` 消息携带客户端 `PROTOCOL_VERSION`
-- `AuthOk` 响应携带守护进程 `protocol_version`
-- 版本不匹配时立即断开连接（不再仅警告），使重连循环能以指数退避持续重试，直到守护进程升级后版本一致（commit d8c340a，#369）
-- 旧行为（仅警告继续连接）已改为立即bail，确保自动重连机制能正常工作
+- `AuthResult` 响应携带守护进程 `protocol_version` 和 `daemon_version`
+- 认证失败（`ok=false`）时保持连接以允许通过协议进行更新；协议版本不匹配时重连循环以指数退避持续重试
+- 旧行为（`AuthOk`/`AuthFailed` 分离）已合并为统一的 `AuthResult` 消息
+- 不匹配通知消息修正（commit fd6b1b3）：正确显示版本号而非原始错误信息
 
 ## 多轮聊天模式 (Multi-turn Chat)
 
@@ -678,6 +828,7 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 **双前缀快速恢复 (issue #261, #361):**
 - 连续快速输入两次前缀（如`::`）在250ms内触发 `InterceptAction::ResumeChat`
 - `::` 优先恢复当前会话上一次使用的线程（`last_thread_id`，通过 `handle_resume_tid` 直接恢复指定线程ID），而非总是取最新线程（commit bd6898f）
+- `::` 无 `last_thread_id` 时自动回退到 `/resume` picker选择器（commit 5809ac9，#406）
 - `last_thread_id` 在所有聊天退出路径上持久保存（commit 81c84f1）
 - 单次前缀在250ms超时后进入新聊天
 
@@ -815,7 +966,7 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 **变体:**
 - `UserInput(String)` - 用户输入文本
 - `ToolStatus(ChatToolStatus)` - 工具执行状态（包含 display_name、param_desc、status_icon、result_compact、result_full）
-- `LlmText(String)` - LLM中间文本（thinking/streaming text）
+- `LlmText(String)` - LLM中间文本（thinking/streaming text，compact view中也显示，commit cfc10c7）
 - `Response(String)` - LLM最终响应（Markdown格式）
 - `Separator` - 响应后的分隔线
 - `SystemMessage(String)` - 系统消息（如 "(interrupted)", "(resumed conversation)"）
@@ -919,7 +1070,9 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 - `/tasks` — 查看或管理定时任务
 - `/update` — 透明自重启到磁盘最新版本（issue #217）
 - `/update auto` — 切换运行时自动更新开关（不持久化）
+- `/config` — 通过Menu widget交互式编辑daemon配置（commit cc08b00），发送ConfigQuery/ConfigUpdate协议消息
 - `/test picker [N]` — 隐藏测试命令（不在 `/help` 中显示），使用20个虚拟条目测试picker组件；`N` 为初始选中索引（commit 5df1e1b）
+- `/test menu` — 隐藏测试命令，使用虚拟多级菜单测试menu组件
 
 ### Ctrl-C 中断 (issue #123, #241)
 聊天等待LLM响应或工具执行时，用户可按Ctrl-C中断：
@@ -1116,6 +1269,8 @@ omnish-client 包含客户端事件日志系统，用于调试和监控异步事
 - Readline异步事件: `readline request (input key)`, `readline request (completion)`, `readline response`
 - 补全流程: `completion request`, `completion response`, `completion accept`
 - 聊天交互: `chat mode enter`, `chat mode enter (timeout)`, `chat mode resume (double-prefix, gap Nms)`
+- 更新检查: `update_check sent`, `update_check: available vX.Y.Z`, `update_check: up to date`
+- 连接事件: `disconnected`, `reconnected`, `reconnect failed: reason`
 - 输入延迟: `input lag Nms (Nbytes)`（处理超过50ms时记录，issue #106）
 - isearch模式: `ctrl+r (isearch mode)`
 - Readline触发跳过: `readline trigger skipped (seq mismatch: cur=N resp=N)`
@@ -1134,7 +1289,7 @@ omnish-client 包含客户端事件日志系统，用于调试和监控异步事
 1. 加载认证令牌（`~/.omnish/auth_token`）
 2. 尝试连接守护进程
 3. 发送`Auth`消息进行认证（包含`PROTOCOL_VERSION`）
-4. 检查`AuthOk`响应中的协议版本，不匹配时显示警告
+4. 检查`AuthResult`响应中的协议版本和认证结果
 5. 发送`SessionStart`消息
 6. 重放缓冲的消息
 7. 连接失败时进入直通模式，打印警告
@@ -1405,6 +1560,9 @@ auto_update = true
 ### 环境变量
 - `OMNISH_SOCKET`: 守护进程socket路径（覆盖配置）
 - `OMNISH_SESSION_ID`: 父会话ID（用于嵌套omnish检测）
+- `OMNISH_STARTED`: 启动时间戳（在父进程execvp前设置，用于外部工具检测omnish环境）（commit 32abf7b）
+- `OMNISH_CURSOR_COL` / `OMNISH_CURSOR_ROW`: 光标位置（用于 `/update` 自重启恢复）
+- `OMNISH_LAST_THREAD_ID`: 上次聊天线程ID（用于 `/update` 自重启恢复 `::` 快速恢复）
 - `SHELL`: 使用的shell命令（覆盖配置）
 
 ## 依赖关系
@@ -1610,6 +1768,45 @@ auto_update = true
 - 编辑器重绘使用相对光标移动代替layout.update()（issue #278）
 
 ## 更新历史
+
+### 2026-03-26（43个commit自7105d6e起）
+
+**协议级更新系统完善 (commit f99bd82~defdb57, #346):**
+- UpdateCheck 与 mtime 重启条件分离：UpdateCheck 不受 at_prompt/idle/alt_screen 限制，确保繁忙客户端也能获取更新（commit c21174b, defdb57）
+- 使用 install.sh 统一更新流程，支持跨版本升级（commit 941ffd6）
+- 共享更新工具模块和客户端缓存改进（commit b3e6ac6）
+- per-host 传输锁防止同主机多客户端并发下载（commit 0c06d51）
+- daemon 启动宽限期内跳过 UpdateCheck（commit 94392b3）
+
+**Menu widget 和 /config 命令 (commit f0d57e2~cc08b00, #410):**
+- 多级菜单组件支持 Toggle/Select/TextInput/Submenu 项目类型
+- /config 命令通过 ConfigQuery/ConfigUpdate 协议消息交互式编辑 daemon 配置
+- Handler 子菜单支持 on_handler_exit 回调动态刷新菜单树（commit f31f7c9）
+- form_mode 自动编辑和光标前进（commit 11d8dd2）
+- 上下文敏感提示行、改进的显示样式（commit 187a7dd, efc2ee0）
+- 变更去重：仅保留每个路径的最后一次修改（commit 970f424）
+- 共享终端工具提取到 common.rs（commit e8fbfc8）
+- 批量ASCII输入处理和menu集成测试（commit c3ff739）
+
+**Ghost text 修复 (#421):**
+- 解决 readline redraw 跨 PTY 读取时 ghost text 未重绘的问题（commit 292a0bc）
+- 修复 deferred ghost text 在 readline 报告同一次 PTY 读取中到达时的刷新（commit f9c573c, 2ed2c90）
+- 添加 ghost text 追踪日志用于调试（commit 11beadc）
+
+**重连机制改进 (#431):**
+- 重复认证失败后停止重连循环，避免无限重试（commit f958a0a）
+- 新增 event_log 条目：update_check、disconnect、reconnect 事件（commit 83e7760）
+- 协议版本不匹配通知消息修正（commit fd6b1b3）
+
+**其他改进:**
+- `::` 无 last_thread_id 时回退到 resume picker（commit 5809ac9, #406）
+- 全屏程序（vim、less、htop）中抑制通知显示（commit 7eadd8b）
+- 环境变量传递 cursor 和 thread-id 用于 /update 恢复（commit 2e521d6）
+- OMNISH_STARTED 在父进程 execvp 前设置，移除 OMNISH_VERSION（commit 32abf7b）
+- 记录版本和启动时间到环境变量用于 /proc 检查（commit 0ebec96）
+- LLM 中间文本在 compact view 中显示（commit cfc10c7）
+- 补全响应 event_log 包含 suggestion 文本（commit 07cbc7c）
+- 工具头 param_desc 换行符折叠（commit 912e232）
 
 ### 2026-03-23（56个commit自cb68db4起）
 

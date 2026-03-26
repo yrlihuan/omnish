@@ -274,11 +274,31 @@ pub struct SessionUpdateRecord {
     pub host: Option<String>,            // 主机名
     pub shell_cwd: Option<String>,       // Shell当前工作目录
     pub child_process: Option<String>,   // 当前子进程（格式: "name:pid"）
-    pub extra: HashMap<String, Value>,   // 其他扩展属性（JSON Value）
+    pub extra: HashMap<String, String>,  // 其他扩展属性（JSON字符串值）
 }
 ```
 
 **用途:** 定期记录会话的状态变化，包括主机、工作目录和当前执行的进程信息。已知属性（host、shell_cwd、child_process）被提取为明确字段，其他属性存入extra用于未来扩展。
+
+### `CompletionRecord`
+补全记录结构，保存每次补全请求的完整信息，写入CSV文件：
+
+```rust
+pub struct CompletionRecord {
+    pub session_id: String,              // 会话ID
+    pub sequence_id: u64,               // 补全请求的序列号
+    pub prompt: String,                  // 请求时的用户输入
+    pub completion: String,              // 建议的补全文本
+    pub accepted: bool,                  // 用户是否接受（Tab键）
+    pub latency_ms: u64,                // 请求到响应的延迟（毫秒）
+    pub dwell_time_ms: Option<u64>,     // 响应到接受/忽略的时间（毫秒）
+    pub cwd: Option<String>,            // 请求时的工作目录
+    pub recorded_at: u64,               // 记录创建时间（epoch毫秒）
+    pub extra: HashMap<String, String>, // 额外元数据（CSV中存为JSON字符串）
+}
+```
+
+**注意:** `extra`字段的类型从`HashMap<String, Value>`改为`HashMap<String, String>`（commit 8585143）。原因是bincode无法反序列化`serde_json::Value`（其`deserialize_any`不兼容bincode），导致包含此类型的帧被静默丢弃，客户端需等待15秒超时。改为`String`值后，需要结构化数据的场景在消费端自行JSON解码。
 
 ## 文件结构
 omnish-store模块使用以下文件结构存储数据：
@@ -317,3 +337,4 @@ timestamp,session_id,host,shell_cwd,child_process,extra
 3. **精确检索**: 通过偏移量和长度精确读取特定范围的流数据
 4. **结构化元数据**: 命令和会话信息使用JSON格式，便于人类阅读和工具处理
 5. **错误处理**: 使用anyhow提供统一的错误处理机制
+9. **bincode兼容**: 需要通过bincode序列化的结构体避免使用`serde_json::Value`等不兼容类型，改用纯字符串存储，由消费端自行解码

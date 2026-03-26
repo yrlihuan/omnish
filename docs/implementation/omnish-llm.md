@@ -146,6 +146,7 @@ Anthropic API后端实现：
 - 思考模式：`enable_thinking == Some(true)` 时启用（budget_tokens: 4096），`Some(false)` 时发送禁用参数
 - 工具调用支持：通过`tools`字段提供工具定义，解析响应中的`tool_use` content blocks
 - `strip_thinking()` 辅助函数解析content blocks（thinking vs text vs tool_use）
+- 连接错误自动重试：`.send()`遇到连接错误（`is_connect()`/`is_request()`）时最多重试3次，指数退避（5s起步，最大60s）
 - 429/529自动重试：最多3次重试，指数退避（默认5s起步，最大60s），支持解析`retry-after`响应头
 - Usage解析：从API响应中提取`input_tokens`、`output_tokens`、`cache_read_input_tokens`、`cache_creation_input_tokens`
 - 请求日志：Chat请求的完整payload记录到`~/.omnish/logs/messages/`
@@ -161,6 +162,7 @@ OpenAI兼容API后端实现：
 - 工具调用支持：通过`tools`字段提供工具定义，解析响应中的`tool_calls`
 - `extract_thinking()` 辅助函数解析响应中的 `<think>` 标签（提取为 `ContentBlock::Thinking`）
 - `convert_extra_messages()` 辅助函数将 Anthropic 格式的 extra_messages（含 `tool_use`/`tool_result`/`thinking` 内容块）转换为 OpenAI 格式（`tool_calls`/`tool` role/`reasoning_content`）
+- 连接错误自动重试：`.send()`遇到连接错误（`is_connect()`/`is_request()`）时最多重试3次，指数退避（5s起步，最大60s）
 - 429自动重试：最多3次重试，指数退避，支持解析`retry-after`响应头
 - Usage解析：从API响应中提取`prompt_tokens`→`input_tokens`、`completion_tokens`→`output_tokens`、`cached_tokens`→`cache_read_input_tokens`
 - 请求日志：Chat请求的完整payload记录到`~/.omnish/logs/messages/`
@@ -474,8 +476,8 @@ let completion_content = template::build_simple_completion_content(
 - `lib.rs`: 模块入口，导出所有公共接口
 - `backend.rs`: LlmBackend trait、LlmRequest/LlmResponse、Usage、UseCase/TriggerType等核心类型
 - `tool.rs`: 工具相关类型（ToolDef、ToolCall、ToolResult）
-- `anthropic.rs`: Anthropic API后端实现（含429/529重试）
-- `openai_compat.rs`: OpenAI兼容API后端实现（含429重试）
+- `anthropic.rs`: Anthropic API后端实现（含连接错误重试、429/529重试）
+- `openai_compat.rs`: OpenAI兼容API后端实现（含连接错误重试、429重试）
 - `factory.rs`: 后端工厂函数（create_backend、create_default_backend、MultiBackend、Langfuse包装逻辑）
 - `template.rs`: 提示模板（build_simple_completion_content、DAILY/HOURLY_NOTES_PROMPT等）
 - `prompt.rs`: PromptManager（可组合系统提示词片段管理）和内嵌chat提示词常量
@@ -527,6 +529,7 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
 ## 错误处理
 模块使用`anyhow::Result`进行错误处理，包括：
 - API调用失败（HTTP错误、网络问题）
+- 连接错误（`.send()`失败，自动重试最多3次，指数退避5s-60s）
 - 429/529速率限制和过载错误（自动重试，最多3次，指数退避）
 - 响应格式错误（缺少必需字段）
 - 配置错误（缺少必需参数）
@@ -545,6 +548,19 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
 - 错误处理场景
 
 ## 更新历史
+
+### a128d08 - 连接错误重试（#407）
+
+**主要变更:**
+
+1. **HTTP层连接错误重试** (commit a128d08):
+   - Anthropic和OpenAI兼容后端的`.send()`调用新增连接错误重试
+   - 捕获`is_connect()`和`is_request()`类型的reqwest错误
+   - 最多重试3次（`MAX_RETRIES`），指数退避（`DEFAULT_BACKOFF` 5s起步，`MAX_BACKOFF` 60s封顶）
+   - 与已有的429/529 HTTP状态码重试共享同一重试循环，连接错误在收到HTTP响应之前处理
+   - 重试耗尽后返回包含原始错误信息的`anyhow::Error`
+
+**相关issue:** #407
 
 ### v0.7.x - 思考块重构、每线程模型选择、OpenAI工具调用增强
 
@@ -597,87 +613,3 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
     - `create_backend()`、`create_default_backend()`、`MultiBackend::new()` 签名新增 `proxy`/`no_proxy` 参数
     - 新增 `build_http_client()` 内部辅助函数，统一构建带代理配置的 reqwest 客户端
     - `LangfuseConfig` 新增 `proxy`/`no_proxy` 字段，`LangfuseBackend` 初始化时应用代理
-    - 工具子进程自动继承 `HTTP_PROXY`/`NO_PROXY` 环境变量
-
-**相关issue:** #349 (daily notes conversations), #353 (configurable summary interval), #359 (global proxy support)
-
-### v0.6.0 - 可观测性、提示词管理和健壮性改进
-
-**主要新功能:**
-
-1. **Langfuse可观测性集成** (commit e447ff3, af926cf, be6d2af, b6d1226):
-   - 新增`langfuse.rs`模块，`LangfuseBackend`以装饰器模式包装后端
-   - 每次LLM调用后异步上报trace和generation事件
-   - 记录模型、use_case、输入摘要、输出、工具调用数、延迟、token使用量
-   - 配置字段变更：`secret_key_cmd`→`secret_key`（直接值），`host`→`base_url`
-   - 修复Langfuse输入记录为实际内容而非字符数
-
-2. **PromptManager可组合提示词** (commit 0eba0ec, efff522):
-   - 新增`prompt.rs`模块，`PromptManager`管理具名提示词片段
-   - 支持从JSON加载、合并覆盖、插件片段追加
-   - 替代原先的`CHAT_SYSTEM_PROMPT`硬编码常量
-
-3. **Chat提示词JSON内嵌和覆盖机制** (commit f3ce03a, c0a9c41, d615da0):
-   - `assets/chat.json`通过`include_str!`编译内嵌到二进制
-   - 启动时安装到`~/.omnish/chat.json`
-   - `prompt.json`重命名为`tool.override.json`
-   - 新增`chat.override.json`支持，可覆盖或追加提示词片段
-   - Chat系统提示词基于Claude Code模式重新设计
-
-4. **LLM请求payload日志** (commit 19de992, c00a368):
-   - 新增`message_log.rs`模块
-   - Chat请求的完整JSON体保存到`~/.omnish/logs/messages/`
-   - 滚动清理，最多保留30个文件
-
-5. **429/529自动重试** (commit ed37473):
-   - Anthropic后端支持429（速率限制）和529（过载）自动重试
-   - OpenAI兼容后端支持429自动重试
-   - 最多3次重试，指数退避（5s/10s/20s），上限60s
-   - 支持解析`retry-after`响应头
-
-6. **思考模式支持chat** (commit 0d3239e):
-   - `enable_thinking`支持`Some(true)`启用Anthropic扩展思考（budget_tokens: 4096）
-   - Chat模式下可启用思考模式
-
-7. **Usage解析** (commit c1a9b34):
-   - 新增`Usage`结构体，从API响应中解析token使用统计
-   - `LlmResponse`新增`usage`字段
-   - 两个后端均支持解析input/output tokens和cache统计
-   - Langfuse上报中包含usage数据
-
-8. **Tool trait移除，工具简化** (commit ed5ab15, 7d7d8af):
-   - 移除`Tool` trait，工具简化为固有方法实现
-   - `tool.rs`仅保留`ToolDef`、`ToolCall`、`ToolResult`数据类型
-
-9. **Anthropic max_tokens设置** (commit a593cf6):
-   - Anthropic后端`max_tokens`固定为8192
-
-**相关issue:** #199 (plugin prompt fragments), #205 (message logging), #207 (retry), #254 (override rename), #257 (embed chat prompt), #260 (langfuse input), #262 (thinking mode), #263 (usage parsing)
-
-### v0.5.0 - 工具调用支持（2026-03）
-
-**主要新功能:**
-1. **工具调用（Tool-use）系统** (commit 467041e, 9e84c65):
-   - 新增`Tool` trait定义工具接口
-   - 新增`ToolDef`、`ToolCall`、`ToolResult`类型
-   - `LlmRequest`新增`tools`和`extra_messages`字段
-   - `LlmResponse`改用`ContentBlock`枚举支持文本和工具调用
-   - 新增`StopReason`枚举区分停止原因
-   - 两个后端（Anthropic和OpenAI-compat）均支持工具调用
-
-2. **模板和上下文改进**:
-   - `CHAT_SYSTEM_PROMPT`新增工具使用说明（commit 8d0ec9f）
-   - `/template chat`移至daemon处理，显示实际工具定义（commit 5a0f0f9）
-   - 自动补全上下文中工作目录包裹在`<system-reminder>`标签（commit 458db9f）
-
-3. **后端改进**:
-   - Anthropic后端支持`base_url`配置（commit 01ad6e8）
-   - Anthropic API版本升级至2024-04-04（支持工具调用）
-   - `LlmResponse::text()`用换行符连接多文本块（commit 135d372）
-
-4. **命令变更**:
-   - 移除`/new`、`/chat`、`/ask`命令（commit 48beea5）
-   - `/threads`改为`/thread list`和`/thread del`（commit 096b094）
-   - 移除`/conversations`别名（commit b2f5a6f）
-
-**相关issue:** #161 (agent tool-use), #152 (remove /new /chat /ask), #163 (/thread subcommands), #167 (system-reminder tags)

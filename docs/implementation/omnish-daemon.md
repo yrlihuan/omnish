@@ -19,8 +19,9 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 12. 提示词管理（PromptManager 可组合系统提示词片段，支持用户覆盖）
 13. 工具结果格式化（FormatterManager 模块，内置 read/edit/default 格式化器注册表 + 外部格式化器子进程支持）
 14. 守护进程日志轮转（每日自动轮转到 `~/.omnish/logs/daemon.log`）
-15. 自动更新与优雅重启（升级后以退出码 42 退出，由 systemd 用新二进制重启）
-16. 线程级模型选择（每个聊天线程可独立指定 LLM 后端模型）
+15. 自动更新与优雅重启（升级后以退出码 42 退出，由 systemd 用新二进制重启；UpdateCache 管理多平台包缓存，支持客户端版本检查与流式包分发）
+16. 配置管理（基于 config_schema.toml 的 TUI 配置菜单，支持 ConfigQuery/ConfigUpdate 消息，变更写回 daemon.toml）
+17. 线程级模型选择（每个聊天线程可独立指定 LLM 后端模型）
 
 守护进程以Unix domain socket方式运行，支持多个客户端同时连接。工作线程数上限为 30（`available_parallelism().min(30)`）。
 
@@ -38,6 +39,8 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - `formatter_mgr`: `Arc<FormatterManager>` - 工具结果格式化管理器（内置格式化器 + 外部格式化器子进程）
 - `cancel_flags`: `CancelFlags` - 智能体循环取消标志映射（request_id → AtomicBool），用于守护进程侧 Cancel 支持
 - `chat_model_name`: `Option<String>` - 聊天后端的模型名称（用于 ChatReady ghost hint，从配置的 chat use case 或默认后端中提取）
+- `update_cache`: `Arc<UpdateCache>` - 更新包缓存管理器，用于客户端版本检查和包分发
+- `opts`: `Arc<ServerOpts>` - 共享运行时选项（代理、沙箱规则、配置文件路径、活跃配置副本）
 
 ### `AgentLoopState`
 暂停态的智能体循环，等待客户端侧工具执行结果返回后恢复，包含：
@@ -209,6 +212,33 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 **SandboxRules 热重载集成：**
 - `server.rs` 中 `SandboxRules`（`HashMap<String, Vec<PermitRule>>`）存储在 `Arc<RwLock<...>>` 中
 - `ConfigWatcher::subscribe(ConfigSection::Sandbox)` 的接收端在后台任务中监听，收到变更后调用 `sandbox_rules::compile_config()` 重新编译规则并原子替换
+
+### `UpdateCache`（`crates/omnish-daemon/src/update_cache.rs`）
+更新包缓存管理器，管理 `~/.omnish/updates/{os}-{arch}/` 目录下的平台安装包，为客户端版本检查和包分发提供支持。
+
+**核心字段：**
+- `cache_dir`: `PathBuf` - 缓存根目录（`~/.omnish/updates/`）
+- `latest_versions`: `Mutex<HashMap<(String, String), String>>` - 每个平台的最新缓存版本号（由 `scan_updates()` 刷新）
+- `known_platforms`: `Mutex<HashSet<(String, String)>>` - 已知的客户端平台集合（由 `UpdateCheck` 消息填充）
+- `transfer_locks`: `Mutex<HashMap<String, Instant>>` - 每主机传输锁（同一主机 5 分钟冷却期，防止重复下载）
+- `startup_time`: `Instant` - 缓存创建时间（守护进程启动时间）
+
+**主要方法：**
+- `new(omnish_dir)` — 初始化缓存，立即执行一次 `scan_updates()`。启动时将本机 hostname 写入 `transfer_locks`，使本地客户端在冷却期内不会触发下载
+- `past_startup_grace()` — 判断启动宽限期（60 秒）是否已过。宽限期内对 `UpdateCheck` 请求返回"无更新"，给守护进程自身更新周期留出时间
+- `check_update(os, arch, current_version)` — 使用缓存的扫描结果检查是否有更新版本
+- `check_update_with_checksum(os, arch, current_version)` — 检查更新并返回 `(version, checksum)`。优先匹配守护进程自身版本的包，回退到最高版本
+- `cached_package(os, arch)` — 查找某平台的缓存包，多版本时返回最高 semver 版本
+- `register_platform(os, arch)` — 记录客户端平台（供自动更新任务下载时使用）
+- `scan_updates()` — 扫描 `updates/` 目录刷新每平台最新版本。守护进程启动后每 60 秒定期执行
+- `cache_package(os, arch, version, source)` — 将包文件复制到缓存目录，保留最近 N 个版本
+- `download_from_local_dir(source_dir, os, arch)` — 从本地目录扫描最高版本包并复制到缓存（原子写入：先写 `.tmp-` 再 rename）
+- `download_from_github(api_url, platforms, client)` — 从 GitHub Releases API 下载多平台包到缓存。解析 `tag_name` 提取版本号，匹配 `omnish-{version}-{os}-{arch}.tar.gz` 格式的 asset
+- `try_acquire_transfer(hostname)` — 尝试获取主机传输锁（5 分钟冷却期），返回是否可以继续
+
+**版本比较：**
+- 使用 `omnish_common::update::compare_versions()` 进行 semver 比较，支持 `git describe` 格式（如 `0.8.4-71-gdf067f6`）
+- 版本号规范化：`normalize_version()` 将 `0.8.4-71-gdf067f6` 转换为 `0.8.4.71`（去掉 git hash 后缀）
 
 ### `SandboxRules`（`crates/omnish-daemon/src/sandbox_rules.rs`）
 沙箱许可规则模块，支持为特定工具配置**白名单规则**，允许特定命令参数绕过 Landlock 沙箱限制。
@@ -730,6 +760,68 @@ Assistant: {{final response}}
 - 所有消息（包括工具调用）以原始 JSON 格式存储，但 `<system-reminder>` 在存储前被过滤
 - thinking 块以完整 `ContentBlock::Thinking` 数组存储到对话历史，供后续轮次使用
 
+## 配置管理（/config 菜单）
+
+### ConfigSchema（`crates/omnish-daemon/src/config_schema.rs`）
+
+配置模式解析器和配置项构建器，基于编译期内嵌的 `config_schema.toml` 定义，将活跃的 `DaemonConfig` 转换为结构化的 `ConfigItem` 列表供客户端 TUI 菜单渲染，并支持将配置变更写回 `daemon.toml`。
+
+**模式定义（`config_schema.toml`）：**
+编译期通过 `include_str!()` 内嵌，每个条目包含：
+- `path` — 点分隔的菜单层级路径（如 `"proxy.http_proxy"`、`"llm.use_cases.chat"`）
+- `label` — 菜单显示名称
+- `kind` — 配置项类型：`text`（文本输入）、`select`（下拉选择）、`toggle`（布尔开关）、`submenu`（子菜单）
+- `toml_key` — 实际 `daemon.toml` 中的键路径（叶子项）
+- `options_from` — （select 类型）运行时从 TOML 表的键名动态生成选项（如 `"llm.backends"` 自动列出已配置的后端名）
+- `options` — （select 类型）静态选项列表
+- `handler` — （submenu 类型）Rust 处理函数名，用于分组变更的批量处理（如 `"add_backend"`）
+
+**当前模式覆盖的配置项：**
+- 代理设置：`proxy`（HTTP 代理）、`no_proxy`
+- LLM use case 路由：`completion`、`analysis`、`chat` 后端选择（选项从已配置后端动态生成）
+- 新增 LLM 后端：`add_backend` 子菜单（name、backend_type、model、api_key_cmd、base_url）
+- 动态项：已存在的后端自动生成编辑条目（`llm.backends.<name>.backend_type/model/api_key_cmd/base_url`）
+
+**核心函数：**
+
+**`build_config_items(config)`** — 从活跃配置构建配置项列表
+- 解析模式定义，将 `DaemonConfig` 序列化为 `toml::Value` 树
+- 遍历模式条目，通过 `resolve_value()` 沿点分隔路径提取当前值
+- select 类型通过 `resolve_options()` 动态获取 TOML 表键名作为选项
+- handler 子菜单下的叶子项不填充当前值（由 handler 统一处理）
+- 返回 `(Vec<ConfigItem>, Vec<ConfigHandlerInfo>)`
+
+**`apply_config_changes(config_path, changes)`** — 将配置变更写入 `daemon.toml`
+- 将变更按是否属于某个 handler 分组
+- 普通变更：根据 kind 调用 `set_toml_value_nested()` 或 `set_toml_value_nested_bool()` 直接写入
+- handler 变更：分组后调用对应处理函数（如 `handle_add_backend` 将新后端的各字段写入 `llm.backends.<name>.*`）
+
+### ConfigQuery/ConfigUpdate 消息处理
+
+**`ConfigQuery`** — 客户端请求配置菜单数据
+- 从 `ServerOpts.daemon_config` 读取当前配置
+- 调用 `build_config_items()` 生成配置项列表和 handler 信息
+- 返回 `ConfigResponse { items, handlers }`
+
+**`ConfigUpdate { changes }`** — 客户端提交配置变更
+- 调用 `apply_config_changes()` 写入 `daemon.toml`
+- 成功后重新加载配置到 `ServerOpts.daemon_config`
+- 返回 `ConfigUpdateResult { ok, error }`
+
+### 客户端更新检查与包分发
+
+**`UpdateCheck { os, arch, current_version, hostname }`** — 客户端检查更新
+- 将客户端平台注册到 `UpdateCache.known_platforms`（供自动更新任务下载对应平台包）
+- 启动宽限期（60 秒）内返回"无更新"，给守护进程自身更新周期留出时间
+- 宽限期后调用 `check_update_with_checksum()` 检查是否有更新，优先匹配守护进程版本的包
+- 返回 `UpdateInfo { latest_version, checksum, available }`
+
+**`UpdateRequest { os, arch, version, hostname }`** — 客户端请求下载更新包
+- 通过 `try_acquire_transfer()` 获取主机传输锁（5 分钟冷却期）
+- 从缓存中查找匹配版本的包文件
+- 以 64KB 分块流式传输 `UpdateChunk` 消息（含序号、总大小、SHA-256 校验和）
+- 版本不匹配或包不存在时返回错误
+
 ## 补全采样
 
 补全采样机制用于收集 LLM 补全建议与用户实际行为的对比数据，持久化到 JSONL 文件供离线分析。
@@ -842,9 +934,16 @@ schedule = "0 0 */6 * * *"  # Cron 表达式，默认每6小时
 #### 6. `auto_update` - 自动更新任务
 **执行周期:** 可配置（默认不启用）
 **功能:** 自动从 GitHub 或本地目录下载并安装新版本，完成后优雅重启守护进程
-**机制:**
-- Phase 1：运行 `~/.omnish/install.sh --upgrade` 升级服务端二进制
-- Phase 2：运行 `~/.omnish/deploy.sh` 将新版本分发到配置的客户端机器
+**机制（三阶段）:**
+- **Phase 0（下载包）**：从 `check_url` 下载安装包到 `~/.omnish/updates/` 缓存目录
+  - 下载范围包括守护进程自身平台 + 所有已知客户端平台（由 `UpdateCheck` 消息收集）
+  - `check_url` 为 HTTP/HTTPS 时使用 GitHub Releases API（`download_from_github()`），支持代理配置
+  - `check_url` 为本地路径时扫描本地目录（`download_from_local_dir()`）
+  - 下载完成后调用 `scan_updates()` 刷新版本缓存
+- **Phase 1（安装）**：从缓存中提取守护进程自身平台的包，运行 `install.sh --upgrade` 升级二进制
+  - 跳过条件：无缓存包，或缓存版本不高于当前运行版本
+  - 使用 `omnish_common::update::extract_and_run_installer()` 解压并执行安装脚本
+- **Phase 2（分发）**：运行 `~/.omnish/deploy.sh` 将新版本分发到配置的客户端机器
 - 升级成功后通知 `restart_signal`（`Arc<Notify>`），主循环检测到信号后以退出码 42（`EXIT_RESTART`）退出
 - systemd 的 `Restart=on-failure` 配置使其自动用新二进制重启
 - SIGUSR1 信号也可触发同样的 42 退出码重启流程
@@ -853,10 +952,10 @@ schedule = "0 0 */6 * * *"  # Cron 表达式，默认每6小时
 [tasks.auto_update]
 enabled = true
 schedule = "0 0 3 * * *"   # 每天凌晨3点检查
-check_url = "https://github.com/..."  # 可选，默认使用 GitHub
+check_url = "https://github.com/..."  # 可选，GitHub Releases API 或本地目录路径
 clients = ["user@host1", "user@host2"]  # 要分发的客户端机器列表
 ```
-**实现:** 通过 `create_auto_update_job()` 函数创建（`crates/omnish-daemon/src/auto_update.rs`）
+**实现:** 通过 `create_auto_update_job()` 函数创建（`crates/omnish-daemon/src/auto_update.rs`），依赖 `UpdateCache` 进行包缓存管理
 
 ### TaskManager 关键函数说明
 
@@ -1215,6 +1314,8 @@ max_line_width = 128
 - `CompletionRequest/CompletionSummary` - 补全请求和结果汇总
 - `ChatStart/ChatMessage/ChatInterrupt` - 多轮聊天（支持工具使用）
 - `ChatToolResult` - 客户端侧工具执行结果
+- `ConfigQuery/ConfigUpdate` - 配置菜单查询和变更提交
+- `UpdateCheck/UpdateRequest` - 客户端版本检查和更新包下载
 
 **注意:** 返回值从单个 `Message` 改为 `Vec<Message>`，以支持智能体循环中的流式状态消息
 
@@ -1449,6 +1550,10 @@ async fn main() -> anyhow::Result<()> {
 工具结果 → 发送ChatToolResult → 守护进程累积结果 → 全部完成时恢复智能体循环
 聊天中断 → 发送ChatInterrupt → 守护进程存储部分结果 + 清理暂停态
 客户端断开 → 发送SessionEnd → 守护进程标记会话结束 + flush pending sample
+配置查询 → 发送ConfigQuery → 守护进程构建配置项列表 → 返回ConfigResponse
+配置变更 → 发送ConfigUpdate → 守护进程写入daemon.toml + 重载配置 → 返回ConfigUpdateResult
+版本检查 → 发送UpdateCheck → 守护进程检查UpdateCache → 返回UpdateInfo
+更新下载 → 发送UpdateRequest → 守护进程流式传输UpdateChunk（64KB分块）
 ```
 
 ## 依赖关系
@@ -1508,6 +1613,11 @@ async fn main() -> anyhow::Result<()> {
 │   ├── sessions/              # 会话更新记录（JSONL）
 │   ├── samples/               # 补全采样数据（JSONL）
 │   └── daemon.log.YYYY-MM-DD  # 每日轮转的守护进程日志
+├── updates/
+│   ├── linux-x86_64/
+│   │   └── omnish-0.9.0-linux-x86_64.tar.gz   # 缓存的更新包
+│   └── macos-aarch64/
+│       └── omnish-0.9.0-macos-aarch64.tar.gz
 └── notes/
     ├── 2026-02-24.md          # 日报
     └── hourly/
