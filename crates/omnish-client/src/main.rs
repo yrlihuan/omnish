@@ -845,7 +845,6 @@ async fn main() -> Result<()> {
                     Err(_) => "unknown".to_string(),
                 };
                 let msg = Message::UpdateCheck {
-                    sequence_id: 0,
                     os,
                     arch,
                     current_version: ver,
