@@ -126,8 +126,8 @@ pub fn extract_and_run_installer(
     use flate2::read::GzDecoder;
     use tar::Archive;
 
-    // Extract to a temp directory next to the tar.gz
-    let extract_dir = tar_gz_path.with_extension("extracted");
+    // Extract to a unique temp directory next to the tar.gz (pid avoids races)
+    let extract_dir = tar_gz_path.with_extension(format!("extracted.{}", std::process::id()));
     if extract_dir.exists() {
         std::fs::remove_dir_all(&extract_dir)?;
     }
