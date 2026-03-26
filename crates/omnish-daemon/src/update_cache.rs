@@ -7,6 +7,9 @@ use std::time::Instant;
 /// Per-platform transfer cooldown (5 minutes).
 const TRANSFER_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// Grace period after daemon startup before responding to UpdateCheck requests.
+/// Gives the daemon time to finish its own update cycle first.
+const STARTUP_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Manages the package cache at ~/.omnish/updates/{os}-{arch}/
 pub struct UpdateCache {
@@ -17,19 +20,37 @@ pub struct UpdateCache {
     known_platforms: Mutex<HashSet<(String, String)>>,
     /// Per-host transfer lock: only one transfer per host within cooldown period
     transfer_locks: Mutex<HashMap<String, Instant>>,
+    /// When the cache was created (daemon startup time)
+    startup_time: Instant,
 }
 
 impl UpdateCache {
     pub fn new(omnish_dir: &Path) -> Self {
         let cache_dir = omnish_dir.join("updates");
+
+        // Seed local hostname into transfer_locks so local clients wait
+        // TRANSFER_COOLDOWN after daemon startup before downloading updates.
+        let mut initial_locks = HashMap::new();
+        if let Ok(hostname) = nix::unistd::gethostname() {
+            if let Ok(name) = hostname.into_string() {
+                initial_locks.insert(name, Instant::now());
+            }
+        }
+
         let cache = Self {
             cache_dir,
             latest_versions: Mutex::new(HashMap::new()),
             known_platforms: Mutex::new(HashSet::new()),
-            transfer_locks: Mutex::new(HashMap::new()),
+            transfer_locks: Mutex::new(initial_locks),
+            startup_time: Instant::now(),
         };
         cache.scan_updates();
         cache
+    }
+
+    /// Whether the startup grace period has elapsed.
+    pub fn past_startup_grace(&self) -> bool {
+        self.startup_time.elapsed() >= STARTUP_GRACE
     }
 
     /// Return the directory for a given platform

@@ -659,7 +659,6 @@ async fn main() -> Result<()> {
         });
     let mut last_update_check = std::time::Instant::now();
     const AUTO_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
-    let mut update_check_done = false;
     let update_in_progress = Arc::new(AtomicBool::new(false));
 
     // Landlock sandbox state
@@ -713,16 +712,12 @@ async fn main() -> Result<()> {
                     exe_mtime = current_mtime;
                 }
             }
-        }
 
-        // Auth-triggered update check: daemon reported a newer version
-        if auto_update_enabled.load(Ordering::Relaxed)
-            && update_needed.swap(false, Ordering::Relaxed)
-            && !update_check_done
-            && !update_in_progress.load(Ordering::Relaxed)
-        {
-            update_check_done = true;
-            if let Some(ref rpc) = daemon_conn {
+            // Periodic UpdateCheck: daemon reported a newer version at auth
+            if update_needed.load(Ordering::Relaxed)
+                && !update_in_progress.load(Ordering::Relaxed)
+            {
+                if let Some(ref rpc) = daemon_conn {
                 let os = std::env::consts::OS.to_string();
                 let arch = std::env::consts::ARCH.to_string();
                 let ver = omnish_common::VERSION.to_string();
@@ -819,6 +814,7 @@ async fn main() -> Result<()> {
                         event_log::push(format!("update_check: error {}", e));
                     }
                 }
+            }
             }
         }
 
