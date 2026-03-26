@@ -459,7 +459,7 @@ impl RpcClient {
     pub async fn call_stream(&self, msg: Message) -> Result<mpsc::Receiver<Message>> {
         let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let frame = Frame { request_id, payload: msg };
-        let (reply_tx, reply_rx) = mpsc::channel(16);
+        let (reply_tx, reply_rx) = mpsc::channel(128);
 
         let tx = {
             let inner = self.inner.lock().await;
@@ -530,25 +530,50 @@ impl RpcClient {
                     continue;
                 }
             };
-            let mut map = pending.lock().await;
-            if let Some(tx) = map.get(&frame.request_id) {
-                match tx {
-                    ReplyTx::Once(_) => {
-                        if let Some(ReplyTx::Once(tx)) = map.remove(&frame.request_id) {
-                            let _ = tx.send(frame.payload);
+            // Dispatch under lock, but for Stream sends we clone the sender
+            // and release the lock before the async send to avoid blocking
+            // the read loop while the consumer is slow.
+            let stream_send = {
+                let mut map = pending.lock().await;
+                if let Some(tx) = map.get(&frame.request_id) {
+                    match tx {
+                        ReplyTx::Once(_) => {
+                            if let Some(ReplyTx::Once(tx)) = map.remove(&frame.request_id) {
+                                let _ = tx.send(frame.payload);
+                            }
+                            None
+                        }
+                        ReplyTx::Stream(tx) => {
+                            if matches!(frame.payload, Message::Ack) {
+                                // End-of-stream sentinel — remove entry, dropping sender
+                                map.remove(&frame.request_id);
+                                None
+                            } else {
+                                // Clone sender and release lock before async send
+                                Some((tx.clone(), frame))
+                            }
+                        }
+                        ReplyTx::None => {
+                            // Fire-and-forget — discard response, clean up
+                            map.remove(&frame.request_id);
+                            None
                         }
                     }
-                    ReplyTx::Stream(tx) => {
-                        if matches!(frame.payload, Message::Ack) {
-                            // End-of-stream sentinel — remove entry, dropping sender
-                            map.remove(&frame.request_id);
-                        } else if tx.try_send(frame.payload).is_err() {
-                            map.remove(&frame.request_id);
+                } else {
+                    None
+                }
+            }; // lock released here
+            if let Some((tx, frame)) = stream_send {
+                match tx.try_send(frame.payload) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(payload)) => {
+                        tracing::debug!("stream channel full (request_id={}), waiting", frame.request_id);
+                        if tx.send(payload).await.is_err() {
+                            pending.lock().await.remove(&frame.request_id);
                         }
                     }
-                    ReplyTx::None => {
-                        // Fire-and-forget — discard response, clean up
-                        map.remove(&frame.request_id);
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        pending.lock().await.remove(&frame.request_id);
                     }
                 }
             }
