@@ -52,6 +52,7 @@ fn build_sandbox_profile(
     let mut profile = String::from(
         "(version 1)\n\
          (allow default)\n\
+         (allow sysctl-read)\n\
          (deny file-write* (subpath \"/\"))\n\
          (allow file-write* (subpath \"/tmp\"))\n\
          (allow file-write* (literal \"/dev/null\"))\n\
