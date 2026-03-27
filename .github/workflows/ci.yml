@@ -178,8 +178,8 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
           VERSION="${TAG#v}"
           # Extract the section for this version from CHANGELOG.md
-          # Grab everything between "## vX.Y.Z" and the next "---" separator
-          BODY=$(sed -n "/^## v${VERSION} /,/^---$/p" CHANGELOG.md | sed '1d;$d')
+          # Grab everything between "## vX.Y.Z" and the next "## v" heading
+          BODY=$(awk "/^## v${VERSION} /{found=1; next} /^## v/{found=0} found" CHANGELOG.md)
           # Write to file to preserve newlines
           echo "$BODY" > /tmp/release-notes.md
 
