@@ -48,6 +48,8 @@ struct AgentLoopState {
     llm_retries: u32,
     /// Cumulative token usage across all LLM calls in this agent loop.
     cumulative_usage: omnish_llm::backend::Usage,
+    /// Token usage from the most recent single LLM API call.
+    last_response_usage: omnish_llm::backend::Usage,
     /// Model name from the last LLM response.
     last_model: String,
 }
@@ -1105,6 +1107,7 @@ async fn handle_chat_message(
         effective_backend,
         llm_retries: 0,
         cumulative_usage: Default::default(),
+        last_response_usage: Default::default(),
         last_model: String::new(),
     };
 
@@ -1233,10 +1236,12 @@ async fn handle_tool_result(
 
 /// Update thread meta with cumulative usage after an agent loop run.
 /// Resets totals when the model changes.
+/// `last_response` — the final LLM API call's usage (stored as usage_last, added to usage_total).
+/// `model` — config backend name used to detect model switches.
 fn update_thread_usage(
     conv_mgr: &omnish_daemon::conversation_mgr::ConversationManager,
     thread_id: &str,
-    usage: &omnish_llm::backend::Usage,
+    last_response: &omnish_llm::backend::Usage,
     model: &str,
 ) {
     if model.is_empty() {
@@ -1245,28 +1250,23 @@ fn update_thread_usage(
     use omnish_daemon::conversation_mgr::ThreadUsage;
     let mut meta = conv_mgr.load_meta(thread_id);
     let last = ThreadUsage {
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        cache_read_input_tokens: usage.cache_read_input_tokens,
-        cache_creation_input_tokens: usage.cache_creation_input_tokens,
+        input_tokens: last_response.input_tokens,
+        output_tokens: last_response.output_tokens,
+        cache_read_input_tokens: last_response.cache_read_input_tokens,
+        cache_creation_input_tokens: last_response.cache_creation_input_tokens,
     };
     // Reset totals on model switch
     let same_model = meta.last_model.as_deref() == Some(model);
     let total = if same_model {
         let prev = meta.usage_total.get_or_insert(ThreadUsage::default());
         ThreadUsage {
-            input_tokens: prev.input_tokens + usage.input_tokens,
-            output_tokens: prev.output_tokens + usage.output_tokens,
-            cache_read_input_tokens: prev.cache_read_input_tokens + usage.cache_read_input_tokens,
-            cache_creation_input_tokens: prev.cache_creation_input_tokens + usage.cache_creation_input_tokens,
+            input_tokens: prev.input_tokens + last_response.input_tokens,
+            output_tokens: prev.output_tokens + last_response.output_tokens,
+            cache_read_input_tokens: prev.cache_read_input_tokens + last_response.cache_read_input_tokens,
+            cache_creation_input_tokens: prev.cache_creation_input_tokens + last_response.cache_creation_input_tokens,
         }
     } else {
-        ThreadUsage {
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            cache_read_input_tokens: usage.cache_read_input_tokens,
-            cache_creation_input_tokens: usage.cache_creation_input_tokens,
-        }
+        last.clone()
     };
     meta.usage_last = Some(last);
     meta.usage_total = Some(total);
@@ -1306,15 +1306,21 @@ async fn run_agent_loop(
             // Append event marker so LLM knows the user interrupted
             to_store.push(serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}));
             conv_mgr.append_messages(&state.cm.thread_id, &to_store);
-            update_thread_usage(conv_mgr, &state.cm.thread_id, &state.cumulative_usage, &state.last_model);
+            update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.last_model);
             return;
         }
 
         match backend.complete(&state.llm_req).await {
             Ok(response) => {
                 state.llm_retries = 0;
-                // Accumulate token usage across iterations
+                // Track last response and accumulate totals across iterations
                 if let Some(ref u) = response.usage {
+                    state.last_response_usage = omnish_llm::backend::Usage {
+                        input_tokens: u.input_tokens,
+                        output_tokens: u.output_tokens,
+                        cache_read_input_tokens: u.cache_read_input_tokens,
+                        cache_creation_input_tokens: u.cache_creation_input_tokens,
+                    };
                     state.cumulative_usage.input_tokens += u.input_tokens;
                     state.cumulative_usage.output_tokens += u.output_tokens;
                     state.cumulative_usage.cache_read_input_tokens += u.cache_read_input_tokens;
@@ -1516,7 +1522,7 @@ async fn run_agent_loop(
                         }
                         to_store.push(serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}));
                         conv_mgr.append_messages(&state.cm.thread_id, &to_store);
-                        update_thread_usage(conv_mgr, &state.cm.thread_id, &state.cumulative_usage, &state.last_model);
+                        update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.last_model);
                         return;
                     }
 
@@ -1573,7 +1579,7 @@ async fn run_agent_loop(
                 let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
                 to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
                 conv_mgr.append_messages(&state.cm.thread_id, &to_store);
-                update_thread_usage(conv_mgr, &state.cm.thread_id, &state.cumulative_usage, &state.last_model);
+                update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.last_model);
                 let _ = tx.send(Message::ChatResponse(ChatResponse {
                     request_id: state.cm.request_id.clone(),
                     thread_id: state.cm.thread_id.clone(),
@@ -1614,7 +1620,7 @@ async fn run_agent_loop(
                     let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
                     to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
                     conv_mgr.append_messages(&state.cm.thread_id, &to_store);
-                    update_thread_usage(conv_mgr, &state.cm.thread_id, &state.cumulative_usage, &state.last_model);
+                    update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.last_model);
 
                     let _ = tx.send(Message::ChatResponse(ChatResponse {
                         request_id: state.cm.request_id.clone(),
@@ -1648,7 +1654,7 @@ async fn run_agent_loop(
     let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
     to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
     conv_mgr.append_messages(&state.cm.thread_id, &to_store);
-    update_thread_usage(conv_mgr, &state.cm.thread_id, &state.cumulative_usage, &state.last_model);
+    update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.last_model);
     let _ = tx.send(Message::ChatResponse(ChatResponse {
         request_id: state.cm.request_id,
         thread_id: state.cm.thread_id,
