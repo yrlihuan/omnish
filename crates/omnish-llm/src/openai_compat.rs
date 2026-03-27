@@ -12,6 +12,7 @@ const DEFAULT_BACKOFF: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 pub struct OpenAiCompatBackend {
+    pub config_name: String,
     pub model: String,
     pub api_key: String,
     pub base_url: String,
@@ -342,7 +343,7 @@ impl LlmBackend for OpenAiCompatBackend {
     }
 
     fn name(&self) -> &str {
-        "openai_compat"
+        &self.config_name
     }
 }
 

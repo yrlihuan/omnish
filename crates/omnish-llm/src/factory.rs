@@ -55,7 +55,7 @@ fn build_http_client(proxy: Option<&str>, no_proxy: Option<&str>) -> Result<reqw
 
 /// Create LLM backend from config
 pub fn create_backend(
-    _name: &str,
+    name: &str,
     config: &LlmBackendConfig,
     proxy: Option<&str>,
     no_proxy: Option<&str>,
@@ -70,6 +70,7 @@ pub fn create_backend(
                 .clone()
                 .unwrap_or_else(|| "https://api.anthropic.com".to_string());
             Ok(Arc::new(AnthropicBackend {
+                config_name: name.to_string(),
                 api_key,
                 model: config.model.clone(),
                 base_url,
@@ -83,6 +84,7 @@ pub fn create_backend(
                 .ok_or_else(|| anyhow!("openai-compat requires base_url"))?;
             let client = build_http_client(proxy, no_proxy)?;
             Ok(Arc::new(OpenAiCompatBackend {
+                config_name: name.to_string(),
                 api_key,
                 model: config.model.clone(),
                 base_url,
@@ -307,7 +309,7 @@ mod tests {
         };
 
         let backend = create_backend("test", &config, None, None).unwrap();
-        assert_eq!(backend.name(), "anthropic");
+        assert_eq!(backend.name(), "test");
     }
 
     #[test]
@@ -321,7 +323,7 @@ mod tests {
         };
 
         let backend = create_backend("test", &config, None, None).unwrap();
-        assert_eq!(backend.name(), "openai_compat");
+        assert_eq!(backend.name(), "test");
     }
 
     #[test]

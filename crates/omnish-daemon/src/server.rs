@@ -1231,10 +1231,6 @@ async fn handle_tool_result(
     cancel_flags.lock().await.remove(&req_id);
 }
 
-/// Core agent loop: calls LLM, executes tools, pauses on client-side tools.
-/// Used by both `handle_chat_message` (initial) and `handle_tool_result` (resumption).
-/// Messages are sent incrementally through `tx` as they're produced (streaming).
-#[allow(clippy::too_many_arguments)]
 /// Update thread meta with cumulative usage after an agent loop run.
 /// Resets totals when the model changes.
 fn update_thread_usage(
@@ -1278,6 +1274,9 @@ fn update_thread_usage(
     conv_mgr.save_meta(thread_id, &meta);
 }
 
+/// Core agent loop: calls LLM, executes tools, pauses on client-side tools.
+/// Used by both `handle_chat_message` (initial) and `handle_tool_result` (resumption).
+/// Messages are sent incrementally through `tx` as they're produced (streaming).
 #[allow(clippy::too_many_arguments)]
 async fn run_agent_loop(
     mut state: AgentLoopState,
@@ -2143,7 +2142,7 @@ async fn format_conversations_json(conv_mgr: &Arc<ConversationManager>, active_t
 /// - Last exchange tokens (input+output)
 /// - Total tokens (sum of all exchanges, reset on model switch)
 /// - Cache hit rate (cache_read / input)
-async fn format_thread_stats(conv_mgr: &ConversationManager, active_threads: &ActiveThreads) -> serde_json::Value {
+async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads: &ActiveThreads) -> serde_json::Value {
     let conversations = conv_mgr.list_conversations();
     if conversations.is_empty() {
         return cmd_display("No conversations yet. Start a chat with :");
@@ -2166,6 +2165,7 @@ async fn format_thread_stats(conv_mgr: &ConversationManager, active_threads: &Ac
     };
 
     for (i, (thread_id, modified, exchange_count, _last_question)) in conversations.into_iter().enumerate() {
+        // _last_question is intentionally not shown here; stats display uses title + usage data instead.
         let time_ago = format_relative_time(modified);
         let meta = conv_mgr.load_meta(&thread_id);
         let is_locked = locked_set.contains(&thread_id);
@@ -2185,7 +2185,6 @@ async fn format_thread_stats(conv_mgr: &ConversationManager, active_threads: &Ac
         output.push('\n');
 
         // Read usage stats from thread meta
-        let meta = conv_mgr.load_meta(&thread_id);
         if let (Some(last_model), Some(last), Some(total)) =
             (meta.last_model.as_deref(), meta.usage_last.as_ref(), meta.usage_total.as_ref())
         {
