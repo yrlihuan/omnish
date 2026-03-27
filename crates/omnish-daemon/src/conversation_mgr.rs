@@ -3,6 +3,14 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct ThreadUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct ThreadMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
@@ -16,6 +24,15 @@ pub struct ThreadMeta {
     /// Backend name for per-thread model override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Last LLM call usage (for display in /thread stats).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_last: Option<ThreadUsage>,
+    /// Cumulative usage for the current model (resets on model switch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_total: Option<ThreadUsage>,
+    /// Name of the model that produced usage_last/usage_total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_model: Option<String>,
 }
 
 pub struct ConversationManager {

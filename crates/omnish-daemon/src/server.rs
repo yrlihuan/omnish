@@ -1066,6 +1066,13 @@ async fn handle_chat_message(
 
     // Load prior conversation history as raw JSON
     let mut extra_messages = conv_mgr.load_raw_messages(&cm.thread_id);
+    // Strip internal metadata fields that must not be sent to the LLM API
+    for msg in &mut extra_messages {
+        if let Some(obj) = msg.as_object_mut() {
+            obj.remove("_usage");
+            obj.remove("_model");
+        }
+    }
     let prior_len = extra_messages.len();
 
     // User message for LLM: includes system-reminder
@@ -1228,20 +1235,47 @@ async fn handle_tool_result(
 /// Used by both `handle_chat_message` (initial) and `handle_tool_result` (resumption).
 /// Messages are sent incrementally through `tx` as they're produced (streaming).
 #[allow(clippy::too_many_arguments)]
-/// Attach `_usage` and `_model` to the last assistant message in a message list.
-fn stamp_usage(messages: &mut [serde_json::Value], usage: &omnish_llm::backend::Usage, model: &str) {
+/// Update thread meta with cumulative usage after an agent loop run.
+/// Resets totals when the model changes.
+fn update_thread_usage(
+    conv_mgr: &omnish_daemon::conversation_mgr::ConversationManager,
+    thread_id: &str,
+    usage: &omnish_llm::backend::Usage,
+    model: &str,
+) {
     if model.is_empty() {
         return;
     }
-    if let Some(msg) = messages.iter_mut().rev().find(|m| m["role"].as_str() == Some("assistant")) {
-        msg["_usage"] = serde_json::json!({
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "cache_read_input_tokens": usage.cache_read_input_tokens,
-            "cache_creation_input_tokens": usage.cache_creation_input_tokens,
-        });
-        msg["_model"] = serde_json::json!(model);
-    }
+    use omnish_daemon::conversation_mgr::ThreadUsage;
+    let mut meta = conv_mgr.load_meta(thread_id);
+    let last = ThreadUsage {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read_input_tokens: usage.cache_read_input_tokens,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens,
+    };
+    // Reset totals on model switch
+    let same_model = meta.last_model.as_deref() == Some(model);
+    let total = if same_model {
+        let prev = meta.usage_total.get_or_insert(ThreadUsage::default());
+        ThreadUsage {
+            input_tokens: prev.input_tokens + usage.input_tokens,
+            output_tokens: prev.output_tokens + usage.output_tokens,
+            cache_read_input_tokens: prev.cache_read_input_tokens + usage.cache_read_input_tokens,
+            cache_creation_input_tokens: prev.cache_creation_input_tokens + usage.cache_creation_input_tokens,
+        }
+    } else {
+        ThreadUsage {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_input_tokens: usage.cache_read_input_tokens,
+            cache_creation_input_tokens: usage.cache_creation_input_tokens,
+        }
+    };
+    meta.usage_last = Some(last);
+    meta.usage_total = Some(total);
+    meta.last_model = Some(model.to_string());
+    conv_mgr.save_meta(thread_id, &meta);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1272,8 +1306,8 @@ async fn run_agent_loop(
             }
             // Append event marker so LLM knows the user interrupted
             to_store.push(serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}));
-            stamp_usage(&mut to_store, &state.cumulative_usage, &state.last_model);
             conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+            update_thread_usage(conv_mgr, &state.cm.thread_id, &state.cumulative_usage, &state.last_model);
             return;
         }
 
@@ -1479,8 +1513,8 @@ async fn run_agent_loop(
                             to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
                         }
                         to_store.push(serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}));
-                        stamp_usage(&mut to_store, &state.cumulative_usage, &state.last_model);
                         conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+                        update_thread_usage(conv_mgr, &state.cm.thread_id, &state.cumulative_usage, &state.last_model);
                         return;
                     }
 
@@ -1536,8 +1570,8 @@ async fn run_agent_loop(
                 // Store new messages without system-reminder in user message
                 let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
                 to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
-                stamp_usage(&mut to_store, &state.cumulative_usage, &state.last_model);
                 conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+                update_thread_usage(conv_mgr, &state.cm.thread_id, &state.cumulative_usage, &state.last_model);
                 let _ = tx.send(Message::ChatResponse(ChatResponse {
                     request_id: state.cm.request_id.clone(),
                     thread_id: state.cm.thread_id.clone(),
@@ -1577,8 +1611,8 @@ async fn run_agent_loop(
                     }));
                     let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
                     to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
-                    stamp_usage(&mut to_store, &state.cumulative_usage, &state.last_model);
                     conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+                    update_thread_usage(conv_mgr, &state.cm.thread_id, &state.cumulative_usage, &state.last_model);
 
                     let _ = tx.send(Message::ChatResponse(ChatResponse {
                         request_id: state.cm.request_id.clone(),
@@ -1611,8 +1645,8 @@ async fn run_agent_loop(
     }));
     let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
     to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
-    stamp_usage(&mut to_store, &state.cumulative_usage, &state.last_model);
     conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+    update_thread_usage(conv_mgr, &state.cm.thread_id, &state.cumulative_usage, &state.last_model);
     let _ = tx.send(Message::ChatResponse(ChatResponse {
         request_id: state.cm.request_id,
         thread_id: state.cm.thread_id,
@@ -2150,56 +2184,25 @@ async fn format_thread_stats(conv_mgr: &ConversationManager, active_threads: &Ac
         }
         output.push('\n');
 
-        // Scan messages for _usage and _model fields
-        let messages = conv_mgr.load_raw_messages(&thread_id);
-        let mut current_model = String::new();
-        let mut last_input = 0u64;
-        let mut last_output = 0u64;
-        let mut total_input = 0u64;
-        let mut total_output = 0u64;
-        let mut total_cache_read = 0u64;
-
-        for msg in &messages {
-            if let Some(usage) = msg.get("_usage") {
-                let model = msg.get("_model").and_then(|v| v.as_str()).unwrap_or("");
-
-                // Reset stats on model switch
-                if !model.is_empty() && model != current_model && !current_model.is_empty() {
-                    total_input = 0;
-                    total_output = 0;
-                    total_cache_read = 0;
-                }
-                if !model.is_empty() {
-                    current_model = model.to_string();
-                }
-
-                let inp = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                let out = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                let cache = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-
-                last_input = inp;
-                last_output = out;
-                total_input += inp;
-                total_output += out;
-                total_cache_read += cache;
-            }
-        }
-
-        if current_model.is_empty() {
-            output.push_str("       (no usage data)\n");
-        } else {
-            let cache_rate = if total_input > 0 {
-                (total_cache_read as f64 / total_input as f64) * 100.0
+        // Read usage stats from thread meta
+        let meta = conv_mgr.load_meta(&thread_id);
+        if let (Some(last_model), Some(last), Some(total)) =
+            (meta.last_model.as_deref(), meta.usage_last.as_ref(), meta.usage_total.as_ref())
+        {
+            let cache_rate = if total.input_tokens > 0 {
+                (total.cache_read_input_tokens as f64 / total.input_tokens as f64) * 100.0
             } else {
                 0.0
             };
             output.push_str(&format!(
                 "       model: {} | context: {} | total: {} | cache: {:.1}%\n",
-                current_model,
-                format_tokens(last_input + last_output),
-                format_tokens(total_input + total_output),
+                last_model,
+                format_tokens(last.input_tokens + last.output_tokens),
+                format_tokens(total.input_tokens + total.output_tokens),
                 cache_rate,
             ));
+        } else {
+            output.push_str("       (no usage data)\n");
         }
     }
     cmd_display(output)
