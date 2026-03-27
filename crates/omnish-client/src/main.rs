@@ -658,7 +658,6 @@ async fn main() -> Result<()> {
     let mut last_thread_id: Option<String> = resume_args.as_ref().and_then(|r| r.last_thread_id.clone());
 
     // Auto-update state
-    let auto_update_enabled = Arc::new(AtomicBool::new(config.auto_update));
     let mut exe_mtime = std::env::current_exe()
         .ok()
         .and_then(|p| {
@@ -705,8 +704,7 @@ async fn main() -> Result<()> {
         // Those conditions only guard the mtime restart. If UpdateCheck is blocked by them,
         // clients that are busy (running commands, in vim, etc.) will never download updates,
         // creating a chicken-and-egg problem where old clients can't get the new code.
-        if auto_update_enabled.load(Ordering::Relaxed)
-            && last_update_check.elapsed() >= AUTO_UPDATE_INTERVAL
+        if last_update_check.elapsed() >= AUTO_UPDATE_INTERVAL
             && !interceptor.is_in_chat()
         {
             last_update_check = std::time::Instant::now();
@@ -852,7 +850,7 @@ async fn main() -> Result<()> {
                             None, &daemon_conn, &mut chat_history, &mut last_thread_id,
                             &session_id, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
-                            &auto_update_enabled, &onboarded, locked,
+                            &onboarded, locked,
                         ).await;
                         if let chat_session::ChatExitAction::Lock(lock) = exit_action {
                             handle_lock(&mut proxy, &mut master_fd, &mut locked, lock, &shell, &shell_args_ref, &session_id);
@@ -1047,7 +1045,7 @@ async fn main() -> Result<()> {
                             initial, &daemon_conn, &mut chat_history, &mut last_thread_id,
                             &session_id, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
-                            &auto_update_enabled, &onboarded, locked,
+                            &onboarded, locked,
                         ).await;
                         if let chat_session::ChatExitAction::Lock(lock) = exit_action {
                             handle_lock(&mut proxy, &mut master_fd, &mut locked, lock, &shell, &shell_args_ref, &session_id);
@@ -1066,7 +1064,7 @@ async fn main() -> Result<()> {
                             Some(resume_cmd), &daemon_conn, &mut chat_history, &mut last_thread_id,
                             &session_id, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
-                            &auto_update_enabled, &onboarded, locked,
+                            &onboarded, locked,
                         ).await;
                         if let chat_session::ChatExitAction::Lock(lock) = exit_action {
                             handle_lock(&mut proxy, &mut master_fd, &mut locked, lock, &shell, &shell_args_ref, &session_id);
@@ -2032,7 +2030,6 @@ async fn enter_chat_mode(
     osc133_detector: &omnish_tracker::osc133_detector::Osc133Detector,
     last_readline_content: &Option<String>,
     col_tracker: &CursorTracker,
-    auto_update_enabled: &AtomicBool,
     onboarded: &AtomicBool,
     locked: bool,
 ) -> chat_session::ChatExitAction {
@@ -2050,7 +2047,7 @@ async fn enter_chat_mode(
         let pending_cd;
         {
             let mut session = chat_session::ChatSession::new(std::mem::take(chat_history));
-            action = session.run(rpc, session_id, proxy, initial_msg, &dbg_fn, auto_update_enabled, onboarded, col_tracker.col, col_tracker.row).await;
+            action = session.run(rpc, session_id, proxy, initial_msg, &dbg_fn, onboarded, col_tracker.col, col_tracker.row).await;
             let new_tid = session.thread_id().map(String::from);
             event_log::push(format!("chat exit: last_thread_id {:?} -> {:?}", last_thread_id, new_tid));
             *last_thread_id = new_tid;
@@ -2452,9 +2449,8 @@ pub(crate) async fn handle_slash_command(
     cursor_col: u16,
     cursor_row: u16,
 ) -> bool {
-    // /update and /update auto are intercepted in DaemonQuery handling below
-    // (they need process state: proxy fd/pid, and mutable auto_update_enabled)
-    // /update auto is intercepted at the call site (needs mutable auto_update_enabled)
+    // /update is intercepted in DaemonQuery handling below
+    // (it needs process state: proxy fd/pid)
 
     match command::dispatch(trimmed) {
         command::ChatAction::Command { result, redirect, limit } => {

@@ -34,8 +34,6 @@ pub struct ClientConfig {
     #[serde(default = "default_true")]
     pub completion_enabled: bool,
     #[serde(default)]
-    pub auto_update: bool,
-    #[serde(default)]
     pub onboarded: bool,
 }
 
@@ -49,7 +47,6 @@ impl Default for ClientConfig {
             shell: ShellConfig::default(),
             daemon_addr: default_socket_path(),
             completion_enabled: true,
-            auto_update: false,
             onboarded: false,
         }
     }
