@@ -2000,7 +2000,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
         }
         "sessions" => cmd_display(mgr.format_sessions_list(&req.session_id).await),
         "conversations" => format_conversations_json(conv_mgr, active_threads).await,
-        "conversations stats" => format_thread_stats(conv_mgr, active_threads).await,
+        "conversations stats" => format_thread_stats(conv_mgr, active_threads, &req.session_id).await,
         "session" => match get_session_debug_info(&req.session_id, mgr).await {
             Ok(info) => cmd_display(info),
             Err(e) => cmd_display(format!("Error: {}", e)),
@@ -2142,7 +2142,61 @@ async fn format_conversations_json(conv_mgr: &Arc<ConversationManager>, active_t
 /// - Last exchange tokens (input+output)
 /// - Total tokens (sum of all exchanges, reset on model switch)
 /// - Cache hit rate (cache_read / input)
-async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads: &ActiveThreads) -> serde_json::Value {
+async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads: &ActiveThreads, session_id: &str) -> serde_json::Value {
+    // Find the thread currently claimed by this session, if any.
+    let current_thread_id: Option<String> = {
+        let threads = active_threads.lock().await;
+        threads
+            .iter()
+            .find(|(_, claim)| claim.session_id == session_id)
+            .map(|(tid, _)| tid.clone())
+    };
+
+    // If there is an active thread for this session, show only that thread.
+    if let Some(ref thread_id) = current_thread_id {
+        let meta = conv_mgr.load_meta(thread_id);
+        let conversations = conv_mgr.list_conversations();
+        let entry = conversations
+            .into_iter()
+            .find(|(tid, _, _, _)| tid == thread_id);
+
+        let (exchange_count, modified) = entry
+            .map(|(_, modified, exchange_count, _)| (exchange_count, modified))
+            .unwrap_or((0, std::time::SystemTime::now()));
+
+        let time_ago = format_relative_time(modified);
+        let title_display = meta.summary.as_deref().unwrap_or("untitled");
+
+        let mut output = format!(
+            "Thread Stats:\n  {} | {} turns | {} [active]\n",
+            time_ago,
+            exchange_count,
+            title_display,
+        );
+
+        if let (Some(last_model), Some(last), Some(total)) =
+            (meta.last_model.as_deref(), meta.usage_last.as_ref(), meta.usage_total.as_ref())
+        {
+            let cache_rate = if total.input_tokens > 0 {
+                (total.cache_read_input_tokens as f64 / total.input_tokens as f64) * 100.0
+            } else {
+                0.0
+            };
+            output.push_str(&format!(
+                "  model: {} | context: {} | total: {} | cache: {:.1}%\n",
+                last_model,
+                format_tokens(last.input_tokens + last.output_tokens),
+                format_tokens(total.input_tokens + total.output_tokens),
+                cache_rate,
+            ));
+        } else {
+            output.push_str("  (no usage data)\n");
+        }
+
+        return cmd_display(output);
+    }
+
+    // No active thread: fall back to showing all threads.
     let conversations = conv_mgr.list_conversations();
     if conversations.is_empty() {
         return cmd_display("No conversations yet. Start a chat with :");
