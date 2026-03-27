@@ -387,6 +387,7 @@ impl Default for LlmConfig {
 ///   base_url = "https://cloud.langfuse.com"
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LangfuseConfig {
+    #[serde(default)]
     pub public_key: String,
     #[serde(default)]
     pub secret_key: Option<String>,
@@ -402,9 +403,15 @@ fn default_llm_name() -> String {
     "claude".to_string()
 }
 
+fn default_backend_type() -> String {
+    "openai-compat".to_string()
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LlmBackendConfig {
+    #[serde(default = "default_backend_type")]
     pub backend_type: String,
+    #[serde(default)]
     pub model: String,
     #[serde(default)]
     pub api_key_cmd: Option<String>,
