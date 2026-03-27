@@ -172,8 +172,8 @@ impl LlmBackend for AnthropicBackend {
             let resp_text = resp.text().await?;
             let json: serde_json::Value = serde_json::from_str(&resp_text)
                 .map_err(|e| {
-                    let preview = if resp_text.len() > 200 {
-                        format!("{}...(truncated, total {} bytes)", &resp_text[..200], resp_text.len())
+                    let preview = if resp_text.len() > 1000 {
+                        format!("{}...(truncated, total {} bytes)", &resp_text[..1000], resp_text.len())
                     } else {
                         resp_text.clone()
                     };
