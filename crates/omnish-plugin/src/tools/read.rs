@@ -2,8 +2,6 @@ use omnish_llm::tool::ToolResult;
 
 /// Maximum bytes to return.
 const MAX_OUTPUT_BYTES: usize = 50_000;
-/// Default and maximum lines to return.
-const DEFAULT_LIMIT: usize = 2000;
 /// Maximum characters per line before truncation.
 const MAX_LINE_CHARS: usize = 2000;
 
@@ -34,7 +32,8 @@ impl ReadTool {
         }
 
         let offset = input["offset"].as_u64().unwrap_or(1).max(1) as usize;
-        let limit = input["limit"].as_u64().unwrap_or(DEFAULT_LIMIT as u64) as usize;
+        // 0 means unlimited; only apply DEFAULT_LIMIT when explicitly requested
+        let limit = input["limit"].as_u64().unwrap_or(0) as usize;
 
         let content = match std::fs::read_to_string(file_path) {
             Ok(c) => c,
@@ -55,14 +54,18 @@ impl ReadTool {
             };
         }
 
+        let total_chars = content.chars().count();
+
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
 
         let start = (offset - 1).min(total_lines);
-        let end = (start + limit).min(total_lines);
+        let effective_limit = if limit == 0 { total_lines - start } else { limit };
+        let end = (start + effective_limit).min(total_lines);
 
         let mut result = String::new();
-        let mut bytes = 0;
+        let mut char_count = 0;
+        let mut truncated_by_bytes = false;
 
         for (i, &line) in lines[start..end].iter().enumerate() {
             let line_no = start + i + 1;
@@ -73,20 +76,22 @@ impl ReadTool {
                 line.to_string()
             };
             let numbered = format!("{:>6}\t{}\n", line_no, display_line);
-            bytes += numbered.len();
-            if bytes > MAX_OUTPUT_BYTES {
+            char_count += numbered.chars().count();
+            if char_count > MAX_OUTPUT_BYTES {
                 result.push_str(&format!(
-                    "\n... (truncated at {} bytes, showing {}/{} lines)",
+                    "\nFile content ({} characters) exceeds maximum allowed characters ({}). \
+                    Please use offset and limit parameters to read specific portions of the file, \
+                    or use the GrepTool to search for specific content.",
+                    total_chars,
                     MAX_OUTPUT_BYTES,
-                    i,
-                    total_lines
                 ));
+                truncated_by_bytes = true;
                 break;
             }
             result.push_str(&numbered);
         }
 
-        if end < total_lines && bytes <= MAX_OUTPUT_BYTES {
+        if end < total_lines && !truncated_by_bytes {
             result.push_str(&format!(
                 "\n({} more lines after line {})",
                 total_lines - end,
