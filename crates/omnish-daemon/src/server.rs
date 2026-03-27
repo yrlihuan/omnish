@@ -975,7 +975,13 @@ struct ChatSetup {
 /// Serialize a ContentBlock to its JSON representation for the Anthropic messages API.
 fn content_block_to_json(block: &ContentBlock) -> serde_json::Value {
     match block {
-        ContentBlock::Thinking(t) => serde_json::json!({"type": "thinking", "thinking": t}),
+        ContentBlock::Thinking { thinking: t, signature } => {
+            let mut v = serde_json::json!({"type": "thinking", "thinking": t});
+            if let Some(sig) = signature {
+                v["signature"] = serde_json::Value::String(sig.clone());
+            }
+            v
+        }
         ContentBlock::Text(t) => serde_json::json!({"type": "text", "text": t}),
         ContentBlock::ToolUse(tc) => serde_json::json!({
             "type": "tool_use",
@@ -1517,7 +1523,7 @@ async fn run_agent_loop(
                     state.cm.thread_id
                 );
                 // Push final assistant response preserving original block order
-                let has_thinking = response.content.iter().any(|b| matches!(b, ContentBlock::Thinking(_)));
+                let has_thinking = response.content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. }));
                 let assistant_msg = if has_thinking {
                     let content: Vec<serde_json::Value> = response.content.iter()
                         .map(content_block_to_json)

@@ -29,7 +29,7 @@ pub enum UseCase {
 pub enum ContentBlock {
     Text(String),
     ToolUse(ToolCall),
-    Thinking(String),
+    Thinking { thinking: String, signature: Option<String> },
 }
 
 /// Why the LLM stopped generating.
@@ -107,7 +107,7 @@ impl LlmResponse {
     /// Extract concatenated thinking content (if any).
     pub fn thinking(&self) -> Option<String> {
         let parts: Vec<&str> = self.content.iter().filter_map(|b| match b {
-            ContentBlock::Thinking(t) => Some(t.as_str()),
+            ContentBlock::Thinking { thinking: t, .. } => Some(t.as_str()),
             _ => None,
         }).collect();
         if parts.is_empty() { None } else { Some(parts.join("\n")) }

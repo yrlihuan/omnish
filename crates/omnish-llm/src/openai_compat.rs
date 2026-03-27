@@ -300,7 +300,7 @@ impl LlmBackend for OpenAiCompatBackend {
                     extract_thinking(raw_content)
                 };
                 if let Some(thinking) = think {
-                    content_blocks.push(ContentBlock::Thinking(thinking));
+                    content_blocks.push(ContentBlock::Thinking { thinking, signature: None });
                 }
                 if !text.is_empty() {
                     content_blocks.push(ContentBlock::Text(text));

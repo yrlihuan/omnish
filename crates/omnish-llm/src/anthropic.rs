@@ -213,7 +213,11 @@ impl LlmBackend for AnthropicBackend {
                 match block["type"].as_str() {
                     Some("thinking") => {
                         if let Some(text) = block["thinking"].as_str() {
-                            content_blocks.push(ContentBlock::Thinking(text.to_string()));
+                            let signature = block["signature"].as_str().map(|s| s.to_string());
+                            content_blocks.push(ContentBlock::Thinking {
+                                thinking: text.to_string(),
+                                signature,
+                            });
                         }
                     }
                     Some("text") => {
