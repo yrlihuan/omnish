@@ -24,6 +24,26 @@ fn strip_thinking(content: &str) -> String {
     content.replace("\n<think>", "").replace("</think>", "")
 }
 
+/// Add `cache_control: {"type": "ephemeral"}` to a message's last content block.
+/// Handles both string content (converted to array format) and array content.
+fn inject_cache_control(msg: &mut serde_json::Value) {
+    match msg.get("content").cloned() {
+        Some(serde_json::Value::String(s)) => {
+            msg["content"] = serde_json::json!([
+                {"type": "text", "text": s, "cache_control": {"type": "ephemeral"}}
+            ]);
+        }
+        Some(serde_json::Value::Array(arr)) if !arr.is_empty() => {
+            let mut new_arr = arr;
+            if let Some(last_block) = new_arr.last_mut() {
+                last_block["cache_control"] = serde_json::json!({"type": "ephemeral"});
+            }
+            msg["content"] = serde_json::Value::Array(new_arr);
+        }
+        _ => {}
+    }
+}
+
 /// Parse `retry-after` header value (seconds) from response headers.
 fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
     let val = resp.headers().get("retry-after")?.to_str().ok()?;
@@ -63,6 +83,11 @@ impl LlmBackend for AnthropicBackend {
             }
             // Append extra messages (tool_use assistant + tool_result user exchanges)
             msgs.extend(req.extra_messages.clone());
+            // Mark the last message with cache_control so the entire prefix is cached
+            // and reused on subsequent agent-loop iterations or follow-up exchanges.
+            if let Some(last) = msgs.last_mut() {
+                inject_cache_control(last);
+            }
             msgs
         };
 
@@ -72,9 +97,11 @@ impl LlmBackend for AnthropicBackend {
         body_map.insert("max_tokens".to_string(), serde_json::Value::Number(8192.into()));
         body_map.insert("messages".to_string(), serde_json::Value::Array(messages));
 
-        // Add system prompt if provided
+        // Add system prompt if provided (array format with cache_control for prompt caching)
         if let Some(ref system) = req.system_prompt {
-            body_map.insert("system".to_string(), serde_json::Value::String(system.clone()));
+            body_map.insert("system".to_string(), serde_json::json!([
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+            ]));
         }
 
         // Add tools if provided
