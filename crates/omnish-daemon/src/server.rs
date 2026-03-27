@@ -1234,7 +1234,7 @@ async fn handle_tool_result(
     cancel_flags.lock().await.remove(&req_id);
 }
 
-/// Update thread meta with cumulative usage after an agent loop run.
+/// Update thread meta with the most recent API call's usage after an agent loop run.
 /// Resets totals when the model changes.
 /// `last_response` — the final LLM API call's usage (stored as usage_last, added to usage_total).
 /// `model` — config backend name used to detect model switches.
@@ -1609,32 +1609,37 @@ async fn run_agent_loop(
 
                 tracing::error!("Chat LLM failed: {}", e);
 
-                // Save progress so the conversation can be continued
-                let has_progress = state.llm_req.extra_messages.len() > state.prior_len + 1;
-                if has_progress {
-                    let error_note = "Connection to the AI service was lost. Your previous tool results have been saved — you can continue by sending another message.";
-                    state.llm_req.extra_messages.push(serde_json::json!({
-                        "role": "assistant",
-                        "content": error_note,
-                    }));
-                    let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
-                    to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
-                    conv_mgr.append_messages(&state.cm.thread_id, &to_store);
-                    update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.last_model);
-
-                    let _ = tx.send(Message::ChatResponse(ChatResponse {
-                        request_id: state.cm.request_id.clone(),
-                        thread_id: state.cm.thread_id.clone(),
-                        content: error_note.to_string(),
-                    })).await;
+                // User-visible message: include truncated error string
+                let display_err: &str = if err_str.len() > 200 {
+                    &err_str[..err_str.floor_char_boundary(200)]
                 } else {
-                    let user_msg = format!("Failed to reach the AI service: {}. Please try again.", err_str);
-                    let _ = tx.send(Message::ChatResponse(ChatResponse {
-                        request_id: state.cm.request_id.clone(),
-                        thread_id: state.cm.thread_id.clone(),
-                        content: user_msg,
-                    })).await;
+                    &err_str
+                };
+                let user_msg = if is_connection {
+                    format!("Connection to the AI service was lost: {}. Your progress has been saved — you can continue by sending another message.", display_err)
+                } else {
+                    format!("AI service returned an error: {}. Your progress has been saved — you can continue by sending another message.", display_err)
+                };
+
+                // Persist a short event marker (like the cancel paths) so the
+                // LLM knows the exchange was interrupted without bloating context.
+                state.llm_req.extra_messages.push(serde_json::json!({
+                    "role": "assistant",
+                    "content": "<event>api error</event>",
+                }));
+                let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
+                // Safe: user message is always pushed at prior_len before the loop starts
+                if !to_store.is_empty() {
+                    to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
                 }
+                conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+                update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.last_model);
+
+                let _ = tx.send(Message::ChatResponse(ChatResponse {
+                    request_id: state.cm.request_id.clone(),
+                    thread_id: state.cm.thread_id.clone(),
+                    content: user_msg,
+                })).await;
                 return;
             }
         }
@@ -2171,7 +2176,7 @@ async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads
 
         let (exchange_count, modified) = entry
             .map(|(_, modified, exchange_count, _)| (exchange_count, modified))
-            .unwrap_or((0, std::time::SystemTime::now()));
+            .unwrap_or((0, std::time::UNIX_EPOCH));
 
         let time_ago = format_relative_time(modified);
         let title_display = meta.summary.as_deref().unwrap_or("untitled");
