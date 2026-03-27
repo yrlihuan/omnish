@@ -1287,7 +1287,7 @@ async fn run_agent_loop(
                     state.cumulative_usage.cache_read_input_tokens += u.cache_read_input_tokens;
                     state.cumulative_usage.cache_creation_input_tokens += u.cache_creation_input_tokens;
                 }
-                state.last_model = response.model.clone();
+                state.last_model = backend.name().to_string();
 
                 if response.stop_reason == StopReason::ToolUse {
                     let tool_calls = response.tool_calls();
@@ -2194,10 +2194,10 @@ async fn format_thread_stats(conv_mgr: &ConversationManager, active_threads: &Ac
                 0.0
             };
             output.push_str(&format!(
-                "       model: {} | last: {}+{}={} | total: {}+{}={} | cache: {:.0}%\n",
+                "       model: {} | context: {} | total: {} | cache: {:.1}%\n",
                 current_model,
-                format_tokens(last_input), format_tokens(last_output), format_tokens(last_input + last_output),
-                format_tokens(total_input), format_tokens(total_output), format_tokens(total_input + total_output),
+                format_tokens(last_input + last_output),
+                format_tokens(total_input + total_output),
                 cache_rate,
             ));
         }
