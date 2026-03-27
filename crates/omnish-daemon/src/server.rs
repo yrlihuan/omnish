@@ -2191,8 +2191,9 @@ async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads
         if let (Some(last_model), Some(last), Some(total)) =
             (meta.last_model.as_deref(), meta.usage_last.as_ref(), meta.usage_total.as_ref())
         {
-            let cache_rate = if total.input_tokens > 0 {
-                (total.cache_read_input_tokens as f64 / total.input_tokens as f64) * 100.0
+            let total_input = total.input_tokens + total.cache_read_input_tokens + total.cache_creation_input_tokens;
+            let cache_rate = if total_input > 0 {
+                (total.cache_read_input_tokens as f64 / total_input as f64) * 100.0
             } else {
                 0.0
             };
@@ -2256,8 +2257,9 @@ async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads
         if let (Some(last_model), Some(last), Some(total)) =
             (meta.last_model.as_deref(), meta.usage_last.as_ref(), meta.usage_total.as_ref())
         {
-            let cache_rate = if total.input_tokens > 0 {
-                (total.cache_read_input_tokens as f64 / total.input_tokens as f64) * 100.0
+            let total_input = total.input_tokens + total.cache_read_input_tokens + total.cache_creation_input_tokens;
+            let cache_rate = if total_input > 0 {
+                (total.cache_read_input_tokens as f64 / total_input as f64) * 100.0
             } else {
                 0.0
             };
