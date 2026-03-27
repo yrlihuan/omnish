@@ -1320,7 +1320,10 @@ async fn run_agent_loop(
                     state.cumulative_usage.cache_read_input_tokens += u.cache_read_input_tokens;
                     state.cumulative_usage.cache_creation_input_tokens += u.cache_creation_input_tokens;
                 }
-                state.last_model = backend.name().to_string();
+                state.last_model = {
+                    let n = backend.chat_default_name();
+                    if n.is_empty() { backend.name().to_string() } else { n.to_string() }
+                };
 
                 if response.stop_reason == StopReason::ToolUse {
                     let tool_calls = response.tool_calls();
