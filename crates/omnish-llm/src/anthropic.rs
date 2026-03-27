@@ -83,10 +83,12 @@ impl LlmBackend for AnthropicBackend {
             }
             // Append extra messages (tool_use assistant + tool_result user exchanges)
             msgs.extend(req.extra_messages.clone());
-            // Mark the last message with cache_control so the entire prefix is cached
-            // and reused on subsequent agent-loop iterations or follow-up exchanges.
-            if let Some(last) = msgs.last_mut() {
-                inject_cache_control(last);
+            // Mark the second-to-last message with cache_control so the stable
+            // prefix is cached.  The last message contains a system-reminder that
+            // changes between requests, so it must NOT be the cache boundary.
+            let len = msgs.len();
+            if len >= 2 {
+                inject_cache_control(&mut msgs[len - 2]);
             }
             msgs
         };
@@ -104,9 +106,9 @@ impl LlmBackend for AnthropicBackend {
             ]));
         }
 
-        // Add tools if provided
+        // Add tools if provided (cache_control on last tool — tools are stable across calls)
         if !req.tools.is_empty() {
-            let tools_json: Vec<serde_json::Value> = req.tools
+            let mut tools_json: Vec<serde_json::Value> = req.tools
                 .iter()
                 .map(|t| serde_json::json!({
                     "name": t.name,
@@ -114,6 +116,9 @@ impl LlmBackend for AnthropicBackend {
                     "input_schema": t.input_schema,
                 }))
                 .collect();
+            if let Some(last_tool) = tools_json.last_mut() {
+                last_tool["cache_control"] = serde_json::json!({"type": "ephemeral"});
+            }
             body_map.insert("tools".to_string(), serde_json::Value::Array(tools_json));
         }
 
