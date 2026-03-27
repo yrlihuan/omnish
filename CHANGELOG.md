@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.8.5 (2026-03-27)
+
+### Features
+- **client**: Event log entries for update checks, disconnects, and reconnects (#431)
+- **client**: `/config` command with menu-based daemon configuration
+- **daemon**: Handle ConfigQuery/ConfigUpdate messages for remote configuration
+- **config**: Config schema parsing and config item builder for dynamic menu generation
+- **menu**: Handler submenu support with `on_handler_exit` callback, form mode for auto-edit and cursor advance
+- **update**: Download packages from GitHub releases, per-host transfer lock, hostname in protocol (#346)
+- **update**: Protocol-based update polling, download, and local cache management (#346)
+- **daemon**: Scheduled update downloads and periodic cache scan (#346)
+- **tool**: Duplicate code finder tool (#375)
+
+### Fixes
+- **update**: Prevent multi-process tmp file collision with PID-unique filenames (#438)
+- **update**: Add error context to download and install steps (#438)
+- **sandbox**: Switch macOS profile from deny-default to allow-default (#437)
+- **sandbox**: Add sysctl-read and missing permissions to macOS sandbox profile (#437)
+- **config**: Add default values for LLM backend config fields (#440)
+- **client**: Remove client-side auto_update config — update checks always enabled (#433)
+- **transport**: Stop reconnect loop after repeated auth failures (#431)
+- **transport**: Reject clients with mismatched protocol version (#346)
+- **client**: Correct notice message on protocol mismatch
+- **sandbox**: Upgrade Landlock ABI from V1 to V5 to fix EXDEV
+- **client**: Suppress notices during alternate screen (vim, less, htop)
+- **client**: Ghost text rendering fixes — deferred render, readline redraw handling
+- **daemon**: Retry on LLM connection errors and save progress on failure (#407)
+- **client**: Show resume picker when `::` has no last_thread_id (#406)
+- **client**: Invert developer_mode semantics — default blocks chat when line has content (#393)
+- **daemon**: EMFILE handling — dump fd stats instead of crashing
+- **menu**: Navigation rendering, batched ASCII input, text editor quality improvements
+- **tool**: Remove `[stderr]` prefix from bash tool output (#427)
+
+### Refactoring
+- **update**: Share update utilities, unify auth, support cross-version upgrades
+- **client**: Pass cursor and thread-id via env vars on client restart
+- **menu**: Extract shared terminal utilities
+
+### Tests
+- Integration tests for menu widget, ghost text, and interceptor
+- Stricter clippy checks, CI improvements
+
 ## v0.8.4 (2026-03-23)
 
 ### Features
