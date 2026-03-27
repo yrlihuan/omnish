@@ -232,6 +232,11 @@ const COMMANDS: &[CommandEntry] = &[
         help: "List all conversation threads",
     },
     CommandEntry {
+        path: "/thread stats",
+        kind: CommandKind::Daemon("conversations stats"),
+        help: "Show token usage statistics for all threads",
+    },
+    CommandEntry {
         path: "/thread del",
         kind: CommandKind::Daemon("conversations del"),
         help: "Delete a conversation thread",

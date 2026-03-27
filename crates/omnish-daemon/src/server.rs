@@ -46,6 +46,10 @@ struct AgentLoopState {
     effective_backend: Arc<dyn LlmBackend>,
     /// Number of LLM connection retries used in this agent loop.
     llm_retries: u32,
+    /// Cumulative token usage across all LLM calls in this agent loop.
+    cumulative_usage: omnish_llm::backend::Usage,
+    /// Model name from the last LLM response.
+    last_model: String,
 }
 
 /// Tracks which session is actively using each thread.
@@ -1087,6 +1091,8 @@ async fn handle_chat_message(
         command_query_tool,
         effective_backend,
         llm_retries: 0,
+        cumulative_usage: Default::default(),
+        last_model: String::new(),
     };
 
     run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, tool_params, opts, tx, cancel_flag).await;
@@ -1216,6 +1222,23 @@ async fn handle_tool_result(
 /// Used by both `handle_chat_message` (initial) and `handle_tool_result` (resumption).
 /// Messages are sent incrementally through `tx` as they're produced (streaming).
 #[allow(clippy::too_many_arguments)]
+/// Attach `_usage` and `_model` to the last assistant message in a message list.
+fn stamp_usage(messages: &mut [serde_json::Value], usage: &omnish_llm::backend::Usage, model: &str) {
+    if model.is_empty() {
+        return;
+    }
+    if let Some(msg) = messages.iter_mut().rev().find(|m| m["role"].as_str() == Some("assistant")) {
+        msg["_usage"] = serde_json::json!({
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_read_input_tokens": usage.cache_read_input_tokens,
+            "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+        });
+        msg["_model"] = serde_json::json!(model);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_agent_loop(
     mut state: AgentLoopState,
     conv_mgr: &Arc<ConversationManager>,
@@ -1243,6 +1266,7 @@ async fn run_agent_loop(
             }
             // Append event marker so LLM knows the user interrupted
             to_store.push(serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}));
+            stamp_usage(&mut to_store, &state.cumulative_usage, &state.last_model);
             conv_mgr.append_messages(&state.cm.thread_id, &to_store);
             return;
         }
@@ -1250,6 +1274,15 @@ async fn run_agent_loop(
         match backend.complete(&state.llm_req).await {
             Ok(response) => {
                 state.llm_retries = 0;
+                // Accumulate token usage across iterations
+                if let Some(ref u) = response.usage {
+                    state.cumulative_usage.input_tokens += u.input_tokens;
+                    state.cumulative_usage.output_tokens += u.output_tokens;
+                    state.cumulative_usage.cache_read_input_tokens += u.cache_read_input_tokens;
+                    state.cumulative_usage.cache_creation_input_tokens += u.cache_creation_input_tokens;
+                }
+                state.last_model = response.model.clone();
+
                 if response.stop_reason == StopReason::ToolUse {
                     let tool_calls = response.tool_calls();
                     if tool_calls.is_empty() {
@@ -1440,6 +1473,7 @@ async fn run_agent_loop(
                             to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
                         }
                         to_store.push(serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}));
+                        stamp_usage(&mut to_store, &state.cumulative_usage, &state.last_model);
                         conv_mgr.append_messages(&state.cm.thread_id, &to_store);
                         return;
                     }
@@ -1496,6 +1530,7 @@ async fn run_agent_loop(
                 // Store new messages without system-reminder in user message
                 let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
                 to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
+                stamp_usage(&mut to_store, &state.cumulative_usage, &state.last_model);
                 conv_mgr.append_messages(&state.cm.thread_id, &to_store);
                 let _ = tx.send(Message::ChatResponse(ChatResponse {
                     request_id: state.cm.request_id.clone(),
@@ -1536,6 +1571,7 @@ async fn run_agent_loop(
                     }));
                     let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
                     to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
+                    stamp_usage(&mut to_store, &state.cumulative_usage, &state.last_model);
                     conv_mgr.append_messages(&state.cm.thread_id, &to_store);
 
                     let _ = tx.send(Message::ChatResponse(ChatResponse {
@@ -1569,6 +1605,7 @@ async fn run_agent_loop(
     }));
     let mut to_store = state.llm_req.extra_messages[state.prior_len..].to_vec();
     to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
+    stamp_usage(&mut to_store, &state.cumulative_usage, &state.last_model);
     conv_mgr.append_messages(&state.cm.thread_id, &to_store);
     let _ = tx.send(Message::ChatResponse(ChatResponse {
         request_id: state.cm.request_id,
@@ -1924,6 +1961,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
         }
         "sessions" => cmd_display(mgr.format_sessions_list(&req.session_id).await),
         "conversations" => format_conversations_json(conv_mgr, active_threads).await,
+        "conversations stats" => format_thread_stats(conv_mgr, active_threads).await,
         "session" => match get_session_debug_info(&req.session_id, mgr).await {
             Ok(info) => cmd_display(info),
             Err(e) => cmd_display(format!("Error: {}", e)),
@@ -2055,6 +2093,121 @@ async fn format_conversations_json(conv_mgr: &Arc<ConversationManager>, active_t
         "thread_ids": thread_ids,
         "locked_threads": locked_threads,
     })
+}
+
+/// Aggregate token usage stats for a thread.
+///
+/// Returns display string with per-thread stats:
+/// - Thread list (like `/thread list` but without last user input)
+/// - Current model (from last exchange)
+/// - Last exchange tokens (input+output)
+/// - Total tokens (sum of all exchanges, reset on model switch)
+/// - Cache hit rate (cache_read / input)
+async fn format_thread_stats(conv_mgr: &ConversationManager, active_threads: &ActiveThreads) -> serde_json::Value {
+    let conversations = conv_mgr.list_conversations();
+    if conversations.is_empty() {
+        return cmd_display("No conversations yet. Start a chat with :");
+    }
+
+    let locked_set: std::collections::HashSet<String> = {
+        let threads = active_threads.lock().await;
+        threads.keys().cloned().collect()
+    };
+
+    let mut output = String::from("Thread Stats:\n");
+    let truncate_display = |s: &str, max: usize| -> String {
+        let single_line = s.replace('\n', " ");
+        if single_line.chars().count() > max {
+            let end: String = single_line.chars().take(max - 3).collect();
+            format!("{}...", end)
+        } else {
+            single_line
+        }
+    };
+
+    for (i, (thread_id, modified, exchange_count, _last_question)) in conversations.into_iter().enumerate() {
+        let time_ago = format_relative_time(modified);
+        let meta = conv_mgr.load_meta(&thread_id);
+        let is_locked = locked_set.contains(&thread_id);
+
+        // Thread header (like /thread list but without last user input)
+        let title_display = meta.summary.as_deref().unwrap_or("untitled");
+        output.push_str(&format!(
+            "  [{}] {} | {} turns | {}",
+            i + 1,
+            time_ago,
+            exchange_count,
+            truncate_display(title_display, 40),
+        ));
+        if is_locked {
+            output.push_str(" [active]");
+        }
+        output.push('\n');
+
+        // Scan messages for _usage and _model fields
+        let messages = conv_mgr.load_raw_messages(&thread_id);
+        let mut current_model = String::new();
+        let mut last_input = 0u64;
+        let mut last_output = 0u64;
+        let mut total_input = 0u64;
+        let mut total_output = 0u64;
+        let mut total_cache_read = 0u64;
+
+        for msg in &messages {
+            if let Some(usage) = msg.get("_usage") {
+                let model = msg.get("_model").and_then(|v| v.as_str()).unwrap_or("");
+
+                // Reset stats on model switch
+                if !model.is_empty() && model != current_model && !current_model.is_empty() {
+                    total_input = 0;
+                    total_output = 0;
+                    total_cache_read = 0;
+                }
+                if !model.is_empty() {
+                    current_model = model.to_string();
+                }
+
+                let inp = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let out = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let cache = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                last_input = inp;
+                last_output = out;
+                total_input += inp;
+                total_output += out;
+                total_cache_read += cache;
+            }
+        }
+
+        if current_model.is_empty() {
+            output.push_str("       (no usage data)\n");
+        } else {
+            let cache_rate = if total_input > 0 {
+                (total_cache_read as f64 / total_input as f64) * 100.0
+            } else {
+                0.0
+            };
+            output.push_str(&format!(
+                "       model: {} | last: {}+{}={} | total: {}+{}={} | cache: {:.0}%\n",
+                current_model,
+                format_tokens(last_input), format_tokens(last_output), format_tokens(last_input + last_output),
+                format_tokens(total_input), format_tokens(total_output), format_tokens(total_input + total_output),
+                cache_rate,
+            ));
+        }
+    }
+    cmd_display(output)
+}
+
+/// Format token count with K/M suffix for readability.
+fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 /// Format a SystemTime as a relative time string (e.g., "12s ago", "1h ago", "2d ago").
