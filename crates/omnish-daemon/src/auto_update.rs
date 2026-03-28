@@ -20,7 +20,7 @@ pub fn create_auto_update_job(
     proxy: Option<String>,
     no_proxy: Option<String>,
 ) -> Result<Job> {
-    Ok(Job::new_async(schedule, move |_uuid, _lock| {
+    Ok(Job::new_async_tz(schedule, chrono::Local, move |_uuid, _lock| {
         let omnish_dir = omnish_dir.clone();
         let clients = clients.clone();
         let check_url = check_url.clone();
