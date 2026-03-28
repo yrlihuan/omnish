@@ -2200,8 +2200,8 @@ async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads
             output.push_str(&format!(
                 "  model: {} | context: {} | total: {} | cache: {:.1}%\n",
                 last_model,
-                format_tokens(last.input_tokens + last.output_tokens),
-                format_tokens(total.input_tokens + total.output_tokens),
+                format_tokens(last.input_tokens + last.cache_read_input_tokens + last.cache_creation_input_tokens + last.output_tokens),
+                format_tokens(total.input_tokens + total.cache_read_input_tokens + total.cache_creation_input_tokens + total.output_tokens),
                 cache_rate,
             ));
         } else {
@@ -2266,8 +2266,8 @@ async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads
             output.push_str(&format!(
                 "       model: {} | context: {} | total: {} | cache: {:.1}%\n",
                 last_model,
-                format_tokens(last.input_tokens + last.output_tokens),
-                format_tokens(total.input_tokens + total.output_tokens),
+                format_tokens(last.input_tokens + last.cache_read_input_tokens + last.cache_creation_input_tokens + last.output_tokens),
+                format_tokens(total.input_tokens + total.cache_read_input_tokens + total.cache_creation_input_tokens + total.output_tokens),
                 cache_rate,
             ));
         } else {
