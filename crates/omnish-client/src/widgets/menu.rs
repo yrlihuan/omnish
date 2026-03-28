@@ -391,7 +391,7 @@ struct NavEntry {
 }
 
 /// Handle TextInput edit: enters inline editor, applies result, records change.
-/// Returns true if value was changed.
+/// Returns true if user confirmed (Enter), false if cancelled (ESC/Ctrl-C).
 fn handle_text_edit(
     item: &mut MenuItem,
     breadcrumb_parts: &[String],
@@ -410,14 +410,14 @@ fn handle_text_edit(
             if new_val != old_value {
                 let path = build_path(breadcrumb_parts, &label_clone);
                 changes.push(MenuChange { path, value: new_val });
-                return true;
             }
+            true // user confirmed with Enter
         }
         None => {
             *value = old_value;
+            false // user cancelled with ESC/Ctrl-C
         }
     }
-    false
 }
 
 /// Rebuild `current_items` pointer by traversing nav_stack from root.
@@ -522,15 +522,15 @@ pub fn run_menu(
                 let vis = visible_count(current_items.len());
                 let cursor_vis_pos = cursor - scroll_offset;
                 let rfb = lines_below_cursor(vis, cursor_vis_pos);
-                handle_text_edit(
+                let confirmed = handle_text_edit(
                     &mut current_items[cursor],
                     &breadcrumb_parts,
                     &mut changes,
                     rfb,
                     cols,
                 );
-                // After text edit returns, advance cursor only on Down/Enter (not Up)
-                if auto_edit_advance && cursor < current_items.len() - 1 {
+                // After text edit returns, advance cursor only on confirm (not cancel)
+                if confirmed && auto_edit_advance && cursor < current_items.len() - 1 {
                     cursor += 1;
                     if cursor >= scroll_offset + vis {
                         scroll_offset = cursor - vis + 1;
@@ -740,15 +740,14 @@ pub fn run_menu(
                         common::write_stdout(full.as_bytes());
                     }
                     MenuItem::TextInput { .. } => {
-                        handle_text_edit(
+                        let confirmed = handle_text_edit(
                             &mut current_items[cursor],
                             &breadcrumb_parts,
                             &mut changes,
                             row_from_bottom,
                             cols,
                         );
-
-                        if in_form_mode && cursor < current_items.len() - 1 {
+                        if confirmed && in_form_mode && cursor < current_items.len() - 1 {
                             cursor += 1;
                             if cursor >= scroll_offset + vis {
                                 scroll_offset = cursor - vis + 1;
