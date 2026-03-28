@@ -8,18 +8,18 @@ omnish-client 是终端用户直接交互的客户端程序，作为PTY代理运
 
 1. **PTY管理**: 创建伪终端并运行用户指定的shell
 2. **输入拦截**: 检测命令前缀（如`:`）进入聊天模式，支持双前缀快速恢复对话
-3. **多轮聊天**: 支持多轮对话循环，包含线程管理（/resume, /thread list, /thread del）
-4. **交互式界面**: 提供美观的终端界面显示聊天提示、输入回显和LLM响应，支持Widgets系统（Picker、LineEditor、ScrollView、InlineNotice、LineStatus、ChatLayout、Menu）
+3. **多轮聊天**: 支持多轮对话循环，包含线程管理（/resume, /thread list, /thread stats, /thread del）
+4. **交互式界面**: 提供美观的终端界面显示聊天提示、输入回显和LLM响应，支持Widgets系统（Picker、LineEditor、ScrollView、InlineNotice、LineStatus、ChatLayout、Menu），Menu支持Button项目类型
 5. **守护进程通信**: 与omnish-daemon建立连接，发送查询和接收响应，支持协议版本检查
 6. **智能完成**: 提供LLM驱动的shell命令完成建议
 7. **会话管理**: 跟踪shell会话状态和命令历史
 8. **命令跟踪**: 通过OSC 133协议实时跟踪命令执行、CWD（当前工作目录）和退出码
 9. **Agent工具使用**: 支持工具调用的Agent循环，实时显示工具执行状态，客户端本地执行工具
 10. **客户端插件系统**: 通过omnish-plugin子进程执行客户端侧工具，支持Landlock沙箱；`/lock on/off` 命令控制整个 shell 的沙箱状态；可配置沙箱放行规则绕过特定工具的沙箱
-11. **自更新**: `/update`命令透明自重启，支持检测磁盘二进制变更后自动更新；协议级 `UpdateCheck` 轮询守护进程获取最新版本并后台下载
+11. **自更新**: `/update`命令透明自重启，支持检测磁盘二进制变更后自动更新；协议级 `UpdateCheck` 轮询守护进程获取最新版本并后台下载；下载使用 PID 隔离 tmp 文件防止多进程冲突
 12. **粘贴支持**: 括号粘贴模式、快速粘贴检测、多行粘贴折叠显示
 13. **Markdown渲染**: LLM响应使用pulldown-cmark解析并渲染为ANSI终端样式
-14. **守护进程配置**: `/config` 命令通过 Menu widget 交互式编辑 daemon.toml 配置，支持 Toggle、Select、TextInput、Submenu 等项目类型
+14. **守护进程配置**: `/config` 命令通过 Menu widget 交互式编辑 daemon.toml 配置，支持 Toggle、Select、TextInput、Submenu、Button 等项目类型
 
 ## 重要数据结构
 
@@ -242,7 +242,7 @@ widgets/
   scroll_view.rs    - 可滚动内容查看器（长LLM响应）
   chat_layout.rs    - 聊天区域布局管理器
   picker.rs         - 交互式选择器（单选/多选）
-  menu.rs           - 多级菜单组件（Toggle、Select、TextInput、Submenu）
+  menu.rs           - 多级菜单组件（Toggle、Select、TextInput、Submenu、Button）
   text_view.rs      - 静态文本视图
 ```
 
@@ -526,7 +526,7 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 
 ### Menu 多级菜单
 
-多级菜单组件，支持层级导航、Toggle/Select/TextInput/Submenu 等项目类型，用于 `/config` 命令交互式编辑守护进程配置。
+多级菜单组件，支持层级导航、Toggle/Select/TextInput/Submenu/Button 等项目类型，用于 `/config` 命令交互式编辑守护进程配置。
 
 #### 模块位置
 `crates/omnish-client/src/widgets/menu.rs`
@@ -538,6 +538,7 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 - `Select { label, options: Vec<String>, selected: usize }` - 固定选项选择（Enter 打开 picker 子选择器）
 - `Toggle { label, value: bool }` - 布尔开关（Enter 立即翻转）
 - `TextInput { label, value: String }` - 自由文本输入（Enter 进入内联编辑器）
+- `Button { label }` - 操作按钮（Enter 确认，等同于 ESC 返回上一级并触发 handler 回调）。form_mode 子菜单自动在末尾追加 "Done" 按钮（commit 3d4c1be, #451）
 
 **`MenuResult` 枚举:**
 - `Done(Vec<MenuChange>)` - 用户正常退出（顶层 ESC），包含所有修改
@@ -571,7 +572,10 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 
 - Submenu 设置 `form_mode: true` 后，TextInput 项获得焦点时自动进入编辑模式
 - Enter 确认后光标自动前进到下一项，若下一项也是 TextInput 则链式自动编辑
+- ESC/Ctrl-C 取消编辑时返回导航模式，不自动前进到下一项（fix commit 1958449）
 - Toggle 和 Select 项在 form_mode 下也会自动前进
+- form_mode 子菜单进入时自动在末尾追加 "Done" 按钮（`MenuItem::Button`），光标到达 Button 时停止自动编辑（`form_auto_edit_active = false`）
+- Button 按 Enter 确认等同于 ESC 返回：触发 handler 回调并弹出导航层级
 - 适用于"添加新项"等表单式子菜单
 
 #### 内联文本编辑器 (`run_text_edit`)
@@ -597,7 +601,7 @@ Config > LLM                          ← 面包屑（带层级指示）
 ```
 
 **上下文敏感提示行:**
-- 根据当前光标项类型显示不同操作提示：Submenu→"open"、Toggle→"toggle"、Select→"select"、TextInput→"edit"
+- 根据当前光标项类型显示不同操作提示：Submenu→"open"、Toggle→"toggle"、Select→"select"、TextInput→"edit"、Button→"confirm"
 - 编辑模式下显示 "Enter confirm  ESC cancel"
 - 有更多项时附加 `(▼ N more)` 或面包屑行附加 `(▲ N more)`
 
@@ -610,7 +614,7 @@ Config > LLM                          ← 面包屑（带层级指示）
 | 按键 | 导航模式 | 编辑模式 (TextInput) |
 |-----|---------|---------------------|
 | ↑/↓ | 移动光标 | - |
-| Enter | 执行操作（open/toggle/select/edit） | 确认编辑 |
+| Enter | 执行操作（open/toggle/select/edit/confirm） | 确认编辑 |
 | ESC | 返回上一级（顶层退出） | 取消编辑 |
 | Ctrl-C | 取消全部变更并退出 | 取消编辑 |
 | ←/→ | - | 光标移动 |
@@ -756,19 +760,18 @@ Config > LLM                          ← 面包屑（带层级指示）
 - **mtime 重启** 仅在以下条件全部满足时触发：at_prompt、空闲超过60秒、不在聊天模式、不在全屏程序中
 - 检测到mtime变化后自动执行 `exec_update()`
 - 检查后更新mtime缓存，避免重复检查（issue #223）
-- `/update auto` 命令可运行时切换自动更新开关（不持久化）
 
 ### 协议级更新轮询 (`UpdateCheck`)
 
 客户端通过协议消息向守护进程查询最新版本，并在后台下载更新包。
 
-**触发条件（commit c21174b, defdb57）:**
+**触发条件（commit c21174b, defdb57, e7cb176）:**
 - `UpdateCheck` 与 mtime 重启共享60秒间隔计时器，但 **不受** at_prompt、idle、alt_screen 条件限制
-- 仅要求：auto_update 启用 + 不在聊天模式 + `update_needed` 标志为 true + 无进行中的下载
+- 仅要求：不在聊天模式 + 60秒间隔已到期（客户端侧 `auto_update` 配置项已移除，commit e7cb176, #433）
 - 设计原则：繁忙客户端（运行命令、在vim中）也必须能下载更新，否则形成"鸡生蛋"死锁——旧客户端拿不到新代码
 
 **`update_needed` 标志:**
-- 初始为 false
+- 初始为 false（UpdateCheck 不依赖 `update_needed`，仅需60秒间隔到期且不在聊天模式）
 - 在重连回调中，若守护进程版本比客户端新则设为 true（`reconnect_cb: daemon newer`）
 - 更新下载/安装成功后重置为 false
 
@@ -779,6 +782,12 @@ Config > LLM                          ← 面包屑（带层级指示）
 4. 若需下载：`tokio::spawn` 后台任务调用 `download_and_extract_update()` 下载 + 解压 + 安装
 5. 下载使用 per-host 传输锁（`hostname` 字段），防止同一主机多客户端并发下载（commit 0c06d51）
 6. 安装完成后 mtime 变化会触发 mtime 重启路径，实际执行 `exec_update()`
+
+**下载健壮性改进 (#438):**
+- tmp 文件名包含 PID 后缀（`.tmp-omnish-{version}-{os}-{arch}-{pid}.tar.gz`），防止多进程并发下载时 tmp 文件冲突（commit ca25e75）
+- 延迟创建 tmp 文件：直到收到第一个有效数据块才创建，避免守护进程立即拒绝（"transfer in progress"）时创建并删除空文件
+- 下载和安装步骤添加 `anyhow::Context` 错误上下文，便于诊断失败原因（commit 9057497）
+- `extract_and_run_installer()` 解压目录也使用 PID 后缀避免多进程竞争
 
 **版本比较 (`compare_versions`):**
 - 支持语义版本和带 `-YYYYMMDD` 后缀的版本号规范化比较（commit 0c06d51）
@@ -983,7 +992,6 @@ Config > LLM                          ← 面包屑（带层级指示）
 - `initial_msg: Option<String>` - 初始消息（如果在前缀匹配前已有输入）
 - `client_debug_fn: &dyn Fn() -> String` - 客户端调试状态生成闭包
 - `chat_history: &mut VecDeque<String>` - 聊天历史
-- `auto_update_enabled: &AtomicBool` - 自动更新开关
 - `cursor_col: u16` - 当前光标列
 - `cursor_row: u16` - 当前光标行
 
@@ -1038,6 +1046,7 @@ Config > LLM                          ← 面包屑（带层级指示）
 **线程管理命令:**
 - `/resume [N]` — 恢复对话。无参数时使用picker选择器交互式选择（issue #157），显示所有会话的线程（issue #220）；带编号时使用 `cached_thread_ids` 缓存的索引（issue #133），自动获取并显示最后一轮对话（issue #137），使用ScrollView显示历史（issue #275）
 - `/thread list` — 列出所有对话线程（原 `/conversations` 命令，commit b2f5a6f, 096b094），同时缓存线程ID供 `/resume N` 使用，刷新缓存以保持索引稳定（issue #150）
+- `/thread stats` — 显示线程 token 使用统计（commit f043224, #442）。在聊天模式中有活跃线程时仅显示当前线程统计；否则显示所有线程。统计包括：当前模型、上次交互 token 数（context）、累计 token 数（total）、缓存命中率（cache hit rate）。转发到守护进程命令 `__cmd:conversations stats`
 - `/thread del [N]` 或 `/thread del 1,2-4,5` — 删除对话线程（原 `/conversations del`，commit 096b094）
   - 无参数时使用多选picker交互式选择要删除的线程（commit 3743aec）
   - 带单个编号时删除指定序号的线程（issue #142）
@@ -1069,7 +1078,6 @@ Config > LLM                          ← 面包屑（带层级指示）
 - `/help` — 显示所有可用命令
 - `/tasks` — 查看或管理定时任务
 - `/update` — 透明自重启到磁盘最新版本（issue #217）
-- `/update auto` — 切换运行时自动更新开关（不持久化）
 - `/config` — 通过Menu widget交互式编辑daemon配置（commit cc08b00），发送ConfigQuery/ConfigUpdate协议消息
 - `/test picker [N]` — 隐藏测试命令（不在 `/help` 中显示），使用20个虚拟条目测试picker组件；`N` 为初始选中索引（commit 5df1e1b）
 - `/test menu` — 隐藏测试命令，使用虚拟多级菜单测试menu组件
@@ -1399,10 +1407,10 @@ omnish-client 包含客户端事件日志系统，用于调试和监控异步事
 - `/debug command <seq>` - 显示指定序号命令的完整详情和输出（转发到守护进程，commit 35542da）
 - `/sessions` - 列出所有会话（转发到守护进程）
 - `/thread list` - 列出所有对话线程（转发到守护进程，映射到 `__cmd:conversations`）
+- `/thread stats` - 显示线程 token 使用统计（转发到守护进程，映射到 `__cmd:conversations stats`，commit f043224, #442）
 - `/thread del` - 删除对话线程（转发到守护进程，映射到 `__cmd:conversations del`）
 - `/tasks [disable <name>]` - 查看或管理定时任务（转发到守护进程）
 - `/update` - 透明自重启到磁盘最新版本（issue #217）
-- `/update auto` - 切换运行时自动更新开关（不持久化）
 - `/lock on` - 使用 Landlock 文件系统沙箱重启 shell（限制写入 /tmp、/dev/null、cwd、git repo根目录）
 - `/lock off` - 不使用沙箱重启 shell（移除 Landlock 限制）
 - `> file.txt` - 重定向输出到文件（后缀支持）
@@ -1490,6 +1498,7 @@ cargo build --release
    - `/thread del` 使用多选picker选择要删除的对话
    - `/thread del N` 删除第N个对话
    - `/thread del 1,2-4,5` 删除多个对话（支持范围语法）
+   - `/thread stats` 查看线程 token 使用统计
    - `Ctrl-C` 中断等待中的LLM响应或工具执行
    - 上下箭头键浏览聊天历史
    - LLM响应以Markdown格式渲染
@@ -1505,7 +1514,6 @@ cargo build --release
    - `/lock on` - 使用 Landlock 沙箱重启 shell
    - `/lock off` - 不使用沙箱重启 shell
    - `/update` - 更新到磁盘最新版本
-   - `/update auto` - 切换自动更新
    - `> file.txt` - 重定向输出到文件（如`/context > context.txt`）
 
    **检查命令自动退出**:
@@ -1554,7 +1562,6 @@ command_prefix = ":"
 intercept_gap_ms = 1000
 
 daemon_addr = "~/.omnish/omnish.sock"
-auto_update = true
 ```
 
 ### 环境变量

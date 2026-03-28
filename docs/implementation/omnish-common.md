@@ -13,8 +13,9 @@ omnish-common 包含客户端和守护进程共享的配置结构和工具函数
 - `shell`: Shell配置（`ShellConfig`类型）
 - `daemon_addr`: 守护进程地址（默认：`~/.omnish/omnish.sock`）
 - `completion_enabled`: 是否启用自动补全（默认：`true`）
-- `auto_update`: 是否启用自动更新，当二进制文件变化时自动重启（默认：`false`）
 - `onboarded`: 用户是否已完成新手引导（默认：`false`）；首次进入聊天后自动写入 `true`
+
+注意：`auto_update` 字段已从 `ClientConfig` 中移除，自动更新功能统一由守护进程端的 `TasksConfig.auto_update` 管理。
 
 ### `DaemonConfig`
 守护进程配置结构（派生`Serialize`和`Deserialize`，所有子结构同样），包含：
@@ -48,7 +49,7 @@ LLM配置结构，包含：
 
 ### `LangfuseConfig`
 Langfuse可观测性集成配置，包含：
-- `public_key`: Langfuse公钥
+- `public_key`: Langfuse公钥（默认：空字符串）
 - `secret_key`: Langfuse密钥（`Option<String>`，直接值，非shell命令）
 - `base_url`: Langfuse服务URL（默认：`https://cloud.langfuse.com`）
 
@@ -106,11 +107,13 @@ Langfuse可观测性集成配置，包含：
 
 ### `LlmBackendConfig`
 LLM后端具体配置，包含：
-- `backend_type`: 后端类型（如`"openai"`、`"anthropic"`等）
-- `model`: 模型名称
+- `backend_type`: 后端类型（默认：`"openai-compat"`，如`"openai"`、`"anthropic"`等）
+- `model`: 模型名称（默认：空字符串）
 - `api_key_cmd`: 获取API密钥的命令（可选）
 - `base_url`: API基础URL（可选）
 - `max_content_chars`: 模型上下文最大字符数（可选）
+
+所有字段均带有 `#[serde(default)]`，因此在 TOML 配置文件中可以只写需要覆盖的字段，省略的字段将使用默认值。
 
 ## 关键函数说明
 
@@ -159,7 +162,6 @@ LLM后端具体配置，包含：
 
 **典型用途:**
 - 首次进入聊天后将 `onboarded = true` 写入 `client.toml`
-- 用户通过 `/auto_update` 命令切换并持久化 `auto_update` 字段
 
 ### `set_toml_value_nested()` / `set_toml_value_nested_bool()`
 原地更新 TOML 配置文件中的嵌套键值，支持点分隔路径，保留原有格式。
@@ -205,7 +207,7 @@ use std::path::Path;
 
 // 顶层键
 let path = Path::new("/home/user/.omnish/client.toml");
-config_edit::set_toml_value(path, "auto_update", true)?;
+config_edit::set_toml_value(path, "onboarded", true)?;
 
 // 嵌套键路径
 let daemon_path = Path::new("/home/user/.omnish/daemon.toml");
@@ -223,7 +225,6 @@ intercept_gap_ms = 500
 # developer_mode = false
 
 daemon_addr = "/tmp/omnish.sock"
-auto_update = true
 onboarded = false
 ```
 
@@ -316,6 +317,7 @@ permit_rules = ["command starts_with glab", "command starts_with docker"]
 - 日志保存到 `~/.omnish/logs/updates/update-{version}-{timestamp}.log`
 - exit code 2 表示已是最新版本（非错误）
 - 完成后自动清理解压目录
+- 解压和安装各步骤附带 `anyhow::Context` 错误上下文，便于排查失败原因
 
 ## auth 模块
 
@@ -372,13 +374,14 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 - 开发者模式: `false`
 - 守护进程socket路径: `~/.omnish/omnish.sock`（或 `$OMNISH_HOME/omnish.sock`）
 - 默认LLM后端: `"claude"`
+- LLM后端类型: `"openai-compat"`
 - 拦截间隔: 1000ms
 - Ghost-text超时: 10000ms
 - 认证令牌路径: `~/.omnish/auth_token`
-- 自动更新: `false`
 - Langfuse base_url: `https://cloud.langfuse.com`
 - 会话淘汰时间: 48小时
 - 周期性摘要间隔: 4小时
 - 磁盘清理计划: `"0 0 */6 * * *"`（每6小时）
+- 自动更新（守护进程端）: `false`
 - 自动更新检查计划: `"0 0 4 * * *"`（每日04:00）
 - 全局代理: 无（`proxy` 和 `no_proxy` 均为 `None`）

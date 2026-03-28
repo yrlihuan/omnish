@@ -84,7 +84,7 @@ token使用统计结构体，从API响应中解析：
 响应内容块类型：
 - `Text(String)`: 文本内容
 - `ToolUse(ToolCall)`: 工具调用请求
-- `Thinking(String)`: 思考内容块（来自支持扩展思考的模型，按API返回的原始顺序保留）
+- `Thinking { thinking: String, signature: Option<String> }`: 思考内容块（来自支持扩展思考的模型，按API返回的原始顺序保留）。`signature`字段保存Anthropic API返回的签名（多轮对话时需要回传），OpenAI兼容后端为`None`
 
 #### `StopReason` 枚举
 LLM停止生成的原因：
@@ -138,16 +138,24 @@ LLM停止生成的原因：
 Anthropic API后端实现：
 - 支持Claude模型系列
 - 实现`LlmBackend` trait
+- `config_name`字段：存储配置中的后端名称（如"anthropic"），`name()`方法返回此名称而非硬编码字符串，用于线程级模型跟踪
 - 使用Anthropic Messages API (v1/messages，API版本2024-04-04）
 - 支持`base_url`配置（默认api.anthropic.com），可用于代理或自托管
 - `max_tokens`固定为8192
 - 多轮对话支持：conversation历史映射为messages数组，上下文注入第一条user消息
-- 系统提示词支持：通过Anthropic `system` 顶层字段
+- 系统提示词支持：通过Anthropic `system` 顶层字段（数组格式，附带`cache_control`用于提示缓存）
 - 思考模式：`enable_thinking == Some(true)` 时启用（budget_tokens: 4096），`Some(false)` 时发送禁用参数
+- 思考块签名保留：解析响应中`thinking` block的`signature`字段并存储为`Option<String>`，多轮对话回传时包含签名（Anthropic API要求）
 - 工具调用支持：通过`tools`字段提供工具定义，解析响应中的`tool_use` content blocks
+- **提示缓存（Prompt Caching）：** 通过`cache_control: {"type": "ephemeral"}`标记实现Anthropic KV cache，设置最多3个缓存断点：
+  - 工具定义：最后一个工具附带`cache_control`（工具在调用间稳定不变）
+  - 系统提示词：转为数组格式并附带`cache_control`
+  - 消息数组：标记倒数第二条消息（非最后一条，因为最后一条含`system-reminder`每次请求会变化）
+  - `inject_cache_control()`辅助函数：为消息的最后一个content block添加`cache_control`，支持字符串内容（自动转为数组格式）和数组内容
 - `strip_thinking()` 辅助函数解析content blocks（thinking vs text vs tool_use）
 - 连接错误自动重试：`.send()`遇到连接错误（`is_connect()`/`is_request()`）时最多重试3次，指数退避（5s起步，最大60s）
 - 429/529自动重试：最多3次重试，指数退避（默认5s起步，最大60s），支持解析`retry-after`响应头
+- 错误诊断增强：响应JSON解码失败时，错误信息包含响应体预览（最多1000字节，超出截断并显示总长度），便于调试代理错误等场景
 - Usage解析：从API响应中提取`input_tokens`、`output_tokens`、`cache_read_input_tokens`、`cache_creation_input_tokens`
 - 请求日志：Chat请求的完整payload记录到`~/.omnish/logs/messages/`
 
@@ -225,7 +233,7 @@ Langfuse可观测性配置结构体：
 根据配置创建LLM后端实例。
 
 **参数:**
-- `_name: &str` - 后端名称（当前未使用）
+- `name: &str` - 后端名称（配置中的key，存储为`config_name`用于模型跟踪）
 - `config: &LlmBackendConfig` - 后端配置
 - `proxy: Option<&str>` - 全局代理URL（可选，支持http/https/socks5）
 - `no_proxy: Option<&str>` - 不走代理的主机列表（逗号分隔，可选）
@@ -531,7 +539,7 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
 - API调用失败（HTTP错误、网络问题）
 - 连接错误（`.send()`失败，自动重试最多3次，指数退避5s-60s）
 - 429/529速率限制和过载错误（自动重试，最多3次，指数退避）
-- 响应格式错误（缺少必需字段）
+- 响应格式错误（缺少必需字段）；JSON解码失败时包含响应体预览（最多1000字节）
 - 配置错误（缺少必需参数）
 - 命令执行失败（获取API密钥失败）
 
@@ -548,6 +556,37 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
 - 错误处理场景
 
 ## 更新历史
+
+### 提示缓存、思考块签名、错误诊断增强、后端名称重构（#442, #446, #449）
+
+**主要变更:**
+
+1. **Anthropic提示缓存（Prompt Caching）** (commit 4daf5d5, a252fbb):
+   - 通过`cache_control: {"type": "ephemeral"}`标记启用Anthropic KV cache
+   - 新增`inject_cache_control()`辅助函数：为消息的最后一个content block添加`cache_control`，支持字符串内容（自动转数组格式）和数组内容
+   - 缓存断点布局（最多3个显式断点）：
+     - 工具定义：最后一个tool附带`cache_control`（工具在调用间稳定不变）
+     - 系统提示词：转为数组格式`[{"type": "text", "text": ..., "cache_control": ...}]`
+     - 消息数组：标记倒数第二条消息（非最后一条，因为最后一条含每次变化的`system-reminder`）
+   - 使API响应中产生非零的`cache_read_input_tokens`，提升`/thread stats`的缓存率显示
+
+2. **思考块签名保留** (commit 5db2bf3):
+   - `ContentBlock::Thinking` 从 `Thinking(String)` 重构为 `Thinking { thinking: String, signature: Option<String> }`
+   - Anthropic后端解析响应中`thinking` block的`signature`字段并存储
+   - 多轮对话时，`content_block_to_json()`序列化思考块会包含`signature`字段（Anthropic API要求回传签名）
+   - OpenAI兼容后端的`signature`始终为`None`（无签名概念）
+
+3. **错误诊断增强** (commit eae20ff, 3597d5a):
+   - Anthropic后端响应JSON解码失败时，先读取响应体为文本再手动解析JSON，错误信息包含响应体预览
+   - 错误体预览上限从200字节增加到1000字节（便于查看完整的代理错误信息等），超出部分截断并显示总长度
+
+4. **后端名称使用config_name** (commit 0e60395):
+   - `AnthropicBackend`和`OpenAiCompatBackend`新增`config_name`字段
+   - `name()`方法返回`config_name`（配置中的后端key，如"anthropic"）而非硬编码字符串
+   - `create_backend()`的`name`参数（原`_name`）现在被实际使用，传入后端实例
+   - 用途：线程级模型跟踪（ThreadMeta中记录实际使用的后端名称）
+
+**相关issue:** #442 (thread stats), #446 (thinking signature, error diagnostics), #449 (prompt caching)
 
 ### a128d08 - 连接错误重试（#407）
 

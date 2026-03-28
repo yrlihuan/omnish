@@ -22,6 +22,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 15. 自动更新与优雅重启（升级后以退出码 42 退出，由 systemd 用新二进制重启；UpdateCache 管理多平台包缓存，支持客户端版本检查与流式包分发）
 16. 配置管理（基于 config_schema.toml 的 TUI 配置菜单，支持 ConfigQuery/ConfigUpdate 消息，变更写回 daemon.toml）
 17. 线程级模型选择（每个聊天线程可独立指定 LLM 后端模型）
+18. 线程用量追踪（`/thread stats` 命令，ThreadUsage 存储在 ThreadMeta 中，支持累计/单次用量、缓存命中率、模型切换重置）
 
 守护进程以Unix domain socket方式运行，支持多个客户端同时连接。工作线程数上限为 30（`available_parallelism().min(30)`）。
 
@@ -54,6 +55,10 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - `start`: `Instant` - 循环开始时间（用于超时检测）
 - `command_query_tool`: `CommandQueryTool` - 命令查询工具实例
 - `effective_backend`: `Arc<dyn LlmBackend>` - 本次循环实际使用的后端（保留线程级模型覆盖，防止恢复后退回默认后端）
+- `llm_retries`: `u32` - 当前智能体循环中已使用的 LLM 连接重试次数
+- `cumulative_usage`: `Usage` - 当前智能体循环中所有 LLM 调用的**累计** token 用量（跨多次迭代累加）
+- `last_response_usage`: `Usage` - 最近一次 LLM API 调用的 token 用量（每次调用覆盖更新，用于 `/thread stats` 的 context 显示）
+- `last_model`: `String` - 最近一次 LLM 响应的模型名称（通过 `backend.chat_default_name()` 获取配置后端名，避免 multi-backend 时显示 "multi"）
 - `cancel_flag`: `Arc<AtomicBool>` - 守护进程侧取消标志，由 `ChatInterrupt` 设置，在每次迭代入口及工具执行间检查
 
 ### `SessionManager`
@@ -163,6 +168,14 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
   - `summary`: LLM 生成的线程摘要（由 `thread_summary` 任务生成）；`/resume` 时在对话选择界面中显示摘要
   - `summary_rounds`: 生成摘要时的对话轮次数
   - `model`: 线程级别的模型覆盖（per-thread model override）
+  - `usage_last`: `Option<ThreadUsage>` - 最近一次 LLM API 调用的 token 用量（用于 `/thread stats` 的 context 列）
+  - `usage_total`: `Option<ThreadUsage>` - 当前模型的累计 token 用量（切换模型时重置）
+  - `last_model`: `Option<String>` - 产生 `usage_last`/`usage_total` 的模型名称（用于检测模型切换）
+- **线程用量结构体**（`ThreadUsage`）：存储 token 用量的四维度计数：
+  - `input_tokens`: 输入 token 数
+  - `output_tokens`: 输出 token 数
+  - `cache_read_input_tokens`: 缓存读取的输入 token 数
+  - `cache_creation_input_tokens`: 缓存创建的输入 token 数
 - **元数据延迟写入**：`ThreadMeta`（host/cwd）在 `ChatStart` 时**不立即写入磁盘**，而是推迟到第一条 `ChatMessage` 到达时才保存。这样可以防止用户取消 `/resume` 选择（即中断 ChatStart 流程）时错误覆盖线程已有的 host/cwd 记录
 - **线程恢复 UX 增强**：
   - **host/cwd 不匹配提示**：恢复对话时若检测到当前主机或工作目录与线程记录不符，向用户提问是否继续（而非静默继续）
@@ -569,11 +582,24 @@ LAST 5 COMMANDS:
 - 每次迭代：调用 LLM → 检查是否有工具调用 → 执行工具 → 将结果反馈给 LLM
 - **使用线程级后端**：循环始终通过 `state.effective_backend` 调用 LLM，在客户端工具返回后恢复循环时也使用同一后端（修复了恢复后退回默认后端的 bug）
 - **Thinking 块保留**：当 LLM 响应中包含 `ContentBlock::Thinking` 块时，assistant 消息以内容数组形式存储（thinking + text + tool_use），确保 thinking 上下文在多轮工具调用中正确传递
+- **用量追踪（Usage Tracking）**：
+  - 每次 LLM API 调用后，`state.last_response_usage` 被覆盖为本次调用的 token 用量，`state.cumulative_usage` 累加本次用量
+  - `cumulative_usage` 记录智能体循环中**所有** API 调用的总和（多次迭代累加），用于更新线程的 `usage_total`
+  - `last_response_usage` 仅记录最后一次 API 调用的用量，用于更新线程的 `usage_last`（`/thread stats` 的 context 列显示此值）
+  - 模型名通过 `backend.chat_default_name()` 获取（返回配置的后端名而非 "multi"），空时回退到 `backend.name()`
+  - 在循环正常结束、取消中断、API 错误、迭代耗尽等所有退出路径上均调用 `update_thread_usage()` 持久化用量
+- **API 错误处理（Error Handling）**：
+  - 连接级错误（connection reset/timeout/broken pipe）自动重试最多 2 次，每次间隔 5 秒递增退避
+  - 非连接错误或重试耗尽后，向用户显示截断的错误信息（最多 200 字符，按字符边界截断）
+  - 错误时向对话线程追加 `<event>api error</event>` 标记消息（类似取消路径的 `<event>user interrupted</event>`），使 LLM 在后续对话中知道上一轮因错误中断
+  - **对话保留**：API 错误时已有的对话消息（包括工具调用和结果）正常持久化到线程，用户可通过发送新消息继续对话
+  - 用量数据在错误退出时也会调用 `update_thread_usage()` 保存
 - 循环终止条件：
   - LLM 返回文本响应（无 `tool_use` 块）
   - 达到最大迭代次数
-  - 遇到错误
+  - 遇到错误（API 错误处理后退出）
   - 超时
+  - 用户取消（`cancel_flag`）
 
 **客户端侧工具转发（暂停/恢复机制）：**
 - 当 LLM 请求的工具包含 `ClientTool` 时，循环暂停：
@@ -591,6 +617,7 @@ LAST 5 COMMANDS:
 - 若循环已暂停等待客户端工具结果，守护进程从 `pending_agent_loops` 中取出暂停态
 - 已完成的工具结果正常存储，未完成的标记为 `"user interrupted"` 错误
 - 所有消息（包括部分结果）持久化到对话线程
+- **`ChatInterrupt` 用量记录**：暂停态被取出时，调用 `update_thread_usage()` 将已累积的用量保存到 `ThreadMeta`，确保中断的对话用量不丢失
 
 **消息流格式:**
 ```
@@ -629,7 +656,8 @@ Assistant: {{final response}}
 聊天请求启用 thinking 模式（`enable_thinking: Some(true)`），允许 LLM 在回答前进行深度推理。补全请求则禁用 thinking 模式（`enable_thinking: Some(false)`）以减少延迟。
 
 **Thinking 块保留（多轮工具调用）：**
-- LLM 响应的 `ContentBlock` 枚举包含 `Thinking(String)` 变体
+- LLM 响应的 `ContentBlock` 枚举包含 `Thinking { thinking: String, signature: Option<String> }` 变体
+- `content_block_to_json()` 在序列化 Thinking 块时保留 `signature` 字段（Anthropic extended thinking 的签名标识），确保多轮工具调用时 thinking 上下文在后续请求中可被 Anthropic API 正确验证
 - `run_agent_loop()` 在构建 assistant 消息时，若响应中含有 `Thinking` 块，以完整内容数组（thinking + text + tool_use）而非纯字符串序列化，确保 thinking 上下文在后续工具结果循环中正确传递给 LLM
 - 最终响应（非工具调用轮次）同样保留 thinking 块存入对话历史
 
@@ -932,7 +960,7 @@ schedule = "0 0 */6 * * *"  # Cron 表达式，默认每6小时
 **实现:** 通过 `create_thread_summary_job()` 函数创建
 
 #### 6. `auto_update` - 自动更新任务
-**执行周期:** 可配置（默认不启用）
+**执行周期:** 可配置（默认不启用），使用本地时区调度（通过 `Job::new_async_tz(schedule, chrono::Local, ...)` 创建）
 **功能:** 自动从 GitHub 或本地目录下载并安装新版本，完成后优雅重启守护进程
 **机制（三阶段）:**
 - **Phase 0（下载包）**：从 `check_url` 下载安装包到 `~/.omnish/updates/` 缓存目录
@@ -1338,15 +1366,18 @@ max_line_width = 128
 智能体循环核心逻辑，被 `handle_chat_message()`（初始启动）和 `handle_tool_result()`（恢复）共同调用。
 
 **流程:**
-1. 使用 `state.effective_backend` 调用 LLM（保留线程级模型覆盖，避免恢复后退回默认后端）
-2. 保留完整 assistant 消息块（包括 `ContentBlock::Thinking`），以正确顺序序列化为 JSON（thinking → text → tool_use）
-3. 检查响应中的 `tool_use` 块
-4. 区分 DaemonTool 和 ClientTool：
+1. 每次迭代入口检查 `cancel_flag`，被设置时存储部分消息并调用 `update_thread_usage()` 退出
+2. 使用 `state.effective_backend` 调用 LLM（保留线程级模型覆盖，避免恢复后退回默认后端）
+3. 成功时更新用量：`state.last_response_usage` 覆盖为本次响应用量，`state.cumulative_usage` 累加；记录 `state.last_model`（通过 `chat_default_name()` 获取配置后端名）
+4. 保留完整 assistant 消息块（包括 `ContentBlock::Thinking` 及其 `signature`），以正确顺序序列化为 JSON（thinking → text → tool_use）
+5. 检查响应中的 `tool_use` 块
+6. 区分 DaemonTool 和 ClientTool：
    - DaemonTool 直接执行，执行前后各发送一条 `ChatToolStatus`
-   - 有 ClientTool 时暂停循环，将 state 存入 `pending_agent_loops`，返回 `ChatToolCall` 消息
-5. 全部为 DaemonTool 时继续循环
-6. 无工具调用时存储消息并返回最终响应（含 thinking 块时以内容数组存储，否则以纯字符串存储）
-7. 达到最大迭代次数时返回错误提示
+   - 有 ClientTool 时暂停循环，将 state 存入 `pending_agent_loops`，返回 `ChatToolCall` 消息；暂停前调用 `update_thread_usage()`
+7. 全部为 DaemonTool 时继续循环
+8. 无工具调用时存储消息、调用 `update_thread_usage()` 并返回最终响应（含 thinking 块时以内容数组存储，否则以纯字符串存储）
+9. API 错误时：截断错误消息（最多 200 字符）、追加 `<event>api error</event>` 标记、持久化对话、保存用量后退出
+10. 达到最大迭代次数时存储消息、保存用量并返回错误提示
 
 ### `handle_tool_result()`
 处理客户端返回的工具执行结果，恢复暂停的智能体循环。
@@ -1361,6 +1392,35 @@ max_line_width = 128
 4. **立即**通过 Formatter 格式化当前工具结果，生成增量 `ChatToolStatus` 更新消息（并行执行场景下每个工具完成时立即通知客户端，不等待其他工具）
 5. 若仍有工具未完成，直接返回增量状态消息，继续等待
 6. 所有工具完成后调用 `run_agent_loop()` 恢复循环，将增量消息前置于后续消息列表
+
+### `update_thread_usage()`
+将智能体循环的 token 用量持久化到线程元数据。在智能体循环的所有退出路径（正常完成、取消中断、API 错误、迭代耗尽）上调用。
+
+**参数:**
+- `conv_mgr`: `&ConversationManager` - 对话管理器
+- `thread_id`: `&str` - 线程 ID
+- `last_response`: `&Usage` - 最近一次 API 调用的 token 用量（存入 `ThreadMeta.usage_last`）
+- `cumulative`: `&Usage` - 本次智能体循环的累计 token 用量（累加到 `ThreadMeta.usage_total`）
+- `model`: `&str` - 配置后端名称（空字符串时跳过更新）
+
+**模型切换重置机制:**
+- 若 `model` 与 `ThreadMeta.last_model` 一致，`cumulative` 累加到已有的 `usage_total` 上
+- 若 `model` 不同（切换了模型），`usage_total` 重置为本次 `cumulative`（从零开始计数）
+
+### `format_thread_stats()`
+聚合线程 token 用量统计，供 `__cmd:conversations stats`（`/thread stats`）命令使用。
+
+**行为:**
+- 若当前会话有活跃线程（通过 `ActiveThreads` 查找），只显示该线程的统计
+- 否则显示所有线程的统计列表
+
+**显示格式（每个线程）:**
+- 标题行：相对时间、对话轮次数、线程摘要
+- 用量行：model（配置后端名）、context（最近一次调用的 input+cache+output tokens）、total（累计 tokens）、cache 命中率
+
+**缓存命中率公式:** `cache_read_input_tokens / (input_tokens + cache_read_input_tokens + cache_creation_input_tokens) * 100%`
+
+**token 格式化:** `format_tokens()` 辅助函数将数值转换为 K/M 后缀（如 `1.5K`、`2.3M`）
 
 ### `build_chat_setup()`
 构建聊天所需的共享状态（工具列表和系统提示词），被 `handle_chat_message()` 和 `/template chat` 共同使用。
@@ -1548,7 +1608,7 @@ async fn main() -> anyhow::Result<()> {
   7. 循环直到获得最终文本响应（最多 100 次 / 600 秒超时）
   8. 存储所有消息（去除 system-reminder）→ 返回 ChatResponse
 工具结果 → 发送ChatToolResult → 守护进程累积结果 → 全部完成时恢复智能体循环
-聊天中断 → 发送ChatInterrupt → 守护进程存储部分结果 + 清理暂停态
+聊天中断 → 发送ChatInterrupt → 守护进程存储部分结果 + 保存用量 + 清理暂停态
 客户端断开 → 发送SessionEnd → 守护进程标记会话结束 + flush pending sample
 配置查询 → 发送ConfigQuery → 守护进程构建配置项列表 → 返回ConfigResponse
 配置变更 → 发送ConfigUpdate → 守护进程写入daemon.toml + 重载配置 → 返回ConfigUpdateResult
@@ -1630,7 +1690,7 @@ async fn main() -> anyhow::Result<()> {
 - `commands.json`: JSON数组格式的命令记录
 - `stream.bin`: 二进制格式的I/O流数据，包含时间戳、方向和原始字节
 - `*.jsonl`（threads/）: 每行一个原始 JSON 消息，保留完整的 LLM API 格式（包括 tool_use、tool_result、thinking 等复杂内容块）。`<system-reminder>` 标签在存储前被过滤。
-- `*.meta.json`（threads/）: 线程元数据（ThreadMeta），含 host/cwd/summary/summary_rounds/model 字段。
+- `*.meta.json`（threads/）: 线程元数据（ThreadMeta），含 host/cwd/summary/summary_rounds/model/usage_last/usage_total/last_model 字段。
 - `*.jsonl`（logs/samples/）: 每行一个 `CompletionSample` JSON对象
 - `tool.json`: 插件工具定义文件，包含 `plugin_type` 和工具列表
 - `tool.override.json`: 用户自定义工具描述覆盖
@@ -1694,6 +1754,7 @@ async fn main() -> anyhow::Result<()> {
 - `__cmd:resume` — 恢复最近的对话（等同于 `__cmd:resume 1`），返回结构化历史（`history` 数组含 `user_input`、`llm_text`、`tool_status`、`response`、`separator` 类型条目）及 `thread_id`
 - `__cmd:resume N` — 按索引恢复指定对话（1-based），返回结构化历史及 `thread_id`
 - `__cmd:resume_tid <thread_id>` — 按线程 ID 恢复对话（跨删除操作稳定），返回结构化历史
+- `__cmd:conversations stats` — 显示线程 token 用量统计（`/thread stats`）：当前活跃线程仅显示自身，无活跃线程时显示全部。每个线程显示模型名、context tokens（最近一次调用）、total tokens（累计）、cache 命中率
 - `__cmd:conversations del <thread_id>` — 按线程 ID 删除对话，返回 `deleted_thread_id`
 - `__cmd:models [thread_id]` — 列出所有可用后端（含 `name`、`model`、`selected` 字段），可选传入线程 ID 以显示该线程的当前模型选择
 - `__cmd:tasks [disable <name>]` — 查看或管理定时任务
