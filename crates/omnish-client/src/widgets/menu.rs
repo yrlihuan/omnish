@@ -55,6 +55,10 @@ pub enum MenuItem {
         label: String,
         value: String,
     },
+    /// Action button (e.g. Confirm in form mode).
+    Button {
+        label: String,
+    },
 }
 
 impl MenuItem {
@@ -63,7 +67,8 @@ impl MenuItem {
             MenuItem::Submenu { label, .. }
             | MenuItem::Select { label, .. }
             | MenuItem::Toggle { label, .. }
-            | MenuItem::TextInput { label, .. } => label,
+            | MenuItem::TextInput { label, .. }
+            | MenuItem::Button { label, .. } => label,
         }
     }
 }
@@ -117,7 +122,17 @@ fn render_menu_item(item: &MenuItem, selected: bool) -> String {
             format!(" \x1b[90m[{}]\x1b[0m", val)
         }
         MenuItem::Submenu { .. } => " \x1b[90m\u{25b8}\x1b[0m".to_string(),
+        MenuItem::Button { .. } => String::new(),
     };
+
+    // Button items render without brackets, aligned with other items
+    if matches!(item, MenuItem::Button { .. }) {
+        if selected {
+            return format!("\r{}\x1b[1;7m{}\x1b[0m\x1b[K", indent, label);
+        } else {
+            return format!("\r{}{}\x1b[K", indent, label);
+        }
+    }
 
     if selected {
         format!("\r{}\x1b[1;7m{}\x1b[0m{}\x1b[K", indent, label, suffix)
@@ -133,6 +148,7 @@ fn render_hint(remaining_below: usize, item: Option<&MenuItem>) -> String {
         Some(MenuItem::Toggle { .. }) => "toggle",
         Some(MenuItem::Select { .. }) => "select",
         Some(MenuItem::TextInput { .. }) => "edit",
+        Some(MenuItem::Button { .. }) => "confirm",
     };
     let hint = match item {
         None => format!("Enter {}  ESC cancel", action),
@@ -471,6 +487,7 @@ pub fn run_menu(
     let mut needs_redraw = false;
     let mut pending_auto_edit = false; // form_mode: auto-enter text edit after redraw
     let mut auto_edit_advance = false; // true = advance cursor after auto-edit (Down/Enter), false = stay (Up)
+    let mut form_auto_edit_active = true; // form_mode: when false, items require Enter to edit (disabled when cursor reaches Button)
 
     loop {
         // 1. Read handler name and form_mode FIRST (immutable borrow of items).
@@ -516,7 +533,7 @@ pub fn run_menu(
         }
 
         // 3b. Form mode: auto-enter text edit after redraw
-        if pending_auto_edit && in_form_mode {
+        if pending_auto_edit && in_form_mode && form_auto_edit_active {
             pending_auto_edit = false;
             if cursor < current_items.len() && matches!(current_items[cursor], MenuItem::TextInput { .. }) {
                 let vis = visible_count(current_items.len());
@@ -536,7 +553,10 @@ pub fn run_menu(
                         scroll_offset = cursor - vis + 1;
                     }
                     // Chain: if next item is also TextInput, set pending again
-                    if matches!(current_items[cursor], MenuItem::TextInput { .. }) {
+                    if matches!(current_items[cursor], MenuItem::Button { .. }) {
+                        form_auto_edit_active = false;
+                    }
+                    if form_auto_edit_active && matches!(current_items[cursor], MenuItem::TextInput { .. }) {
                         pending_auto_edit = true;
                     }
                 }
@@ -577,9 +597,12 @@ pub fn run_menu(
                                 } else {
                                     incremental_redraw(current_items, cursor, cursor + 1, vis, scroll_offset);
                                 }
-                                if in_form_mode && matches!(current_items[cursor], MenuItem::TextInput { .. }) {
+                                if in_form_mode && form_auto_edit_active && matches!(current_items[cursor], MenuItem::TextInput { .. }) {
                                     pending_auto_edit = true;
                                     auto_edit_advance = false;
+                                }
+                                if in_form_mode && matches!(current_items[cursor], MenuItem::Button { .. }) {
+                                    form_auto_edit_active = false;
                                 }
                             }
                             b'B' if cursor < current_items.len().saturating_sub(1) => {
@@ -591,9 +614,12 @@ pub fn run_menu(
                                 } else {
                                     incremental_redraw(current_items, cursor, cursor - 1, vis, scroll_offset);
                                 }
-                                if in_form_mode && matches!(current_items[cursor], MenuItem::TextInput { .. }) {
+                                if in_form_mode && form_auto_edit_active && matches!(current_items[cursor], MenuItem::TextInput { .. }) {
                                     pending_auto_edit = true;
                                     auto_edit_advance = true;
+                                }
+                                if in_form_mode && matches!(current_items[cursor], MenuItem::Button { .. }) {
+                                    form_auto_edit_active = false;
                                 }
                             }
                             _ => {}
@@ -657,6 +683,10 @@ pub fn run_menu(
                         if children.is_empty() {
                             continue;
                         }
+                        // Auto-append Confirm button for form_mode submenus
+                        if *form_mode && !matches!(children.last(), Some(MenuItem::Button { .. })) {
+                            children.push(MenuItem::Button { label: "Done".to_string() });
+                        }
                         let label_clone = label.clone();
                         let entering_form = *form_mode;
 
@@ -675,6 +705,7 @@ pub fn run_menu(
                         needs_redraw = true;
                         pending_auto_edit = entering_form;
                         auto_edit_advance = true;
+                        form_auto_edit_active = true;
                         continue;
                     }
                     MenuItem::Toggle { label, value } => {
@@ -691,7 +722,10 @@ pub fn run_menu(
                             if cursor >= scroll_offset + vis {
                                 scroll_offset = cursor - vis + 1;
                             }
-                            pending_auto_edit = matches!(current_items[cursor], MenuItem::TextInput { .. });
+                            if matches!(current_items[cursor], MenuItem::Button { .. }) {
+                                form_auto_edit_active = false;
+                            }
+                            pending_auto_edit = form_auto_edit_active && matches!(current_items[cursor], MenuItem::TextInput { .. });
                             auto_edit_advance = true;
                             let bc = breadcrumb_parts.join(" > ");
                             let tl = total_lines(current_items.len());
@@ -731,7 +765,10 @@ pub fn run_menu(
                             if cursor >= scroll_offset + vis {
                                 scroll_offset = cursor - vis + 1;
                             }
-                            pending_auto_edit = matches!(current_items[cursor], MenuItem::TextInput { .. });
+                            if matches!(current_items[cursor], MenuItem::Button { .. }) {
+                                form_auto_edit_active = false;
+                            }
+                            pending_auto_edit = form_auto_edit_active && matches!(current_items[cursor], MenuItem::TextInput { .. });
                             auto_edit_advance = true;
                         }
 
@@ -752,7 +789,10 @@ pub fn run_menu(
                             if cursor >= scroll_offset + vis {
                                 scroll_offset = cursor - vis + 1;
                             }
-                            pending_auto_edit = matches!(current_items[cursor], MenuItem::TextInput { .. });
+                            if matches!(current_items[cursor], MenuItem::Button { .. }) {
+                                form_auto_edit_active = false;
+                            }
+                            pending_auto_edit = form_auto_edit_active && matches!(current_items[cursor], MenuItem::TextInput { .. });
                             auto_edit_advance = true;
                         }
 
@@ -762,6 +802,51 @@ pub fn run_menu(
                         common::write_stdout(format!("\x1b[{}A\r\x1b[J", tl - 1).as_bytes());
                         let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
                         common::write_stdout(full.as_bytes());
+                    }
+                    MenuItem::Button { .. } => {
+                        // Button confirm: same as ESC back — trigger handler and pop level
+                        if let Some(ref handler_name) = current_handler {
+                            if let Some(ref mut callback) = on_handler_exit {
+                                let handler_prefix = breadcrumb_parts[1..].join(".");
+                                let handler_changes: Vec<MenuChange> = changes.iter()
+                                    .filter(|c| c.path.starts_with(&handler_prefix))
+                                    .cloned()
+                                    .collect();
+                                changes.retain(|c| !c.path.starts_with(&handler_prefix));
+                                if !handler_changes.is_empty() {
+                                    if let Some(new_items) = callback(handler_name, handler_changes) {
+                                        *items = new_items;
+                                        nav_stack.clear();
+                                        breadcrumb_parts.truncate(1);
+                                        cursor = 0;
+                                        scroll_offset = 0;
+                                        form_auto_edit_active = true;
+                                        let cleanup = render_cleanup(last_item_count);
+                                        common::write_stdout(cleanup.as_bytes());
+                                        needs_redraw = true;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+
+                        if nav_stack.is_empty() {
+                            let cleanup = render_cleanup(last_item_count);
+                            common::write_stdout(cleanup.as_bytes());
+                            common::write_stdout(b"\x1b[?25h");
+                            return MenuResult::Done(changes);
+                        }
+
+                        // Normal pop
+                        let entry = nav_stack.pop().unwrap();
+                        cursor = entry.cursor;
+                        scroll_offset = entry.scroll_offset;
+                        breadcrumb_parts.pop();
+                        form_auto_edit_active = true;
+                        let cleanup = render_cleanup(last_item_count);
+                        common::write_stdout(cleanup.as_bytes());
+                        needs_redraw = true;
+                        continue;
                     }
                 }
             }
