@@ -14,6 +14,7 @@
 #   9. Add backend via handler submenu (fill form, ESC triggers handler, new item appears)
 #  10. Form mode: Select confirm, TextInput auto-edit, Enter advances, handler works
 #  11. Arrow keys in text edit: Left/Right move cursor, Up in form doesn't bounce
+#  12. Add backend with default provider via Done button (issue #453)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -32,6 +33,7 @@ Test cases:
   9. Add backend via handler submenu
  10. Form mode: Select confirm, TextInput auto-edit, Enter advance
  11. Arrow keys in text edit (Left/Right cursor, Up no bounce)
+ 12. Add backend with default provider via Done button (#453)
 EOF
 }
 
@@ -871,5 +873,100 @@ test_11() {
     return 0
 }
 
+# ── Test 12: Add backend with default provider via Done button (#453) ────
+test_12() {
+    echo -e "\n${YELLOW}=== Test 12: Add backend with default provider via Done button ===${NC}"
+
+    restart_client
+    wait_for_client
+    open_test_menu
+
+    # Navigate to "Add backend" (5th item: Down x4)
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+
+    # Enter "Add backend" form (form_mode=true)
+    send_enter 0.5
+
+    local content
+    content=$(capture_pane -20)
+    if ! echo "$content" | grep -q "Add backend"; then
+        assert_fail "Not inside Add backend submenu"
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Provider (Select): Enter opens picker, Enter picks default "anthropic"
+    send_enter 0.5
+    send_enter 0.5
+
+    # Model (TextInput): auto-edit opens, type name, Enter confirms
+    send_keys "my-model" 0.3
+    send_enter 0.5
+
+    # API key (TextInput): auto-edit opens, type key, Enter confirms
+    send_keys "sk-test123" 0.3
+    send_enter 0.5
+
+    # Now on Done button — press Enter to submit form
+    send_enter 1.0
+
+    content=$(capture_pane -20)
+    show_capture "After Done button" "$content" 12
+
+    # Should be back at root level
+    if echo "$content" | grep -q "Config > Add backend"; then
+        assert_fail "Still inside Add backend form after Done"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # New backend "anthropic (my-model)" should appear in root menu
+    if ! echo "$content" | grep -q "anthropic"; then
+        assert_fail "Backend with default provider 'anthropic' not added to menu"
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}New backend with default provider appears in root menu${NC}"
+
+    # Verify "Add backend" is still present
+    if ! echo "$content" | grep -q "Add backend"; then
+        assert_fail "'Add backend' disappeared after adding backend"
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Re-enter "Add backend" to verify form is clean (no stale data)
+    # After adding a backend, "Add backend" moved down by 1. Navigate to it.
+    # Root items: LLM, Shell, Telemetry, Username, anthropic (my-model), Add backend
+    # Cursor is at 0 after handler. Navigate Down x5.
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_enter 0.5
+
+    content=$(capture_pane -20)
+    show_capture "Re-entry form" "$content" 10
+
+    # Model should be empty (not "my-model")
+    if echo "$content" | grep "Model" | grep -q "my-model"; then
+        assert_fail "Form shows stale Model value on re-entry"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}Form is clean on re-entry${NC}"
+
+    send_special Escape 0.5
+    send_special Escape 0.5
+    assert_pass "Add backend with default provider via Done button works, form resets on re-entry"
+    return 0
+}
+
 echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input, add backend, form mode, arrow keys${NC}"
-run_tests 11
+run_tests 12

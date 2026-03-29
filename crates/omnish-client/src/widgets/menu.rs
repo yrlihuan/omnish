@@ -662,6 +662,17 @@ pub fn run_menu(
                         }
                     }
 
+                    // Reset form fields before popping (prevents stale data on re-entry)
+                    if in_form_mode {
+                        for item in current_items.iter_mut() {
+                            match item {
+                                MenuItem::TextInput { value, .. } => *value = String::new(),
+                                MenuItem::Select { selected, .. } => *selected = 0,
+                                _ => {}
+                            }
+                        }
+                    }
+
                     // Normal pop
                     let entry = nav_stack.pop().unwrap();
                     cursor = entry.cursor;
@@ -804,13 +815,25 @@ pub fn run_menu(
                         common::write_stdout(full.as_bytes());
                     }
                     MenuItem::Button { .. } => {
-                        // Button confirm: same as ESC back — trigger handler and pop level
+                        // Button confirm: trigger handler and pop level
                         if let Some(ref handler_name) = current_handler {
                             if let Some(ref mut callback) = on_handler_exit {
                                 let handler_prefix = breadcrumb_parts[1..].join(".");
-                                let handler_changes: Vec<MenuChange> = changes.iter()
-                                    .filter(|c| c.path.starts_with(&handler_prefix))
-                                    .cloned()
+                                // Collect current item values directly (not from changes)
+                                // so that default/unchanged Select values are included.
+                                let handler_changes: Vec<MenuChange> = current_items.iter()
+                                    .filter_map(|item| {
+                                        let (label, value) = match item {
+                                            MenuItem::TextInput { label, value } => (label.clone(), value.clone()),
+                                            MenuItem::Select { label, options, selected } => (label.clone(), options[*selected].clone()),
+                                            MenuItem::Toggle { label, value } => (label.clone(), value.to_string()),
+                                            _ => return None,
+                                        };
+                                        Some(MenuChange {
+                                            path: format!("{}.{}", handler_prefix, label),
+                                            value,
+                                        })
+                                    })
                                     .collect();
                                 changes.retain(|c| !c.path.starts_with(&handler_prefix));
                                 if !handler_changes.is_empty() {
@@ -827,6 +850,15 @@ pub fn run_menu(
                                         continue;
                                     }
                                 }
+                            }
+                        }
+
+                        // Callback returned None or no handler: reset form fields
+                        for item in current_items.iter_mut() {
+                            match item {
+                                MenuItem::TextInput { value, .. } => *value = String::new(),
+                                MenuItem::Select { selected, .. } => *selected = 0,
+                                _ => {}
                             }
                         }
 
