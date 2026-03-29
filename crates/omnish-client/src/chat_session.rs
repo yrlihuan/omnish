@@ -1803,7 +1803,7 @@ impl ChatSession {
                             if api_key.len() > 8 {
                                 format!("{}...{}", &api_key[..4], &api_key[api_key.len()-4..])
                             } else {
-                                "(set)".to_string()
+                                "****".to_string()
                             }
                         },
                     },

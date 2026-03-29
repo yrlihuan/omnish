@@ -150,8 +150,11 @@ pub fn build_config_items(config: &DaemonConfig) -> (Vec<ConfigItem>, Vec<Config
         });
     }
 
-    // Dynamic items: existing backends
-    for (name, backend) in &config.llm.backends {
+    // Dynamic items: existing backends (sorted by name)
+    let mut backend_names: Vec<&String> = config.llm.backends.keys().collect();
+    backend_names.sort();
+    for name in backend_names {
+        let backend = &config.llm.backends[name];
         let prefix = format!("llm.backends.{}", name);
 
         items.push(ConfigItem {
