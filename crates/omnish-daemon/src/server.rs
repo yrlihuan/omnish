@@ -785,7 +785,7 @@ async fn handle_message(
                 None
             };
 
-            if let Some(state) = state {
+            if let Some(mut state) = state {
                 // Build tool_result content: completed results + "user interrupted" for the rest
                 let completed_ids: std::collections::HashSet<String> = state
                     .completed_results
@@ -816,20 +816,11 @@ async fn handle_message(
                     }
                 }
 
-                // Store: prior messages + assistant tool_use + tool_results
-                let mut to_store = state.llm_req.extra_messages[state.saved_up_to..].to_vec();
-                // Replace first message (user+system-reminder) with clean user query
-                if state.saved_up_to == state.prior_len && !to_store.is_empty() {
-                    to_store[0] = serde_json::json!({"role": "user", "content": ci.query});
-                }
-                // Append tool results
-                to_store.push(serde_json::json!({
-                    "role": "user",
-                    "content": result_content,
-                }));
-                to_store.push(serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}));
-                conv_mgr.append_messages(&ci.thread_id, &to_store);
-                update_thread_usage(conv_mgr, &ci.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
+                persist_unsaved(&mut state, conv_mgr, &[
+                    serde_json::json!({"role": "user", "content": result_content}),
+                    serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
+                ]);
+                update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
             } else if let Some(flag) = cancel_flags.lock().await.get(&ci.request_id) {
                 // Agent loop is running daemon-side tools — signal it to stop.
                 // The loop will store partial state to conversation when it detects the flag.
@@ -1150,11 +1141,11 @@ async fn handle_tool_result(
 
     // Check if the agent loop has timed out (10 minutes — bash commands like builds can be slow)
     if state.start.elapsed() > std::time::Duration::from_secs(600) {
-        let state = map.remove(&tr.request_id).unwrap();
+        let mut state = map.remove(&tr.request_id).unwrap();
         drop(map);
         tracing::warn!("Agent loop timed out for request_id={}", tr.request_id);
 
-        // Persist any unsaved messages + tool results + timeout marker
+        // Build tool results: completed + "timed out" for pending
         let completed_ids: std::collections::HashSet<String> = state.completed_results
             .iter()
             .map(|r| r.tool_use_id.clone())
@@ -1178,16 +1169,10 @@ async fn handle_tool_result(
                 }));
             }
         }
-        let mut to_store = state.llm_req.extra_messages[state.saved_up_to..].to_vec();
-        if state.saved_up_to == state.prior_len && !to_store.is_empty() {
-            to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
-        }
-        to_store.push(serde_json::json!({
-            "role": "user",
-            "content": result_content,
-        }));
-        to_store.push(serde_json::json!({"role": "assistant", "content": "<event>tool execution timeout</event>"}));
-        conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+        persist_unsaved(&mut state, conv_mgr, &[
+            serde_json::json!({"role": "user", "content": result_content}),
+            serde_json::json!({"role": "assistant", "content": "<event>tool execution timeout</event>"}),
+        ]);
         update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
 
         let _ = tx.send(Message::ChatResponse(ChatResponse {
@@ -1287,6 +1272,27 @@ async fn handle_tool_result(
 /// Persist token usage for a thread.
 ///
 /// `last_response` — usage from the most recent API call (shown in `/thread stats`).
+/// Persist unsaved messages from the agent loop to the conversation thread.
+/// On the first persist (`saved_up_to == prior_len`), replaces the user message
+/// (which contains system-reminder) with the clean query from `state.cm.query`.
+/// Appends `suffix` messages (e.g. event markers) after the unsaved slice.
+/// Updates `saved_up_to` to reflect what has been persisted.
+fn persist_unsaved(
+    state: &mut AgentLoopState,
+    conv_mgr: &omnish_daemon::conversation_mgr::ConversationManager,
+    suffix: &[serde_json::Value],
+) {
+    let mut to_store = state.llm_req.extra_messages[state.saved_up_to..].to_vec();
+    if state.saved_up_to == state.prior_len && !to_store.is_empty() {
+        to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
+    }
+    to_store.extend_from_slice(suffix);
+    if !to_store.is_empty() {
+        conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+    }
+    state.saved_up_to = state.llm_req.extra_messages.len();
+}
+
 /// `cumulative`    — total usage across all API calls in this agent loop iteration
 ///                   (added to the running thread total).
 fn update_thread_usage(
@@ -1357,13 +1363,9 @@ async fn run_agent_loop(
         if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
             tracing::info!("Agent loop cancelled by user at iteration {} (thread={})", iteration, state.cm.thread_id);
             // Store partial state: everything from this exchange so far
-            let mut to_store = state.llm_req.extra_messages[state.saved_up_to..].to_vec();
-            if !to_store.is_empty() && state.saved_up_to == state.prior_len {
-                to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
-            }
-            // Append event marker so LLM knows the user interrupted
-            to_store.push(serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}));
-            conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+            persist_unsaved(&mut state, conv_mgr, &[
+                serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
+            ]);
             update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
             return;
         }
@@ -1574,12 +1576,9 @@ async fn run_agent_loop(
                             "role": "user",
                             "content": result_content,
                         }));
-                        let mut to_store = state.llm_req.extra_messages[state.saved_up_to..].to_vec();
-                        if !to_store.is_empty() && state.saved_up_to == state.prior_len {
-                            to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
-                        }
-                        to_store.push(serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}));
-                        conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+                        persist_unsaved(&mut state, conv_mgr, &[
+                            serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
+                        ]);
                         update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
                         return;
                     }
@@ -1587,15 +1586,7 @@ async fn run_agent_loop(
                     if has_client_tools {
                         // Persist accumulated messages so they survive if the client
                         // disconnects or the daemon restarts while waiting for tool results.
-                        let to_persist = state.llm_req.extra_messages[state.saved_up_to..].to_vec();
-                        if !to_persist.is_empty() {
-                            let mut to_store = to_persist;
-                            if state.saved_up_to == state.prior_len {
-                                to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
-                            }
-                            conv_mgr.append_messages(&state.cm.thread_id, &to_store);
-                        }
-                        state.saved_up_to = state.llm_req.extra_messages.len();
+                        persist_unsaved(&mut state, conv_mgr, &[]);
 
                         // Pause loop — client will execute tools in parallel and send results back
                         state.pending_tool_calls = tool_calls.iter().map(|tc| (*tc).clone()).collect();
@@ -1646,11 +1637,7 @@ async fn run_agent_loop(
                 };
                 state.llm_req.extra_messages.push(assistant_msg);
                 // Store new messages without system-reminder in user message
-                let mut to_store = state.llm_req.extra_messages[state.saved_up_to..].to_vec();
-                if state.saved_up_to == state.prior_len && !to_store.is_empty() {
-                    to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
-                }
-                conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+                persist_unsaved(&mut state, conv_mgr, &[]);
                 update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
                 let _ = tx.send(Message::ChatResponse(ChatResponse {
                     request_id: state.cm.request_id.clone(),
@@ -1699,11 +1686,7 @@ async fn run_agent_loop(
                     "role": "assistant",
                     "content": "<event>api error</event>",
                 }));
-                let mut to_store = state.llm_req.extra_messages[state.saved_up_to..].to_vec();
-                if !to_store.is_empty() && state.saved_up_to == state.prior_len {
-                    to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
-                }
-                conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+                persist_unsaved(&mut state, conv_mgr, &[]);
                 update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
 
                 let _ = tx.send(Message::ChatResponse(ChatResponse {
@@ -1727,11 +1710,7 @@ async fn run_agent_loop(
         "role": "assistant",
         "content": text,
     }));
-    let mut to_store = state.llm_req.extra_messages[state.saved_up_to..].to_vec();
-    if state.saved_up_to == state.prior_len && !to_store.is_empty() {
-        to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
-    }
-    conv_mgr.append_messages(&state.cm.thread_id, &to_store);
+    persist_unsaved(&mut state, conv_mgr, &[]);
     update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
     let _ = tx.send(Message::ChatResponse(ChatResponse {
         request_id: state.cm.request_id,
