@@ -28,6 +28,9 @@ fn lines_below_cursor(vis: usize, cursor_vis_pos: usize) -> usize {
 /// Callback type for handling menu exit events.
 type MenuExitHandler<'a> = Option<&'a mut dyn FnMut(&str, Vec<MenuChange>) -> Option<Vec<MenuItem>>>;
 
+/// Callback type for immediate per-item change notification (non-form-mode items).
+type MenuChangeHandler<'a> = Option<&'a mut dyn FnMut(&MenuChange)>;
+
 /// A single menu item.
 #[derive(Clone)]
 pub enum MenuItem {
@@ -406,16 +409,32 @@ struct NavEntry {
     scroll_offset: usize,
 }
 
-/// Handle TextInput edit: enters inline editor, applies result, records change.
-/// Returns true if user confirmed (Enter), false if cancelled (ESC/Ctrl-C).
+/// Dispatch a non-form-mode change: call `on_change` if provided, otherwise
+/// accumulate in `changes` for batch return on menu exit.
+fn dispatch_change(
+    change: MenuChange,
+    in_form_mode: bool,
+    changes: &mut Vec<MenuChange>,
+    on_change: &mut MenuChangeHandler,
+) {
+    if in_form_mode {
+        changes.push(change);
+    } else if let Some(ref mut cb) = on_change {
+        cb(&change);
+    } else {
+        changes.push(change);
+    }
+}
+
+/// Handle TextInput edit: enters inline editor, applies result.
+/// Returns (confirmed, change) — confirmed is true if user pressed Enter.
 fn handle_text_edit(
     item: &mut MenuItem,
     breadcrumb_parts: &[String],
-    changes: &mut Vec<MenuChange>,
     row_from_bottom: usize,
     cols: u16,
-) -> bool {
-    let MenuItem::TextInput { label, value } = item else { return false };
+) -> (bool, Option<MenuChange>) {
+    let MenuItem::TextInput { label, value } = item else { return (false, None) };
     let label_clone = label.clone();
     let old_value = value.clone();
 
@@ -423,15 +442,17 @@ fn handle_text_edit(
     match result {
         Some(new_val) => {
             *value = new_val.clone();
-            if new_val != old_value {
+            let change = if new_val != old_value {
                 let path = build_path(breadcrumb_parts, &label_clone);
-                changes.push(MenuChange { path, value: new_val });
-            }
-            true // user confirmed with Enter
+                Some(MenuChange { path, value: new_val })
+            } else {
+                None
+            };
+            (true, change)
         }
         None => {
             *value = old_value;
-            false // user cancelled with ESC/Ctrl-C
+            (false, None)
         }
     }
 }
@@ -451,10 +472,17 @@ fn resolve_level<'a>(items: &'a mut [MenuItem], nav_stack: &[NavEntry]) -> &'a m
 // ── Main menu loop ──────────────────────────────────────────────────────
 
 /// Run the multi-level menu widget. Returns changes made or Cancelled.
+///
+/// `on_change`: if provided, called immediately for each non-form-mode item
+/// change (Toggle/Select/TextInput) instead of accumulating them in the
+/// returned `MenuResult::Done` vec. If `None`, changes are accumulated and
+/// returned on exit (original batch behavior). Form-mode changes always
+/// accumulate for the handler callback / Done button regardless.
 pub fn run_menu(
     title: &str,
     items: &mut Vec<MenuItem>,
     mut on_handler_exit: MenuExitHandler,
+    mut on_change: MenuChangeHandler,
 ) -> MenuResult {
     if items.is_empty() {
         return MenuResult::Done(vec![]);
@@ -539,13 +567,15 @@ pub fn run_menu(
                 let vis = visible_count(current_items.len());
                 let cursor_vis_pos = cursor - scroll_offset;
                 let rfb = lines_below_cursor(vis, cursor_vis_pos);
-                let confirmed = handle_text_edit(
+                let (confirmed, change) = handle_text_edit(
                     &mut current_items[cursor],
                     &breadcrumb_parts,
-                    &mut changes,
                     rfb,
                     cols,
                 );
+                if let Some(change) = change {
+                    dispatch_change(change, in_form_mode, &mut changes, &mut on_change);
+                }
                 // After text edit returns, advance cursor only on confirm (not cancel)
                 if confirmed && auto_edit_advance && cursor < current_items.len() - 1 {
                     cursor += 1;
@@ -722,10 +752,11 @@ pub fn run_menu(
                     MenuItem::Toggle { label, value } => {
                         *value = !*value;
                         let path = build_path(&breadcrumb_parts, label);
-                        changes.push(MenuChange {
+                        let change = MenuChange {
                             path,
                             value: value.to_string(),
-                        });
+                        };
+                        dispatch_change(change, in_form_mode, &mut changes, &mut on_change);
 
                         if in_form_mode && cursor < current_items.len() - 1 {
                             // Form mode: advance to next item
@@ -764,10 +795,11 @@ pub fn run_menu(
                             *selected = idx;
                             if idx != old_selected {
                                 let path = build_path(&breadcrumb_parts, &label_clone);
-                                changes.push(MenuChange {
+                                let change = MenuChange {
                                     path,
                                     value: options_clone[idx].clone(),
-                                });
+                                };
+                                dispatch_change(change, in_form_mode, &mut changes, &mut on_change);
                             }
                         }
 
@@ -788,13 +820,15 @@ pub fn run_menu(
                         common::write_stdout(full.as_bytes());
                     }
                     MenuItem::TextInput { .. } => {
-                        let confirmed = handle_text_edit(
+                        let (confirmed, change) = handle_text_edit(
                             &mut current_items[cursor],
                             &breadcrumb_parts,
-                            &mut changes,
                             row_from_bottom,
                             cols,
                         );
+                        if let Some(change) = change {
+                            dispatch_change(change, in_form_mode, &mut changes, &mut on_change);
+                        }
                         if confirmed && in_form_mode && cursor < current_items.len() - 1 {
                             cursor += 1;
                             if cursor >= scroll_offset + vis {
@@ -1127,7 +1161,7 @@ mod tests {
 
     #[test]
     fn test_empty_menu_returns_done() {
-        let result = run_menu("Empty", &mut vec![], None);
+        let result = run_menu("Empty", &mut vec![], None, None);
         match result {
             MenuResult::Done(changes) => assert!(changes.is_empty()),
             MenuResult::Cancelled => panic!("Expected Done"),

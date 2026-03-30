@@ -1829,7 +1829,7 @@ impl ChatSession {
             Some(current)
         };
 
-        let result = widgets::menu::run_menu("Config", &mut items, Some(&mut handler_callback));
+        let result = widgets::menu::run_menu("Config", &mut items, Some(&mut handler_callback), None);
         match result {
             MenuResult::Done(changes) => {
                 if changes.is_empty() {
@@ -1919,39 +1919,17 @@ impl ChatSession {
                 }
             };
 
-            widgets::menu::run_menu("Config", &mut menu_items, Some(&mut handler_callback))
-        });
-
-        match result {
-            widgets::menu::MenuResult::Done(changes) => {
-                if changes.is_empty() {
-                    write_stdout("\x1b[2;90mNo changes made.\x1b[0m\r\n");
-                    return;
-                }
-                // Clone path_map contents inside a block to ensure RefCell borrow
-                // is fully released before entering async code
-                let config_changes: Vec<ConfigChange> = {
-                    let pm = path_map.borrow();
-                    let path_map_clone = pm.clone();
-                    drop(pm);
-
-                    changes.iter()
-                        .map(|mc| {
-                            let schema_path = path_map_clone.get(&mc.path)
-                                .cloned()
-                                .unwrap_or_else(|| mc.path.clone());
-                            ConfigChange { path: schema_path, value: mc.value.clone() }
-                        })
-                        .collect()
-                };
-
-                match rpc.call(Message::ConfigUpdate { changes: config_changes }).await {
-                    Ok(Message::ConfigUpdateResult { ok: true, .. }) => {
-                        write_stdout(&format!(
-                            "\x1b[2;90mConfig saved ({}). Restart daemon to apply.\x1b[0m\r\n",
-                            changes.len()
-                        ));
-                    }
+            let mut change_callback = |change: &widgets::menu::MenuChange| {
+                let pm = path_map_ref.borrow();
+                let schema_path = pm.get(&change.path)
+                    .cloned()
+                    .unwrap_or_else(|| change.path.clone());
+                drop(pm);
+                let config_changes = vec![ConfigChange { path: schema_path, value: change.value.clone() }];
+                let update_result = rt.block_on(async {
+                    rpc_ref.call(Message::ConfigUpdate { changes: config_changes }).await
+                });
+                match update_result {
                     Ok(Message::ConfigUpdateResult { ok: false, error }) => {
                         write_stdout(&format!("\x1b[31mFailed to save: {}\x1b[0m\r\n",
                             error.unwrap_or_default()));
@@ -1961,10 +1939,14 @@ impl ChatSession {
                     }
                     _ => {}
                 }
-            }
-            widgets::menu::MenuResult::Cancelled => {
-                write_stdout("\x1b[2;90mCancelled.\x1b[0m\r\n");
-            }
+            };
+
+            widgets::menu::run_menu("Config", &mut menu_items, Some(&mut handler_callback), Some(&mut change_callback))
+        });
+
+        // With immediate save, Done/Cancelled both just exit — no batch save needed
+        match result {
+            widgets::menu::MenuResult::Done(_) | widgets::menu::MenuResult::Cancelled => {}
         }
     }
 
