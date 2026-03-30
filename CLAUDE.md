@@ -19,3 +19,6 @@ glab issue close <id>
 ### notes
 when viewing issue, read both title and comments.
 when closing issue, push (to get correct commit id) and append commits info.
+
+## Index of implementation docs
+@docs/implementation/index.md
