@@ -74,7 +74,7 @@ async fn generate_thread_summaries(
         }
 
         let use_case = UseCase::Chat;
-        let max_content_chars = backend.max_content_chars_for_use_case(use_case);
+        let max_content_chars = backend.max_content_chars();
         let req = LlmRequest {
             context: format!("<conversation>\n{}</conversation>", conversation_text),
             query: Some(omnish_llm::template::THREAD_SUMMARY_PROMPT.to_string()),

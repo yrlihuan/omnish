@@ -1,7 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 use crate::tool::{ToolCall, ToolDef};
 
@@ -133,14 +132,6 @@ pub trait LlmBackend: Send + Sync {
     fn max_content_chars(&self) -> Option<usize> {
         None
     }
-    /// Returns the maximum content characters limit for the given use case
-    fn max_content_chars_for_use_case(&self, _use_case: UseCase) -> Option<usize> {
-        self.max_content_chars()
-    }
-    /// List available backends (only meaningful for MultiBackend).
-    fn list_backends(&self) -> Vec<BackendInfo> { vec![] }
-    /// Default chat backend name.
-    fn chat_default_name(&self) -> &str { "" }
-    /// Get backend by config name (for per-thread model override).
-    fn get_backend_by_name(&self, _name: &str) -> Option<Arc<dyn LlmBackend>> { None }
+    /// Model name of this backend.
+    fn model_name(&self) -> &str;
 }

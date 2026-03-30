@@ -345,6 +345,10 @@ impl LlmBackend for OpenAiCompatBackend {
     fn name(&self) -> &str {
         &self.config_name
     }
+
+    fn model_name(&self) -> &str {
+        &self.model
+    }
 }
 
 #[cfg(test)]

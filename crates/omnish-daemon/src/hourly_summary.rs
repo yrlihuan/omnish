@@ -102,7 +102,7 @@ async fn generate_periodic_summary(
     // Try LLM summary
     let summary = if let Some(backend) = llm_backend {
         let use_case = UseCase::Analysis;
-        let max_content_chars = backend.max_content_chars_for_use_case(use_case);
+        let max_content_chars = backend.max_content_chars();
         let req = LlmRequest {
             context,
             query: Some(prompt),

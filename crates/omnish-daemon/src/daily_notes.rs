@@ -99,7 +99,7 @@ async fn generate_daily_note(
     // Daily notes relies entirely on hourly summaries (which contain commands + conversations)
     let summary = if let Some(backend) = llm_backend {
         let use_case = UseCase::Analysis;
-        let max_content_chars = backend.max_content_chars_for_use_case(use_case);
+        let max_content_chars = backend.max_content_chars();
 
         let today = Local::now().format("%Y-%m-%d").to_string();
         let hourly_context = collect_hourly_notes(notes_dir, &today);
@@ -211,6 +211,9 @@ mod tests {
             }
             fn name(&self) -> &str {
                 "mock"
+            }
+            fn model_name(&self) -> &str {
+                "mock-model"
             }
         }
 

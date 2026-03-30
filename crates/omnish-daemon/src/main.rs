@@ -10,6 +10,7 @@ use omnish_daemon::conversation_mgr::ConversationManager;
 use omnish_daemon::daily_notes::create_daily_notes_job;
 use omnish_daemon::hourly_summary::create_hourly_summary_job;
 use omnish_daemon::session_mgr::SessionManager;
+use omnish_llm::backend::LlmBackend;
 use omnish_llm::factory::MultiBackend;
 use server::DaemonServer;
 use std::sync::Arc;
@@ -125,10 +126,10 @@ async fn async_main() -> Result<i32> {
     let omnish_dir = omnish_dir();
 
     // Create LLM backend if configured
-    let llm_backend: Option<Arc<dyn omnish_llm::backend::LlmBackend>> =
+    let llm_backend: Option<Arc<MultiBackend>> =
         match MultiBackend::new(&config.llm, config.proxy.as_deref(), config.no_proxy.as_deref()) {
             Ok(backend) => {
-                let backend: Arc<dyn omnish_llm::backend::LlmBackend> = Arc::new(backend);
+                let backend = Arc::new(backend);
                 tracing::info!("LLM backend initialized: {}", backend.name());
                 Some(backend)
             }
@@ -169,10 +170,11 @@ async fn async_main() -> Result<i32> {
     {
         let notes_dir = omnish_dir.join("notes");
         let interval = periodic_summary_config.interval_hours;
+        let analysis_backend = llm_backend.as_ref().map(|b| b.get_backend(omnish_llm::backend::UseCase::Analysis));
         let (cron, job) = create_hourly_summary_job(
             Arc::clone(&session_mgr),
             Arc::clone(&conv_mgr),
-            llm_backend.clone(),
+            analysis_backend,
             notes_dir,
             interval,
         );
@@ -195,10 +197,11 @@ async fn async_main() -> Result<i32> {
     if daily_notes_config.enabled {
         let notes_dir = omnish_dir.join("notes");
         let cron = format!("0 0 {} * * *", daily_notes_config.schedule_hour);
+        let analysis_backend = llm_backend.as_ref().map(|b| b.get_backend(omnish_llm::backend::UseCase::Analysis));
         let job = create_daily_notes_job(
             Arc::clone(&session_mgr),
             Arc::clone(&conv_mgr),
-            llm_backend.clone(),
+            analysis_backend,
             notes_dir,
             daily_notes_config.schedule_hour,
         )?;
@@ -250,9 +253,10 @@ async fn async_main() -> Result<i32> {
 
     // Register thread summary job (runs every 10 minutes)
     {
+        let chat_backend = llm_backend.as_ref().map(|b| b.get_backend(omnish_llm::backend::UseCase::Chat));
         let job = omnish_daemon::thread_summary::create_thread_summary_job(
             Arc::clone(&conv_mgr),
-            llm_backend.clone(),
+            chat_backend,
         )?;
         task_mgr.register("thread_summary", "0 */10 * * * *", job).await?;
     }
@@ -309,10 +313,7 @@ async fn async_main() -> Result<i32> {
     tokio::spawn(async move { plugin_mgr_watcher.watch_with(plugin_rx, tool_registry_watcher).await });
 
     // Extract chat model name for ghost hint
-    let chat_model_name = config.llm.use_cases.get("chat")
-        .and_then(|backend_name| config.llm.backends.get(backend_name))
-        .or_else(|| config.llm.backends.get(&config.llm.default))
-        .map(|bc| bc.model.clone());
+    let chat_model_name = llm_backend.as_ref().map(|b| b.model_name_for_use_case(omnish_llm::backend::UseCase::Chat));
 
     let sandbox_rules = sandbox_rules::compile_config(&config.sandbox);
     let server_sandbox_rules: Arc<std::sync::RwLock<_>> = Arc::new(std::sync::RwLock::new(sandbox_rules));

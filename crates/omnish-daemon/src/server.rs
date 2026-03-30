@@ -4,6 +4,7 @@ use omnish_daemon::plugin::{PluginManager, PluginType};
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_daemon::task_mgr::TaskManager;
 use omnish_llm::backend::{ContentBlock, LlmBackend, LlmRequest, StopReason, TriggerType, UseCase};
+use omnish_llm::factory::MultiBackend;
 use omnish_protocol::message::*;
 use omnish_transport::rpc_server::RpcServer;
 use std::collections::HashMap;
@@ -133,7 +134,7 @@ pub struct ServerOpts {
 
 pub struct DaemonServer {
     session_mgr: Arc<SessionManager>,
-    llm_backend: Option<Arc<dyn LlmBackend>>,
+    llm_backend: Option<Arc<MultiBackend>>,
     task_mgr: Arc<Mutex<TaskManager>>,
     conv_mgr: Arc<ConversationManager>,
     plugin_mgr: Arc<PluginManager>,
@@ -263,7 +264,7 @@ impl DaemonServer {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         session_mgr: Arc<SessionManager>,
-        llm_backend: Option<Arc<dyn LlmBackend>>,
+        llm_backend: Option<Arc<MultiBackend>>,
         task_mgr: Arc<Mutex<TaskManager>>,
         conv_mgr: Arc<ConversationManager>,
         plugin_mgr: Arc<PluginManager>,
@@ -396,7 +397,7 @@ impl DaemonServer {
 async fn handle_message(
     msg: Message,
     mgr: Arc<SessionManager>,
-    llm: &Option<Arc<dyn LlmBackend>>,
+    llm: &Option<Arc<MultiBackend>>,
     task_mgr: &Arc<Mutex<TaskManager>>,
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
@@ -1013,7 +1014,7 @@ async fn build_chat_setup(mgr: &SessionManager, tool_registry: &omnish_daemon::t
 async fn handle_chat_message(
     cm: ChatMessage,
     mgr: &SessionManager,
-    llm: &Option<Arc<dyn LlmBackend>>,
+    llm: &Option<Arc<MultiBackend>>,
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
     tool_registry: &Arc<omnish_daemon::tool_registry::ToolRegistry>,
@@ -1049,12 +1050,12 @@ async fn handle_chat_message(
 
     // Resolve per-thread model override for backend selection
     let meta = conv_mgr.load_meta(&cm.thread_id);
+    let use_case = UseCase::Chat;
     let effective_backend: Arc<dyn LlmBackend> = meta.model.as_ref()
         .and_then(|name| backend.get_backend_by_name(name))
-        .unwrap_or_else(|| backend.clone());
+        .unwrap_or_else(|| backend.get_backend(use_case));
 
-    let use_case = UseCase::Chat;
-    let max_context_chars = effective_backend.max_content_chars_for_use_case(use_case);
+    let max_context_chars = effective_backend.max_content_chars();
 
     let ChatSetup { command_query_tool, tools, system_prompt } =
         build_chat_setup(mgr, tool_registry).await;
@@ -1386,10 +1387,7 @@ async fn run_agent_loop(
                     state.cumulative_usage.cache_read_input_tokens += u.cache_read_input_tokens;
                     state.cumulative_usage.cache_creation_input_tokens += u.cache_creation_input_tokens;
                 }
-                state.last_model = {
-                    let n = backend.chat_default_name();
-                    if n.is_empty() { backend.name().to_string() } else { n.to_string() }
-                };
+                state.last_model = backend.name().to_string();
 
                 if response.stop_reason == StopReason::ToolUse {
                     let tool_calls = response.tool_calls();
@@ -1722,14 +1720,14 @@ async fn run_agent_loop(
 async fn try_warmup_kv_cache(
     session_id: &str,
     mgr: &SessionManager,
-    llm: &Option<Arc<dyn LlmBackend>>,
+    llm: &Option<Arc<MultiBackend>>,
 ) {
     let backend = match llm {
         Some(b) => b,
         None => return,
     };
 
-    let max_chars = backend.max_content_chars_for_use_case(UseCase::Completion);
+    let max_chars = backend.get_max_content_chars(UseCase::Completion);
 
     let new_context = match mgr.check_and_warmup_context(session_id, max_chars).await {
         Ok(Some(ctx)) => ctx,
@@ -1922,7 +1920,7 @@ async fn build_resume_response(
     conv_mgr: &ConversationManager,
     tool_registry: &omnish_daemon::tool_registry::ToolRegistry,
     formatter_mgr: &omnish_daemon::formatter_mgr::FormatterManager,
-    llm_backend: &Option<Arc<dyn LlmBackend>>,
+    llm_backend: &Option<Arc<MultiBackend>>,
 ) -> serde_json::Value {
     let raw_msgs = conv_mgr.load_raw_messages(thread_id);
     let history = reconstruct_history(&raw_msgs, tool_registry, formatter_mgr).await;
@@ -1944,7 +1942,7 @@ async fn build_resume_response(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<dyn LlmBackend>>, conv_mgr: &Arc<ConversationManager>, tool_registry: &omnish_daemon::tool_registry::ToolRegistry, formatter_mgr: &omnish_daemon::formatter_mgr::FormatterManager, active_threads: &ActiveThreads) -> serde_json::Value {
+async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<MultiBackend>>, conv_mgr: &Arc<ConversationManager>, tool_registry: &omnish_daemon::tool_registry::ToolRegistry, formatter_mgr: &omnish_daemon::formatter_mgr::FormatterManager, active_threads: &ActiveThreads) -> serde_json::Value {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
 
     // Build system-reminder for context display
@@ -2366,7 +2364,7 @@ fn format_relative_time(time: std::time::SystemTime) -> String {
 }
 
 /// Handle /context <scenario> to show context for different use cases.
-async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionManager, llm_backend: &Option<Arc<dyn LlmBackend>>) -> String {
+async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionManager, llm_backend: &Option<Arc<MultiBackend>>) -> String {
     match scenario {
         "chat" | "analysis" => {
             // Return system-reminder (terminal context) when not in a specific chat thread
@@ -2379,7 +2377,7 @@ async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionMan
             // Auto-complete context - uses CompletionFormatter with elastic window
             let max_chars = llm_backend
                 .as_ref()
-                .and_then(|b| b.max_content_chars_for_use_case(UseCase::Completion));
+                .and_then(|b| b.get_max_content_chars(UseCase::Completion));
             match mgr.build_completion_context(&req.session_id, max_chars).await {
                 Ok(ctx) => ctx,
                 Err(e) => format!("Error: {}", e),
@@ -2506,10 +2504,10 @@ async fn get_session_debug_info(session_id: &str, mgr: &SessionManager) -> Resul
 async fn handle_llm_request(
     req: &Request,
     mgr: &SessionManager,
-    backend: &Arc<dyn LlmBackend>,
+    backend: &Arc<MultiBackend>,
 ) -> Result<omnish_llm::backend::LlmResponse> {
     let use_case = UseCase::Chat;
-    let max_context_chars = backend.max_content_chars_for_use_case(use_case);
+    let max_context_chars = backend.get_max_content_chars(use_case);
     let context = resolve_chat_context(req, mgr, max_context_chars).await?;
 
     let llm_req = LlmRequest {
@@ -2561,10 +2559,10 @@ async fn handle_llm_request(
 async fn handle_completion_request(
     req: &omnish_protocol::message::CompletionRequest,
     mgr: &SessionManager,
-    backend: &Arc<dyn LlmBackend>,
+    backend: &Arc<MultiBackend>,
 ) -> Result<Vec<omnish_protocol::message::CompletionSuggestion>> {
     let use_case = UseCase::Completion;
-    let max_context_chars = backend.max_content_chars_for_use_case(use_case);
+    let max_context_chars = backend.get_max_content_chars(use_case);
 
     // Get previous context for prefix match ratio calculation
     let last_context = mgr.get_last_completion_context().await;
@@ -2777,6 +2775,10 @@ mod tests {
         fn name(&self) -> &str {
             "mock_delayed"
         }
+
+        fn model_name(&self) -> &str {
+            "mock-model"
+        }
     }
 
     #[test]
@@ -2822,7 +2824,7 @@ mod tests {
             .unwrap();
 
         // Create mock backend with 100ms delay
-        let backend: Arc<dyn LlmBackend> = Arc::new(MockDelayedBackend::new(100));
+        let backend = Arc::new(MultiBackend::from_single(Arc::new(MockDelayedBackend::new(100))));
 
         // Prepare two completion requests (different sequence IDs)
         let req1 = ProtoCompletionRequest {
@@ -2903,7 +2905,7 @@ mod tests {
             .unwrap();
 
         // Create mock backend with 100ms delay
-        let backend: Arc<dyn LlmBackend> = Arc::new(MockDelayedBackend::new(100));
+        let backend = Arc::new(MultiBackend::from_single(Arc::new(MockDelayedBackend::new(100))));
 
         // Prepare requests for different sessions
         let req1 = ProtoCompletionRequest {

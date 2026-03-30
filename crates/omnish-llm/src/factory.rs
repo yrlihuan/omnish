@@ -219,6 +219,39 @@ impl MultiBackend {
             .copied()
             .flatten()
     }
+
+    /// Model name for the given use case.
+    pub fn model_name_for_use_case(&self, use_case: UseCase) -> String {
+        self.get_backend(use_case).model_name().to_string()
+    }
+
+    /// List available backends.
+    pub fn list_backends(&self) -> Vec<BackendInfo> {
+        self.backend_configs.clone()
+    }
+
+    /// Default chat backend name.
+    pub fn chat_default_name(&self) -> &str {
+        &self.chat_backend_name
+    }
+
+    /// Get backend by config name (for per-thread model override).
+    pub fn get_backend_by_name(&self, name: &str) -> Option<Arc<dyn LlmBackend>> {
+        self.named_backends.get(name).cloned()
+    }
+
+    /// Create a MultiBackend wrapping a single backend (for testing).
+    pub fn from_single(backend: Arc<dyn LlmBackend>) -> Self {
+        let name = backend.name().to_string();
+        Self {
+            use_case_backends: RwLock::new(HashMap::new()),
+            default_backend: backend.clone(),
+            use_case_max_chars: HashMap::new(),
+            named_backends: HashMap::from([(name.clone(), backend)]),
+            backend_configs: vec![BackendInfo { name: name.clone(), model: "test".to_string() }],
+            chat_backend_name: name,
+        }
+    }
 }
 
 #[async_trait]
@@ -232,20 +265,8 @@ impl LlmBackend for MultiBackend {
         "multi"
     }
 
-    fn max_content_chars_for_use_case(&self, use_case: crate::backend::UseCase) -> Option<usize> {
-        self.get_max_content_chars(use_case)
-    }
-
-    fn list_backends(&self) -> Vec<BackendInfo> {
-        self.backend_configs.clone()
-    }
-
-    fn chat_default_name(&self) -> &str {
-        &self.chat_backend_name
-    }
-
-    fn get_backend_by_name(&self, name: &str) -> Option<Arc<dyn LlmBackend>> {
-        self.named_backends.get(name).cloned()
+    fn model_name(&self) -> &str {
+        self.default_backend.model_name()
     }
 }
 

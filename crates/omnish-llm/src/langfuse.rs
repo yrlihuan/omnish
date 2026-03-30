@@ -3,7 +3,7 @@
 //! Wraps an `LlmBackend` to report traces and generations to a Langfuse
 //! instance via the `/api/public/ingestion` batch API.
 
-use crate::backend::{LlmBackend, LlmRequest, LlmResponse, UseCase};
+use crate::backend::{LlmBackend, LlmRequest, LlmResponse};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
@@ -108,8 +108,8 @@ impl LlmBackend for LangfuseBackend {
         self.inner.max_content_chars()
     }
 
-    fn max_content_chars_for_use_case(&self, use_case: UseCase) -> Option<usize> {
-        self.inner.max_content_chars_for_use_case(use_case)
+    fn model_name(&self) -> &str {
+        self.inner.model_name()
     }
 }
 
