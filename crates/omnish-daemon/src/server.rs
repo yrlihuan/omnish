@@ -36,9 +36,8 @@ fn load_chat_prompt() -> omnish_llm::prompt::PromptManager {
 /// Cached state for a paused agent loop awaiting a client-side tool result.
 struct AgentLoopState {
     llm_req: LlmRequest,
-    prior_len: usize,
     /// Index up to which extra_messages have been persisted to disk.
-    /// Initially equals prior_len; advanced after each intermediate persist
+    /// Initially equals the number of prior messages; advanced after each intermediate persist
     /// (e.g. when pausing for client-side tool execution).
     saved_up_to: usize,
     pending_tool_calls: Vec<omnish_llm::tool::ToolCall>,
@@ -1040,8 +1039,20 @@ async fn handle_chat_message(
     // Get session attrs from client probes (cwd, platform, os_version, etc.)
     let session_attrs = mgr.get_session_attrs(&cm.session_id).await;
 
-    // Build system-reminder with time, cwd, and last 5 commands
+    // Build system-reminder and append to system prompt
     let reminder = command_query_tool.build_system_reminder(5, &session_attrs);
+
+    // Detect system-reminder changes (dev aid: compare with previous)
+    let mut meta = conv_mgr.load_meta(&cm.thread_id);
+    if let Some(ref prev) = meta.system_reminder {
+        if *prev != reminder {
+            tracing::info!("[system-reminder changed] thread={}", cm.thread_id);
+        }
+    }
+    meta.system_reminder = Some(reminder.clone());
+    conv_mgr.save_meta(&cm.thread_id, &meta);
+
+    let full_system_prompt = format!("{}\n\n{}", system_prompt, reminder);
 
     // Load prior conversation history as raw JSON
     let mut extra_messages = conv_mgr.load_raw_messages(&cm.thread_id);
@@ -1054,9 +1065,8 @@ async fn handle_chat_message(
     }
     let prior_len = extra_messages.len();
 
-    // User message for LLM: includes system-reminder
-    let llm_user_content = format!("{}\n\n{}", cm.query, reminder);
-    extra_messages.push(serde_json::json!({"role": "user", "content": llm_user_content}));
+    // User message (clean, without system-reminder)
+    extra_messages.push(serde_json::json!({"role": "user", "content": cm.query}));
 
     let llm_req = LlmRequest {
         context: String::new(),
@@ -1066,7 +1076,7 @@ async fn handle_chat_message(
         use_case,
         max_content_chars: max_context_chars,
         conversation: vec![],
-        system_prompt: Some(system_prompt),
+        system_prompt: Some(full_system_prompt),
         enable_thinking: Some(true), // Enable thinking mode for chat
         tools,
         extra_messages,
@@ -1074,7 +1084,6 @@ async fn handle_chat_message(
 
     let state = AgentLoopState {
         llm_req,
-        prior_len,
         saved_up_to: prior_len,
         pending_tool_calls: vec![],
         completed_results: vec![],
@@ -1251,8 +1260,6 @@ async fn handle_tool_result(
 ///
 /// `last_response` — usage from the most recent API call (shown in `/thread stats`).
 /// Persist unsaved messages from the agent loop to the conversation thread.
-/// On the first persist (`saved_up_to == prior_len`), replaces the user message
-/// (which contains system-reminder) with the clean query from `state.cm.query`.
 /// Appends `suffix` messages (e.g. event markers) after the unsaved slice.
 /// Updates `saved_up_to` to reflect what has been persisted.
 fn persist_unsaved(
@@ -1261,9 +1268,6 @@ fn persist_unsaved(
     suffix: &[serde_json::Value],
 ) {
     let mut to_store = state.llm_req.extra_messages[state.saved_up_to..].to_vec();
-    if state.saved_up_to == state.prior_len && !to_store.is_empty() {
-        to_store[0] = serde_json::json!({"role": "user", "content": state.cm.query});
-    }
     to_store.extend_from_slice(suffix);
     if !to_store.is_empty() {
         conv_mgr.append_messages(&state.cm.thread_id, &to_store);

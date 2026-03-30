@@ -33,6 +33,9 @@ pub struct ThreadMeta {
     /// Name of the model that produced usage_last/usage_total.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_model: Option<String>,
+    /// Last system-reminder content (for change detection).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_reminder: Option<String>,
 }
 
 pub struct ConversationManager {
