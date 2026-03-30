@@ -21,7 +21,38 @@ pub struct ConfigWatcher {
     senders: HashMap<ConfigSection, watch::Sender<Arc<DaemonConfig>>>,
 }
 
+impl ConfigSection {
+    /// Map a daemon.toml top-level key to its ConfigSection.
+    /// Returns None for keys that don't map (e.g. listen_addr).
+    #[cfg(test)]
+    pub fn from_toml_key(key: &str) -> Option<ConfigSection> {
+        match key {
+            "llm" => Some(ConfigSection::Llm),
+            "context" => Some(ConfigSection::Context),
+            "tasks" => Some(ConfigSection::Tasks),
+            "plugins" => Some(ConfigSection::Plugins),
+            "tools" => Some(ConfigSection::Tools),
+            "sandbox" => Some(ConfigSection::Sandbox),
+            "proxy" | "no_proxy" => Some(ConfigSection::Llm), // proxy affects LLM backends
+            _ => None,
+        }
+    }
+}
+
 impl ConfigWatcher {
+    /// Sections that have diff + notify implemented in reload().
+    /// The compile-time guard test in config_schema.rs asserts that all schema
+    /// paths map to a section in this list.
+    pub const WATCHED_SECTIONS: &[ConfigSection] = &[
+        ConfigSection::Sandbox,
+        // Add sections here as their diff + subscriber is implemented:
+        // ConfigSection::Llm,
+        // ConfigSection::Context,
+        // ConfigSection::Tasks,
+        // ConfigSection::Plugins,
+        // ConfigSection::Tools,
+    ];
+
     /// Create a new ConfigWatcher. Registers a file watch on config_path
     /// via the shared FileWatcher and spawns a reload task.
     pub fn new(
@@ -82,15 +113,20 @@ impl ConfigWatcher {
         let new_arc = Arc::new(new_config.clone());
 
         // Diff each section and notify if changed
-        if current.sandbox != new_config.sandbox {
-            if let Some(tx) = self.senders.get(&ConfigSection::Sandbox) {
-                let _ = tx.send(Arc::clone(&new_arc));
-                tracing::info!("config section changed: Sandbox");
+        for section in Self::WATCHED_SECTIONS {
+            let changed = match section {
+                ConfigSection::Sandbox => current.sandbox != new_config.sandbox,
+                // Future: add diff for other sections here
+                // (requires PartialEq on those config types)
+                _ => false,
+            };
+            if changed {
+                if let Some(tx) = self.senders.get(section) {
+                    let _ = tx.send(Arc::clone(&new_arc));
+                    tracing::info!("config section changed: {:?}", section);
+                }
             }
         }
-
-        // Future: diff Tools, Context, Llm, Tasks, Plugins sections here
-        // (requires PartialEq on those types)
 
         *current = new_config;
         Ok(())

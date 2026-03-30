@@ -370,4 +370,59 @@ mod tests {
             _ => panic!("expected TextInput"),
         }
     }
+
+    /// Guard test: every config schema path must map to a ConfigSection that
+    /// has diff + notify implemented in ConfigWatcher::reload().
+    ///
+    /// When you add a new section to config_schema.toml, this test will fail
+    /// until the corresponding ConfigSection is added to WATCHED_SECTIONS
+    /// and its diff logic is implemented in config_watcher.rs.
+    ///
+    /// Run with: cargo test -p omnish-daemon -- --ignored test_all_schema_paths
+    #[test]
+    #[ignore]
+    fn test_all_schema_paths_covered_by_config_watcher() {
+        use crate::config_watcher::{ConfigSection, ConfigWatcher};
+        use std::collections::HashSet;
+
+        let watched: HashSet<ConfigSection> = ConfigWatcher::WATCHED_SECTIONS.iter().copied().collect();
+        let schema = parse_schema();
+
+        let mut missing: Vec<(String, ConfigSection)> = Vec::new();
+
+        for item in &schema {
+            // Use toml_key if present, otherwise derive from path
+            let toml_root = item.toml_key.as_deref()
+                .unwrap_or(&item.path)
+                .split('.')
+                .next()
+                .unwrap_or("");
+
+            if let Some(section) = ConfigSection::from_toml_key(toml_root) {
+                if !watched.contains(&section) {
+                    missing.push((item.path.clone(), section));
+                }
+            }
+            // Items with no ConfigSection mapping (e.g. listen_addr) are
+            // intentionally excluded — they require a daemon restart.
+        }
+
+        // Deduplicate by section for a cleaner error message
+        let mut missing_sections: Vec<ConfigSection> = missing.iter()
+            .map(|(_, s)| *s)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        missing_sections.sort_by_key(|s| format!("{:?}", s));
+
+        assert!(
+            missing_sections.is_empty(),
+            "Config schema has items in sections not covered by ConfigWatcher::WATCHED_SECTIONS.\n\
+             Missing sections: {:?}\n\
+             Example paths: {:?}\n\
+             Add these sections to WATCHED_SECTIONS and implement their diff in reload().",
+            missing_sections,
+            missing.iter().take(5).map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
+        );
+    }
 }
