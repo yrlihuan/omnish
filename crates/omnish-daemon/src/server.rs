@@ -4,7 +4,7 @@ use omnish_daemon::plugin::{PluginManager, PluginType};
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_daemon::task_mgr::TaskManager;
 use omnish_llm::backend::{ContentBlock, LlmBackend, LlmRequest, StopReason, TriggerType, UseCase};
-use omnish_llm::factory::MultiBackend;
+use omnish_llm::factory::{MultiBackend, SharedLlmBackend};
 use omnish_protocol::message::*;
 use omnish_transport::rpc_server::RpcServer;
 use std::collections::HashMap;
@@ -134,7 +134,7 @@ pub struct ServerOpts {
 
 pub struct DaemonServer {
     session_mgr: Arc<SessionManager>,
-    llm_backend: Option<Arc<MultiBackend>>,
+    llm_backend: SharedLlmBackend,
     task_mgr: Arc<Mutex<TaskManager>>,
     conv_mgr: Arc<ConversationManager>,
     plugin_mgr: Arc<PluginManager>,
@@ -264,7 +264,7 @@ impl DaemonServer {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         session_mgr: Arc<SessionManager>,
-        llm_backend: Option<Arc<MultiBackend>>,
+        llm_backend: SharedLlmBackend,
         task_mgr: Arc<Mutex<TaskManager>>,
         conv_mgr: Arc<ConversationManager>,
         plugin_mgr: Arc<PluginManager>,
@@ -303,7 +303,7 @@ impl DaemonServer {
         tracing::info!("omnishd listening on {}", addr);
 
         let mgr = self.session_mgr.clone();
-        let llm = self.llm_backend.clone();
+        let llm_holder = self.llm_backend.clone();
         let task_mgr = self.task_mgr.clone();
         let conv_mgr = self.conv_mgr.clone();
         let plugin_mgr = self.plugin_mgr.clone();
@@ -369,7 +369,7 @@ impl DaemonServer {
             .serve(
                 move |msg, tx| {
                     let mgr = mgr.clone();
-                    let llm = llm.clone();
+                    let llm = llm_holder.read().unwrap().clone();
                     let task_mgr = task_mgr.clone();
                     let conv_mgr = conv_mgr.clone();
                     let plugin_mgr = plugin_mgr.clone();
@@ -397,7 +397,7 @@ impl DaemonServer {
 async fn handle_message(
     msg: Message,
     mgr: Arc<SessionManager>,
-    llm: &Option<Arc<MultiBackend>>,
+    llm: &Arc<MultiBackend>,
     task_mgr: &Arc<Mutex<TaskManager>>,
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
@@ -461,7 +461,7 @@ async fn handle_message(
                 tracing::error!("receive_command error: {}", e);
             }
             // Proactively warm the LLM KV cache if the context prefix changed
-            if llm.is_some() {
+            {
                 let mgr = mgr_arc.clone();
                 let llm = llm.clone();
                 let sid = cc.session_id.clone();
@@ -486,16 +486,12 @@ async fn handle_message(
                 return;
             }
 
-            let content = if let Some(ref backend) = llm {
-                match handle_llm_request(&req, mgr, backend).await {
-                    Ok(response) => response.text(),
-                    Err(e) => {
-                        tracing::error!("LLM request failed: {}", e);
-                        format!("Error: {}", e)
-                    }
+            let content = match handle_llm_request(&req, &mgr, llm).await {
+                Ok(response) => response.text(),
+                Err(e) => {
+                    tracing::error!("LLM request failed: {}", e);
+                    format!("Error: {}", e)
                 }
-            } else {
-                "(LLM backend not configured)".to_string()
             };
 
             let _ = tx.send(Message::Response(Response {
@@ -530,27 +526,20 @@ async fn handle_message(
                 })).await;
                 return;
             }
-            let reply = if let Some(ref backend) = llm {
-                match handle_completion_request(&req, mgr, backend).await {
-                    Ok(suggestions) => {
-                        Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
-                            sequence_id: req.sequence_id,
-                            suggestions,
-                        })
-                    }
-                    Err(e) => {
-                        tracing::error!("Completion request failed: {}", e);
-                        Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
-                            sequence_id: req.sequence_id,
-                            suggestions: vec![],
-                        })
-                    }
+            let reply = match handle_completion_request(&req, &mgr, llm).await {
+                Ok(suggestions) => {
+                    Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
+                        sequence_id: req.sequence_id,
+                        suggestions,
+                    })
                 }
-            } else {
-                Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
-                    sequence_id: req.sequence_id,
-                    suggestions: vec![],
-                })
+                Err(e) => {
+                    tracing::error!("Completion request failed: {}", e);
+                    Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
+                        sequence_id: req.sequence_id,
+                        suggestions: vec![],
+                    })
+                }
             };
             let _ = tx.send(reply).await;
         }
@@ -635,9 +624,7 @@ async fn handle_message(
                         .map(|v| serde_json::to_string(v).unwrap_or_default())
                         .collect();
                     let thread_model = old_meta.model.and_then(|model_name| {
-                        let is_default = llm.as_ref()
-                            .map(|b| b.chat_default_name() == model_name)
-                            .unwrap_or(true);
+                        let is_default = llm.chat_default_name() == model_name;
                         if is_default { None } else { Some(model_name) }
                     });
                     Message::ChatReady(ChatReady {
@@ -709,9 +696,7 @@ async fn handle_message(
                                 .map(|v| serde_json::to_string(v).unwrap_or_default())
                                 .collect();
                             let thread_model = old_meta.model.and_then(|model_name| {
-                                let is_default = llm.as_ref()
-                                    .map(|b| b.chat_default_name() == model_name)
-                                    .unwrap_or(true);
+                                let is_default = llm.chat_default_name() == model_name;
                                 if is_default { None } else { Some(model_name) }
                             });
                             Message::ChatReady(ChatReady {
@@ -1014,7 +999,7 @@ async fn build_chat_setup(mgr: &SessionManager, tool_registry: &omnish_daemon::t
 async fn handle_chat_message(
     cm: ChatMessage,
     mgr: &SessionManager,
-    llm: &Option<Arc<MultiBackend>>,
+    llm: &Arc<MultiBackend>,
     conv_mgr: &Arc<ConversationManager>,
     plugin_mgr: &Arc<PluginManager>,
     tool_registry: &Arc<omnish_daemon::tool_registry::ToolRegistry>,
@@ -1025,15 +1010,7 @@ async fn handle_chat_message(
     tx: mpsc::Sender<Message>,
     cancel_flag: &Arc<std::sync::atomic::AtomicBool>,
 ) {
-    if llm.is_none() {
-        let _ = tx.send(Message::ChatResponse(ChatResponse {
-            request_id: cm.request_id,
-            thread_id: cm.thread_id,
-            content: "(LLM backend not configured)".to_string(),
-        })).await;
-        return;
-    }
-    let backend = llm.as_ref().unwrap();
+    let backend = llm;
 
     // Handle model override
     if let Some(ref model_name) = cm.model {
@@ -1720,12 +1697,9 @@ async fn run_agent_loop(
 async fn try_warmup_kv_cache(
     session_id: &str,
     mgr: &SessionManager,
-    llm: &Option<Arc<MultiBackend>>,
+    llm: &Arc<MultiBackend>,
 ) {
-    let backend = match llm {
-        Some(b) => b,
-        None => return,
-    };
+    let backend = llm;
 
     let max_chars = backend.get_max_content_chars(UseCase::Completion);
 
@@ -1920,7 +1894,7 @@ async fn build_resume_response(
     conv_mgr: &ConversationManager,
     tool_registry: &omnish_daemon::tool_registry::ToolRegistry,
     formatter_mgr: &omnish_daemon::formatter_mgr::FormatterManager,
-    llm_backend: &Option<Arc<MultiBackend>>,
+    llm_backend: &Arc<MultiBackend>,
 ) -> serde_json::Value {
     let raw_msgs = conv_mgr.load_raw_messages(thread_id);
     let history = reconstruct_history(&raw_msgs, tool_registry, formatter_mgr).await;
@@ -1931,9 +1905,7 @@ async fn build_resume_response(
     // Include thread model if it differs from the default chat backend
     let meta = conv_mgr.load_meta(thread_id);
     if let Some(ref model_name) = meta.model {
-        let is_default = llm_backend.as_ref()
-            .map(|b| b.chat_default_name() == model_name)
-            .unwrap_or(true);
+        let is_default = llm_backend.chat_default_name() == model_name;
         if !is_default {
             json["model"] = serde_json::json!(model_name);
         }
@@ -1942,7 +1914,7 @@ async fn build_resume_response(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Option<Arc<MultiBackend>>, conv_mgr: &Arc<ConversationManager>, tool_registry: &omnish_daemon::tool_registry::ToolRegistry, formatter_mgr: &omnish_daemon::formatter_mgr::FormatterManager, active_threads: &ActiveThreads) -> serde_json::Value {
+async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Arc<MultiBackend>, conv_mgr: &Arc<ConversationManager>, tool_registry: &omnish_daemon::tool_registry::ToolRegistry, formatter_mgr: &omnish_daemon::formatter_mgr::FormatterManager, active_threads: &ActiveThreads) -> serde_json::Value {
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
 
     // Build system-reminder for context display
@@ -2015,35 +1987,31 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
     if sub == "models" || sub.starts_with("models ") {
         let thread_id = sub.strip_prefix("models ").unwrap_or("").trim();
 
-        if let Some(ref backend) = *llm_backend {
-            let backends = backend.list_backends();
-            if backends.is_empty() {
-                return cmd_display("No LLM backends configured".to_string());
-            }
-
-            // Determine which backend is selected for this thread
-            let selected_name = if !thread_id.is_empty() {
-                let meta = conv_mgr.load_meta(thread_id);
-                meta.model.unwrap_or_else(|| backend.chat_default_name().to_string())
-            } else {
-                backend.chat_default_name().to_string()
-            };
-
-            let models: Vec<serde_json::Value> = backends.iter().map(|b| {
-                serde_json::json!({
-                    "name": b.name,
-                    "model": b.model,
-                    "selected": b.name == selected_name,
-                })
-            }).collect();
-
-            return serde_json::json!({
-                "display": "",
-                "models": models,
-            });
-        } else {
+        let backends = llm_backend.list_backends();
+        if backends.is_empty() {
             return cmd_display("No LLM backends configured".to_string());
         }
+
+        // Determine which backend is selected for this thread
+        let selected_name = if !thread_id.is_empty() {
+            let meta = conv_mgr.load_meta(thread_id);
+            meta.model.unwrap_or_else(|| llm_backend.chat_default_name().to_string())
+        } else {
+            llm_backend.chat_default_name().to_string()
+        };
+
+        let models: Vec<serde_json::Value> = backends.iter().map(|b| {
+            serde_json::json!({
+                "name": b.name,
+                "model": b.model,
+                "selected": b.name == selected_name,
+            })
+        }).collect();
+
+        return serde_json::json!({
+            "display": "",
+            "models": models,
+        });
     }
     if let Some(name) = sub.strip_prefix("template ") {
         return cmd_display(handle_template(name, mgr, tool_registry).await);
@@ -2364,7 +2332,7 @@ fn format_relative_time(time: std::time::SystemTime) -> String {
 }
 
 /// Handle /context <scenario> to show context for different use cases.
-async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionManager, llm_backend: &Option<Arc<MultiBackend>>) -> String {
+async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionManager, llm_backend: &Arc<MultiBackend>) -> String {
     match scenario {
         "chat" | "analysis" => {
             // Return system-reminder (terminal context) when not in a specific chat thread
@@ -2375,9 +2343,7 @@ async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionMan
         }
         "auto-complete" | "completion" => {
             // Auto-complete context - uses CompletionFormatter with elastic window
-            let max_chars = llm_backend
-                .as_ref()
-                .and_then(|b| b.get_max_content_chars(UseCase::Completion));
+            let max_chars = llm_backend.get_max_content_chars(UseCase::Completion);
             match mgr.build_completion_context(&req.session_id, max_chars).await {
                 Ok(ctx) => ctx,
                 Err(e) => format!("Error: {}", e),
@@ -2408,9 +2374,7 @@ async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionMan
             if commands.is_empty() {
                 return "No commands in the past hour".to_string();
             }
-            let max_chars = llm_backend
-                .as_ref()
-                .and_then(|b| b.max_content_chars());
+            let max_chars = llm_backend.max_content_chars();
             let config = mgr.get_hourly_summary_config();
             match mgr.build_hourly_summary_context(&commands, max_chars, &config).await {
                 Ok(ctx) => ctx,

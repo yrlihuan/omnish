@@ -1,5 +1,6 @@
 use crate::conversation_mgr::ConversationManager;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
+use omnish_llm::factory::SharedLlmBackend;
 use std::sync::Arc;
 use tokio_cron_scheduler::Job;
 
@@ -7,16 +8,16 @@ use tokio_cron_scheduler::Job;
 /// that need them.
 pub fn create_thread_summary_job(
     conv_mgr: Arc<ConversationManager>,
-    llm_backend: Option<Arc<dyn LlmBackend>>,
+    llm_holder: SharedLlmBackend,
 ) -> anyhow::Result<Job> {
     // Run every 10 minutes
     let cron = "0 */10 * * * *".to_string();
     Ok(Job::new_async(cron, move |_uuid, _lock| {
         let conv_mgr = conv_mgr.clone();
-        let llm = llm_backend.clone();
+        let llm = llm_holder.read().unwrap().get_backend(UseCase::Chat);
         Box::pin(async move {
             tracing::debug!("task [thread_summary] started");
-            if let Err(e) = generate_thread_summaries(&conv_mgr, llm.as_deref()).await {
+            if let Err(e) = generate_thread_summaries(&conv_mgr, Some(llm.as_ref())).await {
                 tracing::warn!("task [thread_summary] failed: {}", e);
             }
             tracing::debug!("task [thread_summary] finished");

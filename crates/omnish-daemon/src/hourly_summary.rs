@@ -2,6 +2,7 @@ use crate::conversation_mgr::ConversationManager;
 use crate::session_mgr::SessionManager;
 use chrono::Local;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
+use omnish_llm::factory::SharedLlmBackend;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,7 +12,7 @@ use tokio_cron_scheduler::Job;
 pub fn create_hourly_summary_job(
     mgr: Arc<SessionManager>,
     conv_mgr: Arc<ConversationManager>,
-    llm_backend: Option<Arc<dyn LlmBackend>>,
+    llm_holder: SharedLlmBackend,
     summaries_dir: PathBuf,
     interval_hours: u8,
 ) -> (String, anyhow::Result<Job>) {
@@ -21,11 +22,11 @@ pub fn create_hourly_summary_job(
     let job = Job::new_async(cron, move |_uuid, _lock| {
         let mgr = mgr.clone();
         let conv_mgr = conv_mgr.clone();
-        let llm = llm_backend.clone();
+        let llm = llm_holder.read().unwrap().get_backend(UseCase::Analysis);
         let dir = summaries_dir.clone();
         Box::pin(async move {
             tracing::debug!("task [periodic_summary] started");
-            if let Err(e) = generate_periodic_summary(&mgr, &conv_mgr, llm.as_deref(), &dir, interval).await {
+            if let Err(e) = generate_periodic_summary(&mgr, &conv_mgr, Some(llm.as_ref()), &dir, interval).await {
                 tracing::warn!("task [periodic_summary] failed: {}", e);
             }
             tracing::debug!("task [periodic_summary] finished");

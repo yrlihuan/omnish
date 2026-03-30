@@ -2,6 +2,7 @@ use crate::conversation_mgr::ConversationManager;
 use crate::session_mgr::SessionManager;
 use chrono::Local;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
+use omnish_llm::factory::SharedLlmBackend;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio_cron_scheduler::Job;
@@ -10,7 +11,7 @@ use tokio_cron_scheduler::Job;
 pub fn create_daily_notes_job(
     mgr: Arc<SessionManager>,
     conv_mgr: Arc<ConversationManager>,
-    llm_backend: Option<Arc<dyn LlmBackend>>,
+    llm_holder: SharedLlmBackend,
     notes_dir: PathBuf,
     schedule_hour: u8,
 ) -> anyhow::Result<Job> {
@@ -18,11 +19,11 @@ pub fn create_daily_notes_job(
     Ok(Job::new_async_tz(cron, Local, move |_uuid, _lock| {
         let mgr = mgr.clone();
         let conv_mgr = conv_mgr.clone();
-        let llm = llm_backend.clone();
+        let llm = llm_holder.read().unwrap().get_backend(UseCase::Analysis);
         let dir = notes_dir.clone();
         Box::pin(async move {
             tracing::debug!("task [daily_notes] started");
-            if let Err(e) = generate_daily_note(&mgr, &conv_mgr, llm.as_deref(), &dir).await {
+            if let Err(e) = generate_daily_note(&mgr, &conv_mgr, Some(llm.as_ref()), &dir).await {
                 tracing::warn!("task [daily_notes] failed: {}", e);
             }
             tracing::debug!("task [daily_notes] finished");

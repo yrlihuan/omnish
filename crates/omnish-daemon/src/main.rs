@@ -11,7 +11,8 @@ use omnish_daemon::daily_notes::create_daily_notes_job;
 use omnish_daemon::hourly_summary::create_hourly_summary_job;
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_llm::backend::LlmBackend;
-use omnish_llm::factory::MultiBackend;
+use omnish_llm::backend::UnavailableBackend;
+use omnish_llm::factory::{MultiBackend, SharedLlmBackend};
 use server::DaemonServer;
 use std::sync::Arc;
 
@@ -125,19 +126,20 @@ async fn async_main() -> Result<i32> {
     //   - completion logs stored in $omnish_dir/logs/completions
     let omnish_dir = omnish_dir();
 
-    // Create LLM backend if configured
-    let llm_backend: Option<Arc<MultiBackend>> =
-        match MultiBackend::new(&config.llm, config.proxy.as_deref(), config.no_proxy.as_deref()) {
+    // Create LLM backend (falls back to UnavailableBackend if config fails)
+    let llm_backend: SharedLlmBackend = {
+        let backend = match MultiBackend::new(&config.llm, config.proxy.as_deref(), config.no_proxy.as_deref()) {
             Ok(backend) => {
-                let backend = Arc::new(backend);
                 tracing::info!("LLM backend initialized: {}", backend.name());
-                Some(backend)
+                Arc::new(backend)
             }
             Err(e) => {
                 tracing::warn!("LLM backend not available: {}", e);
-                None
+                Arc::new(MultiBackend::from_single(Arc::new(UnavailableBackend)))
             }
         };
+        Arc::new(std::sync::RwLock::new(backend))
+    };
 
     let evict_hours = config.tasks.eviction.session_evict_hours;
     let daily_notes_config = config.tasks.daily_notes.clone();
@@ -170,11 +172,10 @@ async fn async_main() -> Result<i32> {
     {
         let notes_dir = omnish_dir.join("notes");
         let interval = periodic_summary_config.interval_hours;
-        let analysis_backend = llm_backend.as_ref().map(|b| b.get_backend(omnish_llm::backend::UseCase::Analysis));
         let (cron, job) = create_hourly_summary_job(
             Arc::clone(&session_mgr),
             Arc::clone(&conv_mgr),
-            analysis_backend,
+            llm_backend.clone(),
             notes_dir,
             interval,
         );
@@ -197,11 +198,10 @@ async fn async_main() -> Result<i32> {
     if daily_notes_config.enabled {
         let notes_dir = omnish_dir.join("notes");
         let cron = format!("0 0 {} * * *", daily_notes_config.schedule_hour);
-        let analysis_backend = llm_backend.as_ref().map(|b| b.get_backend(omnish_llm::backend::UseCase::Analysis));
         let job = create_daily_notes_job(
             Arc::clone(&session_mgr),
             Arc::clone(&conv_mgr),
-            analysis_backend,
+            llm_backend.clone(),
             notes_dir,
             daily_notes_config.schedule_hour,
         )?;
@@ -253,10 +253,9 @@ async fn async_main() -> Result<i32> {
 
     // Register thread summary job (runs every 10 minutes)
     {
-        let chat_backend = llm_backend.as_ref().map(|b| b.get_backend(omnish_llm::backend::UseCase::Chat));
         let job = omnish_daemon::thread_summary::create_thread_summary_job(
             Arc::clone(&conv_mgr),
-            chat_backend,
+            llm_backend.clone(),
         )?;
         task_mgr.register("thread_summary", "0 */10 * * * *", job).await?;
     }
@@ -313,7 +312,11 @@ async fn async_main() -> Result<i32> {
     tokio::spawn(async move { plugin_mgr_watcher.watch_with(plugin_rx, tool_registry_watcher).await });
 
     // Extract chat model name for ghost hint
-    let chat_model_name = llm_backend.as_ref().map(|b| b.model_name_for_use_case(omnish_llm::backend::UseCase::Chat));
+    let chat_model_name = {
+        let backend = llm_backend.read().unwrap();
+        let name = backend.model_name_for_use_case(omnish_llm::backend::UseCase::Chat);
+        if name == "unavailable" { None } else { Some(name) }
+    };
 
     let sandbox_rules = sandbox_rules::compile_config(&config.sandbox);
     let server_sandbox_rules: Arc<std::sync::RwLock<_>> = Arc::new(std::sync::RwLock::new(sandbox_rules));
@@ -331,6 +334,28 @@ async fn async_main() -> Result<i32> {
                 let tool_count = new_rules.len();
                 *sr.write().unwrap() = new_rules;
                 tracing::info!("sandbox rules reloaded: {} rules for {} tools", rule_count, tool_count);
+            }
+        });
+    }
+
+    // Hot-reload LLM backends on config change
+    {
+        let llm_rx = config_watcher.subscribe(config_watcher::ConfigSection::Llm);
+        let llm_holder = llm_backend.clone();
+        tokio::spawn(async move {
+            let mut rx = llm_rx;
+            while rx.changed().await.is_ok() {
+                let config = rx.borrow_and_update().clone();
+                match MultiBackend::new(&config.llm, config.proxy.as_deref(), config.no_proxy.as_deref()) {
+                    Ok(new_backend) => {
+                        let name = new_backend.name().to_string();
+                        *llm_holder.write().unwrap() = Arc::new(new_backend);
+                        tracing::info!("LLM backend reloaded: {}", name);
+                    }
+                    Err(e) => {
+                        tracing::warn!("LLM backend reload failed (keeping current): {}", e);
+                    }
+                }
             }
         });
     }

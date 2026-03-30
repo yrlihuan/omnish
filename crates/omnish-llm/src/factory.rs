@@ -108,6 +108,10 @@ pub fn create_default_backend(llm_config: &LlmConfig, proxy: Option<&str>, no_pr
     create_backend(backend_name, backend_config, proxy, no_proxy)
 }
 
+/// Shared LLM backend holder. All consumers read through this; hot-reload
+/// swaps the inner Arc atomically via the RwLock.
+pub type SharedLlmBackend = Arc<RwLock<Arc<MultiBackend>>>;
+
 /// MultiBackend routes LLM requests to different backends based on use case
 pub struct MultiBackend {
     /// Map from use case name to backend

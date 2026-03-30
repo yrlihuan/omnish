@@ -45,8 +45,8 @@ impl ConfigWatcher {
     /// paths map to a section in this list.
     pub const WATCHED_SECTIONS: &[ConfigSection] = &[
         ConfigSection::Sandbox,
+        ConfigSection::Llm,
         // Add sections here as their diff + subscriber is implemented:
-        // ConfigSection::Llm,
         // ConfigSection::Context,
         // ConfigSection::Tasks,
         // ConfigSection::Plugins,
@@ -116,6 +116,9 @@ impl ConfigWatcher {
         for section in Self::WATCHED_SECTIONS {
             let changed = match section {
                 ConfigSection::Sandbox => current.sandbox != new_config.sandbox,
+                ConfigSection::Llm => current.llm != new_config.llm
+                    || current.proxy != new_config.proxy
+                    || current.no_proxy != new_config.no_proxy,
                 // Future: add diff for other sections here
                 // (requires PartialEq on those config types)
                 _ => false,

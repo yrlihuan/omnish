@@ -135,3 +135,16 @@ pub trait LlmBackend: Send + Sync {
     /// Model name of this backend.
     fn model_name(&self) -> &str;
 }
+
+/// Fallback backend used when no LLM is configured or initialization fails.
+/// All calls to `complete()` return an error.
+pub struct UnavailableBackend;
+
+#[async_trait]
+impl LlmBackend for UnavailableBackend {
+    async fn complete(&self, _req: &LlmRequest) -> Result<LlmResponse> {
+        Err(anyhow::anyhow!("LLM backend not configured"))
+    }
+    fn name(&self) -> &str { "unavailable" }
+    fn model_name(&self) -> &str { "unavailable" }
+}
