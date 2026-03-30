@@ -486,7 +486,7 @@ async fn handle_message(
                 return;
             }
 
-            let content = match handle_llm_request(&req, &mgr, llm).await {
+            let content = match handle_llm_request(&req, mgr, llm).await {
                 Ok(response) => response.text(),
                 Err(e) => {
                     tracing::error!("LLM request failed: {}", e);
@@ -526,7 +526,7 @@ async fn handle_message(
                 })).await;
                 return;
             }
-            let reply = match handle_completion_request(&req, &mgr, llm).await {
+            let reply = match handle_completion_request(&req, mgr, llm).await {
                 Ok(suggestions) => {
                     Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
                         sequence_id: req.sequence_id,
