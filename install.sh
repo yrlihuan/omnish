@@ -484,14 +484,14 @@ fi
 
 # Provider presets: name -> (backend_type, base_url, default_model, max_content_chars)
 declare -A PROVIDER_TYPE PROVIDER_URL PROVIDER_MODEL PROVIDER_MAX_CHARS
-PROVIDER_TYPE[anthropic]="anthropic";       PROVIDER_URL[anthropic]="";                                                          PROVIDER_MODEL[anthropic]="claude-sonnet-4-20250514";  PROVIDER_MAX_CHARS[anthropic]=200000
-PROVIDER_TYPE[openai]="openai-compat";      PROVIDER_URL[openai]="https://api.openai.com/v1";                                    PROVIDER_MODEL[openai]="gpt-4o";                       PROVIDER_MAX_CHARS[openai]=200000
-PROVIDER_TYPE[gemini]="openai-compat";      PROVIDER_URL[gemini]="https://generativelanguage.googleapis.com/v1beta/openai/";     PROVIDER_MODEL[gemini]="gemini-2.5-pro";               PROVIDER_MAX_CHARS[gemini]=200000
-PROVIDER_TYPE[openrouter]="openai-compat";  PROVIDER_URL[openrouter]="https://openrouter.ai/api/v1";                             PROVIDER_MODEL[openrouter]="";                          PROVIDER_MAX_CHARS[openrouter]=200000
-PROVIDER_TYPE[deepseek]="anthropic";        PROVIDER_URL[deepseek]="https://api.deepseek.com/anthropic";                         PROVIDER_MODEL[deepseek]="deepseek-chat";               PROVIDER_MAX_CHARS[deepseek]=130000
-PROVIDER_TYPE[moonshot-cn]="anthropic";     PROVIDER_URL[moonshot-cn]="https://api.moonshot.cn/anthropic";                       PROVIDER_MODEL[moonshot-cn]="kimi-k2-preview";          PROVIDER_MAX_CHARS[moonshot-cn]=200000
-PROVIDER_TYPE[moonshot-global]="anthropic"; PROVIDER_URL[moonshot-global]="https://api.moonshot.ai/anthropic";                   PROVIDER_MODEL[moonshot-global]="kimi-k2-preview";      PROVIDER_MAX_CHARS[moonshot-global]=200000
-PROVIDER_TYPE[custom]="openai-compat";      PROVIDER_URL[custom]="";                                                             PROVIDER_MODEL[custom]="";                              PROVIDER_MAX_CHARS[custom]=200000
+PROVIDER_TYPE[anthropic]="anthropic";       PROVIDER_URL[anthropic]="";                                                          PROVIDER_MODEL[anthropic]="claude-sonnet-4-20250514";  PROVIDER_MAX_CHARS[anthropic]=400000
+PROVIDER_TYPE[openai]="openai-compat";      PROVIDER_URL[openai]="https://api.openai.com/v1";                                    PROVIDER_MODEL[openai]="gpt-4o";                       PROVIDER_MAX_CHARS[openai]=400000
+PROVIDER_TYPE[gemini]="openai-compat";      PROVIDER_URL[gemini]="https://generativelanguage.googleapis.com/v1beta/openai/";     PROVIDER_MODEL[gemini]="gemini-2.5-pro";               PROVIDER_MAX_CHARS[gemini]=400000
+PROVIDER_TYPE[openrouter]="openai-compat";  PROVIDER_URL[openrouter]="https://openrouter.ai/api/v1";                             PROVIDER_MODEL[openrouter]="";                          PROVIDER_MAX_CHARS[openrouter]=400000
+PROVIDER_TYPE[deepseek]="anthropic";        PROVIDER_URL[deepseek]="https://api.deepseek.com/anthropic";                         PROVIDER_MODEL[deepseek]="deepseek-chat";               PROVIDER_MAX_CHARS[deepseek]=260000
+PROVIDER_TYPE[moonshot-cn]="anthropic";     PROVIDER_URL[moonshot-cn]="https://api.moonshot.cn/anthropic";                       PROVIDER_MODEL[moonshot-cn]="kimi-k2-preview";          PROVIDER_MAX_CHARS[moonshot-cn]=400000
+PROVIDER_TYPE[moonshot-global]="anthropic"; PROVIDER_URL[moonshot-global]="https://api.moonshot.ai/anthropic";                   PROVIDER_MODEL[moonshot-global]="kimi-k2-preview";      PROVIDER_MAX_CHARS[moonshot-global]=400000
+PROVIDER_TYPE[custom]="openai-compat";      PROVIDER_URL[custom]="";                                                             PROVIDER_MODEL[custom]="";                              PROVIDER_MAX_CHARS[custom]=400000
 
 CHAT_PROVIDERS=(anthropic openai gemini openrouter deepseek moonshot-cn moonshot-global custom)
 COMPLETION_PROVIDERS=(gemini openrouter custom)
@@ -651,7 +651,7 @@ else
     SAME="${REPLY:-N}"
 
     if [[ ! "$SAME" =~ ^[Yy] ]]; then
-        configure_backend "completion" "Qwen/Qwen2.5-Coder-32B-Instruct" "32000" "${COMPLETION_PROVIDERS[@]}" > "$TMPDIR/completion_backend.toml"
+        configure_backend "completion" "Qwen/Qwen2.5-Coder-32B-Instruct" "64000" "${COMPLETION_PROVIDERS[@]}" > "$TMPDIR/completion_backend.toml"
         COMPLETION_NAME=$(cat "$TMPDIR/last_backend_name")
         USE_CASES="[llm.use_cases]
 chat = \"${CHAT_NAME}\"
