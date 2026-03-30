@@ -3,7 +3,7 @@
     "anthropic": {
       "backend_type": "anthropic",
       "base_url": "",
-      "default_model": "claude-sonnet-4-20250514",
+      "default_model": "claude-opus-4-6",
       "context_window": 200000
     },
     "openai": {
@@ -15,8 +15,8 @@
     "gemini": {
       "backend_type": "openai-compat",
       "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-      "default_model": "gemini-2.5-pro",
-      "context_window": 1000000
+      "default_model": "gemini-3.1-pro-preview",
+      "context_window": 1048576
     },
     "openrouter": {
       "backend_type": "openai-compat",
@@ -28,19 +28,25 @@
       "backend_type": "anthropic",
       "base_url": "https://api.deepseek.com/anthropic",
       "default_model": "deepseek-chat",
-      "context_window": 64000
+      "context_window": 131072
     },
     "moonshot-cn": {
       "backend_type": "anthropic",
       "base_url": "https://api.moonshot.cn/anthropic",
-      "default_model": "kimi-k2-preview",
-      "context_window": 128000
+      "default_model": "kimi-k2-turbo-preview",
+      "context_window": 256000
     },
     "moonshot-global": {
       "backend_type": "anthropic",
       "base_url": "https://api.moonshot.ai/anthropic",
-      "default_model": "kimi-k2-preview",
-      "context_window": 128000
+      "default_model": "kimi-k2-turbo-preview",
+      "context_window": 256000
+    },
+    "minimax": {
+      "backend_type": "openai-compat",
+      "base_url": "https://api.minimaxi.com/v1",
+      "default_model": "MiniMax-M2.7-highspeed",
+      "context_window": 204800
     },
     "custom": {
       "backend_type": "openai-compat",
@@ -49,6 +55,6 @@
       "context_window": 200000
     }
   },
-  "chat_providers": ["anthropic", "openai", "gemini", "openrouter", "deepseek", "moonshot-cn", "moonshot-global", "custom"],
+  "chat_providers": ["anthropic", "openai", "gemini", "openrouter", "deepseek", "moonshot-cn", "moonshot-global", "minimax", "custom"],
   "completion_providers": ["gemini", "openrouter", "custom"]
 }
