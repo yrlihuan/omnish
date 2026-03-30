@@ -4,7 +4,7 @@
 
 ## 模块概述
 
-omnish-llm 提供LLM后端抽象，支持多种LLM提供商，包括Anthropic、OpenAI兼容API。模块通过统一的接口封装不同LLM提供商的API调用，提供一致的LLM交互体验。从v0.5.0开始，支持工具调用（tool-use）功能，使LLM能够主动调用外部工具完成任务。v0.6.0新增了Langfuse可观测性集成、可组合的系统提示词管理（PromptManager）、请求日志记录、429/529重试机制等功能。v0.7.x支持全局代理（proxy/no_proxy）配置、可配置的定期总结间隔（默认4小时），以及在每日笔记中包含对话记录。
+omnish-llm 提供LLM后端抽象，支持多种LLM提供商，包括Anthropic、OpenAI兼容API。模块通过统一的接口封装不同LLM提供商的API调用，提供一致的LLM交互体验。从v0.5.0开始，支持工具调用（tool-use）功能，使LLM能够主动调用外部工具完成任务。v0.6.0新增了Langfuse可观测性集成、可组合的系统提示词管理（PromptManager）、请求日志记录、429/529重试机制等功能。v0.7.x支持全局代理（proxy/no_proxy）配置、可配置的定期总结间隔（默认4小时），以及在每日笔记中包含对话记录。最新版本新增了模型预设（presets）模块，从嵌入式JSON加载提供商元数据；`LlmBackend` trait精简化，将`list_backends()`等方法下沉到`MultiBackend`固有方法；支持per-backend `use_proxy`配置和`context_window`字段；新增`SharedLlmBackend`类型别名支持热重载；新增`UnavailableBackend`作为未配置LLM时的回退。
 
 ## 重要数据结构
 
@@ -41,11 +41,16 @@ LLM请求的工具调用：
 LLM后端接口，定义所有LLM后端必须实现的方法：
 - `complete()`: 发送补全请求并获取响应
 - `name()`: 返回后端名称标识符
+- `model_name()`: 返回模型名称（必须实现的方法）
 - `max_content_chars()`: 返回该后端模型的上下文最大字符数（可选，默认None）
-- `max_content_chars_for_use_case()`: 根据用途返回上下文字符数限制（可选，默认返回max_content_chars()）
-- `list_backends()`: 列举所有可用后端信息（仅 `MultiBackend` 有意义，其他返回空列表）
-- `chat_default_name()`: 返回默认 Chat 后端名称（仅 `MultiBackend` 有意义）
-- `get_backend_by_name()`: 根据配置名称获取特定后端（用于按线程模型覆盖）
+
+> 注：`max_content_chars_for_use_case()`、`list_backends()`、`chat_default_name()`、`get_backend_by_name()` 已从trait中移除，其中后三者已下沉为`MultiBackend`的固有方法。
+
+#### `UnavailableBackend`
+当未配置LLM或所有后端初始化失败时使用的回退后端：
+- 实现`LlmBackend` trait
+- `complete()` 始终返回错误 `"LLM backend not configured"`
+- `name()` 和 `model_name()` 均返回 `"unavailable"`
 
 #### `LlmRequest`
 LLM请求结构体，包含发送给LLM的完整请求信息：
@@ -132,6 +137,30 @@ LLM停止生成的原因：
 **插件提示词片段：**
 插件可通过系统提供自己的提示词片段，这些片段会被合并到PromptManager中。
 
+### 模型预设（presets）
+
+模型预设模块从编译时嵌入的JSON文件（`assets/model_presets.json`）加载各LLM提供商的元数据，供daemon配置初始化和安装脚本使用。
+
+**`ProviderPreset` 结构体：**
+- `backend_type`: 后端类型（"anthropic" 或 "openai-compat"）
+- `base_url`: API基础URL
+- `default_model`: 默认模型名称
+- `context_window`: 上下文窗口大小（token数）
+
+**公共函数：**
+- `get_provider(name)`: 按名称获取提供商预设（`Option<&ProviderPreset>`）
+- `default_context_window(provider)`: 获取提供商的默认上下文窗口大小（`Option<usize>`）
+- `provider_names()`: 列出所有提供商名称
+- `chat_providers()`: 返回支持Chat的提供商列表（有序）
+- `completion_providers()`: 返回支持Completion的提供商列表（有序）
+
+**支持的提供商：**
+anthropic、openai、gemini、openrouter、deepseek、moonshot-cn、moonshot-global、minimax、custom
+
+**实现细节：**
+- JSON通过`include_str!`编译时嵌入到二进制
+- 使用`OnceLock`实现单例延迟解析，仅在首次访问时解析JSON
+
 ### LLM后端实现
 
 #### `AnthropicBackend`
@@ -139,6 +168,8 @@ Anthropic API后端实现：
 - 支持Claude模型系列
 - 实现`LlmBackend` trait
 - `config_name`字段：存储配置中的后端名称（如"anthropic"），`name()`方法返回此名称而非硬编码字符串，用于线程级模型跟踪
+- `max_content_chars`字段：存储该后端的上下文最大字符数（`Option<usize>`），由工厂函数通过`effective_max_content_chars()`计算后传入
+- `model_name()`：返回模型名称（`&self.model`）
 - 使用Anthropic Messages API (v1/messages，API版本2024-04-04）
 - 支持`base_url`配置（默认api.anthropic.com），可用于代理或自托管
 - `max_tokens`固定为8192
@@ -163,6 +194,8 @@ Anthropic API后端实现：
 OpenAI兼容API后端实现：
 - 支持OpenAI、Azure OpenAI、本地兼容API（如vLLM）；配置中 `"openai"` 可作为 `"openai-compat"` 的别名
 - 实现`LlmBackend` trait
+- `max_content_chars`字段：存储该后端的上下文最大字符数（`Option<usize>`），由工厂函数通过`effective_max_content_chars()`计算后传入
+- `model_name()`：返回模型名称（`&self.model`）
 - 使用OpenAI兼容的Chat Completions API
 - 多轮对话支持：conversation历史映射为messages数组
 - 系统提示词支持：作为 `role: "system"` 消息前置
@@ -182,7 +215,16 @@ OpenAI兼容API后端实现：
 - 创建时自动解析Langfuse配置并包装各后端
 - 存储所有命名后端（`named_backends: HashMap<String, Arc<dyn LlmBackend>>`），支持按名称获取后端
 - 初始化时容忍单个后端失败：use_case 对应的后端初始化失败时记录 warning 并回退到默认后端，而不是中止所有初始化
-- 实现 `list_backends()`、`chat_default_name()`、`get_backend_by_name()` 用于每线程模型选择
+- 固有方法 `list_backends()`、`chat_default_name()`、`get_backend_by_name()` 用于每线程模型选择（从`LlmBackend` trait下沉至此）
+- `model_name_for_use_case(use_case)`: 返回指定用途的模型名称
+- `from_single(backend)`: 将单个后端包装为MultiBackend（用于测试）
+- Per-backend `use_proxy` 支持：仅当后端配置的 `use_proxy` 为 true 时才应用全局代理
+
+**`SharedLlmBackend` 类型别名：**
+```rust
+pub type SharedLlmBackend = Arc<RwLock<Arc<MultiBackend>>>;
+```
+用于热重载场景，所有消费者通过此共享引用读取后端，热重载时通过RwLock原子替换内部`Arc<MultiBackend>`。
 
 #### `LangfuseBackend`（可观测性）
 Langfuse可观测性包装器，透明地为LLM调用添加追踪：
@@ -193,6 +235,7 @@ Langfuse可观测性包装器，透明地为LLM调用添加追踪：
 - 使用Basic Auth认证（public_key + secret_key）
 - fire-and-forget模式：发送失败不影响LLM调用结果
 - 配置可选，未配置时不包装后端
+- 委托方法：`name()`、`max_content_chars()`、`model_name()` 均委托给内部包装的后端
 
 ### 请求日志（message_log）
 
@@ -210,7 +253,9 @@ LLM后端配置结构体（来自omnish-common）：
 - `model`: 模型名称
 - `api_key_cmd`: 获取API密钥的命令
 - `base_url`: API基础URL（anthropic支持自定义，openai-compat必需）
-- `max_content_chars`: 该模型的上下文最大字符数（可选，用于限制上下文大小）
+- `use_proxy`: 是否使用全局代理（布尔值，默认false）——仅当此字段为true时，该后端才会应用全局proxy配置
+- `context_window`: 上下文窗口大小（token数，可选）——当`max_content_chars`未设置时，默认使用`context_window * 1.5`
+- `max_content_chars`: 该模型的上下文最大字符数（可选，高级覆盖，优先级高于`context_window`推算值）
 
 #### `LangfuseConfig`（omnish-common）
 Langfuse可观测性配置结构体：
@@ -239,7 +284,15 @@ Langfuse可观测性配置结构体：
 - `no_proxy: Option<&str>` - 不走代理的主机列表（逗号分隔，可选）
 
 **返回:** `Result<Arc<dyn LlmBackend>>` - 装箱的LLM后端实例
-**用途:** 工厂函数，根据配置类型创建对应的后端实现。若配置了proxy，HTTP客户端会自动使用该代理。
+**用途:** 工厂函数，根据配置类型创建对应的后端实现。仅当后端配置的`use_proxy`为true时，HTTP客户端才会使用全局代理。创建时通过`effective_max_content_chars()`计算`max_content_chars`并传入后端实例。
+
+### `effective_max_content_chars()`
+计算后端的有效最大上下文字符数。
+
+**参数:** `config: &LlmBackendConfig` - 后端配置
+**返回:** `Option<usize>` - 有效的最大上下文字符数
+**优先级:** 显式`max_content_chars` > `context_window * 1.5` > `None`
+**用途:** 统一计算后端的上下文限制，支持从`context_window`自动推算
 
 ### `create_default_backend()`
 从完整LLM配置创建默认后端。
@@ -303,7 +356,7 @@ Langfuse可观测性配置结构体：
 
 ### 常量
 
-- `DAILY_NOTES_PROMPT` — 每日工作总结的LLM提示（中文），使用XML标签 `<commands>`、`<conversations>`（对话记录）、`<hourly_summaries>` 包裹上下文，输出bullet列表格式
+- `DAILY_NOTES_PROMPT` — 每日工作总结的LLM提示（中文），基于`<hourly_summaries>`中各时段工作摘要生成项目符号列表格式的工作日志（已简化，不再直接引用原始命令和对话记录）
 - `HOURLY_NOTES_PROMPT` — 定期总结的LLM提示模板（中文），提示中用"N小时"占位（实际间隔由配置决定），使用XML标签 `<commands>`、`<conversations>` 包裹上下文（issue #96）
 - `CHAT_PROMPT_JSON` — 编译内嵌的chat提示词JSON（来自`assets/chat.json`），通过`include_str!`编译到二进制
 - `CHAT_OVERRIDE_EXAMPLE` — `chat.override.json`示例文件内容（来自`assets/chat.override.json.example`）
@@ -482,15 +535,17 @@ let completion_content = template::build_simple_completion_content(
 
 ## 模块文件结构
 - `lib.rs`: 模块入口，导出所有公共接口
-- `backend.rs`: LlmBackend trait、LlmRequest/LlmResponse、Usage、UseCase/TriggerType等核心类型
+- `backend.rs`: LlmBackend trait、UnavailableBackend、LlmRequest/LlmResponse、Usage、UseCase/TriggerType等核心类型
 - `tool.rs`: 工具相关类型（ToolDef、ToolCall、ToolResult）
 - `anthropic.rs`: Anthropic API后端实现（含连接错误重试、429/529重试）
 - `openai_compat.rs`: OpenAI兼容API后端实现（含连接错误重试、429重试）
-- `factory.rs`: 后端工厂函数（create_backend、create_default_backend、MultiBackend、Langfuse包装逻辑）
+- `factory.rs`: 后端工厂函数（create_backend、create_default_backend、MultiBackend、SharedLlmBackend、effective_max_content_chars、Langfuse包装逻辑）
+- `presets.rs`: 模型预设模块（ProviderPreset、从嵌入式JSON加载提供商元数据）
 - `template.rs`: 提示模板（build_simple_completion_content、DAILY/HOURLY_NOTES_PROMPT等）
 - `prompt.rs`: PromptManager（可组合系统提示词片段管理）和内嵌chat提示词常量
 - `langfuse.rs`: Langfuse可观测性集成（LangfuseBackend包装器）
 - `message_log.rs`: LLM请求payload本地日志记录
+- `assets/model_presets.json`: 模型预设JSON（编译内嵌），包含各提供商的backend_type、base_url、default_model、context_window
 - `assets/chat.json`: 默认chat系统提示词片段JSON（编译内嵌）
 - `assets/chat.override.json.example`: chat覆盖文件示例
 
@@ -510,17 +565,19 @@ default = "anthropic"
 
 [llm.backends.anthropic]
 backend_type = "anthropic"
-model = "claude-3-5-sonnet-20241022"
+model = "claude-sonnet-4-20250514"
 api_key_cmd = "echo $ANTHROPIC_API_KEY"
 # base_url = "https://api.anthropic.com"  # 可选，默认为api.anthropic.com
-max_content_chars = 200000
+use_proxy = false                          # 是否使用全局代理（默认false）
+context_window = 200000                    # 上下文窗口大小（token数，可选）
+# max_content_chars = 300000              # 高级覆盖，优先级高于context_window推算
 
 [llm.backends.openai]
 backend_type = "openai-compat"
 model = "gpt-4"
 api_key_cmd = "echo $OPENAI_API_KEY"
 base_url = "https://api.openai.com/v1"  # openai-compat必需
-max_content_chars = 128000
+context_window = 128000
 
 [llm.use_cases]
 completion = "local-vllm"
@@ -613,7 +670,7 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
 
 2. **每线程模型选择** (commit 2a2e8d0):
    - 新增 `BackendInfo` 结构体（`name`, `model`）
-   - `LlmBackend` trait 新增 `list_backends()`、`chat_default_name()`、`get_backend_by_name()` 方法
+   - `LlmBackend` trait 新增 `list_backends()`、`chat_default_name()`、`get_backend_by_name()` 方法（后续已下沉为`MultiBackend`固有方法）
    - `MultiBackend` 新增 `named_backends` HashMap 和相关字段，支持按名称获取后端
    - 支持 `/model` 命令在聊天中切换当前线程的模型
 
@@ -652,3 +709,43 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
     - `create_backend()`、`create_default_backend()`、`MultiBackend::new()` 签名新增 `proxy`/`no_proxy` 参数
     - 新增 `build_http_client()` 内部辅助函数，统一构建带代理配置的 reqwest 客户端
     - `LangfuseConfig` 新增 `proxy`/`no_proxy` 字段，`LangfuseBackend` 初始化时应用代理
+
+### 2026-03-30 - 模型预设、LlmBackend trait精简、per-backend代理、context_window支持（#465）
+
+**主要变更:**
+
+1. **新增 `presets` 模块** (`presets.rs`):
+   - 从编译时嵌入的 `assets/model_presets.json` 加载提供商元数据
+   - `ProviderPreset` 结构体包含 `backend_type`、`base_url`、`default_model`、`context_window`
+   - 公共函数：`get_provider()`、`default_context_window()`、`provider_names()`、`chat_providers()`、`completion_providers()`
+   - 支持的提供商：anthropic、openai、gemini、openrouter、deepseek、moonshot-cn、moonshot-global、minimax、custom
+   - `lib.rs` 新增 `pub mod presets;` 导出
+
+2. **`LlmBackend` trait 精简**:
+   - 移除方法：`max_content_chars_for_use_case()`、`list_backends()`、`chat_default_name()`、`get_backend_by_name()`
+   - 新增必须实现的方法：`model_name() -> &str`
+   - 新增 `UnavailableBackend` 结构体——未配置LLM时的回退后端，`complete()` 返回错误
+
+3. **`MultiBackend` 变更**:
+   - 新增类型别名 `SharedLlmBackend = Arc<RwLock<Arc<MultiBackend>>>`，用于热重载
+   - `list_backends()`、`chat_default_name()`、`get_backend_by_name()` 从 trait 下沉为固有方法
+   - 新增方法：`model_name_for_use_case(use_case) -> String`
+   - 新增方法：`from_single(backend) -> Self`，将单个后端包装为MultiBackend（测试用）
+   - 新增函数：`effective_max_content_chars(config) -> Option<usize>`，优先级：显式 max_content_chars > context_window * 1.5 > None
+
+4. **Per-backend `use_proxy` 支持**:
+   - `LlmBackendConfig` 新增 `use_proxy: bool` 字段（默认false）
+   - 仅当 `use_proxy` 为 true 时，该后端才应用全局 proxy 配置
+   - `LlmBackendConfig` 新增 `context_window: Option<usize>` 字段
+
+5. **后端实现变更**:
+   - `AnthropicBackend` 和 `OpenAiCompatBackend` 新增 `max_content_chars: Option<usize>` 字段
+   - 两者均实现 `model_name()` 方法（返回 `&self.model`）
+
+6. **`LangfuseBackend` 变更**:
+   - `max_content_chars_for_use_case` 委托替换为 `model_name()` 委托
+
+7. **`DAILY_NOTES_PROMPT` 简化**:
+   - 现在仅引用 `<hourly_summaries>` 中各时段的工作摘要，不再直接包含原始命令和对话记录的XML标签
+
+**相关issue:** #465

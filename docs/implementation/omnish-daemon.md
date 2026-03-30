@@ -31,7 +31,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 ### `DaemonServer`
 守护进程服务器主结构，包含：
 - `session_mgr`: `Arc<SessionManager>` - 会话管理器实例
-- `llm_backend`: `Option<Arc<dyn LlmBackend>>` - 可选的LLM后端
+- `llm_backend`: `SharedLlmBackend`（即 `Arc<RwLock<Arc<MultiBackend>>>`）- LLM后端（始终存在，创建失败时回退到 `MultiBackend::from_single(Arc::new(UnavailableBackend))`）
 - `task_mgr`: `Arc<Mutex<TaskManager>>` - 定时任务管理器
 - `conv_mgr`: `Arc<ConversationManager>` - 对话管理器
 - `plugin_mgr`: `Arc<PluginManager>` - 插件管理器
@@ -39,14 +39,23 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - `tool_registry`: `Arc<ToolRegistry>` - 统一工具元数据注册表（display_name、formatter、status_template 等）
 - `formatter_mgr`: `Arc<FormatterManager>` - 工具结果格式化管理器（内置格式化器 + 外部格式化器子进程）
 - `cancel_flags`: `CancelFlags` - 智能体循环取消标志映射（request_id → AtomicBool），用于守护进程侧 Cancel 支持
-- `chat_model_name`: `Option<String>` - 聊天后端的模型名称（用于 ChatReady ghost hint，从配置的 chat use case 或默认后端中提取）
 - `update_cache`: `Arc<UpdateCache>` - 更新包缓存管理器，用于客户端版本检查和包分发
 - `opts`: `Arc<ServerOpts>` - 共享运行时选项（代理、沙箱规则、配置文件路径、活跃配置副本）
+
+**LLM 后端热重载：**
+- 启动时 spawn 后台任务订阅 `ConfigSection::Llm`，配置变更时重建 `MultiBackend` 并原子替换 `SharedLlmBackend` 中的值
+- 重建失败时保留当前后端并记录 warning 日志
+- `handle_message` 在每次请求时通过 `llm_holder.read().unwrap().clone()` 读取当前后端
+
+**聊天模型名动态获取：**
+- 原有的静态 `chat_model_name` 字段已移除
+- 现在在 `handle_message` 开头动态计算：`llm.model_name_for_use_case(UseCase::Chat)`
+- 若模型名为 "unavailable"，返回 None（不显示 ghost hint）
 
 ### `AgentLoopState`
 暂停态的智能体循环，等待客户端侧工具执行结果返回后恢复，包含：
 - `llm_req`: `LlmRequest` - 累积的 LLM 请求（含完整对话历史）
-- `prior_len`: `usize` - 本轮对话前已有的消息数量
+- `saved_up_to`: `usize` - 已持久化的 extra_messages 索引（每次中间持久化后前进，而非仅在最终保存时更新）
 - `pending_tool_calls`: `Vec<ToolCall>` - 当前轮次的所有工具调用
 - `completed_results`: `Vec<ToolResult>` - 已完成的工具结果
 - `messages`: `Vec<Message>` - 累积的响应消息（ChatToolStatus 等）
@@ -156,7 +165,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - **原始JSON存储格式**：存储完整的 LLM API 消息格式，包括 tool_use、tool_result 等复杂内容块，更灵活，便于未来扩展
 - 启动时从磁盘加载所有线程到内存，后续读取直接走内存缓存
 - 写入时双写：同步更新内存缓存 + append 到磁盘 JSONL 文件
-- **不持久化 `<system-reminder>` 标签**：在存储前自动过滤系统提醒内容
+- **不持久化 `<system-reminder>` 标签**：system-reminder 已移至系统提示词中，用户消息以纯查询文本存储
 - 支持按文件修改时间排序列出所有对话
 - 支持按索引（0-based）选取线程
 - 支持删除线程（同时移除内存缓存和磁盘文件）
@@ -168,6 +177,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
   - `summary`: LLM 生成的线程摘要（由 `thread_summary` 任务生成）；`/resume` 时在对话选择界面中显示摘要
   - `summary_rounds`: 生成摘要时的对话轮次数
   - `model`: 线程级别的模型覆盖（per-thread model override）
+  - `system_reminder`: `Option<String>` - 当前 system-reminder 内容（用于变更检测，判断是否需要更新系统提示词）
   - `usage_last`: `Option<ThreadUsage>` - 最近一次 LLM API 调用的 token 用量（用于 `/thread stats` 的 context 列）
   - `usage_total`: `Option<ThreadUsage>` - 当前模型的累计 token 用量（切换模型时重置）
   - `last_model`: `Option<String>` - 产生 `usage_last`/`usage_total` 的模型名称（用于检测模型切换）
@@ -219,12 +229,21 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 **工作流程：**
 1. `ConfigWatcher::new()` 注册 `FileWatcher` 监视，内部 spawn 一个 reload 任务
 2. 文件变更时调用 `reload()`：文件读取和 TOML 解析在锁外完成，再短暂获取写锁对比各节点差异
-3. 仅发生变更的节点才会向订阅者发送通知（目前已实现 `Sandbox` 节点的 diff 检测）
-4. 各模块通过 `subscribe(section)` 获取 `watch::Receiver`，在自身 spawn 的任务中等待变更并更新本地状态
+3. `reload()` 遍历 `WATCHED_SECTIONS`（`[ConfigSection::Sandbox, ConfigSection::Llm]`），通过 match 分支检测各节点差异，仅发生变更的节点才向订阅者发送通知
+4. Sandbox 节点差异检测：对比 sandbox 配置
+5. Llm 节点差异检测：对比 `current.llm != new_config.llm || current.proxy != new_config.proxy || current.no_proxy != new_config.no_proxy`
+6. 各模块通过 `subscribe(section)` 获取 `watch::Receiver`，在自身 spawn 的任务中等待变更并更新本地状态
+
+**`ConfigSection::from_toml_key()`**（测试辅助函数）：将 TOML 键名映射到 `ConfigSection` 枚举，用于 `test_all_schema_paths_covered_by_config_watcher` 守护测试验证所有 schema 路径都已被 `WATCHED_SECTIONS` 覆盖。
 
 **SandboxRules 热重载集成：**
 - `server.rs` 中 `SandboxRules`（`HashMap<String, Vec<PermitRule>>`）存储在 `Arc<RwLock<...>>` 中
 - `ConfigWatcher::subscribe(ConfigSection::Sandbox)` 的接收端在后台任务中监听，收到变更后调用 `sandbox_rules::compile_config()` 重新编译规则并原子替换
+
+**LLM 后端热重载集成：**
+- `main.rs` 中 spawn 后台任务订阅 `ConfigSection::Llm`
+- 收到变更后重建 `MultiBackend`，成功时原子替换 `SharedLlmBackend` 中的值
+- 重建失败时保留当前后端并记录 warning 日志，不影响服务
 
 ### `UpdateCache`（`crates/omnish-daemon/src/update_cache.rs`）
 更新包缓存管理器，管理 `~/.omnish/updates/{os}-{arch}/` 目录下的平台安装包，为客户端版本检查和包分发提供支持。
@@ -507,7 +526,13 @@ pub trait ToolFormatter: Send + Sync {
 
 ### system-reminder
 
-每条聊天用户消息自动附加 `<system-reminder>` 标签，包含丰富的环境上下文：
+system-reminder 内容附加到**系统提示词**（而非用户消息）中，包含丰富的环境上下文：
+
+```
+format!("{}\n\n{}", system_prompt, reminder)
+```
+
+用户消息只包含纯查询文本，不再附加 system-reminder 标签。`ThreadMeta.system_reminder` 字段用于变更检测，当 system-reminder 内容发生变化时更新系统提示词。
 
 ```
 <system-reminder>
@@ -578,7 +603,7 @@ LAST 5 COMMANDS:
 
 **循环机制:**
 - 最多迭代 100 次（`max_iterations = 100`，从旧版 30 次提升）
-- 超时限制 600 秒（10 分钟），超时后清理暂停态并返回错误
+- 超时限制 600 秒（10 分钟），超时后持久化已完成的工具结果和 "timed out" 标记，然后清理暂停态并返回错误消息：`"Error: client-side tool execution timed out. Your progress has been saved — you can continue by sending another message."`
 - 每次迭代：调用 LLM → 检查是否有工具调用 → 执行工具 → 将结果反馈给 LLM
 - **使用线程级后端**：循环始终通过 `state.effective_backend` 调用 LLM，在客户端工具返回后恢复循环时也使用同一后端（修复了恢复后退回默认后端的 bug）
 - **Thinking 块保留**：当 LLM 响应中包含 `ContentBlock::Thinking` 块时，assistant 消息以内容数组形式存储（thinking + text + tool_use），确保 thinking 上下文在多轮工具调用中正确传递
@@ -603,11 +628,19 @@ LAST 5 COMMANDS:
 
 **客户端侧工具转发（暂停/恢复机制）：**
 - 当 LLM 请求的工具包含 `ClientTool` 时，循环暂停：
-  1. 将当前 `AgentLoopState` 存入 `pending_agent_loops` 映射（以 `request_id` 为 key）
-  2. 返回 `ChatToolCall` 消息给客户端
-  3. 客户端执行后返回 `ChatToolResult`
-  4. `handle_tool_result()` 累积结果，当所有工具完成后从映射中取出 state 恢复循环
+  1. **持久化已累积的消息**：暂停前调用 `persist_unsaved(&mut state, conv_mgr, &[])` 保存到当前为止的消息，确保即使客户端断开或守护进程重启，进度也不丢失
+  2. 将当前 `AgentLoopState` 存入 `pending_agent_loops` 映射（以 `request_id` 为 key）
+  3. 返回 `ChatToolCall` 消息给客户端
+  4. 客户端执行后返回 `ChatToolResult`
+  5. `handle_tool_result()` 累积结果，当所有工具完成后从映射中取出 state 恢复循环
 - 后台定时器每 30 秒清理超过 120 秒的过期暂停态
+
+**`persist_unsaved()` 辅助函数：**
+- 替代了原先 5+ 处手动消息持久化代码
+- 签名：`fn persist_unsaved(state: &mut AgentLoopState, conv_mgr: &ConversationManager, suffix: &[serde_json::Value])`
+- 将未保存的消息（从 `saved_up_to` 到 `extra_messages` 末尾）加上 suffix 追加到对话线程
+- 持久化后更新 `saved_up_to` 索引
+- 在以下场景中使用：取消中断、用户中断、超时、API 错误、正常完成、客户端工具暂停前
 
 **守护进程侧 Cancel（流式执行中断）：**
 - 用户按 Ctrl-C 时，客户端发送 `ChatInterrupt`
@@ -621,7 +654,8 @@ LAST 5 COMMANDS:
 
 **消息流格式:**
 ```
-User: {{query}} + <system-reminder>
+System: {{system_prompt}} + system-reminder
+User: {{query}}
 Assistant: [text] + [tool_use blocks]
   → ChatToolStatus (LLM 文本) + ChatToolStatus (工具状态) + ChatToolCall (客户端工具)
   → 等待 ChatToolResult...
@@ -633,9 +667,9 @@ Assistant: {{final response}}
 
 **存储格式:**
 - 所有消息（包括工具调用和结果）以原始 JSON 格式存储到对话线程
-- 用户消息存储时去除 `<system-reminder>`（只保留用户原始查询文本）
+- 用户消息以纯查询文本存储（system-reminder 已移至系统提示词，不再出现在用户消息中）
 - 工具结果消息的 `content` 是数组（不是字符串），`ConversationManager` 能正确区分
-- 不持久化 `<system-reminder>` 标签，保持线程文件简洁
+- 支持增量持久化：通过 `persist_unsaved()` 在循环中间点保存进度
 
 **ChatToolCall 消息结构：**
 - `request_id` / `thread_id` — 关联到智能体循环
@@ -664,7 +698,8 @@ Assistant: {{final response}}
 ### 聊天上下文增强
 
 **system-reminder 注入:**
-- 每条聊天消息自动附加 `<system-reminder>` 标签（由 `CommandQueryTool::build_system_reminder(5, live_cwd)` 生成）
+- system-reminder 内容（由 `CommandQueryTool::build_system_reminder(5, live_cwd)` 生成）附加到**系统提示词**中：`format!("{}\n\n{}", system_prompt, reminder)`
+- 用户消息只包含纯查询文本（不再附加 `<system-reminder>` 标签）
 - 包含时间、工作目录、Git 仓库状态、平台信息、最近 5 条命令
 - 减少简单环境查询的工具调用次数，提升响应速度
 - 工具仍可用于获取完整输出或更多历史记录
@@ -766,15 +801,15 @@ Assistant: {{final response}}
 客户端发送 ChatStart → 守护进程创建/恢复线程 → 返回 ChatReady（含线程ID）
 客户端发送 ChatMessage → 守护进程进入智能体循环:
   1. 构建 ChatSetup（工具列表 + 系统提示词）
-  2. 附加 system-reminder（时间/cwd/最近5条命令）到用户消息
+  2. 附加 system-reminder（时间/cwd/最近5条命令）到系统提示词
   3. 加载对话历史
   4. 调用 LLM（传递工具定义，启用 thinking 模式）
   5. 检查 tool_use 块:
      - DaemonTool: 直接执行
-     - ClientTool: 发送 ChatToolCall，暂停循环等待结果
+     - ClientTool: 持久化已累积消息，发送 ChatToolCall，暂停循环等待结果
   6. 收到所有 ChatToolResult 后恢复循环
   7. 循环直到获得最终文本响应（最多 100 次迭代 / 600 秒超时）
-  8. 存储所有消息（去除 system-reminder）→ 返回 ChatResponse
+  8. 存储所有消息 → 返回 ChatResponse
 客户端发送 ChatToolResult → 守护进程累积结果 → 全部完成时恢复智能体循环
 客户端发送 ChatInterrupt → 守护进程存储部分结果 → 清理暂停态 → 返回 Ack
 ```
@@ -783,9 +818,9 @@ Assistant: {{final response}}
 - 每条消息都构建 `ChatSetup`（通过 `build_chat_setup()` 共享函数）
 - `ChatSetup` 包含 `CommandQueryTool`、合并的工具列表、系统提示词
 - 系统提示词通过 `PromptManager` 加载：基础 `chat.json`（编译期内嵌，启动时写入 `~/.omnish/plugins/builtin/tool.json`）+ 用户 `chat.override.json`
-- system-reminder 包含实时 `shell_cwd`（从会话探测获取）
+- system-reminder 包含实时 `shell_cwd`（从会话探测获取），附加到系统提示词而非用户消息
 - **线程级模型选择**：`ChatMessage.model` 字段指定模型名时，保存到 `ThreadMeta.model`，后续对话从元数据中读取并通过 `backend.get_backend_by_name()` 解析为具体后端
-- 所有消息（包括工具调用）以原始 JSON 格式存储，但 `<system-reminder>` 在存储前被过滤
+- 所有消息（包括工具调用）以原始 JSON 格式存储，用户消息只包含纯查询文本（不再附加 `<system-reminder>`）
 - thinking 块以完整 `ContentBlock::Thinking` 数组存储到对话历史，供后续轮次使用
 
 ## 配置管理（/config 菜单）
@@ -807,8 +842,9 @@ Assistant: {{final response}}
 **当前模式覆盖的配置项：**
 - 代理设置：`proxy`（HTTP 代理）、`no_proxy`
 - LLM use case 路由：`completion`、`analysis`、`chat` 后端选择（选项从已配置后端动态生成）
-- 新增 LLM 后端：`add_backend` 子菜单（name、backend_type、model、api_key_cmd、base_url）
-- 动态项：已存在的后端自动生成编辑条目（`llm.backends.<name>.backend_type/model/api_key_cmd/base_url`）
+- 新增 LLM 后端：`add_backend` 子菜单（name、backend_type、model、api_key_cmd、base_url）；提交时若输入为纯 `api_key`，自动转换为 `api_key_cmd = "echo {key}"`
+- 动态项：已存在的后端自动生成编辑条目（`llm.backends.<name>.backend_type/model/api_key_cmd/base_url/use_proxy/context_window`），后端按名称排序以确保 UI 顺序一致
+- 每个后端新增 `use_proxy`（Toggle 类型）和 `context_window`（TextInput 类型）配置项
 
 **核心函数：**
 
@@ -821,8 +857,8 @@ Assistant: {{final response}}
 
 **`apply_config_changes(config_path, changes)`** — 将配置变更写入 `daemon.toml`
 - 将变更按是否属于某个 handler 分组
-- 普通变更：根据 kind 调用 `set_toml_value_nested()` 或 `set_toml_value_nested_bool()` 直接写入
-- handler 变更：分组后调用对应处理函数（如 `handle_add_backend` 将新后端的各字段写入 `llm.backends.<name>.*`）
+- 普通变更：根据 kind 调用 `set_toml_value_nested()` 或 `set_toml_value_nested_bool()` 直接写入；路径以 `.use_proxy` 结尾时自动推断为 "toggle" 类型
+- handler 变更：分组后调用对应处理函数（如 `handle_add_backend` 将新后端的各字段写入 `llm.backends.<name>.*`，并将纯 `api_key` 输入转换为 `api_key_cmd = "echo {key}"`）
 
 ### ConfigQuery/ConfigUpdate 消息处理
 
@@ -912,9 +948,10 @@ session_evict_hours = 48  # 默认：48小时后驱逐
 #### 2. `hourly_summary` - 小时总结任务
 **执行周期:** 每小时整点 (`0 0 * * * *`)
 **功能:** 生成过去1小时内的命令执行摘要，保存到 `~/.omnish/notes/hourly/YYYY-MM-DD/HH.md`
-**内容:** 仅保存LLM生成的摘要（不含原始命令上下文）
+**内容:** 输出包含三个部分：`## 命令记录`（命令表格）、`## 会话记录`（对话内容）、`## 工作总结`（LLM 生成的摘要）
 **特点:**
-- 调用 LLM 后端（如果可用）生成执行摘要
+- 使用 `SharedLlmBackend`（通过 `llm_holder.read().unwrap().get_backend(UseCase::Analysis)` 获取后端）
+- 使用 `max_content_chars()` 控制上下文大小
 - 支持上下文大小限制和内容精简
 - 如果没有命令或上下文为空会自动跳过
 
@@ -930,7 +967,11 @@ max_line_width = 128    # 每行最大字符数
 #### 3. `daily_notes` - 日报生成任务
 **执行周期:** 每天指定时刻 (默认 `0 0 18 * * *` - 每天18:00)
 **功能:** 生成过去24小时的工作总结，保存到 `~/.omnish/notes/YYYY-MM-DD.md`
-**特点:** LLM上下文中包含当天已有的小时摘要，帮助生成更准确的日报。日报内容中还包含当天所有聊天对话线程的摘要（来自 `ThreadMeta.summary`）
+**特点:**
+- 完全依赖小时摘要（不再收集原始命令和对话数据）
+- 使用 `SharedLlmBackend`（通过 `llm_holder.read().unwrap().get_backend(UseCase::Analysis)` 获取后端）
+- 若当天无小时摘要或无可用 LLM 后端，自动跳过
+- 输出格式简化为：`# {date} 工作日报\n\n{llm_summary}\n`
 **相关配置:**
 ```toml
 [tasks.daily_notes]
@@ -955,7 +996,7 @@ schedule = "0 0 */6 * * *"  # Cron 表达式，默认每6小时
 **特点:**
 - 只对有内容（`rounds > 0`）且摘要已过期（新增轮次超过阈值）的线程生成摘要
 - 摘要间隔可通过配置调整（`periodic_summary_interval`，默认 4 小时）
-- 调用 LLM 后端生成简短摘要文本
+- 调用 LLM 后端生成简短摘要文本，使用 `SharedLlmBackend` 和 `max_content_chars()`
 - 无 LLM 后端时自动跳过
 **实现:** 通过 `create_thread_summary_job()` 函数创建
 
@@ -1164,15 +1205,14 @@ max_line_width = 128
 
 **参数:**
 - `session_mgr`: `Arc<SessionManager>` - 会话管理器
-- `llm_backend`: `Option<Arc<dyn LlmBackend>>` - LLM后端
+- `llm_backend`: `SharedLlmBackend` - LLM后端（`Arc<RwLock<Arc<MultiBackend>>>`）
 - `task_mgr`: `Arc<Mutex<TaskManager>>` - 定时任务管理器
 - `conv_mgr`: `Arc<ConversationManager>` - 对话管理器
 - `plugin_mgr`: `Arc<PluginManager>` - 插件管理器
-- `chat_model_name`: `Option<String>` - 聊天后端模型名称（用于 `ChatReady` 的 ghost hint）
 
 **返回:** `DaemonServer` 实例
 
-**用途:** 初始化守护进程服务器
+**用途:** 初始化守护进程服务器。`chat_model_name` 不再作为参数传入，而是在 `handle_message` 中动态计算
 
 ### `DaemonServer::run()`
 启动守护进程服务器并开始监听客户端连接。
@@ -1321,12 +1361,12 @@ max_line_width = 128
 **用途:** 检测stderr输出中的模式匹配事件
 
 ### `handle_message()`
-处理来自客户端的消息。
+处理来自客户端的消息。LLM 后端始终存在（不再使用 `Option` 包装），所有相关函数直接接收 `&Arc<MultiBackend>` 参数。
 
 **参数:**
 - `msg`: `Message` - 协议消息
 - `mgr`: `Arc<SessionManager>` - 会话管理器
-- `llm`: `&Option<Arc<dyn LlmBackend>>` - LLM后端
+- `llm`: `&Arc<MultiBackend>` - LLM后端（始终存在）
 - `task_mgr`: `&Arc<Mutex<TaskManager>>` - 任务管理器
 - `conv_mgr`: `&Arc<ConversationManager>` - 对话管理器
 - `plugin_mgr`: `&Arc<PluginManager>` - 插件管理器
@@ -1353,7 +1393,7 @@ max_line_width = 128
 **参数:**
 - `cm`: `ChatMessage` - 聊天消息请求
 - `mgr`: `&SessionManager` - 会话管理器
-- `llm`: `&Option<Arc<dyn LlmBackend>>` - LLM后端
+- `llm`: `&Arc<MultiBackend>` - LLM后端（始终存在）
 - `conv_mgr`: `&Arc<ConversationManager>` - 对话管理器
 - `plugin_mgr`: `&Arc<PluginManager>` - 插件管理器
 - `pending_loops`: `&Arc<Mutex<HashMap<String, AgentLoopState>>>` - 暂停态循环映射
@@ -1373,7 +1413,7 @@ max_line_width = 128
 5. 检查响应中的 `tool_use` 块
 6. 区分 DaemonTool 和 ClientTool：
    - DaemonTool 直接执行，执行前后各发送一条 `ChatToolStatus`
-   - 有 ClientTool 时暂停循环，将 state 存入 `pending_agent_loops`，返回 `ChatToolCall` 消息；暂停前调用 `update_thread_usage()`
+   - 有 ClientTool 时暂停循环，调用 `persist_unsaved()` 保存进度，将 state 存入 `pending_agent_loops`，返回 `ChatToolCall` 消息；暂停前调用 `update_thread_usage()`
 7. 全部为 DaemonTool 时继续循环
 8. 无工具调用时存储消息、调用 `update_thread_usage()` 并返回最终响应（含 thinking 块时以内容数组存储，否则以纯字符串存储）
 9. API 错误时：截断错误消息（最多 200 字符）、追加 `<event>api error</event>` 标记、持久化对话、保存用量后退出
@@ -1387,7 +1427,7 @@ max_line_width = 128
 
 **流程:**
 1. 从 `pending_agent_loops` 中查找对应的暂停态
-2. 检查超时（600 秒）
+2. 检查超时（600 秒），超时时持久化已完成的工具结果和 "timed out" 标记后返回错误
 3. 累积结果到 `completed_results`
 4. **立即**通过 Formatter 格式化当前工具结果，生成增量 `ChatToolStatus` 更新消息（并行执行场景下每个工具完成时立即通知客户端，不等待其他工具）
 5. 若仍有工具未完成，直接返回增量状态消息，继续等待
@@ -1433,7 +1473,7 @@ max_line_width = 128
 **参数:**
 - `req`: `&Request` - 查询请求
 - `mgr`: `&SessionManager` - 会话管理器
-- `backend`: `&Arc<dyn LlmBackend>` - LLM后端
+- `backend`: `&Arc<MultiBackend>` - LLM后端
 
 **返回:** `Result<LlmResponse>`
 
@@ -1445,7 +1485,7 @@ max_line_width = 128
 **参数:**
 - `req`: `&CompletionRequest` - 补全请求
 - `mgr`: `&SessionManager` - 会话管理器
-- `backend`: `&Arc<dyn LlmBackend>` - LLM后端
+- `backend`: `&Arc<MultiBackend>` - LLM后端
 
 **返回:** `Result<Vec<CompletionSuggestion>>`
 
@@ -1600,13 +1640,13 @@ async fn main() -> anyhow::Result<()> {
 聊天开始 → 发送ChatStart → 守护进程创建/恢复线程 → 返回ChatReady
 聊天消息 → 发送ChatMessage → 守护进程进入智能体循环:
   1. 构建 ChatSetup（CommandQueryTool + 插件工具 + 系统提示词）
-  2. 附加 system-reminder（时间/cwd/Git/平台/最近5条命令）
+  2. 附加 system-reminder（时间/cwd/Git/平台/最近5条命令）到系统提示词
   3. 加载对话历史 + 工具定义
   4. 调用 LLM（启用 thinking，传递工具定义）
-  5. DaemonTool 直接执行 / ClientTool 转发 ChatToolCall
+  5. DaemonTool 直接执行 / ClientTool 持久化进度后转发 ChatToolCall
   6. 等待 ChatToolResult（所有工具完成后恢复循环）
   7. 循环直到获得最终文本响应（最多 100 次 / 600 秒超时）
-  8. 存储所有消息（去除 system-reminder）→ 返回 ChatResponse
+  8. 存储所有消息 → 返回 ChatResponse
 工具结果 → 发送ChatToolResult → 守护进程累积结果 → 全部完成时恢复智能体循环
 聊天中断 → 发送ChatInterrupt → 守护进程存储部分结果 + 保存用量 + 清理暂停态
 客户端断开 → 发送SessionEnd → 守护进程标记会话结束 + flush pending sample
@@ -1689,8 +1729,8 @@ async fn main() -> anyhow::Result<()> {
 - `meta.json`: JSON格式的会话元数据（ID、时间戳、属性等）
 - `commands.json`: JSON数组格式的命令记录
 - `stream.bin`: 二进制格式的I/O流数据，包含时间戳、方向和原始字节
-- `*.jsonl`（threads/）: 每行一个原始 JSON 消息，保留完整的 LLM API 格式（包括 tool_use、tool_result、thinking 等复杂内容块）。`<system-reminder>` 标签在存储前被过滤。
-- `*.meta.json`（threads/）: 线程元数据（ThreadMeta），含 host/cwd/summary/summary_rounds/model/usage_last/usage_total/last_model 字段。
+- `*.jsonl`（threads/）: 每行一个原始 JSON 消息，保留完整的 LLM API 格式（包括 tool_use、tool_result、thinking 等复杂内容块）。用户消息以纯查询文本存储（system-reminder 已移至系统提示词）。
+- `*.meta.json`（threads/）: 线程元数据（ThreadMeta），含 host/cwd/summary/summary_rounds/model/system_reminder/usage_last/usage_total/last_model 字段。
 - `*.jsonl`（logs/samples/）: 每行一个 `CompletionSample` JSON对象
 - `tool.json`: 插件工具定义文件，包含 `plugin_type` 和工具列表
 - `tool.override.json`: 用户自定义工具描述覆盖
@@ -1762,3 +1802,51 @@ async fn main() -> anyhow::Result<()> {
 - `__cmd:debug command <seq>` — 显示指定序号命令的完整详情和输出（通过 `CommandQueryTool::get_command_detail(seq)` 获取）
 
 这些命令由客户端的`/`命令转发，通过`handle_builtin_command()`函数处理。
+
+## 更新历史
+
+### 2026-03-30
+
+**SharedLlmBackend 与热重载：**
+- `DaemonServer.llm_backend` 从 `Option<Arc<dyn LlmBackend>>` 改为 `SharedLlmBackend`（`Arc<RwLock<Arc<MultiBackend>>>`），LLM 后端始终存在，创建失败时回退到 `UnavailableBackend`
+- 新增 LLM 后端热重载：后台任务订阅 `ConfigSection::Llm`，配置变更时重建 MultiBackend 并原子替换；失败时保留当前后端
+- 所有 `if let Some(ref backend) = llm` / `llm.is_some()` 模式替换为直接使用 `&Arc<MultiBackend>`
+- `handle_message` 每次请求通过 `llm_holder.read().unwrap().clone()` 获取当前后端
+
+**动态 chat_model_name：**
+- 移除 `DaemonServer` 的静态 `chat_model_name` 字段
+- 在 `handle_message` 中动态计算：`llm.model_name_for_use_case(UseCase::Chat)`，"unavailable" 时返回 None
+
+**system-reminder 移至系统提示词：**
+- system-reminder 不再附加到用户消息，改为附加到系统提示词：`format!("{}\n\n{}", system_prompt, reminder)`
+- 用户消息只包含纯查询文本
+- `ThreadMeta` 新增 `system_reminder: Option<String>` 字段用于变更检测
+
+**persist_unsaved() 辅助函数：**
+- 新增 `persist_unsaved()` 函数替代 5+ 处手动消息持久化代码
+- `AgentLoopState.prior_len` 重命名为 `saved_up_to`，语义为已持久化的消息索引，每次中间持久化后前进
+
+**超时与暂停前持久化：**
+- 超时时持久化已完成的工具结果和 "timed out" 标记，更新错误消息提示用户进度已保存
+- 客户端工具暂停前调用 `persist_unsaved()` 保存累积消息，防止断连或重启导致数据丢失
+
+**日报简化：**
+- `generate_daily_note` 完全依赖小时摘要，不再收集原始命令和对话数据
+- 输出格式简化为 `# {date} 工作日报\n\n{llm_summary}\n`
+
+**小时摘要改进：**
+- 输出新增三个分节：`## 命令记录`、`## 会话记录`、`## 工作总结`
+
+**SharedLlmBackend 全面使用：**
+- `daily_notes.rs`、`hourly_summary.rs`、`thread_summary.rs` 均使用 `SharedLlmBackend` 和 `max_content_chars()` 替代旧的 `max_content_chars_for_use_case`
+
+**ConfigWatcher 增强：**
+- 新增 `WATCHED_SECTIONS` 常量（`[Sandbox, Llm]`），`reload()` 遍历该列表进行差异检测
+- Llm 节点差异检测：对比 `llm`、`proxy`、`no_proxy` 字段
+- 新增 `ConfigSection::from_toml_key()` 测试辅助函数
+
+**配置菜单增强：**
+- 后端按名称排序确保 UI 一致
+- 每个后端新增 `use_proxy`（Toggle）和 `context_window`（TextInput）配置项
+- `handle_add_backend` 自动将纯 `api_key` 输入转换为 `api_key_cmd = "echo {key}"`
+- `apply_config_changes` 对 `.use_proxy` 结尾的路径自动推断为 toggle 类型

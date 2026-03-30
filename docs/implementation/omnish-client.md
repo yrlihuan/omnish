@@ -15,11 +15,11 @@ omnish-client 是终端用户直接交互的客户端程序，作为PTY代理运
 7. **会话管理**: 跟踪shell会话状态和命令历史
 8. **命令跟踪**: 通过OSC 133协议实时跟踪命令执行、CWD（当前工作目录）和退出码
 9. **Agent工具使用**: 支持工具调用的Agent循环，实时显示工具执行状态，客户端本地执行工具
-10. **客户端插件系统**: 通过omnish-plugin子进程执行客户端侧工具，支持Landlock沙箱；`/lock on/off` 命令控制整个 shell 的沙箱状态；可配置沙箱放行规则绕过特定工具的沙箱
+10. **客户端插件系统**: 通过omnish-plugin子进程执行客户端侧工具，支持Landlock沙箱；`/test lock on/off` 命令控制整个 shell 的沙箱状态；可配置沙箱放行规则绕过特定工具的沙箱
 11. **自更新**: `/update`命令透明自重启，支持检测磁盘二进制变更后自动更新；协议级 `UpdateCheck` 轮询守护进程获取最新版本并后台下载；下载使用 PID 隔离 tmp 文件防止多进程冲突
 12. **粘贴支持**: 括号粘贴模式、快速粘贴检测、多行粘贴折叠显示
 13. **Markdown渲染**: LLM响应使用pulldown-cmark解析并渲染为ANSI终端样式
-14. **守护进程配置**: `/config` 命令通过 Menu widget 交互式编辑 daemon.toml 配置，支持 Toggle、Select、TextInput、Submenu、Button 等项目类型
+14. **守护进程配置**: `/config` 命令通过 Menu widget 交互式编辑 daemon.toml 配置，支持 Toggle、Select、TextInput、Submenu、Button 等项目类型；支持即时逐项保存（on_change 回调）和失败自动回滚
 
 ## 重要数据结构
 
@@ -548,11 +548,19 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 - `path: String` - 点分路径（如 `"llm.default"` 或 `"shell.developer_mode"`）
 - `value: String` - 新值的字符串表示
 
+**`MenuChangeHandler` 类型:**
+- `Option<&'a mut dyn FnMut(&MenuChange) -> bool>` - 即时逐项变更回调
+- 非 form-mode 下每次 Toggle/Select/TextInput 变更时立即调用
+- 返回 `true` 表示保存成功（保留变更），`false` 表示保存失败（自动回滚到变更前的值）
+- 为 `None` 时变更累积到 `MenuResult::Done` 中批量返回（原始批量行为）
+- form-mode 下变更始终累积，不触发 on_change 回调
+
 #### 公共 API
 
-**`run_menu(title: &str, items: &mut Vec<MenuItem>, on_handler_exit: MenuExitHandler) -> MenuResult`**
+**`run_menu(title: &str, items: &mut Vec<MenuItem>, on_handler_exit: MenuExitHandler, on_change: MenuChangeHandler) -> MenuResult`**
 - 运行多级菜单组件，返回所有修改或取消
 - `on_handler_exit` 可选回调：离开带 `handler` 的子菜单时调用，可动态刷新菜单树（用于 "Add item" 等动态子菜单）
+- `on_change` 可选回调：非 form-mode 下每次项目变更时立即调用，用于即时保存；返回 false 时自动回滚变更
 
 #### 导航机制
 
@@ -560,6 +568,23 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 - 进入 Submenu 时 push 当前光标和滚动状态
 - ESC 返回上一级时 pop 并恢复状态
 - 面包屑路径（`breadcrumb_parts`）显示当前层级位置，格式为 `"Config > LLM > Backends"`
+
+#### 即时变更回调与失败回滚
+
+**`dispatch_change()` 内部函数:**
+- 路由变更到 `on_change` 回调（非 form-mode）或累积到 `changes` 列表（form-mode）
+- 非 form-mode 下：若提供了 `on_change` 回调则立即调用，否则累积到 `changes`
+- form-mode 下：始终累积到 `changes`，供 handler 回调或 Done 按钮批量处理
+- 返回 `bool`：`true` 表示变更被接受，`false` 表示被拒绝（需回滚）
+
+**失败自动回滚:**
+- Toggle：若 `dispatch_change()` 返回 false，自动回滚 `*value = !*value`
+- Select：若 `dispatch_change()` 返回 false，自动回滚 `*selected = old_selected`
+- TextInput：若 `dispatch_change()` 返回 false，自动回滚 `*value = old_text`
+
+**Form 字段重置:**
+- TextInput 和 Select 项在导航栈 pop 时重置（防止重新进入子菜单时显示过期数据）
+- Button 确认时也触发重置
 
 #### Handler 子菜单
 
@@ -576,11 +601,15 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 - Toggle 和 Select 项在 form_mode 下也会自动前进
 - form_mode 子菜单进入时自动在末尾追加 "Done" 按钮（`MenuItem::Button`），光标到达 Button 时停止自动编辑（`form_auto_edit_active = false`）
 - Button 按 Enter 确认等同于 ESC 返回：触发 handler 回调并弹出导航层级
+- Button handler 直接从当前菜单项收集值（而非从累积的 changes 列表），确保未修改的默认 Select 值也被包含
 - 适用于"添加新项"等表单式子菜单
 
-#### 内联文本编辑器 (`run_text_edit`)
+#### 内联文本编辑器 (`handle_text_edit`)
 
-- TextInput 项按 Enter 后在原地进入编辑模式
+- `handle_text_edit()` 函数签名：不再接受 `changes` 参数，返回 `(bool, Option<MenuChange>)` 而非 `bool`
+  - 第一个返回值 `bool` 表示用户是否按 Enter 确认（true）还是 ESC 取消（false）
+  - 第二个返回值 `Option<MenuChange>` 为值实际发生变化时的变更记录
+- TextInput 项按 Enter 后在原地进入编辑模式（`run_text_edit`）
 - 编辑区使用暗灰背景+亮白文字样式（区别于选中项的粗体反显）
 - 支持左右光标、Home/End、退格删除
 - 长文本自动左滚显示尾部
@@ -709,15 +738,15 @@ Config > LLM                          ← 面包屑（带层级指示）
 - 使用 `omnish_plugin::apply_sandbox(data_dir, cwd)` 限制文件系统访问
 - 工具只能访问自己的数据目录（`~/.omnish/data/{plugin_name}/`）和可选的CWD目录
 - 特权模式工具（如write和edit）可以访问CWD进行文件写入（issue #219）
-- 沙箱内部重构：`apply_sandbox` 拆分为 `apply_landlock` + `common_writable_paths`，新增 `apply_lock_sandbox`（不含插件数据目录，用于 `/lock on`）（commit c73013e）
+- 沙箱内部重构：`apply_sandbox` 拆分为 `apply_landlock` + `common_writable_paths`，新增 `apply_lock_sandbox`（不含插件数据目录，用于 `/test lock on`）（commit c73013e）
 
 **可配置沙箱放行规则 (commit f4a4c77, #379):**
 - Snap 安装的二进制（如 glab、docker）因 `PR_SET_NO_NEW_PRIVS` 阻断 setuid 导致 Landlock 下失败
 - 在 `daemon.toml` 中配置 `[sandbox_permit]` 规则，可按工具名和输入字段匹配（`starts_with`、`contains`、`equals`、`matches`）有选择地绕过沙箱
 - 规则引擎在 `omnish-daemon/src/sandbox_rules.rs`，守护进程发送 `ChatToolCall` 时携带 `sandboxed` 字段
 
-**`/lock on/off` 命令 (commit c73013e, #378):**
-- `/lock on` — 使用 Landlock 沙箱重启 shell；`/lock off` — 不使用沙箱重启 shell
+**`/test lock on/off` 命令 (commit c73013e, #378):**
+- `/test lock on` — 使用 Landlock 沙箱重启 shell；`/test lock off` — 不使用沙箱重启 shell
 - 通过 `PtyProxy::respawn(pre_exec, cwd)` 在原地重启 shell 进程
 - `ChatExitAction` 枚举信号主循环执行 shell 重启
 - 当前锁定状态在 `/debug client` 输出中显示
@@ -1078,9 +1107,9 @@ Config > LLM                          ← 面包屑（带层级指示）
 - `/help` — 显示所有可用命令
 - `/tasks` — 查看或管理定时任务
 - `/update` — 透明自重启到磁盘最新版本（issue #217）
-- `/config` — 通过Menu widget交互式编辑daemon配置（commit cc08b00），发送ConfigQuery/ConfigUpdate协议消息
+- `/config` — 通过Menu widget交互式编辑daemon配置（commit cc08b00），发送ConfigQuery/ConfigUpdate协议消息；使用即时逐项保存模式（`on_change` 回调每次变更立即发送 `ConfigUpdate` RPC），失败时自动回滚；Done/Cancelled 均直接退出（无需批量保存）
 - `/test picker [N]` — 隐藏测试命令（不在 `/help` 中显示），使用20个虚拟条目测试picker组件；`N` 为初始选中索引（commit 5df1e1b）
-- `/test menu` — 隐藏测试命令，使用虚拟多级菜单测试menu组件
+- `/test menu` — 隐藏测试命令，使用虚拟多级菜单测试menu组件；包含 "Save failure test" 子菜单（Toggle/Select/TextInput 项始终保存失败，用于测试 on_change 回滚行为）；短 API key 显示 "****" 而非 "(set)"；输出消息使用 "No batch changes" / "Batch changes" 前缀
 
 ### Ctrl-C 中断 (issue #123, #241)
 聊天等待LLM响应或工具执行时，用户可按Ctrl-C中断：
@@ -1385,7 +1414,7 @@ omnish-client 包含客户端事件日志系统，用于调试和监控异步事
 - `CommandEntry`: 命令条目，包含命令路径、类型（本地或守护进程）和帮助文本
 - `CommandKind::Local`: 客户端本地处理的命令
 - `CommandKind::Daemon`: 转发到守护进程的命令（格式：`__cmd:{key}`）
-- `CHAT_ONLY_COMMANDS`: 聊天模式专用命令列表（仅 `/resume`），不在注册表中但包含在自动完成中
+- `CHAT_ONLY_COMMANDS`: 聊天模式专用命令列表（仅 `/resume`、`/model`、`/test lock`），不在注册表中但包含在自动完成中
 
 **函数:**
 - `dispatch(msg: &str) -> ChatAction` - 分发聊天消息，查找最长匹配命令路径
@@ -1411,14 +1440,15 @@ omnish-client 包含客户端事件日志系统，用于调试和监控异步事
 - `/thread del` - 删除对话线程（转发到守护进程，映射到 `__cmd:conversations del`）
 - `/tasks [disable <name>]` - 查看或管理定时任务（转发到守护进程）
 - `/update` - 透明自重启到磁盘最新版本（issue #217）
-- `/lock on` - 使用 Landlock 文件系统沙箱重启 shell（限制写入 /tmp、/dev/null、cwd、git repo根目录）
-- `/lock off` - 不使用沙箱重启 shell（移除 Landlock 限制）
+- `/test lock on` - 使用 Landlock 文件系统沙箱重启 shell（限制写入 /tmp、/dev/null、cwd、git repo根目录）
+- `/test lock off` - 不使用沙箱重启 shell（移除 Landlock 限制）
 - `> file.txt` - 重定向输出到文件（后缀支持）
 - `| head [-n] [N]` / `| tail [-n] [N]` - 限制输出行数（默认10行），支持 `-nN` 紧凑语法
 
 **聊天模式专用命令（`CHAT_ONLY_COMMANDS`）:**
 - `/resume [N]` - 恢复对话（无参数时使用picker选择，带编号时使用缓存索引）
-- `/lock on|off` - Landlock 沙箱开关（重启 shell）
+- `/model` - 模型选择
+- `/test lock on|off` - Landlock 沙箱开关（重启 shell）
 
 ### Agent工具调用循环 (commit 5f439c8)
 
@@ -1511,8 +1541,8 @@ cargo build --release
    - `/debug command <seq>` - 查看指定序号命令的完整详情和输出
    - `/template <name>` - 显示LLM提示模板（包含实际工具定义）
    - `/sessions` - 列出所有活动会话
-   - `/lock on` - 使用 Landlock 沙箱重启 shell
-   - `/lock off` - 不使用沙箱重启 shell
+   - `/test lock on` - 使用 Landlock 沙箱重启 shell
+   - `/test lock off` - 不使用沙箱重启 shell
    - `/update` - 更新到磁盘最新版本
    - `> file.txt` - 重定向输出到文件（如`/context > context.txt`）
 
@@ -1841,7 +1871,7 @@ daemon_addr = "~/.omnish/omnish.sock"
 - `lines_printed` 改用终端实际行数计算，修复 `redraw_tool_section()` 光标偏移错误
 - `result_compact` 截断为最多3个终端行
 
-**`/lock on/off` Landlock 沙箱命令 (commit c73013e, #378):**
+**`/test lock on/off` Landlock 沙箱命令 (commit c73013e, #378):**
 - 重启 shell 开启/关闭 Landlock 文件系统沙箱
 - `apply_sandbox` 重构为 `apply_landlock` + `common_writable_paths`
 
@@ -1927,3 +1957,31 @@ daemon_addr = "~/.omnish/omnish.sock"
 **集成测试框架扩展 (commit 5df1e1b, #343):**
 - 新增 `/test picker [N]` 隐藏命令，用于picker组件集成测试
 - 新增 `/test` picker命令在集成测试框架中选择测试用例
+
+### 2026-03-30（5个commit）
+
+**`/lock` 命令重命名为 `/test lock`:**
+- `/lock on` → `/test lock on`，`/lock off` → `/test lock off`
+- `CHAT_ONLY_COMMANDS` 更新：`/lock` → `/test lock`
+
+**Menu on_change 回调与失败自动回滚 (widgets/menu.rs):**
+- 新增 `MenuChangeHandler` 类型：`Option<&'a mut dyn FnMut(&MenuChange) -> bool>`，即时逐项变更回调
+- 新增 `dispatch_change()` 内部函数：非 form-mode 下路由变更到 on_change 回调，form-mode 下累积到 changes 列表
+- `run_menu()` 新增第4个参数 `on_change: MenuChangeHandler`
+- Toggle/Select/TextInput 变更失败时自动回滚到变更前的值
+- `handle_text_edit()` 签名变更：不再接受 `changes` 参数，改为返回 `(bool, Option<MenuChange>)`
+- Form 字段（TextInput、Select）在导航栈 pop 和 Button 确认时重置（防止重新进入时显示过期数据）
+- Button handler 直接从当前菜单项收集值（非 changes 列表），确保未修改的默认 Select 值被包含
+
+**`/config` 即时保存模式 (chat_session.rs):**
+- `/config` 菜单使用 `on_change` 回调即时发送 `ConfigUpdate` RPC 保存每项变更
+- 保存失败时显示错误并自动回滚变更值
+- Done/Cancelled 均直接退出，无需批量保存
+- 输出消息变更："No changes made" → "No batch changes"，"Changes" → "Batch changes"
+
+**测试菜单增强 (chat_session.rs):**
+- `/test menu` 新增 "Save failure test" 子菜单（Toggle/Select/TextInput 项始终保存失败，测试回滚行为）
+- 短 API key 显示 "****" 而非 "(set)"
+
+**Backend 排序 (config_schema.rs):**
+- 配置菜单中 Backend 按名称排序显示，保证一致的排列顺序

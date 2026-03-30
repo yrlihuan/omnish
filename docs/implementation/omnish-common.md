@@ -39,7 +39,7 @@ Shell相关配置，包含：
 - `developer_mode`: 开发者模式。默认关闭时命令行有内容则 `:` 和 `::` 不触发聊天模式；启用后即使有内容也允许进入聊天（默认：`false`）
 
 ### `LlmConfig`
-LLM配置结构，包含：
+LLM配置结构（派生`PartialEq`，用于热重载配置差异检测），包含：
 - `default`: 默认LLM后端名称（默认：`"claude"`）
 - `backends`: LLM后端配置映射表（`HashMap<String, LlmBackendConfig>`）
 - `use_cases`: UseCase到后端名的映射（`HashMap<String, String>`）
@@ -48,7 +48,7 @@ LLM配置结构，包含：
 注意：`auto_trigger`（`AutoTriggerConfig`）字段已从 `LlmConfig` 中移除。
 
 ### `LangfuseConfig`
-Langfuse可观测性集成配置，包含：
+Langfuse可观测性集成配置（派生`PartialEq`，用于热重载配置差异检测），包含：
 - `public_key`: Langfuse公钥（默认：空字符串）
 - `secret_key`: Langfuse密钥（`Option<String>`，直接值，非shell命令）
 - `base_url`: Langfuse服务URL（默认：`https://cloud.langfuse.com`）
@@ -106,12 +106,14 @@ Langfuse可观测性集成配置，包含：
 **背景：** Snap 安装的二进制（如 `glab`、`docker`）在 Landlock 沙箱下因 `PR_SET_NO_NEW_PRIVS` 阻止 setuid 提权而失败，需通过此机制选择性豁免。
 
 ### `LlmBackendConfig`
-LLM后端具体配置，包含：
+LLM后端具体配置（派生`PartialEq`，用于热重载配置差异检测），包含：
 - `backend_type`: 后端类型（默认：`"openai-compat"`，如`"openai"`、`"anthropic"`等）
 - `model`: 模型名称（默认：空字符串）
 - `api_key_cmd`: 获取API密钥的命令（可选）
 - `base_url`: API基础URL（可选）
-- `max_content_chars`: 模型上下文最大字符数（可选）
+- `use_proxy`: 是否使用全局代理访问该后端（`bool`，默认：`false`）
+- `context_window`: 上下文窗口大小，以token为单位（`Option<usize>`，模型相关）；当 `max_content_chars` 未设置时，默认取 `context_window * 1.5`
+- `max_content_chars`: 模型上下文最大字符数（`Option<usize>`）。高级覆盖项，若未设置则由 `context_window * 1.5` 推导
 
 所有字段均带有 `#[serde(default)]`，因此在 TOML 配置文件中可以只写需要覆盖的字段，省略的字段将使用默认值。
 
@@ -243,7 +245,9 @@ default = "claude"
 backend_type = "anthropic"
 model = "claude-3-haiku-20240307"
 api_key_cmd = "pass show api/anthropic"
-max_content_chars = 200000
+# use_proxy = false
+context_window = 200000
+# max_content_chars = 300000  # 高级覆盖项，若未设置则由 context_window * 1.5 推导
 
 [llm.langfuse]
 public_key = "pk-lf-..."
@@ -385,3 +389,7 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 - 自动更新（守护进程端）: `false`
 - 自动更新检查计划: `"0 0 4 * * *"`（每日04:00）
 - 全局代理: 无（`proxy` 和 `no_proxy` 均为 `None`）
+
+## 更新历史
+
+- **2026-03-30**: `LlmBackendConfig` 新增 `use_proxy`（是否使用全局代理）和 `context_window`（上下文窗口大小）字段；`max_content_chars` 更新为高级覆盖项，未设置时由 `context_window * 1.5` 推导；`LlmConfig`、`LangfuseConfig`、`LlmBackendConfig` 新增 `PartialEq` 派生，用于热重载配置差异检测。
