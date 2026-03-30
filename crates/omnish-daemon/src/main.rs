@@ -311,13 +311,6 @@ async fn async_main() -> Result<i32> {
     let tool_registry_watcher = Arc::clone(&tool_registry);
     tokio::spawn(async move { plugin_mgr_watcher.watch_with(plugin_rx, tool_registry_watcher).await });
 
-    // Extract chat model name for ghost hint
-    let chat_model_name = {
-        let backend = llm_backend.read().unwrap();
-        let name = backend.model_name_for_use_case(omnish_llm::backend::UseCase::Chat);
-        if name == "unavailable" { None } else { Some(name) }
-    };
-
     let sandbox_rules = sandbox_rules::compile_config(&config.sandbox);
     let server_sandbox_rules: Arc<std::sync::RwLock<_>> = Arc::new(std::sync::RwLock::new(sandbox_rules));
 
@@ -378,7 +371,7 @@ async fn async_main() -> Result<i32> {
         formatter_mgr.register_external(&name, path).await;
     }
     let formatter_mgr = Arc::new(formatter_mgr);
-    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, tool_registry, chat_model_name, config.tools, server_opts, formatter_mgr, Arc::clone(&update_cache));
+    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, tool_registry, config.tools, server_opts, formatter_mgr, Arc::clone(&update_cache));
 
     tracing::info!("starting omnishd at {}", socket_path);
 

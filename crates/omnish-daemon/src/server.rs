@@ -145,7 +145,6 @@ pub struct DaemonServer {
     /// Set to true by ChatInterrupt to signal daemon-side loops to stop.
     cancel_flags: CancelFlags,
     active_threads: ActiveThreads,
-    chat_model_name: Option<String>,
     tool_params: HashMap<String, HashMap<String, serde_json::Value>>,
     opts: Arc<ServerOpts>,
     update_cache: Arc<omnish_daemon::update_cache::UpdateCache>,
@@ -269,7 +268,6 @@ impl DaemonServer {
         conv_mgr: Arc<ConversationManager>,
         plugin_mgr: Arc<PluginManager>,
         tool_registry: Arc<omnish_daemon::tool_registry::ToolRegistry>,
-        chat_model_name: Option<String>,
         tool_params: HashMap<String, HashMap<String, serde_json::Value>>,
         opts: Arc<ServerOpts>,
         formatter_mgr: Arc<omnish_daemon::formatter_mgr::FormatterManager>,
@@ -286,7 +284,6 @@ impl DaemonServer {
             pending_agent_loops: Arc::new(Mutex::new(HashMap::new())),
             cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             active_threads: Arc::new(Mutex::new(HashMap::new())),
-            chat_model_name,
             tool_params,
             opts,
             update_cache,
@@ -312,7 +309,6 @@ impl DaemonServer {
         let pending_loops = self.pending_agent_loops.clone();
         let cancel_flags = self.cancel_flags.clone();
         let active_threads = self.active_threads.clone();
-        let chat_model_name = self.chat_model_name.clone();
         let tool_params = Arc::new(self.tool_params.clone());
         let opts = self.opts.clone();
         let update_cache = self.update_cache.clone();
@@ -378,13 +374,12 @@ impl DaemonServer {
                     let pending_loops = pending_loops.clone();
                     let cancel_flags = cancel_flags.clone();
                     let active_threads = active_threads.clone();
-                    let chat_model_name = chat_model_name.clone();
                     let tool_params = tool_params.clone();
                     let opts = opts.clone();
                     let update_cache = update_cache.clone();
                     let io_requests = io_requests_handler.clone();
                     let io_bytes = io_bytes_handler.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &tool_registry, &formatter_mgr, &pending_loops, &cancel_flags, &active_threads, &chat_model_name, &tool_params, &opts, &update_cache, &io_requests, &io_bytes, tx).await })
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &tool_registry, &formatter_mgr, &pending_loops, &cancel_flags, &active_threads, &tool_params, &opts, &update_cache, &io_requests, &io_bytes, tx).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -406,7 +401,6 @@ async fn handle_message(
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     cancel_flags: &CancelFlags,
     active_threads: &ActiveThreads,
-    chat_model_name: &Option<String>,
     tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
     opts: &Arc<ServerOpts>,
     update_cache: &Arc<omnish_daemon::update_cache::UpdateCache>,
@@ -414,6 +408,12 @@ async fn handle_message(
     io_bytes: &Arc<AtomicU64>,
     tx: mpsc::Sender<Message>,
 ) {
+    // Derive chat model name dynamically from current backend (follows hot-reload)
+    let chat_model_name = {
+        let name = llm.model_name_for_use_case(UseCase::Chat);
+        if name == "unavailable" { None } else { Some(name) }
+    };
+
     // Shadow with reference for existing code; use mgr_arc for spawned tasks
     let mgr_arc = mgr;
     let mgr = &*mgr_arc;
