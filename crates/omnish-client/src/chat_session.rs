@@ -601,9 +601,9 @@ impl ChatSession {
                 continue;
             }
 
-            // /lock on|off
-            if trimmed == "/lock on" || trimmed == "/lock off" {
-                let lock = trimmed == "/lock on";
+            // /test lock on|off
+            if trimmed == "/test lock on" || trimmed == "/test lock off" {
+                let lock = trimmed == "/test lock on";
                 exit_action = ChatExitAction::Lock(lock);
                 break;
             }
