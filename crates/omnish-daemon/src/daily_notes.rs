@@ -4,7 +4,6 @@ use chrono::Local;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_cron_scheduler::Job;
 
 /// Create a cron job that generates daily notes at the given hour.
@@ -92,58 +91,23 @@ fn collect_hourly_notes(notes_dir: &Path, date: &str) -> String {
 
 /// Generate the daily note markdown file.
 async fn generate_daily_note(
-    mgr: &SessionManager,
-    conv_mgr: &ConversationManager,
+    _mgr: &SessionManager,
+    _conv_mgr: &ConversationManager,
     llm_backend: Option<&dyn LlmBackend>,
     notes_dir: &PathBuf,
 ) -> anyhow::Result<()> {
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    let twenty_four_hours_ms = 24 * 3600 * 1000;
-    let since_ms = now_ms.saturating_sub(twenty_four_hours_ms);
-
-    let commands = mgr.collect_recent_commands(since_ms).await;
-
-    // Collect conversations from the last 24 hours
-    let twenty_four_hours_ago = SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(24 * 3600))
-        .unwrap_or(UNIX_EPOCH);
-    let conversations_md = conv_mgr.collect_recent_conversations_md(twenty_four_hours_ago);
-
-    if commands.is_empty() && conversations_md.is_empty() {
-        tracing::info!("daily notes: no commands or conversations in the last 24h, skipping");
-        return Ok(());
-    }
-
-    let mut md = build_daily_notes_context(&commands);
-
-    // Add conversations section to output
-    if !conversations_md.is_empty() {
-        md.push_str("\n## 会话记录\n\n");
-        md.push_str(&conversations_md);
-    }
-
-    // Try LLM summary
-    if let Some(backend) = llm_backend {
+    // Daily notes relies entirely on hourly summaries (which contain commands + conversations)
+    let summary = if let Some(backend) = llm_backend {
         let use_case = UseCase::Analysis;
         let max_content_chars = backend.max_content_chars_for_use_case(use_case);
 
-        // Build LLM context: commands + conversations + hourly notes
         let today = Local::now().format("%Y-%m-%d").to_string();
         let hourly_context = collect_hourly_notes(notes_dir, &today);
-        let mut llm_context = format!("<commands>\n{}</commands>", md);
-        if !conversations_md.is_empty() {
-            llm_context.push_str("\n\n<conversations>\n");
-            llm_context.push_str(&conversations_md);
-            llm_context.push_str("</conversations>");
+        if hourly_context.is_empty() {
+            tracing::info!("daily notes: no hourly summaries for today, skipping");
+            return Ok(());
         }
-        if !hourly_context.is_empty() {
-            llm_context.push_str("\n\n<hourly_summaries>\n");
-            llm_context.push_str(&hourly_context);
-            llm_context.push_str("</hourly_summaries>");
-        }
+        let llm_context = format!("<hourly_summaries>\n{}</hourly_summaries>", hourly_context);
 
         let req = LlmRequest {
             context: llm_context,
@@ -159,20 +123,29 @@ async fn generate_daily_note(
             extra_messages: vec![],
         };
         match backend.complete(&req).await {
-            Ok(resp) => {
-                md.push_str("\n## 工作总结\n");
-                md.push_str(&resp.text());
-                md.push('\n');
-            }
+            Ok(resp) => Some(resp.text()),
             Err(e) => {
                 tracing::warn!("daily notes: LLM summary failed, skipping: {}", e);
+                None
             }
         }
-    }
+    } else {
+        None
+    };
 
-    // Write file
-    std::fs::create_dir_all(notes_dir)?;
+    // Skip writing if no LLM summary available
+    let summary = match summary {
+        Some(s) => s,
+        None => {
+            tracing::info!("daily notes: no LLM available, skipping file write");
+            return Ok(());
+        }
+    };
+
+    // Write file — only the LLM summary, no raw commands/conversations
     let today = Local::now().format("%Y-%m-%d").to_string();
+    let md = format!("# {} 工作日报\n\n{}\n", today, summary);
+    std::fs::create_dir_all(notes_dir)?;
     let file_path = notes_dir.join(format!("{}.md", today));
     std::fs::write(&file_path, &md)?;
     tracing::info!("daily notes: wrote {}", file_path.display());
@@ -184,71 +157,45 @@ async fn generate_daily_note(
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_generate_daily_note_empty_commands() {
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
-        let conv_mgr = ConversationManager::new(dir.path().join("threads"));
-        let notes_dir = dir.path().join("notes");
-
-        // No commands or conversations → should skip without error
-        generate_daily_note(&mgr, &conv_mgr, None, &notes_dir).await.unwrap();
-        assert!(!notes_dir.exists());
+    /// Helper: create a fake hourly summary file for today.
+    fn write_hourly_file(notes_dir: &Path, hour: &str, content: &str) {
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        let hourly_dir = notes_dir.join("hourly").join(&today);
+        std::fs::create_dir_all(&hourly_dir).unwrap();
+        std::fs::write(hourly_dir.join(format!("{}.md", hour)), content).unwrap();
     }
 
     #[tokio::test]
-    async fn test_generate_daily_note_with_commands() {
-        use omnish_store::command::CommandRecord;
-
+    async fn test_generate_daily_note_no_hourly_summaries() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
-
-        let mut attrs = std::collections::HashMap::new();
-        attrs.insert("hostname".to_string(), "dev-server".to_string());
-        mgr.register("s1", None, attrs).await.unwrap();
-
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-
-        mgr.receive_command(
-            "s1",
-            CommandRecord {
-                command_id: "c1".into(),
-                session_id: "s1".into(),
-                command_line: Some("cargo build".into()),
-                cwd: Some("/home/user/project".into()),
-                started_at: now_ms - 1000,
-                ended_at: Some(now_ms),
-                output_summary: String::new(),
-                stream_offset: 0,
-                stream_length: 0,
-                exit_code: Some(0),
-            },
-        )
-        .await
-        .unwrap();
-
         let conv_mgr = ConversationManager::new(dir.path().join("threads"));
         let notes_dir = dir.path().join("notes");
-        generate_daily_note(&mgr, &conv_mgr, None, &notes_dir).await.unwrap();
 
+        // No hourly summaries → should skip without error
+        generate_daily_note(&mgr, &conv_mgr, None, &notes_dir).await.unwrap();
         let today = Local::now().format("%Y-%m-%d").to_string();
-        let content = std::fs::read_to_string(notes_dir.join(format!("{}.md", today))).unwrap();
-        assert!(content.contains("工作日报"));
-        assert!(content.contains("cargo build"));
-        assert!(content.contains("dev-server"));
-        assert!(content.contains("/home/user/project"));
-        // No LLM → no summary section
-        assert!(!content.contains("工作总结"));
+        assert!(!notes_dir.join(format!("{}.md", today)).exists());
+    }
+
+    #[tokio::test]
+    async fn test_generate_daily_note_no_llm() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+        let conv_mgr = ConversationManager::new(dir.path().join("threads"));
+        let notes_dir = dir.path().join("notes");
+
+        // Create hourly summary but no LLM → should skip file write
+        write_hourly_file(&notes_dir, "10", "# 2026-03-30 10:00 时工作摘要\n\n- did stuff");
+        generate_daily_note(&mgr, &conv_mgr, None, &notes_dir).await.unwrap();
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        assert!(!notes_dir.join(format!("{}.md", today)).exists());
     }
 
     #[tokio::test]
     async fn test_generate_daily_note_with_mock_llm() {
         use async_trait::async_trait;
         use omnish_llm::backend::{ContentBlock, LlmBackend, LlmRequest, LlmResponse, StopReason};
-        use omnish_store::command::CommandRecord;
 
         struct MockLlm;
 
@@ -269,36 +216,13 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
-
-        let mut attrs = std::collections::HashMap::new();
-        attrs.insert("hostname".to_string(), "myhost".to_string());
-        mgr.register("s1", None, attrs).await.unwrap();
-
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-
-        mgr.receive_command(
-            "s1",
-            CommandRecord {
-                command_id: "c1".into(),
-                session_id: "s1".into(),
-                command_line: Some("git pull".into()),
-                cwd: Some("/home/user/repo".into()),
-                started_at: now_ms - 500,
-                ended_at: Some(now_ms),
-                output_summary: String::new(),
-                stream_offset: 0,
-                stream_length: 0,
-                exit_code: Some(0),
-            },
-        )
-        .await
-        .unwrap();
-
         let conv_mgr = ConversationManager::new(dir.path().join("threads"));
         let notes_dir = dir.path().join("notes");
+
+        // Create hourly summaries
+        write_hourly_file(&notes_dir, "10", "# 10:00 摘要\n\n## 命令记录\n| 10:05 | host:/proj | cargo build |\n\n## 工作总结\n\n- 编译项目");
+        write_hourly_file(&notes_dir, "14", "# 14:00 摘要\n\n## 命令记录\n| 14:30 | host:/proj | git push |\n\n## 工作总结\n\n- 推送代码");
+
         let mock_llm: &dyn LlmBackend = &MockLlm;
         generate_daily_note(&mgr, &conv_mgr, Some(mock_llm), &notes_dir)
             .await
@@ -306,7 +230,10 @@ mod tests {
 
         let today = Local::now().format("%Y-%m-%d").to_string();
         let content = std::fs::read_to_string(notes_dir.join(format!("{}.md", today))).unwrap();
-        assert!(content.contains("工作总结"));
+        assert!(content.contains("工作日报"));
         assert!(content.contains("今天主要进行了项目构建工作。"));
+        // Daily notes should only contain LLM summary, not raw hourly content
+        assert!(!content.contains("cargo build"));
+        assert!(!content.contains("git push"));
     }
 }

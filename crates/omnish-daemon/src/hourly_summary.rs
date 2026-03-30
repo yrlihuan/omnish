@@ -142,8 +142,20 @@ async fn generate_periodic_summary(
     let filename = format!("{}.md", now.format("%H"));
     let file_path = date_dir.join(&filename);
 
-    // Build markdown content - only the LLM summary
-    let md = format!("# {} 时工作摘要\n\n{}", now.format("%Y-%m-%d %H:00"), summary);
+    // Build markdown content: commands + conversations + LLM summary
+    let mut md = format!("# {} 时工作摘要\n", now.format("%Y-%m-%d %H:00"));
+    if !table_md.is_empty() {
+        md.push_str("\n## 命令记录\n");
+        md.push_str("| 时间 | 主机:工作目录 | 命令 |\n");
+        md.push_str("|------|--------------|------|\n");
+        md.push_str(&table_md);
+    }
+    if !conversations_md.is_empty() {
+        md.push_str("\n## 会话记录\n\n");
+        md.push_str(&conversations_md);
+    }
+    md.push_str("\n## 工作总结\n\n");
+    md.push_str(&summary);
 
     // Write file
     std::fs::create_dir_all(&date_dir)?;
