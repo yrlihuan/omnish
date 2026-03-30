@@ -15,6 +15,7 @@
 #  10. Form mode: Select confirm, TextInput auto-edit, Enter advances, handler works
 #  11. Arrow keys in text edit: Left/Right move cursor, Up in form doesn't bounce
 #  12. Add backend with default provider via Done button (issue #453)
+#  13. Save failure reverts Toggle/Select/TextInput to previous state
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -34,6 +35,7 @@ Test cases:
  10. Form mode: Select confirm, TextInput auto-edit, Enter advance
  11. Arrow keys in text edit (Left/Right cursor, Up no bounce)
  12. Add backend with default provider via Done button (#453)
+ 13. Save failure reverts Toggle/Select/TextInput
 EOF
 }
 
@@ -968,5 +970,157 @@ test_12() {
     return 0
 }
 
-echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input, add backend, form mode, arrow keys${NC}"
-run_tests 12
+# ── Test 13: Save failure reverts item state ─────────────────────────────
+test_13() {
+    echo -e "\n${YELLOW}=== Test 13: Save failure reverts Toggle/Select/TextInput ===${NC}"
+
+    restart_client
+    wait_for_client
+    open_test_menu
+
+    # Navigate to "Save failure test" (6th item: Down x5)
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+
+    # Enter "Save failure test" submenu
+    send_enter 0.5
+
+    local content
+    content=$(capture_pane -20)
+    show_capture "Save failure test submenu" "$content" 10
+
+    if ! echo "$content" | grep -q "Save failure test"; then
+        assert_fail "Not inside Save failure test submenu"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # ── 1. Toggle revert ──
+    # "Toggle option" is first item, starts as [OFF]
+    if ! echo "$content" | grep "Toggle option" | grep -q "\[OFF\]"; then
+        assert_fail "Toggle option initial value not OFF"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    send_enter 0.5
+    content=$(capture_pane -20)
+    show_capture "After toggle (should revert)" "$content" 10
+
+    # Should show failure message
+    if ! echo "$content" | grep -qi "simulated save failure"; then
+        assert_fail "No failure message for Toggle"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Toggle should revert back to [OFF]
+    if ! echo "$content" | grep "Toggle option" | grep -q "\[OFF\]"; then
+        assert_fail "Toggle did not revert to OFF after save failure"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}Toggle reverted to OFF after save failure${NC}"
+
+    # ── 2. Select revert ──
+    # Navigate to "Select option" (Down)
+    send_special Down 0.3
+    content=$(capture_pane -20)
+
+    # Should show current value "A"
+    if ! echo "$content" | grep "Select option" | grep -q "A"; then
+        assert_fail "Select option initial value not A"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Enter opens picker, select "B" (Down + Enter)
+    send_enter 0.5
+    send_special Down 0.3
+    send_enter 0.5
+
+    content=$(capture_pane -20)
+    show_capture "After select change (should revert)" "$content" 10
+
+    # Should show failure message
+    if ! echo "$content" | grep -qi "simulated save failure"; then
+        assert_fail "No failure message for Select"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Select should revert back to "A"
+    if ! echo "$content" | grep "Select option" | grep -q "A"; then
+        assert_fail "Select did not revert to A after save failure"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}Select reverted to A after save failure${NC}"
+
+    # ── 3. TextInput revert ──
+    # Navigate to "Text option" (Down)
+    send_special Down 0.3
+    content=$(capture_pane -20)
+
+    # Should show current value "original"
+    if ! echo "$content" | grep "Text option" | grep -q "original"; then
+        assert_fail "Text option initial value not 'original'"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Enter to edit, clear and type new value, Enter to confirm
+    send_enter 0.5
+    # "original" = 8 chars, backspace x8
+    send_special BSpace 0.1
+    send_special BSpace 0.1
+    send_special BSpace 0.1
+    send_special BSpace 0.1
+    send_special BSpace 0.1
+    send_special BSpace 0.1
+    send_special BSpace 0.1
+    send_special BSpace 0.1
+    send_keys "changed" 0.3
+    send_enter 0.5
+
+    content=$(capture_pane -20)
+    show_capture "After text edit (should revert)" "$content" 10
+
+    # Should show failure message
+    if ! echo "$content" | grep -qi "simulated save failure"; then
+        assert_fail "No failure message for TextInput"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # TextInput should revert back to "original"
+    if ! echo "$content" | grep "Text option" | grep -q "original"; then
+        assert_fail "TextInput did not revert to 'original' after save failure"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}TextInput reverted to 'original' after save failure${NC}"
+
+    # Clean up
+    send_special Escape 0.5
+    send_special Escape 0.5
+
+    assert_pass "Save failure correctly reverts Toggle, Select, and TextInput"
+    return 0
+}
+
+echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input, add backend, form mode, arrow keys, save failure revert${NC}"
+run_tests 13

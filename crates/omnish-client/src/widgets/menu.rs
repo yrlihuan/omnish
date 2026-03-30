@@ -29,7 +29,8 @@ fn lines_below_cursor(vis: usize, cursor_vis_pos: usize) -> usize {
 type MenuExitHandler<'a> = Option<&'a mut dyn FnMut(&str, Vec<MenuChange>) -> Option<Vec<MenuItem>>>;
 
 /// Callback type for immediate per-item change notification (non-form-mode items).
-type MenuChangeHandler<'a> = Option<&'a mut dyn FnMut(&MenuChange)>;
+/// Returns `true` if the change was saved successfully, `false` to revert.
+type MenuChangeHandler<'a> = Option<&'a mut dyn FnMut(&MenuChange) -> bool>;
 
 /// A single menu item.
 #[derive(Clone)]
@@ -416,13 +417,15 @@ fn dispatch_change(
     in_form_mode: bool,
     changes: &mut Vec<MenuChange>,
     on_change: &mut MenuChangeHandler,
-) {
+) -> bool {
     if in_form_mode {
         changes.push(change);
+        true
     } else if let Some(ref mut cb) = on_change {
-        cb(&change);
+        cb(&change)
     } else {
         changes.push(change);
+        true
     }
 }
 
@@ -756,7 +759,9 @@ pub fn run_menu(
                             path,
                             value: value.to_string(),
                         };
-                        dispatch_change(change, in_form_mode, &mut changes, &mut on_change);
+                        if !dispatch_change(change, in_form_mode, &mut changes, &mut on_change) {
+                            *value = !*value;
+                        }
 
                         if in_form_mode && cursor < current_items.len() - 1 {
                             // Form mode: advance to next item
@@ -799,7 +804,9 @@ pub fn run_menu(
                                     path,
                                     value: options_clone[idx].clone(),
                                 };
-                                dispatch_change(change, in_form_mode, &mut changes, &mut on_change);
+                                if !dispatch_change(change, in_form_mode, &mut changes, &mut on_change) {
+                                    *selected = old_selected;
+                                }
                             }
                         }
 
@@ -820,6 +827,10 @@ pub fn run_menu(
                         common::write_stdout(full.as_bytes());
                     }
                     MenuItem::TextInput { .. } => {
+                        let old_text = match &current_items[cursor] {
+                            MenuItem::TextInput { value, .. } => value.clone(),
+                            _ => unreachable!(),
+                        };
                         let (confirmed, change) = handle_text_edit(
                             &mut current_items[cursor],
                             &breadcrumb_parts,
@@ -827,7 +838,11 @@ pub fn run_menu(
                             cols,
                         );
                         if let Some(change) = change {
-                            dispatch_change(change, in_form_mode, &mut changes, &mut on_change);
+                            if !dispatch_change(change, in_form_mode, &mut changes, &mut on_change) {
+                                if let MenuItem::TextInput { value, .. } = &mut current_items[cursor] {
+                                    *value = old_text;
+                                }
+                            }
                         }
                         if confirmed && in_form_mode && cursor < current_items.len() - 1 {
                             cursor += 1;

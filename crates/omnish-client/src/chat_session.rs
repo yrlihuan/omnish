@@ -1763,6 +1763,26 @@ impl ChatSession {
                 value: "user".to_string(),
             },
             make_add_item(),
+            MenuItem::Submenu {
+                label: "Save failure test".to_string(),
+                children: vec![
+                    MenuItem::Toggle {
+                        label: "Toggle option".to_string(),
+                        value: false,
+                    },
+                    MenuItem::Select {
+                        label: "Select option".to_string(),
+                        options: vec!["A".to_string(), "B".to_string(), "C".to_string()],
+                        selected: 0,
+                    },
+                    MenuItem::TextInput {
+                        label: "Text option".to_string(),
+                        value: "original".to_string(),
+                    },
+                ],
+                handler: None,
+                form_mode: false,
+            },
         ];
 
         // Shadow copy tracks current items for the handler callback
@@ -1829,14 +1849,32 @@ impl ChatSession {
             Some(current)
         };
 
-        let result = widgets::menu::run_menu("Config", &mut items, Some(&mut handler_callback), None);
+        // Items under "Save failure test" submenu always fail to test revert behavior
+        let mut change_callback = |change: &MenuChange| -> bool {
+            if change.path.starts_with("Save failure test.") {
+                write_stdout(&format!(
+                    "\x1b[31mSimulated save failure: {} = {}\x1b[0m\r\n",
+                    change.path, change.value
+                ));
+                false
+            } else {
+                write_stdout(&format!(
+                    "\x1b[32mSaved: {} = {}\x1b[0m\r\n",
+                    change.path, change.value
+                ));
+                true
+            }
+        };
+
+        let result = widgets::menu::run_menu("Config", &mut items, Some(&mut handler_callback), Some(&mut change_callback));
         match result {
             MenuResult::Done(changes) => {
+                // With on_change, only form-mode (handler submenu) changes remain here
                 if changes.is_empty() {
-                    write_stdout("\x1b[2;90mNo changes made.\x1b[0m\r\n");
+                    write_stdout("\x1b[2;90mNo batch changes.\x1b[0m\r\n");
                 } else {
                     write_stdout(&format!(
-                        "\x1b[2;90mChanges ({}):\x1b[0m\r\n",
+                        "\x1b[2;90mBatch changes ({}):\x1b[0m\r\n",
                         changes.len()
                     ));
                     for c in &changes {
@@ -1919,7 +1957,7 @@ impl ChatSession {
                 }
             };
 
-            let mut change_callback = |change: &widgets::menu::MenuChange| {
+            let mut change_callback = |change: &widgets::menu::MenuChange| -> bool {
                 let pm = path_map_ref.borrow();
                 let schema_path = pm.get(&change.path)
                     .cloned()
@@ -1933,11 +1971,13 @@ impl ChatSession {
                     Ok(Message::ConfigUpdateResult { ok: false, error }) => {
                         write_stdout(&format!("\x1b[31mFailed to save: {}\x1b[0m\r\n",
                             error.unwrap_or_default()));
+                        false
                     }
                     Err(e) => {
                         write_stdout(&format!("\x1b[31mRPC error: {}\x1b[0m\r\n", e));
+                        false
                     }
-                    _ => {}
+                    _ => true,
                 }
             };
 
