@@ -260,6 +260,15 @@ fn handle_add_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::
         if field.is_empty() {
             continue;
         }
+        // Convert plain api_key input to api_key_cmd = "echo <key>"
+        if field == "api_key" {
+            if !change.value.is_empty() {
+                let toml_key = format!("llm.backends.{}.api_key_cmd", name);
+                let cmd_value = format!("echo {}", change.value);
+                omnish_common::config_edit::set_toml_value_nested(config_path, &toml_key, &cmd_value)?;
+            }
+            continue;
+        }
         let toml_key = format!("llm.backends.{}.{}", name, field);
         omnish_common::config_edit::set_toml_value_nested(config_path, &toml_key, &change.value)?;
     }

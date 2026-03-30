@@ -71,8 +71,8 @@ label = "Model"
 kind = "text"
 
 [[items]]
-path = "llm.backends.__new__.api_key_cmd"
-label = "API key command"
+path = "llm.backends.__new__.api_key"
+label = "API key"
 kind = "text"
 
 [[items]]
