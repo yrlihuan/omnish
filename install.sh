@@ -482,19 +482,36 @@ fi
 
 # ── LLM configuration ───────────────────────────────────────────────────────
 
-# Provider presets: name -> (backend_type, base_url, default_model, max_content_chars)
-declare -A PROVIDER_TYPE PROVIDER_URL PROVIDER_MODEL PROVIDER_MAX_CHARS
-PROVIDER_TYPE[anthropic]="anthropic";       PROVIDER_URL[anthropic]="";                                                          PROVIDER_MODEL[anthropic]="claude-sonnet-4-20250514";  PROVIDER_MAX_CHARS[anthropic]=400000
-PROVIDER_TYPE[openai]="openai-compat";      PROVIDER_URL[openai]="https://api.openai.com/v1";                                    PROVIDER_MODEL[openai]="gpt-4o";                       PROVIDER_MAX_CHARS[openai]=400000
-PROVIDER_TYPE[gemini]="openai-compat";      PROVIDER_URL[gemini]="https://generativelanguage.googleapis.com/v1beta/openai/";     PROVIDER_MODEL[gemini]="gemini-2.5-pro";               PROVIDER_MAX_CHARS[gemini]=400000
-PROVIDER_TYPE[openrouter]="openai-compat";  PROVIDER_URL[openrouter]="https://openrouter.ai/api/v1";                             PROVIDER_MODEL[openrouter]="";                          PROVIDER_MAX_CHARS[openrouter]=400000
-PROVIDER_TYPE[deepseek]="anthropic";        PROVIDER_URL[deepseek]="https://api.deepseek.com/anthropic";                         PROVIDER_MODEL[deepseek]="deepseek-chat";               PROVIDER_MAX_CHARS[deepseek]=260000
-PROVIDER_TYPE[moonshot-cn]="anthropic";     PROVIDER_URL[moonshot-cn]="https://api.moonshot.cn/anthropic";                       PROVIDER_MODEL[moonshot-cn]="kimi-k2-preview";          PROVIDER_MAX_CHARS[moonshot-cn]=400000
-PROVIDER_TYPE[moonshot-global]="anthropic"; PROVIDER_URL[moonshot-global]="https://api.moonshot.ai/anthropic";                   PROVIDER_MODEL[moonshot-global]="kimi-k2-preview";      PROVIDER_MAX_CHARS[moonshot-global]=400000
-PROVIDER_TYPE[custom]="openai-compat";      PROVIDER_URL[custom]="";                                                             PROVIDER_MODEL[custom]="";                              PROVIDER_MAX_CHARS[custom]=400000
+# Locate model_presets.json (release tarball or dev source tree)
+PRESETS_JSON=""
+if [[ -n "${EXTRACTED:-}" ]] && [[ -f "$EXTRACTED/assets/model_presets.json" ]]; then
+    PRESETS_JSON="$EXTRACTED/assets/model_presets.json"
+elif [[ -n "${SCRIPT_DIR:-}" ]] && [[ -f "$SCRIPT_DIR/crates/omnish-llm/assets/model_presets.json" ]]; then
+    PRESETS_JSON="$SCRIPT_DIR/crates/omnish-llm/assets/model_presets.json"
+fi
 
-CHAT_PROVIDERS=(anthropic openai gemini openrouter deepseek moonshot-cn moonshot-global custom)
-COMPLETION_PROVIDERS=(gemini openrouter custom)
+# Helper: read a provider field from model_presets.json via jq
+preset_field() {
+    local provider="$1" field="$2" fallback="${3:-}"
+    if [[ -n "$PRESETS_JSON" ]] && command -v jq &>/dev/null; then
+        local val
+        val=$(jq -r --arg p "$provider" --arg f "$field" '.providers[$p][$f] // empty' "$PRESETS_JSON" 2>/dev/null)
+        if [[ -n "$val" ]]; then
+            echo "$val"
+            return
+        fi
+    fi
+    echo "$fallback"
+}
+
+# Read provider lists from JSON, fallback to hardcoded defaults
+if [[ -n "$PRESETS_JSON" ]] && command -v jq &>/dev/null; then
+    readarray -t CHAT_PROVIDERS < <(jq -r '.chat_providers[]' "$PRESETS_JSON")
+    readarray -t COMPLETION_PROVIDERS < <(jq -r '.completion_providers[]' "$PRESETS_JSON")
+else
+    CHAT_PROVIDERS=(anthropic openai gemini openrouter deepseek moonshot-cn moonshot-global custom)
+    COMPLETION_PROVIDERS=(gemini openrouter custom)
+fi
 
 configure_backend() {
     local purpose="$1"
@@ -526,9 +543,9 @@ configure_backend() {
         name="$REPLY"
     fi
 
-    local backend_type="${PROVIDER_TYPE[$provider]}"
-    local base_url="${PROVIDER_URL[$provider]}"
-    local default_model="${PROVIDER_MODEL[$provider]}"
+    local backend_type="$(preset_field "$provider" backend_type "openai-compat")"
+    local base_url="$(preset_field "$provider" base_url "")"
+    local default_model="$(preset_field "$provider" default_model "")"
 
     # Use recommended model if provided and provider has no default
     if [[ -n "$recommended_model" ]] && [[ -z "$default_model" ]]; then
@@ -579,8 +596,9 @@ configure_backend() {
             api_key="$REPLY"
         fi
 
-        # Determine max_content_chars
-        local max_chars="${max_chars_override:-${PROVIDER_MAX_CHARS[$provider]:-200000}}"
+        # Determine context_window (tokens)
+        local ctx_window="$(preset_field "$provider" context_window "200000")"
+        local max_chars="${max_chars_override:-$ctx_window}"
 
         # Build TOML snippet
         local toml="[llm.backends.${name}]"$'\n'
@@ -590,7 +608,7 @@ configure_backend() {
         if [[ -n "$cur_base_url" ]]; then
             toml+="base_url = \"${cur_base_url}\""$'\n'
         fi
-        toml+="max_content_chars = ${max_chars}"$'\n'
+        toml+="context_window = ${max_chars}"$'\n'
 
         # Preview with masked API key and confirm
         echo "" >&2

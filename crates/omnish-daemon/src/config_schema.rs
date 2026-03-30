@@ -185,6 +185,18 @@ pub fn build_config_items(config: &DaemonConfig) -> (Vec<ConfigItem>, Vec<Config
                 value: backend.base_url.clone().unwrap_or_default(),
             },
         });
+        items.push(ConfigItem {
+            path: format!("{}.use_proxy", prefix),
+            label: "Use proxy".to_string(),
+            kind: ConfigItemKind::Toggle { value: backend.use_proxy },
+        });
+        items.push(ConfigItem {
+            path: format!("{}.context_window", prefix),
+            label: "Context window".to_string(),
+            kind: ConfigItemKind::TextInput {
+                value: backend.context_window.map(|v| v.to_string()).unwrap_or_default(),
+            },
+        });
     }
 
     (items, handlers)
@@ -219,7 +231,10 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
     for change in &generic {
         let item = find_schema_item(&schema, &change.path);
         let toml_key = item.and_then(|s| s.toml_key.as_deref()).unwrap_or(&change.path);
-        let kind = item.map(|s| s.kind.as_str()).unwrap_or("text");
+        let kind = item.map(|s| s.kind.as_str()).unwrap_or_else(|| {
+            // Infer kind for dynamic backend items (e.g. llm.backends.<name>.use_proxy)
+            if change.path.ends_with(".use_proxy") { "toggle" } else { "text" }
+        });
 
         match kind {
             "toggle" => {
@@ -270,7 +285,12 @@ fn handle_add_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::
             continue;
         }
         let toml_key = format!("llm.backends.{}.{}", name, field);
-        omnish_common::config_edit::set_toml_value_nested(config_path, &toml_key, &change.value)?;
+        if field == "use_proxy" {
+            let bool_val: bool = change.value.parse().unwrap_or(false);
+            omnish_common::config_edit::set_toml_value_nested_bool(config_path, &toml_key, bool_val)?;
+        } else {
+            omnish_common::config_edit::set_toml_value_nested(config_path, &toml_key, &change.value)?;
+        }
     }
 
     Ok(())
@@ -315,6 +335,8 @@ mod tests {
             model: "claude-sonnet-4-5-20250929".to_string(),
             api_key_cmd: None,
             base_url: None,
+            use_proxy: false,
+            context_window: None,
             max_content_chars: None,
         });
         config.llm.backends.insert("openai".to_string(), omnish_common::config::LlmBackendConfig {
@@ -322,6 +344,8 @@ mod tests {
             model: "gpt-4o".to_string(),
             api_key_cmd: None,
             base_url: Some("https://api.openai.com".to_string()),
+            use_proxy: false,
+            context_window: None,
             max_content_chars: None,
         });
         let val = toml::Value::try_from(&config).unwrap();
@@ -358,6 +382,8 @@ mod tests {
             model: "claude-sonnet-4-5-20250929".to_string(),
             api_key_cmd: Some("pass show claude-key".to_string()),
             base_url: None,
+            use_proxy: false,
+            context_window: None,
             max_content_chars: None,
         });
         let (items, _handlers) = build_config_items(&config);

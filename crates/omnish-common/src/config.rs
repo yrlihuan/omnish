@@ -417,7 +417,15 @@ pub struct LlmBackendConfig {
     pub api_key_cmd: Option<String>,
     #[serde(default)]
     pub base_url: Option<String>,
-    /// Maximum content characters for context (model-specific limit)
+    /// Whether to use the global proxy for this backend (default: false)
+    #[serde(default)]
+    pub use_proxy: bool,
+    /// Context window size in tokens (model-specific).
+    /// When max_content_chars is not set, defaults to context_window * 1.5.
+    #[serde(default)]
+    pub context_window: Option<usize>,
+    /// Maximum content characters for context. Advanced override.
+    /// If not set, derived from context_window * 1.5.
     #[serde(default)]
     pub max_content_chars: Option<usize>,
 }

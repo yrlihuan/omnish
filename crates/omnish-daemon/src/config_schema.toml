@@ -79,3 +79,13 @@ kind = "text"
 path = "llm.backends.__new__.base_url"
 label = "Base URL"
 kind = "text"
+
+[[items]]
+path = "llm.backends.__new__.use_proxy"
+label = "Use proxy"
+kind = "toggle"
+
+[[items]]
+path = "llm.backends.__new__.context_window"
+label = "Context window"
+kind = "text"

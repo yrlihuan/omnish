@@ -18,27 +18,29 @@ default = "claude"
 backend_type = "anthropic"
 model = "claude-sonnet-4-5-20250929"
 api_key_cmd = "pass show anthropic/api-key"
-# max_content_chars = 400000  # Optional: model-specific context limit
+# use_proxy = false            # Set to true to route through the global proxy
+# context_window = 200000      # Context window in tokens (see model_presets.json)
+# max_content_chars = 300000   # Advanced: override max chars sent to backend (default: context_window * 1.5)
 
 # [llm.backends.claude-haiku]
 # backend_type = "anthropic"
 # model = "claude-3-5-haiku-20240307"
 # api_key_cmd = "pass show anthropic/api-key"
-# max_content_chars = 300000  # Smaller context limit for haiku
+# context_window = 200000
 
 # [llm.backends.openai]
 # backend_type = "openai_compat"
 # model = "gpt-4o"
 # api_key_cmd = "pass show openai/api-key"
 # base_url = "https://api.openai.com/v1"
-# max_content_chars = 256000  # OpenAI context limit
+# context_window = 128000
 
 # [llm.backends.gemini]
 # backend_type = "openai-compat"
 # model = "gemini-2.5-pro"
 # api_key_cmd = "pass show google/gemini-api-key"
 # base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-# max_content_chars = 400000
+# context_window = 1000000
 
 # Map use cases to backend models
 # Uncomment and modify to use different models for different tasks:
@@ -59,7 +61,7 @@ api_key_cmd = "pass show anthropic/api-key"
 # head_lines = 20          # output lines kept from start of each command
 # tail_lines = 20          # output lines kept from end of each command
 # max_line_width = 200     # max characters per output line (default: 200)
-# max_context_chars = 8000 # fallback limit if backend doesn't specify max_content_chars
+# max_context_chars = 8000 # fallback limit if backend doesn't specify context_window
 
 [context.hourly_summary]
 # head_lines = 50         # output lines kept from start of each command (for hourly summary)

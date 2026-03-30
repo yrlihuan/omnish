@@ -4,6 +4,7 @@ pub mod factory;
 pub mod langfuse;
 pub mod message_log;
 pub mod openai_compat;
+pub mod presets;
 pub mod prompt;
 pub mod template;
 pub mod tool;

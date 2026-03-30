@@ -53,6 +53,13 @@ fn build_http_client(proxy: Option<&str>, no_proxy: Option<&str>) -> Result<reqw
     Ok(builder.build()?)
 }
 
+/// Compute effective max_content_chars from config.
+/// Priority: explicit max_content_chars > context_window * 1.5 > None
+fn effective_max_content_chars(config: &LlmBackendConfig) -> Option<usize> {
+    config.max_content_chars
+        .or_else(|| config.context_window.map(|cw| cw * 3 / 2))
+}
+
 /// Create LLM backend from config
 pub fn create_backend(
     name: &str,
@@ -62,9 +69,15 @@ pub fn create_backend(
 ) -> Result<Arc<dyn LlmBackend>> {
     let api_key = resolve_api_key(&config.api_key_cmd)?;
 
+    // Only apply global proxy if this backend opts in via use_proxy
+    let effective_proxy = if config.use_proxy { proxy } else { None };
+    let effective_no_proxy = if config.use_proxy { no_proxy } else { None };
+
+    let max_content_chars = effective_max_content_chars(config);
+
     match config.backend_type.as_str() {
         "anthropic" => {
-            let client = build_http_client(proxy, no_proxy)?;
+            let client = build_http_client(effective_proxy, effective_no_proxy)?;
             let base_url = config
                 .base_url
                 .clone()
@@ -75,7 +88,7 @@ pub fn create_backend(
                 model: config.model.clone(),
                 base_url,
                 client,
-                max_content_chars: config.max_content_chars,
+                max_content_chars,
             }))
         }
         "openai" | "openai-compat" => {
@@ -83,14 +96,14 @@ pub fn create_backend(
                 .base_url
                 .clone()
                 .ok_or_else(|| anyhow!("openai-compat requires base_url"))?;
-            let client = build_http_client(proxy, no_proxy)?;
+            let client = build_http_client(effective_proxy, effective_no_proxy)?;
             Ok(Arc::new(OpenAiCompatBackend {
                 config_name: name.to_string(),
                 api_key,
                 model: config.model.clone(),
                 base_url,
                 client,
-                max_content_chars: config.max_content_chars,
+                max_content_chars,
             }))
         }
         other => Err(anyhow!("unknown backend type: {}", other)),
@@ -164,7 +177,7 @@ impl MultiBackend {
                     .map_err(|_| anyhow!("failed to acquire write lock"))?
                     .insert(use_case_name.clone(), backend.clone());
                 if let Some(cfg) = llm_config.backends.get(backend_name) {
-                    use_case_max_chars.insert(use_case_name.clone(), cfg.max_content_chars);
+                    use_case_max_chars.insert(use_case_name.clone(), effective_max_content_chars(cfg));
                 }
             } else {
                 tracing::warn!(
@@ -334,6 +347,8 @@ mod tests {
             model: "claude-3-5-sonnet-20241022".to_string(),
             api_key_cmd: Some("echo sk-test-key".to_string()),
             base_url: None,
+            use_proxy: false,
+            context_window: None,
             max_content_chars: None,
         };
 
@@ -348,6 +363,8 @@ mod tests {
             model: "gpt-4".to_string(),
             api_key_cmd: Some("echo sk-test-key".to_string()),
             base_url: Some("https://api.openai.com/v1".to_string()),
+            use_proxy: false,
+            context_window: None,
             max_content_chars: None,
         };
 
@@ -362,6 +379,8 @@ mod tests {
             model: "gpt-4".to_string(),
             api_key_cmd: Some("echo sk-test-key".to_string()),
             base_url: None,
+            use_proxy: false,
+            context_window: None,
             max_content_chars: None,
         };
 
@@ -378,6 +397,8 @@ mod tests {
             model: "model".to_string(),
             api_key_cmd: Some("echo key".to_string()),
             base_url: None,
+            use_proxy: false,
+            context_window: None,
             max_content_chars: None,
         };
 

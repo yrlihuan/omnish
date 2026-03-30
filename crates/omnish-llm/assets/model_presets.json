@@ -1,0 +1,54 @@
+{
+  "providers": {
+    "anthropic": {
+      "backend_type": "anthropic",
+      "base_url": "",
+      "default_model": "claude-sonnet-4-20250514",
+      "context_window": 200000
+    },
+    "openai": {
+      "backend_type": "openai-compat",
+      "base_url": "https://api.openai.com/v1",
+      "default_model": "gpt-4o",
+      "context_window": 128000
+    },
+    "gemini": {
+      "backend_type": "openai-compat",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "default_model": "gemini-2.5-pro",
+      "context_window": 1000000
+    },
+    "openrouter": {
+      "backend_type": "openai-compat",
+      "base_url": "https://openrouter.ai/api/v1",
+      "default_model": "",
+      "context_window": 200000
+    },
+    "deepseek": {
+      "backend_type": "anthropic",
+      "base_url": "https://api.deepseek.com/anthropic",
+      "default_model": "deepseek-chat",
+      "context_window": 64000
+    },
+    "moonshot-cn": {
+      "backend_type": "anthropic",
+      "base_url": "https://api.moonshot.cn/anthropic",
+      "default_model": "kimi-k2-preview",
+      "context_window": 128000
+    },
+    "moonshot-global": {
+      "backend_type": "anthropic",
+      "base_url": "https://api.moonshot.ai/anthropic",
+      "default_model": "kimi-k2-preview",
+      "context_window": 128000
+    },
+    "custom": {
+      "backend_type": "openai-compat",
+      "base_url": "",
+      "default_model": "",
+      "context_window": 200000
+    }
+  },
+  "chat_providers": ["anthropic", "openai", "gemini", "openrouter", "deepseek", "moonshot-cn", "moonshot-global", "custom"],
+  "completion_providers": ["gemini", "openrouter", "custom"]
+}
