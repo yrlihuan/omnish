@@ -17,6 +17,7 @@ pub struct AnthropicBackend {
     pub api_key: String,
     pub base_url: String,
     pub client: reqwest::Client,
+    pub max_content_chars: Option<usize>,
 }
 
 /// Strip thinking tags from LLM response content.
@@ -297,5 +298,9 @@ impl LlmBackend for AnthropicBackend {
 
     fn model_name(&self) -> &str {
         &self.model
+    }
+
+    fn max_content_chars(&self) -> Option<usize> {
+        self.max_content_chars
     }
 }

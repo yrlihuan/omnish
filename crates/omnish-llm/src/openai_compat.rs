@@ -17,6 +17,7 @@ pub struct OpenAiCompatBackend {
     pub api_key: String,
     pub base_url: String,
     pub client: reqwest::Client,
+    pub max_content_chars: Option<usize>,
 }
 
 /// Extract thinking from content and return (thinking, cleaned_content)
@@ -348,6 +349,10 @@ impl LlmBackend for OpenAiCompatBackend {
 
     fn model_name(&self) -> &str {
         &self.model
+    }
+
+    fn max_content_chars(&self) -> Option<usize> {
+        self.max_content_chars
     }
 }
 

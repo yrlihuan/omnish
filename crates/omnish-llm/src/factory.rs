@@ -75,6 +75,7 @@ pub fn create_backend(
                 model: config.model.clone(),
                 base_url,
                 client,
+                max_content_chars: config.max_content_chars,
             }))
         }
         "openai" | "openai-compat" => {
@@ -89,6 +90,7 @@ pub fn create_backend(
                 model: config.model.clone(),
                 base_url,
                 client,
+                max_content_chars: config.max_content_chars,
             }))
         }
         other => Err(anyhow!("unknown backend type: {}", other)),
@@ -218,6 +220,7 @@ impl MultiBackend {
             .get(use_case_name)
             .copied()
             .flatten()
+            .or_else(|| self.get_backend(use_case).max_content_chars())
     }
 
     /// Model name for the given use case.
@@ -243,12 +246,13 @@ impl MultiBackend {
     /// Create a MultiBackend wrapping a single backend (for testing).
     pub fn from_single(backend: Arc<dyn LlmBackend>) -> Self {
         let name = backend.name().to_string();
+        let model = backend.model_name().to_string();
         Self {
             use_case_backends: RwLock::new(HashMap::new()),
             default_backend: backend.clone(),
             use_case_max_chars: HashMap::new(),
             named_backends: HashMap::from([(name.clone(), backend)]),
-            backend_configs: vec![BackendInfo { name: name.clone(), model: "test".to_string() }],
+            backend_configs: vec![BackendInfo { name: name.clone(), model }],
             chat_backend_name: name,
         }
     }
