@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -44,6 +44,110 @@ pub struct ConversationManager {
     threads: Mutex<HashMap<String, Vec<serde_json::Value>>>,
 }
 
+/// Extract tool_use IDs from an assistant message's content array.
+fn extract_tool_use_ids(msg: &serde_json::Value) -> Vec<String> {
+    if msg["role"].as_str() != Some("assistant") {
+        return Vec::new();
+    }
+    let content = match msg["content"].as_array() {
+        Some(arr) => arr,
+        None => return Vec::new(),
+    };
+    content
+        .iter()
+        .filter(|b| b["type"].as_str() == Some("tool_use"))
+        .filter_map(|b| b["id"].as_str().map(|s| s.to_string()))
+        .collect()
+}
+
+/// Extract tool_result tool_use_ids from a user message's content array.
+fn extract_tool_result_ids(msg: &serde_json::Value) -> HashSet<String> {
+    if msg["role"].as_str() != Some("user") {
+        return HashSet::new();
+    }
+    let content = match msg["content"].as_array() {
+        Some(arr) => arr,
+        None => return HashSet::new(),
+    };
+    content
+        .iter()
+        .filter(|b| b["type"].as_str() == Some("tool_result"))
+        .filter_map(|b| b["tool_use_id"].as_str().map(|s| s.to_string()))
+        .collect()
+}
+
+/// Scan for assistant messages with tool_use blocks that lack corresponding
+/// tool_result blocks in the following message. Inject synthetic error
+/// tool_result messages so the API never sees orphaned tool_use blocks.
+/// Returns true if any changes were made.
+fn sanitize_orphaned_tool_use(msgs: &mut Vec<serde_json::Value>) -> bool {
+    let mut changed = false;
+    let mut i = 0;
+    while i < msgs.len() {
+        let tool_use_ids = extract_tool_use_ids(&msgs[i]);
+        if tool_use_ids.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        // Check if the next message provides matching tool_results
+        let next_result_ids: HashSet<String> = if i + 1 < msgs.len() {
+            extract_tool_result_ids(&msgs[i + 1])
+        } else {
+            HashSet::new()
+        };
+
+        let missing: Vec<String> = tool_use_ids
+            .into_iter()
+            .filter(|id| !next_result_ids.contains(id))
+            .collect();
+
+        if missing.is_empty() {
+            i += 2; // skip past assistant(tool_use) + user(tool_result)
+            continue;
+        }
+
+        changed = true;
+
+        let has_partial_results =
+            i + 1 < msgs.len() && !next_result_ids.is_empty();
+
+        if has_partial_results {
+            // Extend existing tool_result message with the missing IDs
+            if let Some(arr) = msgs[i + 1]["content"].as_array_mut() {
+                for id in &missing {
+                    arr.push(serde_json::json!({
+                        "type": "tool_result",
+                        "tool_use_id": id,
+                        "content": "tool execution was interrupted — results unavailable",
+                        "is_error": true,
+                    }));
+                }
+            }
+            i += 2;
+        } else {
+            // Insert a new user message with synthetic tool_results
+            let content: Vec<serde_json::Value> = missing
+                .iter()
+                .map(|id| {
+                    serde_json::json!({
+                        "type": "tool_result",
+                        "tool_use_id": id,
+                        "content": "tool execution was interrupted — results unavailable",
+                        "is_error": true,
+                    })
+                })
+                .collect();
+            msgs.insert(i + 1, serde_json::json!({
+                "role": "user",
+                "content": content,
+            }));
+            i += 2;
+        }
+    }
+    changed
+}
+
 impl ConversationManager {
     pub fn new(threads_dir: PathBuf) -> Self {
         std::fs::create_dir_all(&threads_dir).ok();
@@ -64,11 +168,18 @@ impl ConversationManager {
                     Ok(c) => c,
                     Err(_) => continue,
                 };
-                let msgs: Vec<serde_json::Value> = content
+                let mut msgs: Vec<serde_json::Value> = content
                     .lines()
                     .filter(|l| !l.is_empty())
                     .filter_map(|l| serde_json::from_str(l).ok())
                     .collect();
+                if sanitize_orphaned_tool_use(&mut msgs) {
+                    tracing::warn!(
+                        "Sanitized orphaned tool_use blocks in thread {} at startup",
+                        thread_id
+                    );
+                    Self::rewrite_thread_file(&threads_dir, &thread_id, &msgs);
+                }
                 threads.insert(thread_id, msgs);
             }
         }
@@ -198,10 +309,37 @@ impl ConversationManager {
         }
     }
 
+    /// Rewrite a thread's JSONL file from the given messages.
+    fn rewrite_thread_file(
+        threads_dir: &std::path::Path,
+        thread_id: &str,
+        msgs: &[serde_json::Value],
+    ) {
+        use std::io::Write;
+        let path = threads_dir.join(format!("{}.jsonl", thread_id));
+        if let Ok(mut file) = std::fs::File::create(&path) {
+            for msg in msgs {
+                writeln!(file, "{}", serde_json::to_string(msg).unwrap()).ok();
+            }
+        }
+    }
+
     /// Load all messages as raw JSON for LLM context.
+    /// Sanitizes orphaned tool_use blocks (missing tool_result) on the fly.
     pub fn load_raw_messages(&self, thread_id: &str) -> Vec<serde_json::Value> {
-        let threads = self.threads.lock().unwrap();
-        threads.get(thread_id).cloned().unwrap_or_default()
+        let mut threads = self.threads.lock().unwrap();
+        let msgs = match threads.get_mut(thread_id) {
+            Some(m) => m,
+            None => return Vec::new(),
+        };
+        if sanitize_orphaned_tool_use(msgs) {
+            tracing::warn!(
+                "Sanitized orphaned tool_use blocks in thread {}",
+                thread_id
+            );
+            Self::rewrite_thread_file(&self.threads_dir, thread_id, msgs);
+        }
+        msgs.clone()
     }
 
     /// Get all user-assistant exchanges in a thread, ordered chronologically.
@@ -583,5 +721,109 @@ mod tests {
 
         mgr.delete_thread(&id);
         assert!(!meta_path.exists());
+    }
+
+    #[test]
+    fn test_sanitize_orphaned_tool_use_no_result() {
+        // assistant(tool_use) with no following tool_result → inject synthetic result
+        let mut msgs = vec![
+            user_msg("do something"),
+            assistant_with_tool_use(),
+        ];
+        assert!(sanitize_orphaned_tool_use(&mut msgs));
+        assert_eq!(msgs.len(), 3);
+        // Injected message should be a user message with tool_result
+        assert_eq!(msgs[2]["role"], "user");
+        let content = msgs[2]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[0]["tool_use_id"], "toolu_1");
+        assert_eq!(content[0]["is_error"], true);
+    }
+
+    #[test]
+    fn test_sanitize_orphaned_tool_use_followed_by_user_query() {
+        // assistant(tool_use) followed by user(text) instead of tool_result
+        let mut msgs = vec![
+            user_msg("do something"),
+            assistant_with_tool_use(),
+            user_msg("what happened?"),
+        ];
+        assert!(sanitize_orphaned_tool_use(&mut msgs));
+        assert_eq!(msgs.len(), 4);
+        // Synthetic tool_result injected between assistant and next user message
+        assert_eq!(msgs[2]["role"], "user");
+        assert_eq!(msgs[2]["content"].as_array().unwrap()[0]["type"], "tool_result");
+        assert_eq!(msgs[3]["content"], "what happened?");
+    }
+
+    #[test]
+    fn test_sanitize_valid_tool_use_unchanged() {
+        // assistant(tool_use) + user(tool_result) → no changes
+        let mut msgs = vec![
+            user_msg("do something"),
+            assistant_with_tool_use(),
+            tool_result_msg(),
+            assistant_msg("done"),
+        ];
+        assert!(!sanitize_orphaned_tool_use(&mut msgs));
+        assert_eq!(msgs.len(), 4);
+    }
+
+    #[test]
+    fn test_sanitize_partial_tool_results() {
+        // assistant with two tool_use blocks, but only one tool_result
+        let mut msgs = vec![
+            user_msg("do something"),
+            serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "tool_a", "input": {}},
+                    {"type": "tool_use", "id": "toolu_2", "name": "tool_b", "input": {}},
+                ]
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok", "is_error": false},
+                ]
+            }),
+            assistant_msg("partial done"),
+        ];
+        assert!(sanitize_orphaned_tool_use(&mut msgs));
+        // Should still be 4 messages, but the tool_result message should now have 2 entries
+        assert_eq!(msgs.len(), 4);
+        let content = msgs[2]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[1]["tool_use_id"], "toolu_2");
+        assert_eq!(content[1]["is_error"], true);
+    }
+
+    #[test]
+    fn test_sanitize_persisted_on_load() {
+        // Write an orphaned tool_use to disk, then load — should be sanitized
+        let dir = tempfile::tempdir().unwrap();
+        let thread_id;
+        {
+            let mgr = ConversationManager::new(dir.path().to_path_buf());
+            thread_id = mgr.create_thread(ThreadMeta::default());
+            // Simulate persist_unsaved saving tool_use without tool_result
+            mgr.append_messages(&thread_id, &[
+                user_msg("run tool"),
+                assistant_with_tool_use(),
+            ]);
+        }
+        // Reload from disk — startup sanitization should fix it
+        let mgr2 = ConversationManager::new(dir.path().to_path_buf());
+        let msgs = mgr2.load_raw_messages(&thread_id);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[2]["role"], "user");
+        assert_eq!(msgs[2]["content"].as_array().unwrap()[0]["type"], "tool_result");
+
+        // Verify the fix was persisted to disk
+        let path = dir.path().join(format!("{}.jsonl", thread_id));
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 3);
     }
 }
