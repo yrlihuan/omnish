@@ -49,4 +49,5 @@ if [[ -d "$REPO_ROOT/plugins" ]]; then
 fi
 
 tar -czf "${STAGING}.tar.gz" -C dist "omnish-${VERSION}-${OS}-${ARCH}"
+rm -rf "$STAGING"
 echo "Created ${STAGING}.tar.gz"
