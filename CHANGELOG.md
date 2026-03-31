@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.8.6 (2026-03-31)
+
+### Features
+- **tool**: Increase bash tool default timeout to 5min, max to 15min (#472)
+- **config**: Provider preset selector for Add Backend form (#468)
+- **config**: Accept string values for integer config fields (e.g. `context_window = "200000"`)
+- **notes**: Midnight hourly note saves as 24.md, daily notes at 00:10
+
+### Fixes
+- **llm**: Preserve vendor-specific tool call fields like Gemini thought_signature (#480)
+- **llm**: Strip trailing slash from base_url to prevent double-slash 404 (#475)
+- **llm**: Show full response body in OpenAI-compat decode/error messages (#475)
+- **llm**: Fix Gemini backend_type mismatch and context_window type (#473)
+- **chat**: Remove runtime sanitization that injects phantom interrupt tool_result (#479)
+- **chat**: Remove redundant 600s agent loop timeout (#477)
+- **chat**: Sanitize orphaned tool_use blocks to prevent API rejection (#471)
+- **chat**: Extend pending agent loop cleanup timeout to 30 minutes (#472)
+- **menu**: Prevent duplicate breadcrumb after preset provider select + ESC (#469)
+- **config**: Support dotted backend names (e.g. gemini-3.1) in /config menu and TOML keys
+- **config**: Fix /config showing stale backend use_proxy value (#476)
+- **context**: Unify /context command with actual job logic (#481)
+- **completion**: Revert: allow empty input completion requests (#470)
+
+### Refactor
+- **config**: Remove schedule_hour and periodic_summary config options (#481)
+
 ## v0.8.5 (2026-03-27)
 
 ### Features
