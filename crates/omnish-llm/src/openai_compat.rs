@@ -213,7 +213,7 @@ impl LlmBackend for OpenAiCompatBackend {
         let mut last_error = None;
         for attempt in 0..=MAX_RETRIES {
             let resp = match client
-                .post(format!("{}/chat/completions", self.base_url))
+                .post(format!("{}/chat/completions", self.base_url.trim_end_matches('/')))
                 .header("Authorization", format!("Bearer {}", self.api_key))
                 .header("Content-Type", "application/json")
                 .json(&body)
