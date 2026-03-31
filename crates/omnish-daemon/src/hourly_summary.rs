@@ -35,6 +35,42 @@ pub fn create_hourly_summary_job(
     (cron_clone, job.map_err(Into::into))
 }
 
+/// Build the LLM context for hourly/periodic summaries.
+/// Returns `(context_for_llm, table_md)` — the table is reused when writing the output file.
+/// Used by both the scheduled job and `/context hourly-notes`.
+pub fn build_hourly_context(
+    commands: &[(String, omnish_store::command::CommandRecord)],
+    conversations_md: &str,
+) -> (String, String) {
+    let mut table_md = String::new();
+    for (hostname, cmd) in commands {
+        let time = {
+            let dt = chrono::DateTime::from_timestamp_millis(cmd.started_at as i64)
+                .unwrap_or_default()
+                .with_timezone(&Local);
+            dt.format("%H:%M").to_string()
+        };
+        let host = if hostname.is_empty() { "?" } else { hostname };
+        let cwd = cmd.cwd.as_deref().unwrap_or("?");
+        let command_line = cmd.command_line.as_deref().unwrap_or("?");
+        let command_line = command_line.replace('|', "\\|");
+        table_md.push_str(&format!(
+            "| {} | {}:{} | {} |\n",
+            time, host, cwd, command_line
+        ));
+    }
+
+    let mut context = String::new();
+    if !table_md.is_empty() {
+        context.push_str(&format!("<commands>\n{}</commands>\n\n", table_md));
+    }
+    if !conversations_md.is_empty() {
+        context.push_str(&format!("<conversations>\n{}</conversations>", conversations_md));
+    }
+
+    (context, table_md)
+}
+
 /// Generate the periodic summary file with LLM summary only.
 async fn generate_periodic_summary(
     mgr: &SessionManager,
@@ -64,33 +100,7 @@ async fn generate_periodic_summary(
         return Ok(());
     }
 
-    // Build the markdown table for LLM context
-    let mut table_md = String::new();
-    for (hostname, cmd) in &commands {
-        let time = {
-            let dt = chrono::DateTime::from_timestamp_millis(cmd.started_at as i64)
-                .unwrap_or_default()
-                .with_timezone(&Local);
-            dt.format("%H:%M").to_string()
-        };
-        let host = if hostname.is_empty() { "?" } else { hostname };
-        let cwd = cmd.cwd.as_deref().unwrap_or("?");
-        let command_line = cmd.command_line.as_deref().unwrap_or("?");
-        let command_line = command_line.replace('|', "\\|");
-        table_md.push_str(&format!(
-            "| {} | {}:{} | {} |\n",
-            time, host, cwd, command_line
-        ));
-    }
-
-    // Build context with commands and conversations
-    let mut context = String::new();
-    if !table_md.is_empty() {
-        context.push_str(&format!("<commands>\n{}</commands>\n\n", table_md));
-    }
-    if !conversations_md.is_empty() {
-        context.push_str(&format!("<conversations>\n{}</conversations>", conversations_md));
-    }
+    let (context, table_md) = build_hourly_context(&commands, &conversations_md);
 
     // Build prompt with actual interval
     let prompt = format!(

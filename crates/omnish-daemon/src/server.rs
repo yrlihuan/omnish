@@ -1927,7 +1927,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
 
     // Handle /context <scenario> for showing context for different scenarios
     if let Some(scenario) = sub.strip_prefix("context ") {
-        return cmd_display(handle_context_scenario(scenario, req, mgr, llm_backend).await);
+        return cmd_display(handle_context_scenario(scenario, req, mgr, llm_backend, conv_mgr).await);
     }
     // Handle /resume [n] for resuming a specific conversation (by index)
     if let Some(idx_str) = sub.strip_prefix("resume ") {
@@ -2309,7 +2309,7 @@ fn format_relative_time(time: std::time::SystemTime) -> String {
 }
 
 /// Handle /context <scenario> to show context for different use cases.
-async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionManager, llm_backend: &Arc<MultiBackend>) -> String {
+async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionManager, llm_backend: &Arc<MultiBackend>, conv_mgr: &Arc<ConversationManager>) -> String {
     match scenario {
         "chat" | "analysis" => {
             // Return system-reminder (terminal context) when not in a specific chat thread
@@ -2327,36 +2327,30 @@ async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionMan
             }
         }
         "daily-notes" => {
-            // Show the same context that gets sent to the LLM for daily notes:
-            // command table only
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            let since_ms = now_ms.saturating_sub(24 * 3600 * 1000);
-            let commands = mgr.collect_recent_commands(since_ms).await;
-            if commands.is_empty() {
-                return "No commands in the past 24 hours".to_string();
+            let notes_dir = omnish_common::config::omnish_dir().join("notes");
+            let ctx = omnish_daemon::daily_notes::build_daily_context(&notes_dir);
+            if ctx.is_empty() {
+                "No hourly summaries for today".to_string()
+            } else {
+                ctx
             }
-            omnish_daemon::daily_notes::build_daily_notes_context(&commands)
         }
         "hourly-notes" | "hourly" => {
-            // Show commands from past hour using build_hourly_summary_context
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
             let since_ms = now_ms.saturating_sub(3600 * 1000);
             let commands = mgr.collect_recent_commands(since_ms).await;
-            if commands.is_empty() {
-                return "No commands in the past hour".to_string();
+            let window_ago = std::time::SystemTime::now()
+                .checked_sub(std::time::Duration::from_secs(3600))
+                .unwrap_or(std::time::UNIX_EPOCH);
+            let conversations_md = conv_mgr.collect_recent_conversations_md(window_ago);
+            if commands.is_empty() && conversations_md.is_empty() {
+                return "No commands or conversations in the past hour".to_string();
             }
-            let max_chars = llm_backend.max_content_chars();
-            let config = mgr.get_hourly_summary_config();
-            match mgr.build_hourly_summary_context(&commands, max_chars, &config).await {
-                Ok(ctx) => ctx,
-                Err(e) => format!("Error: {}", e),
-            }
+            let (ctx, _table_md) = omnish_daemon::hourly_summary::build_hourly_context(&commands, &conversations_md);
+            ctx
         }
         _ => format!("Unknown scenario: {}. Available: chat, auto-complete, daily-notes, hourly-notes", scenario),
     }

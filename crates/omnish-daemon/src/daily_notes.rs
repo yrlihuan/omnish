@@ -31,37 +31,15 @@ pub fn create_daily_notes_job(
     })?)
 }
 
-/// Build the daily notes LLM context: command table only.
-/// This is used by both the daily note generator and the `/context daily-notes` command.
-pub fn build_daily_notes_context(
-    commands: &[(String, omnish_store::command::CommandRecord)],
-) -> String {
+/// Build the LLM context for daily notes: collects today's hourly summaries.
+/// Used by both the scheduled job and `/context daily-notes`.
+pub fn build_daily_context(notes_dir: &Path) -> String {
     let today = Local::now().format("%Y-%m-%d").to_string();
-
-    // Build the markdown table
-    let mut md = format!("# {} 工作日报\n\n## 命令记录\n", today);
-    md.push_str("| 时间 | 主机:工作目录 | 命令 |\n");
-    md.push_str("|------|--------------|------|\n");
-
-    for (hostname, cmd) in commands {
-        let time = {
-            let dt = chrono::DateTime::from_timestamp_millis(cmd.started_at as i64)
-                .unwrap_or_default()
-                .with_timezone(&Local);
-            dt.format("%H:%M").to_string()
-        };
-        let host = if hostname.is_empty() { "?" } else { hostname };
-        let cwd = cmd.cwd.as_deref().unwrap_or("?");
-        let command_line = cmd.command_line.as_deref().unwrap_or("?");
-        // Escape pipes in markdown table cells
-        let command_line = command_line.replace('|', "\\|");
-        md.push_str(&format!(
-            "| {} | {}:{} | {} |\n",
-            time, host, cwd, command_line
-        ));
+    let hourly_context = collect_hourly_notes(notes_dir, &today);
+    if hourly_context.is_empty() {
+        return String::new();
     }
-
-    md
+    format!("<hourly_summaries>\n{}</hourly_summaries>", hourly_context)
 }
 
 /// Read all hourly note files for the given date (YYYY-MM-DD) and concatenate them.
@@ -102,13 +80,11 @@ async fn generate_daily_note(
         let use_case = UseCase::Analysis;
         let max_content_chars = backend.max_content_chars();
 
-        let today = Local::now().format("%Y-%m-%d").to_string();
-        let hourly_context = collect_hourly_notes(notes_dir, &today);
-        if hourly_context.is_empty() {
+        let llm_context = build_daily_context(notes_dir);
+        if llm_context.is_empty() {
             tracing::info!("daily notes: no hourly summaries for today, skipping");
             return Ok(());
         }
-        let llm_context = format!("<hourly_summaries>\n{}</hourly_summaries>", hourly_context);
 
         let req = LlmRequest {
             context: llm_context,
