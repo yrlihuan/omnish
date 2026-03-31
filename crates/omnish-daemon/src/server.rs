@@ -977,12 +977,20 @@ fn content_block_to_json(block: &ContentBlock) -> serde_json::Value {
             v
         }
         ContentBlock::Text(t) => serde_json::json!({"type": "text", "text": t}),
-        ContentBlock::ToolUse(tc) => serde_json::json!({
-            "type": "tool_use",
-            "id": tc.id,
-            "name": tc.name,
-            "input": tc.input,
-        }),
+        ContentBlock::ToolUse(tc) => {
+            let mut v = serde_json::json!({
+                "type": "tool_use",
+                "id": tc.id,
+                "name": tc.name,
+                "input": tc.input,
+            });
+            if let Some(obj) = v.as_object_mut() {
+                for (k, val) in &tc.extra {
+                    obj.insert(k.clone(), val.clone());
+                }
+            }
+            v
+        }
     }
 }
 

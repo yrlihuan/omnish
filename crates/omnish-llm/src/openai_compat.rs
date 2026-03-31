@@ -61,14 +61,25 @@ fn convert_extra_messages(extra: &[serde_json::Value]) -> Vec<serde_json::Value>
                     for block in content_arr {
                         match block["type"].as_str() {
                             Some("tool_use") => {
-                                tool_calls.push(serde_json::json!({
+                                let mut tc = serde_json::json!({
                                     "id": block["id"],
                                     "type": "function",
                                     "function": {
                                         "name": block["name"],
                                         "arguments": serde_json::to_string(&block["input"]).unwrap_or_default(),
                                     }
-                                }));
+                                });
+                                // Preserve vendor-specific extra fields (e.g. Gemini thought_signature)
+                                if let Some(obj) = block.as_object() {
+                                    if let Some(tc_obj) = tc.as_object_mut() {
+                                        for (k, v) in obj {
+                                            if !matches!(k.as_str(), "type" | "id" | "name" | "input") {
+                                                tc_obj.insert(k.clone(), v.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                                tool_calls.push(tc);
                             }
                             Some("text") => {
                                 if let Some(t) = block["text"].as_str() {
@@ -338,7 +349,14 @@ impl LlmBackend for OpenAiCompatBackend {
                     let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
                     let input: serde_json::Value = serde_json::from_str(args_str)
                         .unwrap_or(serde_json::json!({}));
-                    content_blocks.push(ContentBlock::ToolUse(ToolCall { id, name, input }));
+                    // Capture vendor-specific extra fields (e.g. Gemini thought_signature)
+                    let extra: serde_json::Map<String, serde_json::Value> = tc.as_object()
+                        .map(|obj| obj.iter()
+                            .filter(|(k, _)| !matches!(k.as_str(), "id" | "type" | "function" | "index"))
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect())
+                        .unwrap_or_default();
+                    content_blocks.push(ContentBlock::ToolUse(ToolCall { id, name, input, extra }));
                 }
             }
 

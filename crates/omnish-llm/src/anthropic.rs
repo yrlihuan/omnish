@@ -264,7 +264,13 @@ impl LlmBackend for AnthropicBackend {
                         let id = block["id"].as_str().unwrap_or("").to_string();
                         let name = block["name"].as_str().unwrap_or("").to_string();
                         let input = block["input"].clone();
-                        content_blocks.push(ContentBlock::ToolUse(ToolCall { id, name, input }));
+                        let extra: serde_json::Map<String, serde_json::Value> = block.as_object()
+                            .map(|obj| obj.iter()
+                                .filter(|(k, _)| !matches!(k.as_str(), "type" | "id" | "name" | "input"))
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect())
+                            .unwrap_or_default();
+                        content_blocks.push(ContentBlock::ToolUse(ToolCall { id, name, input, extra }));
                     }
                     _ => {}
                 }
