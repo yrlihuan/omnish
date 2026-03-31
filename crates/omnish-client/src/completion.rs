@@ -121,6 +121,11 @@ impl ShellCompleter {
     ///    after timeout (2× for empty input to reduce spam).
     /// 4. Require new input — sequence_id must have advanced since last send.
     pub fn should_request(&self, current_sequence_id: u64, current_input: &str) -> bool {
+        // No completion for empty input (idle prompt)
+        if current_input.is_empty() {
+            return false;
+        }
+
         // Don't re-request for explicitly dismissed input
         if self.dismissed_input.as_deref() == Some(current_input) {
             return false;
@@ -139,14 +144,9 @@ impl ShellCompleter {
         }
 
         // If an active request already covers this input, only allow retry after timeout.
-        let timeout = if current_input.is_empty() {
-            IN_FLIGHT_TIMEOUT_MS * 2
-        } else {
-            IN_FLIGHT_TIMEOUT_MS
-        };
         for req in self.active_requests.values() {
             if req.input == current_input {
-                return req.sent_at.elapsed().as_millis() >= timeout as u128;
+                return req.sent_at.elapsed().as_millis() >= IN_FLIGHT_TIMEOUT_MS as u128;
             }
         }
 
@@ -492,11 +492,11 @@ mod tests {
     }
 
     #[test]
-    fn test_debounce_ready_empty_input() {
+    fn test_empty_input_rejected() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("", 1);
         c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1));
-        assert!(c.should_request(1, ""));
+        assert!(!c.should_request(1, ""));
     }
 
     #[test]
