@@ -267,7 +267,19 @@ impl LlmBackend for OpenAiCompatBackend {
                 return Err(last_error.unwrap());
             }
 
-            let json: serde_json::Value = resp.json().await?;
+            let resp_text = resp.text().await?;
+            let json: serde_json::Value = serde_json::from_str(&resp_text)
+                .map_err(|e| {
+                    let preview = if resp_text.len() > 1000 {
+                        format!("{}...(truncated, total {} bytes)", &resp_text[..1000], resp_text.len())
+                    } else {
+                        resp_text.clone()
+                    };
+                    anyhow::anyhow!(
+                        "OpenAI API response decode error ({}): {} — body: {}",
+                        status, e, preview
+                    )
+                })?;
 
             // Check for other API errors
             if !status.is_success() {
