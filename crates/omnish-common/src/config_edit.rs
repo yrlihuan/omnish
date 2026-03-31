@@ -59,7 +59,7 @@ pub fn set_toml_value_nested_int(path: &Path, key: &str, value: i64) -> anyhow::
 
 /// Split a dot-separated key path into segments, respecting quoted segments.
 /// e.g. `llm.backends."gemini-3.1".model` → `["llm", "backends", "gemini-3.1", "model"]`
-fn split_key_path(key: &str) -> Vec<String> {
+pub fn split_key_path(key: &str) -> Vec<String> {
     let mut segments = Vec::new();
     let mut current = String::new();
     let mut in_quotes = false;

@@ -110,9 +110,9 @@ fn build_menu_tree(
         .collect();
 
     for item in items {
-        let segments: Vec<&str> = item.path.split('.').collect();
+        let segments = omnish_common::config_edit::split_key_path(&item.path);
         let mut current = &mut root;
-        for (i, &seg) in segments.iter().enumerate() {
+        for (i, seg) in segments.iter().enumerate() {
             if i == segments.len() - 1 {
                 // Leaf item
                 let menu_item = match &item.kind {
@@ -136,7 +136,7 @@ fn build_menu_tree(
                 // Build display path for path_map reverse lookup
                 let mut display_parts: Vec<String> = Vec::new();
                 let mut schema_prefix = String::new();
-                for (j, &s) in segments[..i].iter().enumerate() {
+                for (j, s) in segments[..i].iter().enumerate() {
                     if j > 0 { schema_prefix.push('.'); }
                     schema_prefix.push_str(s);
                     let label = if s == "__new__" {
