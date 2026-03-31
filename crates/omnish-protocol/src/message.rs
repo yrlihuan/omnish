@@ -5,13 +5,17 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version — increment on incompatible wire format changes.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigItem {
     pub path: String,
     pub label: String,
     pub kind: ConfigItemKind,
+    /// For Select items in forms: maps each option to sibling field values to prefill.
+    /// `Vec<(option_name, Vec<(sibling_label, value)>)>`
+    #[serde(default)]
+    pub prefills: Vec<(String, Vec<(String, String)>)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

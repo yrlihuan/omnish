@@ -124,6 +124,7 @@ fn build_menu_tree(
                         label: item.label.clone(),
                         options: options.clone(),
                         selected: *selected,
+                        prefills: item.prefills.clone(),
                     },
                     ConfigItemKind::TextInput { value } => MenuItem::TextInput {
                         label: item.label.clone(),
@@ -1687,6 +1688,7 @@ impl ChatSession {
                         "custom".to_string(),
                     ],
                     selected: 0,
+                    prefills: vec![],
                 },
                 MenuItem::TextInput {
                     label: "Model".to_string(),
@@ -1713,6 +1715,7 @@ impl ChatSession {
                             "local".to_string(),
                         ],
                         selected: 0,
+                        prefills: vec![],
                     },
                     MenuItem::Toggle {
                         label: "Streaming".to_string(),
@@ -1749,6 +1752,7 @@ impl ChatSession {
                             "compact".to_string(),
                         ],
                         selected: 0,
+                        prefills: vec![],
                     },
                 ],
                 handler: None,
@@ -1774,6 +1778,7 @@ impl ChatSession {
                         label: "Select option".to_string(),
                         options: vec!["A".to_string(), "B".to_string(), "C".to_string()],
                         selected: 0,
+                        prefills: vec![],
                     },
                     MenuItem::TextInput {
                         label: "Text option".to_string(),

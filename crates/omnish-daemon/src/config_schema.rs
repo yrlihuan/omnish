@@ -90,6 +90,48 @@ pub fn build_config_items(config: &DaemonConfig) -> (Vec<ConfigItem>, Vec<Config
 
         let under_handler = handler_paths.iter().any(|hp| s.path.starts_with(hp) && s.path != *hp);
 
+        // Special handling for provider selector: populate from presets
+        if s.path == "llm.backends.__new__.provider" {
+            let chat = omnish_llm::presets::chat_providers();
+            let mut options: Vec<String> = Vec::with_capacity(chat.len());
+            options.push("custom".to_string());
+            for p in chat {
+                if p != "custom" {
+                    options.push(p.clone());
+                }
+            }
+
+            let mut prefills: Vec<(String, Vec<(String, String)>)> = Vec::new();
+            for opt in &options {
+                let fields = if let Some(preset) = omnish_llm::presets::get_provider(opt) {
+                    vec![
+                        ("Name".to_string(), opt.clone()),
+                        ("Backend type".to_string(), preset.backend_type.clone()),
+                        ("Model".to_string(), preset.default_model.clone()),
+                        ("Base URL".to_string(), preset.base_url.clone()),
+                        ("Context window".to_string(), preset.context_window.to_string()),
+                    ]
+                } else {
+                    vec![
+                        ("Name".to_string(), String::new()),
+                        ("Backend type".to_string(), String::new()),
+                        ("Model".to_string(), String::new()),
+                        ("Base URL".to_string(), String::new()),
+                        ("Context window".to_string(), String::new()),
+                    ]
+                };
+                prefills.push((opt.clone(), fields));
+            }
+
+            items.push(ConfigItem {
+                path: s.path.clone(),
+                label: s.label.clone(),
+                kind: ConfigItemKind::Select { options, selected: 0 },
+                prefills,
+            });
+            continue;
+        }
+
         let kind = match s.kind.as_str() {
             "text" => {
                 let value = if under_handler {
@@ -147,6 +189,7 @@ pub fn build_config_items(config: &DaemonConfig) -> (Vec<ConfigItem>, Vec<Config
             path: s.path.clone(),
             label: s.label.clone(),
             kind,
+            prefills: vec![],
         });
     }
 
@@ -165,11 +208,13 @@ pub fn build_config_items(config: &DaemonConfig) -> (Vec<ConfigItem>, Vec<Config
                 let sel = opts.iter().position(|o| o == &backend.backend_type).unwrap_or(0);
                 ConfigItemKind::Select { options: opts, selected: sel }
             },
+            prefills: vec![],
         });
         items.push(ConfigItem {
             path: format!("{}.model", prefix),
             label: "Model".to_string(),
             kind: ConfigItemKind::TextInput { value: backend.model.clone() },
+            prefills: vec![],
         });
         items.push(ConfigItem {
             path: format!("{}.api_key_cmd", prefix),
@@ -177,6 +222,7 @@ pub fn build_config_items(config: &DaemonConfig) -> (Vec<ConfigItem>, Vec<Config
             kind: ConfigItemKind::TextInput {
                 value: backend.api_key_cmd.clone().unwrap_or_default(),
             },
+            prefills: vec![],
         });
         items.push(ConfigItem {
             path: format!("{}.base_url", prefix),
@@ -184,11 +230,13 @@ pub fn build_config_items(config: &DaemonConfig) -> (Vec<ConfigItem>, Vec<Config
             kind: ConfigItemKind::TextInput {
                 value: backend.base_url.clone().unwrap_or_default(),
             },
+            prefills: vec![],
         });
         items.push(ConfigItem {
             path: format!("{}.use_proxy", prefix),
             label: "Use proxy".to_string(),
             kind: ConfigItemKind::Toggle { value: backend.use_proxy },
+            prefills: vec![],
         });
         items.push(ConfigItem {
             path: format!("{}.context_window", prefix),
@@ -196,6 +244,7 @@ pub fn build_config_items(config: &DaemonConfig) -> (Vec<ConfigItem>, Vec<Config
             kind: ConfigItemKind::TextInput {
                 value: backend.context_window.map(|v| v.to_string()).unwrap_or_default(),
             },
+            prefills: vec![],
         });
     }
 
@@ -268,7 +317,7 @@ fn handle_add_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::
     }
 
     for change in changes {
-        if change.path.ends_with(".name") {
+        if change.path.ends_with(".name") || change.path.ends_with(".provider") {
             continue;
         }
         let field = change.path.rsplit('.').next().unwrap_or("");

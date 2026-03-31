@@ -55,6 +55,11 @@ kind = "submenu"
 handler = "add_backend"
 
 [[items]]
+path = "llm.backends.__new__.provider"
+label = "Provider"
+kind = "select"
+
+[[items]]
 path = "llm.backends.__new__.name"
 label = "Name"
 kind = "text"

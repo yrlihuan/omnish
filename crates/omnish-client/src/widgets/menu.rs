@@ -48,6 +48,9 @@ pub enum MenuItem {
         label: String,
         options: Vec<String>,
         selected: usize,
+        /// When an option is selected in form_mode, fill sibling items with these values.
+        /// `Vec<(option_name, Vec<(sibling_label, value)>)>`
+        prefills: Vec<(String, Vec<(String, String)>)>,
     },
     /// Boolean toggle (Enter flips immediately).
     Toggle {
@@ -787,9 +790,10 @@ pub fn run_menu(
                             common::write_stdout(format!("\x1b[{}B", row_from_bottom).as_bytes());
                         }
                     }
-                    MenuItem::Select { label, options, selected } => {
+                    MenuItem::Select { label, options, selected, prefills } => {
                         let label_clone = label.clone();
                         let options_clone = options.clone();
+                        let prefills_clone = prefills.clone();
                         let old_selected = *selected;
 
                         let cleanup = render_cleanup(last_item_count);
@@ -808,9 +812,35 @@ pub fn run_menu(
                                     *selected = old_selected;
                                 }
                             }
+
+                            // Apply prefills to sibling items
+                            if !prefills_clone.is_empty() {
+                                let selected_option = &options_clone[idx];
+                                if let Some((_, fields)) = prefills_clone.iter().find(|(name, _)| name == selected_option) {
+                                    for (sibling_label, value) in fields {
+                                        for item in current_items.iter_mut() {
+                                            match item {
+                                                MenuItem::TextInput { label: l, value: v } if l == sibling_label => {
+                                                    *v = value.clone();
+                                                }
+                                                MenuItem::Select { label: l, options: opts, selected: sel, .. } if l == sibling_label => {
+                                                    if let Some(pos) = opts.iter().position(|o| o == value) {
+                                                        *sel = pos;
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+                                // Disable auto-edit so user can navigate freely
+                                form_auto_edit_active = false;
+                            }
                         }
 
-                        if in_form_mode && cursor < current_items.len() - 1 {
+                        if !prefills_clone.is_empty() {
+                            // Prefill mode: don't auto-advance, let user review filled fields
+                        } else if in_form_mode && cursor < current_items.len() - 1 {
                             cursor += 1;
                             if cursor >= scroll_offset + vis {
                                 scroll_offset = cursor - vis + 1;
@@ -874,7 +904,7 @@ pub fn run_menu(
                                     .filter_map(|item| {
                                         let (label, value) = match item {
                                             MenuItem::TextInput { label, value } => (label.clone(), value.clone()),
-                                            MenuItem::Select { label, options, selected } => (label.clone(), options[*selected].clone()),
+                                            MenuItem::Select { label, options, selected, .. } => (label.clone(), options[*selected].clone()),
                                             MenuItem::Toggle { label, value } => (label.clone(), value.to_string()),
                                             _ => return None,
                                         };
@@ -1079,6 +1109,7 @@ mod tests {
             label: "Backend".to_string(),
             options: vec!["claude".to_string(), "openai".to_string()],
             selected: 0,
+            prefills: vec![],
         };
         let line = render_menu_item(&item, false);
         let text = common::strip_ansi(&line);
@@ -1126,7 +1157,7 @@ mod tests {
 
     #[test]
     fn test_render_hint_select() {
-        let item = MenuItem::Select { label: "X".to_string(), options: vec![], selected: 0 };
+        let item = MenuItem::Select { label: "X".to_string(), options: vec![], selected: 0, prefills: vec![] };
         let hint = render_hint(0, Some(&item));
         assert!(hint.contains("select"));
     }
