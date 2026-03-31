@@ -1134,50 +1134,6 @@ async fn handle_tool_result(
         }
     };
 
-    // Check if the agent loop has timed out (10 minutes — bash commands like builds can be slow)
-    if state.start.elapsed() > std::time::Duration::from_secs(600) {
-        let mut state = map.remove(&tr.request_id).unwrap();
-        drop(map);
-        tracing::warn!("Agent loop timed out for request_id={}", tr.request_id);
-
-        // Build tool results: completed + "timed out" for pending
-        let completed_ids: std::collections::HashSet<String> = state.completed_results
-            .iter()
-            .map(|r| r.tool_use_id.clone())
-            .collect();
-        let mut result_content: Vec<serde_json::Value> = state.completed_results
-            .iter()
-            .map(|r| serde_json::json!({
-                "type": "tool_result",
-                "tool_use_id": r.tool_use_id,
-                "content": r.content,
-                "is_error": r.is_error,
-            }))
-            .collect();
-        for tc in &state.pending_tool_calls {
-            if !completed_ids.contains(&tc.id) {
-                result_content.push(serde_json::json!({
-                    "type": "tool_result",
-                    "tool_use_id": tc.id,
-                    "content": "tool execution timed out",
-                    "is_error": true,
-                }));
-            }
-        }
-        persist_unsaved(&mut state, conv_mgr, &[
-            serde_json::json!({"role": "user", "content": result_content}),
-            serde_json::json!({"role": "assistant", "content": "<event>tool execution timeout</event>"}),
-        ]);
-        update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
-
-        let _ = tx.send(Message::ChatResponse(ChatResponse {
-            request_id: tr.request_id,
-            thread_id: tr.thread_id,
-            content: "Error: client-side tool execution timed out. Your progress has been saved — you can continue by sending another message.".to_string(),
-        })).await;
-        return;
-    }
-
     // Add the received client-side tool result
     let tool_call_id = tr.tool_call_id.clone();
     state.completed_results.push(omnish_llm::tool::ToolResult {
