@@ -320,7 +320,7 @@ impl DaemonServer {
                 interval.tick().await;
                 let mut map = pending_cleanup.lock().await;
                 map.retain(|req_id, state| {
-                    if state.start.elapsed() > std::time::Duration::from_secs(120) {
+                    if state.start.elapsed() > std::time::Duration::from_secs(1800) {
                         tracing::warn!("Cleaning up expired agent loop state: {}", req_id);
                         false
                     } else {
