@@ -93,25 +93,19 @@ default = "claude"
 
 [llm.backends.claude]
 backend_type = "anthropic"
-model = "claude-sonnet-4-20250514"
+model = "claude-opus-4-6"
 api_key_cmd = "pass show anthropic/api-key"
 
-[llm.backends.openrouter]
+[llm.backends.openai]
 backend_type = "openai"
-model = "Qwen/Qwen2.5-Coder-32B-Instruct"
-api_key_cmd = "cat ~/.openrouter_api_key"
-base_url = "https://openrouter.ai/api/v1"
+model = "gpt-4o"
+api_key_cmd = "cat ~/.openai_api_key"
+base_url = "https://api.openai.com/v1"
 
 [llm.use_cases]
 chat = "claude"
 analysis = "claude"
-completion = "openrouter"
-
-[tasks.eviction]
-session_evict_hours = 48
-
-[tasks.daily_notes]
-schedule_hour = 18
+completion = "claude"
 
 [tasks.disk_cleanup]
 schedule = "0 0 */6 * * *"
@@ -124,22 +118,12 @@ enabled = true
 [context.completion]
 max_commands = 50
 max_chars = 8000
-
-[plugins]
-enabled = []   # list plugin names; each must have ~/.omnish/plugins/{name}/{name} binary
 ```
 
 ### Other backend examples
 
 ```toml
-# OpenAI
-[llm.backends.openai]
-backend_type = "openai"
-model = "gpt-4o"
-api_key_cmd = "cat ~/.openai_api_key"
-base_url = "https://api.openai.com/v1"
-
-# DeepSeek (Anthropic-compatible)
+# DeepSeek
 [llm.backends.deepseek]
 backend_type = "anthropic"
 model = "deepseek-chat"
@@ -197,6 +181,7 @@ Built-in commands:
 /thread del <n>[,<n>...]  # delete thread(s) by number (interactive multi-select if omitted)
 /tasks                    # list scheduled tasks and their status
 /tasks disable <name>     # disable a scheduled task
+/config                   # interactive configuration menu
 /integrate tmux           # add omnish as default shell in ~/.tmux.conf
 /integrate screen         # add omnish as shell in ~/.screenrc
 /integrate ssh            # show SSH config snippet for RemoteCommand
