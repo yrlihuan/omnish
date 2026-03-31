@@ -158,21 +158,14 @@ pub fn load_client_config() -> Result<ClientConfig> {
 pub struct DailyNotesConfig {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default = "default_schedule_hour", deserialize_with = "string_or_int::deserialize")]
-    pub schedule_hour: u8,
 }
 
 impl Default for DailyNotesConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            schedule_hour: default_schedule_hour(),
         }
     }
-}
-
-fn default_schedule_hour() -> u8 {
-    23
 }
 
 fn default_disk_cleanup_schedule() -> String {
@@ -249,33 +242,12 @@ fn default_auto_update_schedule() -> String {
     "0 0 4 * * *".to_string()
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct PeriodicSummaryConfig {
-    /// Interval in hours between periodic summaries. Default: 4.
-    #[serde(default = "default_summary_interval_hours", deserialize_with = "string_or_int::deserialize")]
-    pub interval_hours: u8,
-}
-
-impl Default for PeriodicSummaryConfig {
-    fn default() -> Self {
-        Self {
-            interval_hours: default_summary_interval_hours(),
-        }
-    }
-}
-
-fn default_summary_interval_hours() -> u8 {
-    4
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct TasksConfig {
     #[serde(default)]
     pub eviction: EvictionConfig,
     #[serde(default)]
     pub daily_notes: DailyNotesConfig,
-    #[serde(default)]
-    pub periodic_summary: PeriodicSummaryConfig,
     #[serde(default)]
     pub disk_cleanup: DiskCleanupConfig,
     #[serde(default)]

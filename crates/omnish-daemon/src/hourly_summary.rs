@@ -8,31 +8,26 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_cron_scheduler::Job;
 
-/// Create a cron job that generates periodic summaries every `interval_hours` hours.
+/// Create a cron job that generates hourly summaries.
 pub fn create_hourly_summary_job(
     mgr: Arc<SessionManager>,
     conv_mgr: Arc<ConversationManager>,
     llm_holder: SharedLlmBackend,
     summaries_dir: PathBuf,
-    interval_hours: u8,
-) -> (String, anyhow::Result<Job>) {
-    let interval = interval_hours.max(1);
-    let cron = format!("0 0 */{} * * *", interval);
-    let cron_clone = cron.clone();
-    let job = Job::new_async(cron, move |_uuid, _lock| {
+) -> anyhow::Result<Job> {
+    Ok(Job::new_async("0 0 * * * *", move |_uuid, _lock| {
         let mgr = mgr.clone();
         let conv_mgr = conv_mgr.clone();
         let llm = llm_holder.read().unwrap().get_backend(UseCase::Analysis);
         let dir = summaries_dir.clone();
         Box::pin(async move {
-            tracing::debug!("task [periodic_summary] started");
-            if let Err(e) = generate_periodic_summary(&mgr, &conv_mgr, Some(llm.as_ref()), &dir, interval).await {
-                tracing::warn!("task [periodic_summary] failed: {}", e);
+            tracing::debug!("task [hourly_summary] started");
+            if let Err(e) = generate_hourly_summary(&mgr, &conv_mgr, Some(llm.as_ref()), &dir).await {
+                tracing::warn!("task [hourly_summary] failed: {}", e);
             }
-            tracing::debug!("task [periodic_summary] finished");
+            tracing::debug!("task [hourly_summary] finished");
         })
-    });
-    (cron_clone, job.map_err(Into::into))
+    })?)
 }
 
 /// Build the LLM context for hourly/periodic summaries.
@@ -71,44 +66,35 @@ pub fn build_hourly_context(
     (context, table_md)
 }
 
-/// Generate the periodic summary file with LLM summary only.
-async fn generate_periodic_summary(
+/// Generate the hourly summary file with LLM summary.
+async fn generate_hourly_summary(
     mgr: &SessionManager,
     conv_mgr: &ConversationManager,
     llm_backend: Option<&dyn LlmBackend>,
     summaries_dir: &Path,
-    interval_hours: u8,
 ) -> anyhow::Result<()> {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
-    let window_ms = (interval_hours as u64) * 3600 * 1000;
-    let since_ms = now_ms.saturating_sub(window_ms);
+    let since_ms = now_ms.saturating_sub(3600 * 1000);
 
     let commands = mgr.collect_recent_commands(since_ms).await;
     let window_ago = SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(interval_hours as u64 * 3600))
+        .checked_sub(std::time::Duration::from_secs(3600))
         .unwrap_or(UNIX_EPOCH);
     let conversations_md = conv_mgr.collect_recent_conversations_md(window_ago);
 
     if commands.is_empty() && conversations_md.is_empty() {
-        tracing::info!(
-            "periodic summary: no commands or conversations in the last {}h, skipping",
-            interval_hours
-        );
+        tracing::info!("hourly summary: no commands or conversations in the last hour, skipping");
         return Ok(());
     }
 
     let (context, table_md) = build_hourly_context(&commands, &conversations_md);
 
-    // Build prompt with actual interval
-    let prompt = format!(
-        "以下<commands>中是从多台终端收集的过去{}小时的命令及其简要输出（如有），\
+    let prompt = "以下<commands>中是从多台终端收集的过去1小时的命令及其简要输出（如有），\
          <conversations>中是与AI助手的对话记录（如有）。\
-         请用中文以项目符号列表形式列出这{}小时的工作内容，每个条目包含一项主要活动或成果。适合直接作为工作日志。",
-        interval_hours, interval_hours
-    );
+         请用中文以项目符号列表形式列出这1小时的工作内容，每个条目包含一项主要活动或成果。适合直接作为工作日志。".to_string();
 
     // Try LLM summary
     let summary = if let Some(backend) = llm_backend {
@@ -142,7 +128,7 @@ async fn generate_periodic_summary(
     let summary = match summary {
         Some(s) => s,
         None => {
-            tracing::info!("periodic summary: no LLM available, skipping");
+            tracing::info!("hourly summary: no LLM available, skipping");
             return Ok(());
         }
     };
@@ -179,7 +165,7 @@ async fn generate_periodic_summary(
     // Write file
     std::fs::create_dir_all(&date_dir)?;
     std::fs::write(&file_path, &md)?;
-    tracing::info!("periodic summary: wrote {}", file_path.display());
+    tracing::info!("hourly summary: wrote {}", file_path.display());
 
     Ok(())
 }
@@ -189,14 +175,14 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_generate_periodic_summary_empty_commands() {
+    async fn test_generate_hourly_summary_empty_commands() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
         let conv_mgr = ConversationManager::new(dir.path().join("threads"));
         let summaries_dir = dir.path().join("summaries");
 
         // No commands or conversations -> should skip without error
-        generate_periodic_summary(&mgr, &conv_mgr, None, &summaries_dir, 4).await.unwrap();
+        generate_hourly_summary(&mgr, &conv_mgr, None, &summaries_dir).await.unwrap();
         assert!(!summaries_dir.exists());
     }
 

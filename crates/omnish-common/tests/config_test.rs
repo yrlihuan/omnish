@@ -96,10 +96,6 @@ detailed_max = "20"
 session_evict_hours = "24"
 
 [tasks.daily_notes]
-schedule_hour = "8"
-
-[tasks.periodic_summary]
-interval_hours = "2"
 "#;
     let config: DaemonConfig = toml::from_str(toml_str).unwrap();
     let backend = &config.llm.backends["test"];
@@ -109,8 +105,6 @@ interval_hours = "2"
     assert_eq!(config.context.completion.history_commands, 100);
     assert_eq!(config.context.completion.max_context_chars, Some(50000));
     assert_eq!(config.tasks.eviction.session_evict_hours, 24);
-    assert_eq!(config.tasks.daily_notes.schedule_hour, 8);
-    assert_eq!(config.tasks.periodic_summary.interval_hours, 2);
 
     // ShellConfig int fields (in ClientConfig)
     let client_toml = r#"

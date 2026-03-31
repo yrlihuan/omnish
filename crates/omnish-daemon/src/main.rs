@@ -143,7 +143,6 @@ async fn async_main() -> Result<i32> {
 
     let evict_hours = config.tasks.eviction.session_evict_hours;
     let daily_notes_config = config.tasks.daily_notes.clone();
-    let periodic_summary_config = config.tasks.periodic_summary.clone();
     let disk_cleanup_config = config.tasks.disk_cleanup.clone();
     let auto_update_config = config.tasks.auto_update.clone();
     let session_mgr = Arc::new(SessionManager::new(omnish_dir.clone(), config.context.clone()));
@@ -168,19 +167,16 @@ async fn async_main() -> Result<i32> {
         task_mgr.register("eviction", "0 0 * * * *", job).await?;
     }
 
-    // Register periodic summary job
+    // Register hourly summary job (every hour)
     {
         let notes_dir = omnish_dir.join("notes");
-        let interval = periodic_summary_config.interval_hours;
-        let (cron, job) = create_hourly_summary_job(
+        let job = create_hourly_summary_job(
             Arc::clone(&session_mgr),
             Arc::clone(&conv_mgr),
             llm_backend.clone(),
             notes_dir,
-            interval,
-        );
-        task_mgr.register("periodic_summary", &cron, job?).await?;
-        tracing::info!("periodic summary enabled (interval={}h)", interval);
+        )?;
+        task_mgr.register("periodic_summary", "0 0 * * * *", job).await?;
     }
 
     // Register disk cleanup job
