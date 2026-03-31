@@ -51,6 +51,11 @@ pub fn set_toml_value_nested_bool(path: &Path, key: &str, value: bool) -> anyhow
     set_toml_value_nested_inner(path, key, toml_edit::value(value))
 }
 
+/// Set a nested integer key in a TOML file, preserving formatting.
+pub fn set_toml_value_nested_int(path: &Path, key: &str, value: i64) -> anyhow::Result<()> {
+    set_toml_value_nested_inner(path, key, toml_edit::value(value))
+}
+
 fn set_toml_value_nested_inner(
     path: &Path,
     key: &str,

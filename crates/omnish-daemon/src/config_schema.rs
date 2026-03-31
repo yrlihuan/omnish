@@ -337,6 +337,10 @@ fn handle_add_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::
         if field == "use_proxy" {
             let bool_val: bool = change.value.parse().unwrap_or(false);
             omnish_common::config_edit::set_toml_value_nested_bool(config_path, &toml_key, bool_val)?;
+        } else if field == "context_window" {
+            if let Ok(int_val) = change.value.parse::<i64>() {
+                omnish_common::config_edit::set_toml_value_nested_int(config_path, &toml_key, int_val)?;
+            }
         } else {
             omnish_common::config_edit::set_toml_value_nested(config_path, &toml_key, &change.value)?;
         }

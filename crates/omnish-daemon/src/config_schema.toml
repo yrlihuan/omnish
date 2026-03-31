@@ -68,7 +68,7 @@ kind = "text"
 path = "llm.backends.__new__.backend_type"
 label = "Backend type"
 kind = "select"
-options = ["anthropic", "openai_compat"]
+options = ["anthropic", "openai-compat"]
 
 [[items]]
 path = "llm.backends.__new__.model"
