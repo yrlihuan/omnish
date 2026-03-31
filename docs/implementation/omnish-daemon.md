@@ -842,7 +842,7 @@ Assistant: {{final response}}
 **当前模式覆盖的配置项：**
 - 代理设置：`proxy`（HTTP 代理）、`no_proxy`
 - LLM use case 路由：`completion`、`analysis`、`chat` 后端选择（选项从已配置后端动态生成）
-- 新增 LLM 后端：`add_backend` 子菜单（name、backend_type、model、api_key_cmd、base_url）；提交时若输入为纯 `api_key`，自动转换为 `api_key_cmd = "echo {key}"`
+- 新增 LLM 后端：`add_backend` 子菜单，首项为 Provider 预设选择器（选项从 `omnish_llm::presets::chat_providers()` 动态生成，"custom" 置顶），选中预设后通过 `ConfigItem.prefills` 自动填充 name、backend_type、model、base_url、context_window；提交时 `provider` 字段被跳过不写入 TOML，纯 `api_key` 输入自动转换为 `api_key_cmd = "echo {key}"`
 - 动态项：已存在的后端自动生成编辑条目（`llm.backends.<name>.backend_type/model/api_key_cmd/base_url/use_proxy/context_window`），后端按名称排序以确保 UI 顺序一致
 - 每个后端新增 `use_proxy`（Toggle 类型）和 `context_window`（TextInput 类型）配置项
 
@@ -853,6 +853,7 @@ Assistant: {{final response}}
 - 遍历模式条目，通过 `resolve_value()` 沿点分隔路径提取当前值
 - select 类型通过 `resolve_options()` 动态获取 TOML 表键名作为选项
 - handler 子菜单下的叶子项不填充当前值（由 handler 统一处理）
+- Provider 预设选择器（`llm.backends.__new__.provider`）特殊处理：从 `omnish_llm::presets` 构建选项和 prefills 数据
 - 返回 `(Vec<ConfigItem>, Vec<ConfigHandlerInfo>)`
 
 **`apply_config_changes(config_path, changes)`** — 将配置变更写入 `daemon.toml`

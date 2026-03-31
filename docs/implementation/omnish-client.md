@@ -535,7 +535,7 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 
 **`MenuItem` 枚举:**
 - `Submenu { label, children: Vec<MenuItem>, handler: Option<String>, form_mode: bool }` - 子菜单。`handler` 标识回调处理器名称，`form_mode` 为true时 TextInput 项自动进入编辑并按Enter后光标自动前进到下一项
-- `Select { label, options: Vec<String>, selected: usize }` - 固定选项选择（Enter 打开 picker 子选择器）
+- `Select { label, options: Vec<String>, selected: usize, prefills: Vec<(String, Vec<(String, String)>)> }` - 固定选项选择（Enter 打开 picker 子选择器）。`prefills` 非空时，选中某选项后按 label 匹配自动填充同级 TextInput/Select 项的值，并禁用 auto-edit（用户可自由导航修改）
 - `Toggle { label, value: bool }` - 布尔开关（Enter 立即翻转）
 - `TextInput { label, value: String }` - 自由文本输入（Enter 进入内联编辑器）
 - `Button { label }` - 操作按钮（Enter 确认，等同于 ESC 返回上一级并触发 handler 回调）。form_mode 子菜单自动在末尾追加 "Done" 按钮（commit 3d4c1be, #451）

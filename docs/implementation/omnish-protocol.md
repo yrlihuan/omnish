@@ -4,7 +4,7 @@
 
 ## 模块概述
 
-omnish-protocol 定义了客户端和守护进程之间交换的消息类型，使用bincode进行二进制序列化。协议包含一个简单的帧格式，每个帧包含请求ID和消息负载，使用魔术字节"OS"(0x4F 0x53)进行验证。当前协议版本为v11（`PROTOCOL_VERSION = 11`），客户端和服务器在认证阶段进行版本协商。
+omnish-protocol 定义了客户端和守护进程之间交换的消息类型，使用bincode进行二进制序列化。协议包含一个简单的帧格式，每个帧包含请求ID和消息负载，使用魔术字节"OS"(0x4F 0x53)进行验证。当前协议版本为v12（`PROTOCOL_VERSION = 12`），客户端和服务器在认证阶段进行版本协商。
 
 ## 重要数据结构
 
@@ -268,6 +268,7 @@ LLM响应消息，包含：
 - `path`: 配置路径（如 `"llm.use_cases.completion"`）
 - `label`: 显示标签
 - `kind`: 配置项类型（`ConfigItemKind`枚举）
+- `prefills`: 预填充数据（`Vec<(String, Vec<(String, String)>)>`，`#[serde(default)]`），用于 Select 项在 form_mode 下选中某选项后自动填充同级表单字段。外层元组为 `(选项名, 字段列表)`，内层元组为 `(兄弟项label, 预填值)`
 
 ### `ConfigItemKind` 枚举
 配置项的输入类型：
@@ -429,7 +430,7 @@ let restored_frame = Frame::from_bytes(&frame_bytes).unwrap();
 
 ## 协议版本管理
 
-协议版本通过`PROTOCOL_VERSION`常量定义（当前值为11），用于客户端和服务器之间的版本协商。
+协议版本通过`PROTOCOL_VERSION`常量定义（当前值为12），用于客户端和服务器之间的版本协商。
 
 **编译时守卫测试：** `message_variant_guard`测试检测Message枚举变体数量变化，变体数不一致时测试失败并提醒开发者考虑更新`PROTOCOL_VERSION`。
 
@@ -442,4 +443,5 @@ let restored_frame = Frame::from_bytes(&frame_bytes).unwrap();
 - v9: 新增`ConfigQuery`、`ConfigResponse`、`ConfigUpdate`、`ConfigUpdateResult`消息，支持通过协议远程查询和修改daemon配置；新增`ConfigItem`、`ConfigItemKind`、`ConfigChange`、`ConfigHandlerInfo`数据结构
 - v10: 新增`UpdateCheck`、`UpdateInfo`、`UpdateRequest`、`UpdateChunk`消息，支持通过协议进行客户端更新检查和包下载；引入hostname字段实现per-host速率限制；版本号规范化处理
 - v11: `AuthOk`和`AuthFailed`合并为统一的`AuthResult`消息，新增`ok`和`daemon_version`字段；协议版本不匹配时保持连接（不再断开），允许客户端通过协议进行更新
+- v12: `ConfigItem`新增`prefills`字段，支持 Select 项在 form_mode 下选中预设选项后自动填充同级表单字段（用于 Add Backend 表单的 Provider 预设选择器）
 
