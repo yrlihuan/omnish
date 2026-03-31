@@ -1681,12 +1681,51 @@ impl ChatSession {
                 MenuItem::Select {
                     label: "Provider".to_string(),
                     options: vec![
+                        "custom".to_string(),
                         "anthropic".to_string(),
                         "openai".to_string(),
                         "openrouter".to_string(),
                         "deepseek".to_string(),
-                        "custom".to_string(),
                     ],
+                    selected: 0,
+                    prefills: vec![
+                        ("anthropic".to_string(), vec![
+                            ("Name".to_string(), "anthropic".to_string()),
+                            ("Backend type".to_string(), "anthropic".to_string()),
+                            ("Model".to_string(), "claude-sonnet-4-5-20250929".to_string()),
+                            ("Base URL".to_string(), "".to_string()),
+                            ("Context window".to_string(), "200000".to_string()),
+                        ]),
+                        ("openai".to_string(), vec![
+                            ("Name".to_string(), "openai".to_string()),
+                            ("Backend type".to_string(), "openai_compat".to_string()),
+                            ("Model".to_string(), "gpt-4o".to_string()),
+                            ("Base URL".to_string(), "https://api.openai.com/v1".to_string()),
+                            ("Context window".to_string(), "128000".to_string()),
+                        ]),
+                        ("openrouter".to_string(), vec![
+                            ("Name".to_string(), "openrouter".to_string()),
+                            ("Backend type".to_string(), "openai_compat".to_string()),
+                            ("Model".to_string(), "".to_string()),
+                            ("Base URL".to_string(), "https://openrouter.ai/api/v1".to_string()),
+                            ("Context window".to_string(), "200000".to_string()),
+                        ]),
+                        ("deepseek".to_string(), vec![
+                            ("Name".to_string(), "deepseek".to_string()),
+                            ("Backend type".to_string(), "anthropic".to_string()),
+                            ("Model".to_string(), "deepseek-chat".to_string()),
+                            ("Base URL".to_string(), "https://api.deepseek.com/anthropic".to_string()),
+                            ("Context window".to_string(), "131072".to_string()),
+                        ]),
+                    ],
+                },
+                MenuItem::TextInput {
+                    label: "Name".to_string(),
+                    value: String::new(),
+                },
+                MenuItem::Select {
+                    label: "Backend type".to_string(),
+                    options: vec!["anthropic".to_string(), "openai_compat".to_string()],
                     selected: 0,
                     prefills: vec![],
                 },
@@ -1696,6 +1735,18 @@ impl ChatSession {
                 },
                 MenuItem::TextInput {
                     label: "API key".to_string(),
+                    value: String::new(),
+                },
+                MenuItem::TextInput {
+                    label: "Base URL".to_string(),
+                    value: String::new(),
+                },
+                MenuItem::Toggle {
+                    label: "Use proxy".to_string(),
+                    value: false,
+                },
+                MenuItem::TextInput {
+                    label: "Context window".to_string(),
                     value: String::new(),
                 },
             ],

@@ -671,6 +671,7 @@ pub fn run_menu(
                     }
 
                     // Handler detection: when leaving a handler submenu, call the callback
+                    let mut already_cleaned_up = false;
                     if let Some(ref handler_name) = current_handler {
                         if let Some(ref mut callback) = on_handler_exit {
                             let handler_prefix = breadcrumb_parts[1..].join(".");
@@ -683,17 +684,27 @@ pub fn run_menu(
                             changes.retain(|c| !c.path.starts_with(&handler_prefix));
 
                             if !handler_changes.is_empty() {
+                                // Clean up widget BEFORE calling callback so any
+                                // stdout output from the callback (e.g. error messages)
+                                // doesn't shift the cursor and break cleanup (#469).
+                                let cleanup = render_cleanup(last_item_count);
+                                common::write_stdout(cleanup.as_bytes());
+
                                 if let Some(new_items) = callback(handler_name, handler_changes) {
+                                    common::write_stdout(b"\x1b[J"); // clear any callback output
                                     *items = new_items;
                                     nav_stack.clear();
                                     breadcrumb_parts.truncate(1);
                                     cursor = 0;
                                     scroll_offset = 0;
-                                    let cleanup = render_cleanup(last_item_count);
-                                    common::write_stdout(cleanup.as_bytes());
+                                    form_auto_edit_active = true;
                                     needs_redraw = true;
                                     continue;
                                 }
+
+                                // Handler error: clear any callback output
+                                common::write_stdout(b"\x1b[J");
+                                already_cleaned_up = true;
                             }
                         }
                     }
@@ -714,8 +725,10 @@ pub fn run_menu(
                     cursor = entry.cursor;
                     scroll_offset = entry.scroll_offset;
                     breadcrumb_parts.pop();
-                    let cleanup = render_cleanup(last_item_count);
-                    common::write_stdout(cleanup.as_bytes());
+                    if !already_cleaned_up {
+                        let cleanup = render_cleanup(last_item_count);
+                        common::write_stdout(cleanup.as_bytes());
+                    }
                     needs_redraw = true;
                     continue;
                 }
@@ -800,6 +813,7 @@ pub fn run_menu(
                         common::write_stdout(cleanup.as_bytes());
 
                         let select_title = format!("{} > {}", breadcrumb_parts.join(" > "), label_clone);
+                        let mut prefill_applied = false;
                         if let Some(idx) = run_select(&select_title, &options_clone, old_selected) {
                             *selected = idx;
                             if idx != old_selected {
@@ -832,14 +846,15 @@ pub fn run_menu(
                                             }
                                         }
                                     }
+                                    // Disable auto-edit so user can review prefilled fields
+                                    form_auto_edit_active = false;
+                                    prefill_applied = true;
                                 }
-                                // Disable auto-edit so user can navigate freely
-                                form_auto_edit_active = false;
                             }
                         }
 
-                        if !prefills_clone.is_empty() {
-                            // Prefill mode: don't auto-advance, let user review filled fields
+                        if prefill_applied {
+                            // Prefill applied: don't auto-advance, let user review filled fields
                         } else if in_form_mode && cursor < current_items.len() - 1 {
                             cursor += 1;
                             if cursor >= scroll_offset + vis {

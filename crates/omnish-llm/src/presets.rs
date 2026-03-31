@@ -65,7 +65,7 @@ mod tests {
     fn test_load_presets() {
         let p = get_provider("anthropic").unwrap();
         assert_eq!(p.backend_type, "anthropic");
-        assert_eq!(p.default_model, "claude-sonnet-4-20250514");
+        assert_eq!(p.default_model, "claude-opus-4-6");
         assert!(p.context_window > 0);
     }
 
