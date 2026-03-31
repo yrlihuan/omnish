@@ -71,3 +71,66 @@ fn test_omnish_dir() {
     let dir = omnish_common::config::omnish_dir();
     assert!(dir.to_string_lossy().ends_with(".omnish"));
 }
+
+#[test]
+fn test_int_fields_accept_string_values() {
+    // Integer fields should accept both native TOML integers and quoted strings
+    let toml_str = r#"
+[llm.backends.test]
+backend_type = "openai-compat"
+model = "gpt-4o"
+context_window = "128000"
+max_content_chars = "192000"
+
+[context.completion]
+detailed_commands = "10"
+history_commands = "100"
+head_lines = "5"
+tail_lines = "5"
+max_line_width = "80"
+max_context_chars = "50000"
+detailed_min = "2"
+detailed_max = "20"
+
+[tasks.eviction]
+session_evict_hours = "24"
+
+[tasks.daily_notes]
+schedule_hour = "8"
+
+[tasks.periodic_summary]
+interval_hours = "2"
+"#;
+    let config: DaemonConfig = toml::from_str(toml_str).unwrap();
+    let backend = &config.llm.backends["test"];
+    assert_eq!(backend.context_window, Some(128000));
+    assert_eq!(backend.max_content_chars, Some(192000));
+    assert_eq!(config.context.completion.detailed_commands, 10);
+    assert_eq!(config.context.completion.history_commands, 100);
+    assert_eq!(config.context.completion.max_context_chars, Some(50000));
+    assert_eq!(config.tasks.eviction.session_evict_hours, 24);
+    assert_eq!(config.tasks.daily_notes.schedule_hour, 8);
+    assert_eq!(config.tasks.periodic_summary.interval_hours, 2);
+
+    // ShellConfig int fields (in ClientConfig)
+    let client_toml = r#"
+[shell]
+intercept_gap_ms = "500"
+ghost_timeout_ms = "5000"
+"#;
+    let client: ClientConfig = toml::from_str(client_toml).unwrap();
+    assert_eq!(client.shell.intercept_gap_ms, 500);
+    assert_eq!(client.shell.ghost_timeout_ms, 5000);
+}
+
+#[test]
+fn test_int_fields_still_accept_native_integers() {
+    let toml_str = r#"
+[llm.backends.test]
+backend_type = "openai-compat"
+model = "gpt-4o"
+context_window = 128000
+"#;
+    let config: DaemonConfig = toml::from_str(toml_str).unwrap();
+    assert_eq!(config.llm.backends["test"].context_window, Some(128000));
+}

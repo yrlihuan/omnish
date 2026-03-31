@@ -3,6 +3,92 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Serde helpers that accept both integer and string representations for numeric
+/// config fields, e.g. `context_window = 200000` and `context_window = "200000"`.
+mod string_or_int {
+    use serde::{self, Deserialize, Deserializer};
+    use std::fmt;
+    use std::marker::PhantomData;
+    use std::str::FromStr;
+
+    struct NumVisitor<T>(PhantomData<T>);
+
+    impl<'de, T> serde::de::Visitor<'de> for NumVisitor<T>
+    where
+        T: Deserialize<'de> + FromStr,
+        T::Err: fmt::Display,
+    {
+        type Value = T;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("an integer or a string containing an integer")
+        }
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<T, E> {
+            let s = v.to_string();
+            T::from_str(&s).map_err(E::custom)
+        }
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<T, E> {
+            let s = v.to_string();
+            T::from_str(&s).map_err(E::custom)
+        }
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<T, E> {
+            T::from_str(v).map_err(E::custom)
+        }
+    }
+
+    pub fn deserialize<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: Deserialize<'de> + FromStr,
+        T::Err: fmt::Display,
+    {
+        deserializer.deserialize_any(NumVisitor(PhantomData))
+    }
+
+    pub mod option {
+        use super::*;
+
+        struct OptNumVisitor<T>(PhantomData<T>);
+
+        impl<'de, T> serde::de::Visitor<'de> for OptNumVisitor<T>
+        where
+            T: Deserialize<'de> + FromStr,
+            T::Err: fmt::Display,
+        {
+            type Value = Option<T>;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("null, an integer, or a string containing an integer")
+            }
+            fn visit_none<E: serde::de::Error>(self) -> Result<Option<T>, E> {
+                Ok(None)
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Option<T>, E> {
+                Ok(None)
+            }
+            fn visit_some<D2: Deserializer<'de>>(self, d: D2) -> Result<Option<T>, D2::Error> {
+                super::deserialize(d).map(Some)
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Option<T>, E> {
+                NumVisitor(PhantomData).visit_i64(v).map(Some)
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Option<T>, E> {
+                NumVisitor(PhantomData).visit_u64(v).map(Some)
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Option<T>, E> {
+                NumVisitor(PhantomData).visit_str(v).map(Some)
+            }
+        }
+
+        pub fn deserialize<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+        where
+            D: Deserializer<'de>,
+            T: Deserialize<'de> + FromStr,
+            T::Err: fmt::Display,
+        {
+            deserializer.deserialize_any(OptNumVisitor(PhantomData))
+        }
+    }
+}
+
 /// Returns the omnish base directory.
 /// Priority: `$OMNISH_HOME` > `~/.omnish` > `/tmp/omnish`.
 pub fn omnish_dir() -> PathBuf {
@@ -72,7 +158,7 @@ pub fn load_client_config() -> Result<ClientConfig> {
 pub struct DailyNotesConfig {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default = "default_schedule_hour")]
+    #[serde(default = "default_schedule_hour", deserialize_with = "string_or_int::deserialize")]
     pub schedule_hour: u8,
 }
 
@@ -100,7 +186,7 @@ fn default_disk_cleanup_schedule() -> String {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EvictionConfig {
     /// Evict sessions from memory after this many hours of inactivity.
-    #[serde(default = "default_session_evict_hours")]
+    #[serde(default = "default_session_evict_hours", deserialize_with = "string_or_int::deserialize")]
     pub session_evict_hours: u64,
 }
 
@@ -166,7 +252,7 @@ fn default_auto_update_schedule() -> String {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PeriodicSummaryConfig {
     /// Interval in hours between periodic summaries. Default: 4.
-    #[serde(default = "default_summary_interval_hours")]
+    #[serde(default = "default_summary_interval_hours", deserialize_with = "string_or_int::deserialize")]
     pub interval_hours: u8,
 }
 
@@ -302,9 +388,9 @@ pub struct ShellConfig {
     /// Prefix to resume last chat thread (default: "::")
     #[serde(default = "default_resume_prefix")]
     pub resume_prefix: String,
-    #[serde(default = "default_intercept_gap_ms")]
+    #[serde(default = "default_intercept_gap_ms", deserialize_with = "string_or_int::deserialize")]
     pub intercept_gap_ms: u64,
-    #[serde(default = "default_ghost_timeout_ms")]
+    #[serde(default = "default_ghost_timeout_ms", deserialize_with = "string_or_int::deserialize")]
     pub ghost_timeout_ms: u64,
     /// When true, prevents : and :: from triggering chat mode when command line already has content
     #[serde(default = "default_developer_mode")]
@@ -422,11 +508,11 @@ pub struct LlmBackendConfig {
     pub use_proxy: bool,
     /// Context window size in tokens (model-specific).
     /// When max_content_chars is not set, defaults to context_window * 1.5.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_or_int::option::deserialize")]
     pub context_window: Option<usize>,
     /// Maximum content characters for context. Advanced override.
     /// If not set, derived from context_window * 1.5.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_or_int::option::deserialize")]
     pub max_content_chars: Option<usize>,
 }
 
@@ -438,30 +524,30 @@ pub struct LlmBackendConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CompletionContextConfig {
     /// Number of recent commands shown with full detail (output, timing, exit code).
-    #[serde(default = "default_detailed_commands")]
+    #[serde(default = "default_detailed_commands", deserialize_with = "string_or_int::deserialize")]
     pub detailed_commands: usize,
     /// Number of older commands listed as command-line only (no output).
-    #[serde(default = "default_history_commands")]
+    #[serde(default = "default_history_commands", deserialize_with = "string_or_int::deserialize")]
     pub history_commands: usize,
-    #[serde(default = "default_head_lines")]
+    #[serde(default = "default_head_lines", deserialize_with = "string_or_int::deserialize")]
     pub head_lines: usize,
-    #[serde(default = "default_tail_lines")]
+    #[serde(default = "default_tail_lines", deserialize_with = "string_or_int::deserialize")]
     pub tail_lines: usize,
     /// Maximum width (in characters) per output line; longer lines are truncated.
-    #[serde(default = "default_max_line_width")]
+    #[serde(default = "default_max_line_width", deserialize_with = "string_or_int::deserialize")]
     pub max_line_width: usize,
     /// Minimum number of commands to keep from the current session.
-    #[serde(default = "default_min_current_session_commands")]
+    #[serde(default = "default_min_current_session_commands", deserialize_with = "string_or_int::deserialize")]
     pub min_current_session_commands: usize,
     /// Maximum character limit for completion context.
     /// If exceeded, the system will try reducing history_commands + detailed_commands by 1/4.
-    #[serde(default = "default_max_context_chars")]
+    #[serde(default = "default_max_context_chars", deserialize_with = "string_or_int::option::deserialize")]
     pub max_context_chars: Option<usize>,
     /// Minimum number of detailed commands after elastic window reset.
-    #[serde(default = "default_detailed_min")]
+    #[serde(default = "default_detailed_min", deserialize_with = "string_or_int::deserialize")]
     pub detailed_min: usize,
     /// Maximum number of detailed commands before elastic window reset.
-    #[serde(default = "default_detailed_max")]
+    #[serde(default = "default_detailed_max", deserialize_with = "string_or_int::deserialize")]
     pub detailed_max: usize,
 }
 
@@ -489,13 +575,13 @@ impl Default for CompletionContextConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HourlySummaryConfig {
     /// Number of lines to keep from the start of each command output.
-    #[serde(default = "default_hourly_head_lines")]
+    #[serde(default = "default_hourly_head_lines", deserialize_with = "string_or_int::deserialize")]
     pub head_lines: usize,
     /// Number of lines to keep from the end of each command output.
-    #[serde(default = "default_hourly_tail_lines")]
+    #[serde(default = "default_hourly_tail_lines", deserialize_with = "string_or_int::deserialize")]
     pub tail_lines: usize,
     /// Maximum width (in characters) per output line; longer lines are truncated.
-    #[serde(default = "default_hourly_max_line_width")]
+    #[serde(default = "default_hourly_max_line_width", deserialize_with = "string_or_int::deserialize")]
     pub max_line_width: usize,
 }
 
@@ -529,13 +615,13 @@ fn default_hourly_max_line_width() -> usize {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DailySummaryConfig {
     /// Number of lines to keep from the start of each command output.
-    #[serde(default = "default_daily_head_lines")]
+    #[serde(default = "default_daily_head_lines", deserialize_with = "string_or_int::deserialize")]
     pub head_lines: usize,
     /// Number of lines to keep from the end of each command output.
-    #[serde(default = "default_daily_tail_lines")]
+    #[serde(default = "default_daily_tail_lines", deserialize_with = "string_or_int::deserialize")]
     pub tail_lines: usize,
     /// Maximum width (in characters) per output line; longer lines are truncated.
-    #[serde(default = "default_daily_max_line_width")]
+    #[serde(default = "default_daily_max_line_width", deserialize_with = "string_or_int::deserialize")]
     pub max_line_width: usize,
 }
 

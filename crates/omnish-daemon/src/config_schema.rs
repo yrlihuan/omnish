@@ -198,7 +198,9 @@ pub fn build_config_items(config: &DaemonConfig) -> (Vec<ConfigItem>, Vec<Config
     backend_names.sort();
     for name in backend_names {
         let backend = &config.llm.backends[name];
-        let prefix = format!("llm.backends.{}", name);
+        // Quote name if it contains dots so config_edit treats it as a single key segment
+        let quoted = if name.contains('.') { format!("\"{}\"", name) } else { name.to_string() };
+        let prefix = format!("llm.backends.{}", quoted);
 
         items.push(ConfigItem {
             path: format!("{}.backend_type", prefix),
@@ -316,6 +318,14 @@ fn handle_add_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::
         anyhow::bail!("add_backend: name cannot be empty");
     }
 
+    // Quote backend name if it contains dots (e.g. "gemini-3.1" → "\"gemini-3.1\"")
+    // so config_edit's split_key_path treats it as a single segment.
+    let quoted_name = if name.contains('.') {
+        format!("\"{}\"", name)
+    } else {
+        name.to_string()
+    };
+
     for change in changes {
         if change.path.ends_with(".name") || change.path.ends_with(".provider") {
             continue;
@@ -327,13 +337,13 @@ fn handle_add_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::
         // Convert plain api_key input to api_key_cmd = "echo <key>"
         if field == "api_key" {
             if !change.value.is_empty() {
-                let toml_key = format!("llm.backends.{}.api_key_cmd", name);
+                let toml_key = format!("llm.backends.{}.api_key_cmd", quoted_name);
                 let cmd_value = format!("echo {}", change.value);
                 omnish_common::config_edit::set_toml_value_nested(config_path, &toml_key, &cmd_value)?;
             }
             continue;
         }
-        let toml_key = format!("llm.backends.{}.{}", name, field);
+        let toml_key = format!("llm.backends.{}.{}", quoted_name, field);
         if field == "use_proxy" {
             let bool_val: bool = change.value.parse().unwrap_or(false);
             omnish_common::config_edit::set_toml_value_nested_bool(config_path, &toml_key, bool_val)?;

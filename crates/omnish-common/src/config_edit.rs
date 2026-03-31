@@ -40,6 +40,7 @@ impl From<i64> for TomlValue {
 /// Set a potentially nested key in a TOML file, preserving formatting.
 ///
 /// `key` is a dot-separated path like `"llm.use_cases.completion"`.
+/// Segments containing dots can be quoted: `"llm.backends.\"gemini-3.1\".model"`.
 /// Intermediate tables are created if they don't exist.
 /// Creates the file if it doesn't exist.
 pub fn set_toml_value_nested(path: &Path, key: &str, value: &str) -> anyhow::Result<()> {
@@ -56,6 +57,30 @@ pub fn set_toml_value_nested_int(path: &Path, key: &str, value: i64) -> anyhow::
     set_toml_value_nested_inner(path, key, toml_edit::value(value))
 }
 
+/// Split a dot-separated key path into segments, respecting quoted segments.
+/// e.g. `llm.backends."gemini-3.1".model` → `["llm", "backends", "gemini-3.1", "model"]`
+fn split_key_path(key: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+
+    for ch in key.chars() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            '.' if !in_quotes => {
+                if !current.is_empty() {
+                    segments.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    segments
+}
+
 fn set_toml_value_nested_inner(
     path: &Path,
     key: &str,
@@ -68,21 +93,21 @@ fn set_toml_value_nested_inner(
     };
     let mut doc = content.parse::<toml_edit::DocumentMut>()?;
 
-    let segments: Vec<&str> = key.split('.').collect();
+    let segments = split_key_path(key);
     if segments.len() == 1 {
-        doc[segments[0]] = value;
+        doc[&segments[0]] = value;
     } else {
         let (parents, leaf) = segments.split_at(segments.len() - 1);
         let mut table = doc.as_table_mut();
-        for &seg in parents {
+        for seg in parents {
             if !table.contains_key(seg) {
                 table.insert(seg, toml_edit::Item::Table(toml_edit::Table::new()));
             }
-            table = table[seg]
+            table = table[seg.as_str()]
                 .as_table_mut()
                 .ok_or_else(|| anyhow::anyhow!("{} is not a table", seg))?;
         }
-        table[leaf[0]] = value;
+        table[&leaf[0]] = value;
     }
 
     let output = doc.to_string();
@@ -240,6 +265,35 @@ mod tests {
 
         let result = fs::read_to_string(&path).unwrap();
         assert!(result.contains("enabled = true"));
+    }
+
+    #[test]
+    fn test_set_nested_with_dotted_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.toml");
+        fs::write(&path, "").unwrap();
+
+        // Backend name "gemini-3.1" contains a dot — must be quoted in the key path
+        set_toml_value_nested(&path, "llm.backends.\"gemini-3.1\".model", "gemini-3.1-pro").unwrap();
+        set_toml_value_nested(&path, "llm.backends.\"gemini-3.1\".backend_type", "openai-compat").unwrap();
+
+        let result = fs::read_to_string(&path).unwrap();
+        // toml_edit should produce a proper quoted key
+        let parsed: toml_edit::DocumentMut = result.parse().unwrap();
+        let backends = parsed["llm"]["backends"].as_table().unwrap();
+        assert!(backends.contains_key("gemini-3.1"), "key 'gemini-3.1' not found in: {}", result);
+        assert_eq!(backends["gemini-3.1"]["model"].as_str(), Some("gemini-3.1-pro"));
+        assert_eq!(backends["gemini-3.1"]["backend_type"].as_str(), Some("openai-compat"));
+    }
+
+    #[test]
+    fn test_split_key_path() {
+        use super::split_key_path;
+        assert_eq!(split_key_path("a.b.c"), vec!["a", "b", "c"]);
+        assert_eq!(split_key_path("llm.backends.\"gemini-3.1\".model"),
+            vec!["llm", "backends", "gemini-3.1", "model"]);
+        assert_eq!(split_key_path("simple"), vec!["simple"]);
+        assert_eq!(split_key_path("\"dotted.key\""), vec!["dotted.key"]);
     }
 
     #[test]
