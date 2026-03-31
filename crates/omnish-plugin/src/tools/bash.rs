@@ -4,9 +4,9 @@ use std::process::Command;
 /// Maximum output characters to return from a bash command.
 const MAX_OUTPUT_CHARS: usize = 30_000;
 /// Default command timeout in seconds.
-const DEFAULT_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_TIMEOUT_SECS: u64 = 300;
 /// Maximum command timeout in seconds.
-const MAX_TIMEOUT_SECS: u64 = 600;
+const MAX_TIMEOUT_SECS: u64 = 900;
 
 #[derive(Default)]
 pub struct BashTool;

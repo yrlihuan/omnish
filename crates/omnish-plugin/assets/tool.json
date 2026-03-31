@@ -16,7 +16,7 @@
         "2. Command Execution: Always quote file paths that contain spaces with double quotes.",
         "",
         "Usage notes:",
-        "- You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). Default: 120000ms (2 minutes).",
+        "- You can specify an optional timeout in milliseconds (up to 900000ms / 15 minutes). Default: 300000ms (5 minutes).",
         "- If the output exceeds 30000 characters, output will be truncated.",
         "- Avoid using Bash with find, grep, cat, head, tail, sed, awk, or echo commands. Use the dedicated tools (Glob, Grep, Read, Edit, Write) instead.",
         "- When issuing multiple commands: use '&&' to chain dependent commands, use ';' if you don't care about failures.",
@@ -43,7 +43,7 @@
           },
           "timeout": {
             "type": "number",
-            "description": "Timeout in milliseconds (default: 120000, max: 600000)"
+            "description": "Timeout in milliseconds (default: 300000, max: 900000)"
           }
         },
         "required": ["command"]
