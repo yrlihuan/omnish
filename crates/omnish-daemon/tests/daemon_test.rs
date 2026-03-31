@@ -1,3 +1,4 @@
+#[cfg(debug_assertions)]
 use omnish_common::config::{CompletionContextConfig, ContextConfig};
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_store::command::CommandRecord;
