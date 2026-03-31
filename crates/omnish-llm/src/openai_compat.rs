@@ -283,9 +283,18 @@ impl LlmBackend for OpenAiCompatBackend {
 
             // Check for other API errors
             if !status.is_success() {
+                // Try OpenAI format first, then fall back to full body
                 let error_msg = json["error"]["message"]
                     .as_str()
-                    .unwrap_or("Unknown API error");
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| {
+                        let body = resp_text.chars().take(1000).collect::<String>();
+                        if resp_text.len() > 1000 {
+                            format!("{}...(truncated)", body)
+                        } else {
+                            body
+                        }
+                    });
                 return Err(anyhow::anyhow!(
                     "OpenAI API error ({}): {}",
                     status,
