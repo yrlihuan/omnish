@@ -1866,6 +1866,11 @@ impl ChatSession {
             } else {
                 format!("{} ({})", provider, model)
             };
+            let use_proxy = changes.iter()
+                .find(|c| c.path.ends_with(".Use proxy"))
+                .and_then(|c| c.value.parse::<bool>().ok())
+                .unwrap_or(false);
+
             let new_item = MenuItem::Submenu {
                 label,
                 children: vec![
@@ -1882,6 +1887,10 @@ impl ChatSession {
                                 "****".to_string()
                             }
                         },
+                    },
+                    MenuItem::Toggle {
+                        label: "Use proxy".to_string(),
+                        value: use_proxy,
                     },
                 ],
                 handler: None,

@@ -17,6 +17,7 @@
 #  12. Add backend with default provider via Done button (issue #453)
 #  13. Save failure reverts Toggle/Select/TextInput to previous state
 #  14. Preset prefill + ESC exit has no duplicate breadcrumb (#469)
+#  15. Use proxy toggle ON preserved in added backend (#476)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -38,6 +39,7 @@ Test cases:
  12. Add backend with default provider via Done button (#453)
  13. Save failure reverts Toggle/Select/TextInput
  14. Preset prefill + ESC exit no duplicate breadcrumb (#469)
+ 15. Use proxy toggle ON preserved in added backend (#476)
 EOF
 }
 
@@ -1206,5 +1208,133 @@ test_14() {
     return 0
 }
 
-echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input, add backend, form mode, arrow keys, save failure revert, prefill breadcrumb${NC}"
-run_tests 14
+# ── Test 15: Use proxy toggle ON preserved in added backend (#476) ──────
+test_15() {
+    echo -e "\n${YELLOW}=== Test 15: Use proxy toggle ON preserved in added backend (#476) ===${NC}"
+
+    restart_client
+    wait_for_client
+    open_test_menu
+
+    # Navigate to "Add backend" (5th item: Down x4)
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+
+    # Enter "Add backend" form (form_mode=true)
+    send_enter 0.5
+
+    local content
+    content=$(capture_pane -20)
+    if ! echo "$content" | grep -q "Add backend"; then
+        assert_fail "Not inside Add backend submenu"
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Provider: Enter opens picker, Down selects "deepseek", Enter confirms
+    send_enter 0.5
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_enter 0.5
+
+    content=$(capture_pane -20)
+    show_capture "After deepseek preset" "$content" 12
+
+    if ! echo "$content" | grep "Name" | grep -q "deepseek"; then
+        assert_fail "Prefill did not set Name to deepseek"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Navigate to "Use proxy" toggle (index 6 in form)
+    # Cursor is on Provider(0). Down x6 → Use proxy(6)
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+
+    content=$(capture_pane -20)
+    show_capture "On Use proxy" "$content" 12
+
+    # Use proxy should be OFF initially
+    if ! echo "$content" | grep "Use proxy" | grep -q "\[OFF\]"; then
+        assert_fail "Use proxy initial value not OFF"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Toggle it ON
+    send_enter 0.5
+
+    content=$(capture_pane -20)
+    if ! echo "$content" | grep "Use proxy" | grep -q "\[ON\]"; then
+        assert_fail "Use proxy did not toggle to ON"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}Use proxy toggled to ON in form${NC}"
+
+    # ESC exits form → triggers handler → return to root
+    send_special Escape 1.0
+
+    content=$(capture_pane -20)
+    show_capture "After handler (root)" "$content" 12
+
+    # Should be at root level with new backend
+    if echo "$content" | grep -q "Config > Add backend"; then
+        assert_fail "Still inside Add backend form"
+        send_special Escape 0.5
+        return 1
+    fi
+
+    if ! echo "$content" | grep -q "deepseek"; then
+        assert_fail "New backend 'deepseek' not found in root menu"
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}New backend 'deepseek' appears in root menu${NC}"
+
+    # Enter the new "deepseek" submenu to check Use proxy value
+    # Find and navigate to the deepseek item.
+    # Root: LLM(0), Shell(1), Telemetry(2), Username(3), Add backend(4),
+    #        deepseek(...)(5), Save failure test(6)
+    # After handler, cursor is reset to 0. Navigate Down x5 to deepseek.
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_enter 0.5
+
+    content=$(capture_pane -20)
+    show_capture "Inside deepseek submenu" "$content" 12
+
+    # Use proxy should show [ON] inside the new backend submenu
+    if echo "$content" | grep "Use proxy" | grep -q "\[ON\]"; then
+        echo -e "  ${GREEN}Use proxy shows [ON] inside new backend submenu${NC}"
+    else
+        assert_fail "Use proxy does not show [ON] inside new backend submenu (bug #476)"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Clean up
+    send_special Escape 0.5
+    send_special Escape 0.5
+
+    assert_pass "Use proxy toggle ON is preserved in added backend (#476)"
+    return 0
+}
+
+echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input, add backend, form mode, arrow keys, save failure revert, prefill breadcrumb, proxy toggle${NC}"
+run_tests 15

@@ -354,12 +354,39 @@ async fn async_main() -> Result<i32> {
     }
 
     let daemon_config_arc = std::sync::Arc::new(std::sync::RwLock::new(config.clone()));
+
+    // Keep daemon_config_arc in sync with daemon.toml file changes.
+    // ConfigQuery reads from this arc; without this, manual edits to daemon.toml
+    // (e.g. use_proxy = true) wouldn't be reflected in /config until daemon restart.
+    {
+        let llm_rx = config_watcher.subscribe(config_watcher::ConfigSection::Llm);
+        let sandbox_rx = config_watcher.subscribe(config_watcher::ConfigSection::Sandbox);
+        let dca = Arc::clone(&daemon_config_arc);
+        tokio::spawn(async move {
+            let mut llm = llm_rx;
+            let mut sandbox = sandbox_rx;
+            loop {
+                tokio::select! {
+                    Ok(()) = llm.changed() => {
+                        let config = llm.borrow_and_update().clone();
+                        *dca.write().unwrap() = (*config).clone();
+                    }
+                    Ok(()) = sandbox.changed() => {
+                        let config = sandbox.borrow_and_update().clone();
+                        *dca.write().unwrap() = (*config).clone();
+                    }
+                    else => break,
+                }
+            }
+        });
+    }
+
     let server_opts = Arc::new(server::ServerOpts {
         proxy: config.proxy,
         no_proxy: config.no_proxy,
         sandbox_rules: Arc::clone(&server_sandbox_rules),
         config_path: config_path.clone(),
-        daemon_config: daemon_config_arc,
+        daemon_config: Arc::clone(&daemon_config_arc),
     });
     // Create formatter manager and register external formatters from plugins
     let mut formatter_mgr = omnish_daemon::formatter_mgr::FormatterManager::new();

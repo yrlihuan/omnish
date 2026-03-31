@@ -822,7 +822,15 @@ async fn handle_message(
             let _ = tx.send(Message::Ack).await;
         }
         Message::ConfigQuery => {
-            let config = opts.daemon_config.read().unwrap().clone();
+            // Re-read config from disk to ensure /config always shows current values,
+            // even if daemon.toml was edited outside of /config (e.g. use_proxy = true).
+            let config = match omnish_common::config::load_daemon_config() {
+                Ok(fresh) => {
+                    *opts.daemon_config.write().unwrap() = fresh.clone();
+                    fresh
+                }
+                Err(_) => opts.daemon_config.read().unwrap().clone(),
+            };
             let (items, handlers) = crate::config_schema::build_config_items(&config);
             let _ = tx.send(Message::ConfigResponse { items, handlers }).await;
         }
