@@ -197,19 +197,14 @@ async fn async_main() -> Result<i32> {
     // Register daily notes job if enabled
     if daily_notes_config.enabled {
         let notes_dir = omnish_dir.join("notes");
-        let cron = format!("0 0 {} * * *", daily_notes_config.schedule_hour);
         let job = create_daily_notes_job(
             Arc::clone(&session_mgr),
             Arc::clone(&conv_mgr),
             llm_backend.clone(),
             notes_dir,
-            daily_notes_config.schedule_hour,
         )?;
-        task_mgr.register("daily_notes", &cron, job).await?;
-        tracing::info!(
-            "daily notes enabled (schedule_hour={})",
-            daily_notes_config.schedule_hour
-        );
+        task_mgr.register("daily_notes", "0 10 0 * * *", job).await?;
+        tracing::info!("daily notes enabled (schedule=00:10, summarizes previous day)");
     }
 
     // Restart signal: notified when auto-update installs a new binary

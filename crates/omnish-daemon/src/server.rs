@@ -2328,9 +2328,11 @@ async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionMan
         }
         "daily-notes" => {
             let notes_dir = omnish_common::config::omnish_dir().join("notes");
-            let ctx = omnish_daemon::daily_notes::build_daily_context(&notes_dir);
+            // Show yesterday's context (same as the scheduled job)
+            let yesterday = (chrono::Local::now() - chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+            let ctx = omnish_daemon::daily_notes::build_daily_context(&notes_dir, &yesterday);
             if ctx.is_empty() {
-                "No hourly summaries for today".to_string()
+                "No hourly summaries for yesterday".to_string()
             } else {
                 ctx
             }

@@ -148,13 +148,21 @@ async fn generate_periodic_summary(
     };
 
     // Generate filename: notes/hourly/YYYY-MM-DD/HH.md
+    // Special case: at midnight (00:xx), save as previous day's 24.md
+    // so that daily notes (running at 00:10) can include this last summary.
     let now = Local::now();
-    let date_dir = summaries_dir.join("hourly").join(now.format("%Y-%m-%d").to_string());
-    let filename = format!("{}.md", now.format("%H"));
+    let (date_str, hour_str) = if now.format("%H").to_string() == "00" {
+        let yesterday = now - chrono::Duration::days(1);
+        (yesterday.format("%Y-%m-%d").to_string(), "24".to_string())
+    } else {
+        (now.format("%Y-%m-%d").to_string(), now.format("%H").to_string())
+    };
+    let date_dir = summaries_dir.join("hourly").join(&date_str);
+    let filename = format!("{}.md", hour_str);
     let file_path = date_dir.join(&filename);
 
     // Build markdown content: commands + conversations + LLM summary
-    let mut md = format!("# {} 时工作摘要\n", now.format("%Y-%m-%d %H:00"));
+    let mut md = format!("# {} {}:00 时工作摘要\n", date_str, hour_str);
     if !table_md.is_empty() {
         md.push_str("\n## 命令记录\n");
         md.push_str("| 时间 | 主机:工作目录 | 命令 |\n");
