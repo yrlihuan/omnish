@@ -325,20 +325,15 @@ impl ConversationManager {
     }
 
     /// Load all messages as raw JSON for LLM context.
-    /// Sanitizes orphaned tool_use blocks (missing tool_result) on the fly.
+    /// Note: orphaned tool_use blocks are only sanitized at startup (in `new()`),
+    /// not here — during runtime an orphaned tail tool_use means tools are actively
+    /// executing, and sanitizing it would inject a phantom "interrupted" result.
     pub fn load_raw_messages(&self, thread_id: &str) -> Vec<serde_json::Value> {
-        let mut threads = self.threads.lock().unwrap();
-        let msgs = match threads.get_mut(thread_id) {
+        let threads = self.threads.lock().unwrap();
+        let msgs = match threads.get(thread_id) {
             Some(m) => m,
             None => return Vec::new(),
         };
-        if sanitize_orphaned_tool_use(msgs) {
-            tracing::warn!(
-                "Sanitized orphaned tool_use blocks in thread {}",
-                thread_id
-            );
-            Self::rewrite_thread_file(&self.threads_dir, thread_id, msgs);
-        }
         msgs.clone()
     }
 
