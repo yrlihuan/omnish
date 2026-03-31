@@ -1055,8 +1055,9 @@ async fn handle_chat_message(
     // Get session attrs from client probes (cwd, platform, os_version, etc.)
     let session_attrs = mgr.get_session_attrs(&cm.session_id).await;
 
-    // Build system-reminder and append to system prompt
-    let reminder = command_query_tool.build_system_reminder(5, &session_attrs);
+    // Build system-reminder and append to system prompt (no recent commands in chat mode;
+    // the agent can query commands via tools)
+    let reminder = command_query_tool.build_system_reminder(5, &session_attrs, false);
 
     // Detect system-reminder changes (dev aid: compare with previous)
     let mut meta = conv_mgr.load_meta(&cm.thread_id);
@@ -1897,7 +1898,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
     let (commands, stream_reader) = mgr.get_all_commands_with_reader().await;
     let command_query_tool = omnish_daemon::tools::command_query::CommandQueryTool::new(commands, stream_reader);
     let session_attrs = mgr.get_session_attrs(&req.session_id).await;
-    let reminder = command_query_tool.build_system_reminder(5, &session_attrs);
+    let reminder = command_query_tool.build_system_reminder(5, &session_attrs, false);
 
     // Handle /context chat:<thread_id> — show conversation context + system-reminder
     if let Some(thread_id) = sub.strip_prefix("context chat:") {
