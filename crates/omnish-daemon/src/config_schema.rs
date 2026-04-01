@@ -496,6 +496,66 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_build_config_items_generates_plugin_items() {
+        let config = DaemonConfig::default();
+        let metas = vec![omnish_daemon::plugin::PluginConfigMeta {
+            name: "web_search".to_string(),
+            config_params: vec![omnish_daemon::plugin::ConfigParam {
+                name: "api_key".to_string(),
+                label: "API key".to_string(),
+                kind: "text".to_string(),
+            }],
+        }];
+        let (items, _handlers) = build_config_items(&config, &metas);
+
+        // Enabled toggle
+        let toggle = items.iter().find(|i| i.path == "plugins.web_search.enabled").unwrap();
+        match &toggle.kind {
+            ConfigItemKind::Toggle { value } => assert!(value, "default should be enabled"),
+            _ => panic!("expected Toggle"),
+        }
+
+        // API key text input
+        let api_key = items.iter().find(|i| i.path == "plugins.web_search.api_key").unwrap();
+        match &api_key.kind {
+            ConfigItemKind::TextInput { value } => assert_eq!(value, ""),
+            _ => panic!("expected TextInput"),
+        }
+    }
+
+    #[test]
+    fn test_build_config_items_plugin_reads_existing_values() {
+        use std::collections::HashMap;
+        let mut config = DaemonConfig::default();
+        let mut ws_cfg = HashMap::new();
+        ws_cfg.insert("enabled".to_string(), serde_json::Value::Bool(false));
+        ws_cfg.insert("api_key".to_string(), serde_json::Value::String("sk-test".to_string()));
+        config.plugins.insert("web_search".to_string(), ws_cfg);
+
+        let metas = vec![omnish_daemon::plugin::PluginConfigMeta {
+            name: "web_search".to_string(),
+            config_params: vec![omnish_daemon::plugin::ConfigParam {
+                name: "api_key".to_string(),
+                label: "API key".to_string(),
+                kind: "text".to_string(),
+            }],
+        }];
+        let (items, _handlers) = build_config_items(&config, &metas);
+
+        let toggle = items.iter().find(|i| i.path == "plugins.web_search.enabled").unwrap();
+        match &toggle.kind {
+            ConfigItemKind::Toggle { value } => assert!(!value, "should be disabled"),
+            _ => panic!("expected Toggle"),
+        }
+
+        let api_key = items.iter().find(|i| i.path == "plugins.web_search.api_key").unwrap();
+        match &api_key.kind {
+            ConfigItemKind::TextInput { value } => assert_eq!(value, "sk-test"),
+            _ => panic!("expected TextInput"),
+        }
+    }
+
     /// Guard test: every config schema path must map to a ConfigSection that
     /// has diff + notify implemented in ConfigWatcher::reload().
     ///
