@@ -14,6 +14,26 @@ pub enum PluginType {
     ClientTool,
 }
 
+/// A configurable parameter declared by a plugin in tool.json.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConfigParam {
+    pub name: String,
+    pub label: String,
+    #[serde(default = "default_config_param_kind")]
+    pub kind: String,
+}
+
+fn default_config_param_kind() -> String {
+    "text".to_string()
+}
+
+/// Plugin metadata exposed for config menu generation.
+#[derive(Debug, Clone)]
+pub struct PluginConfigMeta {
+    pub name: String,
+    pub config_params: Vec<ConfigParam>,
+}
+
 /// A single tool entry parsed from tool.json (base definition, immutable).
 #[derive(Debug, Clone)]
 struct ToolEntry {
@@ -31,6 +51,7 @@ struct PluginInfo {
     plugin_type: PluginType,
     tools: Vec<ToolEntry>,
     formatter_binary: Option<String>,
+    config_params: Vec<ConfigParam>,
 }
 
 /// Cached tool.override.json overrides, updated on file changes.
@@ -57,6 +78,8 @@ struct ToolJsonFile {
     plugin_type: String,
     #[serde(default)]
     formatter_binary: Option<String>,
+    #[serde(default)]
+    config_params: Vec<ConfigParam>,
     tools: Vec<ToolJsonEntry>,
 }
 
@@ -132,15 +155,15 @@ const BUNDLED_WEB_FETCH_TOOL_JSON: &str = include_str!("../../../plugins/web_fet
 const BUNDLED_WEB_FETCH_SCRIPT: &str = include_str!("../../../plugins/web_fetch/web_fetch");
 const BUNDLED_WEB_FETCH_FORMATTER: &str = include_str!("../../../plugins/web_fetch/web_fetch_formatter");
 
-/// Auto-install bundled plugins when their tool config is present in daemon.toml.
-/// For example, if `[tools.web_search]` contains `api_key`, install the web_search
+/// Auto-install bundled plugins when their plugin config is present in daemon.toml.
+/// For example, if `[plugins.web_search]` contains `api_key`, install the web_search
 /// plugin to `~/.omnish/plugins/web_search/` so it's available without manual setup.
 pub fn auto_install_bundled_plugins(
     plugins_dir: &Path,
-    tools_config: &HashMap<String, HashMap<String, serde_json::Value>>,
+    plugins_config: &HashMap<String, HashMap<String, serde_json::Value>>,
 ) {
-    // web_search: install if [tools.web_search] has api_key
-    if let Some(ws_config) = tools_config.get("web_search") {
+    // web_search: install if [plugins.web_search] has api_key
+    if let Some(ws_config) = plugins_config.get("web_search") {
         if ws_config.contains_key("api_key") {
             let plugin_dir = plugins_dir.join("web_search");
             let tool_json = plugin_dir.join("tool.json");
@@ -206,7 +229,10 @@ impl PluginManager {
     /// Load all plugins from the given directory.
     /// Each subdirectory containing a `tool.json` is treated as a plugin.
     /// Built-in tools are always loaded from embedded data if not found on disk.
-    pub fn load(plugins_dir: &Path) -> Self {
+    pub fn load(
+        plugins_dir: &Path,
+        plugins_config: &HashMap<String, HashMap<String, serde_json::Value>>,
+    ) -> Self {
         let mut plugins = Vec::new();
         let mut tool_index = HashMap::new();
 
@@ -248,6 +274,7 @@ impl PluginManager {
                     plugin_type,
                     tools,
                     formatter_binary: None,
+                    config_params: parsed.config_params,
                 });
             }
             Err(e) => {
@@ -289,6 +316,26 @@ impl PluginManager {
                 _ => PluginType::DaemonTool,
             };
 
+            // Check if plugin is explicitly disabled
+            let disabled = plugins_config
+                .get(&dir_name)
+                .and_then(|cfg| cfg.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .map(|b| !b)
+                .unwrap_or(false);
+
+            if disabled {
+                // Still store PluginInfo for config_meta(), but with no tools
+                plugins.push(PluginInfo {
+                    dir_name,
+                    plugin_type,
+                    tools: Vec::new(),
+                    formatter_binary: None,
+                    config_params: parsed.config_params,
+                });
+                continue;
+            }
+
             let plugin_idx = plugins.len();
             let mut tools = Vec::new();
             for te in parsed.tools {
@@ -327,6 +374,7 @@ impl PluginManager {
                 plugin_type,
                 tools,
                 formatter_binary: parsed.formatter_binary,
+                config_params: parsed.config_params,
             });
         }
 
@@ -450,6 +498,18 @@ impl PluginManager {
         registry.update_overrides(cache.descriptions.clone(), cache.override_params.clone());
     }
 
+    /// Returns plugin metadata for the config menu (all non-builtin plugins).
+    pub fn config_meta(&self) -> Vec<PluginConfigMeta> {
+        self.plugins
+            .iter()
+            .filter(|p| p.dir_name != "builtin")
+            .map(|p| PluginConfigMeta {
+                name: p.dir_name.clone(),
+                config_params: p.config_params.clone(),
+            })
+            .collect()
+    }
+
     /// Start watching plugin overrides using a shared file watcher receiver.
     pub async fn watch_with(self: &Arc<Self>, mut rx: tokio::sync::watch::Receiver<()>, registry: std::sync::Arc<crate::tool_registry::ToolRegistry>) {
         tracing::info!("watching plugin overrides via shared file watcher: {}", self.plugins_dir.display());
@@ -508,7 +568,7 @@ mod tests {
     #[test]
     fn test_load_empty_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        let mgr = PluginManager::load(tmp.path());
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         // Only embedded builtin tools
         assert_eq!(count_registered_defs(&mgr), BUILTIN_COUNT);
     }
@@ -526,7 +586,7 @@ mod tests {
                 "sandboxed": true
             }]
         }"#);
-        let mgr = PluginManager::load(tmp.path());
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         let mut reg = crate::tool_registry::ToolRegistry::new();
         mgr.register_all(&mut reg);
         let defs = reg.all_defs();
@@ -548,7 +608,7 @@ mod tests {
                 "sandboxed": true
             }]
         }"#);
-        let mgr = PluginManager::load(tmp.path());
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         let mut reg = crate::tool_registry::ToolRegistry::new();
         mgr.register_all(&mut reg);
         let defs = reg.all_defs();
@@ -579,7 +639,7 @@ mod tests {
                 "sandboxed": true
             }]
         }"#);
-        let mgr = PluginManager::load(tmp.path());
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         // BUILTIN_COUNT + 1 (only first dup_tool loaded, second skipped)
         assert_eq!(count_registered_defs(&mgr), BUILTIN_COUNT + 1);
     }
@@ -595,7 +655,7 @@ mod tests {
                 }
             }
         }"#);
-        let mgr = PluginManager::load(tmp.path());
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         assert_eq!(get_description(&mgr, "bash"), "Custom description");
     }
 
@@ -609,7 +669,7 @@ mod tests {
                 }
             }
         }"#);
-        let mgr = PluginManager::load(tmp.path());
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         let desc = get_description(&mgr, "bash");
         assert!(desc.ends_with("\nExtra guideline"));
     }
@@ -625,7 +685,7 @@ mod tests {
                 }
             }
         }"#);
-        let mgr = PluginManager::load(tmp.path());
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         assert_eq!(get_description(&mgr, "bash"), "Replaced");
     }
 
@@ -639,7 +699,7 @@ mod tests {
                 }
             }
         }"#);
-        let mgr = PluginManager::load(tmp.path());
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         assert_eq!(get_description(&mgr, "bash"), "Line 1\nLine 2\n\nLine 4");
     }
 
@@ -647,7 +707,7 @@ mod tests {
     fn test_no_prompt_json_keeps_original() {
         let tmp = tempfile::tempdir().unwrap();
         // No override file — embedded description is used
-        let mgr = PluginManager::load(tmp.path());
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         let desc = get_description(&mgr, "bash");
         assert!(desc.contains("bash"));  // embedded description mentions bash
     }
@@ -664,7 +724,7 @@ mod tests {
                 "status_template": ""
             }]
         }"#);
-        let mgr = PluginManager::load(tmp.path());
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         let exe = mgr.plugin_executable("web_search").unwrap();
         assert_eq!(exe, tmp.path().join("web_search").join("web_search"));
     }
@@ -695,7 +755,7 @@ mod tests {
     #[test]
     fn test_reload_overrides_picks_up_changes() {
         let tmp = tempfile::tempdir().unwrap();
-        let mgr = PluginManager::load(tmp.path());
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         let original = get_description(&mgr, "bash");
 
         // Write tool.override.json and reload
@@ -727,7 +787,7 @@ mod tests {
                 "formatter": "default"
             }]
         }"#);
-        let mgr = PluginManager::load(tmp.path());
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         let mut reg = ToolRegistry::new();
         mgr.register_all(&mut reg);
         // Custom plugin tool
@@ -755,7 +815,7 @@ mod tests {
         assert!(tmp.path().join("web_search/web_search").exists());
 
         // Should be loadable
-        let mgr = PluginManager::load(tmp.path());
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         assert!(mgr.plugin_executable("web_search").is_some());
     }
 
