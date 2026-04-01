@@ -1457,7 +1457,12 @@ async fn run_agent_loop(
                                 merge_tool_params(&mut merged_input, &override_params);
                             }
                             if let Some(config_params) = tool_params.get(&tc.name) {
-                                merge_tool_params(&mut merged_input, config_params);
+                                let filtered: HashMap<String, serde_json::Value> = config_params
+                                    .iter()
+                                    .filter(|(k, _)| k.as_str() != "enabled")
+                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                    .collect();
+                                merge_tool_params(&mut merged_input, &filtered);
                             }
                             let matched_rule = {
                                 let rules = opts.sandbox_rules.read().unwrap();
@@ -1490,7 +1495,12 @@ async fn run_agent_loop(
                                 merge_tool_params(&mut merged_input, &override_params);
                             }
                             if let Some(config_params) = tool_params.get(&tc.name) {
-                                merge_tool_params(&mut merged_input, config_params);
+                                let filtered: HashMap<String, serde_json::Value> = config_params
+                                    .iter()
+                                    .filter(|(k, _)| k.as_str() != "enabled")
+                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                    .collect();
+                                merge_tool_params(&mut merged_input, &filtered);
                             }
 
                             let (mut result, needs_summarization) = if tool_registry.plugin_type(&tc.name).is_some() {

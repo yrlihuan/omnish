@@ -270,10 +270,10 @@ async fn async_main() -> Result<i32> {
 
     // Auto-install bundled plugins when their tool config is present
     let plugins_dir = omnish_dir.join("plugins");
-    omnish_daemon::plugin::auto_install_bundled_plugins(&plugins_dir, &config.tools);
+    omnish_daemon::plugin::auto_install_bundled_plugins(&plugins_dir, &config.plugins);
 
     // Initialize plugin manager — loads tool definitions from JSON files
-    let plugin_mgr = Arc::new(omnish_daemon::plugin::PluginManager::load(&plugins_dir));
+    let plugin_mgr = Arc::new(omnish_daemon::plugin::PluginManager::load(&plugins_dir, &config.plugins));
 
     // Build unified tool registry from plugins + built-in tools
     let mut tool_registry = omnish_daemon::tool_registry::ToolRegistry::new();
@@ -389,7 +389,7 @@ async fn async_main() -> Result<i32> {
         formatter_mgr.register_external(&name, path).await;
     }
     let formatter_mgr = Arc::new(formatter_mgr);
-    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, tool_registry, config.tools, server_opts, formatter_mgr, Arc::clone(&update_cache));
+    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, tool_registry, config.plugins, server_opts, formatter_mgr, Arc::clone(&update_cache));
 
     tracing::info!("starting omnishd at {}", socket_path);
 
