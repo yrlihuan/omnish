@@ -819,17 +819,21 @@ impl ChatSession {
                                             Some(Ok((idx, result))) => {
                                                 completed += 1;
                                                 let tc = &tool_calls[idx];
-                                                let (content, is_error, needs_summarization) = result
-                                                    .unwrap_or_else(|_| ("Tool execution panicked".to_string(), true, false));
+                                                let output = result
+                                                    .unwrap_or_else(|_| crate::client_plugin::PluginOutput {
+                                                        content: "Tool execution panicked".to_string(),
+                                                        is_error: true,
+                                                        needs_summarization: false,
+                                                    });
 
                                                 let result_msg =
                                                     Message::ChatToolResult(ChatToolResult {
                                                         request_id: tc.request_id.clone(),
                                                         thread_id: tc.thread_id.clone(),
                                                         tool_call_id: tc.tool_call_id.clone(),
-                                                        content,
-                                                        is_error,
-                                                        needs_summarization,
+                                                        content: output.content,
+                                                        is_error: output.is_error,
+                                                        needs_summarization: output.needs_summarization,
                                                     });
 
                                                 if completed < total {

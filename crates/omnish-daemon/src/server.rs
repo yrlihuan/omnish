@@ -158,9 +158,9 @@ fn merge_tool_params(target: &mut serde_json::Value, params: &HashMap<String, se
     }
 }
 
-/// Execute a daemon-side external plugin by spawning a subprocess.
+/// Execute a daemon-side plugin by spawning a subprocess.
 /// Uses the same stdin/stdout JSON protocol as client-side plugins.
-/// Execute a daemon-side plugin. Returns (ToolResult, needs_summarization).
+/// Returns `(ToolResult, needs_summarization)`.
 async fn execute_daemon_plugin(
     executable: &std::path::Path,
     tool_name: &str,
@@ -257,6 +257,54 @@ async fn execute_daemon_plugin(
                 content: "Plugin timed out (600s)".to_string(),
                 is_error: true,
             }, false)
+        }
+    }
+}
+
+/// Maximum content length (in chars) passed to the summarization LLM to avoid exceeding context windows.
+const SUMMARIZATION_MAX_CONTENT_CHARS: usize = 50_000;
+
+/// Summarize tool result content using the LLM. Returns the summarized text, or None on failure.
+async fn summarize_tool_result(
+    backend: &dyn LlmBackend,
+    tool_name: &str,
+    content: &str,
+    prompt_template: &str,
+    user_prompt: &str,
+) -> Option<String> {
+    // Truncate content to avoid exceeding context window
+    let truncated: &str = if content.len() > SUMMARIZATION_MAX_CONTENT_CHARS {
+        &content[..content.floor_char_boundary(SUMMARIZATION_MAX_CONTENT_CHARS)]
+    } else {
+        content
+    };
+    // Replace {prompt} before {content} to prevent content containing "{prompt}" from being substituted
+    let query = prompt_template
+        .replace("{prompt}", user_prompt)
+        .replace("{content}", truncated);
+    let req = omnish_llm::backend::LlmRequest {
+        context: String::new(),
+        query: Some(query),
+        trigger: omnish_llm::backend::TriggerType::Manual,
+        session_ids: vec![],
+        use_case: omnish_llm::backend::UseCase::Summarize,
+        max_content_chars: None,
+        conversation: vec![],
+        system_prompt: None,
+        enable_thinking: Some(false),
+        tools: vec![],
+        extra_messages: vec![],
+    };
+    match backend.complete(&req).await {
+        Ok(resp) => {
+            let text: String = resp.content.iter().filter_map(|b| {
+                if let omnish_llm::backend::ContentBlock::Text(t) = b { Some(t.as_str()) } else { None }
+            }).collect::<Vec<_>>().join("");
+            if text.is_empty() { None } else { Some(text) }
+        }
+        Err(e) => {
+            tracing::warn!("Summarization failed for {tool_name}: {e}, using raw content");
+            None
         }
     }
 }
@@ -1156,34 +1204,10 @@ async fn handle_tool_result(
         if let Some(tc) = state.pending_tool_calls.iter().find(|tc| tc.id == tool_call_id) {
             if let Some(prompt_template) = tool_registry.summarization_prompt(&tc.name) {
                 let user_prompt = tc.input.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-                let summarization_query = prompt_template
-                    .replace("{content}", &content)
-                    .replace("{prompt}", user_prompt);
-                let summary_req = omnish_llm::backend::LlmRequest {
-                    context: String::new(),
-                    query: Some(summarization_query),
-                    trigger: omnish_llm::backend::TriggerType::Manual,
-                    session_ids: vec![],
-                    use_case: omnish_llm::backend::UseCase::Summarize,
-                    max_content_chars: None,
-                    conversation: vec![],
-                    system_prompt: None,
-                    enable_thinking: Some(false),
-                    tools: vec![],
-                    extra_messages: vec![],
-                };
-                match state.effective_backend.complete(&summary_req).await {
-                    Ok(resp) => {
-                        let text: String = resp.content.iter().filter_map(|b| {
-                            if let omnish_llm::backend::ContentBlock::Text(t) = b { Some(t.as_str()) } else { None }
-                        }).collect::<Vec<_>>().join("");
-                        if !text.is_empty() {
-                            content = text;
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Summarization failed for {}: {e}, using raw content", tc.name);
-                    }
+                if let Some(summary) = summarize_tool_result(
+                    state.effective_backend.as_ref(), &tc.name, &content, prompt_template, user_prompt,
+                ).await {
+                    content = summary;
                 }
             }
         }
@@ -1529,34 +1553,10 @@ async fn run_agent_loop(
                             if needs_summarization && !result.is_error {
                                 if let Some(prompt_template) = tool_registry.summarization_prompt(&tc.name) {
                                     let user_prompt = tc.input.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-                                    let summarization_query = prompt_template
-                                        .replace("{content}", &result.content)
-                                        .replace("{prompt}", user_prompt);
-                                    let summary_req = omnish_llm::backend::LlmRequest {
-                                        context: String::new(),
-                                        query: Some(summarization_query),
-                                        trigger: omnish_llm::backend::TriggerType::Manual,
-                                        session_ids: vec![],
-                                        use_case: omnish_llm::backend::UseCase::Summarize,
-                                        max_content_chars: None,
-                                        conversation: vec![],
-                                        system_prompt: None,
-                                        enable_thinking: Some(false),
-                                        tools: vec![],
-                                        extra_messages: vec![],
-                                    };
-                                    match state.effective_backend.complete(&summary_req).await {
-                                        Ok(resp) => {
-                                            let text: String = resp.content.iter().filter_map(|b| {
-                                                if let omnish_llm::backend::ContentBlock::Text(t) = b { Some(t.as_str()) } else { None }
-                                            }).collect::<Vec<_>>().join("");
-                                            if !text.is_empty() {
-                                                result.content = text;
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!("Summarization failed for {}: {e}, using raw content", tc.name);
-                                        }
+                                    if let Some(summary) = summarize_tool_result(
+                                        state.effective_backend.as_ref(), &tc.name, &result.content, prompt_template, user_prompt,
+                                    ).await {
+                                        result.content = summary;
                                     }
                                 }
                             }

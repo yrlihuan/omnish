@@ -11,6 +11,13 @@ pub struct ClientPluginManager {
     plugin_bin: std::path::PathBuf,
 }
 
+/// Result of executing a plugin tool.
+pub struct PluginOutput {
+    pub content: String,
+    pub is_error: bool,
+    pub needs_summarization: bool,
+}
+
 #[derive(serde::Deserialize)]
 struct PluginResponse {
     content: String,
@@ -43,7 +50,7 @@ impl ClientPluginManager {
         input: &serde_json::Value,
         cwd: Option<&str>,
         sandboxed: bool,
-    ) -> (String, bool, bool) {
+    ) -> PluginOutput {
         let executable = if plugin_name == "builtin" {
             self.plugin_bin.clone()
         } else {
@@ -117,7 +124,11 @@ impl ClientPluginManager {
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
-            Err(e) => return (format!("Failed to spawn plugin '{}': {}", plugin_name, e), true, false),
+            Err(e) => return PluginOutput {
+                content: format!("Failed to spawn plugin '{}': {}", plugin_name, e),
+                is_error: true,
+                needs_summarization: false,
+            },
         };
 
         // Write request to stdin
@@ -131,15 +142,15 @@ impl ClientPluginManager {
             let mut reader = BufReader::new(stdout);
             let mut line = String::new();
             match reader.read_line(&mut line) {
-                Ok(0) => ("Plugin produced no output".to_string(), true, false),
+                Ok(0) => PluginOutput { content: "Plugin produced no output".to_string(), is_error: true, needs_summarization: false },
                 Ok(_) => match serde_json::from_str::<PluginResponse>(&line) {
-                    Ok(resp) => (resp.content, resp.is_error, resp.needs_summarization),
-                    Err(e) => (format!("Invalid plugin response: {e}"), true, false),
+                    Ok(resp) => PluginOutput { content: resp.content, is_error: resp.is_error, needs_summarization: resp.needs_summarization },
+                    Err(e) => PluginOutput { content: format!("Invalid plugin response: {e}"), is_error: true, needs_summarization: false },
                 },
-                Err(e) => (format!("Failed to read plugin output: {e}"), true, false),
+                Err(e) => PluginOutput { content: format!("Failed to read plugin output: {e}"), is_error: true, needs_summarization: false },
             }
         } else {
-            ("No stdout from plugin".to_string(), true, false)
+            PluginOutput { content: "No stdout from plugin".to_string(), is_error: true, needs_summarization: false }
         };
 
         let _ = child.wait();

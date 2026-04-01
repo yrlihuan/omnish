@@ -165,55 +165,37 @@ pub fn auto_install_bundled_plugins(
     // web_search: install if [plugins.web_search] has api_key
     if let Some(ws_config) = plugins_config.get("web_search") {
         if ws_config.contains_key("api_key") {
-            let plugin_dir = plugins_dir.join("web_search");
-            let tool_json = plugin_dir.join("tool.json");
-            let script = plugin_dir.join("web_search");
-            if !tool_json.exists() {
-                if let Err(e) = std::fs::create_dir_all(&plugin_dir) {
-                    tracing::warn!("Failed to create web_search plugin dir: {}", e);
-                    return;
+            let _ = (|| -> Result<(), std::io::Error> {
+                let plugin_dir = plugins_dir.join("web_search");
+                let tool_json = plugin_dir.join("tool.json");
+                let script = plugin_dir.join("web_search");
+                if !tool_json.exists() {
+                    std::fs::create_dir_all(&plugin_dir)?;
+                    std::fs::write(&tool_json, BUNDLED_WEB_SEARCH_TOOL_JSON)?;
+                    std::fs::write(&script, BUNDLED_WEB_SEARCH_SCRIPT)?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
+                    }
+                    tracing::info!("Auto-installed bundled web_search plugin");
                 }
-                if let Err(e) = std::fs::write(&tool_json, BUNDLED_WEB_SEARCH_TOOL_JSON) {
-                    tracing::warn!("Failed to write web_search tool.json: {}", e);
-                    return;
-                }
-                if let Err(e) = std::fs::write(&script, BUNDLED_WEB_SEARCH_SCRIPT) {
-                    tracing::warn!("Failed to write web_search script: {}", e);
-                    return;
-                }
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
-                }
-                tracing::info!("Auto-installed bundled web_search plugin");
-            }
+                Ok(())
+            })().map_err(|e| tracing::warn!("Failed to install web_search plugin: {e}"));
         }
     }
 
     // web_fetch: always install (no API key required)
-    {
+    let _ = (|| -> Result<(), std::io::Error> {
         let plugin_dir = plugins_dir.join("web_fetch");
         let tool_json = plugin_dir.join("tool.json");
         let script = plugin_dir.join("web_fetch");
         let formatter = plugin_dir.join("web_fetch_formatter");
         if !tool_json.exists() {
-            if let Err(e) = std::fs::create_dir_all(&plugin_dir) {
-                tracing::warn!("Failed to create web_fetch plugin dir: {}", e);
-                return;
-            }
-            if let Err(e) = std::fs::write(&tool_json, BUNDLED_WEB_FETCH_TOOL_JSON) {
-                tracing::warn!("Failed to write web_fetch tool.json: {}", e);
-                return;
-            }
-            if let Err(e) = std::fs::write(&script, BUNDLED_WEB_FETCH_SCRIPT) {
-                tracing::warn!("Failed to write web_fetch script: {}", e);
-                return;
-            }
-            if let Err(e) = std::fs::write(&formatter, BUNDLED_WEB_FETCH_FORMATTER) {
-                tracing::warn!("Failed to write web_fetch_formatter: {}", e);
-                return;
-            }
+            std::fs::create_dir_all(&plugin_dir)?;
+            std::fs::write(&tool_json, BUNDLED_WEB_FETCH_TOOL_JSON)?;
+            std::fs::write(&script, BUNDLED_WEB_FETCH_SCRIPT)?;
+            std::fs::write(&formatter, BUNDLED_WEB_FETCH_FORMATTER)?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -222,7 +204,8 @@ pub fn auto_install_bundled_plugins(
             }
             tracing::info!("Auto-installed bundled web_fetch plugin");
         }
-    }
+        Ok(())
+    })().map_err(|e| tracing::warn!("Failed to install web_fetch plugin: {e}"));
 }
 
 impl PluginManager {
