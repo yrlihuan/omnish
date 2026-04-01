@@ -1,5 +1,8 @@
 {
   "plugin_type": "daemon_tool",
+  "config_params": [
+    { "name": "api_key", "label": "API key" }
+  ],
   "formatter_binary": "web_fetch_formatter",
   "tools": [
     {
