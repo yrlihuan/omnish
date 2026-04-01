@@ -261,9 +261,6 @@ async fn execute_daemon_plugin(
     }
 }
 
-/// Maximum content length (in chars) passed to the summarization LLM to avoid exceeding context windows.
-const SUMMARIZATION_MAX_CONTENT_CHARS: usize = 50_000;
-
 /// Summarize tool result content using the LLM. Returns the summarized text, or None on failure.
 async fn summarize_tool_result(
     backend: &dyn LlmBackend,
@@ -272,9 +269,15 @@ async fn summarize_tool_result(
     prompt_template: &str,
     user_prompt: &str,
 ) -> Option<String> {
-    // Truncate content to avoid exceeding context window
-    let truncated: &str = if content.len() > SUMMARIZATION_MAX_CONTENT_CHARS {
-        &content[..content.floor_char_boundary(SUMMARIZATION_MAX_CONTENT_CHARS)]
+    // Truncate content based on backend's max_content_chars to avoid exceeding context window.
+    // Reserve 20% for the prompt template and response overhead.
+    let truncated: &str = if let Some(max_chars) = backend.max_content_chars() {
+        let limit = max_chars * 4 / 5;
+        if content.len() > limit {
+            &content[..content.floor_char_boundary(limit)]
+        } else {
+            content
+        }
     } else {
         content
     };
