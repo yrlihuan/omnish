@@ -16,6 +16,8 @@ struct PluginResponse {
     content: String,
     #[serde(default)]
     is_error: bool,
+    #[serde(default)]
+    needs_summarization: bool,
 }
 
 impl ClientPluginManager {
@@ -41,7 +43,7 @@ impl ClientPluginManager {
         input: &serde_json::Value,
         cwd: Option<&str>,
         sandboxed: bool,
-    ) -> (String, bool) {
+    ) -> (String, bool, bool) {
         let executable = if plugin_name == "builtin" {
             self.plugin_bin.clone()
         } else {
@@ -115,7 +117,7 @@ impl ClientPluginManager {
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
-            Err(e) => return (format!("Failed to spawn plugin '{}': {}", plugin_name, e), true),
+            Err(e) => return (format!("Failed to spawn plugin '{}': {}", plugin_name, e), true, false),
         };
 
         // Write request to stdin
@@ -129,15 +131,15 @@ impl ClientPluginManager {
             let mut reader = BufReader::new(stdout);
             let mut line = String::new();
             match reader.read_line(&mut line) {
-                Ok(0) => ("Plugin produced no output".to_string(), true),
+                Ok(0) => ("Plugin produced no output".to_string(), true, false),
                 Ok(_) => match serde_json::from_str::<PluginResponse>(&line) {
-                    Ok(resp) => (resp.content, resp.is_error),
-                    Err(e) => (format!("Invalid plugin response: {e}"), true),
+                    Ok(resp) => (resp.content, resp.is_error, resp.needs_summarization),
+                    Err(e) => (format!("Invalid plugin response: {e}"), true, false),
                 },
-                Err(e) => (format!("Failed to read plugin output: {e}"), true),
+                Err(e) => (format!("Failed to read plugin output: {e}"), true, false),
             }
         } else {
-            ("No stdout from plugin".to_string(), true)
+            ("No stdout from plugin".to_string(), true, false)
         };
 
         let _ = child.wait();

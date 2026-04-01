@@ -160,13 +160,14 @@ fn merge_tool_params(target: &mut serde_json::Value, params: &HashMap<String, se
 
 /// Execute a daemon-side external plugin by spawning a subprocess.
 /// Uses the same stdin/stdout JSON protocol as client-side plugins.
+/// Execute a daemon-side plugin. Returns (ToolResult, needs_summarization).
 async fn execute_daemon_plugin(
     executable: &std::path::Path,
     tool_name: &str,
     input: &serde_json::Value,
     proxy: Option<&str>,
     no_proxy: Option<&str>,
-) -> omnish_llm::tool::ToolResult {
+) -> (omnish_llm::tool::ToolResult, bool) {
     use tokio::process::Command;
     use tokio::io::AsyncWriteExt;
 
@@ -193,11 +194,11 @@ async fn execute_daemon_plugin(
     {
         Ok(c) => c,
         Err(e) => {
-            return omnish_llm::tool::ToolResult {
+            return (omnish_llm::tool::ToolResult {
                 tool_use_id: String::new(),
                 content: format!("Failed to spawn plugin '{}': {}", executable.display(), e),
                 is_error: true,
-            };
+            }, false);
         }
     };
 
@@ -215,11 +216,11 @@ async fn execute_daemon_plugin(
         Ok(Ok(output)) => {
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                return omnish_llm::tool::ToolResult {
+                return (omnish_llm::tool::ToolResult {
                     tool_use_id: String::new(),
                     content: format!("Plugin exited with {}: {}", output.status, stderr.trim()),
                     is_error: true,
-                };
+                }, false);
             }
             let stdout = String::from_utf8_lossy(&output.stdout);
             #[derive(serde::Deserialize)]
@@ -227,33 +228,35 @@ async fn execute_daemon_plugin(
                 content: String,
                 #[serde(default)]
                 is_error: bool,
+                #[serde(default)]
+                needs_summarization: bool,
             }
             match serde_json::from_str::<PluginResponse>(stdout.trim()) {
-                Ok(resp) => omnish_llm::tool::ToolResult {
+                Ok(resp) => (omnish_llm::tool::ToolResult {
                     tool_use_id: String::new(),
                     content: resp.content,
                     is_error: resp.is_error,
-                },
-                Err(e) => omnish_llm::tool::ToolResult {
+                }, resp.needs_summarization),
+                Err(e) => (omnish_llm::tool::ToolResult {
                     tool_use_id: String::new(),
                     content: format!("Invalid plugin response: {e}"),
                     is_error: true,
-                },
+                }, false),
             }
         }
-        Ok(Err(e)) => omnish_llm::tool::ToolResult {
+        Ok(Err(e)) => (omnish_llm::tool::ToolResult {
             tool_use_id: String::new(),
             content: format!("Plugin I/O error: {e}"),
             is_error: true,
-        },
+        }, false),
         Err(_) => {
             // Timeout: the future was dropped, which drops the Child,
             // killing the process. Return error.
-            omnish_llm::tool::ToolResult {
+            (omnish_llm::tool::ToolResult {
                 tool_use_id: String::new(),
                 content: "Plugin timed out (600s)".to_string(),
                 is_error: true,
-            }
+            }, false)
         }
     }
 }
@@ -1145,9 +1148,49 @@ async fn handle_tool_result(
 
     // Add the received client-side tool result
     let tool_call_id = tr.tool_call_id.clone();
+    let mut content = tr.content;
+
+    // LLM summarization for client-side tool results
+    if tr.needs_summarization && !tr.is_error {
+        if let Some(tc) = state.pending_tool_calls.iter().find(|tc| tc.id == tool_call_id) {
+            if let Some(prompt_template) = tool_registry.summarization_prompt(&tc.name) {
+                let user_prompt = tc.input.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+                let summarization_query = prompt_template
+                    .replace("{content}", &content)
+                    .replace("{prompt}", user_prompt);
+                let summary_req = omnish_llm::backend::LlmRequest {
+                    context: String::new(),
+                    query: Some(summarization_query),
+                    trigger: omnish_llm::backend::TriggerType::Manual,
+                    session_ids: vec![],
+                    use_case: omnish_llm::backend::UseCase::Summarize,
+                    max_content_chars: None,
+                    conversation: vec![],
+                    system_prompt: None,
+                    enable_thinking: Some(false),
+                    tools: vec![],
+                    extra_messages: vec![],
+                };
+                match state.effective_backend.complete(&summary_req).await {
+                    Ok(resp) => {
+                        let text: String = resp.content.iter().filter_map(|b| {
+                            if let omnish_llm::backend::ContentBlock::Text(t) = b { Some(t.as_str()) } else { None }
+                        }).collect::<Vec<_>>().join("");
+                        if !text.is_empty() {
+                            content = text;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Summarization failed for {}: {e}, using raw content", tc.name);
+                    }
+                }
+            }
+        }
+    }
+
     state.completed_results.push(omnish_llm::tool::ToolResult {
         tool_use_id: tr.tool_call_id.clone(),
-        content: tr.content,
+        content,
         is_error: tr.is_error,
     });
 
@@ -1450,26 +1493,62 @@ async fn run_agent_loop(
                                 merge_tool_params(&mut merged_input, config_params);
                             }
 
-                            let mut result = if tool_registry.plugin_type(&tc.name).is_some() {
+                            let (mut result, needs_summarization) = if tool_registry.plugin_type(&tc.name).is_some() {
                                 if let Some(exe) = plugin_mgr.plugin_executable(&tc.name) {
                                     execute_daemon_plugin(&exe, &tc.name, &merged_input, opts.proxy.as_deref(), opts.no_proxy.as_deref()).await
                                 } else {
-                                    omnish_llm::tool::ToolResult {
+                                    (omnish_llm::tool::ToolResult {
                                         tool_use_id: String::new(),
                                         content: format!("Unknown daemon tool: {}", tc.name),
                                         is_error: true,
-                                    }
+                                    }, false)
                                 }
                             } else if tool_registry.is_known(&tc.name) {
-                                state.command_query_tool.execute(&tc.name, &merged_input)
+                                (state.command_query_tool.execute(&tc.name, &merged_input), false)
                             } else {
-                                omnish_llm::tool::ToolResult {
+                                (omnish_llm::tool::ToolResult {
                                     tool_use_id: String::new(),
                                     content: format!("Unknown tool: {}", tc.name),
                                     is_error: true,
-                                }
+                                }, false)
                             };
                             result.tool_use_id = tc.id.clone();
+
+                            // LLM summarization: if the tool requested it and has a prompt template
+                            if needs_summarization && !result.is_error {
+                                if let Some(prompt_template) = tool_registry.summarization_prompt(&tc.name) {
+                                    let user_prompt = tc.input.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+                                    let summarization_query = prompt_template
+                                        .replace("{content}", &result.content)
+                                        .replace("{prompt}", user_prompt);
+                                    let summary_req = omnish_llm::backend::LlmRequest {
+                                        context: String::new(),
+                                        query: Some(summarization_query),
+                                        trigger: omnish_llm::backend::TriggerType::Manual,
+                                        session_ids: vec![],
+                                        use_case: omnish_llm::backend::UseCase::Summarize,
+                                        max_content_chars: None,
+                                        conversation: vec![],
+                                        system_prompt: None,
+                                        enable_thinking: Some(false),
+                                        tools: vec![],
+                                        extra_messages: vec![],
+                                    };
+                                    match state.effective_backend.complete(&summary_req).await {
+                                        Ok(resp) => {
+                                            let text: String = resp.content.iter().filter_map(|b| {
+                                                if let omnish_llm::backend::ContentBlock::Text(t) = b { Some(t.as_str()) } else { None }
+                                            }).collect::<Vec<_>>().join("");
+                                            if !text.is_empty() {
+                                                result.content = text;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("Summarization failed for {}: {e}, using raw content", tc.name);
+                                        }
+                                    }
+                                }
+                            }
 
                             // Post-execution: send update ChatToolStatus with formatted results immediately
                             let post_display = tool_registry.display_name(&tc.name).to_string();

@@ -819,8 +819,8 @@ impl ChatSession {
                                             Some(Ok((idx, result))) => {
                                                 completed += 1;
                                                 let tc = &tool_calls[idx];
-                                                let (content, is_error) = result
-                                                    .unwrap_or_else(|_| ("Tool execution panicked".to_string(), true));
+                                                let (content, is_error, needs_summarization) = result
+                                                    .unwrap_or_else(|_| ("Tool execution panicked".to_string(), true, false));
 
                                                 let result_msg =
                                                     Message::ChatToolResult(ChatToolResult {
@@ -829,6 +829,7 @@ impl ChatSession {
                                                         tool_call_id: tc.tool_call_id.clone(),
                                                         content,
                                                         is_error,
+                                                        needs_summarization,
                                                     });
 
                                                 if completed < total {

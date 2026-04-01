@@ -216,6 +216,7 @@ impl MultiBackend {
             UseCase::Completion => "completion",
             UseCase::Analysis => "analysis",
             UseCase::Chat => "chat",
+            UseCase::Summarize => "summarize",
         };
 
         self.use_case_backends
@@ -231,6 +232,7 @@ impl MultiBackend {
             UseCase::Completion => "completion",
             UseCase::Analysis => "analysis",
             UseCase::Chat => "chat",
+            UseCase::Summarize => "summarize",
         };
 
         self.use_case_max_chars

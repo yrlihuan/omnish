@@ -16,6 +16,9 @@ pub struct ToolMeta {
     pub custom_status: Option<CustomStatusFn>,
     pub plugin_type: Option<PluginType>,
     pub plugin_name: Option<String>,
+    /// LLM summarization prompt template. When a tool result has `needs_summarization`,
+    /// this template is used to call the LLM for post-processing.
+    pub summarization_prompt: Option<String>,
 }
 
 /// Unified registry for tool metadata, definitions, and runtime overrides.
@@ -106,6 +109,13 @@ impl ToolRegistry {
             .and_then(|m| m.plugin_name.as_deref())
     }
 
+    /// Return the summarization prompt template for a tool, if configured.
+    pub fn summarization_prompt(&self, tool_name: &str) -> Option<&str> {
+        self.tools
+            .get(tool_name)
+            .and_then(|m| m.summarization_prompt.as_deref())
+    }
+
     /// Check whether a tool is registered.
     pub fn is_known(&self, tool_name: &str) -> bool {
         self.tools.contains_key(tool_name)
@@ -179,6 +189,7 @@ mod tests {
             custom_status: None,
             plugin_type: None,
             plugin_name: None,
+            summarization_prompt: None,
         }
     }
 

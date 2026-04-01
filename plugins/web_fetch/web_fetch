@@ -48,5 +48,14 @@ OUTPUT="$OUTPUT
 
 $CONTENT"
 
+# Check if content is large enough to need summarization
+CHAR_COUNT=${#OUTPUT}
+if [ "$CHAR_COUNT" -gt 5000 ]; then
+  NEEDS_SUMMARIZATION=true
+else
+  NEEDS_SUMMARIZATION=false
+fi
+
 # Output JSON response
-jq -n --arg content "$OUTPUT" '{"content": $content, "is_error": false}'
+jq -n --arg content "$OUTPUT" --argjson needs "$NEEDS_SUMMARIZATION" \
+  '{"content": $content, "is_error": false, "needs_summarization": $needs}'

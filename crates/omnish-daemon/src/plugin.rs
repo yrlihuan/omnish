@@ -21,6 +21,7 @@ struct ToolEntry {
     status_template: String,
     display_name: String,
     formatter: String,
+    summarization_prompt: Option<String>,
 }
 
 /// A plugin loaded from a tool.json file.
@@ -238,6 +239,7 @@ impl PluginManager {
                         status_template: te.status_template,
                         display_name,
                         formatter,
+                        summarization_prompt: te.summarization_prompt,
                     });
                 }
                 tracing::info!("Loaded builtin plugin with {} tools", tools.len());
@@ -311,6 +313,7 @@ impl PluginManager {
                     status_template: te.status_template,
                     display_name,
                     formatter,
+                    summarization_prompt: te.summarization_prompt,
                 });
             }
 
@@ -437,6 +440,7 @@ impl PluginManager {
                     custom_status: None,
                     plugin_type: Some(plugin.plugin_type),
                     plugin_name: Some(plugin.dir_name.clone()),
+                    summarization_prompt: te.summarization_prompt.clone(),
                 });
                 registry.register_def(te.def.clone());
             }

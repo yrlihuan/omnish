@@ -366,6 +366,9 @@ pub struct ChatToolResult {
     pub tool_call_id: String,
     pub content: String,
     pub is_error: bool,
+    /// Tool requests LLM summarization of its result.
+    #[serde(default)]
+    pub needs_summarization: bool,
 }
 
 impl Message {
@@ -757,6 +760,7 @@ mod tests {
                 tool_call_id: String::new(),
                 content: String::new(),
                 is_error: false,
+                needs_summarization: false,
             }),
             Message::Ack,
             Message::Auth(Auth {

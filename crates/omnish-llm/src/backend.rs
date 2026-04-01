@@ -21,6 +21,8 @@ pub enum UseCase {
     Analysis,
     /// Chat mode - conversational interaction
     Chat,
+    /// Summarize tool results before feeding back to the conversation
+    Summarize,
 }
 
 /// A block of content in an LLM response.
