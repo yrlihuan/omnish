@@ -1,0 +1,43 @@
+{
+  "plugin_type": "daemon_tool",
+  "formatter_binary": "web_fetch_formatter",
+  "tools": [
+    {
+      "name": "web_fetch",
+      "description": [
+        "Fetch a web page and return its content as markdown.",
+        "",
+        "IMPORTANT: WebFetch WILL FAIL for authenticated or private URLs. Before using this tool, check if the URL points to an authenticated service (e.g. Google Docs, Confluence, Jira, GitHub). If so, you MUST use other specialized tools that provide authenticated access.",
+        "",
+        "- Fetches content from a specified URL and converts HTML to markdown",
+        "- Returns the page title, URL, and full markdown content",
+        "- Use this tool when you need to retrieve and analyze web content",
+        "",
+        "Usage notes:",
+        "- The URL must be a fully-formed valid URL",
+        "- HTTP URLs will be automatically upgraded to HTTPS",
+        "- This tool is read-only and does not modify any files",
+        "- Results may be large for content-heavy pages",
+        "- For GitHub URLs, prefer using the gh/glab CLI via Bash instead"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The URL to fetch"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "What information to extract or focus on from the page (used for summarization when available)"
+          }
+        },
+        "required": ["url"]
+      },
+      "summarization_prompt": "You are a web content summarizer. Given the following web page content, answer the user's question or extract the requested information concisely.\n\nUser's request: {prompt}\n\nWeb page content:\n{content}\n\nProvide a focused, concise response based on the web page content. If the user did not specify a request, provide a brief summary of the page's main points.",
+      "status_template": "获取: {url}",
+      "display_name": "Web Fetch",
+      "formatter": "web_fetch"
+    }
+  ]
+}

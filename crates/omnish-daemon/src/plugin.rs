@@ -75,6 +75,10 @@ struct ToolJsonEntry {
     display_name: Option<String>,
     #[serde(default)]
     formatter: Option<String>,
+    /// LLM summarization prompt template for post-processing tool results (reserved for future use).
+    #[serde(default)]
+    #[allow(dead_code)]
+    summarization_prompt: Option<String>,
 }
 
 /// Description can be a plain string or an array of lines for readability.
@@ -122,6 +126,11 @@ const BUILTIN_TOOL_JSON: &str = include_str!("../../omnish-plugin/assets/tool.js
 const BUNDLED_WEB_SEARCH_TOOL_JSON: &str = include_str!("../../../plugins/web_search/tool.json");
 const BUNDLED_WEB_SEARCH_SCRIPT: &str = include_str!("../../../plugins/web_search/web_search");
 
+/// Bundled plugin: web_fetch
+const BUNDLED_WEB_FETCH_TOOL_JSON: &str = include_str!("../../../plugins/web_fetch/tool.json");
+const BUNDLED_WEB_FETCH_SCRIPT: &str = include_str!("../../../plugins/web_fetch/web_fetch");
+const BUNDLED_WEB_FETCH_FORMATTER: &str = include_str!("../../../plugins/web_fetch/web_fetch_formatter");
+
 /// Auto-install bundled plugins when their tool config is present in daemon.toml.
 /// For example, if `[tools.web_search]` contains `api_key`, install the web_search
 /// plugin to `~/.omnish/plugins/web_search/` so it's available without manual setup.
@@ -155,6 +164,39 @@ pub fn auto_install_bundled_plugins(
                 }
                 tracing::info!("Auto-installed bundled web_search plugin");
             }
+        }
+    }
+
+    // web_fetch: always install (no API key required)
+    {
+        let plugin_dir = plugins_dir.join("web_fetch");
+        let tool_json = plugin_dir.join("tool.json");
+        let script = plugin_dir.join("web_fetch");
+        let formatter = plugin_dir.join("web_fetch_formatter");
+        if !tool_json.exists() {
+            if let Err(e) = std::fs::create_dir_all(&plugin_dir) {
+                tracing::warn!("Failed to create web_fetch plugin dir: {}", e);
+                return;
+            }
+            if let Err(e) = std::fs::write(&tool_json, BUNDLED_WEB_FETCH_TOOL_JSON) {
+                tracing::warn!("Failed to write web_fetch tool.json: {}", e);
+                return;
+            }
+            if let Err(e) = std::fs::write(&script, BUNDLED_WEB_FETCH_SCRIPT) {
+                tracing::warn!("Failed to write web_fetch script: {}", e);
+                return;
+            }
+            if let Err(e) = std::fs::write(&formatter, BUNDLED_WEB_FETCH_FORMATTER) {
+                tracing::warn!("Failed to write web_fetch_formatter: {}", e);
+                return;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
+                let _ = std::fs::set_permissions(&formatter, std::fs::Permissions::from_mode(0o755));
+            }
+            tracing::info!("Auto-installed bundled web_fetch plugin");
         }
     }
 }

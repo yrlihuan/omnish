@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Read JSON request from stdin
+INPUT=$(cat)
+URL=$(echo "$INPUT" | jq -r '.input.url // empty')
+API_KEY=$(echo "$INPUT" | jq -r '.input.api_key // empty')
+
+# Validate required params
+if [ -z "$URL" ]; then
+  jq -n '{"content":"Error: url parameter is required","is_error":true}'
+  exit 0
+fi
+
+# Build curl headers
+HEADERS=(-H "Accept: application/json")
+if [ -n "$API_KEY" ]; then
+  HEADERS+=(-H "Authorization: Bearer $API_KEY")
+fi
+
+# Fetch via jina.ai reader
+RESPONSE=$(curl -sS -w "\n%{http_code}" \
+  "${HEADERS[@]}" \
+  --max-time 30 \
+  "https://r.jina.ai/$URL")
+
+HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+BODY=$(echo "$RESPONSE" | sed '$d')
+
+if [ "$HTTP_CODE" != "200" ]; then
+  ERROR_MSG=$(echo "$BODY" | jq -r '.data // .message // .error // "Unknown error"' 2>/dev/null || echo "HTTP $HTTP_CODE")
+  jq -n --arg msg "Fetch failed (HTTP $HTTP_CODE): $ERROR_MSG" '{"content": $msg, "is_error": true}'
+  exit 0
+fi
+
+# Extract fields from jina.ai response
+TITLE=$(echo "$BODY" | jq -r '.data.title // "Untitled"')
+PAGE_URL=$(echo "$BODY" | jq -r '.data.url // empty')
+CONTENT=$(echo "$BODY" | jq -r '.data.content // ""')
+
+# Build output
+OUTPUT="# $TITLE"
+if [ -n "$PAGE_URL" ]; then
+  OUTPUT="$OUTPUT
+URL: $PAGE_URL"
+fi
+OUTPUT="$OUTPUT
+
+$CONTENT"
+
+# Output JSON response
+jq -n --arg content "$OUTPUT" '{"content": $content, "is_error": false}'
