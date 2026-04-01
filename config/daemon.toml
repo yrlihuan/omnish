@@ -83,7 +83,7 @@ enabled = true
 # schedule = "0 0 4 * * *"
 # check_url = "https://api.github.com/repos/yrlihuan/omnish/releases/latest"
 
-# Per-tool parameter injection (values merged into tool call inputs)
-# [tools.web_search]
+# Per-plugin configuration (values merged into tool call inputs)
+# [plugins.web_search]
 # api_key = "BSAxxxxxxxx"
 # base_url = "https://api.search.brave.com/res/v1/web/search"

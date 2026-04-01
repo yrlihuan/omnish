@@ -1,5 +1,9 @@
 {
   "plugin_type": "daemon_tool",
+  "config_params": [
+    { "name": "api_key", "label": "API key" },
+    { "name": "base_url", "label": "Base URL" }
+  ],
   "formatter_binary": "web_search_formatter",
   "tools": [
     {
