@@ -50,8 +50,12 @@ impl FileWatcher {
         #[cfg(target_os = "linux")]
         {
             use nix::sys::inotify::AddWatchFlags;
-            let flags = AddWatchFlags::IN_CREATE
-                | AddWatchFlags::IN_CLOSE_WRITE
+            // IN_CLOSE_WRITE: in-place writes (nano, gedit, etc.)
+            // IN_MOVED_TO: atomic writes via rename (vim, sed -i)
+            // Intentionally omit IN_CREATE: it fires when the file is
+            // created but still empty (e.g. vim delete-then-recreate),
+            // causing a spurious reload with an empty config.
+            let flags = AddWatchFlags::IN_CLOSE_WRITE
                 | AddWatchFlags::IN_MOVED_TO;
             // For files, watch parent directory (survives editor rename patterns).
             // For directories, watch the directory itself.
