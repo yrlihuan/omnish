@@ -47,21 +47,21 @@ warn()  { printf '\033[1;33mWARN:\033[0m %s\n' "$*"; }
 error() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 ask()   { printf '\033[1;32m?\033[0m %s ' "$1" >&2; read -r REPLY </dev/tty; }
 
-# Write or replace a [tools.<name>] section in a TOML file
+# Write or replace a [plugins.<name>] section in a TOML file
 patch_toml_section() {
     local toml_file="$1"
     local plugin_name="$2"
     local -n values=$3
-    local section_header="[tools.$plugin_name]"
+    local section_header="[plugins.$plugin_name]"
 
     # Remove existing section if present (from header to next [section] or EOF)
-    if grep -q "^\[tools\.$plugin_name\]" "$toml_file"; then
-        sed -i "/^\[tools\.$plugin_name\]/,/^\[/{/^\[tools\.$plugin_name\]/d;/^\[/!d}" "$toml_file"
+    if grep -q "^\[plugins\.$plugin_name\]" "$toml_file"; then
+        sed -i "/^\[plugins\.$plugin_name\]/,/^\[/{/^\[plugins\.$plugin_name\]/d;/^\[/!d}" "$toml_file"
     fi
 
     # Also remove commented-out section and its commented keys (including blank lines)
-    if grep -q "^# *\[tools\.$plugin_name\]" "$toml_file"; then
-        sed -i "/^# *\[tools\.$plugin_name\]/,/^[^#$]/{/^# *\[tools\.$plugin_name\]/d;/^# /d}" "$toml_file"
+    if grep -q "^# *\[plugins\.$plugin_name\]" "$toml_file"; then
+        sed -i "/^# *\[plugins\.$plugin_name\]/,/^[^#$]/{/^# *\[plugins\.$plugin_name\]/d;/^# /d}" "$toml_file"
     fi
 
     # Append new section
@@ -77,41 +77,6 @@ patch_toml_section() {
             fi
         done
     } >> "$toml_file"
-}
-
-# Add a plugin name to [plugins] enabled array in a TOML file
-patch_plugins_enabled() {
-    local toml_file="$1"
-    local plugin_name="$2"
-
-    if ! grep -q '^\[plugins\]' "$toml_file"; then
-        # No [plugins] section — check for commented one
-        if grep -q '^# *\[plugins\]' "$toml_file"; then
-            # Uncomment and set
-            sed -i 's/^# *\[plugins\]/[plugins]/' "$toml_file"
-            sed -i '/^\[plugins\]/,/^\[/{s/^# *enabled = \[.*\]/enabled = ["'"$plugin_name"'"]/}' "$toml_file"
-        else
-            # Append new section
-            printf '\n[plugins]\nenabled = ["%s"]\n' "$plugin_name" >> "$toml_file"
-        fi
-    else
-        # [plugins] section exists — grep for enabled= scoped to [plugins] section only
-        local current
-        current=$(sed -n '/^\[plugins\]/,/^\[/{/^enabled/p}' "$toml_file" | head -1)
-        if [[ -z "$current" ]]; then
-            # enabled key missing, add after [plugins]
-            sed -i '/^\[plugins\]/a enabled = ["'"$plugin_name"'"]' "$toml_file"
-        elif echo "$current" | grep -q "\"$plugin_name\""; then
-            # Already in the list
-            :
-        elif echo "$current" | grep -q '\[\]'; then
-            # Empty array: enabled = [] -> enabled = ["web_search"]
-            sed -i '/^\[plugins\]/,/^\[/{s/^enabled = \[\]/enabled = ["'"$plugin_name"'"]/}' "$toml_file"
-        else
-            # Append to existing array: enabled = ["a"] -> enabled = ["a", "web_search"]
-            sed -i '/^\[plugins\]/,/^\[/{s/^\(enabled = \[.*\)\]/\1, "'"$plugin_name"'"]/}' "$toml_file"
-        fi
-    fi
 }
 
 # Run interactive setup for a plugin using its setup.json manifest
@@ -160,18 +125,15 @@ setup_plugin() {
         fi
     done
 
-    # Write [tools.<plugin_name>] section to daemon.toml
+    # Write [plugins.<plugin_name>] section to daemon.toml
     patch_toml_section "$daemon_toml" "$plugin_name" PARAM_VALUES
-
-    # Add to [plugins] enabled
-    patch_plugins_enabled "$daemon_toml" "$plugin_name"
 
     # Show confirmation
     for key in "${!PARAM_VALUES[@]}"; do
         info "  $key = ${PARAM_VALUES[$key]}"
     done
 
-    info "Plugin $plugin_name configured and enabled"
+    info "Plugin $plugin_name configured"
 }
 
 # ── Version normalization ────────────────────────────────────────────────────
@@ -799,9 +761,6 @@ DAEMON_EOF
 enabled = ${AUTO_UPDATE_ENABLED}
 # schedule = "0 0 4 * * *"
 ${CHECK_URL_LINE}
-
-# [plugins]
-# enabled = []
 DAEMON_EOF
     } > "$TMPDIR/daemon.toml"
 
@@ -822,7 +781,7 @@ if [[ "$DRY_RUN" != true ]] && [[ -f "$DAEMON_TOML" ]]; then
         plugin_name=$(basename "$plugin_dir")
         [[ "$plugin_name" == "builtin" ]] && continue
         # Skip if already configured
-        if grep -q "^\[tools\.$plugin_name\]" "$DAEMON_TOML" 2>/dev/null; then
+        if grep -q "^\[plugins\.$plugin_name\]" "$DAEMON_TOML" 2>/dev/null; then
             continue
         fi
         setup_plugin "$plugin_name" || true
