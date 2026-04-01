@@ -63,7 +63,10 @@ fn resolve_options(doc: &toml::Value, table_path: &str) -> Vec<String> {
 }
 
 /// Build ConfigItem list + handler info from live config using the embedded schema.
-pub fn build_config_items(config: &DaemonConfig) -> (Vec<ConfigItem>, Vec<ConfigHandlerInfo>) {
+pub fn build_config_items(
+    config: &DaemonConfig,
+    plugin_metas: &[crate::plugin::PluginConfigMeta],
+) -> (Vec<ConfigItem>, Vec<ConfigHandlerInfo>) {
     let schema = parse_schema();
     let config_value = toml::Value::try_from(config)
         .expect("DaemonConfig must be Serializable");
@@ -250,6 +253,38 @@ pub fn build_config_items(config: &DaemonConfig) -> (Vec<ConfigItem>, Vec<Config
         });
     }
 
+    // ── Plugin items ──────────────────────────────────────────
+    for meta in plugin_metas {
+        let plugin_cfg = config.plugins.get(&meta.name);
+
+        // Enabled toggle (default: true)
+        let enabled = plugin_cfg
+            .and_then(|cfg| cfg.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        items.push(ConfigItem {
+            path: format!("plugins.{}.enabled", meta.name),
+            label: "Enabled".to_string(),
+            kind: ConfigItemKind::Toggle { value: enabled },
+            prefills: Vec::new(),
+        });
+
+        // Config params declared in tool.json
+        for param in &meta.config_params {
+            let value = plugin_cfg
+                .and_then(|cfg| cfg.get(&param.name))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            items.push(ConfigItem {
+                path: format!("plugins.{}.{}", meta.name, param.name),
+                label: param.label.clone(),
+                kind: ConfigItemKind::TextInput { value },
+                prefills: Vec::new(),
+            });
+        }
+    }
+
     (items, handlers)
 }
 
@@ -283,8 +318,9 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
         let item = find_schema_item(&schema, &change.path);
         let toml_key = item.and_then(|s| s.toml_key.as_deref()).unwrap_or(&change.path);
         let kind = item.map(|s| s.kind.as_str()).unwrap_or_else(|| {
-            // Infer kind for dynamic backend items (e.g. llm.backends.<name>.use_proxy)
-            if change.path.ends_with(".use_proxy") { "toggle" } else { "text" }
+            if change.path.ends_with(".use_proxy") { "toggle" }
+            else if change.path.starts_with("plugins.") && change.path.ends_with(".enabled") { "toggle" }
+            else { "text" }
         });
 
         match kind {
@@ -421,7 +457,7 @@ mod tests {
     #[test]
     fn test_build_config_items_includes_leaf_items() {
         let config = DaemonConfig::default();
-        let (items, _handlers) = build_config_items(&config);
+        let (items, _handlers) = build_config_items(&config, &[]);
         assert!(items.iter().any(|i| i.path == "proxy.http_proxy"));
         assert!(items.iter().any(|i| i.path == "llm.use_cases.completion"));
         assert!(items.iter().any(|i| i.path == "llm.backends.__new__.name"));
@@ -430,7 +466,7 @@ mod tests {
     #[test]
     fn test_build_config_items_returns_handlers() {
         let config = DaemonConfig::default();
-        let (_items, handlers) = build_config_items(&config);
+        let (_items, handlers) = build_config_items(&config, &[]);
         assert_eq!(handlers.len(), 1);
         assert_eq!(handlers[0].path, "llm.backends.__new__");
         assert_eq!(handlers[0].handler, "add_backend");
@@ -449,7 +485,7 @@ mod tests {
             context_window: None,
             max_content_chars: None,
         });
-        let (items, _handlers) = build_config_items(&config);
+        let (items, _handlers) = build_config_items(&config, &[]);
         assert!(items.iter().any(|i| i.path == "llm.backends.claude.backend_type"));
         assert!(items.iter().any(|i| i.path == "llm.backends.claude.model"));
         assert!(items.iter().any(|i| i.path == "llm.backends.claude.api_key_cmd"));
