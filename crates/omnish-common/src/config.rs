@@ -154,18 +154,10 @@ pub fn load_client_config() -> Result<ClientConfig> {
 // Daily notes config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct DailyNotesConfig {
     #[serde(default)]
     pub enabled: bool,
-}
-
-impl Default for DailyNotesConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-        }
-    }
 }
 
 fn default_disk_cleanup_schedule() -> String {
