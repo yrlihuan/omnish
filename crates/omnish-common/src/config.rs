@@ -247,18 +247,6 @@ pub struct TasksConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Plugins config
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct PluginsConfig {
-    /// List of enabled plugin names. Each corresponds to a directory
-    /// under ~/.omnish/plugins/{name}/ containing a {name} executable.
-    #[serde(default)]
-    pub enabled: Vec<String>,
-}
-
-// ---------------------------------------------------------------------------
 // Sandbox config
 // ---------------------------------------------------------------------------
 
@@ -300,13 +288,12 @@ pub struct DaemonConfig {
     pub context: ContextConfig,
     #[serde(default)]
     pub tasks: TasksConfig,
+    /// Per-plugin configuration.
+    /// [plugins.web_search]
+    /// enabled = false
+    /// api_key = "..."
     #[serde(default)]
-    pub plugins: PluginsConfig,
-    /// Per-tool parameter overrides.
-    /// Example: [tools.web_search] api_key = "..."
-    #[serde(default)]
-    #[serde(skip_serializing)]
-    pub tools: HashMap<String, HashMap<String, serde_json::Value>>,
+    pub plugins: HashMap<String, HashMap<String, serde_json::Value>>,
     #[serde(default)]
     pub sandbox: SandboxConfig,
 }
@@ -320,8 +307,7 @@ impl Default for DaemonConfig {
             llm: LlmConfig::default(),
             context: ContextConfig::default(),
             tasks: TasksConfig::default(),
-            plugins: PluginsConfig::default(),
-            tools: HashMap::new(),
+            plugins: HashMap::new(),
             sandbox: SandboxConfig::default(),
         }
     }
