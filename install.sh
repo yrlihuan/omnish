@@ -674,12 +674,14 @@ else
         USE_CASES="[llm.use_cases]
 chat = \"${CHAT_NAME}\"
 analysis = \"${CHAT_NAME}\"
-completion = \"${COMPLETION_NAME}\""
+completion = \"${COMPLETION_NAME}\"
+summarize = \"${CHAT_NAME}\""
     else
         USE_CASES="[llm.use_cases]
 chat = \"${CHAT_NAME}\"
 analysis = \"${CHAT_NAME}\"
-completion = \"${CHAT_NAME}\""
+completion = \"${CHAT_NAME}\"
+summarize = \"${CHAT_NAME}\""
     fi
 
     # Listen address
