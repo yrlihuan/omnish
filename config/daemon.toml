@@ -72,7 +72,7 @@ api_key_cmd = "pass show anthropic/api-key"
 # session_evict_hours = 48 # evict inactive sessions from memory after N hours
 
 [tasks.periodic_summary]
-# interval_hours = 4       # 每隔几小时生成一次工作摘要 (默认 4)
+# schedule: 0 0 */4 * * * (每4小时: 0/4/8/12/16/20点)
 
 [tasks.daily_notes]
 enabled = true

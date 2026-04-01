@@ -176,7 +176,7 @@ async fn async_main() -> Result<i32> {
             llm_backend.clone(),
             notes_dir,
         )?;
-        task_mgr.register("periodic_summary", "0 0 * * * *", job).await?;
+        task_mgr.register("periodic_summary", "0 0 */4 * * *", job).await?;
     }
 
     // Register disk cleanup job

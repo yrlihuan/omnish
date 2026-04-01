@@ -15,7 +15,7 @@ pub fn create_hourly_summary_job(
     llm_holder: SharedLlmBackend,
     summaries_dir: PathBuf,
 ) -> anyhow::Result<Job> {
-    Ok(Job::new_async("0 0 * * * *", move |_uuid, _lock| {
+    Ok(Job::new_async("0 0 */4 * * *", move |_uuid, _lock| {
         let mgr = mgr.clone();
         let conv_mgr = conv_mgr.clone();
         let llm = llm_holder.read().unwrap().get_backend(UseCase::Analysis);
@@ -77,24 +77,24 @@ async fn generate_hourly_summary(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
-    let since_ms = now_ms.saturating_sub(3600 * 1000);
+    let since_ms = now_ms.saturating_sub(4 * 3600 * 1000);
 
     let commands = mgr.collect_recent_commands(since_ms).await;
     let window_ago = SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(3600))
+        .checked_sub(std::time::Duration::from_secs(4 * 3600))
         .unwrap_or(UNIX_EPOCH);
     let conversations_md = conv_mgr.collect_recent_conversations_md(window_ago);
 
     if commands.is_empty() && conversations_md.is_empty() {
-        tracing::info!("hourly summary: no commands or conversations in the last hour, skipping");
+        tracing::info!("hourly summary: no commands or conversations in the last 4 hours, skipping");
         return Ok(());
     }
 
     let (context, table_md) = build_hourly_context(&commands, &conversations_md);
 
-    let prompt = "以下<commands>中是从多台终端收集的过去1小时的命令及其简要输出（如有），\
+    let prompt = "以下<commands>中是从多台终端收集的过去4小时的命令及其简要输出（如有），\
          <conversations>中是与AI助手的对话记录（如有）。\
-         请用中文以项目符号列表形式列出这1小时的工作内容，每个条目包含一项主要活动或成果。适合直接作为工作日志。".to_string();
+         请用中文以项目符号列表形式列出这4小时的工作内容，每个条目包含一项主要活动或成果。适合直接作为工作日志。".to_string();
 
     // Try LLM summary
     let summary = if let Some(backend) = llm_backend {

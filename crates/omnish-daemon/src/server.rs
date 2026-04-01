@@ -2342,14 +2342,14 @@ async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionMan
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
-            let since_ms = now_ms.saturating_sub(3600 * 1000);
+            let since_ms = now_ms.saturating_sub(4 * 3600 * 1000);
             let commands = mgr.collect_recent_commands(since_ms).await;
             let window_ago = std::time::SystemTime::now()
-                .checked_sub(std::time::Duration::from_secs(3600))
+                .checked_sub(std::time::Duration::from_secs(4 * 3600))
                 .unwrap_or(std::time::UNIX_EPOCH);
             let conversations_md = conv_mgr.collect_recent_conversations_md(window_ago);
             if commands.is_empty() && conversations_md.is_empty() {
-                return "No commands or conversations in the past hour".to_string();
+                return "No commands or conversations in the past 4 hours".to_string();
             }
             let (ctx, _table_md) = omnish_daemon::hourly_summary::build_hourly_context(&commands, &conversations_md);
             ctx
