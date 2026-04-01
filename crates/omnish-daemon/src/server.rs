@@ -834,7 +834,8 @@ async fn handle_message(
                 }
                 Err(_) => opts.daemon_config.read().unwrap().clone(),
             };
-            let (items, handlers) = crate::config_schema::build_config_items(&config);
+            let plugin_metas = plugin_mgr.config_meta();
+            let (items, handlers) = crate::config_schema::build_config_items(&config, &plugin_metas);
             let _ = tx.send(Message::ConfigResponse { items, handlers }).await;
         }
         Message::ConfigUpdate { changes } => {

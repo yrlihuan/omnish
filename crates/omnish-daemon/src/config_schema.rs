@@ -65,7 +65,7 @@ fn resolve_options(doc: &toml::Value, table_path: &str) -> Vec<String> {
 /// Build ConfigItem list + handler info from live config using the embedded schema.
 pub fn build_config_items(
     config: &DaemonConfig,
-    plugin_metas: &[crate::plugin::PluginConfigMeta],
+    plugin_metas: &[omnish_daemon::plugin::PluginConfigMeta],
 ) -> (Vec<ConfigItem>, Vec<ConfigHandlerInfo>) {
     let schema = parse_schema();
     let config_value = toml::Value::try_from(config)
