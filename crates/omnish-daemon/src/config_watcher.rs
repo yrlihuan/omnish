@@ -46,10 +46,10 @@ impl ConfigWatcher {
     pub const WATCHED_SECTIONS: &[ConfigSection] = &[
         ConfigSection::Sandbox,
         ConfigSection::Llm,
+        ConfigSection::Plugins,
         // Add sections here as their diff + subscriber is implemented:
         // ConfigSection::Context,
         // ConfigSection::Tasks,
-        // ConfigSection::Plugins,
         // ConfigSection::Tools,
     ];
 
@@ -119,8 +119,8 @@ impl ConfigWatcher {
                 ConfigSection::Llm => current.llm != new_config.llm
                     || current.proxy != new_config.proxy
                     || current.no_proxy != new_config.no_proxy,
+                ConfigSection::Plugins => current.plugins != new_config.plugins,
                 // Future: add diff for other sections here
-                // (requires PartialEq on those config types)
                 _ => false,
             };
             if changed {

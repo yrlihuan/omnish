@@ -352,10 +352,12 @@ async fn async_main() -> Result<i32> {
     {
         let llm_rx = config_watcher.subscribe(config_watcher::ConfigSection::Llm);
         let sandbox_rx = config_watcher.subscribe(config_watcher::ConfigSection::Sandbox);
+        let plugins_rx = config_watcher.subscribe(config_watcher::ConfigSection::Plugins);
         let dca = Arc::clone(&daemon_config_arc);
         tokio::spawn(async move {
             let mut llm = llm_rx;
             let mut sandbox = sandbox_rx;
+            let mut plugins = plugins_rx;
             loop {
                 tokio::select! {
                     Ok(()) = llm.changed() => {
@@ -364,6 +366,10 @@ async fn async_main() -> Result<i32> {
                     }
                     Ok(()) = sandbox.changed() => {
                         let config = sandbox.borrow_and_update().clone();
+                        *dca.write().unwrap() = (*config).clone();
+                    }
+                    Ok(()) = plugins.changed() => {
+                        let config = plugins.borrow_and_update().clone();
                         *dca.write().unwrap() = (*config).clone();
                     }
                     else => break,
