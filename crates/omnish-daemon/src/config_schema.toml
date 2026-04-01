@@ -45,6 +45,13 @@ kind = "select"
 toml_key = "llm.use_cases.chat"
 options_from = "llm.backends"
 
+[[items]]
+path = "llm.use_cases.summarize"
+label = "Summarize backend"
+kind = "select"
+toml_key = "llm.use_cases.summarize"
+options_from = "llm.backends"
+
 # ── Add new LLM backend ───────────────────────────────
 # handler on submenu node: all child changes are grouped
 # and passed to the handler function on ESC back
