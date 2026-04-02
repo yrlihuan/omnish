@@ -1,7 +1,42 @@
 use anyhow::Result;
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 use tokio_cron_scheduler::{Job, JobScheduler};
 use uuid::Uuid;
+
+use crate::conversation_mgr::ConversationManager;
+use crate::session_mgr::SessionManager;
+use crate::update_cache::UpdateCache;
+use omnish_llm::factory::SharedLlmBackend;
+
+/// Shared daemon-level context (non-per-request state).
+pub struct DaemonContext {
+    pub omnish_dir: PathBuf,
+    pub restart_signal: Arc<tokio::sync::Notify>,
+    pub update_cache: Arc<UpdateCache>,
+}
+
+/// Everything a scheduled task needs to build its job closure.
+pub struct TaskContext {
+    pub session_mgr: Arc<SessionManager>,
+    pub conv_mgr: Arc<ConversationManager>,
+    pub llm_backend: SharedLlmBackend,
+    pub daemon: Arc<DaemonContext>,
+    pub daemon_config: Arc<std::sync::RwLock<omnish_common::config::DaemonConfig>>,
+}
+
+/// Trait for self-describing, config-driven scheduled tasks.
+pub trait ScheduledTask: Send + Sync {
+    /// Human-readable task name (used as key in TaskManager).
+    fn name(&self) -> &'static str;
+    /// Cron expression for the schedule.
+    fn schedule(&self) -> &str;
+    /// Whether the task is enabled (from config).
+    fn enabled(&self) -> bool;
+    /// Build the tokio-cron-scheduler Job using the shared context.
+    fn create_job(&self, ctx: &TaskContext) -> Result<Job>;
+}
 
 struct TaskEntry {
     uuid: Uuid,
@@ -70,5 +105,39 @@ impl TaskManager {
             lines.push(format!("  {} [{}] ({})", name, entry.cron, status));
         }
         lines.join("\n")
+    }
+
+    /// Remove all current jobs and re-register from the given task list.
+    /// Disabled tasks (per their own `enabled()`) are skipped.
+    pub async fn reload(
+        &mut self,
+        tasks: &[Box<dyn ScheduledTask>],
+        ctx: &TaskContext,
+    ) -> Result<()> {
+        // Remove all current jobs
+        for (name, entry) in self.tasks.drain() {
+            if entry.enabled {
+                if let Err(e) = self.scheduler.remove(&entry.uuid).await {
+                    tracing::warn!("failed to remove task '{}': {}", name, e);
+                }
+            }
+        }
+        // Re-register enabled tasks
+        for task in tasks {
+            if task.enabled() {
+                match task.create_job(ctx) {
+                    Ok(job) => {
+                        self.register(task.name(), task.schedule(), job).await?;
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to create job for '{}': {}", task.name(), e);
+                    }
+                }
+            } else {
+                tracing::debug!("task '{}' is disabled, skipping", task.name());
+            }
+        }
+        tracing::info!("task reload complete: {} tasks registered", self.tasks.len());
+        Ok(())
     }
 }
