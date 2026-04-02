@@ -1,33 +1,45 @@
 use crate::conversation_mgr::ConversationManager;
 use crate::session_mgr::SessionManager;
+use crate::task_mgr::{ScheduledTask, TaskContext};
 use chrono::Local;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
-use omnish_llm::factory::SharedLlmBackend;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tokio_cron_scheduler::Job;
 
-/// Create a cron job that generates daily notes at 00:10 (summarizing the previous day).
-pub fn create_daily_notes_job(
-    mgr: Arc<SessionManager>,
-    conv_mgr: Arc<ConversationManager>,
-    llm_holder: SharedLlmBackend,
-    notes_dir: PathBuf,
-) -> anyhow::Result<Job> {
-    let cron = "0 10 0 * * *".to_string();
-    Ok(Job::new_async_tz(cron, Local, move |_uuid, _lock| {
-        let mgr = mgr.clone();
-        let conv_mgr = conv_mgr.clone();
-        let llm = llm_holder.read().unwrap().get_backend(UseCase::Analysis);
-        let dir = notes_dir.clone();
-        Box::pin(async move {
-            tracing::debug!("task [daily_notes] started");
-            if let Err(e) = generate_daily_note(&mgr, &conv_mgr, Some(llm.as_ref()), &dir).await {
-                tracing::warn!("task [daily_notes] failed: {}", e);
-            }
-            tracing::debug!("task [daily_notes] finished");
-        })
-    })?)
+pub struct DailyNotesTask(pub omnish_common::config::DailyNotesConfig);
+
+impl ScheduledTask for DailyNotesTask {
+    fn name(&self) -> &'static str {
+        "daily_notes"
+    }
+
+    fn schedule(&self) -> &str {
+        "0 10 0 * * *"
+    }
+
+    fn enabled(&self) -> bool {
+        self.0.enabled
+    }
+
+    fn create_job(&self, ctx: &TaskContext) -> anyhow::Result<Job> {
+        let mgr = ctx.session_mgr.clone();
+        let conv_mgr = ctx.conv_mgr.clone();
+        let llm_holder = ctx.llm_backend.clone();
+        let notes_dir = ctx.daemon.omnish_dir.join("notes");
+        Ok(Job::new_async_tz(self.schedule(), Local, move |_uuid, _lock| {
+            let mgr = mgr.clone();
+            let conv_mgr = conv_mgr.clone();
+            let llm = llm_holder.read().unwrap().get_backend(UseCase::Analysis);
+            let dir = notes_dir.clone();
+            Box::pin(async move {
+                tracing::debug!("task [daily_notes] started");
+                if let Err(e) = generate_daily_note(&mgr, &conv_mgr, Some(llm.as_ref()), &dir).await {
+                    tracing::warn!("task [daily_notes] failed: {}", e);
+                }
+                tracing::debug!("task [daily_notes] finished");
+            })
+        })?)
+    }
 }
 
 /// Build the LLM context for daily notes: collects hourly summaries for the given date.

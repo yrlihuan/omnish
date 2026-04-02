@@ -141,3 +141,14 @@ impl TaskManager {
         Ok(())
     }
 }
+
+pub fn create_all_tasks(config: &omnish_common::config::TasksConfig) -> Vec<Box<dyn ScheduledTask>> {
+    vec![
+        Box::new(crate::eviction::EvictionTask(config.eviction.clone())),
+        Box::new(crate::hourly_summary::HourlySummaryTask(config.hourly_summary.clone())),
+        Box::new(crate::daily_notes::DailyNotesTask(config.daily_notes.clone())),
+        Box::new(crate::cleanup::DiskCleanupTask(config.disk_cleanup.clone())),
+        Box::new(crate::auto_update::AutoUpdateTask(config.auto_update.clone())),
+        Box::new(crate::thread_summary::ThreadSummaryTask(config.thread_summary.clone())),
+    ]
+}

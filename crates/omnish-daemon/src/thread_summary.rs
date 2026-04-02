@@ -1,28 +1,38 @@
 use crate::conversation_mgr::ConversationManager;
+use crate::task_mgr::{ScheduledTask, TaskContext};
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
-use omnish_llm::factory::SharedLlmBackend;
-use std::sync::Arc;
 use tokio_cron_scheduler::Job;
 
-/// Create a cron job that generates thread summaries for conversations
-/// that need them.
-pub fn create_thread_summary_job(
-    conv_mgr: Arc<ConversationManager>,
-    llm_holder: SharedLlmBackend,
-) -> anyhow::Result<Job> {
-    // Run every 10 minutes
-    let cron = "0 */10 * * * *".to_string();
-    Ok(Job::new_async(cron, move |_uuid, _lock| {
-        let conv_mgr = conv_mgr.clone();
-        let llm = llm_holder.read().unwrap().get_backend(UseCase::Chat);
-        Box::pin(async move {
-            tracing::debug!("task [thread_summary] started");
-            if let Err(e) = generate_thread_summaries(&conv_mgr, Some(llm.as_ref())).await {
-                tracing::warn!("task [thread_summary] failed: {}", e);
-            }
-            tracing::debug!("task [thread_summary] finished");
-        })
-    })?)
+pub struct ThreadSummaryTask(pub omnish_common::config::ThreadSummaryConfig);
+
+impl ScheduledTask for ThreadSummaryTask {
+    fn name(&self) -> &'static str {
+        "thread_summary"
+    }
+
+    fn schedule(&self) -> &str {
+        "0 * * * * *"
+    }
+
+    fn enabled(&self) -> bool {
+        self.0.enabled
+    }
+
+    fn create_job(&self, ctx: &TaskContext) -> anyhow::Result<Job> {
+        let conv_mgr = ctx.conv_mgr.clone();
+        let llm_holder = ctx.llm_backend.clone();
+        Ok(Job::new_async(self.schedule(), move |_uuid, _lock| {
+            let conv_mgr = conv_mgr.clone();
+            let llm = llm_holder.read().unwrap().get_backend(UseCase::Chat);
+            Box::pin(async move {
+                tracing::debug!("task [thread_summary] started");
+                if let Err(e) = generate_thread_summaries(&conv_mgr, Some(llm.as_ref())).await {
+                    tracing::warn!("task [thread_summary] failed: {}", e);
+                }
+                tracing::debug!("task [thread_summary] finished");
+            })
+        })?)
+    }
 }
 
 /// Scan all threads and generate summaries for those that need them.

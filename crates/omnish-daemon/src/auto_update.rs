@@ -1,27 +1,37 @@
+use crate::task_mgr::{ScheduledTask, TaskContext};
 use anyhow::Result;
-use std::sync::Arc;
-use tokio::sync::Notify;
 use tokio_cron_scheduler::Job;
 
-/// Create a cron job that checks for and installs updates.
-///
-/// When an upgrade succeeds, `restart_signal` is notified so the daemon can
-/// shut down gracefully and let systemd restart it with the new binary.
-pub fn create_auto_update_job(
-    schedule: &str,
-    check_url: Option<String>,
-    restart_signal: Arc<Notify>,
-    update_cache: Arc<crate::update_cache::UpdateCache>,
-    proxy: Option<String>,
-    no_proxy: Option<String>,
-) -> Result<Job> {
-    Ok(Job::new_async_tz(schedule, chrono::Local, move |_uuid, _lock| {
-        let check_url = check_url.clone();
-        let restart_signal = restart_signal.clone();
-        let update_cache = update_cache.clone();
-        let proxy = proxy.clone();
-        let no_proxy = no_proxy.clone();
-        Box::pin(async move {
+pub struct AutoUpdateTask(pub omnish_common::config::AutoUpdateConfig);
+
+impl ScheduledTask for AutoUpdateTask {
+    fn name(&self) -> &'static str {
+        "auto_update"
+    }
+
+    fn schedule(&self) -> &str {
+        &self.0.schedule
+    }
+
+    fn enabled(&self) -> bool {
+        self.0.enabled
+    }
+
+    fn create_job(&self, ctx: &TaskContext) -> Result<Job> {
+        let check_url = self.0.check_url.clone();
+        let restart_signal = ctx.daemon.restart_signal.clone();
+        let update_cache = ctx.daemon.update_cache.clone();
+        let daemon_config = ctx.daemon_config.clone();
+        Ok(Job::new_async_tz(self.schedule(), chrono::Local, move |_uuid, _lock| {
+            let check_url = check_url.clone();
+            let restart_signal = restart_signal.clone();
+            let update_cache = update_cache.clone();
+            let daemon_config = daemon_config.clone();
+            Box::pin(async move {
+            let (proxy, no_proxy) = {
+                let dc = daemon_config.read().unwrap();
+                (dc.proxy.clone(), dc.no_proxy.clone())
+            };
             // Phase 0: Download packages from check_url to OMNISH_HOME/updates/
             // for daemon's own platform + all known client platforms
             if let Some(ref url) = check_url {
@@ -120,4 +130,5 @@ pub fn create_auto_update_job(
             restart_signal.notify_one();
         })
     })?)
+    }
 }

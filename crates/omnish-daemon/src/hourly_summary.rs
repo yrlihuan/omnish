@@ -1,33 +1,46 @@
 use crate::conversation_mgr::ConversationManager;
 use crate::session_mgr::SessionManager;
+use crate::task_mgr::{ScheduledTask, TaskContext};
 use chrono::Local;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
-use omnish_llm::factory::SharedLlmBackend;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_cron_scheduler::Job;
 
-/// Create a cron job that generates hourly summaries.
-pub fn create_hourly_summary_job(
-    mgr: Arc<SessionManager>,
-    conv_mgr: Arc<ConversationManager>,
-    llm_holder: SharedLlmBackend,
-    summaries_dir: PathBuf,
-) -> anyhow::Result<Job> {
-    Ok(Job::new_async("0 0 */4 * * *", move |_uuid, _lock| {
-        let mgr = mgr.clone();
-        let conv_mgr = conv_mgr.clone();
-        let llm = llm_holder.read().unwrap().get_backend(UseCase::Analysis);
-        let dir = summaries_dir.clone();
-        Box::pin(async move {
-            tracing::debug!("task [hourly_summary] started");
-            if let Err(e) = generate_hourly_summary(&mgr, &conv_mgr, Some(llm.as_ref()), &dir).await {
-                tracing::warn!("task [hourly_summary] failed: {}", e);
-            }
-            tracing::debug!("task [hourly_summary] finished");
-        })
-    })?)
+pub struct HourlySummaryTask(pub omnish_common::config::HourlySummaryConfig);
+
+impl ScheduledTask for HourlySummaryTask {
+    fn name(&self) -> &'static str {
+        "hourly_summary"
+    }
+
+    fn schedule(&self) -> &str {
+        "0 0 */4 * * *"
+    }
+
+    fn enabled(&self) -> bool {
+        self.0.enabled
+    }
+
+    fn create_job(&self, ctx: &TaskContext) -> anyhow::Result<Job> {
+        let mgr = ctx.session_mgr.clone();
+        let conv_mgr = ctx.conv_mgr.clone();
+        let llm_holder = ctx.llm_backend.clone();
+        let notes_dir = ctx.daemon.omnish_dir.join("notes");
+        Ok(Job::new_async(self.schedule(), move |_uuid, _lock| {
+            let mgr = mgr.clone();
+            let conv_mgr = conv_mgr.clone();
+            let llm = llm_holder.read().unwrap().get_backend(UseCase::Analysis);
+            let dir = notes_dir.clone();
+            Box::pin(async move {
+                tracing::debug!("task [hourly_summary] started");
+                if let Err(e) = generate_hourly_summary(&mgr, &conv_mgr, Some(llm.as_ref()), &dir).await {
+                    tracing::warn!("task [hourly_summary] failed: {}", e);
+                }
+                tracing::debug!("task [hourly_summary] finished");
+            })
+        })?)
+    }
 }
 
 /// Build the LLM context for hourly/periodic summaries.
