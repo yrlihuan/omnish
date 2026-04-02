@@ -18,44 +18,46 @@ if [ -n "$API_KEY" ]; then
   HEADERS+=(-H "Authorization: Bearer $API_KEY")
 fi
 
+# Use a temp file for the response body to avoid ARG_MAX limits on large pages
+TMPFILE=$(mktemp)
+trap 'rm -f "$TMPFILE"' EXIT
+
 # Fetch via jina.ai reader
-RESPONSE=$(curl -sS -w "\n%{http_code}" \
+HTTP_CODE=$(curl -sS -w "%{http_code}" \
   "${HEADERS[@]}" \
   --max-time 30 \
+  -o "$TMPFILE" \
   "https://r.jina.ai/$URL")
 
-HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-BODY=$(echo "$RESPONSE" | sed '$d')
-
 if [ "$HTTP_CODE" != "200" ]; then
-  ERROR_MSG=$(echo "$BODY" | jq -r '.data // .message // .error // "Unknown error"' 2>/dev/null || echo "HTTP $HTTP_CODE")
+  ERROR_MSG=$(jq -r '.data // .message // .error // "Unknown error"' < "$TMPFILE" 2>/dev/null || echo "HTTP $HTTP_CODE")
   jq -n --arg msg "Fetch failed (HTTP $HTTP_CODE): $ERROR_MSG" '{"content": $msg, "is_error": true}'
   exit 0
 fi
 
 # Extract fields from jina.ai response
-TITLE=$(echo "$BODY" | jq -r '.data.title // "Untitled"')
-PAGE_URL=$(echo "$BODY" | jq -r '.data.url // empty')
-CONTENT=$(echo "$BODY" | jq -r '.data.content // ""')
+TITLE=$(jq -r '.data.title // "Untitled"' < "$TMPFILE")
+PAGE_URL=$(jq -r '.data.url // empty' < "$TMPFILE")
 
-# Build output
-OUTPUT="# $TITLE"
-if [ -n "$PAGE_URL" ]; then
-  OUTPUT="$OUTPUT
-URL: $PAGE_URL"
-fi
-OUTPUT="$OUTPUT
-
-$CONTENT"
+# Build output into the temp file: header + content
+{
+  echo "# $TITLE"
+  if [ -n "$PAGE_URL" ]; then
+    echo "URL: $PAGE_URL"
+  fi
+  echo
+  jq -r '.data.content // ""' < "$TMPFILE"
+} > "${TMPFILE}.out"
+mv "${TMPFILE}.out" "$TMPFILE"
 
 # Check if content is large enough to need summarization
-CHAR_COUNT=${#OUTPUT}
+CHAR_COUNT=$(wc -c < "$TMPFILE")
 if [ "$CHAR_COUNT" -gt 5000 ]; then
   NEEDS_SUMMARIZATION=true
 else
   NEEDS_SUMMARIZATION=false
 fi
 
-# Output JSON response
-jq -n --arg content "$OUTPUT" --argjson needs "$NEEDS_SUMMARIZATION" \
+# Output JSON response — read content from file via slurpfile to avoid ARG_MAX
+jq -n --rawfile content "$TMPFILE" --argjson needs "$NEEDS_SUMMARIZATION" \
   '{"content": $content, "is_error": false, "needs_summarization": $needs}'

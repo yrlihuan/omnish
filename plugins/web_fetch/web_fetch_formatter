@@ -12,12 +12,17 @@ set -uo pipefail
 
 MAX_LINES=30
 
+TMPFILE=$(mktemp)
+trap 'rm -f "$TMPFILE"' EXIT
+
 while IFS= read -r line; do
-    output=$(echo "$line" | jq -r '.output // ""')
-    is_error=$(echo "$line" | jq -r '.is_error // false')
+    # Write input line to temp file to avoid ARG_MAX with large output
+    echo "$line" > "$TMPFILE"
+    output=$(jq -r '.output // ""' < "$TMPFILE")
+    is_error=$(jq -r '.is_error // false' < "$TMPFILE")
 
     if [ "$is_error" = "true" ]; then
-        jq -cn --arg o "$output" '{"summary": $o, "compact": [$o], "full": [$o]}'
+        echo "$output" | jq -Rsc '{"summary": ., "compact": [.], "full": [.]}'
         continue
     fi
 
@@ -29,40 +34,30 @@ while IFS= read -r line; do
     # Count total content lines (skip title + URL + blank line)
     total_lines=$(echo "$output" | tail -n +4 | wc -l)
 
-    # Build compact: title + URL + line count
-    compact_lines=()
-    if [ -n "$title" ]; then
-        compact_lines+=("$title")
-    fi
-    if echo "$url_line" | grep -q '^URL: '; then
-        compact_lines+=("$url_line")
-    fi
-    compact_lines+=("($total_lines lines)")
+    # Build compact JSON array
+    compact_json=$(
+        {
+            [ -n "$title" ] && echo "$title"
+            echo "$url_line" | grep -q '^URL: ' && echo "$url_line"
+            echo "($total_lines lines)"
+        } | jq -R . | jq -sc .
+    )
 
-    # Build full: title + URL + first MAX_LINES of content
-    full_lines=()
-    if [ -n "$title" ]; then
-        full_lines+=("$title")
-    fi
-    if echo "$url_line" | grep -q '^URL: '; then
-        full_lines+=("$url_line")
-    fi
-    full_lines+=("")
+    # Build full JSON array
+    full_json=$(
+        {
+            [ -n "$title" ] && echo "$title"
+            echo "$url_line" | grep -q '^URL: ' && echo "$url_line"
+            echo ""
+            echo "$output" | tail -n +4 | head -n "$MAX_LINES"
+            if [ "$total_lines" -gt "$MAX_LINES" ]; then
+                remaining=$((total_lines - MAX_LINES))
+                echo "(+${remaining} more lines)"
+            fi
+        } | jq -R . | jq -sc .
+    )
 
-    # Read first MAX_LINES of content
-    content_preview=$(echo "$output" | tail -n +4 | head -n "$MAX_LINES")
-    while IFS= read -r cline; do
-        full_lines+=("$cline")
-    done <<< "$content_preview"
-
-    if [ "$total_lines" -gt "$MAX_LINES" ]; then
-        remaining=$((total_lines - MAX_LINES))
-        full_lines+=("(+${remaining} more lines)")
-    fi
-
-    # Output JSON
-    jq -cn --jsonargs \
-        '{"summary": null, "compact": $ARGS.positional[0], "full": $ARGS.positional[1]}' \
-        "$(printf '%s\n' "${compact_lines[@]}" | jq -R . | jq -s .)" \
-        "$(printf '%s\n' "${full_lines[@]}" | jq -R . | jq -s .)"
+    # Output JSON — use --argjson to pass pre-built arrays
+    jq -cn --argjson compact "$compact_json" --argjson full "$full_json" \
+        '{"summary": null, "compact": $compact, "full": $full}'
 done
