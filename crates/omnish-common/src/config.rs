@@ -208,9 +208,6 @@ pub struct AutoUpdateConfig {
     /// Cron schedule for update checks. Default: daily at 04:00.
     #[serde(default = "default_auto_update_schedule")]
     pub schedule: String,
-    /// Client hosts to distribute updates to (e.g. ["user@host1", "user@host2"]).
-    #[serde(default)]
-    pub clients: Vec<String>,
     /// Update source: local directory path or GitHub API URL.
     /// Local path: "/data/releases" — scans for latest tar.gz
     /// GitHub URL: "https://api.github.com/repos/user/repo/releases/latest"
@@ -224,7 +221,6 @@ impl Default for AutoUpdateConfig {
         Self {
             enabled: false,
             schedule: default_auto_update_schedule(),
-            clients: Vec::new(),
             check_url: None,
         }
     }

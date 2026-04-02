@@ -960,8 +960,6 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]] && [[ -z "${OLD_
         echo "  Run on client: export PATH=\"\$HOME/.omnish/bin:\$PATH\""
     }
 
-    DEPLOYED_CLIENTS=()
-
     if [[ "$DRY_RUN" == true ]]; then
         info "[DRY RUN] Would ask to deploy clients via scp"
     else
@@ -983,28 +981,12 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]] && [[ -z "${OLD_
                 info "Checking SSH connectivity to ${CLIENT_HOST}..."
                 if ssh -n -o ConnectTimeout=5 -o BatchMode=yes "$CLIENT_HOST" true 2>/dev/null; then
                     info "SSH OK: ${CLIENT_HOST}"
-                    deploy_client "$CLIENT_HOST" && DEPLOYED_CLIENTS+=("$CLIENT_HOST") || true
+                    deploy_client "$CLIENT_HOST" || true
                 else
                     warn "Cannot connect to ${CLIENT_HOST} via SSH, skipping"
                 fi
             done
         fi
-    fi
-
-    # Add client list to existing [tasks.auto_update] section in daemon.toml
-    if [[ ${#DEPLOYED_CLIENTS[@]} -gt 0 ]] && [[ -f "$DAEMON_TOML" ]]; then
-        # Build TOML array string: clients = ["user@host1", "user@host2"]
-        CLIENTS_TOML="clients = ["
-        for i in "${!DEPLOYED_CLIENTS[@]}"; do
-            (( i > 0 )) && CLIENTS_TOML+=", "
-            CLIENTS_TOML+="\"${DEPLOYED_CLIENTS[$i]}\""
-        done
-        CLIENTS_TOML+="]"
-        # Insert clients line after check_url (unique in the file, inside [tasks.auto_update])
-        sed -i "/check_url/a ${CLIENTS_TOML}" "$DAEMON_TOML"
-        # Ensure auto_update is enabled (only match within [tasks.auto_update] section)
-        sed -i '/^\[tasks\.auto_update\]/,/^\[/{s/^enabled = false$/enabled = true/}' "$DAEMON_TOML"
-        info "Auto-update enabled with ${#DEPLOYED_CLIENTS[@]} client(s) in daemon.toml"
     fi
 
 fi

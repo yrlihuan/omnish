@@ -224,9 +224,7 @@ async fn async_main() -> Result<i32> {
     // Register auto-update job if enabled
     if auto_update_config.enabled {
         let job = omnish_daemon::auto_update::create_auto_update_job(
-            omnish_dir.clone(),
             &auto_update_config.schedule,
-            auto_update_config.clients.clone(),
             auto_update_config.check_url.clone(),
             Arc::clone(&restart_signal),
             Arc::clone(&update_cache),
