@@ -263,7 +263,7 @@ fn build_menu_tree(
     let mut root: Vec<MenuItem> = Vec::new();
     let mut path_map: HashMap<String, String> = HashMap::new();
 
-    let handler_lookup: HashMap<&str, (&str, &str)> = handlers.iter()
+    let submenu_lookup: HashMap<&str, (&str, &str)> = handlers.iter()
         .map(|h| (h.path.as_str(), (h.handler.as_str(), h.label.as_str())))
         .collect();
 
@@ -297,13 +297,9 @@ fn build_menu_tree(
                 for (j, s) in segments[..i].iter().enumerate() {
                     if j > 0 { schema_prefix.push('.'); }
                     schema_prefix.push_str(s);
-                    let label = if s == "__new__" {
-                        handler_lookup.get(schema_prefix.as_str())
-                            .map(|(_, lbl)| lbl.to_string())
-                            .unwrap_or_else(|| segment_to_label(s))
-                    } else {
-                        segment_to_label(s)
-                    };
+                    let label = submenu_lookup.get(schema_prefix.as_str())
+                        .map(|(_, lbl)| lbl.to_string())
+                        .unwrap_or_else(|| segment_to_label(s));
                     display_parts.push(label);
                 }
                 display_parts.push(item.label.clone());
@@ -312,13 +308,9 @@ fn build_menu_tree(
             } else {
                 // Intermediate segment — find or create submenu
                 let schema_path_so_far = segments[..=i].join(".");
-                let label = if seg == "__new__" {
-                    handler_lookup.get(schema_path_so_far.as_str())
-                        .map(|(_, lbl)| lbl.to_string())
-                        .unwrap_or_else(|| segment_to_label(seg))
-                } else {
-                    segment_to_label(seg)
-                };
+                let label = submenu_lookup.get(schema_path_so_far.as_str())
+                    .map(|(_, lbl)| lbl.to_string())
+                    .unwrap_or_else(|| segment_to_label(seg));
 
                 let pos = current.iter().position(|m| {
                     matches!(m, MenuItem::Submenu { label: l, .. } if *l == label)
@@ -326,8 +318,8 @@ fn build_menu_tree(
                 let idx = match pos {
                     Some(idx) => idx,
                     None => {
-                        let handler = handler_lookup.get(schema_path_so_far.as_str())
-                            .map(|(name, _)| name.to_string());
+                        let handler = submenu_lookup.get(schema_path_so_far.as_str())
+                            .and_then(|(name, _)| if name.is_empty() { None } else { Some(name.to_string()) });
                         current.push(MenuItem::Submenu {
                             label: label.clone(),
                             children: Vec::new(),

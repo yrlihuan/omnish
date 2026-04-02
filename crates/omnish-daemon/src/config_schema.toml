@@ -10,20 +10,70 @@
 #   options      — (select) static option list
 #   handler      — (submenu) Rust function name for grouped change handling
 
-# ── Proxy ──────────────────────────────────────────────
+# ── General > Hotkeys ─────────────────────────────────
 [[items]]
-path = "proxy.http_proxy"
+path = "general.hotkeys.command_prefix"
+label = "Enter chat mode hotkey"
+kind = "text"
+toml_key = "shell.command_prefix"
+
+[[items]]
+path = "general.hotkeys.resume_prefix"
+label = "Fast resume hotkey"
+kind = "text"
+toml_key = "shell.resume_prefix"
+
+# ── General > Shell Completion ────────────────────────
+[[items]]
+path = "general.shell_completion.completion_enabled"
+label = "Completion enabled"
+kind = "toggle"
+toml_key = "shell.completion_enabled"
+
+[[items]]
+path = "general.shell_completion.ghost_timeout_ms"
+label = "Ghost text timeout (ms)"
+kind = "text"
+toml_key = "shell.ghost_timeout_ms"
+
+# ── General > Auto Update ────────────────────────────
+[[items]]
+path = "general.auto_update.enabled"
+label = "Enabled"
+kind = "toggle"
+toml_key = "tasks.auto_update.enabled"
+
+[[items]]
+path = "general.auto_update.check_url"
+label = "Check URL"
+kind = "text"
+toml_key = "tasks.auto_update.check_url"
+
+[[items]]
+path = "general.auto_update.schedule"
+label = "Schedule"
+kind = "text"
+toml_key = "tasks.auto_update.schedule"
+
+# ── General > Proxy ──────────────────────────────────
+[[items]]
+path = "general.proxy.http_proxy"
 label = "HTTP proxy"
 kind = "text"
 toml_key = "proxy"
 
 [[items]]
-path = "proxy.no_proxy"
+path = "general.proxy.no_proxy"
 label = "No proxy"
 kind = "text"
 toml_key = "no_proxy"
 
-# ── LLM use cases ─────────────────────────────────────
+# ── LLM ───────────────────────────────────────────────
+[[items]]
+path = "llm"
+label = "LLM"
+kind = "submenu"
+
 [[items]]
 path = "llm.use_cases.completion"
 label = "Completion backend"
@@ -101,3 +151,16 @@ kind = "toggle"
 path = "llm.backends.__new__.context_window"
 label = "Context window"
 kind = "text"
+
+# ── Tasks ────────────────────────────────────────────
+[[items]]
+path = "tasks.hourly_summary.enabled"
+label = "Enabled"
+kind = "toggle"
+toml_key = "tasks.hourly_summary.enabled"
+
+[[items]]
+path = "tasks.daily_summary.enabled"
+label = "Enabled"
+kind = "toggle"
+toml_key = "tasks.daily_notes.enabled"

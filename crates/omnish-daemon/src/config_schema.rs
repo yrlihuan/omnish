@@ -72,11 +72,11 @@ pub fn build_config_items(
         .expect("DaemonConfig must be Serializable");
 
     let handlers: Vec<ConfigHandlerInfo> = schema.iter()
-        .filter(|s| s.handler.is_some())
+        .filter(|s| s.kind == "submenu")
         .map(|s| ConfigHandlerInfo {
             path: s.path.clone(),
             label: s.label.clone(),
-            handler: s.handler.clone().unwrap(),
+            handler: s.handler.clone().unwrap_or_default(),
         })
         .collect();
 
@@ -405,9 +405,12 @@ mod tests {
     fn test_parse_schema() {
         let schema = parse_schema();
         assert!(!schema.is_empty());
-        assert!(schema.iter().any(|s| s.path == "proxy.http_proxy"));
+        assert!(schema.iter().any(|s| s.path == "general.proxy.http_proxy"));
+        assert!(schema.iter().any(|s| s.path == "general.hotkeys.command_prefix"));
         assert!(schema.iter().any(|s| s.path == "llm.use_cases.completion"));
         assert!(schema.iter().any(|s| s.path == "llm.backends.__new__" && s.handler.is_some()));
+        assert!(schema.iter().any(|s| s.path == "tasks.hourly_summary.enabled"));
+        assert!(schema.iter().any(|s| s.path == "tasks.daily_summary.enabled"));
     }
 
     #[test]
@@ -459,19 +462,26 @@ mod tests {
     fn test_build_config_items_includes_leaf_items() {
         let config = DaemonConfig::default();
         let (items, _handlers) = build_config_items(&config, &[]);
-        assert!(items.iter().any(|i| i.path == "proxy.http_proxy"));
+        assert!(items.iter().any(|i| i.path == "general.proxy.http_proxy"));
+        assert!(items.iter().any(|i| i.path == "general.hotkeys.command_prefix"));
         assert!(items.iter().any(|i| i.path == "llm.use_cases.completion"));
         assert!(items.iter().any(|i| i.path == "llm.backends.__new__.name"));
+        assert!(items.iter().any(|i| i.path == "tasks.hourly_summary.enabled"));
+        assert!(items.iter().any(|i| i.path == "tasks.daily_summary.enabled"));
     }
 
     #[test]
     fn test_build_config_items_returns_handlers() {
         let config = DaemonConfig::default();
         let (_items, handlers) = build_config_items(&config, &[]);
-        assert_eq!(handlers.len(), 1);
-        assert_eq!(handlers[0].path, "llm.backends.__new__");
-        assert_eq!(handlers[0].handler, "add_backend");
-        assert_eq!(handlers[0].label, "Add backend");
+        // Label-only submenu (llm) + handler submenu (add_backend)
+        assert_eq!(handlers.len(), 2);
+        let llm = handlers.iter().find(|h| h.path == "llm").unwrap();
+        assert_eq!(llm.label, "LLM");
+        assert_eq!(llm.handler, "");
+        let add = handlers.iter().find(|h| h.path == "llm.backends.__new__").unwrap();
+        assert_eq!(add.handler, "add_backend");
+        assert_eq!(add.label, "Add backend");
     }
 
     #[test]
