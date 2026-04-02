@@ -7,11 +7,8 @@ mod server;
 use anyhow::Result;
 use omnish_common::config::{load_daemon_config, omnish_dir};
 use omnish_daemon::conversation_mgr::ConversationManager;
-use omnish_daemon::daily_notes::create_daily_notes_job;
-use omnish_daemon::hourly_summary::create_hourly_summary_job;
 use omnish_daemon::session_mgr::SessionManager;
-use omnish_llm::backend::LlmBackend;
-use omnish_llm::backend::UnavailableBackend;
+use omnish_llm::backend::{LlmBackend, UnavailableBackend};
 use omnish_llm::factory::{MultiBackend, SharedLlmBackend};
 use server::DaemonServer;
 use std::sync::Arc;
@@ -141,9 +138,6 @@ async fn async_main() -> Result<i32> {
         Arc::new(std::sync::RwLock::new(backend))
     };
 
-    let evict_hours = config.tasks.eviction.session_evict_hours;
-    let daily_notes_config = config.tasks.daily_notes.clone();
-    let auto_update_config = config.tasks.auto_update.clone();
     let session_mgr = Arc::new(SessionManager::new(omnish_dir.clone(), config.context.clone()));
     match session_mgr.load_existing().await {
         Ok(count) if count > 0 => tracing::info!("loaded {} existing session(s)", count),
@@ -153,59 +147,18 @@ async fn async_main() -> Result<i32> {
 
     let conv_mgr = Arc::new(ConversationManager::new(omnish_dir.join("threads")));
 
-    // Set up scheduled task manager
-    let mut task_mgr = omnish_daemon::task_mgr::TaskManager::new().await?;
-
-    // Register session eviction job (hourly)
-    {
-        let max_inactive = std::time::Duration::from_secs(evict_hours * 3600);
-        let job = omnish_daemon::eviction::create_eviction_job(
-            Arc::clone(&session_mgr),
-            max_inactive,
-        )?;
-        task_mgr.register("eviction", "0 0 * * * *", job).await?;
-    }
-
-    // Register hourly summary job (every hour)
-    {
-        let notes_dir = omnish_dir.join("notes");
-        let job = create_hourly_summary_job(
-            Arc::clone(&session_mgr),
-            Arc::clone(&conv_mgr),
-            llm_backend.clone(),
-            notes_dir,
-        )?;
-        task_mgr.register("periodic_summary", "0 0 */4 * * *", job).await?;
-    }
-
-    // Register disk cleanup job (every 6 hours)
-    {
-        let max_age = std::time::Duration::from_secs(48 * 3600);
-        let job = omnish_daemon::cleanup::create_disk_cleanup_job(
-            Arc::clone(&session_mgr),
-            max_age,
-        )?;
-        task_mgr.register("disk_cleanup", "0 0 */6 * * *", job).await?;
-    }
-
-    // Register daily notes job if enabled
-    if daily_notes_config.enabled {
-        let notes_dir = omnish_dir.join("notes");
-        let job = create_daily_notes_job(
-            Arc::clone(&session_mgr),
-            Arc::clone(&conv_mgr),
-            llm_backend.clone(),
-            notes_dir,
-        )?;
-        task_mgr.register("daily_notes", "0 10 0 * * *", job).await?;
-        tracing::info!("daily notes enabled (schedule=00:10, summarizes previous day)");
-    }
-
     // Restart signal: notified when auto-update installs a new binary
     let restart_signal = Arc::new(tokio::sync::Notify::new());
 
     // Update cache: stores downloaded packages for distribution to clients
     let update_cache = Arc::new(omnish_daemon::update_cache::UpdateCache::new(&omnish_dir));
+
+    // Shared daemon-level context for scheduled tasks
+    let daemon_ctx = Arc::new(omnish_daemon::task_mgr::DaemonContext {
+        omnish_dir: omnish_dir.clone(),
+        restart_signal: Arc::clone(&restart_signal),
+        update_cache: Arc::clone(&update_cache),
+    });
 
     // Periodic scan of updates directory (every 60s) to refresh cached versions
     {
@@ -218,37 +171,6 @@ async fn async_main() -> Result<i32> {
             }
         });
     }
-
-    // Register auto-update job if enabled
-    if auto_update_config.enabled {
-        let job = omnish_daemon::auto_update::create_auto_update_job(
-            &auto_update_config.schedule,
-            auto_update_config.check_url.clone(),
-            Arc::clone(&restart_signal),
-            Arc::clone(&update_cache),
-            config.proxy.clone(),
-            config.no_proxy.clone(),
-        )?;
-        task_mgr
-            .register("auto_update", &auto_update_config.schedule, job)
-            .await?;
-        tracing::info!(
-            "auto update enabled (schedule={})",
-            auto_update_config.schedule
-        );
-    }
-
-    // Register thread summary job (every minute, no-op if no new content)
-    {
-        let job = omnish_daemon::thread_summary::create_thread_summary_job(
-            Arc::clone(&conv_mgr),
-            llm_backend.clone(),
-        )?;
-        task_mgr.register("thread_summary", "0 * * * * *", job).await?;
-    }
-
-    task_mgr.start().await?;
-    let task_mgr = Arc::new(tokio::sync::Mutex::new(task_mgr));
 
     // Initialize credentials and embedded assets
     let (auth_token, token_status, _cert_status) = init_omnish_dir(&omnish_dir)?;
@@ -392,6 +314,27 @@ async fn async_main() -> Result<i32> {
         config_path: config_path.clone(),
         daemon_config: Arc::clone(&daemon_config_arc),
     });
+
+    // Set up scheduled tasks using unified TaskContext + create_all_tasks
+    let task_ctx = omnish_daemon::task_mgr::TaskContext {
+        session_mgr: Arc::clone(&session_mgr),
+        conv_mgr: Arc::clone(&conv_mgr),
+        llm_backend: llm_backend.clone(),
+        daemon: Arc::clone(&daemon_ctx),
+        daemon_config: Arc::clone(&daemon_config_arc),
+    };
+
+    let mut task_mgr = omnish_daemon::task_mgr::TaskManager::new().await?;
+    let all_tasks = omnish_daemon::task_mgr::create_all_tasks(&config.tasks);
+    for task in &all_tasks {
+        if task.enabled() {
+            let job = task.create_job(&task_ctx)?;
+            task_mgr.register(task.name(), task.schedule(), job).await?;
+        }
+    }
+    task_mgr.start().await?;
+    let task_mgr = Arc::new(tokio::sync::Mutex::new(task_mgr));
+
     // Create formatter manager and register external formatters from plugins
     let mut formatter_mgr = omnish_daemon::formatter_mgr::FormatterManager::new();
     for (name, binary) in plugin_mgr.formatter_binaries() {
