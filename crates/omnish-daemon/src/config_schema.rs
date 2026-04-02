@@ -318,8 +318,9 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
         let item = find_schema_item(&schema, &change.path);
         let toml_key = item.and_then(|s| s.toml_key.as_deref()).unwrap_or(&change.path);
         let kind = item.map(|s| s.kind.as_str()).unwrap_or_else(|| {
-            if change.path.ends_with(".use_proxy") { "toggle" }
-            else if change.path.starts_with("plugins.") && change.path.ends_with(".enabled") { "toggle" }
+            if change.path.ends_with(".use_proxy")
+                || (change.path.starts_with("plugins.") && change.path.ends_with(".enabled"))
+            { "toggle" }
             else { "text" }
         });
 
