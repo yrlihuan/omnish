@@ -1495,11 +1495,6 @@ impl SessionManager {
         }
     }
 
-    /// Get the hourly summary configuration.
-    pub fn get_hourly_summary_config(&self) -> omnish_common::config::HourlySummaryContextConfig {
-        self.context_config.hourly_summary.clone()
-    }
-
     /// Get the last completion context (read-only) for logging/analytics purposes.
     /// Returns the cached context from the previous build, or empty string if no previous context.
     pub async fn get_last_completion_context(&self) -> String {
@@ -1507,297 +1502,6 @@ impl SessionManager {
         cached.clone()
     }
 
-    /// Build hourly summary context from recent commands with the given config.
-    /// Implements the reduction logic from issue 44:
-    /// 1. First try with head_lines/tail_lines reduction (10 iterations, reduce by 1/10 each time)
-    /// 2. If still over limit, switch to history_commands format
-    /// 3. Further reduce history_commands by 1/4 each time until fits
-    pub async fn build_hourly_summary_context(
-        &self,
-        commands: &[(String, CommandRecord)],
-        max_content_chars: Option<usize>,
-        config: &omnish_common::config::HourlySummaryContextConfig,
-    ) -> Result<String> {
-        // Snapshot session Arcs under brief read lock
-        let session_arcs: Vec<_> = {
-            let sessions = self.sessions.read().await;
-            sessions.values().cloned().collect()
-        };
-
-        let mut all_commands: Vec<CommandRecord> = Vec::new();
-        let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
-        let mut hostnames: HashMap<String, String> = HashMap::new();
-        for (hostname, cmd) in commands.iter() {
-            for session in &session_arcs {
-                let cmds = session.commands.read().await;
-                if cmds.iter().any(|c| c.command_id == cmd.command_id) {
-                    let stream_path = session.dir.join("stream.bin");
-                    offset_to_path.insert(
-                        (cmd.stream_offset, cmd.stream_length),
-                        stream_path,
-                    );
-                    hostnames.insert(cmd.session_id.clone(), hostname.clone());
-                    break;
-                }
-            }
-            all_commands.push(cmd.clone());
-        }
-
-        if all_commands.is_empty() {
-            return Ok(String::new());
-        }
-
-        all_commands.sort_by_key(|c| c.started_at);
-
-        let reader = MultiSessionReader {
-            readers: offset_to_path,
-        };
-
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-
-        // Default: include all commands as detailed
-        let total = all_commands.len();
-        let strategy = RecentCommands::new(total);
-
-        // Step 1: Try with head_lines/tail_lines reduction (10 iterations)
-        let head_step = config.head_lines / 10;
-        let tail_step = config.tail_lines / 10;
-
-        let mut current_head = config.head_lines;
-        let mut current_tail = config.tail_lines;
-
-        for _ in 0..10 {
-            if current_head == 0 && current_tail == 0 {
-                break;
-            }
-
-            let formatter =
-                GroupedFormatter::new("", now_ms, current_head.max(1), current_tail.max(1));
-
-            let context = omnish_context::build_context(
-                &strategy,
-                &formatter,
-                &all_commands,
-                &reader,
-                &hostnames,
-                total,
-                config.max_line_width,
-            )
-            .await?;
-
-            if let Some(max_chars) = max_content_chars {
-                if context.chars().count() <= max_chars {
-                    return Ok(context);
-                }
-            } else {
-                return Ok(context);
-            }
-
-            // Reduce by 1/10
-            current_head = current_head.saturating_sub(head_step.max(1));
-            current_tail = current_tail.saturating_sub(tail_step.max(1));
-        }
-
-        // Step 2: Switch to history_commands format (command-line only, no output)
-        // Reset head/tail to 0, use history_commands format
-        let formatter = GroupedFormatter::new("", now_ms, 0, 0);
-
-        // Try with history_commands = total, then reduce by 1/4 each iteration
-        let mut current_history = total;
-
-        loop {
-            let history_strategy = RecentCommands::new(current_history);
-
-            let context = omnish_context::build_context(
-                &history_strategy,
-                &formatter,
-                &all_commands,
-                &reader,
-                &hostnames,
-                current_history,
-                config.max_line_width,
-            )
-            .await?;
-
-            if let Some(max_chars) = max_content_chars {
-                if context.chars().count() <= max_chars {
-                    return Ok(context);
-                }
-            } else {
-                return Ok(context);
-            }
-
-            // Reduce by 1/4
-            let reduction = (current_history / 4).max(1);
-            if reduction >= current_history {
-                break; // Can't reduce further
-            }
-            current_history -= reduction;
-        }
-
-        // If still over limit, return what we have
-        let formatter = GroupedFormatter::new("", now_ms, 0, 0);
-        let final_strategy = RecentCommands::new(1);
-        omnish_context::build_context(
-            &final_strategy,
-            &formatter,
-            &all_commands,
-            &reader,
-            &hostnames,
-            1,
-            config.max_line_width,
-        )
-        .await
-    }
-
-    /// Get the daily summary configuration.
-    pub fn get_daily_summary_config(&self) -> omnish_common::config::DailySummaryConfig {
-        self.context_config.daily_summary.clone()
-    }
-
-    /// Build daily summary context from recent commands with the given config.
-    /// Similar to hourly but for daily (24 hours) with different default limits.
-    pub async fn build_daily_summary_context(
-        &self,
-        commands: &[(String, CommandRecord)],
-        max_content_chars: Option<usize>,
-        config: &omnish_common::config::DailySummaryConfig,
-    ) -> Result<String> {
-        // Snapshot session Arcs under brief read lock
-        let session_arcs: Vec<_> = {
-            let sessions = self.sessions.read().await;
-            sessions.values().cloned().collect()
-        };
-
-        let mut all_commands: Vec<CommandRecord> = Vec::new();
-        let mut offset_to_path: HashMap<(u64, u64), PathBuf> = HashMap::new();
-        let mut hostnames: HashMap<String, String> = HashMap::new();
-        for (hostname, cmd) in commands.iter() {
-            for session in &session_arcs {
-                let cmds = session.commands.read().await;
-                if cmds.iter().any(|c| c.command_id == cmd.command_id) {
-                    let stream_path = session.dir.join("stream.bin");
-                    offset_to_path.insert(
-                        (cmd.stream_offset, cmd.stream_length),
-                        stream_path,
-                    );
-                    hostnames.insert(cmd.session_id.clone(), hostname.clone());
-                    break;
-                }
-            }
-            all_commands.push(cmd.clone());
-        }
-
-        if all_commands.is_empty() {
-            return Ok(String::new());
-        }
-
-        all_commands.sort_by_key(|c| c.started_at);
-
-        let reader = MultiSessionReader {
-            readers: offset_to_path,
-        };
-
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-
-        // Default: include all commands as detailed
-        let total = all_commands.len();
-        let strategy = RecentCommands::new(total);
-
-        // Step 1: Try with head_lines/tail_lines reduction (10 iterations)
-        let head_step = config.head_lines / 10;
-        let tail_step = config.tail_lines / 10;
-
-        let mut current_head = config.head_lines;
-        let mut current_tail = config.tail_lines;
-
-        for _ in 0..10 {
-            if current_head == 0 && current_tail == 0 {
-                break;
-            }
-
-            let formatter =
-                GroupedFormatter::new("", now_ms, current_head.max(1), current_tail.max(1));
-
-            let context = omnish_context::build_context(
-                &strategy,
-                &formatter,
-                &all_commands,
-                &reader,
-                &hostnames,
-                total,
-                config.max_line_width,
-            )
-            .await?;
-
-            if let Some(max_chars) = max_content_chars {
-                if context.chars().count() <= max_chars {
-                    return Ok(context);
-                }
-            } else {
-                return Ok(context);
-            }
-
-            // Reduce by 1/10
-            current_head = current_head.saturating_sub(head_step.max(1));
-            current_tail = current_tail.saturating_sub(tail_step.max(1));
-        }
-
-        // Step 2: Switch to history_commands format (command-line only, no output)
-        let formatter = GroupedFormatter::new("", now_ms, 0, 0);
-
-        let mut current_history = total;
-
-        loop {
-            let history_strategy = RecentCommands::new(current_history);
-
-            let context = omnish_context::build_context(
-                &history_strategy,
-                &formatter,
-                &all_commands,
-                &reader,
-                &hostnames,
-                current_history,
-                config.max_line_width,
-            )
-            .await?;
-
-            if let Some(max_chars) = max_content_chars {
-                if context.chars().count() <= max_chars {
-                    return Ok(context);
-                }
-            } else {
-                return Ok(context);
-            }
-
-            // Reduce by 1/4
-            let reduction = (current_history / 4).max(1);
-            if reduction >= current_history {
-                break;
-            }
-            current_history -= reduction;
-        }
-
-        // If still over limit, return what we have
-        let formatter = GroupedFormatter::new("", now_ms, 0, 0);
-        let final_strategy = RecentCommands::new(1);
-        omnish_context::build_context(
-            &final_strategy,
-            &formatter,
-            &all_commands,
-            &reader,
-            &hostnames,
-            1,
-            config.max_line_width,
-        )
-        .await
-    }
 }
 
 #[cfg(test)]
@@ -2087,7 +1791,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_max_context_chars_reduces_commands() {
-        use omnish_common::config::{CompletionContextConfig, ContextConfig, DailySummaryConfig, HourlySummaryContextConfig};
+        use omnish_common::config::{CompletionContextConfig, ContextConfig};
 
         let dir = tempfile::tempdir().unwrap();
 
@@ -2104,8 +1808,6 @@ mod tests {
                 detailed_min: 20,
                 detailed_max: 30,
             },
-            hourly_summary: HourlySummaryContextConfig::default(),
-            daily_summary: DailySummaryConfig::default(),
         };
         let mgr_no_limit = SessionManager::new(dir.path().to_path_buf(), cc_no_limit);
         mgr_no_limit.register("sess1", None, Default::default())
@@ -2148,8 +1850,6 @@ mod tests {
                 detailed_min: 20,
                 detailed_max: 30,
             },
-            hourly_summary: HourlySummaryContextConfig::default(),
-            daily_summary: DailySummaryConfig::default(),
         };
         let mgr_limited = SessionManager::new(dir.path().to_path_buf(), cc_limited);
         mgr_limited.register("sess1", None, Default::default())

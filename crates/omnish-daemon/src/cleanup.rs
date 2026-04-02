@@ -1,9 +1,20 @@
 use crate::task_mgr::{ScheduledTask, TaskContext};
 use anyhow::Result;
+use omnish_common::config::ConfigMap;
 use std::time::Duration;
 use tokio_cron_scheduler::Job;
 
-pub struct DiskCleanupTask(pub omnish_common::config::DiskCleanupConfig);
+pub struct DiskCleanupTask {
+    config: ConfigMap,
+    schedule: String,
+}
+
+impl DiskCleanupTask {
+    pub fn new(config: ConfigMap) -> Self {
+        let schedule = config.get_string("schedule", "0 0 */6 * * *");
+        Self { config, schedule }
+    }
+}
 
 impl ScheduledTask for DiskCleanupTask {
     fn name(&self) -> &'static str {
@@ -11,11 +22,11 @@ impl ScheduledTask for DiskCleanupTask {
     }
 
     fn schedule(&self) -> &str {
-        "0 0 */6 * * *"
+        &self.schedule
     }
 
     fn enabled(&self) -> bool {
-        self.0.enabled
+        self.config.get_bool("enabled", true)
     }
 
     fn create_job(&self, ctx: &TaskContext) -> Result<Job> {
@@ -68,7 +79,7 @@ mod tests {
             daemon_config,
         };
 
-        let task = DiskCleanupTask(omnish_common::config::DiskCleanupConfig::default());
+        let task = DiskCleanupTask::new(ConfigMap::default());
         assert!(task.enabled());
         let job = task.create_job(&ctx);
         assert!(job.is_ok());

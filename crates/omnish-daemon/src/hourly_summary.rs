@@ -2,12 +2,23 @@ use crate::conversation_mgr::ConversationManager;
 use crate::session_mgr::SessionManager;
 use crate::task_mgr::{ScheduledTask, TaskContext};
 use chrono::Local;
+use omnish_common::config::ConfigMap;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_cron_scheduler::Job;
 
-pub struct HourlySummaryTask(pub omnish_common::config::HourlySummaryConfig);
+pub struct HourlySummaryTask {
+    config: ConfigMap,
+    schedule: String,
+}
+
+impl HourlySummaryTask {
+    pub fn new(config: ConfigMap) -> Self {
+        let schedule = config.get_string("schedule", "0 0 */4 * * *");
+        Self { config, schedule }
+    }
+}
 
 impl ScheduledTask for HourlySummaryTask {
     fn name(&self) -> &'static str {
@@ -15,11 +26,11 @@ impl ScheduledTask for HourlySummaryTask {
     }
 
     fn schedule(&self) -> &str {
-        "0 0 */4 * * *"
+        &self.schedule
     }
 
     fn enabled(&self) -> bool {
-        self.0.enabled
+        self.config.get_bool("enabled", true)
     }
 
     fn create_job(&self, ctx: &TaskContext) -> anyhow::Result<Job> {

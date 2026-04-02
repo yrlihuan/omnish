@@ -104,7 +104,10 @@ session_evict_hours = "24"
     assert_eq!(config.context.completion.detailed_commands, 10);
     assert_eq!(config.context.completion.history_commands, 100);
     assert_eq!(config.context.completion.max_context_chars, Some(50000));
-    assert_eq!(config.tasks.eviction.session_evict_hours, 24);
+    assert_eq!(
+        config.tasks["eviction"].get_u64("session_evict_hours", 48),
+        24
+    );
 
     // ShellConfig int fields (in ClientConfig)
     let client_toml = r#"

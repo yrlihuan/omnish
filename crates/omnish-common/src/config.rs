@@ -151,121 +151,39 @@ pub fn load_client_config() -> Result<ClientConfig> {
 }
 
 // ---------------------------------------------------------------------------
-// Tasks config
+// ConfigMap: generic key-value config (used by tasks and plugins)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct EvictionConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Evict sessions from memory after this many hours of inactivity.
-    #[serde(default = "default_session_evict_hours", deserialize_with = "string_or_int::deserialize")]
-    pub session_evict_hours: u64,
-}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ConfigMap(pub HashMap<String, serde_json::Value>);
 
-impl Default for EvictionConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            session_evict_hours: default_session_evict_hours(),
+impl ConfigMap {
+    pub fn get_bool(&self, key: &str, default: bool) -> bool {
+        self.0.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
+    }
+
+    pub fn get_u64(&self, key: &str, default: u64) -> u64 {
+        match self.0.get(key) {
+            Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(default),
+            Some(serde_json::Value::String(s)) => s.parse().unwrap_or(default),
+            _ => default,
         }
     }
-}
 
-fn default_session_evict_hours() -> u64 {
-    48
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct HourlySummaryConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-impl Default for HourlySummaryConfig {
-    fn default() -> Self {
-        Self { enabled: true }
+    pub fn get_string(&self, key: &str, default: &str) -> String {
+        self.0.get(key).and_then(|v| v.as_str()).map(String::from).unwrap_or_else(|| default.to_string())
     }
-}
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
-pub struct DailyNotesConfig {
-    #[serde(default)]
-    pub enabled: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct DiskCleanupConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-impl Default for DiskCleanupConfig {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct AutoUpdateConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    /// Cron schedule for update checks. Default: daily at 04:00.
-    #[serde(default = "default_auto_update_schedule")]
-    pub schedule: String,
-    /// Update source: local directory path or GitHub API URL.
-    /// Local path: "/data/releases" — scans for latest tar.gz
-    /// GitHub URL: "https://api.github.com/repos/user/repo/releases/latest"
-    /// If omitted, defaults to GitHub (yrlihuan/omnish).
-    #[serde(default)]
-    pub check_url: Option<String>,
-}
-
-impl Default for AutoUpdateConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            schedule: default_auto_update_schedule(),
-            check_url: None,
-        }
-    }
-}
-
-fn default_auto_update_schedule() -> String {
-    "0 0 4 * * *".to_string()
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct ThreadSummaryConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-impl Default for ThreadSummaryConfig {
-    fn default() -> Self {
-        Self { enabled: true }
+    pub fn get_opt_string(&self, key: &str) -> Option<String> {
+        self.0.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from)
     }
 }
 
 // ---------------------------------------------------------------------------
-// TasksConfig: all 6 task configs
+// TasksConfig: per-task key-value config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
-pub struct TasksConfig {
-    #[serde(default)]
-    pub eviction: EvictionConfig,
-    #[serde(default)]
-    pub hourly_summary: HourlySummaryConfig,
-    #[serde(default)]
-    pub daily_notes: DailyNotesConfig,
-    #[serde(default)]
-    pub disk_cleanup: DiskCleanupConfig,
-    #[serde(default)]
-    pub auto_update: AutoUpdateConfig,
-    #[serde(default)]
-    pub thread_summary: ThreadSummaryConfig,
-}
+pub type TasksConfig = HashMap<String, ConfigMap>;
 
 // ---------------------------------------------------------------------------
 // Sandbox config
@@ -314,7 +232,7 @@ pub struct DaemonConfig {
     /// enabled = false
     /// api_key = "..."
     #[serde(default)]
-    pub plugins: HashMap<String, HashMap<String, serde_json::Value>>,
+    pub plugins: HashMap<String, ConfigMap>,
     #[serde(default)]
     pub sandbox: SandboxConfig,
 }
@@ -327,7 +245,7 @@ impl Default for DaemonConfig {
             no_proxy: None,
             llm: LlmConfig::default(),
             context: ContextConfig::default(),
-            tasks: TasksConfig::default(),
+            tasks: HashMap::new(),
             plugins: HashMap::new(),
             sandbox: SandboxConfig::default(),
         }
@@ -538,94 +456,10 @@ impl Default for CompletionContextConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Hourly summary config
-// ---------------------------------------------------------------------------
-
-/// Hourly summary context configuration
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct HourlySummaryContextConfig {
-    /// Number of lines to keep from the start of each command output.
-    #[serde(default = "default_hourly_head_lines", deserialize_with = "string_or_int::deserialize")]
-    pub head_lines: usize,
-    /// Number of lines to keep from the end of each command output.
-    #[serde(default = "default_hourly_tail_lines", deserialize_with = "string_or_int::deserialize")]
-    pub tail_lines: usize,
-    /// Maximum width (in characters) per output line; longer lines are truncated.
-    #[serde(default = "default_hourly_max_line_width", deserialize_with = "string_or_int::deserialize")]
-    pub max_line_width: usize,
-}
-
-impl Default for HourlySummaryContextConfig {
-    fn default() -> Self {
-        Self {
-            head_lines: default_hourly_head_lines(),
-            tail_lines: default_hourly_tail_lines(),
-            max_line_width: default_hourly_max_line_width(),
-        }
-    }
-}
-
-fn default_hourly_head_lines() -> usize {
-    50
-}
-
-fn default_hourly_tail_lines() -> usize {
-    100
-}
-
-fn default_hourly_max_line_width() -> usize {
-    128
-}
-
-// ---------------------------------------------------------------------------
-// Daily summary config
-// ---------------------------------------------------------------------------
-
-/// Daily summary context configuration
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DailySummaryConfig {
-    /// Number of lines to keep from the start of each command output.
-    #[serde(default = "default_daily_head_lines", deserialize_with = "string_or_int::deserialize")]
-    pub head_lines: usize,
-    /// Number of lines to keep from the end of each command output.
-    #[serde(default = "default_daily_tail_lines", deserialize_with = "string_or_int::deserialize")]
-    pub tail_lines: usize,
-    /// Maximum width (in characters) per output line; longer lines are truncated.
-    #[serde(default = "default_daily_max_line_width", deserialize_with = "string_or_int::deserialize")]
-    pub max_line_width: usize,
-}
-
-impl Default for DailySummaryConfig {
-    fn default() -> Self {
-        Self {
-            head_lines: default_daily_head_lines(),
-            tail_lines: default_daily_tail_lines(),
-            max_line_width: default_daily_max_line_width(),
-        }
-    }
-}
-
-fn default_daily_head_lines() -> usize {
-    20
-}
-
-fn default_daily_tail_lines() -> usize {
-    50
-}
-
-fn default_daily_max_line_width() -> usize {
-    128
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ContextConfig {
     #[serde(default)]
     pub completion: CompletionContextConfig,
-    #[serde(default)]
-    pub hourly_summary: HourlySummaryContextConfig,
-    #[serde(default)]
-    pub daily_summary: DailySummaryConfig,
 }
 
 fn default_detailed_commands() -> usize {

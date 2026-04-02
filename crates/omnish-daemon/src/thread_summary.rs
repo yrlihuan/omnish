@@ -1,9 +1,20 @@
 use crate::conversation_mgr::ConversationManager;
 use crate::task_mgr::{ScheduledTask, TaskContext};
+use omnish_common::config::ConfigMap;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
 use tokio_cron_scheduler::Job;
 
-pub struct ThreadSummaryTask(pub omnish_common::config::ThreadSummaryConfig);
+pub struct ThreadSummaryTask {
+    config: ConfigMap,
+    schedule: String,
+}
+
+impl ThreadSummaryTask {
+    pub fn new(config: ConfigMap) -> Self {
+        let schedule = config.get_string("schedule", "0 * * * * *");
+        Self { config, schedule }
+    }
+}
 
 impl ScheduledTask for ThreadSummaryTask {
     fn name(&self) -> &'static str {
@@ -11,11 +22,11 @@ impl ScheduledTask for ThreadSummaryTask {
     }
 
     fn schedule(&self) -> &str {
-        "0 * * * * *"
+        &self.schedule
     }
 
     fn enabled(&self) -> bool {
-        self.0.enabled
+        self.config.get_bool("enabled", true)
     }
 
     fn create_job(&self, ctx: &TaskContext) -> anyhow::Result<Job> {

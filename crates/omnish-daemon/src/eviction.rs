@@ -1,9 +1,20 @@
 use crate::task_mgr::{ScheduledTask, TaskContext};
 use anyhow::Result;
+use omnish_common::config::ConfigMap;
 use std::time::Duration;
 use tokio_cron_scheduler::Job;
 
-pub struct EvictionTask(pub omnish_common::config::EvictionConfig);
+pub struct EvictionTask {
+    config: ConfigMap,
+    schedule: String,
+}
+
+impl EvictionTask {
+    pub fn new(config: ConfigMap) -> Self {
+        let schedule = config.get_string("schedule", "0 0 * * * *");
+        Self { config, schedule }
+    }
+}
 
 impl ScheduledTask for EvictionTask {
     fn name(&self) -> &'static str {
@@ -11,16 +22,17 @@ impl ScheduledTask for EvictionTask {
     }
 
     fn schedule(&self) -> &str {
-        "0 0 * * * *"
+        &self.schedule
     }
 
     fn enabled(&self) -> bool {
-        self.0.enabled
+        self.config.get_bool("enabled", true)
     }
 
     fn create_job(&self, ctx: &TaskContext) -> Result<Job> {
         let mgr = ctx.session_mgr.clone();
-        let max_inactive = Duration::from_secs(self.0.session_evict_hours * 3600);
+        let hours = self.config.get_u64("session_evict_hours", 48);
+        let max_inactive = Duration::from_secs(hours * 3600);
         Ok(Job::new_async(self.schedule(), move |_uuid, _lock| {
             let mgr = mgr.clone();
             Box::pin(async move {

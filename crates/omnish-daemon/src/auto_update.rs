@@ -1,8 +1,19 @@
 use crate::task_mgr::{ScheduledTask, TaskContext};
 use anyhow::Result;
+use omnish_common::config::ConfigMap;
 use tokio_cron_scheduler::Job;
 
-pub struct AutoUpdateTask(pub omnish_common::config::AutoUpdateConfig);
+pub struct AutoUpdateTask {
+    config: ConfigMap,
+    schedule: String,
+}
+
+impl AutoUpdateTask {
+    pub fn new(config: ConfigMap) -> Self {
+        let schedule = config.get_string("schedule", "0 0 4 * * *");
+        Self { config, schedule }
+    }
+}
 
 impl ScheduledTask for AutoUpdateTask {
     fn name(&self) -> &'static str {
@@ -10,15 +21,15 @@ impl ScheduledTask for AutoUpdateTask {
     }
 
     fn schedule(&self) -> &str {
-        &self.0.schedule
+        &self.schedule
     }
 
     fn enabled(&self) -> bool {
-        self.0.enabled
+        self.config.get_bool("enabled", false)
     }
 
     fn create_job(&self, ctx: &TaskContext) -> Result<Job> {
-        let check_url = self.0.check_url.clone();
+        let check_url = self.config.get_opt_string("check_url");
         let restart_signal = ctx.daemon.restart_signal.clone();
         let update_cache = ctx.daemon.update_cache.clone();
         let daemon_config = ctx.daemon_config.clone();
