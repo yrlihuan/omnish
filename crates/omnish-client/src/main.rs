@@ -1315,7 +1315,7 @@ async fn main() -> Result<()> {
                     let regex_cmds = command_tracker.feed_output(raw, timestamp_ms(), 0);
                     if !regex_cmds.is_empty() && osc133_hook_installed && !osc133_warned {
                         osc133_warned = true;
-                        eprintln!("\x1b[31m[omnish]\x1b[0m OSC 133 shell hook not active, falling back to regex prompt detection");
+                        event_log::push("OSC 133 shell hook not active, falling back to regex prompt detection");
                     }
                     completed.extend(regex_cmds);
 
