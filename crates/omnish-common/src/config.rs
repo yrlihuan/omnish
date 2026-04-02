@@ -155,7 +155,7 @@ pub fn load_client_config() -> Result<ClientConfig> {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct ConfigMap(pub HashMap<String, serde_json::Value>);
+pub struct ConfigMap(HashMap<String, serde_json::Value>);
 
 impl ConfigMap {
     pub fn get_bool(&self, key: &str, default: bool) -> bool {
@@ -176,6 +176,24 @@ impl ConfigMap {
 
     pub fn get_opt_string(&self, key: &str) -> Option<String> {
         self.0.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from)
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.0.contains_key(key)
+    }
+
+    pub fn get(&self, key: &str) -> Option<&serde_json::Value> {
+        self.0.get(key)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &serde_json::Value)> {
+        self.0.iter()
+    }
+}
+
+impl From<HashMap<String, serde_json::Value>> for ConfigMap {
+    fn from(map: HashMap<String, serde_json::Value>) -> Self {
+        Self(map)
     }
 }
 

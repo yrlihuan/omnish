@@ -1468,7 +1468,7 @@ async fn run_agent_loop(
                             {
                                 let plugins_config = &opts.daemon_config.read().unwrap().plugins;
                                 if let Some(config_params) = plugins_config.get(&tc.name) {
-                                    let filtered: HashMap<String, serde_json::Value> = config_params.0
+                                    let filtered: HashMap<String, serde_json::Value> = config_params
                                         .iter()
                                         .filter(|(k, _)| k.as_str() != "enabled")
                                         .map(|(k, v)| (k.clone(), v.clone()))
@@ -1509,7 +1509,7 @@ async fn run_agent_loop(
                             {
                                 let plugins_config = &opts.daemon_config.read().unwrap().plugins;
                                 if let Some(config_params) = plugins_config.get(&tc.name) {
-                                    let filtered: HashMap<String, serde_json::Value> = config_params.0
+                                    let filtered: HashMap<String, serde_json::Value> = config_params
                                         .iter()
                                         .filter(|(k, _)| k.as_str() != "enabled")
                                         .map(|(k, v)| (k.clone(), v.clone()))

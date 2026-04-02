@@ -165,7 +165,7 @@ pub fn auto_install_bundled_plugins(
 ) {
     // web_search: install if [plugins.web_search] has api_key
     if let Some(ws_config) = plugins_config.get("web_search") {
-        if ws_config.0.contains_key("api_key") {
+        if ws_config.contains_key("api_key") {
             let _ = (|| -> Result<(), std::io::Error> {
                 let plugin_dir = plugins_dir.join("web_search");
                 let tool_json = plugin_dir.join("tool.json");
@@ -303,7 +303,7 @@ impl PluginManager {
             // Check if plugin is explicitly disabled
             let disabled = plugins_config
                 .get(&dir_name)
-                .and_then(|cfg| cfg.0.get("enabled"))
+                .and_then(|cfg| cfg.get("enabled"))
                 .and_then(|v| v.as_bool())
                 .map(|b| !b)
                 .unwrap_or(false);
@@ -521,7 +521,7 @@ impl PluginManager {
             let was_disabled = plugin.tools.is_empty();
             let now_disabled = new_config
                 .get(&plugin.dir_name)
-                .and_then(|cfg| cfg.0.get("enabled"))
+                .and_then(|cfg| cfg.get("enabled"))
                 .and_then(|v| v.as_bool())
                 .map(|b| !b)
                 .unwrap_or(false);
@@ -897,7 +897,7 @@ mod tests {
         let mut tools_config = HashMap::new();
         let mut ws = HashMap::new();
         ws.insert("api_key".to_string(), serde_json::json!("test-key"));
-        tools_config.insert("web_search".to_string(), omnish_common::config::ConfigMap(ws));
+        tools_config.insert("web_search".to_string(), omnish_common::config::ConfigMap::from(ws));
 
         auto_install_bundled_plugins(tmp.path(), &tools_config);
 
@@ -925,7 +925,7 @@ mod tests {
         let mut tools_config = HashMap::new();
         let mut ws = HashMap::new();
         ws.insert("api_key".to_string(), serde_json::json!("test-key"));
-        tools_config.insert("web_search".to_string(), omnish_common::config::ConfigMap(ws));
+        tools_config.insert("web_search".to_string(), omnish_common::config::ConfigMap::from(ws));
 
         // Pre-create with custom content
         let plugin_dir = tmp.path().join("web_search");

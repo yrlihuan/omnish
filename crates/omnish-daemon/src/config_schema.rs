@@ -265,7 +265,7 @@ pub fn build_config_items(
 
         // Enabled toggle (default: true)
         let enabled = plugin_cfg
-            .and_then(|cfg| cfg.0.get("enabled"))
+            .and_then(|cfg| cfg.get("enabled"))
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
         items.push(ConfigItem {
@@ -278,7 +278,7 @@ pub fn build_config_items(
         // Config params declared in tool.json
         for param in &meta.config_params {
             let value = plugin_cfg
-                .and_then(|cfg| cfg.0.get(&param.name))
+                .and_then(|cfg| cfg.get(&param.name))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -548,7 +548,7 @@ mod tests {
         let mut ws_cfg = HashMap::new();
         ws_cfg.insert("enabled".to_string(), serde_json::Value::Bool(false));
         ws_cfg.insert("api_key".to_string(), serde_json::Value::String("sk-test".to_string()));
-        config.plugins.insert("web_search".to_string(), omnish_common::config::ConfigMap(ws_cfg));
+        config.plugins.insert("web_search".to_string(), ws_cfg.into());
 
         let metas = vec![omnish_daemon::plugin::PluginConfigMeta {
             name: "web_search".to_string(),
