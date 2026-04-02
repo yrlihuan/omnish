@@ -124,8 +124,6 @@ type CancelFlags = Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>
 
 /// Shared runtime options threaded through request handlers.
 pub struct ServerOpts {
-    pub proxy: Option<String>,
-    pub no_proxy: Option<String>,
     pub sandbox_rules: SandboxRules,
     pub config_path: std::path::PathBuf,
     pub daemon_config: std::sync::Arc<std::sync::RwLock<omnish_common::config::DaemonConfig>>,
@@ -1522,7 +1520,11 @@ async fn run_agent_loop(
 
                             let (mut result, needs_summarization) = if tool_registry.plugin_type(&tc.name).is_some() {
                                 if let Some(exe) = plugin_mgr.plugin_executable(&tc.name) {
-                                    execute_daemon_plugin(&exe, &tc.name, &merged_input, opts.proxy.as_deref(), opts.no_proxy.as_deref()).await
+                                    let (proxy, no_proxy) = {
+                                        let dc = opts.daemon_config.read().unwrap();
+                                        (dc.proxy.clone(), dc.no_proxy.clone())
+                                    };
+                                    execute_daemon_plugin(&exe, &tc.name, &merged_input, proxy.as_deref(), no_proxy.as_deref()).await
                                 } else {
                                     (omnish_llm::tool::ToolResult {
                                         tool_use_id: String::new(),

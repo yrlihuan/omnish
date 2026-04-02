@@ -143,7 +143,6 @@ async fn async_main() -> Result<i32> {
 
     let evict_hours = config.tasks.eviction.session_evict_hours;
     let daily_notes_config = config.tasks.daily_notes.clone();
-    let disk_cleanup_config = config.tasks.disk_cleanup.clone();
     let auto_update_config = config.tasks.auto_update.clone();
     let session_mgr = Arc::new(SessionManager::new(omnish_dir.clone(), config.context.clone()));
     match session_mgr.load_existing().await {
@@ -179,15 +178,14 @@ async fn async_main() -> Result<i32> {
         task_mgr.register("periodic_summary", "0 0 */4 * * *", job).await?;
     }
 
-    // Register disk cleanup job
+    // Register disk cleanup job (every 6 hours)
     {
         let max_age = std::time::Duration::from_secs(48 * 3600);
         let job = omnish_daemon::cleanup::create_disk_cleanup_job(
             Arc::clone(&session_mgr),
             max_age,
-            &disk_cleanup_config.schedule,
         )?;
-        task_mgr.register("disk_cleanup", &disk_cleanup_config.schedule, job).await?;
+        task_mgr.register("disk_cleanup", "0 0 */6 * * *", job).await?;
     }
 
     // Register daily notes job if enabled
@@ -240,13 +238,13 @@ async fn async_main() -> Result<i32> {
         );
     }
 
-    // Register thread summary job (runs every 10 minutes)
+    // Register thread summary job (every minute, no-op if no new content)
     {
         let job = omnish_daemon::thread_summary::create_thread_summary_job(
             Arc::clone(&conv_mgr),
             llm_backend.clone(),
         )?;
-        task_mgr.register("thread_summary", "0 */10 * * * *", job).await?;
+        task_mgr.register("thread_summary", "0 * * * * *", job).await?;
     }
 
     task_mgr.start().await?;
@@ -390,8 +388,6 @@ async fn async_main() -> Result<i32> {
     }
 
     let server_opts = Arc::new(server::ServerOpts {
-        proxy: config.proxy,
-        no_proxy: config.no_proxy,
         sandbox_rules: Arc::clone(&server_sandbox_rules),
         config_path: config_path.clone(),
         daemon_config: Arc::clone(&daemon_config_arc),
