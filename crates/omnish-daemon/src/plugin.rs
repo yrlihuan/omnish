@@ -677,7 +677,7 @@ mod tests {
             }]
         }"#);
         let mgr = PluginManager::load(tmp.path(), &HashMap::new());
-        let mut reg = crate::tool_registry::ToolRegistry::new();
+        let reg = crate::tool_registry::ToolRegistry::new();
         mgr.register_all(&reg);
         let defs = reg.all_defs();
         assert_eq!(defs.len(), BUILTIN_COUNT + 1);
@@ -699,7 +699,7 @@ mod tests {
             }]
         }"#);
         let mgr = PluginManager::load(tmp.path(), &HashMap::new());
-        let mut reg = crate::tool_registry::ToolRegistry::new();
+        let reg = crate::tool_registry::ToolRegistry::new();
         mgr.register_all(&reg);
         let defs = reg.all_defs();
         assert_eq!(defs.len(), BUILTIN_COUNT + 1);

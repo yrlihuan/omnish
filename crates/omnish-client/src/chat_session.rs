@@ -96,6 +96,164 @@ fn segment_to_label(seg: &str) -> String {
         .join(" ")
 }
 
+/// Whether a config path refers to a sensitive value (API key, token, etc.)
+fn is_sensitive_path(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.contains("api_key")
+        || lower.contains("secret")
+        || lower.contains("token")
+        || lower.contains("password")
+}
+
+/// Mask a sensitive value for display.
+fn mask_sensitive_value(old: &str) -> (String, String) {
+    if old.is_empty() {
+        ("(empty)".into(), "***hidden***".into())
+    } else {
+        (format!("***{} chars***", old.len()), "***hidden***".into())
+    }
+}
+
+/// Build a human-readable label for a config item from its config path segments
+/// (e.g. "LLM > Default" from ["llm", "use_cases", "completion"]).
+fn item_display_label(segments: Vec<String>, item_label: &str) -> String {
+    let parts: Vec<String> = segments.into_iter()
+        .filter(|s| s != "__new__")
+        .map(|s| segment_to_label(&s))
+        .collect();
+    match parts.len() {
+        0 => item_label.to_string(),
+        1 => format!("{} > {}", parts[0], item_label),
+        _ => format!("{} > {}", parts[..parts.len() - 1].join(" > "), item_label),
+    }
+}
+
+/// A single config change detected between pre- and post-edit snapshots.
+struct ConfigDiff {
+    label: String,
+    old_value: String,
+    new_value: String,
+}
+
+/// Extract the current value string from a ConfigItem.
+fn item_value(item: &ConfigItem) -> String {
+    match &item.kind {
+        ConfigItemKind::Toggle { value } => value.to_string(),
+        ConfigItemKind::Select { options, selected } => {
+            options.get(*selected).cloned().unwrap_or_default()
+        }
+        ConfigItemKind::TextInput { value } => {
+            if value.is_empty() {
+                "(empty)".to_string()
+            } else {
+                value.clone()
+            }
+        }
+    }
+}
+
+/// Compute diff between two config item snapshots by matching on `path`.
+/// Uses BTreeMap for deterministic traversal order and sorts output by label.
+fn compute_config_diff(old_items: &[ConfigItem], new_items: &[ConfigItem]) -> Vec<ConfigDiff> {
+    let old_map: std::collections::BTreeMap<&str, &ConfigItem> = old_items.iter()
+        .map(|i| (i.path.as_str(), i))
+        .collect();
+    let new_map: std::collections::BTreeMap<&str, &ConfigItem> = new_items.iter()
+        .map(|i| (i.path.as_str(), i))
+        .collect();
+
+    let mut diffs = Vec::new();
+
+    // Changed or removed items (sorted by path via BTreeMap)
+    for (path, old_item) in &old_map {
+        let segments = omnish_common::config_edit::split_key_path(path);
+        if let Some(new_item) = new_map.get(path) {
+            let real_old = item_value(old_item);
+            let real_new = item_value(new_item);
+            if real_old != real_new {
+                let (old_display, new_display) = if is_sensitive_path(path) {
+                    mask_sensitive_value(&real_old)
+                } else {
+                    (real_old, real_new)
+                };
+                diffs.push(ConfigDiff {
+                    label: item_display_label(segments, &new_item.label),
+                    old_value: old_display,
+                    new_value: new_display,
+                });
+            }
+        } else {
+            let display = if is_sensitive_path(path) {
+                "***hidden***".to_string()
+            } else {
+                item_value(old_item)
+            };
+            diffs.push(ConfigDiff {
+                label: item_display_label(segments, &old_item.label),
+                old_value: display,
+                new_value: "(removed)".to_string(),
+            });
+        }
+    }
+
+    // Added items (present in new but not old)
+    for (path, new_item) in &new_map {
+        if !old_map.contains_key(path) {
+            let display = if is_sensitive_path(path) {
+                "***hidden***".to_string()
+            } else {
+                item_value(new_item)
+            };
+            let segments = omnish_common::config_edit::split_key_path(path);
+            diffs.push(ConfigDiff {
+                label: item_display_label(segments, &new_item.label),
+                old_value: "(not set)".to_string(),
+                new_value: display,
+            });
+        }
+    }
+
+    // Sort by label for deterministic display order
+    diffs.sort_by(|a, b| a.label.cmp(&b.label));
+    diffs
+}
+
+/// Truncate a string to max `n` Unicode characters (not bytes), appending "…" if truncated.
+fn char_truncate(s: &str, n: usize) -> String {
+    let count = s.chars().count();
+    if count <= n {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(n.saturating_sub(1)).collect();
+        format!("{}…", truncated)
+    }
+}
+
+/// Display a list of config diffs to the user.
+fn display_config_diff(diffs: &[ConfigDiff]) {
+    let val_width = 40; // wide enough for URLs and model names
+    let max_label_chars = diffs.iter().map(|d| d.label.chars().count()).max().unwrap_or(0);
+    let col2_start = (max_label_chars + 2).clamp(22, 60);
+
+    write_stdout("\r\n\x1b[1mConfig changes:\x1b[0m\r\n");
+
+    for d in diffs {
+        let label = char_truncate(&d.label, col2_start);
+        let label_padding = col2_start.saturating_sub(label.chars().count()) + 2;
+
+        write_stdout(&format!(
+            "  {}{:<pad$}\x1b[90m{:<w$}\x1b[0m \x1b[33m→\x1b[0m \x1b[32m{}\x1b[0m\r\n",
+            label,
+            "",
+            char_truncate(&d.old_value, val_width),
+            char_truncate(&d.new_value, val_width),
+            pad = label_padding,
+            w = val_width,
+        ));
+    }
+    write_stdout("\r\n");
+}
+
 /// Build MenuItem tree from flat ConfigItems and handler info.
 fn build_menu_tree(
     items: &[ConfigItem],
@@ -1979,6 +2137,9 @@ impl ChatSession {
             return;
         }
 
+        // Snapshot initial state for diff computation on exit
+        let initial_items = items.clone();
+
         let (mut menu_items, path_map_initial) = build_menu_tree(&items, &handlers);
         let path_map = RefCell::new(path_map_initial);
 
@@ -2054,9 +2215,16 @@ impl ChatSession {
             widgets::menu::run_menu("Config", &mut menu_items, Some(&mut handler_callback), Some(&mut change_callback))
         });
 
-        // With immediate save, Done/Cancelled both just exit — no batch save needed
+        // Show diff of changes on exit
         match result {
-            widgets::menu::MenuResult::Done(_) | widgets::menu::MenuResult::Cancelled => {}
+            widgets::menu::MenuResult::Done(_) | widgets::menu::MenuResult::Cancelled => {
+                if let Ok(Message::ConfigResponse { items: final_items, .. }) = rpc.call(Message::ConfigQuery).await {
+                    let diff = compute_config_diff(&initial_items, &final_items);
+                    if !diff.is_empty() {
+                        display_config_diff(&diff);
+                    }
+                }
+            }
         }
     }
 
