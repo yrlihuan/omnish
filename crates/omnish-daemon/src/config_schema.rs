@@ -28,6 +28,8 @@ struct SchemaItem {
     options: Option<Vec<String>>,
     #[serde(default)]
     pub handler: Option<String>,
+    #[serde(default)]
+    pub default: Option<String>,
 }
 
 fn parse_schema() -> Vec<SchemaItem> {
@@ -80,6 +82,8 @@ pub fn build_config_items(
         })
         .collect();
 
+    // Only submenus with an actual handler — label-only submenus don't form
+    // a handler subtree, so their children are treated as independent items.
     let handler_paths: Vec<&str> = schema.iter()
         .filter(|s| s.handler.is_some())
         .map(|s| s.path.as_str())
@@ -142,6 +146,7 @@ pub fn build_config_items(
                 } else {
                     s.toml_key.as_ref()
                         .and_then(|k| resolve_value(&config_value, k))
+                        .or_else(|| s.default.clone())
                         .unwrap_or_default()
                 };
                 ConfigItemKind::TextInput { value }
@@ -180,6 +185,7 @@ pub fn build_config_items(
                 } else {
                     s.toml_key.as_ref()
                         .and_then(|k| resolve_value(&config_value, k))
+                        .or_else(|| s.default.clone())
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(false)
                 };
@@ -474,8 +480,8 @@ mod tests {
     fn test_build_config_items_returns_handlers() {
         let config = DaemonConfig::default();
         let (_items, handlers) = build_config_items(&config, &[]);
-        // Label-only submenu (llm) + handler submenu (add_backend)
-        assert_eq!(handlers.len(), 2);
+        // Label-only submenus (llm, shell_completion) + handler submenu (add_backend)
+        assert_eq!(handlers.len(), 3);
         let llm = handlers.iter().find(|h| h.path == "llm").unwrap();
         assert_eq!(llm.label, "LLM");
         assert_eq!(llm.handler, "");

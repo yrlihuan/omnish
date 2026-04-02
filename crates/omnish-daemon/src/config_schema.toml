@@ -9,32 +9,42 @@
 #   options_from — (select) TOML table whose keys become options at runtime
 #   options      — (select) static option list
 #   handler      — (submenu) Rust function name for grouped change handling
+#   default      — fallback value when toml_key is absent from config
 
 # ── General > Hotkeys ─────────────────────────────────
 [[items]]
 path = "general.hotkeys.command_prefix"
-label = "Enter chat mode hotkey"
+label = "Enter chat mode"
 kind = "text"
 toml_key = "shell.command_prefix"
+default = ":"
 
 [[items]]
 path = "general.hotkeys.resume_prefix"
-label = "Fast resume hotkey"
+label = "Resume chat"
 kind = "text"
 toml_key = "shell.resume_prefix"
+default = "::"
 
-# ── General > Shell Completion ────────────────────────
+# ── General > Completion ──────────────────────────────
+[[items]]
+path = "general.shell_completion"
+label = "Completion"
+kind = "submenu"
+
 [[items]]
 path = "general.shell_completion.completion_enabled"
 label = "Completion enabled"
 kind = "toggle"
 toml_key = "shell.completion_enabled"
+default = "true"
 
 [[items]]
 path = "general.shell_completion.ghost_timeout_ms"
 label = "Ghost text timeout (ms)"
 kind = "text"
 toml_key = "shell.ghost_timeout_ms"
+default = "10000"
 
 # ── General > Auto Update ────────────────────────────
 [[items]]
