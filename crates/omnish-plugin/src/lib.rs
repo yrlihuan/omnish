@@ -56,6 +56,7 @@ fn build_sandbox_profile(
          (deny file-write* (subpath \"/\"))\n\
          (allow file-write* (subpath \"/tmp\"))\n\
          (allow file-write* (literal \"/dev/null\"))\n\
+         (allow file-write* (literal \"/dev/tty\"))\n\
          (allow file-write* (subpath \"/opt/homebrew\"))\n",
     );
 
@@ -121,7 +122,8 @@ fn apply_landlock(writable_paths: &[&std::path::Path]) -> Result<(), String> {
 #[cfg(target_os = "linux")]
 fn common_writable_paths(cwd: Option<&std::path::Path>) -> (Vec<std::path::PathBuf>, Option<std::path::PathBuf>) {
     let mut paths: Vec<std::path::PathBuf> = [
-        "/tmp", "/dev/null", "/home/linuxbrew/.linuxbrew", "/var/spool/cron",
+        "/tmp", "/dev/null", "/dev/ptmx", "/dev/pts", "/dev/tty", "/dev/shm",
+        "/home/linuxbrew/.linuxbrew", "/var/spool/cron",
     ].iter().map(std::path::PathBuf::from).collect();
 
     // Well-known dotdirs that system commands commonly write to
