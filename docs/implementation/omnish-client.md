@@ -19,7 +19,7 @@ omnish-client 是终端用户直接交互的客户端程序，作为PTY代理运
 11. **自更新**: `/update`命令透明自重启，支持检测磁盘二进制变更后自动更新；协议级 `UpdateCheck` 轮询守护进程获取最新版本并后台下载；下载使用 PID 隔离 tmp 文件防止多进程冲突
 12. **粘贴支持**: 括号粘贴模式、快速粘贴检测、多行粘贴折叠显示
 13. **Markdown渲染**: LLM响应使用pulldown-cmark解析并渲染为ANSI终端样式
-14. **守护进程配置**: `/config` 命令通过 Menu widget 交互式编辑 daemon.toml 配置，支持 Toggle、Select、TextInput、Submenu、Button 等项目类型；支持即时逐项保存（on_change 回调）和失败自动回滚
+14. **守护进程配置**: `/config` 命令通过 Menu widget 交互式编辑 daemon.toml 配置，支持 Toggle、Select、TextInput、Submenu、Button 等项目类型；支持即时逐项保存（on_change 回调）和失败自动回滚；退出时显示配置变更 diff（变更前后值对比）；打开时自动刷新 backend use_proxy 等陈旧值；支持带点号的 backend 名称（如 gemini-3.1）
 
 ## 重要数据结构
 
@@ -129,6 +129,7 @@ Shell完成建议处理器，管理LLM驱动的命令完成。
 - 即时提示后请求：新提示符后允许立即发送完成请求
 - 短前缀优先第二建议：当第一个建议是短前缀时偏好第二个（issue #95）
 - `/update`后防洪：防止 `/update` 执行后因状态重置导致的完成请求洪泛（issue #224）
+- 空输入补全拒绝修复：被拒绝后又恢复为空输入的补全请求不再重复发送（commit 1b3b09f, 644a7f9）
 
 ### `ShellInputTracker`
 Shell命令行输入跟踪器，通过观察转发的字节和OSC 133状态转换跟踪当前shell命令行输入。
@@ -544,6 +545,10 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 - `Done(Vec<MenuChange>)` - 用户正常退出（顶层 ESC），包含所有修改
 - `Cancelled` - 用户按 Ctrl-C 取消，丢弃所有变更
 
+**配置变更 Diff 显示:**
+- `/config` 退出时显示变更前后值的 diff 对比，列出所有被修改的配置项及其旧值和新值
+- 页面布局重构为分节（sections）显示，改善配置项的组织结构
+
 **`MenuChange` 结构体:**
 - `path: String` - 点分路径（如 `"llm.default"` 或 `"shell.developer_mode"`）
 - `value: String` - 新值的字符串表示
@@ -568,6 +573,7 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 - 进入 Submenu 时 push 当前光标和滚动状态
 - ESC 返回上一级时 pop 并恢复状态
 - 面包屑路径（`breadcrumb_parts`）显示当前层级位置，格式为 `"Config > LLM > Backends"`
+- 面包屑重复修复：preset provider 选择后按 ESC 返回时不再出现重复的面包屑层级
 
 #### 即时变更回调与失败回滚
 
@@ -726,12 +732,13 @@ Config > LLM                          ← 面包屑（带层级指示）
 
 **方法:**
 - `new() -> Self` - 创建，自动查找同目录下的 `omnish-plugin` 二进制
-- `execute_tool(plugin_name, tool_name, input, cwd, sandboxed) -> (String, bool)` - 执行工具
+- `execute_tool(plugin_name, tool_name, input, cwd, sandboxed) -> (String, bool, bool)` - 执行工具，返回 `(content, is_error, needs_summarization)`
   - `plugin_name`: `"builtin"` 使用omnish-plugin二进制，否则在 `~/.omnish/plugins/{name}/{name}` 查找
   - `tool_name`: 工具名称
   - `input`: JSON格式的工具输入
   - `cwd`: 可选工作目录（自动注入到input中）
   - `sandboxed`: 是否应用Landlock沙箱
+  - 返回值第三个字段 `needs_summarization`：工具执行结果是否需要 LLM 摘要化处理，由工具插件响应中的 `needs_summarization` 字段决定
 
 **Landlock沙箱:**
 - 通过 `pre_exec` 在子进程fork后exec前应用
@@ -759,7 +766,7 @@ Config > LLM                          ← 面包屑（带层级指示）
 1. 守护进程发送 `ChatToolCall` 消息（包含plugin_name、tool_name、input）
 2. 客户端本地通过 `ClientPluginManager` 执行工具
 3. 多个工具调用并行执行（`tokio::task::spawn_blocking`）
-4. 结果通过 `ChatToolResult` 消息返回守护进程
+4. 结果通过 `ChatToolResult` 消息返回守护进程，携带 `needs_summarization` 标志指示结果是否需要 LLM 摘要化处理
 5. 中间结果使用 `rpc.call()` 发送，最后一个使用 `rpc.call_stream()` 以获取新的响应流
 
 ## /update 自更新系统 (issue #217)
@@ -1107,7 +1114,7 @@ Config > LLM                          ← 面包屑（带层级指示）
 - `/help` — 显示所有可用命令
 - `/tasks` — 查看或管理定时任务
 - `/update` — 透明自重启到磁盘最新版本（issue #217）
-- `/config` — 通过Menu widget交互式编辑daemon配置（commit cc08b00），发送ConfigQuery/ConfigUpdate协议消息；使用即时逐项保存模式（`on_change` 回调每次变更立即发送 `ConfigUpdate` RPC），失败时自动回滚；Done/Cancelled 均直接退出（无需批量保存）
+- `/config` — 通过Menu widget交互式编辑daemon配置（commit cc08b00），发送ConfigQuery/ConfigUpdate协议消息；使用即时逐项保存模式（`on_change` 回调每次变更立即发送 `ConfigUpdate` RPC），失败时自动回滚；Done/Cancelled 均直接退出（无需批量保存）；退出时显示配置变更 diff（变更前后值对比），页面布局重构为分节显示；打开时自动刷新陈旧的 backend use_proxy 值（commit 19ad611）；支持带点号的 backend 名称（如 gemini-3.1）
 - `/test picker [N]` — 隐藏测试命令（不在 `/help` 中显示），使用20个虚拟条目测试picker组件；`N` 为初始选中索引（commit 5df1e1b）
 - `/test menu` — 隐藏测试命令，使用虚拟多级菜单测试menu组件；包含 "Save failure test" 子菜单（Toggle/Select/TextInput 项始终保存失败，用于测试 on_change 回滚行为）；短 API key 显示 "****" 而非 "(set)"；输出消息使用 "No batch changes" / "Batch changes" 前缀
 
@@ -1475,6 +1482,7 @@ omnish-client 包含客户端事件日志系统，用于调试和监控异步事
 - `ChatToolResult` - 工具执行结果
   - `content`: 结果文本
   - `is_error`: 是否为错误
+  - `needs_summarization`: 是否需要 LLM 摘要化处理（由 `ClientPluginManager.execute_tool()` 转发）
 
 **工具定义:**
 - `CommandQueryTool` - 查询命令历史和上下文的工具（daemon实现）
@@ -1671,6 +1679,7 @@ daemon_addr = "~/.omnish/omnish.sock"
 - 使用复合赋值`__omnish_last_ec=$? __omnish_in_precmd=1`立即捕获退出码，避免被`PROMPT_COMMAND`中的其他命令覆盖
 - 对命令和PWD中的分号进行转义，确保OSC 133解析正确
 - `NoReadline` 事件检测bash无readline支持（bind -x不可用，issue #226）
+- Shell hook 警告（如 readline 不可用）重定向到事件日志（`event_log`），不再直接输出到终端（commit e855123）
 
 **CWD跟踪:**
 - 实时跟踪命令执行时的当前工作目录
@@ -1985,3 +1994,21 @@ daemon_addr = "~/.omnish/omnish.sock"
 
 **Backend 排序 (config_schema.rs):**
 - 配置菜单中 Backend 按名称排序显示，保证一致的排列顺序
+
+### 2026-04-02（10个commit）
+
+**/config 菜单改进:**
+- 退出 `/config` 菜单时显示配置变更 diff（变更前后值对比），页面布局重构为分节显示
+- Menu widget 面包屑重复修复：preset provider 选择后按 ESC 返回时不再出现重复层级
+- 打开 `/config` 时自动刷新陈旧的 backend use_proxy 值（commit 19ad611）
+- 带点号的 backend 名称（如 gemini-3.1）在 /config 菜单中正确显示
+
+**LLM 工具摘要化标志:**
+- `ChatToolResult` 新增 `needs_summarization` 字段，指示工具结果是否需要 LLM 摘要化处理
+- `ClientPluginManager.execute_tool()` 返回值扩展为 `(String, bool, bool)`，第三个值为 `needs_summarization`，从工具插件响应中转发
+
+**Shell hook 警告重定向 (commit e855123):**
+- OSC 133 shell hook 警告（如 readline 不可用）改为记录到事件日志（`event_log`），不再直接输出到终端
+
+**补全修复 (commit 1b3b09f, 644a7f9):**
+- 被拒绝后又恢复为空输入的补全请求不再重复发送

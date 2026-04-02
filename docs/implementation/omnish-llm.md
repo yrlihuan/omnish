@@ -23,6 +23,7 @@ LLM请求的工具调用：
 - `id`: 工具调用ID（用于关联结果）
 - `name`: 工具名称
 - `input`: 工具输入参数（`serde_json::Value`）
+- `extra`: 供应商特定扩展字段（`serde_json::Map<String, serde_json::Value>`），使用 `#[serde(flatten)]` 透明序列化/反序列化，空时跳过序列化。用于保留如 Gemini `thought_signature` 等供应商特有字段，确保多轮对话回传时不丢失
 
 #### `ToolResult`
 工具执行结果：
@@ -102,6 +103,7 @@ LLM停止生成的原因：
 - `Completion`: 自动命令补全
 - `Analysis`: 分析任务（每日/每小时总结等）
 - `Chat`: 多轮对话
+- `Summarize`: 工具结果摘要，在将工具执行结果反馈回对话前进行压缩/总结
 
 #### `TriggerType` 枚举
 触发类型枚举，表示LLM请求的触发方式：
@@ -175,9 +177,10 @@ Anthropic API后端实现：
 - `max_tokens`固定为8192
 - 多轮对话支持：conversation历史映射为messages数组，上下文注入第一条user消息
 - 系统提示词支持：通过Anthropic `system` 顶层字段（数组格式，附带`cache_control`用于提示缓存）
-- 思考模式：`enable_thinking == Some(true)` 时启用（budget_tokens: 4096），`Some(false)` 时发送禁用参数
+- 思考模式：`enable_thinking == Some(true)` 时启用（budget_tokens: 4096）；`Some(false)` 和 `None` 时均不发送思考参数（不再为 `Some(false)` 显式发送禁用参数）
 - 思考块签名保留：解析响应中`thinking` block的`signature`字段并存储为`Option<String>`，多轮对话回传时包含签名（Anthropic API要求）
 - 工具调用支持：通过`tools`字段提供工具定义，解析响应中的`tool_use` content blocks
+- 供应商扩展字段捕获：解析 `tool_use` content blocks 时，除 `id`/`name`/`input` 外的字段保留到 `ToolCall.extra`，确保供应商特有字段（如签名等）在多轮回传时不丢失
 - **提示缓存（Prompt Caching）：** 通过`cache_control: {"type": "ephemeral"}`标记实现Anthropic KV cache，设置最多3个缓存断点：
   - 工具定义：最后一个工具附带`cache_control`（工具在调用间稳定不变）
   - 系统提示词：转为数组格式并附带`cache_control`
@@ -197,12 +200,14 @@ OpenAI兼容API后端实现：
 - `max_content_chars`字段：存储该后端的上下文最大字符数（`Option<usize>`），由工厂函数通过`effective_max_content_chars()`计算后传入
 - `model_name()`：返回模型名称（`&self.model`）
 - 使用OpenAI兼容的Chat Completions API
+- `base_url` 尾部斜杠自动剥离：初始化时去除末尾 `/`，防止拼接路径时产生双斜杠导致 404
 - 多轮对话支持：conversation历史映射为messages数组
 - 系统提示词支持：作为 `role: "system"` 消息前置
 - 思考模式：通过 `chat_template_kwargs` 传递 `enable_thinking: false`（适配vLLM/Qwen3）
 - 工具调用支持：通过`tools`字段提供工具定义，解析响应中的`tool_calls`
 - `extract_thinking()` 辅助函数解析响应中的 `<think>` 标签（提取为 `ContentBlock::Thinking`）
-- `convert_extra_messages()` 辅助函数将 Anthropic 格式的 extra_messages（含 `tool_use`/`tool_result`/`thinking` 内容块）转换为 OpenAI 格式（`tool_calls`/`tool` role/`reasoning_content`）
+- `convert_extra_messages()` 辅助函数将 Anthropic 格式的 extra_messages（含 `tool_use`/`tool_result`/`thinking` 内容块）转换为 OpenAI 格式（`tool_calls`/`tool` role/`reasoning_content`），同时保留 `ToolCall.extra` 中的供应商特定扩展字段
+- 错误诊断增强：非 OpenAI 标准格式的错误响应（无 `error.message` 字段）和 JSON 解码失败时，错误信息包含完整响应体内容，便于调试非标准 API 实现
 - 连接错误自动重试：`.send()`遇到连接错误（`is_connect()`/`is_request()`）时最多重试3次，指数退避（5s起步，最大60s）
 - 429自动重试：最多3次重试，指数退避，支持解析`retry-after`响应头
 - Usage解析：从API响应中提取`prompt_tokens`→`input_tokens`、`completion_tokens`→`output_tokens`、`cached_tokens`→`cache_read_input_tokens`
@@ -749,3 +754,26 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
    - 现在仅引用 `<hourly_summaries>` 中各时段的工作摘要，不再直接包含原始命令和对话记录的XML标签
 
 **相关issue:** #465
+
+### 2026-04-02 - ToolCall扩展字段、UseCase::Summarize、思考参数精简、OpenAI错误诊断增强
+
+**主要变更:**
+
+1. **`ToolCall` 新增 `extra` 字段**:
+   - 类型为 `serde_json::Map<String, serde_json::Value>`，使用 `#[serde(flatten)]` 透明序列化
+   - 保留供应商特定字段（如 Gemini `thought_signature`），确保多轮对话回传不丢失
+   - 空时通过 `skip_serializing_if` 跳过序列化
+
+2. **`UseCase` 新增 `Summarize` 变体**:
+   - 用于工具结果摘要场景，在将工具执行结果反馈回对话前进行压缩/总结
+   - 可路由到独立的模型后端
+
+3. **AnthropicBackend 思考参数精简**:
+   - 思考参数仅在 `enable_thinking == Some(true)` 时发送启用参数
+   - `Some(false)` 和 `None` 时均不再发送思考参数（之前 `Some(false)` 会显式发送禁用参数）
+   - 解析 `tool_use` blocks 时捕获供应商扩展字段到 `ToolCall.extra`
+
+4. **OpenAiCompatBackend 增强**:
+   - `base_url` 初始化时自动剥离尾部斜杠，防止拼接路径产生双斜杠导致 404 错误
+   - 错误诊断增强：非 OpenAI 标准格式的错误响应和 JSON 解码失败时，错误信息包含完整响应体
+   - `convert_extra_messages()` 转换时保留 `ToolCall.extra` 中的供应商特定扩展字段

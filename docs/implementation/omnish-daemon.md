@@ -94,8 +94,8 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 ### `PluginManager`
 元数据驱动的插件管理器，从 `~/.omnish/plugins/` 下各子目录的 `tool.json` 文件加载工具定义，包含：
 - `plugins_dir`: `PathBuf` - 插件根目录路径
-- `plugins`: `Vec<PluginInfo>` - 已加载的插件信息列表
-- `tool_index`: `HashMap<String, (usize, usize)>` - 工具名 → (plugin_index, tool_index) 的快速查找表
+- `plugins`: `RwLock<Vec<PluginInfo>>` - 已加载的插件信息列表（RwLock 支持运行时热重载）
+- `tool_index`: `RwLock<HashMap<String, (usize, usize)>>` - 工具名 → (plugin_index, tool_index) 的快速查找表
 - `prompt_cache`: `RwLock<PromptCache>` - 缓存的工具描述覆盖（来自 `tool.override.json`）
 
 **主要特点:**
@@ -110,14 +110,20 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - **inotify 热重载**：Linux 上通过 inotify 监视 `tool.override.json` 文件变更，自动调用 `reload_overrides()` 更新；非 Linux 平台每 5 秒轮询
 - **内嵌资源自动安装**：守护进程启动时将编译期内嵌的 `tool.json` 写入 `~/.omnish/plugins/builtin/`（每次启动覆盖），`tool.override.json.example` 仅在不存在时写入
 - **按需自动安装捆绑插件**：`auto_install_bundled_plugins()` 检测 `daemon.toml` 中 `[tools.<name>]` 配置是否包含 `api_key` 字段，若有则自动将对应捆绑插件（如 `web_search`）写入 `~/.omnish/plugins/` 目录
+- **web_fetch 内置插件**：使用 jina.ai reader 抓取网页内容的内置插件，始终自动安装（无需 API key）。包含可执行脚本 `web_fetch`、外部格式化器 `web_fetch_formatter`，通过 `needs_summarization` 标志触发 LLM 摘要化
 - **ToolRegistry 集成**：`register_all()` 方法将所有已加载插件的工具元数据（display_name、formatter 名称、status_template、plugin_type、plugin_name）批量注册到 `ToolRegistry` 中，供智能体循环统一查询
 - **多行描述支持**：`tool.json` 和 `tool.override.json` 中的 `description` 字段可以是字符串或字符串数组（以 `\n` 拼接）
+- **config_params 声明**：`tool.json` 可声明 `config_params` 数组（每个含 `name`、`label`、`kind`），声明可配置参数供 `/config` 菜单生成。插件的 `config_params` 在 `PluginConfigMeta` 中暴露给配置系统
+- **热重载**：`reload_plugins(new_config, registry)` 方法处理插件的动态启用/禁用。ConfigWatcher 订阅 `ConfigSection::Plugins`，配置变更时触发重载。禁用插件时清除其工具并调用 `registry.unregister_by_plugin()`；启用时重新读取 `tool.json` 并注册工具
+- **enabled 标志**：每个非 builtin 插件可通过 `[plugins.<name>] enabled = false` 禁用，禁用时工具列表清空
 
 ### `PluginInfo`（内部结构）
 单个插件的加载信息：
 - `dir_name`: `String` - 插件子目录名（如 `builtin`）
 - `plugin_type`: `PluginType` - 插件类型
 - `tools`: `Vec<ToolEntry>` - 工具条目列表
+- `formatter_binary`: `Option<String>` - 外部格式化器二进制路径
+- `config_params`: `Vec<ConfigParam>` - 声明的可配置参数列表
 
 ### `ToolEntry`（内部结构）
 单个工具的定义和元数据：
@@ -127,9 +133,10 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - `formatter`: `String` - 格式化器名称（如 `"read"`、`"edit"`、`"default"`）
 - `formatter_binary`: `Option<String>` - 外部格式化器二进制路径（来自 `tool.json` 的 `formatter_binary` 字段）
 - `sandboxed`: `bool` - 是否启用沙箱
+- `summarization_prompt`: `Option<String>` - LLM 摘要化提示词模板（设置后工具结果可通过 LLM 进行后处理摘要）
 
 ### `ToolRegistry`
-统一工具元数据注册表（定义在 `crates/omnish-daemon/src/tool_registry.rs`），在守护进程启动时由 `PluginManager::register_all()` 和 `CommandQueryTool::register()` 填充，此后以 `Arc` 共享只读使用。
+统一工具元数据注册表（定义在 `crates/omnish-daemon/src/tool_registry.rs`），在守护进程启动时由 `PluginManager::register_all()` 和 `CommandQueryTool::register()` 填充，此后以 `Arc` 共享只读使用。所有字段均使用 `RwLock` 以支持运行时插件热重载。
 
 **核心字段：**
 - `tools`: `HashMap<String, ToolMeta>` - 工具名 → 元数据（display_name、formatter、status_template、custom_status、plugin_type、plugin_name）
@@ -139,12 +146,14 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 
 **主要方法：**
 - `register(meta)` / `register_def(def)` — 启动时注册工具元数据和定义
+- `unregister_by_plugin(plugin_name)` — 移除指定插件的所有工具和定义（热重载禁用插件时使用）
 - `display_name(tool_name)` — 返回工具显示名，未注册时回退到工具名
 - `formatter_name(tool_name)` — 返回格式化器名称，未注册时回退 `"default"`
 - `status_text(tool_name, input)` — 若设置了 `custom_status` 则调用之，否则使用 `status_template` 插值
 - `plugin_type(tool_name)` / `plugin_name(tool_name)` — 查询插件类型和插件目录名
 - `all_defs()` — 返回所有工具定义（应用运行时描述覆盖后）
 - `update_overrides(descriptions, override_params)` — 热重载时原子更新运行时覆盖
+- `summarization_prompt(tool_name)` — 返回工具的 LLM 摘要化提示词模板
 
 **ToolMeta 结构：**
 - `name`: `String` - 工具名
@@ -154,6 +163,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - `custom_status`: `Option<CustomStatusFn>` - 自定义状态文本函数（`Arc<dyn Fn(&str, &Value) -> String>`）
 - `plugin_type`: `Option<PluginType>` - 插件类型（DaemonTool / ClientTool）
 - `plugin_name`: `Option<String>` - 所属插件目录名
+- `summarization_prompt`: `Option<String>` - LLM 摘要化提示词模板
 
 ### `ConversationManager`
 多轮聊天对话管理器，负责线程的创建、存储、加载和删除，包含：
@@ -164,6 +174,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - 每个线程以 UUID 命名，存储为 JSONL 文件（每行一个原始 JSON 消息）
 - **原始JSON存储格式**：存储完整的 LLM API 消息格式，包括 tool_use、tool_result 等复杂内容块，更灵活，便于未来扩展
 - 启动时从磁盘加载所有线程到内存，后续读取直接走内存缓存
+- **启动时孤立 tool_use 消毒**：`sanitize_orphaned_tool_use()` 在启动加载时扫描所有线程，检测缺少匹配 `tool_result` 的 `tool_use` 块（因中断或崩溃导致），自动注入合成错误 `tool_result`（内容为 "tool execution was interrupted"），防止后续 API 调用因孤立 tool_use 被拒绝。运行时不执行消毒（尾部孤立 tool_use 表示工具正在执行中）
 - 写入时双写：同步更新内存缓存 + append 到磁盘 JSONL 文件
 - **不持久化 `<system-reminder>` 标签**：system-reminder 已移至系统提示词中，用户消息以纯查询文本存储
 - 支持按文件修改时间排序列出所有对话
@@ -211,7 +222,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 共享文件监视模块（定义在 `crates/omnish-daemon/src/file_watcher.rs`），为 `ConfigWatcher` 和 `PluginManager` 提供统一的文件变更通知基础设施。
 
 **架构：**
-- Linux：使用单个 `inotify` 实例监视所有注册路径。对于文件路径，监视其**父目录**（使用 `IN_CREATE | IN_CLOSE_WRITE | IN_MOVED_TO` 事件），以兼容编辑器的 save-and-rename 模式（vim、`sed -i` 等）
+- Linux：使用单个 `inotify` 实例监视所有注册路径。对于文件路径，监视其**父目录**（使用 `IN_CLOSE_WRITE | IN_MOVED_TO` 事件，不含 `IN_CREATE` 以避免编辑器写入临时文件时的虚假重载），以兼容编辑器的 save-and-rename 模式（vim、`sed -i` 等）
 - 非 Linux：每 5 秒轮询检查文件修改时间
 - `watch(path)` 返回 `tokio::sync::watch::Receiver<()>`，文件变更时触发通知
 - 同一 `FileWatcher` 实例可被多个模块共享（`Arc` 包装），避免重复创建 inotify 描述符
@@ -226,13 +237,17 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 
 **`ConfigSection` 枚举：**`Tools`、`Sandbox`、`Context`、`Llm`、`Tasks`、`Plugins`
 
+**`WATCHED_SECTIONS` 常量：**`[Sandbox, Llm, Plugins, Tasks]`
+
 **工作流程：**
 1. `ConfigWatcher::new()` 注册 `FileWatcher` 监视，内部 spawn 一个 reload 任务
 2. 文件变更时调用 `reload()`：文件读取和 TOML 解析在锁外完成，再短暂获取写锁对比各节点差异
-3. `reload()` 遍历 `WATCHED_SECTIONS`（`[ConfigSection::Sandbox, ConfigSection::Llm]`），通过 match 分支检测各节点差异，仅发生变更的节点才向订阅者发送通知
+3. `reload()` 遍历 `WATCHED_SECTIONS`，通过 match 分支检测各节点差异，仅发生变更的节点才向订阅者发送通知
 4. Sandbox 节点差异检测：对比 sandbox 配置
 5. Llm 节点差异检测：对比 `current.llm != new_config.llm || current.proxy != new_config.proxy || current.no_proxy != new_config.no_proxy`
-6. 各模块通过 `subscribe(section)` 获取 `watch::Receiver`，在自身 spawn 的任务中等待变更并更新本地状态
+6. Plugins 节点差异检测：对比 `current.plugins != new_config.plugins`
+7. Tasks 节点差异检测：对比 `current.tasks != new_config.tasks`
+8. 各模块通过 `subscribe(section)` 获取 `watch::Receiver`，在自身 spawn 的任务中等待变更并更新本地状态
 
 **`ConfigSection::from_toml_key()`**（测试辅助函数）：将 TOML 键名映射到 `ConfigSection` 枚举，用于 `test_all_schema_paths_covered_by_config_watcher` 守护测试验证所有 schema 路径都已被 `WATCHED_SECTIONS` 覆盖。
 
@@ -244,6 +259,16 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - `main.rs` 中 spawn 后台任务订阅 `ConfigSection::Llm`
 - 收到变更后重建 `MultiBackend`，成功时原子替换 `SharedLlmBackend` 中的值
 - 重建失败时保留当前后端并记录 warning 日志，不影响服务
+
+**PluginManager 热重载集成：**
+- `main.rs` 中 spawn 后台任务订阅 `ConfigSection::Plugins`
+- 收到变更后调用 `PluginManager::reload_plugins(new_config.plugins, &tool_registry)` 处理插件的启用/禁用切换
+- 禁用插件时清除工具并调用 `ToolRegistry::unregister_by_plugin()`；启用时重新读取 `tool.json` 并注册
+
+**TaskManager 热重载集成：**
+- `main.rs` 中 spawn 后台任务订阅 `ConfigSection::Tasks`
+- 收到变更后调用 `create_all_tasks(&new_config.tasks)` 重建任务列表，再调用 `TaskManager::reload(tasks, ctx)` 执行增量更新
+- 增量更新仅移除/重建配置（schedule/enabled）发生变化的任务，未变化的任务保持原有调度位置
 
 ### `UpdateCache`（`crates/omnish-daemon/src/update_cache.rs`）
 更新包缓存管理器，管理 `~/.omnish/updates/{os}-{arch}/` 目录下的平台安装包，为客户端版本检查和包分发提供支持。
@@ -536,8 +561,6 @@ format!("{}\n\n{}", system_prompt, reminder)
 
 ```
 <system-reminder>
-TIME: 2026-03-15 10:30:00 +0800
-
 WORKING DIR: /home/user/project
 
 Is directory a git repo: Yes
@@ -547,20 +570,17 @@ Platform: linux
 OS Version: Linux 6.8.0-86-generic
 
 Today's date: 2026-03-15
-
-LAST 5 COMMANDS:
-[seq=1] cargo build  (exit 0, 5m ago)
-[seq=2] cargo test [FAILED]
-...
 </system-reminder>
 ```
+
+注：聊天模式下不包含最近命令列表；补全上下文中仍通过 `include_commands: true` 包含最近命令。
 
 **生成逻辑（`CommandQueryTool::build_system_reminder()`）：**
 - 当前时间（含时区）和日期（已移除 `TIME` 字段，只保留 `Today's date`）
 - 工作目录（优先使用会话探测的实时 `shell_cwd`，回退到最后命令记录的 cwd）
 - Git 仓库检测
 - 平台和操作系统版本（**来自客户端会话属性** `platform`/`os_version`，而非守护进程自身环境；客户端通过 `SessionUpdate` 上报探测结果）
-- 最近 5 条命令（标记失败命令为 `[FAILED]`，过滤掉空命令和未知命令）
+- 最近命令列表（可通过 `include_commands` 参数控制；聊天模式下不包含最近命令——仅在补全上下文中包含）
 
 ## 工具使用与智能体循环
 
@@ -603,7 +623,6 @@ LAST 5 COMMANDS:
 
 **循环机制:**
 - 最多迭代 100 次（`max_iterations = 100`，从旧版 30 次提升）
-- 超时限制 600 秒（10 分钟），超时后持久化已完成的工具结果和 "timed out" 标记，然后清理暂停态并返回错误消息：`"Error: client-side tool execution timed out. Your progress has been saved — you can continue by sending another message."`
 - 每次迭代：调用 LLM → 检查是否有工具调用 → 执行工具 → 将结果反馈给 LLM
 - **使用线程级后端**：循环始终通过 `state.effective_backend` 调用 LLM，在客户端工具返回后恢复循环时也使用同一后端（修复了恢复后退回默认后端的 bug）
 - **Thinking 块保留**：当 LLM 响应中包含 `ContentBlock::Thinking` 块时，assistant 消息以内容数组形式存储（thinking + text + tool_use），确保 thinking 上下文在多轮工具调用中正确传递
@@ -623,7 +642,6 @@ LAST 5 COMMANDS:
   - LLM 返回文本响应（无 `tool_use` 块）
   - 达到最大迭代次数
   - 遇到错误（API 错误处理后退出）
-  - 超时
   - 用户取消（`cancel_flag`）
 
 **客户端侧工具转发（暂停/恢复机制）：**
@@ -633,7 +651,7 @@ LAST 5 COMMANDS:
   3. 返回 `ChatToolCall` 消息给客户端
   4. 客户端执行后返回 `ChatToolResult`
   5. `handle_tool_result()` 累积结果，当所有工具完成后从映射中取出 state 恢复循环
-- 后台定时器每 30 秒清理超过 120 秒的过期暂停态
+- 后台定时器每 30 秒清理超过 30 分钟的过期暂停态
 
 **`persist_unsaved()` 辅助函数：**
 - 替代了原先 5+ 处手动消息持久化代码
@@ -684,6 +702,23 @@ Assistant: {{final response}}
 - `tool_call_id` — 对应的工具调用 ID
 - `content` — 工具执行结果文本
 - `is_error` — 是否为错误结果
+- `needs_summarization` — 是否需要 LLM 摘要化（由插件在响应中设置）
+
+### LLM 工具结果摘要化
+
+当工具结果包含 `needs_summarization = true` 且非错误时，守护进程使用 LLM 对结果内容进行后处理摘要，减少传递给主对话的 token 数量。
+
+**流程：**
+1. 插件子进程返回 `{"needs_summarization": true}` 标志
+2. `handle_tool_result()` 检测到标志后，从 `ToolRegistry` 查找该工具的 `summarization_prompt` 模板
+3. 调用 `summarize_tool_result()` 使用 `UseCase::Summarize` 后端进行摘要
+4. 摘要结果中的内容按 `max_content_chars`（来自后端配置）截断，防止超出上下文窗口
+5. 摘要成功时替换原始 `content`，失败时保留原始内容
+
+**`merge_tool_params()` 函数：**
+- 将插件的 `config_params`（来自 `[plugins.<name>]` 配置）浅合并到工具调用的 `input` JSON 对象中
+- 源键覆盖目标键（如 `api_key` 从配置注入到工具输入）
+- 在 DaemonTool 和 ClientTool 的执行路径中均调用
 
 ### Thinking 模式
 
@@ -692,17 +727,18 @@ Assistant: {{final response}}
 **Thinking 块保留（多轮工具调用）：**
 - LLM 响应的 `ContentBlock` 枚举包含 `Thinking { thinking: String, signature: Option<String> }` 变体
 - `content_block_to_json()` 在序列化 Thinking 块时保留 `signature` 字段（Anthropic extended thinking 的签名标识），确保多轮工具调用时 thinking 上下文在后续请求中可被 Anthropic API 正确验证
+- `content_block_to_json()` 在序列化 ToolUse 块时保留 `ToolCall.extra` 中的供应商特定字段（如 Gemini 的 `thought_signature`），确保工具调用转发时这些字段不丢失
 - `run_agent_loop()` 在构建 assistant 消息时，若响应中含有 `Thinking` 块，以完整内容数组（thinking + text + tool_use）而非纯字符串序列化，确保 thinking 上下文在后续工具结果循环中正确传递给 LLM
 - 最终响应（非工具调用轮次）同样保留 thinking 块存入对话历史
 
 ### 聊天上下文增强
 
 **system-reminder 注入:**
-- system-reminder 内容（由 `CommandQueryTool::build_system_reminder(5, live_cwd)` 生成）附加到**系统提示词**中：`format!("{}\n\n{}", system_prompt, reminder)`
+- system-reminder 内容（由 `CommandQueryTool::build_system_reminder(5, session_attrs, false)` 生成）附加到**系统提示词**中：`format!("{}\n\n{}", system_prompt, reminder)`
+- 聊天模式下 `include_commands` 参数为 `false`，不包含最近命令（最近命令仅在补全上下文中包含）
 - 用户消息只包含纯查询文本（不再附加 `<system-reminder>` 标签）
-- 包含时间、工作目录、Git 仓库状态、平台信息、最近 5 条命令
+- 包含时间、工作目录、Git 仓库状态、平台信息
 - 减少简单环境查询的工具调用次数，提升响应速度
-- 工具仍可用于获取完整输出或更多历史记录
 
 ## 对话管理
 
@@ -808,7 +844,7 @@ Assistant: {{final response}}
      - DaemonTool: 直接执行
      - ClientTool: 持久化已累积消息，发送 ChatToolCall，暂停循环等待结果
   6. 收到所有 ChatToolResult 后恢复循环
-  7. 循环直到获得最终文本响应（最多 100 次迭代 / 600 秒超时）
+  7. 循环直到获得最终文本响应（最多 100 次迭代）
   8. 存储所有消息 → 返回 ChatResponse
 客户端发送 ChatToolResult → 守护进程累积结果 → 全部完成时恢复智能体循环
 客户端发送 ChatInterrupt → 守护进程存储部分结果 → 清理暂停态 → 返回 Ack
@@ -841,10 +877,13 @@ Assistant: {{final response}}
 
 **当前模式覆盖的配置项：**
 - 代理设置：`proxy`（HTTP 代理）、`no_proxy`
-- LLM use case 路由：`completion`、`analysis`、`chat` 后端选择（选项从已配置后端动态生成）
+- LLM use case 路由：`completion`、`analysis`、`chat` 后端选择（选项从已配置后端动态生成；支持点分隔的后端名如 `provider.model`）
 - 新增 LLM 后端：`add_backend` 子菜单，首项为 Provider 预设选择器（选项从 `omnish_llm::presets::chat_providers()` 动态生成，"custom" 置顶），选中预设后通过 `ConfigItem.prefills` 自动填充 name、backend_type、model、base_url、context_window；提交时 `provider` 字段被跳过不写入 TOML，纯 `api_key` 输入自动转换为 `api_key_cmd = "echo {key}"`
 - 动态项：已存在的后端自动生成编辑条目（`llm.backends.<name>.backend_type/model/api_key_cmd/base_url/use_proxy/context_window`），后端按名称排序以确保 UI 顺序一致
 - 每个后端新增 `use_proxy`（Toggle 类型）和 `context_window`（TextInput 类型）配置项
+- **插件配置项**（动态生成）：遍历 `PluginManager::config_meta()` 为每个非 builtin 插件生成：
+  - `plugins.<name>.enabled`（Toggle）— 插件启用/禁用开关
+  - `plugins.<name>.<param>`（TextInput）— 插件声明的 `config_params` 参数（如 `api_key`）
 
 **核心函数：**
 
@@ -858,7 +897,7 @@ Assistant: {{final response}}
 
 **`apply_config_changes(config_path, changes)`** — 将配置变更写入 `daemon.toml`
 - 将变更按是否属于某个 handler 分组
-- 普通变更：根据 kind 调用 `set_toml_value_nested()` 或 `set_toml_value_nested_bool()` 直接写入；路径以 `.use_proxy` 结尾时自动推断为 "toggle" 类型
+- 普通变更：根据 kind 调用 `set_toml_value_nested()` 或 `set_toml_value_nested_bool()` 直接写入；路径以 `.use_proxy` 结尾或 `plugins.<name>.enabled` 格式时自动推断为 "toggle" 类型
 - handler 变更：分组后调用对应处理函数（如 `handle_add_backend` 将新后端的各字段写入 `llm.backends.<name>.*`，并将纯 `api_key` 输入转换为 `api_key_cmd = "echo {key}"`）
 
 ### ConfigQuery/ConfigUpdate 消息处理
@@ -916,7 +955,29 @@ Assistant: {{final response}}
 
 ### TaskManager
 
-`TaskManager` 是一个集中式的定时任务管理器，用于管理守护进程中的所有定时任务。它基于 `tokio-cron-scheduler` 库实现，提供了统一的任务注册、启动、列表和禁用等功能。
+`TaskManager` 是一个集中式的定时任务管理器，用于管理守护进程中的所有定时任务。它基于 `tokio-cron-scheduler` 库实现，提供了统一的任务注册、启动、列表、禁用和增量热重载等功能。
+
+**ScheduledTask trait:**
+统一的定时任务接口，所有 6 个内置任务均实现此 trait：
+- `name() -> &'static str` — 人类可读的任务名称（作为 TaskManager 的 key）
+- `schedule() -> &str` — cron 表达式
+- `enabled() -> bool` — 是否启用（从 ConfigMap 读取，硬编码默认值）
+- `create_job(&TaskContext) -> Result<Job>` — 使用共享上下文构建 tokio-cron-scheduler Job
+
+**TaskContext 共享上下文：**
+- `session_mgr`: `Arc<SessionManager>` - 会话管理器
+- `conv_mgr`: `Arc<ConversationManager>` - 对话管理器
+- `llm_backend`: `SharedLlmBackend` - LLM 后端
+- `daemon`: `Arc<DaemonContext>` - 守护进程级上下文（omnish_dir、restart_signal、update_cache）
+- `daemon_config`: `Arc<RwLock<DaemonConfig>>` - 活跃配置副本
+
+**DaemonContext 结构：**
+- `omnish_dir`: `PathBuf` - omnish 基础目录
+- `restart_signal`: `Arc<Notify>` - 重启信号
+- `update_cache`: `Arc<UpdateCache>` - 更新缓存
+
+**ConfigMap 配置：**
+每个任务通过 `ConfigMap`（即 `HashMap<String, toml::Value>` 的包装）获取配置，使用 `get_string(key, default)` / `get_bool(key, default)` 等方法读取，具有硬编码默认值。`create_all_tasks(config: &TasksConfig)` 工厂函数从 `TasksConfig`（`HashMap<String, ConfigMap>`）中按任务名提取对应的 ConfigMap 创建全部 6 个任务实例。
 
 **结构说明:**
 - `scheduler`: `JobScheduler` - 底层的 cron 任务调度器
@@ -931,6 +992,7 @@ Assistant: {{final response}}
 - 使用本地时区进行时间计算（通过设置 `TZ` 环境变量）
 - 支持运行时任务列表查询和禁用
 - 任务注册后自动添加到调度器并记录日志
+- **增量热重载**：`reload(tasks, ctx)` 方法对比每个任务的 schedule 和 enabled 状态，仅移除/重建发生变化的任务，未变化的任务保持原有调度位置（保留 next trigger time）。ConfigWatcher 订阅 `ConfigSection::Tasks` 触发重载
 
 ### 内置定时任务
 
@@ -944,17 +1006,18 @@ Assistant: {{final response}}
 [tasks.eviction]
 session_evict_hours = 48  # 默认：48小时后驱逐
 ```
-**实现:** 通过 `create_eviction_job()` 函数创建，调用 `SessionManager::evict_inactive()`
+**实现:** 通过 `EvictionTask` 实现 `ScheduledTask` trait
 
-#### 2. `hourly_summary` - 小时总结任务
-**执行周期:** 每小时整点 (`0 0 * * * *`)
-**功能:** 生成过去1小时内的命令执行摘要，保存到 `~/.omnish/notes/hourly/YYYY-MM-DD/HH.md`
+#### 2. `hourly_summary` - 定期总结任务
+**执行周期:** 每4小时 (默认 `0 0 */4 * * *`)
+**功能:** 生成过去数小时内的命令执行摘要，保存到 `~/.omnish/notes/hourly/YYYY-MM-DD/HH.md`
 **内容:** 输出包含三个部分：`## 命令记录`（命令表格）、`## 会话记录`（对话内容）、`## 工作总结`（LLM 生成的摘要）
 **特点:**
 - 使用 `SharedLlmBackend`（通过 `llm_holder.read().unwrap().get_backend(UseCase::Analysis)` 获取后端）
 - 使用 `max_content_chars()` 控制上下文大小
 - 支持上下文大小限制和内容精简
 - 如果没有命令或上下文为空会自动跳过
+- **午夜特殊处理**：在 00:xx 执行时，保存为前一天的 `24.md`（而非 `00.md`），使得在 00:10 运行的 daily_notes 任务可以包含这最后一份摘要
 
 **相关配置:**
 ```toml
@@ -963,10 +1026,10 @@ head_lines = 50         # 命令输出头部行数
 tail_lines = 100        # 命令输出尾部行数
 max_line_width = 128    # 每行最大字符数
 ```
-**实现:** 通过 `create_hourly_summary_job()` 函数创建
+**实现:** 通过 `HourlySummaryTask` 实现 `ScheduledTask` trait
 
 #### 3. `daily_notes` - 日报生成任务
-**执行周期:** 每天指定时刻 (默认 `0 0 18 * * *` - 每天18:00)
+**执行周期:** 每天 00:10 (默认 `0 10 0 * * *`)
 **功能:** 生成过去24小时的工作总结，保存到 `~/.omnish/notes/YYYY-MM-DD.md`
 **特点:**
 - 完全依赖小时摘要（不再收集原始命令和对话数据）
@@ -976,10 +1039,10 @@ max_line_width = 128    # 每行最大字符数
 **相关配置:**
 ```toml
 [tasks.daily_notes]
-enabled = true
-schedule_hour = 18      # 每天几点生成（0-23），默认 18:00
+enabled = false           # 默认不启用
+schedule = "0 10 0 * * *" # 每天 00:10 生成
 ```
-**实现:** 通过 `create_daily_notes_job()` 函数创建
+**实现:** 通过 `DailyNotesTask` 实现 `ScheduledTask` trait
 
 #### 4. `disk_cleanup` - 磁盘清理任务
 **执行周期:** 默认每6小时 (`0 0 */6 * * *`)
@@ -989,17 +1052,16 @@ schedule_hour = 18      # 每天几点生成（0-23），默认 18:00
 [tasks.disk_cleanup]
 schedule = "0 0 */6 * * *"  # Cron 表达式，默认每6小时
 ```
-**实现:** 通过 `create_disk_cleanup_job()` 函数创建，调用 `SessionManager::cleanup_expired_dirs()`
+**实现:** 通过 `DiskCleanupTask` 实现 `ScheduledTask` trait
 
 #### 5. `thread_summary` - 对话摘要任务
 **执行周期:** 每10分钟 (`0 */10 * * * *`)
 **功能:** 扫描所有对话线程，为有新对话轮次的线程生成或更新摘要，存储到线程的 `.meta.json` sidecar 文件中（`ThreadMeta.summary` 字段）
 **特点:**
 - 只对有内容（`rounds > 0`）且摘要已过期（新增轮次超过阈值）的线程生成摘要
-- 摘要间隔可通过配置调整（`periodic_summary_interval`，默认 4 小时）
 - 调用 LLM 后端生成简短摘要文本，使用 `SharedLlmBackend` 和 `max_content_chars()`
 - 无 LLM 后端时自动跳过
-**实现:** 通过 `create_thread_summary_job()` 函数创建
+**实现:** 通过 `ThreadSummaryTask` 实现 `ScheduledTask` trait
 
 #### 6. `auto_update` - 自动更新任务
 **执行周期:** 可配置（默认不启用），使用本地时区调度（通过 `Job::new_async_tz(schedule, chrono::Local, ...)` 创建）
@@ -1025,7 +1087,7 @@ schedule = "0 0 3 * * *"   # 每天凌晨3点检查
 check_url = "https://github.com/..."  # 可选，GitHub Releases API 或本地目录路径
 clients = ["user@host1", "user@host2"]  # 要分发的客户端机器列表
 ```
-**实现:** 通过 `create_auto_update_job()` 函数创建（`crates/omnish-daemon/src/auto_update.rs`），依赖 `UpdateCache` 进行包缓存管理
+**实现:** 通过 `AutoUpdateTask` 实现 `ScheduledTask` trait（`crates/omnish-daemon/src/auto_update.rs`），依赖 `UpdateCache` 进行包缓存管理
 
 ### TaskManager 关键函数说明
 
@@ -1083,32 +1145,37 @@ clients = ["user@host1", "user@host2"]  # 要分发的客户端机器列表
 
 ### 创建 Job 的模式
 
-omnish 中所有定时任务都遵循统一的模式，使用 `tokio_cron_scheduler::Job::new_async()` 创建异步任务：
+omnish 中所有定时任务都实现 `ScheduledTask` trait，在 `create_job()` 中使用 `tokio_cron_scheduler::Job::new_async()` 创建异步任务：
 
 ```rust
-pub fn create_custom_job(
-    mgr: Arc<SessionManager>,
-    config_param: SomeType,
-) -> anyhow::Result<Job> {
-    let cron = "0 0 * * * *";  // 定义 cron 表达式
-    Ok(Job::new_async(cron, move |_uuid, _lock| {
-        let mgr = mgr.clone();
-        let param = config_param.clone();
-        Box::pin(async move {
-            // 任务实现逻辑
-            if let Err(e) = perform_task(&mgr, &param).await {
-                tracing::warn!("task failed: {}", e);
-            }
-        })
-    })?)
+pub struct MyTask {
+    config: ConfigMap,
+    schedule: String,
 }
 
-async fn perform_task(
-    mgr: &SessionManager,
-    param: &SomeType,
-) -> anyhow::Result<()> {
-    // 实现具体逻辑
-    Ok(())
+impl MyTask {
+    pub fn new(config: ConfigMap) -> Self {
+        let schedule = config.get_string("schedule", "0 0 * * * *");
+        Self { config, schedule }
+    }
+}
+
+impl ScheduledTask for MyTask {
+    fn name(&self) -> &'static str { "my_task" }
+    fn schedule(&self) -> &str { &self.schedule }
+    fn enabled(&self) -> bool { self.config.get_bool("enabled", true) }
+
+    fn create_job(&self, ctx: &TaskContext) -> Result<Job> {
+        let mgr = ctx.session_mgr.clone();
+        Ok(Job::new_async(self.schedule(), move |_uuid, _lock| {
+            let mgr = mgr.clone();
+            Box::pin(async move {
+                if let Err(e) = perform_task(&mgr).await {
+                    tracing::warn!("task failed: {}", e);
+                }
+            })
+        })?)
+    }
 }
 ```
 
@@ -1117,6 +1184,7 @@ async fn perform_task(
 2. 在闭包中克隆必要的参数（Arc<T> 支持廉价克隆）
 3. 使用 `tracing::warn!()` 记录任务执行错误，但不让错误中断任务调度器
 4. cron 表达式采用标准 Unix cron 格式：`秒 分 时 日 月 周几`
+5. 每个任务通过 `ConfigMap` 获取配置（`get_string()`/`get_bool()` 带硬编码默认值）
 
 ### 配置示例
 
@@ -1126,9 +1194,13 @@ async fn perform_task(
 [tasks.eviction]
 session_evict_hours = 48
 
-[tasks.daily_notes]
+[tasks.hourly_summary]
+schedule = "0 0 */4 * * *"
 enabled = true
-schedule_hour = 23
+
+[tasks.daily_notes]
+enabled = false
+schedule = "0 10 0 * * *"
 
 [tasks.disk_cleanup]
 schedule = "0 0 */6 * * *"
@@ -1138,6 +1210,10 @@ enabled = true
 schedule = "0 0 3 * * *"
 clients = ["user@host1"]
 check_url = "https://github.com/..."
+
+[plugins.web_search]
+enabled = true
+api_key = "..."
 
 [context.hourly_summary]
 head_lines = 50
@@ -1225,7 +1301,7 @@ max_line_width = 128
 
 **返回:** `Result<()>`
 
-**用途:** 启动RPC服务器并处理客户端请求。同时启动后台任务定期清理超过 120 秒的过期 `pending_agent_loops` 条目
+**用途:** 启动RPC服务器并处理客户端请求。同时启动后台任务定期清理超过 30 分钟的过期 `pending_agent_loops` 条目
 
 ### `SessionManager::new()`
 创建新的会话管理器。
@@ -1428,7 +1504,7 @@ max_line_width = 128
 
 **流程:**
 1. 从 `pending_agent_loops` 中查找对应的暂停态
-2. 检查超时（600 秒），超时时持久化已完成的工具结果和 "timed out" 标记后返回错误
+2. 检查超时（30 分钟），超时时持久化已完成的工具结果和 "timed out" 标记后返回错误
 3. 累积结果到 `completed_results`
 4. **立即**通过 Formatter 格式化当前工具结果，生成增量 `ChatToolStatus` 更新消息（并行执行场景下每个工具完成时立即通知客户端，不等待其他工具）
 5. 若仍有工具未完成，直接返回增量状态消息，继续等待
@@ -1516,7 +1592,7 @@ proxy = "http://proxy.example.com:8080"
 no_proxy = "localhost,127.0.0.1"
 ```
 
-代理设置通过 `DaemonOpts` 结构传递，在执行 DaemonTool 子进程时注入为环境变量（`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 及小写变体）。LLM 后端 HTTP 客户端同样尊重这些环境变量（通过 `reqwest` 的代理支持）。
+代理设置从 `DaemonConfig`（`opts.daemon_config`）中直接读取，在执行 DaemonTool 子进程时注入为环境变量（`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 及小写变体）。LLM 后端 HTTP 客户端同样尊重这些环境变量（通过 `reqwest` 的代理支持）。
 
 ### UseCase路由
 
@@ -1585,7 +1661,8 @@ chat = "claude-sonnet"
 session_evict_hours = 48
 
 [tasks.daily_notes]
-schedule_hour = 18
+enabled = false
+schedule = "0 10 0 * * *"
 
 [tasks.disk_cleanup]
 schedule = "0 0 */6 * * *"
@@ -1646,7 +1723,7 @@ async fn main() -> anyhow::Result<()> {
   4. 调用 LLM（启用 thinking，传递工具定义）
   5. DaemonTool 直接执行 / ClientTool 持久化进度后转发 ChatToolCall
   6. 等待 ChatToolResult（所有工具完成后恢复循环）
-  7. 循环直到获得最终文本响应（最多 100 次 / 600 秒超时）
+  7. 循环直到获得最终文本响应（最多 100 次迭代）
   8. 存储所有消息 → 返回 ChatResponse
 工具结果 → 发送ChatToolResult → 守护进程累积结果 → 全部完成时恢复智能体循环
 聊天中断 → 发送ChatInterrupt → 守护进程存储部分结果 + 保存用量 + 清理暂停态
@@ -1851,3 +1928,77 @@ async fn main() -> anyhow::Result<()> {
 - 每个后端新增 `use_proxy`（Toggle）和 `context_window`（TextInput）配置项
 - `handle_add_backend` 自动将纯 `api_key` 输入转换为 `api_key_cmd = "echo {key}"`
 - `apply_config_changes` 对 `.use_proxy` 结尾的路径自动推断为 toggle 类型
+
+### 2026-04-02
+
+**ScheduledTask trait 与 TaskManager 热重载：**
+- 新增 `ScheduledTask` trait（`name()`/`schedule()`/`enabled()`/`create_job()`），所有 6 个内置任务（eviction/hourly_summary/daily_notes/disk_cleanup/thread_summary/auto_update）均实现此 trait
+- 任务配置使用 `ConfigMap`（`HashMap<String, toml::Value>` 包装）带硬编码默认值
+- `create_all_tasks(config: &TasksConfig)` 工厂函数从配置创建全部任务实例
+- `TaskManager::reload()` 增量更新：仅移除/重建 schedule 或 enabled 变化的任务，未变化的保持调度位置
+- ConfigWatcher 新增 `ConfigSection::Tasks` 订阅触发热重载
+- `TaskContext`/`DaemonContext` 结构封装共享上下文
+
+**PluginManager 热重载：**
+- ConfigWatcher 新增 `ConfigSection::Plugins` 订阅
+- `reload_plugins(new_config, registry)` 处理插件动态启用/禁用
+- 新增 `config_params` 字段：插件在 `tool.json` 中声明可配置参数（`ConfigParam`），通过 `PluginConfigMeta` 暴露给配置系统
+- 新增 `enabled` 标志：每个非 builtin 插件可通过 `[plugins.<name>] enabled = false` 禁用
+- 所有集合（plugins/tool_index）改为 `RwLock` 以支持运行时重载
+
+**ToolRegistry 热重载：**
+- 新增 `unregister_by_plugin(plugin_name)` 方法，移除指定插件的所有工具/定义/覆盖
+- 插件禁用/启用时由 `PluginManager::reload_plugins()` 调用
+
+**ConfigWatcher 增强：**
+- `WATCHED_SECTIONS` 扩展为 `[Sandbox, Llm, Plugins, Tasks]`
+- 新增 Plugins/Tasks 节点差异检测
+- FileWatcher inotify 事件移除 `IN_CREATE`，仅保留 `IN_CLOSE_WRITE | IN_MOVED_TO`，防止编辑器写入临时文件时触发虚假重载
+
+**ConfigSchema 增强：**
+- 动态生成插件配置项：`plugins.<name>.enabled`（Toggle）+ `plugins.<name>.<param>`（TextInput）
+- 支持点分隔的后端名（如 `provider.model`）
+- `apply_config_changes` 对 `plugins.<name>.enabled` 路径自动推断为 toggle 类型
+
+**LLM 工具结果摘要化：**
+- 插件子进程返回 `needs_summarization: true` 时，守护进程使用 `UseCase::Summarize` 后端对结果进行 LLM 摘要
+- `ToolMeta`/`ToolEntry` 新增 `summarization_prompt` 字段
+- `summarize_tool_result()` 函数：按 `max_content_chars` 截断后调用 LLM
+- `merge_tool_params()` 函数：将插件 config_params 浅合并到工具调用 input
+
+**web_fetch 内置插件：**
+- 使用 jina.ai reader 抓取网页内容，始终自动安装（无需 API key）
+- 包含可执行脚本 `web_fetch`、外部格式化器 `web_fetch_formatter`
+- 通过 `needs_summarization` 标志触发 LLM 摘要化
+
+**ConversationManager 孤立 tool_use 消毒：**
+- `sanitize_orphaned_tool_use()` 在启动加载时扫描线程，为缺少匹配 tool_result 的 tool_use 注入合成错误 tool_result，防止 API 拒绝
+- 运行时不执行消毒（尾部孤立 tool_use 表示工具正在执行中）
+
+**Agent Loop 清理：**
+- 移除冗余的 600 秒超时（与 per-iteration 超时重复）
+- pending agent loop 清理超时从 120 秒延长到 30 分钟
+
+**Vendor extra 字段保留：**
+- `content_block_to_json()` 序列化 ToolUse 块时保留 `ToolCall.extra` 中的供应商特定字段（如 Gemini `thought_signature`）
+
+**system-reminder 精简：**
+- 聊天模式下不再包含最近命令列表（最近命令仅在补全上下文中包含）
+- `build_system_reminder()` 移至 `CommandQueryTool`，新增 `include_commands` 参数控制
+
+**ChatInterrupt 简化：**
+- 移除运行时注入 phantom interrupt tool_result 的消毒逻辑
+
+**hourly_summary 调度变更：**
+- 默认 schedule 从每小时改为每 4 小时（`0 0 */4 * * *`）
+- 午夜执行时保存为前一天的 `24.md`
+- 移除 `schedule_hour` 和 `periodic_summary` 配置项
+
+**daily_notes 调度变更：**
+- 默认 schedule 改为每天 00:10（`0 10 0 * * *`），默认不启用
+
+**proxy/no_proxy 简化：**
+- 从 `ServerOpts` 中移除，改为从 `opts.daemon_config` 直接读取
+
+**Dead code 清理：**
+- 移除 ~300 行未使用的 SessionManager 方法（`get_hourly_summary_config()`、`build_hourly_summary_context()`、`get_daily_summary_config()`、`build_daily_summary_context()`）
