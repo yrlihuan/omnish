@@ -144,7 +144,6 @@ pub struct DaemonServer {
     /// Set to true by ChatInterrupt to signal daemon-side loops to stop.
     cancel_flags: CancelFlags,
     active_threads: ActiveThreads,
-    tool_params: HashMap<String, HashMap<String, serde_json::Value>>,
     opts: Arc<ServerOpts>,
     update_cache: Arc<omnish_daemon::update_cache::UpdateCache>,
 }
@@ -321,7 +320,6 @@ impl DaemonServer {
         conv_mgr: Arc<ConversationManager>,
         plugin_mgr: Arc<PluginManager>,
         tool_registry: Arc<omnish_daemon::tool_registry::ToolRegistry>,
-        tool_params: HashMap<String, HashMap<String, serde_json::Value>>,
         opts: Arc<ServerOpts>,
         formatter_mgr: Arc<omnish_daemon::formatter_mgr::FormatterManager>,
         update_cache: Arc<omnish_daemon::update_cache::UpdateCache>,
@@ -337,7 +335,6 @@ impl DaemonServer {
             pending_agent_loops: Arc::new(Mutex::new(HashMap::new())),
             cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             active_threads: Arc::new(Mutex::new(HashMap::new())),
-            tool_params,
             opts,
             update_cache,
         }
@@ -362,7 +359,6 @@ impl DaemonServer {
         let pending_loops = self.pending_agent_loops.clone();
         let cancel_flags = self.cancel_flags.clone();
         let active_threads = self.active_threads.clone();
-        let tool_params = Arc::new(self.tool_params.clone());
         let opts = self.opts.clone();
         let update_cache = self.update_cache.clone();
 
@@ -427,12 +423,11 @@ impl DaemonServer {
                     let pending_loops = pending_loops.clone();
                     let cancel_flags = cancel_flags.clone();
                     let active_threads = active_threads.clone();
-                    let tool_params = tool_params.clone();
                     let opts = opts.clone();
                     let update_cache = update_cache.clone();
                     let io_requests = io_requests_handler.clone();
                     let io_bytes = io_bytes_handler.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &tool_registry, &formatter_mgr, &pending_loops, &cancel_flags, &active_threads, &tool_params, &opts, &update_cache, &io_requests, &io_bytes, tx).await })
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &tool_registry, &formatter_mgr, &pending_loops, &cancel_flags, &active_threads, &opts, &update_cache, &io_requests, &io_bytes, tx).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -454,7 +449,6 @@ async fn handle_message(
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     cancel_flags: &CancelFlags,
     active_threads: &ActiveThreads,
-    tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
     opts: &Arc<ServerOpts>,
     update_cache: &Arc<omnish_daemon::update_cache::UpdateCache>,
     io_requests: &Arc<AtomicU64>,
@@ -809,12 +803,12 @@ async fn handle_message(
             let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let req_id = cm.request_id.clone();
             cancel_flags.lock().await.insert(req_id.clone(), flag.clone());
-            handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, tool_params, opts, tx, &flag).await;
+            handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, opts, tx, &flag).await;
             cancel_flags.lock().await.remove(&req_id);
         }
         Message::ChatToolResult(tr) => {
             touch_thread(active_threads, &tr.thread_id, conv_mgr).await;
-            handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, cancel_flags, tool_params, opts, tx).await;
+            handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, cancel_flags, opts, tx).await;
         }
         Message::ChatInterrupt(ci) => {
             // Clean up pending agent loop and store partial results
@@ -1067,7 +1061,6 @@ async fn handle_chat_message(
     tool_registry: &Arc<omnish_daemon::tool_registry::ToolRegistry>,
     formatter_mgr: &Arc<omnish_daemon::formatter_mgr::FormatterManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
-    tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
     opts: &Arc<ServerOpts>,
     tx: mpsc::Sender<Message>,
     cancel_flag: &Arc<std::sync::atomic::AtomicBool>,
@@ -1162,7 +1155,7 @@ async fn handle_chat_message(
         last_model: String::new(),
     };
 
-    run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, tool_params, opts, tx, cancel_flag).await;
+    run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, opts, tx, cancel_flag).await;
 }
 
 /// Handle a ChatToolResult from the client — accumulate results, resume when all are received.
@@ -1176,7 +1169,6 @@ async fn handle_tool_result(
     formatter_mgr: &Arc<omnish_daemon::formatter_mgr::FormatterManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
     cancel_flags: &CancelFlags,
-    tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
     opts: &Arc<ServerOpts>,
     tx: mpsc::Sender<Message>,
 ) {
@@ -1200,7 +1192,7 @@ async fn handle_tool_result(
             if let Some(prompt_template) = tool_registry.summarization_prompt(&tc.name) {
                 let user_prompt = tc.input.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
                 if let Some(summary) = summarize_tool_result(
-                    state.effective_backend.as_ref(), &tc.name, &content, prompt_template, user_prompt,
+                    state.effective_backend.as_ref(), &tc.name, &content, &prompt_template, user_prompt,
                 ).await {
                     content = summary;
                 }
@@ -1219,7 +1211,7 @@ async fn handle_tool_result(
         if let Some(tc) = state.pending_tool_calls.iter().find(|tc| tc.id == tool_call_id) {
             let formatter_name = tool_registry.formatter_name(&tc.name);
             let display_name = tool_registry.display_name(&tc.name).to_string();
-            let fmt_out = formatter_mgr.format(formatter_name, &omnish_plugin::formatter::FormatInput {
+            let fmt_out = formatter_mgr.format(&formatter_name, &omnish_plugin::formatter::FormatInput {
                 tool_name: tc.name.clone(),
                 params: tc.input.clone(),
                 output: result.content.clone(),
@@ -1284,7 +1276,7 @@ async fn handle_tool_result(
     let req_id = state.cm.request_id.clone();
     let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     cancel_flags.lock().await.insert(req_id.clone(), flag.clone());
-    run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, tool_params, opts, tx, &flag).await;
+    run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, opts, tx, &flag).await;
     cancel_flags.lock().await.remove(&req_id);
 }
 
@@ -1367,7 +1359,6 @@ async fn run_agent_loop(
     tool_registry: &Arc<omnish_daemon::tool_registry::ToolRegistry>,
     formatter_mgr: &Arc<omnish_daemon::formatter_mgr::FormatterManager>,
     pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
-    tool_params: &Arc<HashMap<String, HashMap<String, serde_json::Value>>>,
     opts: &Arc<ServerOpts>,
     tx: mpsc::Sender<Message>,
     cancel_flag: &Arc<std::sync::atomic::AtomicBool>,
@@ -1476,13 +1467,16 @@ async fn run_agent_loop(
                             if let Some(override_params) = tool_registry.override_params(&tc.name) {
                                 merge_tool_params(&mut merged_input, &override_params);
                             }
-                            if let Some(config_params) = tool_params.get(&tc.name) {
-                                let filtered: HashMap<String, serde_json::Value> = config_params
-                                    .iter()
-                                    .filter(|(k, _)| k.as_str() != "enabled")
-                                    .map(|(k, v)| (k.clone(), v.clone()))
-                                    .collect();
-                                merge_tool_params(&mut merged_input, &filtered);
+                            {
+                                let plugins_config = &opts.daemon_config.read().unwrap().plugins;
+                                if let Some(config_params) = plugins_config.get(&tc.name) {
+                                    let filtered: HashMap<String, serde_json::Value> = config_params
+                                        .iter()
+                                        .filter(|(k, _)| k.as_str() != "enabled")
+                                        .map(|(k, v)| (k.clone(), v.clone()))
+                                        .collect();
+                                    merge_tool_params(&mut merged_input, &filtered);
+                                }
                             }
                             let matched_rule = {
                                 let rules = opts.sandbox_rules.read().unwrap();
@@ -1504,7 +1498,7 @@ async fn run_agent_loop(
                                 tool_name: tc.name.clone(),
                                 tool_call_id: tc.id.clone(),
                                 input: serde_json::to_string(&merged_input).unwrap_or_default(),
-                                plugin_name: tool_registry.plugin_name(&tc.name).unwrap_or("builtin").to_string(),
+                                plugin_name: tool_registry.plugin_name(&tc.name).unwrap_or_else(|| "builtin".to_string()),
                                 sandboxed: matched_rule.is_none(),
                             })).await.is_err() { return; }
                             has_client_tools = true;
@@ -1514,13 +1508,16 @@ async fn run_agent_loop(
                             if let Some(override_params) = tool_registry.override_params(&tc.name) {
                                 merge_tool_params(&mut merged_input, &override_params);
                             }
-                            if let Some(config_params) = tool_params.get(&tc.name) {
-                                let filtered: HashMap<String, serde_json::Value> = config_params
-                                    .iter()
-                                    .filter(|(k, _)| k.as_str() != "enabled")
-                                    .map(|(k, v)| (k.clone(), v.clone()))
-                                    .collect();
-                                merge_tool_params(&mut merged_input, &filtered);
+                            {
+                                let plugins_config = &opts.daemon_config.read().unwrap().plugins;
+                                if let Some(config_params) = plugins_config.get(&tc.name) {
+                                    let filtered: HashMap<String, serde_json::Value> = config_params
+                                        .iter()
+                                        .filter(|(k, _)| k.as_str() != "enabled")
+                                        .map(|(k, v)| (k.clone(), v.clone()))
+                                        .collect();
+                                    merge_tool_params(&mut merged_input, &filtered);
+                                }
                             }
 
                             let (mut result, needs_summarization) = if tool_registry.plugin_type(&tc.name).is_some() {
@@ -1549,7 +1546,7 @@ async fn run_agent_loop(
                                 if let Some(prompt_template) = tool_registry.summarization_prompt(&tc.name) {
                                     let user_prompt = tc.input.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
                                     if let Some(summary) = summarize_tool_result(
-                                        state.effective_backend.as_ref(), &tc.name, &result.content, prompt_template, user_prompt,
+                                        state.effective_backend.as_ref(), &tc.name, &result.content, &prompt_template, user_prompt,
                                     ).await {
                                         result.content = summary;
                                     }
@@ -1558,7 +1555,8 @@ async fn run_agent_loop(
 
                             // Post-execution: send update ChatToolStatus with formatted results immediately
                             let post_display = tool_registry.display_name(&tc.name).to_string();
-                            let post_out = formatter_mgr.format(tool_registry.formatter_name(&tc.name), &omnish_plugin::formatter::FormatInput {
+                            let post_fmt_name = tool_registry.formatter_name(&tc.name);
+                            let post_out = formatter_mgr.format(&post_fmt_name, &omnish_plugin::formatter::FormatInput {
                                 tool_name: tc.name.clone(),
                                 params: tc.input.clone(),
                                 output: result.content.clone(),
@@ -1864,7 +1862,8 @@ async fn reconstruct_history(
 
                             if let Some((tool_name, input)) = pending_tools.remove(&tool_use_id) {
                                 let display_name = tool_registry.display_name(&tool_name).to_string();
-                                let fmt_out = formatter_mgr.format(tool_registry.formatter_name(&tool_name), &omnish_plugin::formatter::FormatInput {
+                                let fmt_name = tool_registry.formatter_name(&tool_name);
+                                let fmt_out = formatter_mgr.format(&fmt_name, &omnish_plugin::formatter::FormatInput {
                                     tool_name: tool_name.clone(),
                                     params: input.clone(),
                                     output,

@@ -237,7 +237,7 @@ impl CommandQueryTool {
 
     /// Register command query tool metadata and definitions with a ToolRegistry.
     /// This is a static method — it doesn't need a CommandQueryTool instance.
-    pub fn register(registry: &mut crate::tool_registry::ToolRegistry) {
+    pub fn register(registry: &crate::tool_registry::ToolRegistry) {
         use crate::tool_registry::{ToolMeta, CustomStatusFn};
         use std::sync::Arc;
 
@@ -470,8 +470,8 @@ mod tests {
     #[test]
     fn test_register_command_query_tools() {
         use crate::tool_registry::ToolRegistry;
-        let mut reg = ToolRegistry::new();
-        CommandQueryTool::register(&mut reg);
+        let reg = ToolRegistry::new();
+        CommandQueryTool::register(&reg);
         assert_eq!(reg.display_name("omnish_list_history"), "History");
         assert_eq!(reg.display_name("omnish_get_output"), "GetOutput");
         let defs = reg.all_defs();
@@ -482,8 +482,8 @@ mod tests {
     #[test]
     fn test_register_custom_status_text() {
         use crate::tool_registry::ToolRegistry;
-        let mut reg = ToolRegistry::new();
-        CommandQueryTool::register(&mut reg);
+        let reg = ToolRegistry::new();
+        CommandQueryTool::register(&reg);
         let input = serde_json::json!({"seq": 3, "command": "git status"});
         assert_eq!(reg.status_text("omnish_get_output", &input), "[3] git status");
         let input2 = serde_json::json!({"count": 10});

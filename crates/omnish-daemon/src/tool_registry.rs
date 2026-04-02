@@ -22,11 +22,12 @@ pub struct ToolMeta {
 }
 
 /// Unified registry for tool metadata, definitions, and runtime overrides.
+/// All fields are behind RwLock to support runtime plugin reload.
 pub struct ToolRegistry {
-    /// Static tool metadata, set at startup.
-    tools: HashMap<String, ToolMeta>,
-    /// Static tool definitions, set at startup.
-    defs: HashMap<String, ToolDef>,
+    /// Tool metadata (display_name, formatter, status_template, etc.).
+    tools: RwLock<HashMap<String, ToolMeta>>,
+    /// Tool definitions (name, description, input_schema) for LLM prompts.
+    defs: RwLock<HashMap<String, ToolDef>>,
     /// Runtime-updatable description overrides (tool_name -> description).
     descriptions: RwLock<HashMap<String, String>>,
     /// Runtime-updatable parameter overrides (tool_name -> param_name -> value).
@@ -36,8 +37,8 @@ pub struct ToolRegistry {
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self {
-            tools: HashMap::new(),
-            defs: HashMap::new(),
+            tools: RwLock::new(HashMap::new()),
+            defs: RwLock::new(HashMap::new()),
             descriptions: RwLock::new(HashMap::new()),
             override_params: RwLock::new(HashMap::new()),
         }
@@ -50,44 +51,82 @@ impl ToolRegistry {
         Self::default()
     }
 
-    /// Register tool metadata. Called at startup before the registry is shared.
-    pub fn register(&mut self, meta: ToolMeta) {
-        self.tools.insert(meta.name.clone(), meta);
+    /// Register tool metadata.
+    pub fn register(&self, meta: ToolMeta) {
+        self.tools.write().unwrap().insert(meta.name.clone(), meta);
     }
 
-    /// Register a tool definition. Called at startup before the registry is shared.
-    pub fn register_def(&mut self, def: ToolDef) {
-        self.defs.insert(def.name.clone(), def);
+    /// Register a tool definition.
+    pub fn register_def(&self, def: ToolDef) {
+        self.defs.write().unwrap().insert(def.name.clone(), def);
+    }
+
+    /// Remove all tools and definitions belonging to a plugin.
+    pub fn unregister_by_plugin(&self, plugin_name: &str) {
+        let tool_names: Vec<String> = {
+            let tools = self.tools.read().unwrap();
+            tools
+                .iter()
+                .filter(|(_, m)| m.plugin_name.as_deref() == Some(plugin_name))
+                .map(|(name, _)| name.clone())
+                .collect()
+        };
+        if tool_names.is_empty() {
+            return;
+        }
+        {
+            let mut tools = self.tools.write().unwrap();
+            for name in &tool_names {
+                tools.remove(name);
+            }
+        }
+        {
+            let mut defs = self.defs.write().unwrap();
+            for name in &tool_names {
+                defs.remove(name);
+            }
+        }
+        {
+            let mut descs = self.descriptions.write().unwrap();
+            for name in &tool_names {
+                descs.remove(name);
+            }
+        }
+        tracing::info!("unregistered {} tools from plugin '{}'", tool_names.len(), plugin_name);
     }
 
     /// Return the display name for a tool, falling back to the tool name itself.
-    pub fn display_name<'a>(&'a self, tool_name: &'a str) -> &'a str {
-        self.tools
+    pub fn display_name(&self, tool_name: &str) -> String {
+        let tools = self.tools.read().unwrap();
+        tools
             .get(tool_name)
-            .map(|m| m.display_name.as_str())
-            .unwrap_or(tool_name)
+            .map(|m| m.display_name.clone())
+            .unwrap_or_else(|| tool_name.to_string())
     }
 
     /// Return the formatter name for a tool, falling back to "default".
-    pub fn formatter_name(&self, tool_name: &str) -> &str {
-        self.tools
+    pub fn formatter_name(&self, tool_name: &str) -> String {
+        let tools = self.tools.read().unwrap();
+        tools
             .get(tool_name)
-            .map(|m| m.formatter.as_str())
-            .unwrap_or("default")
+            .map(|m| m.formatter.clone())
+            .unwrap_or_else(|| "default".to_string())
     }
 
     /// Return the status template for a tool, falling back to "".
-    pub fn status_template(&self, tool_name: &str) -> &str {
-        self.tools
+    pub fn status_template(&self, tool_name: &str) -> String {
+        let tools = self.tools.read().unwrap();
+        tools
             .get(tool_name)
-            .map(|m| m.status_template.as_str())
-            .unwrap_or("")
+            .map(|m| m.status_template.clone())
+            .unwrap_or_default()
     }
 
     /// Produce status text for a tool call. Uses custom_status if set,
     /// otherwise interpolates the status_template with values from input.
     pub fn status_text(&self, tool_name: &str, input: &Value) -> String {
-        if let Some(meta) = self.tools.get(tool_name) {
+        let tools = self.tools.read().unwrap();
+        if let Some(meta) = tools.get(tool_name) {
             if let Some(ref custom) = meta.custom_status {
                 return custom(tool_name, input);
             }
@@ -99,26 +138,30 @@ impl ToolRegistry {
 
     /// Return the plugin type for a tool, if registered.
     pub fn plugin_type(&self, tool_name: &str) -> Option<PluginType> {
-        self.tools.get(tool_name).and_then(|m| m.plugin_type)
+        self.tools.read().unwrap().get(tool_name).and_then(|m| m.plugin_type)
     }
 
     /// Return the plugin name for a tool, if registered.
-    pub fn plugin_name(&self, tool_name: &str) -> Option<&str> {
+    pub fn plugin_name(&self, tool_name: &str) -> Option<String> {
         self.tools
+            .read()
+            .unwrap()
             .get(tool_name)
-            .and_then(|m| m.plugin_name.as_deref())
+            .and_then(|m| m.plugin_name.clone())
     }
 
     /// Return the summarization prompt template for a tool, if configured.
-    pub fn summarization_prompt(&self, tool_name: &str) -> Option<&str> {
+    pub fn summarization_prompt(&self, tool_name: &str) -> Option<String> {
         self.tools
+            .read()
+            .unwrap()
             .get(tool_name)
-            .and_then(|m| m.summarization_prompt.as_deref())
+            .and_then(|m| m.summarization_prompt.clone())
     }
 
     /// Check whether a tool is registered.
     pub fn is_known(&self, tool_name: &str) -> bool {
-        self.tools.contains_key(tool_name)
+        self.tools.read().unwrap().contains_key(tool_name)
     }
 
     /// Return override params for a tool (cloned from the RwLock).
@@ -130,7 +173,8 @@ impl ToolRegistry {
     /// Collect all tool definitions with description overrides applied.
     pub fn all_defs(&self) -> Vec<ToolDef> {
         let descs = self.descriptions.read().unwrap();
-        self.defs
+        let defs = self.defs.read().unwrap();
+        defs
             .values()
             .map(|def| {
                 let mut d = def.clone();
@@ -142,8 +186,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Update runtime overrides (descriptions and params). Takes &self because
-    /// it only writes to the interior RwLock fields.
+    /// Update runtime overrides (descriptions and params).
     pub fn update_overrides(
         &self,
         descriptions: HashMap<String, String>,
@@ -195,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_register_and_lookup_display_name() {
-        let mut reg = ToolRegistry::new();
+        let reg = ToolRegistry::new();
         let mut meta = make_meta("bash");
         meta.display_name = "Bash Shell".to_string();
         reg.register(meta);
@@ -207,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_formatter_lookup() {
-        let mut reg = ToolRegistry::new();
+        let reg = ToolRegistry::new();
         let mut meta = make_meta("code_edit");
         meta.formatter = "diff".to_string();
         reg.register(meta);
@@ -219,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_status_text_with_template() {
-        let mut reg = ToolRegistry::new();
+        let reg = ToolRegistry::new();
         let mut meta = make_meta("bash");
         meta.status_template = "running: {command}".to_string();
         reg.register(meta);
@@ -237,7 +280,7 @@ mod tests {
 
     #[test]
     fn test_status_text_with_custom_fn() {
-        let mut reg = ToolRegistry::new();
+        let reg = ToolRegistry::new();
         let mut meta = make_meta("web_search");
         meta.status_template = "searching: {query}".to_string();
         meta.custom_status = Some(Arc::new(|tool_name, input| {
@@ -259,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_plugin_type_lookup() {
-        let mut reg = ToolRegistry::new();
+        let reg = ToolRegistry::new();
 
         let mut meta1 = make_meta("daemon_tool");
         meta1.plugin_type = Some(PluginType::DaemonTool);
@@ -274,7 +317,7 @@ mod tests {
         assert_eq!(reg.plugin_type("client_tool"), Some(PluginType::ClientTool));
         assert_eq!(reg.plugin_type("unknown"), None);
 
-        assert_eq!(reg.plugin_name("daemon_tool"), Some("my_plugin"));
+        assert_eq!(reg.plugin_name("daemon_tool"), Some("my_plugin".to_string()));
         assert_eq!(reg.plugin_name("client_tool"), None);
 
         assert!(reg.is_known("daemon_tool"));
@@ -282,8 +325,46 @@ mod tests {
     }
 
     #[test]
+    fn test_unregister_by_plugin() {
+        let reg = ToolRegistry::new();
+
+        let mut meta1 = make_meta("tool_a");
+        meta1.plugin_name = Some("my_plugin".to_string());
+        reg.register(meta1);
+        reg.register_def(ToolDef {
+            name: "tool_a".to_string(),
+            description: "Tool A".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        });
+
+        let mut meta2 = make_meta("tool_b");
+        meta2.plugin_name = Some("my_plugin".to_string());
+        reg.register(meta2);
+        reg.register_def(ToolDef {
+            name: "tool_b".to_string(),
+            description: "Tool B".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        });
+
+        let mut meta3 = make_meta("other_tool");
+        meta3.plugin_name = Some("other_plugin".to_string());
+        reg.register(meta3);
+
+        assert!(reg.is_known("tool_a"));
+        assert!(reg.is_known("tool_b"));
+        assert!(reg.is_known("other_tool"));
+
+        reg.unregister_by_plugin("my_plugin");
+
+        assert!(!reg.is_known("tool_a"));
+        assert!(!reg.is_known("tool_b"));
+        assert!(reg.is_known("other_tool"));
+        assert_eq!(reg.all_defs().iter().filter(|d| d.name == "tool_a").count(), 0);
+    }
+
+    #[test]
     fn test_override_updates() {
-        let mut reg = ToolRegistry::new();
+        let reg = ToolRegistry::new();
         reg.register(make_meta("bash"));
         reg.register_def(ToolDef {
             name: "bash".to_string(),

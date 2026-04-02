@@ -276,10 +276,9 @@ async fn async_main() -> Result<i32> {
     let plugin_mgr = Arc::new(omnish_daemon::plugin::PluginManager::load(&plugins_dir, &config.plugins));
 
     // Build unified tool registry from plugins + built-in tools
-    let mut tool_registry = omnish_daemon::tool_registry::ToolRegistry::new();
-    plugin_mgr.register_all(&mut tool_registry);
-    omnish_daemon::tools::command_query::CommandQueryTool::register(&mut tool_registry);
-    let tool_registry = Arc::new(tool_registry);
+    let tool_registry = Arc::new(omnish_daemon::tool_registry::ToolRegistry::new());
+    plugin_mgr.register_all(&tool_registry);
+    omnish_daemon::tools::command_query::CommandQueryTool::register(&tool_registry);
 
     // Shared file watcher for config and plugin hot-reload
     let file_watcher = Arc::new(file_watcher::FileWatcher::new());
@@ -378,6 +377,20 @@ async fn async_main() -> Result<i32> {
         });
     }
 
+    // Hot-reload plugins on config change (enable/disable)
+    {
+        let plugins_rx = config_watcher.subscribe(config_watcher::ConfigSection::Plugins);
+        let pm = Arc::clone(&plugin_mgr);
+        let tr = Arc::clone(&tool_registry);
+        tokio::spawn(async move {
+            let mut rx = plugins_rx;
+            while rx.changed().await.is_ok() {
+                let config = rx.borrow_and_update().clone();
+                pm.reload_plugins(&config.plugins, &tr);
+            }
+        });
+    }
+
     let server_opts = Arc::new(server::ServerOpts {
         proxy: config.proxy,
         no_proxy: config.no_proxy,
@@ -395,7 +408,7 @@ async fn async_main() -> Result<i32> {
         formatter_mgr.register_external(&name, path).await;
     }
     let formatter_mgr = Arc::new(formatter_mgr);
-    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, tool_registry, config.plugins, server_opts, formatter_mgr, Arc::clone(&update_cache));
+    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr.clone(), tool_registry.clone(), server_opts, formatter_mgr, Arc::clone(&update_cache));
 
     tracing::info!("starting omnishd at {}", socket_path);
 

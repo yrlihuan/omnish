@@ -64,11 +64,12 @@ struct PromptCache {
 
 /// Metadata-only plugin manager. Loads tool definitions from JSON files.
 /// Watches tool.override.json files for changes via inotify/polling.
+/// All collections are behind RwLock to support runtime plugin reload.
 pub struct PluginManager {
     plugins_dir: PathBuf,
-    plugins: Vec<PluginInfo>,
+    plugins: RwLock<Vec<PluginInfo>>,
     /// Maps tool_name → (plugin_index, tool_index) for fast lookup.
-    tool_index: HashMap<String, (usize, usize)>,
+    tool_index: RwLock<HashMap<String, (usize, usize)>>,
     /// Prompt overrides, updated on file changes.
     prompt_cache: RwLock<PromptCache>,
 }
@@ -363,8 +364,8 @@ impl PluginManager {
 
         let mgr = Self {
             plugins_dir: plugins_dir.to_path_buf(),
-            plugins,
-            tool_index,
+            plugins: RwLock::new(plugins),
+            tool_index: RwLock::new(tool_index),
             prompt_cache: RwLock::new(PromptCache {
                 descriptions: HashMap::new(),
                 override_params: HashMap::new(),
@@ -380,7 +381,8 @@ impl PluginManager {
         let mut descriptions = HashMap::new();
         let mut override_params = HashMap::new();
 
-        for plugin in &self.plugins {
+        let plugins = self.plugins.read().unwrap();
+        for plugin in plugins.iter() {
             let override_path = self.plugins_dir.join(&plugin.dir_name).join("tool.override.json");
             let overrides = if override_path.is_file() {
                 match std::fs::read_to_string(&override_path) {
@@ -418,6 +420,7 @@ impl PluginManager {
                 descriptions.insert(te.def.name.clone(), desc);
             }
         }
+        drop(plugins);
 
         let mut cache = self.prompt_cache.write().unwrap();
         let changed = cache.descriptions != descriptions || cache.override_params != override_params;
@@ -431,8 +434,10 @@ impl PluginManager {
 
     /// Return the executable path for the plugin that owns the given tool.
     pub fn plugin_executable(&self, tool_name: &str) -> Option<std::path::PathBuf> {
-        self.tool_index.get(tool_name).map(|&(pi, _)| {
-            let dir_name = &self.plugins[pi].dir_name;
+        let tool_index = self.tool_index.read().unwrap();
+        let plugins = self.plugins.read().unwrap();
+        tool_index.get(tool_name).map(|&(pi, _)| {
+            let dir_name = &plugins[pi].dir_name;
             self.plugins_dir.join(dir_name).join(dir_name)
         })
     }
@@ -441,7 +446,8 @@ impl PluginManager {
     /// Only returns entries where a tool has a non-default formatter AND the plugin has a formatter_binary.
     pub fn formatter_binaries(&self) -> Vec<(String, PathBuf)> {
         let mut result = Vec::new();
-        for plugin in &self.plugins {
+        let plugins = self.plugins.read().unwrap();
+        for plugin in plugins.iter() {
             if let Some(ref binary) = plugin.formatter_binary {
                 let binary_path = self.plugins_dir.join(&plugin.dir_name).join(binary);
                 for tool in &plugin.tools {
@@ -460,8 +466,9 @@ impl PluginManager {
     /// Register all plugin tools into a ToolRegistry.
     /// Includes tool metadata (display_name, formatter, status_template)
     /// and tool definitions (for LLM prompt construction).
-    pub fn register_all(&self, registry: &mut crate::tool_registry::ToolRegistry) {
-        for plugin in &self.plugins {
+    pub fn register_all(&self, registry: &crate::tool_registry::ToolRegistry) {
+        let plugins = self.plugins.read().unwrap();
+        for plugin in plugins.iter() {
             for te in &plugin.tools {
                 registry.register(crate::tool_registry::ToolMeta {
                     name: te.def.name.clone(),
@@ -476,6 +483,7 @@ impl PluginManager {
                 registry.register_def(te.def.clone());
             }
         }
+        drop(plugins);
         // Apply current overrides
         let cache = self.prompt_cache.read().unwrap();
         registry.update_overrides(cache.descriptions.clone(), cache.override_params.clone());
@@ -484,6 +492,8 @@ impl PluginManager {
     /// Returns plugin metadata for the config menu (all non-builtin plugins).
     pub fn config_meta(&self) -> Vec<PluginConfigMeta> {
         self.plugins
+            .read()
+            .unwrap()
             .iter()
             .filter(|p| p.dir_name != "builtin")
             .map(|p| PluginConfigMeta {
@@ -491,6 +501,103 @@ impl PluginManager {
                 config_params: p.config_params.clone(),
             })
             .collect()
+    }
+
+    /// Reload plugins based on new config. Handles enable/disable changes
+    /// by adding/removing tools from the ToolRegistry.
+    pub fn reload_plugins(
+        &self,
+        new_config: &HashMap<String, HashMap<String, serde_json::Value>>,
+        registry: &crate::tool_registry::ToolRegistry,
+    ) {
+        let mut plugins = self.plugins.write().unwrap();
+        let mut tool_index = self.tool_index.write().unwrap();
+
+        for (idx, plugin) in plugins.iter_mut().enumerate() {
+            if plugin.dir_name == "builtin" {
+                continue;
+            }
+
+            let was_disabled = plugin.tools.is_empty();
+            let now_disabled = new_config
+                .get(&plugin.dir_name)
+                .and_then(|cfg| cfg.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .map(|b| !b)
+                .unwrap_or(false);
+
+            if !was_disabled && now_disabled {
+                // Enabled → Disabled: remove tools from registry and plugin
+                let tool_names: Vec<String> = plugin.tools.iter().map(|t| t.def.name.clone()).collect();
+                for name in &tool_names {
+                    tool_index.remove(name);
+                }
+                plugin.tools.clear();
+                plugin.formatter_binary = None;
+                registry.unregister_by_plugin(&plugin.dir_name);
+                tracing::info!("plugin '{}' disabled", plugin.dir_name);
+            } else if was_disabled && !now_disabled {
+                // Disabled → Enabled: re-read tool.json and register tools
+                let tool_json_path = self.plugins_dir.join(&plugin.dir_name).join("tool.json");
+                let content = match std::fs::read_to_string(&tool_json_path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!("Failed to read {}: {}", tool_json_path.display(), e);
+                        continue;
+                    }
+                };
+                let parsed: ToolJsonFile = match serde_json::from_str(&content) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!("Malformed {}: {}", tool_json_path.display(), e);
+                        continue;
+                    }
+                };
+
+                let mut tools = Vec::new();
+                for te in parsed.tools {
+                    if tool_index.contains_key(&te.name) {
+                        tracing::warn!(
+                            "Duplicate tool name '{}' in {}, skipping",
+                            te.name,
+                            tool_json_path.display()
+                        );
+                        continue;
+                    }
+                    let tool_idx = tools.len();
+                    tool_index.insert(te.name.clone(), (idx, tool_idx));
+                    let display_name = te.display_name.clone().unwrap_or_else(|| te.name.clone());
+                    let formatter = te.formatter.clone().unwrap_or_else(|| "default".to_string());
+                    // Register into ToolRegistry
+                    registry.register(crate::tool_registry::ToolMeta {
+                        name: te.name.clone(),
+                        display_name: display_name.clone(),
+                        formatter: formatter.clone(),
+                        status_template: te.status_template.clone(),
+                        custom_status: None,
+                        plugin_type: Some(plugin.plugin_type),
+                        plugin_name: Some(plugin.dir_name.clone()),
+                        summarization_prompt: te.summarization_prompt.clone(),
+                    });
+                    let def = ToolDef {
+                        name: te.name,
+                        description: te.description.into_string(),
+                        input_schema: te.input_schema,
+                    };
+                    registry.register_def(def.clone());
+                    tools.push(ToolEntry {
+                        def,
+                        status_template: te.status_template,
+                        display_name,
+                        formatter,
+                        summarization_prompt: te.summarization_prompt,
+                    });
+                }
+                plugin.formatter_binary = parsed.formatter_binary;
+                plugin.tools = tools;
+                tracing::info!("plugin '{}' enabled with {} tools", plugin.dir_name, plugin.tools.len());
+            }
+        }
     }
 
     /// Start watching plugin overrides using a shared file watcher receiver.
@@ -535,16 +642,16 @@ mod tests {
     /// Helper: register all tools from a PluginManager and return the count of defs.
     fn count_registered_defs(mgr: &PluginManager) -> usize {
         use crate::tool_registry::ToolRegistry;
-        let mut reg = ToolRegistry::new();
-        mgr.register_all(&mut reg);
+        let reg = ToolRegistry::new();
+        mgr.register_all(&reg);
         reg.all_defs().len()
     }
 
     /// Helper: get description for a tool via ToolRegistry (after register_all + overrides).
     fn get_description(mgr: &PluginManager, name: &str) -> String {
         use crate::tool_registry::ToolRegistry;
-        let mut reg = ToolRegistry::new();
-        mgr.register_all(&mut reg);
+        let reg = ToolRegistry::new();
+        mgr.register_all(&reg);
         reg.all_defs().into_iter().find(|t| t.name == name).unwrap().description
     }
 
@@ -571,7 +678,7 @@ mod tests {
         }"#);
         let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         let mut reg = crate::tool_registry::ToolRegistry::new();
-        mgr.register_all(&mut reg);
+        mgr.register_all(&reg);
         let defs = reg.all_defs();
         assert_eq!(defs.len(), BUILTIN_COUNT + 1);
         assert!(defs.iter().any(|t| t.name == "my_tool"));
@@ -593,7 +700,7 @@ mod tests {
         }"#);
         let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         let mut reg = crate::tool_registry::ToolRegistry::new();
-        mgr.register_all(&mut reg);
+        mgr.register_all(&reg);
         let defs = reg.all_defs();
         assert_eq!(defs.len(), BUILTIN_COUNT + 1);
         assert!(defs.iter().any(|t| t.name == "custom_read"));
@@ -771,8 +878,8 @@ mod tests {
             }]
         }"#);
         let mgr = PluginManager::load(tmp.path(), &HashMap::new());
-        let mut reg = ToolRegistry::new();
-        mgr.register_all(&mut reg);
+        let reg = ToolRegistry::new();
+        mgr.register_all(&reg);
         // Custom plugin tool
         assert_eq!(reg.display_name("my_tool"), "MyTool");
         assert_eq!(reg.formatter_name("my_tool"), "default");
