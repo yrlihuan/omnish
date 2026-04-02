@@ -1496,7 +1496,7 @@ impl SessionManager {
     }
 
     /// Get the hourly summary configuration.
-    pub fn get_hourly_summary_config(&self) -> omnish_common::config::HourlySummaryConfig {
+    pub fn get_hourly_summary_config(&self) -> omnish_common::config::HourlySummaryContextConfig {
         self.context_config.hourly_summary.clone()
     }
 
@@ -1516,7 +1516,7 @@ impl SessionManager {
         &self,
         commands: &[(String, CommandRecord)],
         max_content_chars: Option<usize>,
-        config: &omnish_common::config::HourlySummaryConfig,
+        config: &omnish_common::config::HourlySummaryContextConfig,
     ) -> Result<String> {
         // Snapshot session Arcs under brief read lock
         let session_arcs: Vec<_> = {
@@ -2087,7 +2087,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_max_context_chars_reduces_commands() {
-        use omnish_common::config::{CompletionContextConfig, ContextConfig, DailySummaryConfig, HourlySummaryConfig};
+        use omnish_common::config::{CompletionContextConfig, ContextConfig, DailySummaryConfig, HourlySummaryContextConfig};
 
         let dir = tempfile::tempdir().unwrap();
 
@@ -2104,7 +2104,7 @@ mod tests {
                 detailed_min: 20,
                 detailed_max: 30,
             },
-            hourly_summary: HourlySummaryConfig::default(),
+            hourly_summary: HourlySummaryContextConfig::default(),
             daily_summary: DailySummaryConfig::default(),
         };
         let mgr_no_limit = SessionManager::new(dir.path().to_path_buf(), cc_no_limit);
@@ -2148,7 +2148,7 @@ mod tests {
                 detailed_min: 20,
                 detailed_max: 30,
             },
-            hourly_summary: HourlySummaryConfig::default(),
+            hourly_summary: HourlySummaryContextConfig::default(),
             daily_summary: DailySummaryConfig::default(),
         };
         let mgr_limited = SessionManager::new(dir.path().to_path_buf(), cc_limited);
