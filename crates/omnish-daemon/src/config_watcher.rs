@@ -47,9 +47,9 @@ impl ConfigWatcher {
         ConfigSection::Sandbox,
         ConfigSection::Llm,
         ConfigSection::Plugins,
+        ConfigSection::Tasks,
         // Add sections here as their diff + subscriber is implemented:
         // ConfigSection::Context,
-        // ConfigSection::Tasks,
         // ConfigSection::Tools,
     ];
 
@@ -120,6 +120,7 @@ impl ConfigWatcher {
                     || current.proxy != new_config.proxy
                     || current.no_proxy != new_config.no_proxy,
                 ConfigSection::Plugins => current.plugins != new_config.plugins,
+                ConfigSection::Tasks => current.tasks != new_config.tasks,
                 // Future: add diff for other sections here
                 _ => false,
             };

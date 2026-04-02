@@ -270,11 +270,13 @@ async fn async_main() -> Result<i32> {
         let llm_rx = config_watcher.subscribe(config_watcher::ConfigSection::Llm);
         let sandbox_rx = config_watcher.subscribe(config_watcher::ConfigSection::Sandbox);
         let plugins_rx = config_watcher.subscribe(config_watcher::ConfigSection::Plugins);
+        let tasks_rx = config_watcher.subscribe(config_watcher::ConfigSection::Tasks);
         let dca = Arc::clone(&daemon_config_arc);
         tokio::spawn(async move {
             let mut llm = llm_rx;
             let mut sandbox = sandbox_rx;
             let mut plugins = plugins_rx;
+            let mut tasks = tasks_rx;
             loop {
                 tokio::select! {
                     Ok(()) = llm.changed() => {
@@ -287,6 +289,10 @@ async fn async_main() -> Result<i32> {
                     }
                     Ok(()) = plugins.changed() => {
                         let config = plugins.borrow_and_update().clone();
+                        *dca.write().unwrap() = (*config).clone();
+                    }
+                    Ok(()) = tasks.changed() => {
+                        let config = tasks.borrow_and_update().clone();
                         *dca.write().unwrap() = (*config).clone();
                     }
                     else => break,
@@ -334,6 +340,23 @@ async fn async_main() -> Result<i32> {
     }
     task_mgr.start().await?;
     let task_mgr = Arc::new(tokio::sync::Mutex::new(task_mgr));
+
+    // Hot-reload tasks on config change
+    {
+        let tasks_rx = config_watcher.subscribe(config_watcher::ConfigSection::Tasks);
+        let tm = Arc::clone(&task_mgr);
+        tokio::spawn(async move {
+            let mut rx = tasks_rx;
+            while rx.changed().await.is_ok() {
+                let config = rx.borrow_and_update().clone();
+                let all_tasks = omnish_daemon::task_mgr::create_all_tasks(&config.tasks);
+                let mut mgr = tm.lock().await;
+                if let Err(e) = mgr.reload(&all_tasks, &task_ctx).await {
+                    tracing::warn!("task reload failed: {}", e);
+                }
+            }
+        });
+    }
 
     // Create formatter manager and register external formatters from plugins
     let mut formatter_mgr = omnish_daemon::formatter_mgr::FormatterManager::new();
