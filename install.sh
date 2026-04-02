@@ -748,19 +748,25 @@ DAEMON_EOF
 # max_line_width = 128
 
 [tasks.eviction]
+# enabled = true
 # session_evict_hours = 48
+
+[tasks.hourly_summary]
+# enabled = true
 
 [tasks.daily_notes]
 # enabled = true
-# schedule_hour = 23
 
 [tasks.disk_cleanup]
-# schedule = "0 0 */6 * * *"
+# enabled = true
 
 [tasks.auto_update]
 enabled = ${AUTO_UPDATE_ENABLED}
 # schedule = "0 0 4 * * *"
 ${CHECK_URL_LINE}
+
+[tasks.thread_summary]
+# enabled = true
 DAEMON_EOF
     } > "$TMPDIR/daemon.toml"
 
