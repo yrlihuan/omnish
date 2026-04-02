@@ -70,13 +70,13 @@ toml_key = "tasks.auto_update.schedule"
 path = "general.proxy.http_proxy"
 label = "HTTP proxy"
 kind = "text"
-toml_key = "proxy"
+toml_key = "proxy.http_proxy"
 
 [[items]]
 path = "general.proxy.no_proxy"
 label = "No proxy"
 kind = "text"
-toml_key = "no_proxy"
+toml_key = "proxy.no_proxy"
 
 # ── LLM ───────────────────────────────────────────────
 [[items]]

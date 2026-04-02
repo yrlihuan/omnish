@@ -1522,7 +1522,7 @@ async fn run_agent_loop(
                                 if let Some(exe) = plugin_mgr.plugin_executable(&tc.name) {
                                     let (proxy, no_proxy) = {
                                         let dc = opts.daemon_config.read().unwrap();
-                                        (dc.proxy.clone(), dc.no_proxy.clone())
+                                        (dc.proxy.http_proxy.clone(), dc.proxy.no_proxy.clone())
                                     };
                                     execute_daemon_plugin(&exe, &tc.name, &merged_input, proxy.as_deref(), no_proxy.as_deref()).await
                                 } else {

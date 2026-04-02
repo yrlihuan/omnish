@@ -249,10 +249,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonexistent.toml");
 
-        set_toml_value_nested(&path, "proxy", "http://proxy:8080").unwrap();
+        set_toml_value_nested(&path, "proxy.http_proxy", "http://proxy:8080").unwrap();
 
         let result = fs::read_to_string(&path).unwrap();
-        assert!(result.contains("proxy = \"http://proxy:8080\""));
+        assert!(result.contains("http_proxy = \"http://proxy:8080\""));
     }
 
     #[test]

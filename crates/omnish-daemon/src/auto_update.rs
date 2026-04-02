@@ -41,7 +41,7 @@ impl ScheduledTask for AutoUpdateTask {
             Box::pin(async move {
                 let (proxy, no_proxy) = {
                     let dc = daemon_config.read().unwrap();
-                    (dc.proxy.clone(), dc.no_proxy.clone())
+                    (dc.proxy.http_proxy.clone(), dc.proxy.no_proxy.clone())
                 };
                 // Phase 0: Download packages from check_url to OMNISH_HOME/updates/
                 // for daemon's own platform + all known client platforms

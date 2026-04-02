@@ -33,7 +33,7 @@ impl ConfigSection {
             "plugins" => Some(ConfigSection::Plugins),
             "tools" => Some(ConfigSection::Tools),
             "sandbox" => Some(ConfigSection::Sandbox),
-            "proxy" | "no_proxy" => Some(ConfigSection::Llm), // proxy affects LLM backends
+            "proxy" => Some(ConfigSection::Llm), // proxy affects LLM backends
             _ => None,
         }
     }
@@ -117,8 +117,7 @@ impl ConfigWatcher {
             let changed = match section {
                 ConfigSection::Sandbox => current.sandbox != new_config.sandbox,
                 ConfigSection::Llm => current.llm != new_config.llm
-                    || current.proxy != new_config.proxy
-                    || current.no_proxy != new_config.no_proxy,
+                    || current.proxy != new_config.proxy,
                 ConfigSection::Plugins => current.plugins != new_config.plugins,
                 ConfigSection::Tasks => current.tasks != new_config.tasks,
                 // Future: add diff for other sections here

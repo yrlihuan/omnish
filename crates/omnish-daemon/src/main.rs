@@ -125,7 +125,7 @@ async fn async_main() -> Result<i32> {
 
     // Create LLM backend (falls back to UnavailableBackend if config fails)
     let llm_backend: SharedLlmBackend = {
-        let backend = match MultiBackend::new(&config.llm, config.proxy.as_deref(), config.no_proxy.as_deref()) {
+        let backend = match MultiBackend::new(&config.llm, config.proxy.http_proxy.as_deref(), config.proxy.no_proxy.as_deref()) {
             Ok(backend) => {
                 tracing::info!("LLM backend initialized: {}", backend.name());
                 Arc::new(backend)
@@ -247,7 +247,7 @@ async fn async_main() -> Result<i32> {
             let mut rx = llm_rx;
             while rx.changed().await.is_ok() {
                 let config = rx.borrow_and_update().clone();
-                match MultiBackend::new(&config.llm, config.proxy.as_deref(), config.no_proxy.as_deref()) {
+                match MultiBackend::new(&config.llm, config.proxy.http_proxy.as_deref(), config.proxy.no_proxy.as_deref()) {
                     Ok(new_backend) => {
                         let name = new_backend.name().to_string();
                         *llm_holder.write().unwrap() = Arc::new(new_backend);

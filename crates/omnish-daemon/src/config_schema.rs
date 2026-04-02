@@ -422,11 +422,14 @@ mod tests {
     #[test]
     fn test_resolve_value_top_level() {
         let config = DaemonConfig {
-            proxy: Some("http://proxy:8080".to_string()),
+            proxy: omnish_common::config::ProxyConfig {
+                http_proxy: Some("http://proxy:8080".to_string()),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let val = toml::Value::try_from(&config).unwrap();
-        assert_eq!(resolve_value(&val, "proxy"), Some("http://proxy:8080".to_string()));
+        assert_eq!(resolve_value(&val, "proxy.http_proxy"), Some("http://proxy:8080".to_string()));
     }
 
     #[test]
