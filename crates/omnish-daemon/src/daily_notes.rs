@@ -96,7 +96,7 @@ async fn generate_daily_note(
             max_content_chars,
             conversation: vec![],
             system_prompt: None,
-            enable_thinking: None, // Use default (thinking enabled for analysis)
+            enable_thinking: Some(true),
             tools: vec![],
             extra_messages: vec![],
         };

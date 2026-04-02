@@ -123,21 +123,14 @@ impl LlmBackend for AnthropicBackend {
             body_map.insert("tools".to_string(), serde_json::Value::Array(tools_json));
         }
 
-        // Add thinking parameter if explicitly enabled or disabled
-        // None means use backend default (no thinking parameter sent)
-        if let Some(enabled) = req.enable_thinking {
-            if enabled {
-                let mut thinking_map = serde_json::Map::new();
-                thinking_map.insert("type".to_string(), serde_json::Value::String("enabled".to_string()));
-                // Default budget_tokens: 4096 (can be made configurable in the future)
-                thinking_map.insert("budget_tokens".to_string(), serde_json::Value::Number(4096.into()));
-                body_map.insert("thinking".to_string(), serde_json::Value::Object(thinking_map));
-            } else {
-                let mut thinking_map = serde_json::Map::new();
-                thinking_map.insert("type".to_string(), serde_json::Value::String("enabled".to_string()));
-                thinking_map.insert("disabled_reason".to_string(), serde_json::Value::String("disabled_by_client".to_string()));
-                body_map.insert("thinking".to_string(), serde_json::Value::Object(thinking_map));
-            }
+        // Add thinking parameter only when explicitly enabled.
+        // None or Some(false) means no thinking parameter sent (disabled by default).
+        if req.enable_thinking == Some(true) {
+            let mut thinking_map = serde_json::Map::new();
+            thinking_map.insert("type".to_string(), serde_json::Value::String("enabled".to_string()));
+            // Default budget_tokens: 4096 (can be made configurable in the future)
+            thinking_map.insert("budget_tokens".to_string(), serde_json::Value::Number(4096.into()));
+            body_map.insert("thinking".to_string(), serde_json::Value::Object(thinking_map));
         }
 
         let body = serde_json::Value::Object(body_map);
