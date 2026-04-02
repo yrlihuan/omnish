@@ -107,23 +107,50 @@ impl TaskManager {
         lines.join("\n")
     }
 
-    /// Remove all current jobs and re-register from the given task list.
-    /// Disabled tasks (per their own `enabled()`) are skipped.
+    /// Incrementally reload tasks: only remove/recreate tasks whose config
+    /// actually changed. Unchanged tasks keep their scheduler position so
+    /// their next trigger time is preserved.
     pub async fn reload(
         &mut self,
         tasks: &[Box<dyn ScheduledTask>],
         ctx: &TaskContext,
     ) -> Result<()> {
-        // Remove all current jobs
-        for (name, entry) in self.tasks.drain() {
-            if entry.enabled {
-                if let Err(e) = self.scheduler.remove(&entry.uuid).await {
-                    tracing::warn!("failed to remove task '{}': {}", name, e);
+        let mut changed = Vec::new();
+
+        for task in tasks {
+            let name = task.name();
+            let want_enabled = task.enabled();
+            let want_schedule = task.schedule();
+
+            match self.tasks.get(name) {
+                Some(entry) if entry.enabled == want_enabled && entry.cron == want_schedule => {
+                    // Unchanged — keep existing job
+                    continue;
+                }
+                Some(_) => {
+                    // Config changed — remove old job, will re-register below
+                    if let Some(entry) = self.tasks.remove(name) {
+                        if entry.enabled {
+                            if let Err(e) = self.scheduler.remove(&entry.uuid).await {
+                                tracing::warn!("failed to remove task '{}': {}", name, e);
+                            }
+                        }
+                    }
+                    changed.push(task);
+                }
+                None => {
+                    // New task (shouldn't happen in practice, but handle it)
+                    changed.push(task);
                 }
             }
         }
-        // Re-register enabled tasks
-        for task in tasks {
+
+        if changed.is_empty() {
+            tracing::debug!("task reload: no changes detected");
+            return Ok(());
+        }
+
+        for task in changed {
             if task.enabled() {
                 match task.create_job(ctx) {
                     Ok(job) => {
@@ -134,10 +161,12 @@ impl TaskManager {
                     }
                 }
             } else {
-                tracing::debug!("task '{}' is disabled, skipping", task.name());
+                tracing::debug!("task '{}' is now disabled", task.name());
             }
         }
-        tracing::info!("task reload complete: {} tasks registered", self.tasks.len());
+
+        let active = self.tasks.values().filter(|e| e.enabled).count();
+        tracing::info!("task reload complete: {} active tasks", active);
         Ok(())
     }
 }
