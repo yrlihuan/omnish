@@ -110,7 +110,8 @@ impl ConfigWatcher {
     pub fn reload(&self) -> anyhow::Result<()> {
         // Read and parse outside the lock
         let content = std::fs::read_to_string(&self.config_path)?;
-        let new_config: DaemonConfig = toml::from_str(&content)?;
+        let mut new_config: DaemonConfig = toml::from_str(&content)?;
+        new_config.normalize();
 
         // Lock briefly for diff + swap
         let mut current = self.current.write().unwrap();

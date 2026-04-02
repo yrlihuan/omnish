@@ -223,12 +223,49 @@ pub struct SandboxPluginConfig {
     pub permit_rules: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
 pub struct ProxyConfig {
     #[serde(default)]
     pub http_proxy: Option<String>,
     #[serde(default)]
     pub no_proxy: Option<String>,
+}
+
+/// Custom deserializer: accepts both `proxy = "http://..."` (old) and `[proxy]` table (new).
+impl<'de> serde::Deserialize<'de> for ProxyConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ProxyVisitor;
+        impl<'de> serde::de::Visitor<'de> for ProxyVisitor {
+            type Value = ProxyConfig;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "a proxy URL string or a [proxy] table")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<ProxyConfig, E> {
+                Ok(ProxyConfig {
+                    http_proxy: Some(v.to_string()),
+                    no_proxy: None,
+                })
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<ProxyConfig, M::Error> {
+                #[derive(Deserialize)]
+                struct Inner {
+                    #[serde(default)]
+                    http_proxy: Option<String>,
+                    #[serde(default)]
+                    no_proxy: Option<String>,
+                }
+                let inner = Inner::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(ProxyConfig {
+                    http_proxy: inner.http_proxy,
+                    no_proxy: inner.no_proxy,
+                })
+            }
+        }
+        deserializer.deserialize_any(ProxyVisitor)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +278,9 @@ pub struct DaemonConfig {
     pub listen_addr: String,
     #[serde(default)]
     pub proxy: ProxyConfig,
+    /// Backward compat: old top-level `no_proxy` key merges into `proxy.no_proxy`.
+    #[serde(default, skip_serializing)]
+    no_proxy: Option<String>,
     #[serde(default)]
     pub llm: LlmConfig,
     #[serde(default)]
@@ -264,6 +304,7 @@ impl Default for DaemonConfig {
         Self {
             listen_addr: default_socket_path(),
             proxy: ProxyConfig::default(),
+            no_proxy: None,
             llm: LlmConfig::default(),
             context: ContextConfig::default(),
             tasks: HashMap::new(),
@@ -274,13 +315,26 @@ impl Default for DaemonConfig {
     }
 }
 
+impl DaemonConfig {
+    /// Merge deprecated top-level `no_proxy` into `proxy.no_proxy`.
+    pub fn normalize(&mut self) {
+        if let Some(np) = self.no_proxy.take() {
+            if self.proxy.no_proxy.is_none() {
+                self.proxy.no_proxy = Some(np);
+            }
+        }
+    }
+}
+
 pub fn load_daemon_config() -> Result<DaemonConfig> {
     let path = std::env::var("OMNISH_DAEMON_CONFIG")
         .map(PathBuf::from)
         .unwrap_or_else(|_| omnish_dir().join("daemon.toml"));
     if path.exists() {
         let contents = std::fs::read_to_string(&path)?;
-        Ok(toml::from_str(&contents)?)
+        let mut config: DaemonConfig = toml::from_str(&contents)?;
+        config.normalize();
+        Ok(config)
     } else {
         Ok(DaemonConfig::default())
     }
