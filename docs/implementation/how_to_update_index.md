@@ -1,21 +1,35 @@
-## 更新 index.md
-更新index.md. 该文档描述了模块文档中中主要组件的功能和模块文档中该功能部分的行号范围.
-对于每个组件, 应该主要介绍该组件的功能指责范围. 这部分描述应该覆盖所有子功能的要点.
-不要太多冗余信息, 控制文件的大小, index.md会成为所有任务重llm都会加载的reference.
-做增量更新的时候, 不用一一涵盖模块文档中每一处更新. 一些实现的细节忽略.
+## Updating index.md
+Update index.md. This document describes the main components in each module doc along with their line number ranges.
+For each component, focus on its functional responsibilities. The description should cover the key points of all sub-features.
+Avoid redundant information and keep the file small — index.md is loaded as a reference by the LLM in every task.
+For incremental updates, do NOT include every change in the module docs. Ignore implementation details.
 
-## 使用 split_doc_sections.sh 逐段更新
+### What belongs in index.md
+- Data structure type changes (e.g. TasksConfig changed from a concrete struct to a HashMap type alias)
+- Protocol version updates
+- New fields on protocol messages (brief mention)
+- Important new state fields on core structs (e.g. AgentLoopState adding cancel_flag)
+- Public API signature changes (e.g. return type changes)
 
-可以使用 `split_doc_sections.sh` 将模块文档按 `## ` 标题拆分为独立段落，便于逐段读取并更新 index.md：
+### What does NOT belong in index.md
+- Specific function names (e.g. `sanitize_orphaned_tool_use()`, `unregister_by_plugin()`)
+- Internal mechanism details (e.g. inotify event types, RwLock usage, specific trait method signatures)
+- Helper types or wrapper types do not need their own entries (e.g. ConfigMap)
+- Error handling / diagnostics improvements
+- Internal logic of config menu generation
+- Appending implementation details to existing component descriptions (preserve the original granularity)
+
+## Using split_doc_sections.sh for section-by-section updates
+
+Use `split_doc_sections.sh` to split a module doc by `## ` headings into independent sections, making it easy to read and update index.md section by section:
 
 ```bash
-# 列出所有段落及行号范围
+# List all sections with line number ranges
 bash docs/implementation/split_doc_sections.sh docs/implementation/omnish-daemon.md list
 
-# 按名称获取段落（子串匹配）
+# Get a section by name (substring match)
 bash docs/implementation/split_doc_sections.sh docs/implementation/omnish-daemon.md get "插件系统"
 
-# 按编号获取段落（0=preamble, 1-N=各段落）
+# Get a section by number (0=preamble, 1-N=sections)
 bash docs/implementation/split_doc_sections.sh docs/implementation/omnish-daemon.md get 3
 ```
-
