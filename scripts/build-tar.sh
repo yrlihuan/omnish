@@ -48,6 +48,7 @@ if [[ -d "$REPO_ROOT/plugins" ]]; then
     cp -r "$REPO_ROOT/plugins" "$STAGING/"
 fi
 
-tar -czf "${STAGING}.tar.gz" -C dist "omnish-${VERSION}-${OS}-${ARCH}"
+tar -czf "${STAGING}.tar.gz.tmp" -C dist "omnish-${VERSION}-${OS}-${ARCH}"
+mv "${STAGING}.tar.gz.tmp" "${STAGING}.tar.gz"
 rm -rf "$STAGING"
 echo "Created ${STAGING}.tar.gz"
