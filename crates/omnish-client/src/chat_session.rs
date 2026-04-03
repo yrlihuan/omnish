@@ -2071,16 +2071,8 @@ impl ChatSession {
         // Items under "Save failure test" submenu always fail to test revert behavior
         let mut change_callback = |change: &MenuChange| -> bool {
             if change.path.starts_with("Save failure test.") {
-                write_stdout(&format!(
-                    "\x1b[31mSimulated save failure: {} = {}\x1b[0m\r\n",
-                    change.path, change.value
-                ));
                 false
             } else {
-                write_stdout(&format!(
-                    "\x1b[32mSaved: {} = {}\x1b[0m\r\n",
-                    change.path, change.value
-                ));
                 true
             }
         };

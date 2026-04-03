@@ -796,7 +796,7 @@ pub fn run_menu(
                             let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
                             common::write_stdout(full.as_bytes());
                         } else {
-                            // Normal mode: redraw just the current item
+                            // Normal mode without callback: redraw just the current item
                             common::write_stdout(format!("\x1b[{}A", row_from_bottom).as_bytes());
                             let line = render_menu_item(&current_items[cursor], true);
                             common::write_stdout(line.as_bytes());
