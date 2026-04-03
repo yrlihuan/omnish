@@ -186,7 +186,7 @@ pub fn create_all_tasks(config: &omnish_common::config::TasksConfig) -> Vec<Box<
 }
 
 /// Inject task defaults into a TasksConfig so serialization includes them.
-/// Called from DaemonConfig::normalize().
+/// Called at startup and on every config reload.
 pub fn inject_task_defaults(tasks: &mut omnish_common::config::TasksConfig) {
     let all_defaults: Vec<(&str, HashMap<String, serde_json::Value>)> = vec![
         ("eviction", crate::eviction::EvictionTask::defaults()),
