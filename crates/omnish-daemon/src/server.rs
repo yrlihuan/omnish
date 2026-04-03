@@ -929,7 +929,8 @@ async fn handle_message(
             match result {
                 Ok(()) => {
                     // Reload config after successful write
-                    if let Ok(new_config) = omnish_common::config::load_daemon_config() {
+                    if let Ok(mut new_config) = omnish_common::config::load_daemon_config() {
+                        omnish_daemon::task_mgr::inject_task_defaults(&mut new_config.tasks);
                         *opts.daemon_config.write().unwrap() = new_config;
                     }
                     let _ = tx.send(Message::ConfigUpdateResult { ok: true, error: None }).await;

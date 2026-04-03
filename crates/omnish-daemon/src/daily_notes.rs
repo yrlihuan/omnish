@@ -14,7 +14,7 @@ pub struct DailyNotesTask {
 
 impl DailyNotesTask {
     pub fn new(config: ConfigMap) -> Self {
-        let schedule = config.get_string("schedule", "0 10 0 * * *");
+        let schedule = config.get_string("schedule", "");
         Self { config, schedule }
     }
 }
@@ -29,7 +29,14 @@ impl ScheduledTask for DailyNotesTask {
     }
 
     fn enabled(&self) -> bool {
-        self.config.get_bool("enabled", false)
+        self.config.get_bool("enabled", true)
+    }
+
+    fn defaults() -> std::collections::HashMap<String, serde_json::Value> {
+        [
+            ("enabled".into(), serde_json::json!(true)),
+            ("schedule".into(), serde_json::json!("0 10 0 * * *")),
+        ].into()
     }
 
     fn create_job(&self, ctx: &TaskContext) -> anyhow::Result<Job> {

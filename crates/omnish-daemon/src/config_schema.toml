@@ -17,14 +17,12 @@ path = "general.hotkeys.command_prefix"
 label = "Enter chat mode"
 kind = "text"
 toml_key = "client.command_prefix"
-default = ":"
 
 [[items]]
 path = "general.hotkeys.resume_prefix"
 label = "Resume chat"
 kind = "text"
 toml_key = "client.resume_prefix"
-default = "::"
 
 # ── General > Completion ──────────────────────────────
 [[items]]
@@ -37,14 +35,12 @@ path = "general.shell_completion.completion_enabled"
 label = "Completion enabled"
 kind = "toggle"
 toml_key = "client.completion_enabled"
-default = "true"
 
 [[items]]
 path = "general.shell_completion.ghost_timeout_ms"
 label = "Ghost text timeout (ms)"
 kind = "text"
 toml_key = "client.ghost_timeout_ms"
-default = "10000"
 
 # ── General > Auto Update ────────────────────────────
 [[items]]

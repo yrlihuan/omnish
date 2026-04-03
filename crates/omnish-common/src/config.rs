@@ -178,16 +178,26 @@ pub fn load_client_config() -> Result<ClientConfig> {
 // ConfigMap: generic key-value config (used by tasks and plugins)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct ConfigMap(HashMap<String, serde_json::Value>);
+#[derive(Debug, Clone)]
+pub struct ConfigMap {
+    values: HashMap<String, serde_json::Value>,
+    defaults: HashMap<String, serde_json::Value>,
+}
 
 impl ConfigMap {
+    pub fn set_defaults(&mut self, defaults: HashMap<String, serde_json::Value>) {
+        self.defaults = defaults;
+    }
+
     pub fn get_bool(&self, key: &str, default: bool) -> bool {
-        self.0.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
+        self.values.get(key)
+            .or_else(|| self.defaults.get(key))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(default)
     }
 
     pub fn get_u64(&self, key: &str, default: u64) -> u64 {
-        match self.0.get(key) {
+        match self.values.get(key).or_else(|| self.defaults.get(key)) {
             Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(default),
             Some(serde_json::Value::String(s)) => s.parse().unwrap_or(default),
             _ => default,
@@ -195,29 +205,71 @@ impl ConfigMap {
     }
 
     pub fn get_string(&self, key: &str, default: &str) -> String {
-        self.0.get(key).and_then(|v| v.as_str()).map(String::from).unwrap_or_else(|| default.to_string())
+        self.values.get(key)
+            .or_else(|| self.defaults.get(key))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| default.to_string())
     }
 
     pub fn get_opt_string(&self, key: &str) -> Option<String> {
-        self.0.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from)
+        self.values.get(key)
+            .or_else(|| self.defaults.get(key))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from)
     }
 
     pub fn contains_key(&self, key: &str) -> bool {
-        self.0.contains_key(key)
+        self.values.contains_key(key) || self.defaults.contains_key(key)
     }
 
     pub fn get(&self, key: &str) -> Option<&serde_json::Value> {
-        self.0.get(key)
+        self.values.get(key).or_else(|| self.defaults.get(key))
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &serde_json::Value)> {
-        self.0.iter()
+    /// Iterate over merged view (values override defaults).
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &serde_json::Value)> + '_ {
+        self.defaults.iter()
+            .filter(|(k, _)| !self.values.contains_key(*k))
+            .chain(self.values.iter())
+    }
+}
+
+impl Default for ConfigMap {
+    fn default() -> Self {
+        Self { values: HashMap::new(), defaults: HashMap::new() }
+    }
+}
+
+/// Compare user-set values only (defaults don't affect config diff).
+impl PartialEq for ConfigMap {
+    fn eq(&self, other: &Self) -> bool {
+        self.values == other.values
+    }
+}
+
+/// Serialize: output merged values + defaults (for menu display via toml::Value).
+/// File writes go through config_edit, not serialization.
+impl serde::Serialize for ConfigMap {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut merged = self.defaults.clone();
+        merged.extend(self.values.iter().map(|(k, v)| (k.clone(), v.clone())));
+        merged.serialize(serializer)
+    }
+}
+
+/// Deserialize: only populate values, defaults remain empty.
+impl<'de> serde::Deserialize<'de> for ConfigMap {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let values = HashMap::<String, serde_json::Value>::deserialize(deserializer)?;
+        Ok(Self { values, defaults: HashMap::new() })
     }
 }
 
 impl From<HashMap<String, serde_json::Value>> for ConfigMap {
     fn from(map: HashMap<String, serde_json::Value>) -> Self {
-        Self(map)
+        Self { values: map, defaults: HashMap::new() }
     }
 }
 

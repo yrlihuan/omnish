@@ -36,6 +36,8 @@ pub trait ScheduledTask: Send + Sync {
     fn enabled(&self) -> bool;
     /// Build the tokio-cron-scheduler Job using the shared context.
     fn create_job(&self, ctx: &TaskContext) -> Result<Job>;
+    /// Default config values for this task (injected into ConfigMap.defaults).
+    fn defaults() -> HashMap<String, serde_json::Value> where Self: Sized;
 }
 
 struct TaskEntry {
@@ -181,4 +183,21 @@ pub fn create_all_tasks(config: &omnish_common::config::TasksConfig) -> Vec<Box<
         Box::new(crate::auto_update::AutoUpdateTask::new(config.get("auto_update").unwrap_or(&empty).clone())),
         Box::new(crate::thread_summary::ThreadSummaryTask::new(config.get("thread_summary").unwrap_or(&empty).clone())),
     ]
+}
+
+/// Inject task defaults into a TasksConfig so serialization includes them.
+/// Called from DaemonConfig::normalize().
+pub fn inject_task_defaults(tasks: &mut omnish_common::config::TasksConfig) {
+    let all_defaults: Vec<(&str, HashMap<String, serde_json::Value>)> = vec![
+        ("eviction", crate::eviction::EvictionTask::defaults()),
+        ("hourly_summary", crate::hourly_summary::HourlySummaryTask::defaults()),
+        ("daily_notes", crate::daily_notes::DailyNotesTask::defaults()),
+        ("disk_cleanup", crate::cleanup::DiskCleanupTask::defaults()),
+        ("auto_update", crate::auto_update::AutoUpdateTask::defaults()),
+        ("thread_summary", crate::thread_summary::ThreadSummaryTask::defaults()),
+    ];
+    for (name, defaults) in all_defaults {
+        let entry = tasks.entry(name.to_string()).or_default();
+        entry.set_defaults(defaults);
+    }
 }

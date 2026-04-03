@@ -10,7 +10,7 @@ pub struct AutoUpdateTask {
 
 impl AutoUpdateTask {
     pub fn new(config: ConfigMap) -> Self {
-        let schedule = config.get_string("schedule", "0 0 4 * * *");
+        let schedule = config.get_string("schedule", "");
         Self { config, schedule }
     }
 }
@@ -25,7 +25,14 @@ impl ScheduledTask for AutoUpdateTask {
     }
 
     fn enabled(&self) -> bool {
-        self.config.get_bool("enabled", false)
+        self.config.get_bool("enabled", true)
+    }
+
+    fn defaults() -> std::collections::HashMap<String, serde_json::Value> {
+        [
+            ("enabled".into(), serde_json::json!(true)),
+            ("schedule".into(), serde_json::json!("0 0 4 * * *")),
+        ].into()
     }
 
     fn create_job(&self, ctx: &TaskContext) -> Result<Job> {

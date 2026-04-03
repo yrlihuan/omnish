@@ -112,6 +112,7 @@ impl ConfigWatcher {
         let content = std::fs::read_to_string(&self.config_path)?;
         let mut new_config: DaemonConfig = toml::from_str(&content)?;
         new_config.normalize();
+        omnish_daemon::task_mgr::inject_task_defaults(&mut new_config.tasks);
 
         // Lock briefly for diff + swap
         let mut current = self.current.write().unwrap();

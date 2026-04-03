@@ -113,7 +113,8 @@ async fn async_main() -> Result<i32> {
     tracing::info!("omnish-daemon {}", omnish_common::VERSION);
 
     // Load configuration
-    let config = load_daemon_config()?;
+    let mut config = load_daemon_config()?;
+    omnish_daemon::task_mgr::inject_task_defaults(&mut config.tasks);
 
     // Environment variable takes precedence over config file
     let socket_path = std::env::var("OMNISH_SOCKET").unwrap_or_else(|_| config.listen_addr.clone());

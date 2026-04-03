@@ -11,7 +11,7 @@ pub struct DiskCleanupTask {
 
 impl DiskCleanupTask {
     pub fn new(config: ConfigMap) -> Self {
-        let schedule = config.get_string("schedule", "0 0 */6 * * *");
+        let schedule = config.get_string("schedule", "");
         Self { config, schedule }
     }
 }
@@ -27,6 +27,13 @@ impl ScheduledTask for DiskCleanupTask {
 
     fn enabled(&self) -> bool {
         self.config.get_bool("enabled", true)
+    }
+
+    fn defaults() -> std::collections::HashMap<String, serde_json::Value> {
+        [
+            ("enabled".into(), serde_json::json!(true)),
+            ("schedule".into(), serde_json::json!("0 0 */6 * * *")),
+        ].into()
     }
 
     fn create_job(&self, ctx: &TaskContext) -> Result<Job> {
@@ -79,7 +86,9 @@ mod tests {
             daemon_config,
         };
 
-        let task = DiskCleanupTask::new(ConfigMap::default());
+        let mut config = ConfigMap::default();
+        config.set_defaults(DiskCleanupTask::defaults());
+        let task = DiskCleanupTask::new(config);
         assert!(task.enabled());
         let job = task.create_job(&ctx);
         assert!(job.is_ok());
