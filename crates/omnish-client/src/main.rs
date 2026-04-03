@@ -1549,9 +1549,18 @@ fn apply_client_config_changes(
         }
     }
     if any_changed {
-        if let Err(e) = save_client_config_cache(changes) {
-            tracing::warn!("failed to cache client config: {}", e);
-        }
+        let changes = changes.to_vec();
+        tokio::spawn(async move {
+            // Random delay (0-5s) to avoid multiple clients writing simultaneously
+            let delay: u64 = {
+                use rand::Rng;
+                rand::thread_rng().gen_range(0..5000)
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            if let Err(e) = save_client_config_cache(&changes) {
+                tracing::warn!("failed to cache client config: {}", e);
+            }
+        });
     }
 }
 
@@ -1559,42 +1568,80 @@ fn save_client_config_cache(changes: &[omnish_protocol::message::ConfigChange]) 
     let path = std::env::var("OMNISH_CLIENT_CONFIG")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| omnish_common::config::omnish_dir().join("client.toml"));
+
+    // Read current file content once, then apply all changes in memory.
+    let content = if path.exists() {
+        std::fs::read_to_string(&path)?
+    } else {
+        String::new()
+    };
+    let mut doc = content.parse::<toml_edit::DocumentMut>()?;
+
+    let mut any_modified = false;
     for change in changes {
         // Map daemon.toml "client.*" paths to client.toml keys.
-        // Use typed writers to preserve TOML type correctness — writing
-        // booleans as strings (e.g. completion_enabled = "true") causes
-        // deserialization failures on next load, losing daemon_addr.
-        match change.path.as_str() {
-            "client.command_prefix" | "client.resume_prefix" => {
-                let key = if change.path == "client.command_prefix" {
-                    "shell.command_prefix"
-                } else {
-                    "shell.resume_prefix"
-                };
-                omnish_common::config_edit::set_toml_value_nested(&path, key, &change.value)?;
+        // Use typed values to preserve TOML type correctness.
+        let (key, new_item) = match change.path.as_str() {
+            "client.command_prefix" => ("shell.command_prefix", toml_edit::value(&change.value)),
+            "client.resume_prefix" => ("shell.resume_prefix", toml_edit::value(&change.value)),
+            "client.completion_enabled" => {
+                let v: bool = change.value.parse().unwrap_or(false);
+                ("completion_enabled", toml_edit::value(v))
             }
-            "client.completion_enabled" | "client.developer_mode" => {
-                let key = if change.path == "client.completion_enabled" {
-                    "completion_enabled"
-                } else {
-                    "shell.developer_mode"
-                };
-                let bool_val: bool = change.value.parse().unwrap_or(false);
-                omnish_common::config_edit::set_toml_value_nested_bool(&path, key, bool_val)?;
+            "client.developer_mode" => {
+                let v: bool = change.value.parse().unwrap_or(false);
+                ("shell.developer_mode", toml_edit::value(v))
             }
-            "client.ghost_timeout_ms" | "client.intercept_gap_ms" => {
-                let key = if change.path == "client.ghost_timeout_ms" {
-                    "shell.ghost_timeout_ms"
+            "client.ghost_timeout_ms" => {
+                if let Ok(v) = change.value.parse::<i64>() {
+                    ("shell.ghost_timeout_ms", toml_edit::value(v))
                 } else {
-                    "shell.intercept_gap_ms"
-                };
-                if let Ok(int_val) = change.value.parse::<i64>() {
-                    omnish_common::config_edit::set_toml_value_nested_int(&path, key, int_val)?;
+                    continue;
+                }
+            }
+            "client.intercept_gap_ms" => {
+                if let Ok(v) = change.value.parse::<i64>() {
+                    ("shell.intercept_gap_ms", toml_edit::value(v))
+                } else {
+                    continue;
                 }
             }
             _ => continue,
+        };
+
+        // Navigate to the leaf and compare before overwriting.
+        let segments = omnish_common::config_edit::split_key_path(key);
+        let (parents, leaf) = segments.split_at(segments.len() - 1);
+        let mut table = doc.as_table_mut();
+        for seg in parents {
+            if !table.contains_key(seg) {
+                table.insert(seg, toml_edit::Item::Table(toml_edit::Table::new()));
+            }
+            table = table[seg.as_str()]
+                .as_table_mut()
+                .ok_or_else(|| anyhow::anyhow!("{} is not a table", seg))?;
         }
+        let leaf_key = &leaf[0];
+        // Skip if the value already matches.
+        if let Some(existing) = table.get(leaf_key) {
+            if existing.to_string().trim() == new_item.to_string().trim() {
+                continue;
+            }
+        }
+        table[leaf_key] = new_item;
+        any_modified = true;
     }
+
+    if !any_modified {
+        return Ok(());
+    }
+
+    // Atomic write: write to temp file then rename.
+    let output = doc.to_string();
+    let output = if output.ends_with('\n') { output } else { format!("{}\n", output) };
+    let tmp_path = path.with_extension("toml.tmp");
+    std::fs::write(&tmp_path, &output)?;
+    std::fs::rename(&tmp_path, &path)?;
     Ok(())
 }
 
