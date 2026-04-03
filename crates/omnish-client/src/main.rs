@@ -614,7 +614,7 @@ async fn main() -> Result<()> {
     let guard = TimeGapGuard::new(std::time::Duration::from_millis(config.shell.intercept_gap_ms));
     let mut interceptor = InputInterceptor::new(&config.shell.command_prefix, &config.shell.resume_prefix, Box::new(guard), config.shell.developer_mode);
     let mut prefix_bytes: Vec<u8> = config.shell.command_prefix.as_bytes().to_vec();
-    let mut completion_enabled = config.completion_enabled;
+    let mut completion_enabled = config.shell.completion_enabled;
     let mut ghost_timeout_ms = config.shell.ghost_timeout_ms;
     let mut alt_screen_detector = AltScreenDetector::new();
     let mut col_tracker = if let Some(ref r) = resume_args {
@@ -1586,7 +1586,7 @@ fn save_client_config_cache(changes: &[omnish_protocol::message::ConfigChange]) 
             "client.resume_prefix" => ("shell.resume_prefix", toml_edit::value(&change.value)),
             "client.completion_enabled" => {
                 let v: bool = change.value.parse().unwrap_or(false);
-                ("completion_enabled", toml_edit::value(v))
+                ("shell.completion_enabled", toml_edit::value(v))
             }
             "client.developer_mode" => {
                 let v: bool = change.value.parse().unwrap_or(false);

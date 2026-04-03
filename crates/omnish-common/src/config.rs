@@ -144,8 +144,6 @@ pub struct ClientConfig {
     pub shell: ShellConfig,
     #[serde(default = "default_socket_path")]
     pub daemon_addr: String,
-    #[serde(default = "default_true", deserialize_with = "string_or_bool::deserialize")]
-    pub completion_enabled: bool,
     #[serde(default)]
     pub onboarded: bool,
 }
@@ -159,7 +157,6 @@ impl Default for ClientConfig {
         Self {
             shell: ShellConfig::default(),
             daemon_addr: default_socket_path(),
-            completion_enabled: true,
             onboarded: false,
         }
     }
@@ -387,6 +384,8 @@ pub struct ShellConfig {
     /// When true, prevents : and :: from triggering chat mode when command line already has content
     #[serde(default = "default_developer_mode", deserialize_with = "string_or_bool::deserialize")]
     pub developer_mode: bool,
+    #[serde(default = "default_true", deserialize_with = "string_or_bool::deserialize")]
+    pub completion_enabled: bool,
 }
 
 impl Default for ShellConfig {
@@ -398,6 +397,7 @@ impl Default for ShellConfig {
             intercept_gap_ms: default_intercept_gap_ms(),
             ghost_timeout_ms: default_ghost_timeout_ms(),
             developer_mode: default_developer_mode(),
+            completion_enabled: true,
         }
     }
 }
