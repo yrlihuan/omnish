@@ -271,12 +271,14 @@ async fn async_main() -> Result<i32> {
         let sandbox_rx = config_watcher.subscribe(config_watcher::ConfigSection::Sandbox);
         let plugins_rx = config_watcher.subscribe(config_watcher::ConfigSection::Plugins);
         let tasks_rx = config_watcher.subscribe(config_watcher::ConfigSection::Tasks);
+        let client_rx = config_watcher.subscribe(config_watcher::ConfigSection::Client);
         let dca = Arc::clone(&daemon_config_arc);
         tokio::spawn(async move {
             let mut llm = llm_rx;
             let mut sandbox = sandbox_rx;
             let mut plugins = plugins_rx;
             let mut tasks = tasks_rx;
+            let mut client = client_rx;
             loop {
                 tokio::select! {
                     Ok(()) = llm.changed() => {
@@ -293,6 +295,10 @@ async fn async_main() -> Result<i32> {
                     }
                     Ok(()) = tasks.changed() => {
                         let config = tasks.borrow_and_update().clone();
+                        *dca.write().unwrap() = (*config).clone();
+                    }
+                    Ok(()) = client.changed() => {
+                        let config = client.borrow_and_update().clone();
                         *dca.write().unwrap() = (*config).clone();
                     }
                     else => break,
@@ -369,6 +375,29 @@ async fn async_main() -> Result<i32> {
     }
     let formatter_mgr = Arc::new(formatter_mgr);
     let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr.clone(), tool_registry.clone(), server_opts, formatter_mgr, Arc::clone(&update_cache));
+
+    // Push client config changes to all connected clients via push_registry
+    {
+        let client_rx = config_watcher.subscribe(config_watcher::ConfigSection::Client);
+        let push_reg = server.push_registry.clone();
+        tokio::spawn(async move {
+            let mut rx = client_rx;
+            let mut prev = rx.borrow_and_update().client.clone();
+            while rx.changed().await.is_ok() {
+                let config = rx.borrow_and_update().clone();
+                let changes = crate::server::diff_client_section(&prev, &config.client);
+                if !changes.is_empty() {
+                    let msg = omnish_protocol::message::Message::ConfigClient { changes };
+                    let registry = push_reg.lock().await;
+                    for (_, push_tx) in registry.iter() {
+                        let _ = push_tx.send(msg.clone()).await;
+                    }
+                    tracing::info!("pushed client config to {} connections", registry.len());
+                }
+                prev = config.client.clone();
+            }
+        });
+    }
 
     tracing::info!("starting omnishd at {}", socket_path);
 

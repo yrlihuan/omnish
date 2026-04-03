@@ -255,6 +255,8 @@ pub struct DaemonConfig {
     pub plugins: HashMap<String, ConfigMap>,
     #[serde(default)]
     pub sandbox: SandboxConfig,
+    #[serde(default)]
+    pub client: ClientSection,
 }
 
 impl Default for DaemonConfig {
@@ -267,6 +269,7 @@ impl Default for DaemonConfig {
             tasks: HashMap::new(),
             plugins: HashMap::new(),
             sandbox: SandboxConfig::default(),
+            client: ClientSection::default(),
         }
     }
 }
@@ -313,6 +316,36 @@ impl Default for ShellConfig {
             resume_prefix: default_resume_prefix(),
             intercept_gap_ms: default_intercept_gap_ms(),
             ghost_timeout_ms: default_ghost_timeout_ms(),
+            developer_mode: default_developer_mode(),
+        }
+    }
+}
+
+/// Daemon-owned client settings pushed to connected clients.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ClientSection {
+    #[serde(default = "default_command_prefix")]
+    pub command_prefix: String,
+    #[serde(default = "default_resume_prefix")]
+    pub resume_prefix: String,
+    #[serde(default = "default_true")]
+    pub completion_enabled: bool,
+    #[serde(default = "default_ghost_timeout_ms", deserialize_with = "string_or_int::deserialize")]
+    pub ghost_timeout_ms: u64,
+    #[serde(default = "default_intercept_gap_ms", deserialize_with = "string_or_int::deserialize")]
+    pub intercept_gap_ms: u64,
+    #[serde(default = "default_developer_mode")]
+    pub developer_mode: bool,
+}
+
+impl Default for ClientSection {
+    fn default() -> Self {
+        Self {
+            command_prefix: default_command_prefix(),
+            resume_prefix: default_resume_prefix(),
+            completion_enabled: true,
+            ghost_timeout_ms: default_ghost_timeout_ms(),
+            intercept_gap_ms: default_intercept_gap_ms(),
             developer_mode: default_developer_mode(),
         }
     }

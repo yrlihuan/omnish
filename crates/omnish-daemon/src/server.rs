@@ -6,7 +6,7 @@ use omnish_daemon::task_mgr::TaskManager;
 use omnish_llm::backend::{ContentBlock, LlmBackend, LlmRequest, StopReason, TriggerType, UseCase};
 use omnish_llm::factory::{MultiBackend, SharedLlmBackend};
 use omnish_protocol::message::*;
-use omnish_transport::rpc_server::RpcServer;
+use omnish_transport::rpc_server::{OnPushConnect, PushRegistry, RpcServer};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -144,6 +144,7 @@ pub struct DaemonServer {
     active_threads: ActiveThreads,
     opts: Arc<ServerOpts>,
     update_cache: Arc<omnish_daemon::update_cache::UpdateCache>,
+    pub push_registry: PushRegistry,
 }
 
 /// Shallow-merge params into a JSON object. Source keys overwrite target keys.
@@ -153,6 +154,42 @@ fn merge_tool_params(target: &mut serde_json::Value, params: &HashMap<String, se
             obj.insert(k.clone(), v.clone());
         }
     }
+}
+
+/// Compare two ClientSection values and return a list of changes.
+pub fn diff_client_section(old: &omnish_common::config::ClientSection, new: &omnish_common::config::ClientSection) -> Vec<ConfigChange> {
+    let mut changes = Vec::new();
+    if old.command_prefix != new.command_prefix {
+        changes.push(ConfigChange { path: "client.command_prefix".into(), value: new.command_prefix.clone() });
+    }
+    if old.resume_prefix != new.resume_prefix {
+        changes.push(ConfigChange { path: "client.resume_prefix".into(), value: new.resume_prefix.clone() });
+    }
+    if old.completion_enabled != new.completion_enabled {
+        changes.push(ConfigChange { path: "client.completion_enabled".into(), value: new.completion_enabled.to_string() });
+    }
+    if old.ghost_timeout_ms != new.ghost_timeout_ms {
+        changes.push(ConfigChange { path: "client.ghost_timeout_ms".into(), value: new.ghost_timeout_ms.to_string() });
+    }
+    if old.intercept_gap_ms != new.intercept_gap_ms {
+        changes.push(ConfigChange { path: "client.intercept_gap_ms".into(), value: new.intercept_gap_ms.to_string() });
+    }
+    if old.developer_mode != new.developer_mode {
+        changes.push(ConfigChange { path: "client.developer_mode".into(), value: new.developer_mode.to_string() });
+    }
+    changes
+}
+
+/// Build a full set of config changes from a ClientSection (for initial push).
+pub fn full_client_changes(cs: &omnish_common::config::ClientSection) -> Vec<ConfigChange> {
+    vec![
+        ConfigChange { path: "client.command_prefix".into(), value: cs.command_prefix.clone() },
+        ConfigChange { path: "client.resume_prefix".into(), value: cs.resume_prefix.clone() },
+        ConfigChange { path: "client.completion_enabled".into(), value: cs.completion_enabled.to_string() },
+        ConfigChange { path: "client.ghost_timeout_ms".into(), value: cs.ghost_timeout_ms.to_string() },
+        ConfigChange { path: "client.intercept_gap_ms".into(), value: cs.intercept_gap_ms.to_string() },
+        ConfigChange { path: "client.developer_mode".into(), value: cs.developer_mode.to_string() },
+    ]
 }
 
 /// Execute a daemon-side plugin by spawning a subprocess.
@@ -335,6 +372,7 @@ impl DaemonServer {
             active_threads: Arc::new(Mutex::new(HashMap::new())),
             opts,
             update_cache,
+            push_registry: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -408,6 +446,17 @@ impl DaemonServer {
 
         let io_requests_handler = io_requests.clone();
         let io_bytes_handler = io_bytes.clone();
+        let daemon_config_for_push = self.opts.daemon_config.clone();
+        let on_push_connect: Option<OnPushConnect> = Some(Arc::new(move |push_tx: mpsc::Sender<Message>| {
+            let config = daemon_config_for_push.clone();
+            Box::pin(async move {
+                let changes = {
+                    let cfg = config.read().unwrap();
+                    full_client_changes(&cfg.client)
+                };
+                let _ = push_tx.send(Message::ConfigClient { changes }).await;
+            })
+        }));
         server
             .serve(
                 move |msg, tx| {
@@ -429,6 +478,8 @@ impl DaemonServer {
                 },
                 Some(auth_token),
                 tls_acceptor,
+                Some(self.push_registry.clone()),
+                on_push_connect,
             )
             .await
     }
@@ -891,7 +942,7 @@ async fn handle_message(
                 }
             }
         }
-        Message::ConfigResponse { .. } | Message::ConfigUpdateResult { .. } => {
+        Message::ConfigResponse { .. } | Message::ConfigUpdateResult { .. } | Message::ConfigClient { .. } => {
             // These are daemon→client messages, ignore if received
             let _ = tx.send(Message::Ack).await;
         }

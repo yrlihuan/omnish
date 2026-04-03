@@ -613,7 +613,9 @@ async fn main() -> Result<()> {
     let mut output_buf = [0u8; 4096];
     let guard = TimeGapGuard::new(std::time::Duration::from_millis(config.shell.intercept_gap_ms));
     let mut interceptor = InputInterceptor::new(&config.shell.command_prefix, &config.shell.resume_prefix, Box::new(guard), config.shell.developer_mode);
-    let prefix_bytes = config.shell.command_prefix.as_bytes();
+    let mut prefix_bytes: Vec<u8> = config.shell.command_prefix.as_bytes().to_vec();
+    let mut completion_enabled = config.completion_enabled;
+    let mut ghost_timeout_ms = config.shell.ghost_timeout_ms;
     let mut alt_screen_detector = AltScreenDetector::new();
     let mut col_tracker = if let Some(ref r) = resume_args {
         let t = CursorTracker::with_position(r.cursor_col, r.cursor_row);
@@ -915,7 +917,7 @@ async fn main() -> Result<()> {
                             // No visual feedback yet; chat prompt appears on timeout or Enter.
                             shell_completer.clear();
                             prefix_match_time = Some(std::time::Instant::now());
-                        } else if buf.len() > prefix_bytes.len() && buf.starts_with(prefix_bytes) {
+                        } else if buf.len() > prefix_bytes.len() && buf.starts_with(&prefix_bytes) {
                             // Additional input after prefix — cancel timer
                             prefix_match_time = None;
                         }
@@ -1365,7 +1367,7 @@ async fn main() -> Result<()> {
             // Clean up timed-out requests first
             let _cleaned = shell_completer.cleanup_timed_out_requests();
 
-            if config.completion_enabled && at_prompt && !in_chat && !shell_input.in_isearch() && shell_input.cursor_at_end() && shell_completer.should_request(shell_input.sequence_id(), current) {
+            if completion_enabled && at_prompt && !in_chat && !shell_input.in_isearch() && shell_input.cursor_at_end() && shell_completer.should_request(shell_input.sequence_id(), current) {
                 let seq = shell_input.sequence_id();
                 if let Some(ref rpc) = daemon_conn {
                     let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
@@ -1451,8 +1453,23 @@ async fn main() -> Result<()> {
             }
         }
 
+        // Check for pushed config changes from daemon (non-blocking)
+        if let Some(ref rpc) = daemon_conn {
+            while let Some(msg) = rpc.try_recv_push().await {
+                if let Message::ConfigClient { changes } = msg {
+                    apply_client_config_changes(
+                        &changes,
+                        &mut interceptor,
+                        &mut completion_enabled,
+                        &mut ghost_timeout_ms,
+                        &mut prefix_bytes,
+                    );
+                }
+            }
+        }
+
         // Auto-dismiss expired ghost text
-        if shell_completer.is_ghost_expired(config.shell.ghost_timeout_ms) {
+        if shell_completer.is_ghost_expired(ghost_timeout_ms) {
             // Send completion summary (ignored - ghost expired)
             if let Some(ref rpc) = daemon_conn {
                 let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
@@ -1483,6 +1500,80 @@ async fn main() -> Result<()> {
 
     let exit_code = proxy.wait().unwrap_or(1);
     std::process::exit(exit_code);
+}
+
+fn apply_client_config_changes(
+    changes: &[omnish_protocol::message::ConfigChange],
+    interceptor: &mut InputInterceptor,
+    completion_enabled: &mut bool,
+    ghost_timeout_ms: &mut u64,
+    prefix_bytes: &mut Vec<u8>,
+) {
+    let mut any_changed = false;
+    for change in changes {
+        match change.path.as_str() {
+            "client.command_prefix" => {
+                interceptor.update_prefix(&change.value);
+                *prefix_bytes = change.value.as_bytes().to_vec();
+                any_changed = true;
+            }
+            "client.resume_prefix" => {
+                interceptor.update_resume_prefix(&change.value);
+                any_changed = true;
+            }
+            "client.completion_enabled" => {
+                if let Ok(v) = change.value.parse::<bool>() {
+                    *completion_enabled = v;
+                    any_changed = true;
+                }
+            }
+            "client.ghost_timeout_ms" => {
+                if let Ok(v) = change.value.parse::<u64>() {
+                    *ghost_timeout_ms = v;
+                    any_changed = true;
+                }
+            }
+            "client.intercept_gap_ms" => {
+                if let Ok(v) = change.value.parse::<u64>() {
+                    interceptor.update_min_gap(std::time::Duration::from_millis(v));
+                    any_changed = true;
+                }
+            }
+            "client.developer_mode" => {
+                if let Ok(v) = change.value.parse::<bool>() {
+                    interceptor.set_developer_mode(v);
+                    any_changed = true;
+                }
+            }
+            _ => {} // unknown paths silently ignored
+        }
+    }
+    if any_changed {
+        if let Err(e) = save_client_config_cache(changes) {
+            tracing::warn!("failed to cache client config: {}", e);
+        }
+    }
+}
+
+fn save_client_config_cache(changes: &[omnish_protocol::message::ConfigChange]) -> anyhow::Result<()> {
+    let path = std::env::var("OMNISH_CLIENT_CONFIG")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| omnish_common::config::omnish_dir().join("client.toml"));
+    for change in changes {
+        // Strip "client." prefix — in client.toml these are top-level keys
+        // under [shell] or at root
+        let key = match change.path.as_str() {
+            "client.command_prefix" => "shell.command_prefix",
+            "client.resume_prefix" => "shell.resume_prefix",
+            "client.completion_enabled" => "completion_enabled",
+            "client.ghost_timeout_ms" => "shell.ghost_timeout_ms",
+            "client.intercept_gap_ms" => "shell.intercept_gap_ms",
+            "client.developer_mode" => "shell.developer_mode",
+            _ => continue,
+        };
+        omnish_common::config_edit::set_toml_value_nested(&path, key, &change.value)?;
+    }
+    Ok(())
 }
 
 async fn connect_daemon(

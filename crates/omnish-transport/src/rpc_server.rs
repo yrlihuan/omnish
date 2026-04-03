@@ -5,11 +5,21 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixListener as TokioUnixListener};
 use tokio::sync::{mpsc, Mutex};
 use tokio_rustls::TlsAcceptor;
+
+/// Registry of per-connection push channels.
+pub type PushRegistry = Arc<Mutex<HashMap<u64, mpsc::Sender<Message>>>>;
+
+/// Callback invoked after a new connection registers in the PushRegistry.
+/// Receives the push sender so it can send initial messages (e.g. current config).
+pub type OnPushConnect = Arc<dyn Fn(mpsc::Sender<Message>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 
 fn is_fd_exhausted(e: &std::io::Error) -> bool {
     // EMFILE (per-process limit) or ENFILE (system-wide limit)
@@ -128,6 +138,8 @@ impl RpcServer {
         handler: F,
         auth_token: Option<String>,
         tls_acceptor: Option<TlsAcceptor>,
+        push_registry: Option<PushRegistry>,
+        on_push_connect: Option<OnPushConnect>,
     ) -> Result<()>
     where
         F: Fn(Message, mpsc::Sender<Message>) -> Pin<Box<dyn Future<Output = ()> + Send>>
@@ -162,7 +174,7 @@ impl RpcServer {
                         }
                     }
                     let (reader, writer) = stream.into_split();
-                    spawn_connection(reader, writer, handler.clone(), auth_token.clone());
+                    spawn_connection(reader, writer, handler.clone(), auth_token.clone(), push_registry.clone(), on_push_connect.clone());
                 }
                 Listener::Tcp(l) => {
                     let (stream, _) = match l.accept().await {
@@ -183,6 +195,8 @@ impl RpcServer {
                                     writer,
                                     handler.clone(),
                                     auth_token.clone(),
+                                    push_registry.clone(),
+                                    on_push_connect.clone(),
                                 );
                             }
                             Err(e) => {
@@ -192,7 +206,7 @@ impl RpcServer {
                         }
                     } else {
                         let (reader, writer) = stream.into_split();
-                        spawn_connection(reader, writer, handler.clone(), auth_token.clone());
+                        spawn_connection(reader, writer, handler.clone(), auth_token.clone(), push_registry.clone(), on_push_connect.clone());
                     }
                 }
             }
@@ -229,6 +243,8 @@ fn spawn_connection<R, W, F>(
     writer: W,
     handler: Arc<F>,
     auth_token: Option<Arc<String>>,
+    push_registry: Option<PushRegistry>,
+    on_push_connect: Option<OnPushConnect>,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -293,46 +309,84 @@ fn spawn_connection<R, W, F>(
             }
         }
 
-        // Normal message loop
+        // Register push channel for this connection
+        let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
+        let mut push_rx = if let Some(ref registry) = push_registry {
+            let (push_tx, push_rx) = mpsc::channel::<Message>(32);
+            registry.lock().await.insert(conn_id, push_tx.clone());
+            // Send initial push messages (e.g. current client config) to newly connected client
+            if let Some(ref callback) = on_push_connect {
+                callback(push_tx).await;
+            }
+            Some(push_rx)
+        } else {
+            None
+        };
+
+        // Normal message loop with push support
         loop {
-            let frame = match read_frame(&mut reader).await {
-                Ok(f) => f,
-                Err(e) => {
-                    // EOF is normal (client disconnected); only warn on real errors
-                    let msg = e.to_string().to_lowercase();
-                    if !msg.contains("eof") && !msg.contains("end of file") {
-                        tracing::warn!("failed to read frame: {}", e);
-                    }
-                    break;
+            tokio::select! {
+                frame_result = read_frame(&mut reader) => {
+                    let frame = match frame_result {
+                        Ok(f) => f,
+                        Err(e) => {
+                            // EOF is normal (client disconnected); only warn on real errors
+                            let msg = e.to_string().to_lowercase();
+                            if !msg.contains("eof") && !msg.contains("end of file") {
+                                tracing::warn!("failed to read frame: {}", e);
+                            }
+                            break;
+                        }
+                    };
+
+                    let handler = handler.clone();
+                    let writer = writer.clone();
+                    tokio::spawn(async move {
+                        let (tx, mut rx) = mpsc::channel::<Message>(16);
+                        let request_id = frame.request_id;
+
+                        // Spawn handler — it sends messages through tx
+                        tokio::spawn(async move {
+                            handler(frame.payload, tx).await;
+                            // tx is dropped when handler completes
+                        });
+
+                        // Read from channel and write to connection as messages arrive
+                        let mut count = 0u32;
+                        while let Some(msg) = rx.recv().await {
+                            count += 1;
+                            if let Err(e) = write_reply(&writer, request_id, msg).await {
+                                tracing::error!("write_reply failed: {}", e);
+                                break;
+                            }
+                        }
+                        // Send end-of-stream sentinel for multi-message responses
+                        if count > 1 {
+                            let _ = write_reply(&writer, request_id, Message::Ack).await;
+                        }
+                    });
                 }
-            };
-
-            let handler = handler.clone();
-            let writer = writer.clone();
-            tokio::spawn(async move {
-                let (tx, mut rx) = mpsc::channel::<Message>(16);
-                let request_id = frame.request_id;
-
-                // Spawn handler — it sends messages through tx
-                tokio::spawn(async move {
-                    handler(frame.payload, tx).await;
-                    // tx is dropped when handler completes
-                });
-
-                // Read from channel and write to connection as messages arrive
-                let mut count = 0u32;
-                while let Some(msg) = rx.recv().await {
-                    count += 1;
-                    if let Err(e) = write_reply(&writer, request_id, msg).await {
-                        tracing::error!("write_reply failed: {}", e);
+                push_msg = async {
+                    match push_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if let Some(msg) = push_msg {
+                        if let Err(e) = write_reply(&writer, 0, msg).await {
+                            tracing::warn!("push write failed: {}", e);
+                            break;
+                        }
+                    } else {
                         break;
                     }
                 }
-                // Send end-of-stream sentinel for multi-message responses
-                if count > 1 {
-                    let _ = write_reply(&writer, request_id, Message::Ack).await;
-                }
-            });
+            }
+        }
+
+        // Cleanup: remove from push registry on disconnect
+        if let Some(ref registry) = push_registry {
+            registry.lock().await.remove(&conn_id);
         }
     });
 }
@@ -371,6 +425,8 @@ mod tests {
                             let _ = tx.send(reply).await;
                         })
                     },
+                    None,
+                    None,
                     None,
                     None,
                 )
@@ -446,6 +502,8 @@ mod tests {
                     },
                     None,
                     None,
+                    None,
+                    None,
                 )
                 .await
                 .ok();
@@ -507,6 +565,8 @@ mod tests {
                             let _ = tx.send(reply).await;
                         })
                     },
+                    None,
+                    None,
                     None,
                     None,
                 )
@@ -575,6 +635,8 @@ mod tests {
                     },
                     None,
                     None,
+                    None,
+                    None,
                 )
                 .await
                 .ok();
@@ -630,6 +692,8 @@ mod tests {
                     },
                     Some(server_token),
                     None,
+                    None,
+                    None,
                 )
                 .await
                 .ok();
@@ -677,6 +741,8 @@ mod tests {
                     |_msg, tx| Box::pin(async move { let _ = tx.send(Message::Ack).await; }),
                     Some("correct-token".to_string()),
                     None,
+                    None,
+                    None,
                 )
                 .await
                 .ok();
@@ -714,6 +780,8 @@ mod tests {
                 .serve(
                     |_msg, tx| Box::pin(async move { let _ = tx.send(Message::Ack).await; }),
                     Some("some-token".to_string()),
+                    None,
+                    None,
                     None,
                 )
                 .await

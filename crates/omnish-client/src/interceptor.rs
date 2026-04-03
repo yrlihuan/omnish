@@ -174,11 +174,13 @@ pub enum InterceptAction {
 
 /// Strategy for deciding whether to start intercepting at the current moment.
 /// Allows swapping between time-gap heuristic, prompt detection, etc.
-pub trait InterceptGuard {
+pub trait InterceptGuard: Send {
     /// Record that user input was forwarded to the shell (not intercepted).
     fn note_input(&mut self);
     /// Return true if the interceptor should try to match the prefix right now.
     fn should_intercept(&self) -> bool;
+    /// Update the minimum time gap used by gap-based guards.
+    fn update_min_gap(&mut self, _gap: std::time::Duration) {}
 }
 
 /// Always intercept — used in tests.
@@ -218,6 +220,10 @@ impl InterceptGuard for TimeGapGuard {
             None => true, // No prior input — likely at initial prompt
             Some(t) => t.elapsed() >= self.min_gap,
         }
+    }
+
+    fn update_min_gap(&mut self, gap: std::time::Duration) {
+        self.min_gap = gap;
     }
 }
 
@@ -287,6 +293,22 @@ impl InputInterceptor {
             developer_mode,
             command_line_has_content: false,
         }
+    }
+
+    pub fn update_prefix(&mut self, prefix: &str) {
+        self.prefix = prefix.as_bytes().to_vec();
+    }
+
+    pub fn update_resume_prefix(&mut self, prefix: &str) {
+        self.resume_prefix = prefix.as_bytes().to_vec();
+    }
+
+    pub fn set_developer_mode(&mut self, mode: bool) {
+        self.developer_mode = mode;
+    }
+
+    pub fn update_min_gap(&mut self, gap: std::time::Duration) {
+        self.guard.update_min_gap(gap);
     }
 
     /// Set suppression state (e.g. when alternate screen is active)

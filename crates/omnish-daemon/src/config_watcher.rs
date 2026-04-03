@@ -13,6 +13,7 @@ pub enum ConfigSection {
     Llm,
     Tasks,
     Plugins,
+    Client,
 }
 
 pub struct ConfigWatcher {
@@ -34,6 +35,7 @@ impl ConfigSection {
             "tools" => Some(ConfigSection::Tools),
             "sandbox" => Some(ConfigSection::Sandbox),
             "proxy" => Some(ConfigSection::Llm), // proxy affects LLM backends
+            "client" => Some(ConfigSection::Client),
             _ => None,
         }
     }
@@ -48,6 +50,7 @@ impl ConfigWatcher {
         ConfigSection::Llm,
         ConfigSection::Plugins,
         ConfigSection::Tasks,
+        ConfigSection::Client,
         // Add sections here as their diff + subscriber is implemented:
         // ConfigSection::Context,
         // ConfigSection::Tools,
@@ -71,6 +74,7 @@ impl ConfigWatcher {
             ConfigSection::Llm,
             ConfigSection::Tasks,
             ConfigSection::Plugins,
+            ConfigSection::Client,
         ] {
             let (tx, _) = watch::channel(Arc::clone(&initial_arc));
             senders.insert(section, tx);
@@ -120,6 +124,7 @@ impl ConfigWatcher {
                     || current.proxy != new_config.proxy,
                 ConfigSection::Plugins => current.plugins != new_config.plugins,
                 ConfigSection::Tasks => current.tasks != new_config.tasks,
+                ConfigSection::Client => current.client != new_config.client,
                 // Future: add diff for other sections here
                 _ => false,
             };
@@ -169,6 +174,7 @@ mod tests {
             ConfigSection::Llm,
             ConfigSection::Tasks,
             ConfigSection::Plugins,
+            ConfigSection::Client,
         ] {
             let (tx, _) = watch::channel(Arc::clone(&initial_arc));
             senders.insert(section, tx);
@@ -211,6 +217,7 @@ permit_rules = ["command starts_with glab"]
             ConfigSection::Llm,
             ConfigSection::Tasks,
             ConfigSection::Plugins,
+            ConfigSection::Client,
         ] {
             let (tx, _) = watch::channel(Arc::clone(&initial_arc));
             senders.insert(section, tx);
@@ -248,6 +255,7 @@ permit_rules = ["command starts_with glab"]
             ConfigSection::Llm,
             ConfigSection::Tasks,
             ConfigSection::Plugins,
+            ConfigSection::Client,
         ] {
             let (tx, _) = watch::channel(Arc::clone(&initial_arc));
             senders.insert(section, tx);
@@ -268,5 +276,49 @@ permit_rules = ["command starts_with glab"]
         // Current config should be unchanged (default)
         let current = cw.current.read().unwrap();
         assert!(current.sandbox.plugins.is_empty());
+    }
+
+    #[test]
+    fn test_reload_detects_client_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("daemon.toml");
+        std::fs::write(&config_path, "").unwrap();
+        let initial = DaemonConfig::default();
+
+        let initial_arc = Arc::new(initial.clone());
+        let mut senders = HashMap::new();
+        let (tx, rx) = watch::channel(Arc::clone(&initial_arc));
+        senders.insert(ConfigSection::Client, tx);
+        for section in [
+            ConfigSection::Tools,
+            ConfigSection::Sandbox,
+            ConfigSection::Context,
+            ConfigSection::Llm,
+            ConfigSection::Tasks,
+            ConfigSection::Plugins,
+        ] {
+            let (tx, _) = watch::channel(Arc::clone(&initial_arc));
+            senders.insert(section, tx);
+        }
+
+        let cw = ConfigWatcher {
+            config_path: config_path.clone(),
+            current: RwLock::new(initial),
+            senders,
+        };
+
+        std::fs::write(
+            &config_path,
+            r#"
+[client]
+command_prefix = "/"
+"#,
+        )
+        .unwrap();
+
+        cw.reload().unwrap();
+        assert!(rx.has_changed().unwrap());
+        let config = rx.borrow();
+        assert_eq!(config.client.command_prefix, "/");
     }
 }

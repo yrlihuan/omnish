@@ -42,6 +42,7 @@ struct Inner {
     connected: Arc<AtomicBool>,
     _write_task: JoinHandle<()>,
     _read_task: JoinHandle<()>,
+    _push_tx: mpsc::Sender<Message>,
 }
 
 type ConnectorFn = Arc<
@@ -112,16 +113,19 @@ fn make_connector(addr: &str, tls_connector: Option<TlsConnector>) -> ConnectorF
 pub struct RpcClient {
     inner: Arc<Mutex<Inner>>,
     next_id: Arc<AtomicU64>,
+    push_rx: Arc<Mutex<mpsc::Receiver<Message>>>,
 }
 
 impl RpcClient {
     pub async fn connect_unix(addr: &str) -> Result<Self> {
         let stream = UnixStream::connect(addr).await?;
         let (reader, writer) = stream.into_split();
-        let inner = Self::create_inner(reader, writer, None);
+        let (push_tx, push_rx) = mpsc::channel::<Message>(64);
+        let inner = Self::create_inner(reader, writer, None, push_tx);
         Ok(Self {
             inner: Arc::new(Mutex::new(inner)),
             next_id: Arc::new(AtomicU64::new(1)),
+            push_rx: Arc::new(Mutex::new(push_rx)),
         })
     }
 
@@ -129,10 +133,12 @@ impl RpcClient {
         let stream = TcpStream::connect(addr).await?;
         stream.set_nodelay(true)?;
         let (reader, writer) = stream.into_split();
-        let inner = Self::create_inner(reader, writer, None);
+        let (push_tx, push_rx) = mpsc::channel::<Message>(64);
+        let inner = Self::create_inner(reader, writer, None, push_tx);
         Ok(Self {
             inner: Arc::new(Mutex::new(inner)),
             next_id: Arc::new(AtomicU64::new(1)),
+            push_rx: Arc::new(Mutex::new(push_rx)),
         })
     }
 
@@ -147,6 +153,7 @@ impl RpcClient {
         reader: R,
         writer: W,
         disconnect_tx: Option<oneshot::Sender<()>>,
+        push_tx: mpsc::Sender<Message>,
     ) -> Inner
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -170,6 +177,7 @@ impl RpcClient {
             read_pending,
             read_connected,
             disconnect_tx,
+            push_tx.clone(),
         ));
 
         Inner {
@@ -177,6 +185,7 @@ impl RpcClient {
             connected,
             _write_task,
             _read_task,
+            _push_tx: push_tx,
         }
     }
 
@@ -234,11 +243,14 @@ impl RpcClient {
             Ok((reader, writer)) => {
                 // Initial connection succeeded - normal flow
                 let (disc_tx, disc_rx) = oneshot::channel::<()>();
-                let inner = Self::create_inner(reader, writer, Some(disc_tx));
+                let (push_tx, push_rx) = mpsc::channel::<Message>(64);
+                let inner = Self::create_inner(reader, writer, Some(disc_tx), push_tx);
                 let next_id = Arc::new(AtomicU64::new(1));
+                let push_rx = Arc::new(Mutex::new(push_rx));
                 let client = Self {
                     inner: Arc::new(Mutex::new(inner)),
                     next_id: next_id.clone(),
+                    push_rx: push_rx.clone(),
                 };
 
                 // Call on_reconnect for initial registration
@@ -257,6 +269,7 @@ impl RpcClient {
                     notify_fn.clone(),
                     disconnect_fn.clone(),
                     disc_rx,
+                    push_rx,
                 ));
 
                 Ok(client)
@@ -269,18 +282,22 @@ impl RpcClient {
                 // Create a disconnected inner state
                 let (tx, _rx) = mpsc::channel::<WriteRequest>(256);
                 let connected = Arc::new(AtomicBool::new(false));
+                let (push_tx, push_rx) = mpsc::channel::<Message>(64);
 
                 let inner = Inner {
                     tx,
                     connected,
                     _write_task: tokio::spawn(async {}), // dummy task
                     _read_task: tokio::spawn(async {}),  // dummy task
+                    _push_tx: push_tx,
                 };
 
                 let next_id = Arc::new(AtomicU64::new(1));
+                let push_rx = Arc::new(Mutex::new(push_rx));
                 let client = Self {
                     inner: Arc::new(Mutex::new(inner)),
                     next_id: next_id.clone(),
+                    push_rx: push_rx.clone(),
                 };
 
                 // Create a oneshot channel that's already closed to trigger immediate reconnection
@@ -300,6 +317,7 @@ impl RpcClient {
                     notify_fn,
                     disconnect_fn,
                     disc_rx,
+                    push_rx,
                 ));
 
                 Ok(client)
@@ -315,6 +333,7 @@ impl RpcClient {
         on_notify: Option<NotifyFn>,
         on_disconnect: Option<NotifyFn>,
         mut disc_rx: oneshot::Receiver<()>,
+        push_rx: Arc<Mutex<mpsc::Receiver<Message>>>,
     ) {
         loop {
             // Wait for disconnect notification
@@ -352,12 +371,15 @@ impl RpcClient {
                 };
 
                 let (new_disc_tx, new_disc_rx) = oneshot::channel::<()>();
-                let new_inner = Self::create_inner(reader, writer, Some(new_disc_tx));
+                let (new_push_tx, new_push_rx) = mpsc::channel::<Message>(64);
+                let new_inner = Self::create_inner(reader, writer, Some(new_disc_tx), new_push_tx);
 
                 // Create a temporary client wrapping the new inner for the callback
+                let dummy_push_rx = Arc::new(Mutex::new(mpsc::channel::<Message>(1).1));
                 let temp_client = RpcClient {
                     inner: Arc::new(Mutex::new(new_inner)),
                     next_id: next_id.clone(),
+                    push_rx: dummy_push_rx,
                 };
 
                 // Call on_reconnect with the temp client
@@ -395,6 +417,12 @@ impl RpcClient {
                     *guard = new_inner;
                 }
 
+                // Swap push_rx to match the new inner's push_tx
+                {
+                    let mut rx_guard = push_rx.lock().await;
+                    *rx_guard = new_push_rx;
+                }
+
                 // Notify caller of successful reconnection
                 if let Some(ref notify) = on_notify {
                     notify();
@@ -409,6 +437,11 @@ impl RpcClient {
 
     pub async fn is_connected(&self) -> bool {
         self.inner.lock().await.connected.load(Ordering::SeqCst)
+    }
+
+    /// Non-blocking receive of a push message (server-initiated, request_id=0).
+    pub async fn try_recv_push(&self) -> Option<Message> {
+        self.push_rx.lock().await.try_recv().ok()
     }
 
     pub async fn call(&self, msg: Message) -> Result<Message> {
@@ -516,6 +549,7 @@ impl RpcClient {
         pending: Arc<Mutex<HashMap<u64, ReplyTx>>>,
         connected: Arc<AtomicBool>,
         disconnect_tx: Option<oneshot::Sender<()>>,
+        push_tx: mpsc::Sender<Message>,
     ) {
         while let Ok(l) = reader.read_u32().await {
             let len = l as usize;
@@ -530,6 +564,11 @@ impl RpcClient {
                     continue;
                 }
             };
+            // Server-initiated push messages use request_id 0
+            if frame.request_id == 0 {
+                let _ = push_tx.send(frame.payload).await;
+                continue;
+            }
             // Dispatch under lock, but for Stream sends we clone the sender
             // and release the lock before the async send to avoid blocking
             // the read loop while the consumer is slow.

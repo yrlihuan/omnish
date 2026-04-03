@@ -5,7 +5,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version — increment on incompatible wire format changes.
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigItem {
@@ -76,6 +76,7 @@ pub enum Message {
     },
     ConfigUpdate { changes: Vec<ConfigChange> },
     ConfigUpdateResult { ok: bool, error: Option<String> },
+    ConfigClient { changes: Vec<ConfigChange> },
     UpdateCheck {
         os: String,
         arch: String,
@@ -613,7 +614,7 @@ mod tests {
     /// reminding you to bump PROTOCOL_VERSION if the wire format changed.
     #[test]
     fn message_variant_guard() {
-        const EXPECTED_VARIANT_COUNT: usize = 31;
+        const EXPECTED_VARIANT_COUNT: usize = 32;
 
         let variants: Vec<Message> = vec![
             Message::SessionStart(SessionStart {
@@ -776,6 +777,7 @@ mod tests {
             Message::ConfigResponse { items: vec![], handlers: vec![] },
             Message::ConfigUpdate { changes: vec![] },
             Message::ConfigUpdateResult { ok: true, error: None },
+            Message::ConfigClient { changes: vec![] },
             Message::UpdateCheck { os: "linux".into(), arch: "x86_64".into(), current_version: "0.1.0".into(), hostname: "host1".into() },
             Message::UpdateInfo { latest_version: "0.2.0".into(), checksum: "abc123".into(), available: true },
             Message::UpdateRequest { os: "linux".into(), arch: "x86_64".into(), version: "0.2.0".into(), hostname: "host1".into() },
@@ -812,6 +814,7 @@ mod tests {
                 | Message::ConfigResponse { .. }
                 | Message::ConfigUpdate { .. }
                 | Message::ConfigUpdateResult { .. }
+                | Message::ConfigClient { .. }
                 | Message::UpdateCheck { .. }
                 | Message::UpdateInfo { .. }
                 | Message::UpdateRequest { .. }
