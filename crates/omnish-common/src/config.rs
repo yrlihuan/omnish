@@ -178,7 +178,7 @@ pub fn load_client_config() -> Result<ClientConfig> {
 // ConfigMap: generic key-value config (used by tasks and plugins)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ConfigMap {
     values: HashMap<String, serde_json::Value>,
     defaults: HashMap<String, serde_json::Value>,
@@ -233,12 +233,6 @@ impl ConfigMap {
         self.defaults.iter()
             .filter(|(k, _)| !self.values.contains_key(*k))
             .chain(self.values.iter())
-    }
-}
-
-impl Default for ConfigMap {
-    fn default() -> Self {
-        Self { values: HashMap::new(), defaults: HashMap::new() }
     }
 }
 
