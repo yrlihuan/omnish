@@ -325,6 +325,7 @@ impl RpcClient {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn reconnect_loop(
         inner_ref: Arc<Mutex<Inner>>,
         next_id: Arc<AtomicU64>,

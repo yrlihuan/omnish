@@ -403,7 +403,6 @@ async fn test_interleaved_two_session_context_at_10_and_20_commands() {
             detailed_commands: 10,
             ..Default::default()
         },
-        ..Default::default()
     };
     let mgr = SessionManager::new(dir.path().to_path_buf(), cc);
 
