@@ -76,7 +76,6 @@ pub enum Message {
     },
     ConfigUpdate { changes: Vec<ConfigChange> },
     ConfigUpdateResult { ok: bool, error: Option<String> },
-    ConfigClient { changes: Vec<ConfigChange> },
     UpdateCheck {
         os: String,
         arch: String,
@@ -102,6 +101,9 @@ pub enum Message {
         done: bool,
         error: Option<String>,
     },
+    // New variants MUST be added at the end to preserve bincode variant indices.
+    // Inserting in the middle shifts indices and breaks old clients.
+    ConfigClient { changes: Vec<ConfigChange> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -777,11 +779,11 @@ mod tests {
             Message::ConfigResponse { items: vec![], handlers: vec![] },
             Message::ConfigUpdate { changes: vec![] },
             Message::ConfigUpdateResult { ok: true, error: None },
-            Message::ConfigClient { changes: vec![] },
             Message::UpdateCheck { os: "linux".into(), arch: "x86_64".into(), current_version: "0.1.0".into(), hostname: "host1".into() },
             Message::UpdateInfo { latest_version: "0.2.0".into(), checksum: "abc123".into(), available: true },
             Message::UpdateRequest { os: "linux".into(), arch: "x86_64".into(), version: "0.2.0".into(), hostname: "host1".into() },
             Message::UpdateChunk { seq: 0, total_size: 1024, checksum: "abc".into(), data: vec![1,2,3], done: false, error: None },
+            Message::ConfigClient { changes: vec![] },
         ];
 
         // Exhaustive match — no wildcard. Compiler will error if a variant is missing.
@@ -828,6 +830,33 @@ mod tests {
             "Message variant count changed! If you added/removed a variant, \
              update EXPECTED_VARIANT_COUNT and consider bumping PROTOCOL_VERSION."
         );
+    }
+
+    /// Bincode serializes enums as a u32 variant index. New variants MUST be
+    /// appended at the end of the enum — inserting in the middle shifts indices
+    /// and breaks old clients that haven't upgraded yet.
+    ///
+    /// This test pins the variant indices of critical message types so that
+    /// inserting a variant in the middle causes a compile-time-like failure.
+    #[test]
+    fn variant_indices_are_stable() {
+        fn variant_index(msg: &Message) -> u32 {
+            let bytes = bincode::serialize(msg).expect("serialize");
+            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+        }
+
+        // Auth / AuthResult — must be stable for handshake to work across versions
+        assert_eq!(variant_index(&Message::Auth(Auth { token: String::new(), protocol_version: 0 })), 21, "Auth index shifted");
+        assert_eq!(variant_index(&Message::AuthResult(AuthResult { ok: true, protocol_version: 0, daemon_version: String::new() })), 22, "AuthResult index shifted");
+
+        // Update messages — old clients rely on these indices for self-update
+        assert_eq!(variant_index(&Message::UpdateCheck { os: String::new(), arch: String::new(), current_version: String::new(), hostname: String::new() }), 27, "UpdateCheck index shifted");
+        assert_eq!(variant_index(&Message::UpdateInfo { latest_version: String::new(), checksum: String::new(), available: false }), 28, "UpdateInfo index shifted");
+        assert_eq!(variant_index(&Message::UpdateRequest { os: String::new(), arch: String::new(), version: String::new(), hostname: String::new() }), 29, "UpdateRequest index shifted");
+        assert_eq!(variant_index(&Message::UpdateChunk { seq: 0, total_size: 0, checksum: String::new(), data: vec![], done: false, error: None }), 30, "UpdateChunk index shifted");
+
+        // New variants must go at the end — ConfigClient was the first such addition
+        assert_eq!(variant_index(&Message::ConfigClient { changes: vec![] }), 31, "ConfigClient index shifted");
     }
 
     /// Regression test: ChatReady with populated history must survive a bincode round-trip.
