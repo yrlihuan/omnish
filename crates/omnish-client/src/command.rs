@@ -258,11 +258,6 @@ const COMMANDS: &[CommandEntry] = &[
         kind: CommandKind::Daemon("__cmd:update"),
         help: "Re-exec client from updated binary on disk",
     },
-    CommandEntry {
-        path: "/update auto",
-        kind: CommandKind::Daemon("__cmd:update_auto"),
-        help: "Toggle auto-update (runtime only, not persisted)",
-    },
 ];
 
 /// Chat-mode-only commands (not in COMMANDS registry).
