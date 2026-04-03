@@ -1560,18 +1560,40 @@ fn save_client_config_cache(changes: &[omnish_protocol::message::ConfigChange]) 
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| omnish_common::config::omnish_dir().join("client.toml"));
     for change in changes {
-        // Strip "client." prefix — in client.toml these are top-level keys
-        // under [shell] or at root
-        let key = match change.path.as_str() {
-            "client.command_prefix" => "shell.command_prefix",
-            "client.resume_prefix" => "shell.resume_prefix",
-            "client.completion_enabled" => "completion_enabled",
-            "client.ghost_timeout_ms" => "shell.ghost_timeout_ms",
-            "client.intercept_gap_ms" => "shell.intercept_gap_ms",
-            "client.developer_mode" => "shell.developer_mode",
+        // Map daemon.toml "client.*" paths to client.toml keys.
+        // Use typed writers to preserve TOML type correctness — writing
+        // booleans as strings (e.g. completion_enabled = "true") causes
+        // deserialization failures on next load, losing daemon_addr.
+        match change.path.as_str() {
+            "client.command_prefix" | "client.resume_prefix" => {
+                let key = if change.path == "client.command_prefix" {
+                    "shell.command_prefix"
+                } else {
+                    "shell.resume_prefix"
+                };
+                omnish_common::config_edit::set_toml_value_nested(&path, key, &change.value)?;
+            }
+            "client.completion_enabled" | "client.developer_mode" => {
+                let key = if change.path == "client.completion_enabled" {
+                    "completion_enabled"
+                } else {
+                    "shell.developer_mode"
+                };
+                let bool_val: bool = change.value.parse().unwrap_or(false);
+                omnish_common::config_edit::set_toml_value_nested_bool(&path, key, bool_val)?;
+            }
+            "client.ghost_timeout_ms" | "client.intercept_gap_ms" => {
+                let key = if change.path == "client.ghost_timeout_ms" {
+                    "shell.ghost_timeout_ms"
+                } else {
+                    "shell.intercept_gap_ms"
+                };
+                if let Ok(int_val) = change.value.parse::<i64>() {
+                    omnish_common::config_edit::set_toml_value_nested_int(&path, key, int_val)?;
+                }
+            }
             _ => continue,
-        };
-        omnish_common::config_edit::set_toml_value_nested(&path, key, &change.value)?;
+        }
     }
     Ok(())
 }

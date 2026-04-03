@@ -89,6 +89,33 @@ mod string_or_int {
     }
 }
 
+/// Serde helper that accepts both `true`/`false` and `"true"`/`"false"` for bool fields.
+mod string_or_bool {
+    use serde::{self, Deserializer};
+
+    struct BoolVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for BoolVisitor {
+        type Value = bool;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a boolean or a string containing a boolean")
+        }
+        fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<bool, E> {
+            Ok(v)
+        }
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<bool, E> {
+            v.parse().map_err(E::custom)
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<bool, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(BoolVisitor)
+    }
+}
+
 /// Returns the omnish base directory.
 /// Priority: `$OMNISH_HOME` > `~/.omnish` > `/tmp/omnish`.
 pub fn omnish_dir() -> PathBuf {
@@ -117,7 +144,7 @@ pub struct ClientConfig {
     pub shell: ShellConfig,
     #[serde(default = "default_socket_path")]
     pub daemon_addr: String,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "string_or_bool::deserialize")]
     pub completion_enabled: bool,
     #[serde(default)]
     pub onboarded: bool,
@@ -358,7 +385,7 @@ pub struct ShellConfig {
     #[serde(default = "default_ghost_timeout_ms", deserialize_with = "string_or_int::deserialize")]
     pub ghost_timeout_ms: u64,
     /// When true, prevents : and :: from triggering chat mode when command line already has content
-    #[serde(default = "default_developer_mode")]
+    #[serde(default = "default_developer_mode", deserialize_with = "string_or_bool::deserialize")]
     pub developer_mode: bool,
 }
 
@@ -382,13 +409,13 @@ pub struct ClientSection {
     pub command_prefix: String,
     #[serde(default = "default_resume_prefix")]
     pub resume_prefix: String,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "string_or_bool::deserialize")]
     pub completion_enabled: bool,
     #[serde(default = "default_ghost_timeout_ms", deserialize_with = "string_or_int::deserialize")]
     pub ghost_timeout_ms: u64,
     #[serde(default = "default_intercept_gap_ms", deserialize_with = "string_or_int::deserialize")]
     pub intercept_gap_ms: u64,
-    #[serde(default = "default_developer_mode")]
+    #[serde(default = "default_developer_mode", deserialize_with = "string_or_bool::deserialize")]
     pub developer_mode: bool,
 }
 
