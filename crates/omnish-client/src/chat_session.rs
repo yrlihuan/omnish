@@ -231,7 +231,7 @@ fn char_truncate(s: &str, n: usize) -> String {
 
 /// Display a list of config diffs to the user.
 fn display_config_diff(diffs: &[ConfigDiff]) {
-    let val_width = 40; // wide enough for URLs and model names
+    let val_width = 40; // truncation limit for very long values
     let max_label_chars = diffs.iter().map(|d| d.label.chars().count()).max().unwrap_or(0);
     let col2_start = (max_label_chars + 2).clamp(22, 60);
 
@@ -242,13 +242,12 @@ fn display_config_diff(diffs: &[ConfigDiff]) {
         let label_padding = col2_start.saturating_sub(label.chars().count()) + 2;
 
         write_stdout(&format!(
-            "  {}{:<pad$}\x1b[90m{:<w$}\x1b[0m \x1b[33m→\x1b[0m \x1b[32m{}\x1b[0m\r\n",
+            "  {}{:<pad$}\x1b[90m{}\x1b[0m \x1b[33m→\x1b[0m \x1b[32m{}\x1b[0m\r\n",
             label,
             "",
             char_truncate(&d.old_value, val_width),
             char_truncate(&d.new_value, val_width),
             pad = label_padding,
-            w = val_width,
         ));
     }
     write_stdout("\r\n");
