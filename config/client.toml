@@ -5,11 +5,6 @@
 #   Unix socket:  daemon_addr = "~/.omnish/omnish.sock"   (default)
 #   TCP:          daemon_addr = "tcp://127.0.0.1:9500"
 
-# Auto-update: when enabled, client checks binary mtime every 60s
-# and re-execs if updated while idle at prompt for 60s+.
-# Can also be toggled at runtime with `/update auto` (not persisted).
-# auto_update = false
-
 [shell]
 # command = "/bin/bash"    # defaults to $SHELL
 command_prefix = ":"

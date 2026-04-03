@@ -196,7 +196,7 @@ mod tests {
         let path = dir.path().join("test.toml");
         fs::write(
             &path,
-            "auto_update = true\n\n# First-run onboarding completed\n# onboarded = false\n",
+            "daemon_addr = \"localhost:9500\"\n\n# First-run onboarding completed\n# onboarded = false\n",
         )
         .unwrap();
 
