@@ -1550,13 +1550,7 @@ fn apply_client_config_changes(
     }
     if any_changed {
         let changes = changes.to_vec();
-        tokio::spawn(async move {
-            // Random delay (0-5s) to avoid multiple clients writing simultaneously
-            let delay: u64 = {
-                use rand::Rng;
-                rand::thread_rng().gen_range(0..5000)
-            };
-            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        tokio::task::spawn_blocking(move || {
             if let Err(e) = save_client_config_cache(&changes) {
                 tracing::warn!("failed to cache client config: {}", e);
             }
@@ -1565,9 +1559,16 @@ fn apply_client_config_changes(
 }
 
 fn save_client_config_cache(changes: &[omnish_protocol::message::ConfigChange]) -> anyhow::Result<()> {
+    use fs2::FileExt;
+
     let path = std::env::var("OMNISH_CLIENT_CONFIG")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| omnish_common::config::omnish_dir().join("client.toml"));
+
+    // Exclusive lock so multiple clients don't clobber each other.
+    let lock_path = path.with_extension("toml.lock");
+    let lock_file = std::fs::File::create(&lock_path)?;
+    lock_file.lock_exclusive()?;
 
     // Read current file content once, then apply all changes in memory.
     let content = if path.exists() {
@@ -1622,10 +1623,22 @@ fn save_client_config_cache(changes: &[omnish_protocol::message::ConfigChange]) 
                 .ok_or_else(|| anyhow::anyhow!("{} is not a table", seg))?;
         }
         let leaf_key = &leaf[0];
-        // Skip if the value already matches.
+        // Skip if the value already matches (compare by typed extraction).
         if let Some(existing) = table.get(leaf_key) {
-            if existing.to_string().trim() == new_item.to_string().trim() {
-                continue;
+            if let (Some(a), Some(b)) = (existing.as_value(), new_item.as_value()) {
+                let same = match (a.as_str(), b.as_str()) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => match (a.as_bool(), b.as_bool()) {
+                        (Some(a), Some(b)) => a == b,
+                        _ => match (a.as_integer(), b.as_integer()) {
+                            (Some(a), Some(b)) => a == b,
+                            _ => false,
+                        },
+                    },
+                };
+                if same {
+                    continue;
+                }
             }
         }
         table[leaf_key] = new_item;

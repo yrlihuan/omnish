@@ -33,10 +33,9 @@ _restore_prefix() {
     fi
 }
 
-# Register restore as part of cleanup (runs on EXIT)
-_original_cleanup() {
-    cleanup
-}
+# Register restore as part of cleanup (runs on EXIT).
+# Save the original cleanup body before redefining.
+eval "_original_cleanup() { $(declare -f cleanup | tail -n +2); }"
 cleanup() {
     _restore_prefix
     _original_cleanup
