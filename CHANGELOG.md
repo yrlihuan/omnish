@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.8.7 (2026-04-03)
+
+### Features
+- **config**: Daemon-to-client config push via ConfigClient message (#490)
+- **config**: Move completion_enabled under [shell] section in client config
+- **task**: Add defaults layer to ConfigMap, unify task/config default values
+
+### Fixes
+- **protocol**: Move ConfigClient to end of Message enum to preserve bincode variant indices
+- **config**: Use correct TOML types in client config cache, add string_or_bool deserializer
+- **config**: Use flock for client.toml write safety, fix value comparison and cleanup recursion
+- **config**: Compact config diff display, remove padding between old and new values
+- **config**: Backward compat for old top-level proxy/no_proxy config format
+- **menu**: Full redraw on rejected toggle to handle callback output
+- **menu**: Remove test menu callback output that corrupted toggle redraw
+- **client**: Hide /update from /help, add lock on/off to /test help
+- **build**: Atomic tar.gz write in build-tar.sh to prevent daemon picking up partial files
+- **clippy**: Resolve too_many_arguments and needless_update warnings
+
+### Chores
+- Remove dead /update auto command (#491)
+- Remove stale auto_update references from client config and test data
+- Add test_config_push.sh to integration tests
+
+### Refactor
+- Move proxy/no_proxy under [proxy] section in DaemonConfig
+- Encapsulate ConfigMap internals, add delegate methods
+
 ## v0.8.6 (2026-03-31)
 
 ### Features
