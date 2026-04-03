@@ -147,7 +147,9 @@ fn integrate_command(args: &str) -> String {
 fn help_command(_args: &str) -> String {
     let mut output = String::from("Available commands:\n");
     for entry in COMMANDS {
-        output.push_str(&format!("  {} — {}\n", entry.path, entry.help));
+        if !entry.help.is_empty() {
+            output.push_str(&format!("  {} — {}\n", entry.path, entry.help));
+        }
     }
     output
 }
@@ -253,10 +255,12 @@ const COMMANDS: &[CommandEntry] = &[
         kind: CommandKind::Local(integrate_command),
         help: "Integrate omnish with tmux, screen, or ssh",
     },
+    // /update is handled client-side (exec_update needs proxy fd/pid).
+    // Hidden from /help — auto-update handles this transparently.
     CommandEntry {
         path: "/update",
-        kind: CommandKind::Daemon("__cmd:update"),
-        help: "Re-exec client from updated binary on disk",
+        kind: CommandKind::Daemon("update"),
+        help: "",
     },
 ];
 

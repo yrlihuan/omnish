@@ -775,7 +775,8 @@ pub fn run_menu(
                             path,
                             value: value.to_string(),
                         };
-                        if !dispatch_change(change, in_form_mode, &mut changes, &mut on_change) {
+                        let accepted = dispatch_change(change, in_form_mode, &mut changes, &mut on_change);
+                        if !accepted {
                             *value = !*value;
                         }
 
@@ -795,8 +796,11 @@ pub fn run_menu(
                             common::write_stdout(format!("\x1b[{}A\r\x1b[J", tl - 1).as_bytes());
                             let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
                             common::write_stdout(full.as_bytes());
+                        } else if !accepted && on_change.is_some() {
+                            // Callback rejected and may have printed output — full redraw
+                            needs_redraw = true;
                         } else {
-                            // Normal mode without callback: redraw just the current item
+                            // Normal mode: redraw just the current item
                             common::write_stdout(format!("\x1b[{}A", row_from_bottom).as_bytes());
                             let line = render_menu_item(&current_items[cursor], true);
                             common::write_stdout(line.as_bytes());

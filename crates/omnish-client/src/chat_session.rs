@@ -677,6 +677,7 @@ impl ChatSession {
                         write_stdout("\x1b[2;90m  /test picker [N]          — flat picker (N = initial index)\x1b[0m\r\n");
                         write_stdout("\x1b[2;90m  /test multi_level_picker  — cascading picker (3 levels)\x1b[0m\r\n");
                         write_stdout("\x1b[2;90m  /test menu                — multi-level menu widget\x1b[0m\r\n");
+                        write_stdout("\x1b[2;90m  /test lock on|off         — toggle Landlock sandbox for shell\x1b[0m\r\n");
                     }
                     "multi_level_picker" => self.handle_test_multi_level_picker(),
                     "menu" => self.handle_test_menu(),
@@ -2071,6 +2072,10 @@ impl ChatSession {
         // Items under "Save failure test" submenu always fail to test revert behavior
         let mut change_callback = |change: &MenuChange| -> bool {
             if change.path.starts_with("Save failure test.") {
+                write_stdout(&format!(
+                    "\x1b[31mSimulated save failure: {} = {}\x1b[0m\r\n",
+                    change.path, change.value
+                ));
                 false
             } else {
                 true
