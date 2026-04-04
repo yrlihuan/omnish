@@ -67,26 +67,26 @@ cargo build --release
 
 ## Configuration
 
-Configuration uses two files under `~/.omnish/`:
+All settings are managed through `~/.omnish/daemon.toml` (or `$OMNISH_DAEMON_CONFIG`). Client settings (hotkeys, completion, etc.) are stored in the `[client]` section and pushed to clients at connect time. Use `:config` inside omnish to edit settings interactively.
 
-**Client config** — `~/.omnish/client.toml` (or `$OMNISH_CLIENT_CONFIG`):
+**Client-only config** — `~/.omnish/client.toml` (or `$OMNISH_CLIENT_CONFIG`):
+
+Only needed to override the daemon address (e.g., for remote TCP connections):
 
 ```toml
 daemon_addr = "~/.omnish/omnish.sock"  # or "server-ip:9800" for TCP
-completion_enabled = true
-
-[shell]
-command = "/bin/bash"
-command_prefix = ":"        # prefix for chat mode (default: ":")
-resume_prefix = "::"       # prefix to resume last thread (default: "::")
-intercept_gap_ms = 1000     # min ms between inputs to trigger interception
-ghost_timeout_ms = 10000    # ghost-text suggestion timeout
 ```
 
-**Daemon config** — `~/.omnish/daemon.toml` (or `$OMNISH_DAEMON_CONFIG`):
+**Daemon config** — `~/.omnish/daemon.toml`:
 
 ```toml
 listen_addr = "~/.omnish/omnish.sock"  # or "0.0.0.0:9800" for TCP
+
+[client]
+command_prefix = ":"        # prefix for chat mode (default: ":")
+resume_prefix = "::"       # prefix to resume last thread (default: "::")
+completion_enabled = true
+ghost_timeout_ms = 10000    # ghost-text suggestion timeout
 
 [llm]
 default = "claude"
@@ -113,7 +113,6 @@ schedule = "0 0 */6 * * *"
 [tasks.auto_update]
 enabled = true
 # schedule = "0 0 4 * * *"  # default: 4 AM daily
-# clients = ["user@host1", "user@host2"]
 
 [context.completion]
 max_commands = 50
@@ -206,8 +205,8 @@ Session data is stored under `~/.omnish/`:
 ~/.omnish/
 ├── install.sh               # installer (also used for --upgrade)
 ├── deploy.sh                # client deployment script
-├── client.toml              # client configuration
-├── daemon.toml              # daemon configuration
+├── client.toml              # client-only config (optional, for daemon_addr override)
+├── daemon.toml              # all configuration (daemon, client, LLM, tasks)
 ├── omnish.sock              # Unix domain socket
 ├── auth_token               # shared auth token (0600)
 ├── tls/                     # TLS cert and key for TCP mode
