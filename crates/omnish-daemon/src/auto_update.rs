@@ -32,6 +32,7 @@ impl ScheduledTask for AutoUpdateTask {
         [
             ("enabled".into(), serde_json::json!(true)),
             ("schedule".into(), serde_json::json!("0 0 4 * * *")),
+            ("check_url".into(), serde_json::json!("https://api.github.com/repos/yrlihuan/omnish/releases/latest")),
         ].into()
     }
 
