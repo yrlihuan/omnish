@@ -191,6 +191,7 @@ pub fn build_config_items(
                 };
                 ConfigItemKind::Toggle { value }
             }
+            "label" => ConfigItemKind::Label,
             _ => continue,
         };
 
@@ -331,6 +332,7 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
         });
 
         match kind {
+            "label" => continue,
             "toggle" => {
                 let bool_val: bool = change.value.parse().unwrap_or(false);
                 omnish_common::config_edit::set_toml_value_nested_bool(config_path, toml_key, bool_val)?;

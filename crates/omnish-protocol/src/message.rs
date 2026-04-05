@@ -5,7 +5,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version — increment on incompatible wire format changes.
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigItem {
@@ -23,6 +23,8 @@ pub enum ConfigItemKind {
     Toggle { value: bool },
     Select { options: Vec<String>, selected: usize },
     TextInput { value: String },
+    /// Non-interactive label for displaying descriptions or section notes.
+    Label,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

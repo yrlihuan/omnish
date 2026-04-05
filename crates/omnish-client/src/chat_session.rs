@@ -149,6 +149,7 @@ fn item_value(item: &ConfigItem) -> String {
                 value.clone()
             }
         }
+        ConfigItemKind::Label => String::new(),
     }
 }
 
@@ -286,6 +287,9 @@ fn build_menu_tree(
                     ConfigItemKind::TextInput { value } => MenuItem::TextInput {
                         label: item.label.clone(),
                         value: value.clone(),
+                    },
+                    ConfigItemKind::Label => MenuItem::Label {
+                        label: item.label.clone(),
                     },
                 };
                 current.push(menu_item);

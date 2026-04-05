@@ -66,6 +66,10 @@ pub enum MenuItem {
     Button {
         label: String,
     },
+    /// Non-interactive label for displaying descriptions or section notes.
+    Label {
+        label: String,
+    },
 }
 
 impl MenuItem {
@@ -75,7 +79,26 @@ impl MenuItem {
             | MenuItem::Select { label, .. }
             | MenuItem::Toggle { label, .. }
             | MenuItem::TextInput { label, .. }
-            | MenuItem::Button { label, .. } => label,
+            | MenuItem::Button { label, .. }
+            | MenuItem::Label { label, .. } => label,
+        }
+    }
+}
+
+/// Find the next interactive (non-Label) item index in the given direction.
+/// Returns `None` if no interactive item exists in that direction.
+fn next_interactive(items: &[MenuItem], from: usize, forward: bool) -> Option<usize> {
+    let mut i = from;
+    loop {
+        if forward {
+            if i >= items.len() - 1 { return None; }
+            i += 1;
+        } else {
+            if i == 0 { return None; }
+            i -= 1;
+        }
+        if !matches!(items[i], MenuItem::Label { .. }) {
+            return Some(i);
         }
     }
 }
@@ -130,7 +153,13 @@ fn render_menu_item(item: &MenuItem, selected: bool) -> String {
         }
         MenuItem::Submenu { .. } => " \x1b[90m\u{25b8}\x1b[0m".to_string(),
         MenuItem::Button { .. } => String::new(),
+        MenuItem::Label { .. } => String::new(),
     };
+
+    // Label items render in dim gray, never highlighted
+    if matches!(item, MenuItem::Label { .. }) {
+        return format!("\r  \x1b[90m{}\x1b[0m\x1b[K", label);
+    }
 
     // Button items render without brackets, aligned with other items
     if matches!(item, MenuItem::Button { .. }) {
@@ -156,6 +185,7 @@ fn render_hint(remaining_below: usize, item: Option<&MenuItem>) -> String {
         Some(MenuItem::Select { .. }) => "select",
         Some(MenuItem::TextInput { .. }) => "edit",
         Some(MenuItem::Button { .. }) => "confirm",
+        Some(MenuItem::Label { .. }) => "",
     };
     let hint = match item {
         None => format!("Enter {}  ESC cancel", action),
@@ -499,8 +529,12 @@ pub fn run_menu(
     let mut nav_stack: Vec<NavEntry> = Vec::new();
     let mut breadcrumb_parts: Vec<String> = vec![title.to_string()];
 
-    // Current level state
-    let mut cursor: usize = 0;
+    // Current level state — skip leading Label items
+    let mut cursor: usize = if matches!(items.first(), Some(MenuItem::Label { .. })) {
+        next_interactive(&items, 0, true).unwrap_or(0)
+    } else {
+        0
+    };
     let mut scroll_offset: usize = 0;
 
     // Hide cursor
@@ -625,37 +659,43 @@ pub fn run_menu(
                         let vis = visible_count(current_items.len());
                         match seq[1] {
                             b'A' if cursor > 0 => {
-                                cursor -= 1;
-                                if cursor < scroll_offset {
-                                    scroll_offset = cursor;
-                                    let bc = breadcrumb_parts.join(" > ");
-                                    full_redraw(&bc, current_items, cursor, cols, scroll_offset, vis);
-                                } else {
-                                    incremental_redraw(current_items, cursor, cursor + 1, vis, scroll_offset);
-                                }
-                                if in_form_mode && form_auto_edit_active && matches!(current_items[cursor], MenuItem::TextInput { .. }) {
-                                    pending_auto_edit = true;
-                                    auto_edit_advance = false;
-                                }
-                                if in_form_mode && matches!(current_items[cursor], MenuItem::Button { .. }) {
-                                    form_auto_edit_active = false;
+                                if let Some(next) = next_interactive(current_items, cursor, false) {
+                                    let old_cursor = cursor;
+                                    cursor = next;
+                                    if cursor < scroll_offset {
+                                        scroll_offset = cursor;
+                                        let bc = breadcrumb_parts.join(" > ");
+                                        full_redraw(&bc, current_items, cursor, cols, scroll_offset, vis);
+                                    } else {
+                                        incremental_redraw(current_items, cursor, old_cursor, vis, scroll_offset);
+                                    }
+                                    if in_form_mode && form_auto_edit_active && matches!(current_items[cursor], MenuItem::TextInput { .. }) {
+                                        pending_auto_edit = true;
+                                        auto_edit_advance = false;
+                                    }
+                                    if in_form_mode && matches!(current_items[cursor], MenuItem::Button { .. }) {
+                                        form_auto_edit_active = false;
+                                    }
                                 }
                             }
                             b'B' if cursor < current_items.len().saturating_sub(1) => {
-                                cursor += 1;
-                                if cursor >= scroll_offset + vis {
-                                    scroll_offset = cursor - vis + 1;
-                                    let bc = breadcrumb_parts.join(" > ");
-                                    full_redraw(&bc, current_items, cursor, cols, scroll_offset, vis);
-                                } else {
-                                    incremental_redraw(current_items, cursor, cursor - 1, vis, scroll_offset);
-                                }
-                                if in_form_mode && form_auto_edit_active && matches!(current_items[cursor], MenuItem::TextInput { .. }) {
-                                    pending_auto_edit = true;
-                                    auto_edit_advance = true;
-                                }
-                                if in_form_mode && matches!(current_items[cursor], MenuItem::Button { .. }) {
-                                    form_auto_edit_active = false;
+                                if let Some(next) = next_interactive(current_items, cursor, true) {
+                                    let old_cursor = cursor;
+                                    cursor = next;
+                                    if cursor >= scroll_offset + vis {
+                                        scroll_offset = cursor - vis + 1;
+                                        let bc = breadcrumb_parts.join(" > ");
+                                        full_redraw(&bc, current_items, cursor, cols, scroll_offset, vis);
+                                    } else {
+                                        incremental_redraw(current_items, cursor, old_cursor, vis, scroll_offset);
+                                    }
+                                    if in_form_mode && form_auto_edit_active && matches!(current_items[cursor], MenuItem::TextInput { .. }) {
+                                        pending_auto_edit = true;
+                                        auto_edit_advance = true;
+                                    }
+                                    if in_form_mode && matches!(current_items[cursor], MenuItem::Button { .. }) {
+                                        form_auto_edit_active = false;
+                                    }
                                 }
                             }
                             _ => {}
@@ -760,7 +800,7 @@ pub fn run_menu(
                         });
                         breadcrumb_parts.push(label_clone);
 
-                        cursor = 0;
+                        cursor = next_interactive(children, 0, true).unwrap_or(0);
                         scroll_offset = 0;
                         needs_redraw = true;
                         pending_auto_edit = entering_form;
@@ -911,6 +951,9 @@ pub fn run_menu(
                         common::write_stdout(format!("\x1b[{}A\r\x1b[J", tl - 1).as_bytes());
                         let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
                         common::write_stdout(full.as_bytes());
+                    }
+                    MenuItem::Label { .. } => {
+                        // Non-interactive — do nothing
                     }
                     MenuItem::Button { .. } => {
                         // Button confirm: trigger handler and pop level
