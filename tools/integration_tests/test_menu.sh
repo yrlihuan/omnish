@@ -18,6 +18,7 @@
 #  13. Save failure reverts Toggle/Select/TextInput to previous state
 #  14. Preset prefill + ESC exit has no duplicate breadcrumb (#469)
 #  15. Use proxy toggle ON preserved in added backend (#476)
+#  16. Label items render in dim gray and are skipped by cursor navigation
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -40,6 +41,7 @@ Test cases:
  13. Save failure reverts Toggle/Select/TextInput
  14. Preset prefill + ESC exit no duplicate breadcrumb (#469)
  15. Use proxy toggle ON preserved in added backend (#476)
+ 16. Label items render and are skipped by cursor navigation
 EOF
 }
 
@@ -1336,5 +1338,70 @@ test_15() {
     return 0
 }
 
-echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input, add backend, form mode, arrow keys, save failure revert, prefill breadcrumb, proxy toggle${NC}"
-run_tests 15
+# ── Test 16: Label items render and cursor skips them ──────────────────
+test_16() {
+    echo -e "\n${YELLOW}=== Test 16: Label items render and are skipped by cursor ===${NC}"
+
+    restart_client
+    wait_for_client
+    open_test_menu
+
+    local content
+    content=$(capture_pane -20)
+    show_capture "Menu with label" "$content" 15
+
+    # Top-level label should be visible
+    if ! echo "$content" | grep -q "labels are non-interactive"; then
+        assert_fail "Top-level label text not found"
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}Top-level label rendered${NC}"
+
+    # Cursor should start on LLM (first interactive item), not on the label.
+    # Press Up — cursor should stay on LLM (nowhere to go, label is skipped).
+    send_special Up 0.3
+    content=$(capture_pane -20)
+    # LLM should still be visible and menu intact
+    if ! echo "$content" | grep -q "LLM"; then
+        assert_fail "Menu broken after Up from first interactive item"
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}Up from first item stays put (label skipped)${NC}"
+
+    # Enter LLM submenu — should see the label inside
+    send_enter 0.5
+    content=$(capture_pane -20)
+    show_capture "LLM submenu with label" "$content" 10
+
+    if ! echo "$content" | grep -q "Configure LLM backend settings"; then
+        assert_fail "LLM submenu label text not found"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}Submenu label rendered${NC}"
+
+    # Cursor should be on Default backend (first interactive), not the label.
+    # Press Up — should stay on Default backend.
+    send_special Up 0.3
+    content=$(capture_pane -20)
+    if ! echo "$content" | grep -q "Default backend"; then
+        assert_fail "Submenu navigation broken"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}Submenu cursor skips label on Up${NC}"
+
+    # Clean up
+    send_special Escape 0.5
+    send_special Escape 0.5
+
+    assert_pass "Label items render in dim and are skipped by cursor"
+    return 0
+}
+
+echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input, add backend, form mode, arrow keys, save failure revert, prefill breadcrumb, proxy toggle, label${NC}"
+run_tests 16

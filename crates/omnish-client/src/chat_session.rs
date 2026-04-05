@@ -1878,6 +1878,9 @@ impl ChatSession {
                         ]),
                     ],
                 },
+                MenuItem::Label {
+                    label: "──────────────────────────────".to_string(),
+                },
                 MenuItem::TextInput {
                     label: "Name".to_string(),
                     value: String::new(),
@@ -1914,9 +1917,15 @@ impl ChatSession {
         };
 
         let mut items = vec![
+            MenuItem::Label {
+                label: "Test menu — labels are non-interactive".to_string(),
+            },
             MenuItem::Submenu {
                 label: "LLM".to_string(),
                 children: vec![
+                    MenuItem::Label {
+                        label: "Configure LLM backend settings".to_string(),
+                    },
                     MenuItem::Select {
                         label: "Default backend".to_string(),
                         options: vec![

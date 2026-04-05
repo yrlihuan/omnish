@@ -85,6 +85,11 @@ impl MenuItem {
     }
 }
 
+/// Find the first interactive (non-Label) item index, starting from 0.
+fn first_interactive(items: &[MenuItem]) -> usize {
+    items.iter().position(|item| !matches!(item, MenuItem::Label { .. })).unwrap_or(0)
+}
+
 /// Find the next interactive (non-Label) item index in the given direction.
 /// Returns `None` if no interactive item exists in that direction.
 fn next_interactive(items: &[MenuItem], from: usize, forward: bool) -> Option<usize> {
@@ -530,11 +535,7 @@ pub fn run_menu(
     let mut breadcrumb_parts: Vec<String> = vec![title.to_string()];
 
     // Current level state — skip leading Label items
-    let mut cursor: usize = if matches!(items.first(), Some(MenuItem::Label { .. })) {
-        next_interactive(&items, 0, true).unwrap_or(0)
-    } else {
-        0
-    };
+    let mut cursor: usize = first_interactive(&items);
     let mut scroll_offset: usize = 0;
 
     // Hide cursor
@@ -618,7 +619,7 @@ pub fn run_menu(
                 }
                 // After text edit returns, advance cursor only on confirm (not cancel)
                 if confirmed && auto_edit_advance && cursor < current_items.len() - 1 {
-                    cursor += 1;
+                    cursor = next_interactive(current_items, cursor, true).unwrap_or(cursor);
                     if cursor >= scroll_offset + vis {
                         scroll_offset = cursor - vis + 1;
                     }
@@ -735,7 +736,7 @@ pub fn run_menu(
                                     *items = new_items;
                                     nav_stack.clear();
                                     breadcrumb_parts.truncate(1);
-                                    cursor = 0;
+                                    cursor = first_interactive(items);
                                     scroll_offset = 0;
                                     form_auto_edit_active = true;
                                     needs_redraw = true;
@@ -800,7 +801,7 @@ pub fn run_menu(
                         });
                         breadcrumb_parts.push(label_clone);
 
-                        cursor = next_interactive(children, 0, true).unwrap_or(0);
+                        cursor = first_interactive(children);
                         scroll_offset = 0;
                         needs_redraw = true;
                         pending_auto_edit = entering_form;
@@ -821,8 +822,8 @@ pub fn run_menu(
                         }
 
                         if in_form_mode && cursor < current_items.len() - 1 {
-                            // Form mode: advance to next item
-                            cursor += 1;
+                            // Form mode: advance to next interactive item
+                            cursor = next_interactive(current_items, cursor, true).unwrap_or(cursor);
                             if cursor >= scroll_offset + vis {
                                 scroll_offset = cursor - vis + 1;
                             }
@@ -900,7 +901,7 @@ pub fn run_menu(
                         if prefill_applied {
                             // Prefill applied: don't auto-advance, let user review filled fields
                         } else if in_form_mode && cursor < current_items.len() - 1 {
-                            cursor += 1;
+                            cursor = next_interactive(current_items, cursor, true).unwrap_or(cursor);
                             if cursor >= scroll_offset + vis {
                                 scroll_offset = cursor - vis + 1;
                             }
@@ -934,7 +935,7 @@ pub fn run_menu(
                             }
                         }
                         if confirmed && in_form_mode && cursor < current_items.len() - 1 {
-                            cursor += 1;
+                            cursor = next_interactive(current_items, cursor, true).unwrap_or(cursor);
                             if cursor >= scroll_offset + vis {
                                 scroll_offset = cursor - vis + 1;
                             }
@@ -982,7 +983,7 @@ pub fn run_menu(
                                         *items = new_items;
                                         nav_stack.clear();
                                         breadcrumb_parts.truncate(1);
-                                        cursor = 0;
+                                        cursor = first_interactive(items);
                                         scroll_offset = 0;
                                         form_auto_edit_active = true;
                                         let cleanup = render_cleanup(last_item_count);
