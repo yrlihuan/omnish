@@ -11,7 +11,7 @@ pub struct DiskCleanupTask {
 
 impl DiskCleanupTask {
     pub fn new(config: ConfigMap) -> Self {
-        let schedule = config.get_string("schedule", "");
+        let schedule = crate::task_mgr::normalize_cron(&config.get_string("schedule", ""));
         Self { config, schedule }
     }
 }
@@ -32,7 +32,7 @@ impl ScheduledTask for DiskCleanupTask {
     fn defaults() -> std::collections::HashMap<String, serde_json::Value> {
         [
             ("enabled".into(), serde_json::json!(true)),
-            ("schedule".into(), serde_json::json!("0 0 */6 * * *")),
+            ("schedule".into(), serde_json::json!("0 */6 * * *")),
         ].into()
     }
 

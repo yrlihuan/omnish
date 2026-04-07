@@ -15,7 +15,7 @@ pub struct HourlySummaryTask {
 
 impl HourlySummaryTask {
     pub fn new(config: ConfigMap) -> Self {
-        let schedule = config.get_string("schedule", "");
+        let schedule = crate::task_mgr::normalize_cron(&config.get_string("schedule", ""));
         Self { config, schedule }
     }
 }
@@ -36,7 +36,7 @@ impl ScheduledTask for HourlySummaryTask {
     fn defaults() -> std::collections::HashMap<String, serde_json::Value> {
         [
             ("enabled".into(), serde_json::json!(true)),
-            ("schedule".into(), serde_json::json!("0 0 */4 * * *")),
+            ("schedule".into(), serde_json::json!("0 */4 * * *")),
         ].into()
     }
 

@@ -173,6 +173,18 @@ impl TaskManager {
     }
 }
 
+/// Normalize a cron expression to tokio-cron-scheduler's 6/7-field format.
+/// If the input has 5 fields (standard Linux cron: min hour dom month dow),
+/// prepend "0 " to add a seconds field. If 6+ fields, pass through as-is.
+pub fn normalize_cron(expr: &str) -> String {
+    let fields = expr.split_whitespace().count();
+    if fields == 5 {
+        format!("0 {}", expr)
+    } else {
+        expr.to_string()
+    }
+}
+
 pub fn create_all_tasks(config: &omnish_common::config::TasksConfig) -> Vec<Box<dyn ScheduledTask>> {
     let empty = omnish_common::config::ConfigMap::default();
     vec![
