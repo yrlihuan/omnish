@@ -53,6 +53,7 @@ integration-test:
     # Run integration tests
     - bash tools/integration_tests/test_basic.sh
     - bash tools/integration_tests/test_tool_display.sh
+    - bash tools/integration_tests/test_spinner.sh
     # Issue verification tests
     - bash tools/integration_tests/verify_issue_127.sh
     - bash tools/integration_tests/verify_issue_144.sh
