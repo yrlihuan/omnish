@@ -63,6 +63,8 @@ pub struct ChatSession {
     tool_section_start: Option<usize>,
     /// scroll_history index where the current tool batch starts.
     tool_section_hist_idx: Option<usize>,
+    /// Current spinner animation frame index (for running tool icons).
+    spinner_frame: usize,
 }
 
 fn write_stdout(s: &str) {
@@ -366,6 +368,7 @@ impl ChatSession {
             lines_printed: 0,
             tool_section_start: None,
             tool_section_hist_idx: None,
+            spinner_frame: 0,
         }
     }
 
@@ -436,7 +439,8 @@ impl ChatSession {
                     let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
                     let param_desc = cts.param_desc.as_deref().unwrap_or("");
                     let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Running);
-                    let header = display::render_tool_header(icon, display_name, param_desc, cols);
+                    let sf = if *icon == StatusIcon::Running { Some(self.spinner_frame) } else { None };
+                    let header = display::render_tool_header_with_spinner(icon, display_name, param_desc, cols, sf);
                     write_stdout(&header);
                     write_stdout("\r\n");
                     count += Self::visual_rows(&header, cols);
@@ -844,6 +848,11 @@ impl ChatSession {
             if let Some(result) = stream_result {
                 match result {
                     Ok(mut rx) => {
+                        let mut spinner_interval = tokio::time::interval(std::time::Duration::from_millis(200));
+                        spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        // Consume the first immediate tick
+                        spinner_interval.tick().await;
+
                         'stream: loop {
                             // Phase 1: Collect messages
                             let mut tool_calls: Vec<ChatToolCall> = Vec::new();
@@ -876,7 +885,8 @@ impl ChatSession {
                                                     let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
                                                     let param_desc = cts.param_desc.as_deref().unwrap_or("");
                                                     let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Running);
-                                                    let header = display::render_tool_header(icon, display_name, param_desc, cols as usize);
+                                                    let sf = if *icon == StatusIcon::Running { Some(self.spinner_frame) } else { None };
+                                                    let header = display::render_tool_header_with_spinner(icon, display_name, param_desc, cols as usize, sf);
                                                     self.print_line(&header);
                                                     self.push_entry(ScrollEntry::ToolStatus(cts));
                                                 } else {
@@ -919,6 +929,10 @@ impl ChatSession {
                                             None => break,
                                             _ => { got_response = true; break; }
                                         }
+                                    }
+                                    _ = spinner_interval.tick(), if self.tool_section_start.is_some() => {
+                                        self.spinner_frame = self.spinner_frame.wrapping_add(1);
+                                        self.redraw_tool_section();
                                     }
                                     _ = wait_cancel(&mut crx) => {
                                         interrupted = true;
@@ -1045,6 +1059,10 @@ impl ChatSession {
                                             }
                                             None => break, // All tasks done
                                         }
+                                    }
+                                    _ = spinner_interval.tick(), if self.tool_section_start.is_some() => {
+                                        self.spinner_frame = self.spinner_frame.wrapping_add(1);
+                                        self.redraw_tool_section();
                                     }
                                     _ = wait_cancel(&mut crx2) => {
                                         interrupted = true;

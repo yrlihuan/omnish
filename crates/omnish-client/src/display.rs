@@ -140,13 +140,32 @@ pub fn render_chat_history(last_exchange: Option<&(String, String)>, earlier_cou
     output
 }
 
-pub fn render_tool_header(icon: &omnish_protocol::message::StatusIcon, display_name: &str, param_desc: &str, max_cols: usize) -> String {
+/// Spinner frames for running tool status animation.
+const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// Get the spinner character for a given frame index.
+pub fn spinner_char(frame: usize) -> char {
+    SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]
+}
+
+fn status_icon_str(icon: &omnish_protocol::message::StatusIcon, spinner_frame: Option<usize>) -> String {
     use omnish_protocol::message::StatusIcon;
-    let icon_str = match icon {
-        StatusIcon::Running => "\x1b[97m●\x1b[0m",
-        StatusIcon::Success => "\x1b[38;5;114m●\x1b[0m",
-        StatusIcon::Error => "\x1b[38;5;211m●\x1b[0m",
-    };
+    match icon {
+        StatusIcon::Running => {
+            let ch = spinner_char(spinner_frame.unwrap_or(0));
+            format!("\x1b[97m{}\x1b[0m", ch)
+        }
+        StatusIcon::Success => "\x1b[38;5;114m●\x1b[0m".to_string(),
+        StatusIcon::Error => "\x1b[38;5;211m●\x1b[0m".to_string(),
+    }
+}
+
+pub fn render_tool_header(icon: &omnish_protocol::message::StatusIcon, display_name: &str, param_desc: &str, max_cols: usize) -> String {
+    render_tool_header_with_spinner(icon, display_name, param_desc, max_cols, None)
+}
+
+pub fn render_tool_header_with_spinner(icon: &omnish_protocol::message::StatusIcon, display_name: &str, param_desc: &str, max_cols: usize, spinner_frame: Option<usize>) -> String {
+    let icon_str = status_icon_str(icon, spinner_frame);
     let oneline = collapse_newlines(param_desc);
     let name_cols = display_name.len() + 2;
     let available = max_cols.saturating_sub(4 + name_cols);
@@ -155,12 +174,11 @@ pub fn render_tool_header(icon: &omnish_protocol::message::StatusIcon, display_n
 }
 
 pub fn render_tool_header_full(icon: &omnish_protocol::message::StatusIcon, display_name: &str, param_desc: &str) -> String {
-    use omnish_protocol::message::StatusIcon;
-    let icon_str = match icon {
-        StatusIcon::Running => "\x1b[97m●\x1b[0m",
-        StatusIcon::Success => "\x1b[38;5;114m●\x1b[0m",
-        StatusIcon::Error => "\x1b[38;5;211m●\x1b[0m",
-    };
+    render_tool_header_full_with_spinner(icon, display_name, param_desc, None)
+}
+
+pub fn render_tool_header_full_with_spinner(icon: &omnish_protocol::message::StatusIcon, display_name: &str, param_desc: &str, spinner_frame: Option<usize>) -> String {
+    let icon_str = status_icon_str(icon, spinner_frame);
     let oneline = collapse_newlines(param_desc);
     format!("{} \x1b[1m{}\x1b[0m\x1b[2m({})\x1b[0m", icon_str, display_name, oneline)
 }
