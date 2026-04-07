@@ -535,7 +535,7 @@ pub fn run_menu(
     let mut breadcrumb_parts: Vec<String> = vec![title.to_string()];
 
     // Current level state — skip leading Label items
-    let mut cursor: usize = first_interactive(&items);
+    let mut cursor: usize = first_interactive(items);
     let mut scroll_offset: usize = 0;
 
     // Hide cursor

@@ -872,6 +872,7 @@ impl ChatSession {
                         'stream: loop {
                             // Phase 1: Collect messages
                             let mut tool_calls: Vec<ChatToolCall> = Vec::new();
+                            #[allow(unused_assignments)]
                             let mut got_response = false;
                             loop {
                                 let mut crx = cancel_rx.clone();
