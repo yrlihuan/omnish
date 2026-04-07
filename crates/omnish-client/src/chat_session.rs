@@ -474,6 +474,22 @@ impl ChatSession {
         self.lines_printed = start_line + count;
     }
 
+    /// Mark all Running tool statuses as Error and redraw.
+    fn mark_running_tools_error(&mut self) {
+        let mut changed = false;
+        for entry in &mut self.scroll_history {
+            if let ScrollEntry::ToolStatus(cts) = entry {
+                if cts.status_icon == Some(StatusIcon::Running) {
+                    cts.status_icon = Some(StatusIcon::Error);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.redraw_tool_section();
+        }
+    }
+
     fn push_entry(&mut self, entry: ScrollEntry) {
         self.scroll_history.push(entry);
     }
@@ -926,7 +942,18 @@ impl ChatSession {
                                                 got_response = true;
                                                 break;
                                             }
-                                            None => break,
+                                            None => {
+                                                // Channel closed — daemon disconnected
+                                                self.erase_thinking();
+                                                self.mark_running_tools_error();
+                                                self.tool_section_start = None;
+                                                self.tool_section_hist_idx = None;
+                                                write_stdout(&display::render_error(
+                                                    "Daemon connection lost",
+                                                ));
+                                                got_response = true; // skip Phase 2+3
+                                                break;
+                                            }
                                             _ => { got_response = true; break; }
                                         }
                                     }
@@ -1071,6 +1098,9 @@ impl ChatSession {
                                 }
                             }
                             if send_failed {
+                                self.mark_running_tools_error();
+                                self.tool_section_start = None;
+                                self.tool_section_hist_idx = None;
                                 break 'stream;
                             }
 
