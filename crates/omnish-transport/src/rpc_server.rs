@@ -352,7 +352,7 @@ fn spawn_connection<R, W, F>(
                             // IO error (EOF, connection reset, etc.) — close connection
                             let msg = e.to_string().to_lowercase();
                             if !msg.contains("eof") && !msg.contains("end of file") {
-                                tracing::warn!("failed to read frame: {}", e);
+                                tracing::warn!("conn#{}: read_frame failed: {}", conn_id, e);
                             }
                             break;
                         }
@@ -398,7 +398,7 @@ fn spawn_connection<R, W, F>(
                         while let Some(msg) = rx.recv().await {
                             count += 1;
                             if let Err(e) = write_reply(&writer, request_id, msg).await {
-                                tracing::error!("write_reply failed: {}", e);
+                                tracing::error!("conn#{}: write_reply failed: {}", conn_id, e);
                                 break;
                             }
                         }
@@ -416,7 +416,7 @@ fn spawn_connection<R, W, F>(
                 } => {
                     if let Some(msg) = push_msg {
                         if let Err(e) = write_reply(&writer, 0, msg).await {
-                            tracing::warn!("push write failed: {}", e);
+                            tracing::warn!("conn#{}: push_write failed: {}", conn_id, e);
                             break;
                         }
                     } else {
