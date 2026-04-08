@@ -402,12 +402,53 @@ pub fn load_daemon_config() -> Result<DaemonConfig> {
         .unwrap_or_else(|_| omnish_dir().join("daemon.toml"));
     if path.exists() {
         let contents = std::fs::read_to_string(&path)?;
-        let mut config: DaemonConfig = toml::from_str(&contents)?;
+        let mut config: DaemonConfig = match toml::from_str(&contents) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "WARNING: failed to parse {}: {}; attempting to sanitize",
+                    path.display(),
+                    e
+                );
+                toml::from_str(&dedup_toml_tables(&contents))?
+            }
+        };
         config.normalize();
         Ok(config)
     } else {
         Ok(DaemonConfig::default())
     }
+}
+
+/// Remove duplicate TOML table headers, keeping the first occurrence of each.
+/// Lines belonging to a duplicate table section are dropped.
+fn dedup_toml_tables(input: &str) -> String {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    let mut output = String::with_capacity(input.len());
+    let mut skip = false;
+
+    for line in input.lines() {
+        let trimmed = line.trim();
+        // Detect table headers like [foo] or [foo.bar] (but not array-of-tables [[foo]])
+        if trimmed.starts_with('[') && !trimmed.starts_with("[[") {
+            if let Some(end) = trimmed.find(']') {
+                let key = &trimmed[1..end];
+                if !seen.insert(key.to_string()) {
+                    // Duplicate table header — skip this section
+                    skip = true;
+                    continue;
+                } else {
+                    skip = false;
+                }
+            }
+        } else if skip {
+            continue;
+        }
+        output.push_str(line);
+        output.push('\n');
+    }
+    output
 }
 
 // ---------------------------------------------------------------------------
@@ -689,5 +730,33 @@ mod tests {
         assert!(value.get("llm").unwrap().get("backends").is_some());
         assert!(value.get("proxy").is_some());
         assert!(value.get("proxy").unwrap().is_table());
+    }
+
+    #[test]
+    fn test_dedup_toml_tables() {
+        let input = r#"
+listen_addr = "/tmp/omnish.sock"
+
+[tasks.auto_update]
+enabled = true
+
+[tasks.eviction]
+session_evict_hours = 48
+
+[tasks.auto_update]
+enabled = false
+schedule = "0 0 4 * * *"
+"#;
+        let output = dedup_toml_tables(input);
+        // First [tasks.auto_update] kept, second dropped
+        assert_eq!(output.matches("[tasks.auto_update]").count(), 1);
+        assert!(output.contains("enabled = true"));
+        assert!(!output.contains("enabled = false"));
+        // [tasks.eviction] preserved
+        assert!(output.contains("[tasks.eviction]"));
+        assert!(output.contains("session_evict_hours = 48"));
+        // Result should be valid TOML
+        let config: DaemonConfig = toml::from_str(&output).unwrap();
+        assert_eq!(config.tasks["auto_update"].get_bool("enabled", false), true);
     }
 }

@@ -67,6 +67,30 @@ fn test_load_daemon_config_missing_file_returns_default() {
 }
 
 #[test]
+fn test_load_daemon_config_duplicate_table_recovers() {
+    let path = "/tmp/omnish-test-dup-section.toml";
+    std::fs::write(
+        path,
+        r#"
+listen_addr = "/tmp/test.sock"
+
+[tasks.auto_update]
+enabled = true
+
+[tasks.auto_update]
+enabled = false
+"#,
+    )
+    .unwrap();
+    std::env::set_var("OMNISH_DAEMON_CONFIG", path);
+    let config = omnish_common::config::load_daemon_config().unwrap();
+    assert_eq!(config.listen_addr, "/tmp/test.sock");
+    assert_eq!(config.tasks["auto_update"].get_bool("enabled", false), true);
+    std::env::remove_var("OMNISH_DAEMON_CONFIG");
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
 fn test_omnish_dir() {
     let dir = omnish_common::config::omnish_dir();
     assert!(dir.to_string_lossy().ends_with(".omnish"));
