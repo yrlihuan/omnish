@@ -3,6 +3,19 @@
 // Pure functions that produce ANSI terminal output strings for the :: interactive mode.
 // All functions return a String suitable for writing to a raw-mode terminal (using \r\n).
 
+/// Character types that have extended Unicode variants.
+pub enum UiChar {
+    /// ⎿ (extended) / └ (fallback) — tool output prefix
+    ToolOutputCorner,
+}
+
+/// Return the appropriate character for the given UI element.
+pub fn ui_char(char_type: UiChar, extended_unicode: bool) -> &'static str {
+    match char_type {
+        UiChar::ToolOutputCorner => if extended_unicode { "⎿" } else { "└" },
+    }
+}
+
 /// Truncate a string to fit within `max_cols` display columns.
 /// CJK / fullwidth characters count as 2 columns.
 /// Appends "…" if truncated.
@@ -187,14 +200,15 @@ fn collapse_newlines(s: &str) -> String {
     result.trim_end().to_string()
 }
 
-pub fn render_tool_output(lines: &[String]) -> Vec<String> {
-    render_tool_output_with_cols(lines, 0)
+pub fn render_tool_output(lines: &[String], extended_unicode: bool) -> Vec<String> {
+    render_tool_output_with_cols(lines, 0, extended_unicode)
 }
 
 /// Render tool output lines with optional column-width limit.
 /// If `max_cols > 0`, content that would exceed 3 terminal rows is truncated with "…".
-pub fn render_tool_output_with_cols(lines: &[String], max_cols: usize) -> Vec<String> {
-    let prefix_width = 5; // "  ⎿  " or "     "
+pub fn render_tool_output_with_cols(lines: &[String], max_cols: usize, extended_unicode: bool) -> Vec<String> {
+    let prefix_width = 5; // "  ⎿  " / "  └  " or "     "
+    let corner = ui_char(UiChar::ToolOutputCorner, extended_unicode);
     let mut out = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         let content = if max_cols > 0 {
@@ -205,7 +219,7 @@ pub fn render_tool_output_with_cols(lines: &[String], max_cols: usize) -> Vec<St
             line.clone()
         };
         if i == 0 {
-            out.push(format!("  \x1b[2m⎿  {}\x1b[0m", content));
+            out.push(format!("  \x1b[2m{corner}  {}\x1b[0m", content));
         } else {
             out.push(format!("  \x1b[2m   {}\x1b[0m", content));
         }

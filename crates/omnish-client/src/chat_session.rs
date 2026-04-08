@@ -57,6 +57,7 @@ pub struct ChatSession {
     shell_cwd: Option<String>,
     /// Directory to cd into after chat mode exits (set by resume mismatch handler).
     pending_cd: Option<String>,
+    extended_unicode: bool,
     /// Total terminal lines printed (for tracking tool section position).
     lines_printed: usize,
     /// Line position where the current batch of tool headers starts.
@@ -346,7 +347,7 @@ fn build_menu_tree(
 }
 
 impl ChatSession {
-    pub fn new(chat_history: VecDeque<String>) -> Self {
+    pub fn new(chat_history: VecDeque<String>, extended_unicode: bool) -> Self {
         Self {
             current_thread_id: None,
             cached_thread_ids: Vec::new(),
@@ -365,6 +366,7 @@ impl ChatSession {
             resumed_model: None,
             shell_cwd: None,
             pending_cd: None,
+            extended_unicode,
             lines_printed: 0,
             tool_section_start: None,
             tool_section_hist_idx: None,
@@ -445,7 +447,7 @@ impl ChatSession {
                     write_stdout("\r\n");
                     count += Self::visual_rows(&header, cols);
                     if let Some(ref lines) = cts.result_compact {
-                        let rendered = display::render_tool_output_with_cols(lines, cols);
+                        let rendered = display::render_tool_output_with_cols(lines, cols, self.extended_unicode);
                         for line in &rendered {
                             write_stdout(line);
                             write_stdout("\r\n");
@@ -516,7 +518,7 @@ impl ChatSession {
                     let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Success);
                     let mut lines = vec![display::render_tool_header_full(icon, display_name, param_desc)];
                     if let Some(ref full) = cts.result_full {
-                        lines.extend(display::render_tool_output(full));
+                        lines.extend(display::render_tool_output(full, self.extended_unicode));
                     }
                     lines
                 }
@@ -1580,7 +1582,7 @@ impl ChatSession {
                         let header = display::render_tool_header(icon, display_name, param_desc, cols as usize);
                         self.print_line(&header);
                         if let Some(ref lines) = cts.result_compact {
-                            let rendered = display::render_tool_output_with_cols(lines, cols as usize);
+                            let rendered = display::render_tool_output_with_cols(lines, cols as usize, self.extended_unicode);
                             for line in &rendered {
                                 self.print_line(line);
                             }

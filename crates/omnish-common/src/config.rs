@@ -146,6 +146,11 @@ pub struct ClientConfig {
     pub daemon_addr: String,
     #[serde(default)]
     pub onboarded: bool,
+    /// Use extended Unicode characters (e.g. ⎿) in the UI.
+    /// Set to false for terminals lacking font support (e.g. ConEmu with default fonts).
+    /// In the future this may be set automatically via terminal detection.
+    #[serde(default = "default_true")]
+    pub extended_unicode: bool,
 }
 
 fn default_true() -> bool {
@@ -158,6 +163,7 @@ impl Default for ClientConfig {
             shell: ShellConfig::default(),
             daemon_addr: default_socket_path(),
             onboarded: false,
+            extended_unicode: true,
         }
     }
 }
