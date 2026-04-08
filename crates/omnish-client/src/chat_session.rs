@@ -1561,7 +1561,7 @@ impl ChatSession {
                     .count();
                 if earlier_count > 0 {
                     self.print_line(&format!(
-                        "\x1b[2;37m({} earlier exchange{})\x1b[0m",
+                        "\x1b[2;37m({} earlier message{})\x1b[0m",
                         earlier_count,
                         if earlier_count == 1 { "" } else { "s" }
                     ));

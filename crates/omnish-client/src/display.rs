@@ -124,22 +124,6 @@ pub fn render_ghost_text(ghost: &str) -> String {
     format!("\x1b7\x1b[2;90m{}\x1b[0m\x1b8", ghost)
 }
 
-/// Render previous chat history in dim gray for chat mode re-entry.
-#[allow(dead_code)]
-pub fn render_chat_history(last_exchange: Option<&(String, String)>, earlier_count: u32) -> String {
-    let mut output = String::new();
-    if earlier_count > 0 {
-        output.push_str(&format!("\r\n\x1b[2;37m({} earlier messages)\x1b[0m", earlier_count));
-    }
-    if let Some((query, reply)) = last_exchange {
-        output.push_str(&format!("\r\n\x1b[2;37m> {}\x1b[0m", query));
-        for line in reply.lines() {
-            output.push_str(&format!("\r\n\x1b[2;37m{}\x1b[0m", line.trim_end()));
-        }
-    }
-    output
-}
-
 /// Spinner frames for running tool status animation.
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
