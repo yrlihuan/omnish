@@ -1941,14 +1941,14 @@ impl ChatSession {
                         ]),
                         ("openai".to_string(), vec![
                             ("Name".to_string(), "openai".to_string()),
-                            ("Backend type".to_string(), "openai_compat".to_string()),
+                            ("Backend type".to_string(), "openai-compat".to_string()),
                             ("Model".to_string(), "gpt-4o".to_string()),
                             ("Base URL".to_string(), "https://api.openai.com/v1".to_string()),
                             ("Context window".to_string(), "128000".to_string()),
                         ]),
                         ("openrouter".to_string(), vec![
                             ("Name".to_string(), "openrouter".to_string()),
-                            ("Backend type".to_string(), "openai_compat".to_string()),
+                            ("Backend type".to_string(), "openai-compat".to_string()),
                             ("Model".to_string(), "".to_string()),
                             ("Base URL".to_string(), "https://openrouter.ai/api/v1".to_string()),
                             ("Context window".to_string(), "200000".to_string()),
@@ -1971,7 +1971,7 @@ impl ChatSession {
                 },
                 MenuItem::Select {
                     label: "Backend type".to_string(),
-                    options: vec!["anthropic".to_string(), "openai_compat".to_string()],
+                    options: vec!["anthropic".to_string(), "openai-compat".to_string()],
                     selected: 0,
                     prefills: vec![],
                 },

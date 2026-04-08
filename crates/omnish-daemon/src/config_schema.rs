@@ -216,7 +216,7 @@ pub fn build_config_items(
             path: format!("{}.backend_type", prefix),
             label: "Backend type".to_string(),
             kind: {
-                let opts = vec!["anthropic".to_string(), "openai_compat".to_string()];
+                let opts = vec!["anthropic".to_string(), "openai-compat".to_string()];
                 let sel = opts.iter().position(|o| o == &backend.backend_type).unwrap_or(0);
                 ConfigItemKind::Select { options: opts, selected: sel }
             },
@@ -452,7 +452,7 @@ mod tests {
             max_content_chars: None,
         });
         config.llm.backends.insert("openai".to_string(), omnish_common::config::LlmBackendConfig {
-            backend_type: "openai_compat".to_string(),
+            backend_type: "openai-compat".to_string(),
             model: "gpt-4o".to_string(),
             api_key_cmd: None,
             base_url: Some("https://api.openai.com".to_string()),
