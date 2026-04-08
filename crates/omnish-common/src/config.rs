@@ -410,7 +410,7 @@ pub fn load_daemon_config() -> Result<DaemonConfig> {
                     path.display(),
                     e
                 );
-                toml::from_str(&dedup_toml_tables(&contents))?
+                toml::from_str(&sanitize_toml(&contents))?
             }
         };
         config.normalize();
@@ -420,30 +420,40 @@ pub fn load_daemon_config() -> Result<DaemonConfig> {
     }
 }
 
-/// Remove duplicate TOML table headers, keeping the first occurrence of each.
-/// Lines belonging to a duplicate table section are dropped.
-fn dedup_toml_tables(input: &str) -> String {
+/// Sanitize TOML text by removing duplicate table headers and duplicate keys
+/// within each section. Keeps the first occurrence of each.
+fn sanitize_toml(input: &str) -> String {
     use std::collections::HashSet;
-    let mut seen = HashSet::new();
+    let mut seen_tables = HashSet::new();
+    // Keys seen in the current section (reset on each new table header)
+    let mut seen_keys = HashSet::<String>::new();
     let mut output = String::with_capacity(input.len());
-    let mut skip = false;
+    let mut skip_table = false;
 
     for line in input.lines() {
         let trimmed = line.trim();
         // Detect table headers like [foo] or [foo.bar] (but not array-of-tables [[foo]])
         if trimmed.starts_with('[') && !trimmed.starts_with("[[") {
             if let Some(end) = trimmed.find(']') {
-                let key = &trimmed[1..end];
-                if !seen.insert(key.to_string()) {
-                    // Duplicate table header — skip this section
-                    skip = true;
+                let table = &trimmed[1..end];
+                if !seen_tables.insert(table.to_string()) {
+                    skip_table = true;
                     continue;
                 } else {
-                    skip = false;
+                    skip_table = false;
+                    seen_keys.clear();
                 }
             }
-        } else if skip {
+        } else if skip_table {
             continue;
+        } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            // Check for duplicate key within current section
+            if let Some(key) = trimmed.split('=').next() {
+                let key = key.trim();
+                if !key.is_empty() && !seen_keys.insert(key.to_string()) {
+                    continue;
+                }
+            }
         }
         output.push_str(line);
         output.push('\n');
@@ -733,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dedup_toml_tables() {
+    fn test_sanitize_toml_duplicate_tables() {
         let input = r#"
 listen_addr = "/tmp/omnish.sock"
 
@@ -747,16 +757,36 @@ session_evict_hours = 48
 enabled = false
 schedule = "0 0 4 * * *"
 "#;
-        let output = dedup_toml_tables(input);
-        // First [tasks.auto_update] kept, second dropped
+        let output = sanitize_toml(input);
         assert_eq!(output.matches("[tasks.auto_update]").count(), 1);
         assert!(output.contains("enabled = true"));
         assert!(!output.contains("enabled = false"));
-        // [tasks.eviction] preserved
         assert!(output.contains("[tasks.eviction]"));
         assert!(output.contains("session_evict_hours = 48"));
-        // Result should be valid TOML
         let config: DaemonConfig = toml::from_str(&output).unwrap();
+        assert_eq!(config.tasks["auto_update"].get_bool("enabled", false), true);
+    }
+
+    #[test]
+    fn test_sanitize_toml_duplicate_keys() {
+        let input = r#"
+listen_addr = "/tmp/omnish.sock"
+listen_addr = "/tmp/other.sock"
+
+[tasks.auto_update]
+enabled = true
+enabled = false
+schedule = "0 0 4 * * *"
+"#;
+        let output = sanitize_toml(input);
+        assert_eq!(output.matches("listen_addr").count(), 1);
+        assert!(output.contains(r#"listen_addr = "/tmp/omnish.sock""#));
+        assert!(!output.contains("other.sock"));
+        assert_eq!(output.matches("enabled").count(), 1);
+        assert!(output.contains("enabled = true"));
+        assert!(output.contains("schedule"));
+        let config: DaemonConfig = toml::from_str(&output).unwrap();
+        assert_eq!(config.listen_addr, "/tmp/omnish.sock");
         assert_eq!(config.tasks["auto_update"].get_bool("enabled", false), true);
     }
 }
