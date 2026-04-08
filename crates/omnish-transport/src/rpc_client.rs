@@ -45,6 +45,10 @@ struct Inner {
     _push_tx: mpsc::Sender<Message>,
 }
 
+/// Epoch millis after which reconnection is allowed again.
+/// 0 means no suppression. Shared between RpcClient and the reconnect loop.
+type SuppressUntil = Arc<AtomicU64>;
+
 type ConnectorFn = Arc<
     dyn Fn()
             -> Pin<
@@ -114,6 +118,7 @@ pub struct RpcClient {
     inner: Arc<Mutex<Inner>>,
     next_id: Arc<AtomicU64>,
     push_rx: Arc<Mutex<mpsc::Receiver<Message>>>,
+    suppress_until: SuppressUntil,
 }
 
 impl RpcClient {
@@ -126,6 +131,7 @@ impl RpcClient {
             inner: Arc::new(Mutex::new(inner)),
             next_id: Arc::new(AtomicU64::new(1)),
             push_rx: Arc::new(Mutex::new(push_rx)),
+            suppress_until: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -139,6 +145,7 @@ impl RpcClient {
             inner: Arc::new(Mutex::new(inner)),
             next_id: Arc::new(AtomicU64::new(1)),
             push_rx: Arc::new(Mutex::new(push_rx)),
+            suppress_until: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -247,10 +254,12 @@ impl RpcClient {
                 let inner = Self::create_inner(reader, writer, Some(disc_tx), push_tx);
                 let next_id = Arc::new(AtomicU64::new(1));
                 let push_rx = Arc::new(Mutex::new(push_rx));
+                let suppress_until = Arc::new(AtomicU64::new(0));
                 let client = Self {
                     inner: Arc::new(Mutex::new(inner)),
                     next_id: next_id.clone(),
                     push_rx: push_rx.clone(),
+                    suppress_until: suppress_until.clone(),
                 };
 
                 // Call on_reconnect for initial registration
@@ -270,6 +279,7 @@ impl RpcClient {
                     disconnect_fn.clone(),
                     disc_rx,
                     push_rx,
+                    suppress_until,
                 ));
 
                 Ok(client)
@@ -294,10 +304,12 @@ impl RpcClient {
 
                 let next_id = Arc::new(AtomicU64::new(1));
                 let push_rx = Arc::new(Mutex::new(push_rx));
+                let suppress_until = Arc::new(AtomicU64::new(0));
                 let client = Self {
                     inner: Arc::new(Mutex::new(inner)),
                     next_id: next_id.clone(),
                     push_rx: push_rx.clone(),
+                    suppress_until: suppress_until.clone(),
                 };
 
                 // Create a oneshot channel that's already closed to trigger immediate reconnection
@@ -318,6 +330,7 @@ impl RpcClient {
                     disconnect_fn,
                     disc_rx,
                     push_rx,
+                    suppress_until,
                 ));
 
                 Ok(client)
@@ -335,6 +348,7 @@ impl RpcClient {
         on_disconnect: Option<NotifyFn>,
         mut disc_rx: oneshot::Receiver<()>,
         push_rx: Arc<Mutex<mpsc::Receiver<Message>>>,
+        suppress_until: SuppressUntil,
     ) {
         loop {
             // Wait for disconnect notification
@@ -349,6 +363,21 @@ impl RpcClient {
             {
                 let guard = inner_ref.lock().await;
                 guard.connected.store(false, Ordering::SeqCst);
+            }
+
+            // Wait for suppress period to elapse (set by TestDisconnect)
+            let until = suppress_until.load(Ordering::Relaxed);
+            if until > 0 {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                if now < until {
+                    let wait = std::time::Duration::from_millis(until - now);
+                    tracing::info!("reconnect suppressed for {}ms", wait.as_millis());
+                    tokio::time::sleep(wait).await;
+                }
+                suppress_until.store(0, Ordering::Relaxed);
             }
 
             // Exponential backoff reconnection
@@ -381,6 +410,7 @@ impl RpcClient {
                     inner: Arc::new(Mutex::new(new_inner)),
                     next_id: next_id.clone(),
                     push_rx: dummy_push_rx,
+                    suppress_until: Arc::new(AtomicU64::new(0)),
                 };
 
                 // Call on_reconnect with the temp client
@@ -443,6 +473,17 @@ impl RpcClient {
     /// Non-blocking receive of a push message (server-initiated, request_id=0).
     pub async fn try_recv_push(&self) -> Option<Message> {
         self.push_rx.lock().await.try_recv().ok()
+    }
+
+    /// Suppress reconnection attempts for the given duration.
+    /// Used by TestDisconnect to delay reconnection.
+    pub fn suppress_reconnect(&self, duration: std::time::Duration) {
+        let until = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+            + duration.as_millis() as u64;
+        self.suppress_until.store(until, Ordering::Relaxed);
     }
 
     pub async fn call(&self, msg: Message) -> Result<Message> {

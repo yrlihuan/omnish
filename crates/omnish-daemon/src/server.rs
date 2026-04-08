@@ -943,8 +943,8 @@ async fn handle_message(
                 }
             }
         }
-        Message::ConfigResponse { .. } | Message::ConfigUpdateResult { .. } | Message::ConfigClient { .. } => {
-            // These are daemon→client messages, ignore if received
+        Message::ConfigResponse { .. } | Message::ConfigUpdateResult { .. } | Message::ConfigClient { .. } | Message::TestDisconnect { .. } => {
+            // These are daemon→client or transport-layer messages, ignore if received at app layer
             let _ = tx.send(Message::Ack).await;
         }
         Message::UpdateCheck { os, arch, current_version, .. } => {

@@ -702,6 +702,7 @@ impl ChatSession {
                         write_stdout("\x1b[2;90m  /test multi_level_picker  — cascading picker (3 levels)\x1b[0m\r\n");
                         write_stdout("\x1b[2;90m  /test menu                — multi-level menu widget\x1b[0m\r\n");
                         write_stdout("\x1b[2;90m  /test lock on|off         — toggle Landlock sandbox for shell\x1b[0m\r\n");
+                        write_stdout("\x1b[2;90m  /test disconnect N1 [N2]  — daemon disconnects after N1s, reconnect delay N2s\x1b[0m\r\n");
                     }
                     "multi_level_picker" => self.handle_test_multi_level_picker(),
                     "menu" => self.handle_test_menu(),
@@ -710,6 +711,8 @@ impl ChatSession {
                             let idx: usize = other.strip_prefix("picker")
                                 .unwrap().trim().parse().unwrap_or(0);
                             self.handle_test_picker(idx);
+                        } else if other.starts_with("disconnect") {
+                            self.handle_test_disconnect(other, rpc).await;
                         } else {
                             write_stdout(&format!(
                                 "\x1b[2;90mUnknown test: {}. Run /test for a list.\x1b[0m\r\n",
@@ -1877,6 +1880,40 @@ impl ChatSession {
             None => "Cancelled".to_string(),
         };
         write_stdout(&format!("\x1b[2;90m{}\x1b[0m\r\n", msg));
+    }
+
+    async fn handle_test_disconnect(&self, arg: &str, rpc: &RpcClient) {
+        let parts: Vec<&str> = arg.split_whitespace().collect();
+        // parts[0] = "disconnect", parts[1] = N1, parts[2] = N2 (optional)
+        let delay_secs: u64 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let reconnect_delay: Option<u64> = parts.get(2).and_then(|s| s.parse().ok());
+
+        let msg = Message::TestDisconnect { delay_secs };
+        match rpc.call(msg).await {
+            Ok(Message::Ack) => {
+                write_stdout(&format!(
+                    "\x1b[2;90mDaemon will disconnect in {}s\x1b[0m\r\n",
+                    delay_secs
+                ));
+                if let Some(n2) = reconnect_delay {
+                    write_stdout(&format!(
+                        "\x1b[2;90mClient will delay reconnect by {}s\x1b[0m\r\n",
+                        n2
+                    ));
+                    // Schedule reconnect suppression
+                    let delay = std::time::Duration::from_secs(delay_secs + n2);
+                    rpc.suppress_reconnect(delay);
+                }
+            }
+            Ok(_) => {
+                write_stdout("\x1b[2;90mUnexpected response from daemon\x1b[0m\r\n");
+            }
+            Err(e) => {
+                write_stdout(&format!(
+                    "\x1b[2;90mFailed to send disconnect request: {}\x1b[0m\r\n", e
+                ));
+            }
+        }
     }
 
     fn handle_test_menu(&self) {

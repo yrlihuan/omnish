@@ -323,6 +323,9 @@ fn spawn_connection<R, W, F>(
             None
         };
 
+        // Delayed disconnect: a oneshot that fires after TestDisconnect delay
+        let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(1);
+
         // Normal message loop with push support
         loop {
             tokio::select! {
@@ -338,6 +341,19 @@ fn spawn_connection<R, W, F>(
                             break;
                         }
                     };
+
+                    // Handle TestDisconnect at connection layer
+                    if let Message::TestDisconnect { delay_secs } = &frame.payload {
+                        tracing::info!("TestDisconnect: will close connection in {}s", delay_secs);
+                        let _ = write_reply(&writer, frame.request_id, Message::Ack).await;
+                        let delay = std::time::Duration::from_secs(*delay_secs);
+                        let tx = disconnect_tx.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(delay).await;
+                            let _ = tx.send(()).await;
+                        });
+                        continue;
+                    }
 
                     let handler = handler.clone();
                     let writer = writer.clone();
@@ -380,6 +396,10 @@ fn spawn_connection<R, W, F>(
                     } else {
                         break;
                     }
+                }
+                _ = disconnect_rx.recv() => {
+                    tracing::info!("TestDisconnect: closing connection now");
+                    break;
                 }
             }
         }

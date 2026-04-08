@@ -5,7 +5,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version — increment on incompatible wire format changes.
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigItem {
@@ -106,6 +106,8 @@ pub enum Message {
     // New variants MUST be added at the end to preserve bincode variant indices.
     // Inserting in the middle shifts indices and breaks old clients.
     ConfigClient { changes: Vec<ConfigChange> },
+    /// Test helper: daemon closes this connection after `delay_secs` seconds.
+    TestDisconnect { delay_secs: u64 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -618,7 +620,7 @@ mod tests {
     /// reminding you to bump PROTOCOL_VERSION if the wire format changed.
     #[test]
     fn message_variant_guard() {
-        const EXPECTED_VARIANT_COUNT: usize = 32;
+        const EXPECTED_VARIANT_COUNT: usize = 33;
 
         let variants: Vec<Message> = vec![
             Message::SessionStart(SessionStart {
@@ -786,6 +788,7 @@ mod tests {
             Message::UpdateRequest { os: "linux".into(), arch: "x86_64".into(), version: "0.2.0".into(), hostname: "host1".into() },
             Message::UpdateChunk { seq: 0, total_size: 1024, checksum: "abc".into(), data: vec![1,2,3], done: false, error: None },
             Message::ConfigClient { changes: vec![] },
+            Message::TestDisconnect { delay_secs: 5 },
         ];
 
         // Exhaustive match — no wildcard. Compiler will error if a variant is missing.
@@ -822,7 +825,8 @@ mod tests {
                 | Message::UpdateCheck { .. }
                 | Message::UpdateInfo { .. }
                 | Message::UpdateRequest { .. }
-                | Message::UpdateChunk { .. } => {}
+                | Message::UpdateChunk { .. }
+                | Message::TestDisconnect { .. } => {}
             }
         }
 
