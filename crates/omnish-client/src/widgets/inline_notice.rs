@@ -8,7 +8,7 @@
 pub struct InlineNotice;
 
 impl InlineNotice {
-    /// Generate the ANSI escape sequence that inserts a dim notice line above
+    /// Generate the ANSI escape sequence that inserts a gray notice line above
     /// the current cursor position, then returns the cursor to its original line.
     ///
     /// `max_cols` limits the visible message length to avoid wrapping.
@@ -19,13 +19,13 @@ impl InlineNotice {
     /// 2. Scroll Up (`\x1b[1S`) — content shifts up, row 0 enters scrollback
     /// 3. Move up (`\x1b[1A`) — cursor at R-1
     /// 4. Insert Line (`\x1b[1L`) — blank at R-1, prompt pushed back to R
-    /// 5. Write dim notice on the blank line
+    /// 5. Write gray notice on the blank line
     /// 6. DECRC restore cursor to (R, C)
     ///
     /// **Top mode** (`at_bottom = false`) — for cursor near screen top:
     /// 1. DECSC save cursor (R, C)
     /// 2. Insert Line (`\x1b[1L`) — blank at R, content pushed to R+1
-    /// 3. Write dim notice on the blank line
+    /// 3. Write gray notice on the blank line
     /// 4. DECRC restore cursor to (R, C) — now on the notice line
     /// 5. Move down (`\x1b[1B`) — follow original content at R+1
     #[cfg(test)]
@@ -37,12 +37,12 @@ impl InlineNotice {
         let truncated = crate::display::truncate_cols(message, max_cols);
         if at_bottom {
             format!(
-                "\x1b7\x1b[1S\x1b[1A\x1b[1L\r\x1b[2m{}\x1b[0m\x1b8",
+                "\x1b7\x1b[1S\x1b[1A\x1b[1L\r\x1b[90m{}\x1b[0m\x1b8",
                 truncated
             )
         } else {
             format!(
-                "\x1b7\r\x1b[1L\x1b[2m{}\x1b[0m\x1b8\x1b[1B",
+                "\x1b7\r\x1b[1L\x1b[90m{}\x1b[0m\x1b8\x1b[1B",
                 truncated
             )
         }
@@ -63,7 +63,7 @@ mod tests {
     #[test]
     fn test_render_has_dim_formatting() {
         let output = InlineNotice::render("test", 80);
-        assert!(output.contains("\x1b[2m"));
+        assert!(output.contains("\x1b[90m"));
         assert!(output.contains("\x1b[0m"));
     }
 
