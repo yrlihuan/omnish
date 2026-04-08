@@ -90,7 +90,7 @@ test_2() {
     local long_str
     long_str=$(seq -s '' 1 200 | head -c 500)
 
-    send_keys "运行 echo \"$long_str\"" 0.3
+    send_keys "使用bash工具执行: echo \"$long_str\"" 0.3
     send_enter 0.3
 
     if ! wait_for_chat_response; then
