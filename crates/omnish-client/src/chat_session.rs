@@ -947,15 +947,18 @@ impl ChatSession {
                                                 break;
                                             }
                                             None => {
-                                                // Channel closed — daemon disconnected
-                                                self.erase_thinking();
-                                                self.mark_running_tools_error();
-                                                self.tool_section_start = None;
-                                                self.tool_section_hist_idx = None;
-                                                write_stdout(&display::render_error(
-                                                    "Daemon connection lost",
-                                                ));
-                                                got_response = true; // skip Phase 2+3
+                                                if tool_calls.is_empty() {
+                                                    // No tool calls pending — real disconnect
+                                                    self.erase_thinking();
+                                                    self.mark_running_tools_error();
+                                                    self.tool_section_start = None;
+                                                    self.tool_section_hist_idx = None;
+                                                    write_stdout(&display::render_error(
+                                                        "Daemon connection lost",
+                                                    ));
+                                                    got_response = true;
+                                                }
+                                                // else: normal stream end after tool calls forwarded
                                                 break;
                                             }
                                             _ => { got_response = true; break; }
