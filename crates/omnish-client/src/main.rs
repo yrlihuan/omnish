@@ -2221,7 +2221,7 @@ async fn enter_chat_mode(
         let action;
         let pending_cd;
         {
-            let mut session = chat_session::ChatSession::new(std::mem::take(chat_history), config.extended_unicode);
+            let mut session = chat_session::ChatSession::new(std::mem::take(chat_history), config.shell.extended_unicode);
             action = session.run(rpc, session_id, proxy, initial_msg, &dbg_fn, onboarded, col_tracker.col, col_tracker.row).await;
             let new_tid = session.thread_id().map(String::from);
             event_log::push(format!("chat exit: last_thread_id {:?} -> {:?}", last_thread_id, new_tid));

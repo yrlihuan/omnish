@@ -146,11 +146,6 @@ pub struct ClientConfig {
     pub daemon_addr: String,
     #[serde(default)]
     pub onboarded: bool,
-    /// Use extended Unicode characters (e.g. ⎿) in the UI.
-    /// Set to false for terminals lacking font support (e.g. ConEmu with default fonts).
-    /// In the future this may be set automatically via terminal detection.
-    #[serde(default = "default_true")]
-    pub extended_unicode: bool,
 }
 
 fn default_true() -> bool {
@@ -163,7 +158,6 @@ impl Default for ClientConfig {
             shell: ShellConfig::default(),
             daemon_addr: default_socket_path(),
             onboarded: false,
-            extended_unicode: true,
         }
     }
 }
@@ -489,6 +483,11 @@ pub struct ShellConfig {
     pub developer_mode: bool,
     #[serde(default = "default_true", deserialize_with = "string_or_bool::deserialize")]
     pub completion_enabled: bool,
+    /// Use extended Unicode characters (e.g. ⎿) in the UI.
+    /// Set to false for terminals lacking font support (e.g. ConEmu with default fonts).
+    /// In the future this may be set automatically via terminal detection.
+    #[serde(default = "default_true", deserialize_with = "string_or_bool::deserialize")]
+    pub extended_unicode: bool,
 }
 
 impl Default for ShellConfig {
@@ -501,6 +500,7 @@ impl Default for ShellConfig {
             ghost_timeout_ms: default_ghost_timeout_ms(),
             developer_mode: default_developer_mode(),
             completion_enabled: true,
+            extended_unicode: true,
         }
     }
 }
