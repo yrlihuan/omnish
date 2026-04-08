@@ -95,11 +95,48 @@ pub fn sandbox_profile(data_dir: &std::path::Path, cwd: Option<&std::path::Path>
     build_sandbox_profile(data_dir, cwd, repo_root.as_deref())
 }
 
+/// Detect the best Landlock ABI supported by the running kernel.
+/// Returns `None` if Landlock is not available (kernel < 5.13).
+///
+/// ABI versions and minimum kernel requirements:
+///   V1 = 5.13, V2 = 5.19, V3 = 6.2, V4 = 6.7, V5 = 6.10
+#[cfg(target_os = "linux")]
+fn detect_landlock_abi() -> Option<ABI> {
+    let mut utsname: libc::utsname = unsafe { std::mem::zeroed() };
+    if unsafe { libc::uname(&mut utsname) } != 0 {
+        return None;
+    }
+    let release = unsafe { std::ffi::CStr::from_ptr(utsname.release.as_ptr()) };
+    let release = release.to_str().ok()?;
+    let mut parts = release.split(|c: char| !c.is_ascii_digit());
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor: u32 = parts.next()?.parse().ok()?;
+
+    let ver = (major, minor);
+    if ver >= (6, 10) {
+        Some(ABI::V5)
+    } else if ver >= (6, 7) {
+        Some(ABI::V4)
+    } else if ver >= (6, 2) {
+        Some(ABI::V3)
+    } else if ver >= (5, 19) {
+        Some(ABI::V2)
+    } else if ver >= (5, 13) {
+        Some(ABI::V1)
+    } else {
+        None
+    }
+}
+
 /// Core Landlock enforcement: read everywhere, write only to the given paths.
 /// Called inside `pre_exec` (between fork and exec), so only affects the child process.
+/// Skips sandboxing on kernels that do not support Landlock (< 5.13).
 #[cfg(target_os = "linux")]
 fn apply_landlock(writable_paths: &[&std::path::Path]) -> Result<(), String> {
-    let abi = ABI::V5;
+    let abi = match detect_landlock_abi() {
+        Some(abi) => abi,
+        None => return Ok(()), // kernel too old for Landlock
+    };
     let status = Ruleset::default()
         .handle_access(AccessFs::from_all(abi))
         .map_err(|e| format!("landlock handle_access: {e}"))?
@@ -113,7 +150,7 @@ fn apply_landlock(writable_paths: &[&std::path::Path]) -> Result<(), String> {
         .map_err(|e| format!("landlock restrict_self: {e}"))?;
     match status.ruleset {
         RulesetStatus::FullyEnforced | RulesetStatus::PartiallyEnforced => Ok(()),
-        RulesetStatus::NotEnforced => Err("Landlock not supported on this kernel".into()),
+        RulesetStatus::NotEnforced => Ok(()),
     }
 }
 
