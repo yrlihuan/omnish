@@ -1058,11 +1058,7 @@ impl ChatSession {
                                                                 *entry = ScrollEntry::ToolStatus(cts);
                                                             }
                                                         }
-                                                        Err(e) => {
-                                                            write_stdout(&display::render_error(&format!(
-                                                                "Failed to send tool result: {}",
-                                                                e
-                                                            )));
+                                                        Err(_) => {
                                                             send_failed = true;
                                                             break;
                                                         }
@@ -1075,11 +1071,7 @@ impl ChatSession {
                                                             rx = new_rx;
                                                             continue 'stream;
                                                         }
-                                                        Err(e) => {
-                                                            write_stdout(&display::render_error(&format!(
-                                                                "Failed to send tool result: {}",
-                                                                e
-                                                            )));
+                                                        Err(_) => {
                                                             send_failed = true;
                                                             break;
                                                         }
@@ -1108,6 +1100,9 @@ impl ChatSession {
                                 self.mark_running_tools_error();
                                 self.tool_section_start = None;
                                 self.tool_section_hist_idx = None;
+                                write_stdout(&display::render_error(
+                                    "Daemon connection lost",
+                                ));
                                 break 'stream;
                             }
 
