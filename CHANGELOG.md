@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.8.8 (2026-04-08)
+
+### Features
+- **protocol**: Protocol version compatibility range and graceful frame skip (#496)
+- **chat**: Add /test disconnect command for testing client-daemon disconnect (#495)
+- **widget**: Add Label component to menu widget for non-interactive descriptions
+- **spinner**: Add spinner animation for running tool status icons (#478)
+- **test**: Add disconnect integration test (#494, #495)
+
+### Fixes
+- **sandbox**: Detect kernel version for Landlock ABI selection, skip sandbox on kernel < 5.13 (#502)
+- **ci**: Set UTF-8 locale in CI for integration tests (#501)
+- **tmux**: Fix tmux window title set to empty when child process exits (#500)
+- **config**: Use openai-compat (hyphen) instead of openai_compat in config UI (#499)
+- **config**: Tolerate duplicate TOML table headers and deduplicate keys (#498)
+- **chat**: Only show "Daemon connection lost" on real disconnects, not normal stream end
+- **chat**: Show error and mark tools failed on daemon disconnect (#494)
+- **task**: Support standard Linux 5-field cron format in task schedules (#493)
+
+### Refactor
+- Rename "exchanges" to "messages" in chat thread resumption display
+- Remove dead render_chat_history from display
+
 ## v0.8.7 (2026-04-03)
 
 ### Features
