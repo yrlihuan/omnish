@@ -21,6 +21,18 @@ pub type OnPushConnect = Arc<dyn Fn(mpsc::Sender<Message>) -> Pin<Box<dyn Future
 
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Check if an IO error is a benign peer-disconnect (EOF, close_notify, etc.)
+/// that should not be logged as a warning.
+fn is_benign_disconnect(e: &impl std::fmt::Display) -> bool {
+    let msg = e.to_string().to_lowercase();
+    msg.contains("eof")
+        || msg.contains("end of file")
+        || msg.contains("close_notify")
+        || msg.contains("broken pipe")
+        || msg.contains("reset by peer")
+        || msg.contains("connection reset")
+}
+
 fn is_fd_exhausted(e: &std::io::Error) -> bool {
     // EMFILE (per-process limit) or ENFILE (system-wide limit)
     matches!(e.raw_os_error(), Some(24) | Some(23))
@@ -349,9 +361,7 @@ fn spawn_connection<R, W, F>(
                     let buf = match io_result {
                         Ok(b) => b,
                         Err(e) => {
-                            // IO error (EOF, connection reset, etc.) — close connection
-                            let msg = e.to_string().to_lowercase();
-                            if !msg.contains("eof") && !msg.contains("end of file") {
+                            if !is_benign_disconnect(&e) {
                                 tracing::warn!("failed to read frame: {}", e);
                             }
                             break;
@@ -398,7 +408,9 @@ fn spawn_connection<R, W, F>(
                         while let Some(msg) = rx.recv().await {
                             count += 1;
                             if let Err(e) = write_reply(&writer, request_id, msg).await {
-                                tracing::error!("write_reply failed: {}", e);
+                                if !is_benign_disconnect(&e) {
+                                    tracing::error!("write_reply failed: {}", e);
+                                }
                                 break;
                             }
                         }
@@ -416,7 +428,9 @@ fn spawn_connection<R, W, F>(
                 } => {
                     if let Some(msg) = push_msg {
                         if let Err(e) = write_reply(&writer, 0, msg).await {
-                            tracing::warn!("push write failed: {}", e);
+                            if !is_benign_disconnect(&e) {
+                                tracing::warn!("push write failed: {}", e);
+                            }
                             break;
                         }
                     } else {
