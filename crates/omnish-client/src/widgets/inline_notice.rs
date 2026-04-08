@@ -34,15 +34,16 @@ impl InlineNotice {
     }
 
     pub fn render_at(message: &str, max_cols: usize, at_bottom: bool) -> String {
+        use crate::display::{DIM, RESET};
         let truncated = crate::display::truncate_cols(message, max_cols);
         if at_bottom {
             format!(
-                "\x1b7\x1b[1S\x1b[1A\x1b[1L\r\x1b[90m{}\x1b[0m\x1b8",
+                "\x1b7\x1b[1S\x1b[1A\x1b[1L\r{DIM}{}{RESET}\x1b8",
                 truncated
             )
         } else {
             format!(
-                "\x1b7\r\x1b[1L\x1b[90m{}\x1b[0m\x1b8\x1b[1B",
+                "\x1b7\r\x1b[1L{DIM}{}{RESET}\x1b8\x1b[1B",
                 truncated
             )
         }
@@ -63,7 +64,7 @@ mod tests {
     #[test]
     fn test_render_has_dim_formatting() {
         let output = InlineNotice::render("test", 80);
-        assert!(output.contains("\x1b[90m"));
+        assert!(output.contains(crate::display::DIM));
         assert!(output.contains("\x1b[0m"));
     }
 

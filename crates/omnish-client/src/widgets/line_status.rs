@@ -96,7 +96,7 @@ impl LineStatus {
         let visible = self.visible_lines();
         visible.iter().map(|l| {
             let truncated = Self::truncate_line(l, self.max_cols);
-            format!("\x1b[2m{}\x1b[0m", truncated)
+            format!("{}{}{}", crate::display::DIM, truncated, crate::display::RESET)
         }).collect()
     }
 
@@ -157,7 +157,7 @@ impl LineStatus {
         let mut out = String::new();
         for line in lines {
             let display = Self::truncate_line(line, max_cols);
-            out.push_str(&format!("\r\n\x1b[K\x1b[2m{}\x1b[0m", display));
+            out.push_str(&format!("\r\n\x1b[K{}{}{}", crate::display::DIM, display, crate::display::RESET));
         }
         out
     }

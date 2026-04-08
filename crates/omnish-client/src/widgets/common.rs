@@ -14,7 +14,8 @@ pub fn terminal_cols() -> u16 {
 
 /// Separator line spanning `cols` columns (dim horizontal-rule characters).
 pub fn render_separator(cols: u16) -> String {
-    format!("\r\x1b[2m{}\x1b[0m", "\u{2500}".repeat(cols as usize))
+    use crate::display::{DIM, RESET};
+    format!("\r{DIM}{}{RESET}", "\u{2500}".repeat(cols as usize))
 }
 
 /// Write raw bytes to stdout (for terminal escape sequences).

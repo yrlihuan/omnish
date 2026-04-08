@@ -241,7 +241,7 @@ impl LineEditor {
             s.push_str(&text);
 
             if i == self.lines.len() - 1 && !ghost.is_empty() {
-                s.push_str(&format!("\x1b[2;37m{}\x1b[0m", ghost));
+                s.push_str(&format!("{}{}{}", crate::display::DIM, ghost, crate::display::RESET));
             }
             result.push(s);
         }
@@ -525,9 +525,10 @@ mod tests {
         editor.insert('h');
         editor.insert('i');
 
-        let lines = editor.render("\x1b[36m> \x1b[0m", "");
+        let prefix = format!("{}> {}", crate::display::CYAN, crate::display::RESET);
+        let lines = editor.render(&prefix, "");
         assert_eq!(lines.len(), 1);
-        assert!(lines[0].starts_with("\x1b[36m> \x1b[0m"));
+        assert!(lines[0].starts_with(&prefix));
         assert!(lines[0].contains("hi"));
     }
 
@@ -539,7 +540,7 @@ mod tests {
         let lines = editor.render("> ", "ello");
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("h"));
-        assert!(lines[0].contains("\x1b[2;37mello\x1b[0m"));
+        assert!(lines[0].contains(&format!("{}ello{}", crate::display::DIM, crate::display::RESET)));
     }
 
     #[test]

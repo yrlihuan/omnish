@@ -10,8 +10,8 @@
 //! — no alternate screen.
 
 /// Scrollbar block characters.
-const THUMB: &str = "\x1b[2m\u{2590}\x1b[0m"; // ▐ (dim)
-const TRACK: &str = "\x1b[2m\u{2502}\x1b[0m"; // │ (dim)
+const THUMB: &str = "\x1b[2;90m\u{2590}\x1b[0m"; // ▐ (dim)
+const TRACK: &str = "\x1b[2;90m\u{2502}\x1b[0m"; // │ (dim)
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ViewMode {
@@ -219,7 +219,7 @@ impl ScrollView {
 
         for i in start..total {
             let line = Self::truncate_line(&self.lines[i], self.max_cols);
-            out.push_str(&format!("\r\n\x1b[K\x1b[2m{}\x1b[0m", line));
+            out.push_str(&format!("\r\n\x1b[K{}{}{}", crate::display::DIM, line, crate::display::RESET));
         }
 
         self.rendered_lines = visible;
@@ -283,7 +283,7 @@ impl ScrollView {
         }
 
         // Hint line
-        out.push_str("\r\n\x1b[K\x1b[2m\u{2191}\u{2193}/j/k scroll  ctrl+b/+f page-up/down  ctrl+o/esc quit\x1b[0m");
+        out.push_str(&format!("\r\n\x1b[K{}\u{2191}\u{2193}/j/k scroll  ctrl+b/+f page-up/down  ctrl+o/esc quit{}", crate::display::DIM, crate::display::RESET));
 
         self.rendered_lines = used_rows + 1; // visual rows + hint
         out
@@ -335,8 +335,8 @@ impl ScrollView {
             .collect();
         let hidden = self.lines.len().saturating_sub(self.compact_height);
         result.push(format!(
-            "\x1b[2m\u{2026} +{} lines (ctrl+o to view)\x1b[0m",
-            hidden
+            "{}\u{2026} +{} lines (ctrl+o to view){}",
+            crate::display::DIM, hidden, crate::display::RESET
         ));
         result
     }

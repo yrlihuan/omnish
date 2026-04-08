@@ -11,6 +11,7 @@ use omnish_pty::proxy::PtyProxy;
 use omnish_transport::rpc_client::RpcClient;
 
 use crate::{client_plugin, command, display, ghost_complete, markdown, widgets};
+use crate::display::{BOLD, BRIGHT_WHITE, CYAN, DIM, GRAY, GREEN, RED, RESET, YELLOW};
 use widgets::scroll_view::ScrollView;
 
 #[derive(Debug, Clone)]
@@ -239,14 +240,14 @@ fn display_config_diff(diffs: &[ConfigDiff]) {
     let max_label_chars = diffs.iter().map(|d| d.label.chars().count()).max().unwrap_or(0);
     let col2_start = (max_label_chars + 2).clamp(22, 60);
 
-    write_stdout("\r\n\x1b[1mConfig changes:\x1b[0m\r\n");
+    write_stdout(&format!("\r\n{BOLD}Config changes:{RESET}\r\n"));
 
     for d in diffs {
         let label = char_truncate(&d.label, col2_start);
         let label_padding = col2_start.saturating_sub(label.chars().count()) + 2;
 
         write_stdout(&format!(
-            "  {}{:<pad$}\x1b[90m{}\x1b[0m \x1b[33m→\x1b[0m \x1b[32m{}\x1b[0m\r\n",
+            "  {}{:<pad$}{GRAY}{}{RESET} {YELLOW}→{RESET} {GREEN}{}{RESET}\r\n",
             label,
             "",
             char_truncate(&d.old_value, val_width),
@@ -389,7 +390,7 @@ impl ChatSession {
     }
 
     fn show_thinking(&mut self) {
-        write_stdout("\x1b[2m(thinking...)\x1b[0m\r\n");
+        write_stdout(&format!("{}(thinking...){}\r\n", crate::display::DIM, crate::display::RESET));
         self.thinking_visible = true;
     }
 
@@ -460,7 +461,7 @@ impl ChatSession {
                     count += 1;
                     for (i, line) in text.split('\n').enumerate() {
                         let formatted = if i == 0 {
-                            format!("\x1b[97m●\x1b[0m {}", line)
+                            format!("{BRIGHT_WHITE}●{RESET} {}", line)
                         } else {
                             format!("  {}", line)
                         };
@@ -506,7 +507,7 @@ impl ChatSession {
                 ScrollEntry::UserInput(text) => {
                     text.lines().enumerate().map(|(i, line)| {
                         if i == 0 {
-                            format!("\x1b[36m> \x1b[0m{}", line)
+                            format!("{CYAN}> {RESET}{}", line)
                         } else {
                             format!("  {}", line)
                         }
@@ -526,7 +527,7 @@ impl ChatSession {
                     let mut out = vec![String::new()];
                     for (i, line) in text.split('\n').enumerate() {
                         if i == 0 {
-                            out.push(format!("\x1b[97m●\x1b[0m {}", line));
+                            out.push(format!("{BRIGHT_WHITE}●{RESET} {}", line));
                         } else {
                             out.push(format!("  {}", line));
                         }
@@ -538,7 +539,7 @@ impl ChatSession {
                     let mut out = vec![String::new()]; // empty line before response
                     for (i, line) in rendered.split("\r\n").enumerate() {
                         if i == 0 {
-                            out.push(format!("\x1b[97m●\x1b[0m {}", line));
+                            out.push(format!("{BRIGHT_WHITE}●{RESET} {}", line));
                         } else {
                             out.push(format!("  {}", line));
                         }
@@ -549,7 +550,7 @@ impl ChatSession {
                     vec![display::render_separator_plain(cols)]
                 }
                 ScrollEntry::SystemMessage(msg) => {
-                    vec![format!("\x1b[2;37m{}\x1b[0m", msg)]
+                    vec![format!("{}{}{}", crate::display::DIM, msg, crate::display::RESET)]
                 }
             }
         }).collect();
@@ -610,7 +611,7 @@ impl ChatSession {
             let (input, is_fast_resume) = if let Some(msg) = self.pending_input.take() {
                 (msg, true)
             } else {
-                write_stdout("\x1b[36m> \x1b[0m");
+                write_stdout(&format!("{CYAN}> {RESET}"));
                 // Show ghost hint on first prompt
                 if show_ghost_hint && !self.ghost_hint_shown {
                     self.ghost_hint_shown = true;
@@ -622,7 +623,7 @@ impl ChatSession {
                         "type to start, /resume to continue".to_string()
                     };
                     if !hint.is_empty() {
-                        write_stdout(&format!("\x1b7\x1b[2;90m{}\x1b[0m\x1b8", hint));
+                        write_stdout(&format!("\x1b7{DIM}{}{RESET}\x1b8", hint));
                     }
                 }
                 crate::event_log::push(format!("chat_loop: entering read_input allow_backspace_exit={}", !self.has_activity));
@@ -699,12 +700,12 @@ impl ChatSession {
                 let arg = trimmed.strip_prefix("/test").unwrap().trim();
                 match arg {
                     "" => {
-                        write_stdout("\x1b[2;90mAvailable /test commands:\x1b[0m\r\n");
-                        write_stdout("\x1b[2;90m  /test picker [N]          — flat picker (N = initial index)\x1b[0m\r\n");
-                        write_stdout("\x1b[2;90m  /test multi_level_picker  — cascading picker (3 levels)\x1b[0m\r\n");
-                        write_stdout("\x1b[2;90m  /test menu                — multi-level menu widget\x1b[0m\r\n");
-                        write_stdout("\x1b[2;90m  /test lock on|off         — toggle Landlock sandbox for shell\x1b[0m\r\n");
-                        write_stdout("\x1b[2;90m  /test disconnect N1 [N2]  — daemon disconnects after N1s, reconnect delay N2s\x1b[0m\r\n");
+                        write_stdout(&format!("{DIM}Available /test commands:{RESET}\r\n"));
+                        write_stdout(&format!("{DIM}  /test picker [N]          — flat picker (N = initial index){RESET}\r\n"));
+                        write_stdout(&format!("{DIM}  /test multi_level_picker  — cascading picker (3 levels){RESET}\r\n"));
+                        write_stdout(&format!("{DIM}  /test menu                — multi-level menu widget{RESET}\r\n"));
+                        write_stdout(&format!("{DIM}  /test lock on|off         — toggle Landlock sandbox for shell{RESET}\r\n"));
+                        write_stdout(&format!("{DIM}  /test disconnect N1 [N2]  — daemon disconnects after N1s, reconnect delay N2s{RESET}\r\n"));
                     }
                     "multi_level_picker" => self.handle_test_multi_level_picker(),
                     "menu" => self.handle_test_menu(),
@@ -717,7 +718,7 @@ impl ChatSession {
                             self.handle_test_disconnect(other, rpc).await;
                         } else {
                             write_stdout(&format!(
-                                "\x1b[2;90mUnknown test: {}. Run /test for a list.\x1b[0m\r\n",
+                                "{DIM}Unknown test: {}. Run /test for a list.{RESET}\r\n",
                                 other
                             ));
                         }
@@ -891,7 +892,7 @@ impl ChatSession {
                                                     self.print_line("");
                                                     for (i, line) in cts.status.split('\n').enumerate() {
                                                         if i == 0 {
-                                                            self.print_line(&format!("\x1b[97m●\x1b[0m {}", line));
+                                                            self.print_line(&format!("{BRIGHT_WHITE}●{RESET} {}", line));
                                                         } else {
                                                             self.print_line(&format!("  {}", line));
                                                         }
@@ -936,7 +937,7 @@ impl ChatSession {
                                                 let rendered = markdown::render(&resp.content);
                                                 for (i, line) in rendered.split("\r\n").enumerate() {
                                                     if i == 0 {
-                                                        self.print_line(&format!("\x1b[97m●\x1b[0m {}", line));
+                                                        self.print_line(&format!("{BRIGHT_WHITE}●{RESET} {}", line));
                                                     } else {
                                                         self.print_line(&format!("  {}", line));
                                                     }
@@ -1136,7 +1137,7 @@ impl ChatSession {
             if interrupted {
                 self.erase_thinking();
                 self.print_line("");
-                self.print_line("\x1b[97m●\x1b[0m User interrupted. What should I do instead?");
+                self.print_line("{BRIGHT_WHITE}●{RESET} User interrupted. What should I do instead?");
                 self.push_entry(ScrollEntry::Response("User interrupted. What should I do instead?".to_string()));
 
                 let interrupt_msg = Message::ChatInterrupt(omnish_protocol::message::ChatInterrupt {
@@ -1558,7 +1559,7 @@ impl ChatSession {
                     .count();
                 if earlier_count > 0 {
                     self.print_line(&format!(
-                        "\x1b[2;37m({} earlier message{})\x1b[0m",
+                        "{DIM}({} earlier message{}){RESET}",
                         earlier_count,
                         if earlier_count == 1 { "" } else { "s" }
                     ));
@@ -1569,7 +1570,7 @@ impl ChatSession {
                     ScrollEntry::UserInput(text) => {
                         for (i, line) in text.lines().enumerate() {
                             if i == 0 {
-                                self.print_line(&format!("\x1b[36m> \x1b[0m{}", line));
+                                self.print_line(&format!("{CYAN}> {RESET}{}", line));
                             } else {
                                 self.print_line(&format!("  {}", line));
                             }
@@ -1592,7 +1593,7 @@ impl ChatSession {
                         self.print_line("");
                         for (i, line) in text.split('\n').enumerate() {
                             if i == 0 {
-                                self.print_line(&format!("\x1b[97m●\x1b[0m {}", line));
+                                self.print_line(&format!("{BRIGHT_WHITE}●{RESET} {}", line));
                             } else {
                                 self.print_line(&format!("  {}", line));
                             }
@@ -1603,7 +1604,7 @@ impl ChatSession {
                         let rendered = markdown::render(content);
                         for (i, line) in rendered.split("\r\n").enumerate() {
                             if i == 0 {
-                                self.print_line(&format!("\x1b[97m●\x1b[0m {}", line));
+                                self.print_line(&format!("{BRIGHT_WHITE}●{RESET} {}", line));
                             } else {
                                 self.print_line(&format!("  {}", line));
                             }
@@ -1613,12 +1614,12 @@ impl ChatSession {
                         self.print_line(&display::render_separator(cols));
                     }
                     ScrollEntry::SystemMessage(msg) => {
-                        self.print_line(&format!("\x1b[2;37m{}\x1b[0m", msg));
+                        self.print_line(&format!("{DIM}{}{RESET}", msg));
                     }
                 }
             }
         } else {
-            write_stdout("\x1b[2;37m(resumed conversation)\x1b[0m\r\n");
+            write_stdout(&format!("{DIM}(resumed conversation){RESET}\r\n"));
             self.push_entry(ScrollEntry::SystemMessage("(resumed conversation)".to_string()));
         }
 
@@ -1684,7 +1685,7 @@ impl ChatSession {
                         match action {
                             ResumeMismatchAction::Cancel => {
                                 crate::event_log::push("resume_tid: user cancelled due to cwd/host mismatch");
-                                write_stdout("\x1b[2;37m(User canceled)\x1b[0m\r\n");
+                                write_stdout(&format!("{DIM}(User canceled){RESET}\r\n"));
                                 // Release the thread claim
                                 let end_msg = Message::ChatEnd(ChatEnd {
                                     session_id: session_id.to_string(),
@@ -1705,7 +1706,7 @@ impl ChatSession {
                                 });
                                 let _ = rpc.send(msg).await;
                                 self.pending_cd = Some(old_cwd.clone());
-                                write_stdout(&format!("\x1b[2;37mcwd changed: {}\x1b[0m\r\n", old_cwd));
+                                write_stdout(&format!("{DIM}cwd changed: {}{RESET}\r\n", old_cwd));
                             }
                             ResumeMismatchAction::StayHere(_old_cwd) => {}
                             ResumeMismatchAction::ContinueDifferentHost => {}
@@ -1762,7 +1763,7 @@ impl ChatSession {
         if !same_host {
             // Different machine
             let title = format!(
-                "This conversation was on \x1b[36m{}\x1b[0m (current: \x1b[36m{}\x1b[0m). Proceed?",
+                "This conversation was on {CYAN}{}{RESET} (current: {CYAN}{}{RESET}). Proceed?",
                 thread_host, cur_host,
             );
             let items = &["[Y]es", "[C]ancel"];
@@ -1773,7 +1774,7 @@ impl ChatSession {
         } else {
             // Same machine, different cwd
             let title = format!(
-                "Switch to \x1b[34m{}\x1b[0m (last conversation path)?",
+                "Switch to {CYAN}{}{RESET} (last conversation path)?",
                 thread_cwd,
             );
             let items = &["[Y]es", "[N]o, stay here", "[C]ancel"];
@@ -1850,7 +1851,7 @@ impl ChatSession {
                     });
                     match rpc.call(msg).await {
                         Ok(Message::Ack) => {
-                            write_stdout(&format!("\x1b[2;90mSwitched to {}\x1b[0m\r\n", display_name));
+                            write_stdout(&format!("{DIM}Switched to {}{RESET}\r\n", display_name));
                         }
                         _ => {
                             write_stdout(&display::render_error("Failed to switch model"));
@@ -1859,7 +1860,7 @@ impl ChatSession {
                 } else {
                     // New thread — defer model selection to first message
                     self.pending_model = Some(name);
-                    write_stdout(&format!("\x1b[2;90mSwitched to {}\x1b[0m\r\n", display_name));
+                    write_stdout(&format!("{DIM}Switched to {}{RESET}\r\n", display_name));
                 }
             }
             _ => {} // ESC or no selection — do nothing
@@ -1879,7 +1880,7 @@ impl ChatSession {
             Some(idx) => format!("Selected: {}", items[idx]),
             None => "Cancelled".to_string(),
         };
-        write_stdout(&format!("\x1b[2;90m{}\x1b[0m\r\n", msg));
+        write_stdout(&format!("{DIM}{}{RESET}\r\n", msg));
     }
 
     async fn handle_test_disconnect(&self, arg: &str, rpc: &RpcClient) {
@@ -1892,12 +1893,12 @@ impl ChatSession {
         match rpc.call(msg).await {
             Ok(Message::Ack) => {
                 write_stdout(&format!(
-                    "\x1b[2;90mDaemon will disconnect in {}s\x1b[0m\r\n",
+                    "{DIM}Daemon will disconnect in {}s{RESET}\r\n",
                     delay_secs
                 ));
                 if let Some(n2) = reconnect_delay {
                     write_stdout(&format!(
-                        "\x1b[2;90mClient will delay reconnect by {}s\x1b[0m\r\n",
+                        "{DIM}Client will delay reconnect by {}s{RESET}\r\n",
                         n2
                     ));
                     // Schedule reconnect suppression
@@ -1906,11 +1907,11 @@ impl ChatSession {
                 }
             }
             Ok(_) => {
-                write_stdout("\x1b[2;90mUnexpected response from daemon\x1b[0m\r\n");
+                write_stdout(&format!("{DIM}Unexpected response from daemon{RESET}\r\n"));
             }
             Err(e) => {
                 write_stdout(&format!(
-                    "\x1b[2;90mFailed to send disconnect request: {}\x1b[0m\r\n", e
+                    "{DIM}Failed to send disconnect request: {}{RESET}\r\n", e
                 ));
             }
         }
@@ -2172,7 +2173,7 @@ impl ChatSession {
         let mut change_callback = |change: &MenuChange| -> bool {
             if change.path.starts_with("Save failure test.") {
                 write_stdout(&format!(
-                    "\x1b[31mSimulated save failure: {} = {}\x1b[0m\r\n",
+                    "{RED}Simulated save failure: {} = {}{RESET}\r\n",
                     change.path, change.value
                 ));
                 false
@@ -2186,22 +2187,22 @@ impl ChatSession {
             MenuResult::Done(changes) => {
                 // With on_change, only form-mode (handler submenu) changes remain here
                 if changes.is_empty() {
-                    write_stdout("\x1b[2;90mNo batch changes.\x1b[0m\r\n");
+                    write_stdout(&format!("{DIM}No batch changes.{RESET}\r\n"));
                 } else {
                     write_stdout(&format!(
-                        "\x1b[2;90mBatch changes ({}):\x1b[0m\r\n",
+                        "{DIM}Batch changes ({}):{RESET}\r\n",
                         changes.len()
                     ));
                     for c in &changes {
                         write_stdout(&format!(
-                            "\x1b[2;90m  {} = {}\x1b[0m\r\n",
+                            "{DIM}  {} = {}{RESET}\r\n",
                             c.path, c.value
                         ));
                     }
                 }
             }
             MenuResult::Cancelled => {
-                write_stdout("\x1b[2;90mCancelled.\x1b[0m\r\n");
+                write_stdout(&format!("{DIM}Cancelled.{RESET}\r\n"));
             }
         }
     }
@@ -2210,17 +2211,17 @@ impl ChatSession {
         let (items, handlers) = match rpc.call(Message::ConfigQuery).await {
             Ok(Message::ConfigResponse { items, handlers }) => (items, handlers),
             Ok(_) => {
-                write_stdout("\x1b[31mUnexpected response from daemon\x1b[0m\r\n");
+                write_stdout(&format!("{RED}Unexpected response from daemon{RESET}\r\n"));
                 return;
             }
             Err(e) => {
-                write_stdout(&format!("\x1b[31mFailed to query config: {}\x1b[0m\r\n", e));
+                write_stdout(&format!("{RED}Failed to query config: {}{RESET}\r\n", e));
                 return;
             }
         };
 
         if items.is_empty() {
-            write_stdout("\x1b[2;90mNo configurable items.\x1b[0m\r\n");
+            write_stdout(&format!("{DIM}No configurable items.{RESET}\r\n"));
             return;
         }
 
@@ -2267,7 +2268,7 @@ impl ChatSession {
                         }
                     }
                     Ok(Message::ConfigUpdateResult { ok: false, error }) => {
-                        write_stdout(&format!("\x1b[31mHandler error: {}\x1b[0m\r\n",
+                        write_stdout(&format!("{RED}Handler error: {}{RESET}\r\n",
                             error.unwrap_or_default()));
                         None
                     }
@@ -2287,12 +2288,12 @@ impl ChatSession {
                 });
                 match update_result {
                     Ok(Message::ConfigUpdateResult { ok: false, error }) => {
-                        write_stdout(&format!("\x1b[31mFailed to save: {}\x1b[0m\r\n",
+                        write_stdout(&format!("{RED}Failed to save: {}{RESET}\r\n",
                             error.unwrap_or_default()));
                         false
                     }
                     Err(e) => {
-                        write_stdout(&format!("\x1b[31mRPC error: {}\x1b[0m\r\n", e));
+                        write_stdout(&format!("{RED}RPC error: {}{RESET}\r\n", e));
                         false
                     }
                     _ => true,
@@ -2321,12 +2322,12 @@ impl ChatSession {
         let cat_idx = match widgets::picker::pick_one("Select category:", categories) {
             Some(idx) => idx,
             None => {
-                write_stdout("\x1b[2;90mCancelled at level 1\x1b[0m\r\n");
+                write_stdout(&format!("{DIM}Cancelled at level 1{RESET}\r\n"));
                 return;
             }
         };
         write_stdout(&format!(
-            "\x1b[2;90mCategory: {}\x1b[0m\r\n",
+            "{DIM}Category: {}{RESET}\r\n",
             categories[cat_idx]
         ));
 
@@ -2340,13 +2341,13 @@ impl ChatSession {
         let item_idx = match widgets::picker::pick_one(&title, items[cat_idx]) {
             Some(idx) => idx,
             None => {
-                write_stdout("\x1b[2;90mCancelled at level 2\x1b[0m\r\n");
+                write_stdout(&format!("{DIM}Cancelled at level 2{RESET}\r\n"));
                 return;
             }
         };
         let selected = items[cat_idx][item_idx];
         write_stdout(&format!(
-            "\x1b[2;90mItem: {}\x1b[0m\r\n",
+            "{DIM}Item: {}{RESET}\r\n",
             selected
         ));
 
@@ -2355,7 +2356,7 @@ impl ChatSession {
         let action_idx = match widgets::picker::pick_one("Action:", actions) {
             Some(idx) => idx,
             None => {
-                write_stdout("\x1b[2;90mCancelled at level 3\x1b[0m\r\n");
+                write_stdout(&format!("{DIM}Cancelled at level 3{RESET}\r\n"));
                 return;
             }
         };
@@ -2364,7 +2365,7 @@ impl ChatSession {
             "Result: {} > {} > {}",
             categories[cat_idx], selected, actions[action_idx]
         );
-        write_stdout(&format!("\x1b[2;90m{}\x1b[0m\r\n", result));
+        write_stdout(&format!("{DIM}{}{RESET}\r\n", result));
     }
 
     // ── Input handling ───────────────────────────────────────────────────
@@ -2417,7 +2418,7 @@ impl ChatSession {
             let mut display_widths = Vec::with_capacity(line_count);
             for i in 0..line_count {
                 let line = editor.line(i);
-                let pfx = if i == 0 { "\x1b[36m> \x1b[0m" } else { "  " };
+                let pfx = if i == 0 { "{CYAN}> {RESET}" } else { "  " };
                 let mut s = String::new();
                 s.push_str(pfx);
                 let mut dw = 2usize;
@@ -2432,7 +2433,7 @@ impl ChatSession {
                                     block.index, block.line_count
                                 );
                                 dw += marker.len();
-                                s.push_str(&format!("\x1b[2;36m{}\x1b[0m", marker));
+                                s.push_str(&format!("{DIM}{}{RESET}", marker));
                             }
                             fffc_idx += 1;
                         } else {
@@ -2453,7 +2454,7 @@ impl ChatSession {
                     for ch in ghost.chars() {
                         dw += UnicodeWidthChar::width(ch).unwrap_or(1);
                     }
-                    s.push_str(&format!("\x1b[2;37m{}\x1b[0m", ghost));
+                    s.push_str(&format!("{DIM}{}{RESET}", ghost));
                 }
 
                 if i == line_count - 1 {
@@ -2566,7 +2567,7 @@ impl ChatSession {
                 let ready = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
                 if ready == 0 {
                     // Timeout — auto-exit chat mode
-                    write_stdout("\r\n\x1b[2;37m(chat closed due to inactivity)\x1b[0m\r\n");
+                    write_stdout(&format!("\r\n{DIM}(chat closed due to inactivity){RESET}\r\n"));
                     // Disable bracketed paste before exiting
                     write_stdout("\x1b[?2004l");
                     return None;

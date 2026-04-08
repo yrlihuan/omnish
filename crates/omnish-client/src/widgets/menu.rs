@@ -7,6 +7,7 @@
 use std::os::unix::io::AsRawFd;
 
 use super::common::{self, MAX_VISIBLE};
+use crate::display::{BOLD, BOLD_REVERSE, DIM, GRAY, GREEN, RESET};
 
 // ── Layout constants ────────────────────────────────────────────────────
 
@@ -140,43 +141,43 @@ fn render_menu_item(item: &MenuItem, selected: bool) -> String {
     let suffix = match item {
         MenuItem::Toggle { value, .. } => {
             if *value {
-                " \x1b[32m[ON]\x1b[0m".to_string()
+                format!(" {GREEN}[ON]{RESET}")
             } else {
-                " \x1b[90m[OFF]\x1b[0m".to_string()
+                format!(" {GRAY}[OFF]{RESET}")
             }
         }
         MenuItem::TextInput { value, .. } => {
             if value.is_empty() {
-                " \x1b[90m(empty)\x1b[0m".to_string()
+                format!(" {GRAY}(empty){RESET}")
             } else {
-                format!(" \x1b[90m\"{}\"\x1b[0m", value)
+                format!(" {GRAY}\"{}\"{RESET}", value)
             }
         }
         MenuItem::Select { options, selected: idx, .. } => {
             let val = options.get(*idx).map(|s| s.as_str()).unwrap_or("");
-            format!(" \x1b[90m[{}]\x1b[0m", val)
+            format!(" {GRAY}[{}]{RESET}", val)
         }
-        MenuItem::Submenu { .. } => " \x1b[90m\u{25b8}\x1b[0m".to_string(),
+        MenuItem::Submenu { .. } => format!(" {GRAY}\u{25b8}{RESET}"),
         MenuItem::Button { .. } => String::new(),
         MenuItem::Label { .. } => String::new(),
     };
 
     // Label items render in dim gray, never highlighted
     if matches!(item, MenuItem::Label { .. }) {
-        return format!("\r  \x1b[90m{}\x1b[0m\x1b[K", label);
+        return format!("\r  {GRAY}{}{RESET}\x1b[K", label);
     }
 
     // Button items render without brackets, aligned with other items
     if matches!(item, MenuItem::Button { .. }) {
         if selected {
-            return format!("\r{}\x1b[1;7m{}\x1b[0m\x1b[K", indent, label);
+            return format!("\r{}{BOLD_REVERSE}{}{RESET}\x1b[K", indent, label);
         } else {
             return format!("\r{}{}\x1b[K", indent, label);
         }
     }
 
     if selected {
-        format!("\r{}\x1b[1;7m{}\x1b[0m{}\x1b[K", indent, label, suffix)
+        format!("\r{}{BOLD_REVERSE}{}{RESET}{}\x1b[K", indent, label, suffix)
     } else {
         format!("\r{}{}{}\x1b[K", indent, label, suffix)
     }
@@ -198,11 +199,11 @@ fn render_hint(remaining_below: usize, item: Option<&MenuItem>) -> String {
     };
     if remaining_below > 0 {
         format!(
-            "\r\x1b[2m{}  (\u{25bc} {} more)\x1b[0m\x1b[K",
-            hint, remaining_below
+            "\r{}{}  (\u{25bc} {} more){}\x1b[K",
+            crate::display::DIM, hint, remaining_below, crate::display::RESET
         )
     } else {
-        format!("\r\x1b[2m{}\x1b[0m\x1b[K", hint)
+        format!("\r{}{}{}\x1b[K", crate::display::DIM, hint, crate::display::RESET)
     }
 }
 
@@ -226,11 +227,11 @@ fn render_full(
     // Breadcrumb title (with scroll-up indicator)
     if scroll_offset > 0 {
         out.push_str(&format!(
-            "\r\x1b[1m{}\x1b[0m \x1b[2m(\u{25b2} {} more)\x1b[0m\x1b[K",
+            "\r{BOLD}{}{RESET} {DIM}(\u{25b2} {} more){RESET}\x1b[K",
             breadcrumb, scroll_offset
         ));
     } else {
-        out.push_str(&format!("\r\x1b[1m{}\x1b[0m\x1b[K", breadcrumb));
+        out.push_str(&format!("\r{BOLD}{}{RESET}\x1b[K", breadcrumb));
     }
     out.push_str("\r\n");
 
@@ -281,10 +282,11 @@ fn render_edit_line(label: &str, text: &str, cols: u16) -> String {
         text.to_string()
     };
 
+    use crate::display::{BG_BLACK, WHITE};
     // Dark background + bright text for edit mode (distinct from bold-inverse selected highlight)
     format!(
-        "\r{}{} \x1b[48;5;236m\x1b[38;5;255m{}\x1b[0m\x1b[K",
-        indent, label, display_text,
+        "\r{}{} {}{}\x1b[48;5;236m\x1b[38;5;255m{}{RESET}\x1b[K",
+        indent, label, BG_BLACK, WHITE, display_text,
     )
 }
 

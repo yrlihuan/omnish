@@ -5,16 +5,16 @@
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
-// ANSI style codes
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
-const DIM: &str = "\x1b[2m";
+// ANSI style codes — shared constants from display, plus markdown-only styles
+const RESET: &str = crate::display::RESET;
+const BOLD: &str = crate::display::BOLD;
+const DIM: &str = crate::display::DIM;
+const CYAN: &str = crate::display::CYAN;
+const YELLOW: &str = crate::display::YELLOW;
+const GREEN: &str = crate::display::GREEN;
 const ITALIC: &str = "\x1b[3m";
 const UNDERLINE: &str = "\x1b[4m";
-const CYAN: &str = "\x1b[36m";
-const YELLOW: &str = "\x1b[33m";
-const GREEN: &str = "\x1b[32m";
-const CODE_BG: &str = "\x1b[48;5;236m"; // dark gray background
+const CODE_BG: &str = concat!(crate::display::BG_BLACK, "\x1b[48;5;236m"); // dark gray background
 const HEADING_COLOR: &str = "\x1b[1;36m"; // bold cyan
 
 /// Render markdown content to ANSI terminal output.

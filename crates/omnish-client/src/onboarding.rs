@@ -11,14 +11,15 @@ fn client_toml_path() -> PathBuf {
 pub fn print_welcome() {
     let config_path = client_toml_path();
     let config_display = config_path.display();
+    use crate::display::{BOLD, CYAN, DIM, RESET};
     let msg = format!(
-        "\x1b[1mWelcome to omnish!\x1b[0m\n\
+        "{BOLD}Welcome to omnish!{RESET}\n\
          \n\
-         \x1b[36m  :  <query>\x1b[0m    Chat with AI about your terminal activity\n\
-         \x1b[36m  :: <query>\x1b[0m    Resume your last conversation\n\
-         \x1b[36m  Tab\x1b[0m           Accept ghost completion suggestion\n\
+         {CYAN}  :  <query>{RESET}    Chat with AI about your terminal activity\n\
+         {CYAN}  :: <query>{RESET}    Resume your last conversation\n\
+         {CYAN}  Tab{RESET}           Accept ghost completion suggestion\n\
          \n\
-         \x1b[2m  Config: {}\x1b[0m\n",
+         {DIM}  Config: {}{RESET}\n",
         config_display,
     );
     print!("{}", msg);

@@ -3,6 +3,34 @@
 // Pure functions that produce ANSI terminal output strings for the :: interactive mode.
 // All functions return a String suitable for writing to a raw-mode terminal (using \r\n).
 
+// ── ANSI style constants ─────────────────────────────────────────────
+/// Reset all text attributes.
+pub const RESET: &str = "\x1b[0m";
+/// Bold text.
+pub const BOLD: &str = "\x1b[1m";
+/// Dim gray text — combines SGR dim (2) and bright-black (90) so text
+/// appears dimmed on terminals that support the dim attribute, and still
+/// renders as gray on terminals that ignore it.
+pub const DIM: &str = "\x1b[2;90m";
+/// Bold + reverse video — used for selected/highlighted items.
+pub const BOLD_REVERSE: &str = "\x1b[1;7m";
+/// Red — errors.
+pub const RED: &str = "\x1b[31m";
+/// Green — success, ON toggles.
+pub const GREEN: &str = "\x1b[32m";
+/// Yellow — warnings, change arrows.
+pub const YELLOW: &str = "\x1b[33m";
+/// Cyan — prompts, user input prefix, links.
+pub const CYAN: &str = "\x1b[36m";
+/// White — fallback text color.
+pub const WHITE: &str = "\x1b[37m";
+/// Background black — fallback for dark backgrounds.
+pub const BG_BLACK: &str = "\x1b[40m";
+/// Bright-black (gray) — secondary info, OFF toggles, values.
+pub const GRAY: &str = "\x1b[90m";
+/// Bright white — assistant bullets, spinner.
+pub const BRIGHT_WHITE: &str = "\x1b[97m";
+
 /// Character types that have extended Unicode variants.
 pub enum UiChar {
     /// ⎿ (extended) / └ (fallback) — tool output prefix
@@ -67,7 +95,7 @@ pub fn display_width(s: &str) -> usize {
 
 /// Render a plain separator line spanning `cols` columns (dim ─ characters).
 pub fn render_separator_plain(cols: u16) -> String {
-    format!("\x1b[2m{}\x1b[0m", "─".repeat(cols as usize))
+    format!("{DIM}{}{RESET}", "─".repeat(cols as usize))
 }
 
 /// Render a separator line spanning `cols` columns (dim ─ characters),
@@ -79,7 +107,7 @@ pub fn render_separator(cols: u16) -> String {
         let right_dashes = 2;
         let left_dashes = cols - hint.len() - right_dashes;
         format!(
-            "\x1b[2m{}{}{}\x1b[0m",
+            "{DIM}{}{}{}{RESET}",
             "─".repeat(left_dashes),
             hint,
             "─".repeat(right_dashes),
@@ -95,7 +123,7 @@ pub fn render_separator(cols: u16) -> String {
 #[cfg(test)]
 pub fn render_prompt(cols: u16) -> String {
     let separator = render_separator(cols);
-    format!("\r\n{}\r\n\x1b[36m❯\x1b[0m ", separator)
+    format!("\r\n{}\r\n{CYAN}❯{RESET} ", separator)
 }
 
 /// Dismiss the omnish UI by clearing only the separator and ❯ lines below
@@ -110,7 +138,7 @@ pub fn render_dismiss() -> String {
 #[cfg(test)]
 pub fn render_input_echo(user_input: &[u8]) -> String {
     format!(
-        "\r\x1b[36m❯\x1b[0m {}\x1b[K",
+        "\r{CYAN}❯{RESET} {}\x1b[K",
         String::from_utf8_lossy(user_input)
     )
 }
@@ -124,7 +152,7 @@ pub fn render_response(content: &str) -> String {
 
 /// Format an error message in red.
 pub fn render_error(msg: &str) -> String {
-    format!("\r\n\x1b[31m[omnish] {}\x1b[0m\r\n", msg)
+    format!("\r\n{RED}[omnish] {}{RESET}\r\n", msg)
 }
 
 /// Render ghost text (completion suggestion) in dim gray after the cursor.
@@ -134,7 +162,7 @@ pub fn render_ghost_text(ghost: &str) -> String {
     if ghost.is_empty() {
         return String::new();
     }
-    format!("\x1b7\x1b[2;90m{}\x1b[0m\x1b8", ghost)
+    format!("\x1b7{DIM}{}{RESET}\x1b8", ghost)
 }
 
 /// Spinner frames for running tool status animation.
@@ -150,10 +178,10 @@ fn status_icon_str(icon: &omnish_protocol::message::StatusIcon, spinner_frame: O
     match icon {
         StatusIcon::Running => {
             let ch = spinner_char(spinner_frame.unwrap_or(0));
-            format!("\x1b[97m{}\x1b[0m", ch)
+            format!("{BRIGHT_WHITE}{}{RESET}", ch)
         }
-        StatusIcon::Success => "\x1b[38;5;114m●\x1b[0m".to_string(),
-        StatusIcon::Error => "\x1b[38;5;211m●\x1b[0m".to_string(),
+        StatusIcon::Success => format!("{}\x1b[38;5;114m●\x1b[0m", GREEN),
+        StatusIcon::Error => format!("{}\x1b[38;5;211m●\x1b[0m", RED),
     }
 }
 
@@ -167,7 +195,7 @@ pub fn render_tool_header_with_spinner(icon: &omnish_protocol::message::StatusIc
     let name_cols = display_name.len() + 2;
     let available = max_cols.saturating_sub(4 + name_cols);
     let truncated = truncate_cols(&oneline, available);
-    format!("{} \x1b[1m{}\x1b[0m\x1b[2m({})\x1b[0m", icon_str, display_name, truncated)
+    format!("{} {BOLD}{}{RESET}{DIM}({}){RESET}", icon_str, display_name, truncated)
 }
 
 pub fn render_tool_header_full(icon: &omnish_protocol::message::StatusIcon, display_name: &str, param_desc: &str) -> String {
@@ -177,7 +205,7 @@ pub fn render_tool_header_full(icon: &omnish_protocol::message::StatusIcon, disp
 pub fn render_tool_header_full_with_spinner(icon: &omnish_protocol::message::StatusIcon, display_name: &str, param_desc: &str, spinner_frame: Option<usize>) -> String {
     let icon_str = status_icon_str(icon, spinner_frame);
     let oneline = collapse_newlines(param_desc);
-    format!("{} \x1b[1m{}\x1b[0m\x1b[2m({})\x1b[0m", icon_str, display_name, oneline)
+    format!("{} {BOLD}{}{RESET}{DIM}({}){RESET}", icon_str, display_name, oneline)
 }
 
 /// Collapse newlines (and surrounding whitespace) into a single space.
@@ -219,9 +247,9 @@ pub fn render_tool_output_with_cols(lines: &[String], max_cols: usize, extended_
             line.clone()
         };
         if i == 0 {
-            out.push(format!("  \x1b[2m{corner}  {}\x1b[0m", content));
+            out.push(format!("  {DIM}{corner}  {}{RESET}", content));
         } else {
-            out.push(format!("  \x1b[2m   {}\x1b[0m", content));
+            out.push(format!("  {DIM}   {}{RESET}", content));
         }
     }
     out

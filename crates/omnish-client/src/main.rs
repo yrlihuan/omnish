@@ -1832,7 +1832,7 @@ fn handle_lock(
 ) {
     if lock == *locked {
         let status = if lock { "already locked" } else { "already unlocked" };
-        let msg = format!("\r\n\x1b[33m{}\x1b[0m\r\n", status);
+        let msg = format!("\r\n{}{}{}\r\n", display::YELLOW, status, display::RESET);
         nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
         return;
     }
@@ -1864,11 +1864,11 @@ fn handle_lock(
             }
             let status = if lock { "locked" } else { "unlocked" };
             event_log::push(format!("lock: shell respawned ({})", status));
-            let msg = format!("\r\n\x1b[32mShell {}\x1b[0m\r\n", status);
+            let msg = format!("\r\n{}Shell {}{}\r\n", display::GREEN, status, display::RESET);
             nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
         }
         Err(e) => {
-            let msg = format!("\r\n\x1b[31mFailed to respawn shell: {}\x1b[0m\r\n", e);
+            let msg = format!("\r\n{}Failed to respawn shell: {}{}\r\n", display::RED, e, display::RESET);
             nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
         }
     }

@@ -7,6 +7,7 @@
 use std::os::unix::io::AsRawFd;
 
 use super::common::{self, MAX_VISIBLE};
+use crate::display::{BOLD, BOLD_REVERSE, RESET};
 
 /// Icon style for disabled items in the picker.
 #[allow(dead_code)]
@@ -47,9 +48,9 @@ fn render_item(text: &str, selected: bool, checked: bool, multi: bool, disabled_
     };
     if let Some(icon) = disabled_icon {
         // Dim style with icon, no reverse video even when cursor is on it
-        format!("\r\x1b[2m{}{}{} {}\x1b[0m\x1b[K", prefix, checkbox, icon.as_str(), text)
+        format!("\r{}{}{}{} {}{}\x1b[K", crate::display::DIM, prefix, checkbox, icon.as_str(), text, crate::display::RESET)
     } else if selected {
-        format!("\r\x1b[1;7m{}{}{}\x1b[0m\x1b[K", prefix, checkbox, text)
+        format!("\r{BOLD_REVERSE}{}{}{}{RESET}\x1b[K", prefix, checkbox, text)
     } else {
         format!("\r{}{}{}\x1b[K", prefix, checkbox, text)
     }
@@ -63,9 +64,9 @@ fn render_hint(multi: bool, remaining_below: usize) -> String {
         "\u{2191}\u{2193} move  Enter confirm  ESC cancel"
     };
     if remaining_below > 0 {
-        format!("\r\x1b[2m{}  (\u{25bc} {} more)\x1b[0m\x1b[K", hint, remaining_below)
+        format!("\r{}{}  (\u{25bc} {} more){}\x1b[K", crate::display::DIM, hint, remaining_below, crate::display::RESET)
     } else {
-        format!("\r\x1b[2m{}\x1b[0m\x1b[K", hint)
+        format!("\r{}{}{}\x1b[K", crate::display::DIM, hint, crate::display::RESET)
     }
 }
 
@@ -100,11 +101,11 @@ fn render_full(
     // Title (with scroll indicator if applicable)
     if scroll_offset > 0 {
         out.push_str(&format!(
-            "\r\x1b[1m{}\x1b[0m \x1b[2m(\u{25b2} {} more)\x1b[0m\x1b[K",
-            title, scroll_offset
+            "\r{BOLD}{}{RESET} {}(\u{25b2} {} more){}\x1b[K",
+            title, crate::display::DIM, scroll_offset, crate::display::RESET
         ));
     } else {
-        out.push_str(&format!("\r\x1b[1m{}\x1b[0m\x1b[K", title));
+        out.push_str(&format!("\r{BOLD}{}{RESET}\x1b[K", title));
     }
     out.push_str("\r\n");
 
@@ -377,7 +378,7 @@ mod tests {
         assert!(output.contains("  "), "non-selected item should have '  ' prefix");
         assert!(output.contains("Option A"), "should contain the item text");
         // Should NOT contain bold/reverse escape
-        assert!(!output.contains("\x1b[1;7m"), "non-selected item should not be bold+reverse");
+        assert!(!output.contains(BOLD_REVERSE), "non-selected item should not be bold+reverse");
     }
 
     #[test]
@@ -386,7 +387,7 @@ mod tests {
         assert!(output.contains("> "), "selected item should have '> ' prefix");
         assert!(output.contains("Option B"), "should contain the item text");
         // Should contain bold+reverse escape
-        assert!(output.contains("\x1b[1;7m"), "selected item should be bold+reverse");
+        assert!(output.contains(BOLD_REVERSE), "selected item should be bold+reverse");
     }
 
     #[test]
@@ -647,22 +648,22 @@ mod tests {
     fn test_render_item_disabled_lock() {
         let output = render_item("Locked thread", false, false, false, Some(DisabledIcon::Lock));
         assert!(output.contains("\u{1f512}"), "Lock icon should show 🔒");
-        assert!(output.contains("\x1b[2m"), "disabled item should be dim");
-        assert!(!output.contains("\x1b[1;7m"), "disabled item should NOT be bold+reverse");
+        assert!(output.contains(crate::display::DIM), "disabled item should be dim");
+        assert!(!output.contains(BOLD_REVERSE), "disabled item should NOT be bold+reverse");
     }
 
     #[test]
     fn test_render_item_disabled_key() {
         let output = render_item("Locked thread", false, false, false, Some(DisabledIcon::Key));
         assert!(output.contains("\u{26bf}"), "Key icon should show ⚿");
-        assert!(output.contains("\x1b[2m"), "disabled item should be dim");
+        assert!(output.contains(crate::display::DIM), "disabled item should be dim");
     }
 
     #[test]
     fn test_render_item_disabled_forbidden() {
         let output = render_item("Locked thread", false, false, false, Some(DisabledIcon::Forbidden));
         assert!(output.contains("\u{2298}"), "Forbidden icon should show ⊘");
-        assert!(output.contains("\x1b[2m"), "disabled item should be dim");
+        assert!(output.contains(crate::display::DIM), "disabled item should be dim");
     }
 
     #[test]
@@ -670,8 +671,8 @@ mod tests {
         // Even when cursor is on a disabled item, it should be dim (no reverse video)
         let output = render_item("Locked thread", true, false, false, Some(DisabledIcon::Lock));
         assert!(output.contains("\u{1f512}"), "disabled selected item should show lock icon");
-        assert!(output.contains("\x1b[2m"), "disabled selected item should be dim");
-        assert!(!output.contains("\x1b[1;7m"), "disabled selected item should NOT be bold+reverse");
+        assert!(output.contains(crate::display::DIM), "disabled selected item should be dim");
+        assert!(!output.contains(BOLD_REVERSE), "disabled selected item should NOT be bold+reverse");
     }
 
     #[test]
