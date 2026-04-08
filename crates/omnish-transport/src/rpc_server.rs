@@ -215,10 +215,16 @@ impl RpcServer {
 }
 
 async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Frame> {
+    let buf = read_frame_bytes(reader).await?;
+    Frame::from_bytes(&buf)
+}
+
+/// Read a length-prefixed frame as raw bytes (IO only, no deserialization).
+async fn read_frame_bytes<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec<u8>> {
     let len = reader.read_u32().await? as usize;
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf).await?;
-    Frame::from_bytes(&buf)
+    Ok(buf)
 }
 
 async fn write_reply<W: AsyncWrite + Unpin>(
@@ -276,12 +282,22 @@ fn spawn_connection<R, W, F>(
 
             match frame.payload {
                 Message::Auth(Auth { ref token, protocol_version }) if token == expected_token.as_str() => {
-                    let ok = protocol_version == omnish_protocol::message::PROTOCOL_VERSION;
+                    let ok = omnish_protocol::message::versions_compatible(
+                        omnish_protocol::message::MIN_COMPATIBLE_VERSION,
+                        protocol_version,
+                    );
                     if !ok {
                         tracing::warn!(
-                            "protocol mismatch (client={}, server={})",
+                            "protocol incompatible (client={}, server={}, server_min={})",
                             protocol_version,
-                            omnish_protocol::message::PROTOCOL_VERSION
+                            omnish_protocol::message::PROTOCOL_VERSION,
+                            omnish_protocol::message::MIN_COMPATIBLE_VERSION,
+                        );
+                    } else if protocol_version != omnish_protocol::message::PROTOCOL_VERSION {
+                        tracing::info!(
+                            "protocol compatible (client={}, server={})",
+                            protocol_version,
+                            omnish_protocol::message::PROTOCOL_VERSION,
                         );
                     }
                     let reply = Message::AuthResult(AuthResult {
@@ -329,16 +345,26 @@ fn spawn_connection<R, W, F>(
         // Normal message loop with push support
         loop {
             tokio::select! {
-                frame_result = read_frame(&mut reader) => {
-                    let frame = match frame_result {
-                        Ok(f) => f,
+                io_result = read_frame_bytes(&mut reader) => {
+                    let buf = match io_result {
+                        Ok(b) => b,
                         Err(e) => {
-                            // EOF is normal (client disconnected); only warn on real errors
+                            // IO error (EOF, connection reset, etc.) — close connection
                             let msg = e.to_string().to_lowercase();
                             if !msg.contains("eof") && !msg.contains("end of file") {
                                 tracing::warn!("failed to read frame: {}", e);
                             }
                             break;
+                        }
+                    };
+
+                    let frame = match Frame::from_bytes(&buf) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            // Deserialization error (e.g. unknown message variant from
+                            // a newer peer) — skip this frame, keep connection alive.
+                            tracing::debug!("frame deserialization error ({} bytes), skipping: {}", buf.len(), e);
+                            continue;
                         }
                     };
 

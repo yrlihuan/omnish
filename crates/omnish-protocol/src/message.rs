@@ -4,8 +4,16 @@ use std::collections::HashMap;
 
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
-/// Protocol version — increment on incompatible wire format changes.
+/// Protocol version — increment on any wire format change.
 pub const PROTOCOL_VERSION: u32 = 16;
+
+/// Minimum protocol version this build can interoperate with.
+///
+/// - Append-only changes (new variants at end): bump `PROTOCOL_VERSION` only.
+/// - Breaking changes (modified existing variant fields): bump both to the same value.
+///
+/// Server auth accepts peers whose `protocol_version >= MIN_COMPATIBLE_VERSION`.
+pub const MIN_COMPATIBLE_VERSION: u32 = 14;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigItem {
@@ -123,6 +131,15 @@ pub struct AuthResult {
     pub protocol_version: u32,
     #[serde(default)]
     pub daemon_version: String,
+}
+
+/// Check if a peer's protocol version is within our compatibility range.
+///
+/// Returns true when `peer_version >= my_min`. Combined with frame-skip on
+/// deserialization errors, this allows talking to both older and newer peers
+/// as long as the shared message set hasn't had breaking field changes.
+pub fn versions_compatible(my_min: u32, peer_version: u32) -> bool {
+    peer_version >= my_min
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -935,5 +952,18 @@ mod tests {
         } else {
             panic!("expected CompletionSummary");
         }
+    }
+
+    #[test]
+    fn test_versions_compatible() {
+        use super::versions_compatible;
+        // Same version
+        assert!(versions_compatible(14, 14));
+        // Peer older but within range
+        assert!(versions_compatible(14, 15));
+        // Peer too old
+        assert!(!versions_compatible(14, 13));
+        // Peer newer: compatible (unknown messages are skipped)
+        assert!(versions_compatible(14, 16));
     }
 }
