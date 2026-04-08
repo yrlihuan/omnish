@@ -573,6 +573,7 @@ async fn main() -> Result<()> {
                     if let Some(child_process) = changed.get("child_process") {
                         let in_tmux = std::env::var("TMUX").is_ok();
                         let process_name = child_process.split(':').next().unwrap_or(child_process.as_str());
+                        let process_name = if process_name.is_empty() { "omnish" } else { process_name };
                         if let Some(title) = tmux_title(process_name, in_tmux) {
                             nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
                         }
