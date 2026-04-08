@@ -764,7 +764,7 @@ schedule = "0 0 4 * * *"
         assert!(output.contains("[tasks.eviction]"));
         assert!(output.contains("session_evict_hours = 48"));
         let config: DaemonConfig = toml::from_str(&output).unwrap();
-        assert_eq!(config.tasks["auto_update"].get_bool("enabled", false), true);
+        assert!(config.tasks["auto_update"].get_bool("enabled", false));
     }
 
     #[test]
@@ -787,6 +787,6 @@ schedule = "0 0 4 * * *"
         assert!(output.contains("schedule"));
         let config: DaemonConfig = toml::from_str(&output).unwrap();
         assert_eq!(config.listen_addr, "/tmp/omnish.sock");
-        assert_eq!(config.tasks["auto_update"].get_bool("enabled", false), true);
+        assert!(config.tasks["auto_update"].get_bool("enabled", false));
     }
 }

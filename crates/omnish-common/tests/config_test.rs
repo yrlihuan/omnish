@@ -85,7 +85,7 @@ enabled = false
     std::env::set_var("OMNISH_DAEMON_CONFIG", path);
     let config = omnish_common::config::load_daemon_config().unwrap();
     assert_eq!(config.listen_addr, "/tmp/test.sock");
-    assert_eq!(config.tasks["auto_update"].get_bool("enabled", false), true);
+    assert!(config.tasks["auto_update"].get_bool("enabled", false));
     std::env::remove_var("OMNISH_DAEMON_CONFIG");
     std::fs::remove_file(path).ok();
 }
