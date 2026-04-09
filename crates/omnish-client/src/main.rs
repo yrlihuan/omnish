@@ -2229,6 +2229,16 @@ async fn enter_chat_mode(
     locked: bool,
     config: &omnish_common::config::ClientConfig,
 ) -> chat_session::ChatExitAction {
+    // One-time notice per session: warn if kernel doesn't support Landlock sandbox (#509)
+    static LANDLOCK_WARNED: AtomicBool = AtomicBool::new(false);
+    if !omnish_plugin::is_landlock_supported() && !LANDLOCK_WARNED.swap(true, Ordering::Relaxed) {
+        let msg = format!(
+            "\r\n{}[omnish] Landlock sandbox unavailable (kernel < 5.13), tool execution is not sandboxed.{}\r\n",
+            display::DIM, display::RESET,
+        );
+        nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
+    }
+
     notice_queue::defer();
     let saved_input = shell_input.input().to_string();
 

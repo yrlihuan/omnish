@@ -11,6 +11,17 @@ use landlock::{
 
 // --- Landlock sandbox (Linux only) ---
 
+/// Check whether the running kernel supports Landlock (>= 5.13).
+#[cfg(target_os = "linux")]
+pub fn is_landlock_supported() -> bool {
+    detect_landlock_abi().is_some()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn is_landlock_supported() -> bool {
+    false
+}
+
 /// Detect the git repository root for a given directory.
 /// Returns `None` if the directory is not inside a git repo.
 fn git_repo_root(dir: &std::path::Path) -> Option<std::path::PathBuf> {
