@@ -2275,17 +2275,17 @@ fn sandbox_notice(status: omnish_plugin::SandboxDetectResult) -> Option<String> 
         SandboxDetectResult::Preferred(_) => None,
         SandboxDetectResult::Fallback { preferred, actual } => {
             let install_hint = match preferred {
-                SandboxBackendType::Bwrap => " Install with: apt install bubblewrap",
+                SandboxBackendType::Bwrap => " To enable bwrap: apt install bubblewrap",
                 _ => "",
             };
             Some(format!(
-                "\r\n{}[omnish] sandbox: {:?} not available, using {:?}.{}{}\r\n",
+                "\r\n{}[omnish] sandbox: {:?} not available, fallback to {:?}.{}{}\r\n",
                 display::DIM, preferred, actual, install_hint, display::RESET,
             ))
         }
         SandboxDetectResult::Unavailable { preferred } => {
             let install_hint = match preferred {
-                SandboxBackendType::Bwrap => " Install with: apt install bubblewrap",
+                SandboxBackendType::Bwrap => " To enable bwrap: apt install bubblewrap",
                 _ => "",
             };
             Some(format!(
