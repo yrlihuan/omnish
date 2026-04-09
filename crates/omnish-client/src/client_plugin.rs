@@ -2,13 +2,12 @@
 //! Spawns a fresh process per tool call: writes JSON to stdin, reads JSON from stdout.
 
 use std::io::{BufRead, BufReader, Write};
-#[cfg(target_os = "linux")]
-use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
 /// Executes client-side tools by spawning short-lived plugin processes.
 pub struct ClientPluginManager {
     plugin_bin: std::path::PathBuf,
+    sandbox_backend: Option<omnish_plugin::SandboxBackendType>,
 }
 
 /// Result of executing a plugin tool.
@@ -33,7 +32,12 @@ impl ClientPluginManager {
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("omnish-plugin")))
             .unwrap_or_else(|| std::path::PathBuf::from("omnish-plugin"));
-        Self { plugin_bin }
+        let backend = if cfg!(target_os = "macos") {
+            omnish_plugin::SandboxBackendType::from_config("macos")
+        } else {
+            omnish_plugin::SandboxBackendType::from_config("bwrap")
+        };
+        Self { plugin_bin, sandbox_backend: backend }
     }
 
     /// Execute a tool via a short-lived plugin process.
@@ -42,7 +46,7 @@ impl ClientPluginManager {
     /// - `tool_name`: the specific tool within the plugin
     /// - `input`: tool input JSON
     /// - `cwd`: optional working directory to inject into input
-    /// - `sandboxed`: whether to apply platform sandbox (Landlock on Linux, sandbox-exec on macOS)
+    /// - `sandboxed`: whether to apply platform sandbox
     pub fn execute_tool(
         &self,
         plugin_name: &str,
@@ -83,44 +87,29 @@ impl ClientPluginManager {
 
         let cwd_path: Option<std::path::PathBuf> = cwd.map(std::path::PathBuf::from);
 
-        // On macOS: wrap with sandbox-exec; on Linux: use pre_exec Landlock
-        #[cfg(target_os = "macos")]
         let mut cmd = if sandboxed {
-            let mut c = Command::new("sandbox-exec");
-            let profile = omnish_plugin::sandbox_profile(
-                &data_dir,
-                cwd_path.as_deref(),
-            );
-            c.args([
-                "-p",
-                &profile,
-                &executable.to_string_lossy(),
-            ]);
-            c
+            if let Some(backend) = self.sandbox_backend.and_then(omnish_plugin::detect_backend) {
+                let policy = omnish_plugin::plugin_policy(&data_dir, cwd_path.as_deref());
+                match omnish_plugin::sandbox_command(backend, &policy, &executable, &[]) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return PluginOutput {
+                            content: format!("Sandbox setup failed: {}", e),
+                            is_error: true,
+                            needs_summarization: false,
+                        };
+                    }
+                }
+            } else {
+                Command::new(&executable)
+            }
         } else {
             Command::new(&executable)
         };
 
-        #[cfg(not(target_os = "macos"))]
-        let mut cmd = Command::new(&executable);
-
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
-
-        // Apply Landlock sandbox via pre_exec on Linux
-        #[cfg(target_os = "linux")]
-        if sandboxed {
-            let data_dir_clone = data_dir.clone();
-            let cwd_clone = cwd_path.clone();
-            unsafe {
-                cmd.pre_exec(move || {
-                    omnish_plugin::apply_sandbox(&data_dir_clone, cwd_clone.as_deref()).map_err(
-                        |e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e),
-                    )
-                });
-            }
-        }
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,

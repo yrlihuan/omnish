@@ -1841,7 +1841,8 @@ async fn connect_daemon(
     }
 }
 
-/// Respawn the shell with or without Landlock sandbox.
+/// Respawn the shell with or without sandbox restrictions.
+/// Uses the unified sandbox backend (bwrap/landlock/seatbelt).
 fn handle_lock(
     proxy: &mut PtyProxy,
     master_fd: &mut i32,
@@ -1866,16 +1867,72 @@ fn handle_lock(
     env.insert("OMNISH_SESSION_ID".to_string(), session_id.to_string());
     env.insert("SHELL".to_string(), shell.to_string());
 
-    let pre_exec: Option<Box<dyn FnOnce() -> Result<(), String> + Send>> = if lock {
-        let cwd_clone = cwd.clone();
-        Some(Box::new(move || {
-            omnish_plugin::apply_lock_sandbox(cwd_clone.as_deref())
-        }))
-    } else {
-        None
-    };
+    if lock {
+        // Determine sandbox backend
+        let preferred = if cfg!(target_os = "macos") {
+            omnish_plugin::SandboxBackendType::from_config("macos")
+        } else {
+            omnish_plugin::SandboxBackendType::from_config("bwrap")
+        };
+        let backend = preferred.and_then(omnish_plugin::detect_backend);
+        let policy = omnish_plugin::lock_policy(cwd.as_deref());
 
-    match proxy.respawn(shell, shell_args, env, cwd.as_deref(), pre_exec) {
+        match backend {
+            Some(omnish_plugin::SandboxBackendType::Landlock) => {
+                // Landlock applies via pre_exec in the forked child
+                let cwd_clone = cwd.clone();
+                let pre_exec: Option<Box<dyn FnOnce() -> Result<(), String> + Send>> =
+                    Some(Box::new(move || {
+                        let policy = omnish_plugin::lock_policy(cwd_clone.as_deref());
+                        omnish_plugin::apply_in_process(&policy)
+                    }));
+                do_respawn(proxy, master_fd, locked, shell, shell_args, env, cwd.as_deref(), pre_exec, true);
+            }
+            Some(backend) => {
+                // Bwrap/seatbelt: build a sandbox command wrapping the shell
+                let shell_path = std::path::Path::new(shell);
+                let args_refs: Vec<&str> = shell_args.to_vec();
+                match omnish_plugin::sandbox_command(backend, &policy, shell_path, &args_refs) {
+                    Ok(cmd) => {
+                        let program = cmd.get_program().to_string_lossy().to_string();
+                        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+                        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                        do_respawn(proxy, master_fd, locked, &program, &args_refs, env, cwd.as_deref(), None, true);
+                    }
+                    Err(e) => {
+                        let msg = format!("\r\n{}Sandbox setup failed: {}{}\r\n", display::RED, e, display::RESET);
+                        nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
+                    }
+                }
+            }
+            None => {
+                let msg = format!(
+                    "\r\n{}No sandbox backend available, cannot lock shell{}\r\n",
+                    display::YELLOW, display::RESET
+                );
+                nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
+            }
+        }
+    } else {
+        // Unlock: respawn shell without sandbox
+        do_respawn(proxy, master_fd, locked, shell, shell_args, env, cwd.as_deref(), None, false);
+    }
+}
+
+/// Helper to respawn the shell and update lock state.
+#[allow(clippy::too_many_arguments)]
+fn do_respawn(
+    proxy: &mut PtyProxy,
+    master_fd: &mut i32,
+    locked: &mut bool,
+    cmd: &str,
+    args: &[&str],
+    env: std::collections::HashMap<String, String>,
+    cwd: Option<&std::path::Path>,
+    pre_exec: Option<Box<dyn FnOnce() -> Result<(), String> + Send>>,
+    lock: bool,
+) {
+    match proxy.respawn(cmd, args, env, cwd, pre_exec) {
         Ok(new_fd) => {
             *master_fd = new_fd;
             *locked = lock;

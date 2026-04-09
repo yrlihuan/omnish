@@ -277,12 +277,32 @@ pub type TasksConfig = HashMap<String, ConfigMap>;
 // Sandbox config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+fn default_sandbox_backend() -> String {
+    if cfg!(target_os = "macos") {
+        "macos".to_string()
+    } else {
+        "bwrap".to_string()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct SandboxConfig {
+    /// Sandbox backend: "bwrap" | "landlock" | "macos"
+    #[serde(default = "default_sandbox_backend")]
+    pub backend: String,
     /// Per-tool permit rules. Key is tool_name (e.g. "bash").
     /// When any rule matches, the tool runs without Landlock sandbox.
     #[serde(default)]
     pub plugins: HashMap<String, SandboxPluginConfig>,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_sandbox_backend(),
+            plugins: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
