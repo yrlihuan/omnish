@@ -52,22 +52,33 @@ pub fn truncate_cols(s: &str, max_cols: usize) -> String {
     if max_cols == 0 {
         return String::new();
     }
-    // First check if the string fits entirely
-    let total_width: usize = s.chars().map(|c| c.width().unwrap_or(0)).sum();
-    if total_width <= max_cols {
+    // First check if the string fits entirely (skip ANSI escape sequences)
+    if display_width(s) <= max_cols {
         return s.to_string();
     }
     // Doesn't fit — truncate, reserving 1 column for "…"
     let limit = max_cols.saturating_sub(1);
     let mut width = 0usize;
     let mut end = 0usize;
-    for ch in s.chars() {
-        let w = ch.width().unwrap_or(0);
-        if width + w > limit {
-            break;
+    let mut chars = s.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            // Keep ANSI escape sequence in output but don't count its width
+            end += ch.len_utf8();
+            for c in chars.by_ref() {
+                end += c.len_utf8();
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            let w = ch.width().unwrap_or(0);
+            if width + w > limit {
+                break;
+            }
+            width += w;
+            end += ch.len_utf8();
         }
-        width += w;
-        end += ch.len_utf8();
     }
     format!("{}…", &s[..end])
 }
@@ -291,6 +302,38 @@ mod tests {
     fn truncate_cols_empty() {
         assert_eq!(truncate_cols("hello", 0), "");
         assert_eq!(truncate_cols("", 10), "");
+    }
+
+    #[test]
+    fn truncate_cols_ansi_fits() {
+        // "\x1b[1mhello\x1b[0m world" — visible: "hello world" = 11 cols
+        let s = "\x1b[1mhello\x1b[0m world";
+        assert_eq!(truncate_cols(s, 11), s);
+        assert_eq!(truncate_cols(s, 20), s);
+    }
+
+    #[test]
+    fn truncate_cols_ansi_truncated() {
+        // visible: "hello world" = 11 cols, truncate to 8 → "hello w…"
+        let s = "\x1b[1mhello\x1b[0m world";
+        assert_eq!(truncate_cols(s, 8), "\x1b[1mhello\x1b[0m w…");
+    }
+
+    #[test]
+    fn truncate_cols_ansi_heavy() {
+        // Many ANSI codes, visible content is short
+        let s = "\x1b[1m\x1b[33mA\x1b[0m\x1b[2;90mB\x1b[0m";
+        // visible: "AB" = 2 cols
+        assert_eq!(truncate_cols(s, 2), s);
+        assert_eq!(truncate_cols(s, 1), "\x1b[1m\x1b[33m…");
+    }
+
+    #[test]
+    fn truncate_cols_ansi_cjk() {
+        // ANSI + CJK: "\x1b[33m你好世界\x1b[0m" — visible: 8 cols
+        let s = "\x1b[33m你好世界\x1b[0m";
+        assert_eq!(truncate_cols(s, 8), s);
+        assert_eq!(truncate_cols(s, 6), "\x1b[33m你好…");
     }
 
     #[test]
