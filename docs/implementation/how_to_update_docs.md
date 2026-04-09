@@ -12,5 +12,9 @@ bash docs/implementation/check_doc_updates.sh
 
 * 对于每个需要更新的文档，先通过git获取文档上次编辑的commit，然后获取对应模块自该commit以来的提交日志
 * 有重要改动时读取改动的源码内容
+* 使用 `split_doc_sections.sh` 定位文档段落，再用 Read tool 的 offset/limit 只读取需要修改的段落，避免读入整个文件：
+  ```bash
+  bash docs/implementation/split_doc_sections.sh <doc-file>  # 列出所有段落及行号范围
+  ```
 * 更新文档，先不提交, 所有文档更新完成后，统一提交
 * 不使用subagent, 在主agent中逐个处理.

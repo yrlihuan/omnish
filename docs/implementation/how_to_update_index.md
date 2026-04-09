@@ -1,5 +1,5 @@
 ## Updating index.md
-Update index.md. This document describes the main components in each module doc along with their line number ranges.
+Update index.md. This document describes the main components in each module doc and their functional responsibilities.
 For each component, focus on its functional responsibilities. The description should cover the key points of all sub-features.
 Avoid redundant information and keep the file small — index.md is loaded as a reference by the LLM in every task.
 For incremental updates, do NOT include every change in the module docs. Ignore implementation details.
@@ -21,15 +21,8 @@ For incremental updates, do NOT include every change in the module docs. Ignore 
 
 ## Using split_doc_sections.sh for section-by-section updates
 
-Use `split_doc_sections.sh` to split a module doc by `## ` headings into independent sections, making it easy to read and update index.md section by section:
+Use `split_doc_sections.sh` to list sections by `## ` headings with line ranges, then use Read tool with offset/limit to read only the relevant sections:
 
 ```bash
-# List all sections with line number ranges
-bash docs/implementation/split_doc_sections.sh docs/implementation/omnish-daemon.md list
-
-# Get a section by name (substring match)
-bash docs/implementation/split_doc_sections.sh docs/implementation/omnish-daemon.md get "插件系统"
-
-# Get a section by number (0=preamble, 1-N=sections)
-bash docs/implementation/split_doc_sections.sh docs/implementation/omnish-daemon.md get 3
+bash docs/implementation/split_doc_sections.sh docs/implementation/omnish-daemon.md
 ```
