@@ -1208,6 +1208,9 @@ async fn main() -> Result<()> {
                                 event_log::push("osc133 PromptStart");
                                 shell_input.on_prompt();
                                 shell_completer.clear();
+                                pending_completion_responses.clear();
+                                readline_triggered_for_completions = false;
+                                readline_trigger_time = None;
                                 last_readline_content = None;
                                 query_cursor_position();
                                 if let Some(title) = tmux_title("omnish", in_tmux) {
@@ -1218,6 +1221,9 @@ async fn main() -> Result<()> {
                                 event_log::push(format!("osc133 CommandEnd exit_code={exit_code}"));
                                 shell_input.on_prompt();
                                 shell_completer.clear();
+                                pending_completion_responses.clear();
+                                readline_triggered_for_completions = false;
+                                readline_trigger_time = None;
                                 last_readline_content = None;
                                 query_cursor_position();
                                 if let Some(title) = tmux_title("omnish", in_tmux) {
@@ -1244,6 +1250,9 @@ async fn main() -> Result<()> {
                                     send_ignored_summary(rpc, &mut shell_completer, &session_id, shell_cwd);
                                 }
                                 shell_completer.clear();
+                                pending_completion_responses.clear();
+                                readline_triggered_for_completions = false;
+                                readline_trigger_time = None;
                                 // Reset polling interval to 1s on command start
                                 let _ = cmd_start_tx_for_loop.try_send(());
                                 if let Some(cmd) = command {
@@ -1260,6 +1269,9 @@ async fn main() -> Result<()> {
                                     send_ignored_summary(rpc, &mut shell_completer, &session_id, shell_cwd);
                                 }
                                 shell_completer.clear();
+                                pending_completion_responses.clear();
+                                readline_triggered_for_completions = false;
+                                readline_trigger_time = None;
                             }
                             Osc133EventKind::ReadlineLine { content, point } => {
                                 event_log::push(format!(
@@ -1389,10 +1401,18 @@ async fn main() -> Result<()> {
         }
 
         // Check for completion responses (non-blocking)
-        // Discard responses if user has entered chat mode or isearch mode.
+        // Discard responses if user has entered chat mode, isearch mode,
+        // or is no longer at prompt (command executing). Issue #507.
         while let Ok(resp) = completion_rx.try_recv() {
             if interceptor.is_in_chat() {
                 shell_completer.clear();
+                continue;
+            }
+
+            // Discard responses that arrive after user has left the prompt
+            // (e.g. command is executing). The response is stale. (issue #507)
+            if !shell_input.at_prompt() {
+                event_log::push(format!("completion response seq={} discarded (not at prompt)", resp.sequence_id));
                 continue;
             }
 
@@ -1437,7 +1457,8 @@ async fn main() -> Result<()> {
             if let Some(trigger_time) = readline_trigger_time {
                 if trigger_time.elapsed() > std::time::Duration::from_millis(500) {
                     // Timeout - process pending responses with current input
-                    if shell_input.cursor_at_end() {
+                    // Guard: only render ghost text when at prompt (issue #507)
+                    if shell_input.at_prompt() && shell_input.cursor_at_end() {
                         let current = shell_input.input();
                         for resp in pending_completion_responses.drain(..) {
                             if let Some(ghost) = shell_completer.on_response(&resp, current) {
