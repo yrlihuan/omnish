@@ -1137,7 +1137,7 @@ impl ChatSession {
             if interrupted {
                 self.erase_thinking();
                 self.print_line("");
-                self.print_line("{BRIGHT_WHITE}●{RESET} User interrupted. What should I do instead?");
+                self.print_line(&format!("{BRIGHT_WHITE}●{RESET} User interrupted. What should I do instead?"));
                 self.push_entry(ScrollEntry::Response("User interrupted. What should I do instead?".to_string()));
 
                 let interrupt_msg = Message::ChatInterrupt(omnish_protocol::message::ChatInterrupt {
@@ -2418,9 +2418,9 @@ impl ChatSession {
             let mut display_widths = Vec::with_capacity(line_count);
             for i in 0..line_count {
                 let line = editor.line(i);
-                let pfx = if i == 0 { "{CYAN}> {RESET}" } else { "  " };
+                let pfx = if i == 0 { format!("{CYAN}> {RESET}") } else { "  ".to_string() };
                 let mut s = String::new();
-                s.push_str(pfx);
+                s.push_str(&pfx);
                 let mut dw = 2usize;
 
                 let has_fffc = line.contains(&'\u{FFFC}');

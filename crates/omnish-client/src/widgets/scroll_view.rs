@@ -267,7 +267,7 @@ impl ScrollView {
         for i in start..end {
             let vr = visual_rows[i];
             // Write the line (let terminal wrap naturally)
-            out.push_str(&format!("\r\n\x1b[K{}\x1b[0m", self.lines[i]));
+            out.push_str(&format!("\r\n\x1b[K{}{}", self.lines[i], crate::display::RESET));
             // If line wraps, it already consumed vr rows from the first \r\n.
             // For extra wrapped rows, we just let the terminal handle it.
             // Place scrollbar on the last visual row of this line
