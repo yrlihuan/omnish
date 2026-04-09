@@ -247,9 +247,9 @@ pub fn render_tool_output_with_cols(lines: &[String], max_cols: usize, extended_
             line.clone()
         };
         if i == 0 {
-            out.push(format!("  {DIM}{corner}  {}{RESET}", content));
+            out.push(format!("  {DIM}{corner}{RESET}  {}", content));
         } else {
-            out.push(format!("  {DIM}   {}{RESET}", content));
+            out.push(format!("     {}", content));
         }
     }
     out

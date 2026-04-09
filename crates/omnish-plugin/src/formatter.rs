@@ -33,7 +33,7 @@ pub fn head_lines(text: &str, n: usize) -> Vec<String> {
     let mut result = Vec::with_capacity(n + 1);
     result.extend(lines.iter().take(n).map(|&l| l.to_string()));
     if total > n {
-        result.push(format!("(+{} more lines)", total - n));
+        result.push(format!("\x1b[2;90m(+{} more lines)\x1b[0m", total - n));
     }
     result
 }
@@ -51,7 +51,7 @@ pub fn truncate_lines(lines: Vec<String>, max: usize, keep: usize) -> Vec<String
     }
     let mut out = Vec::with_capacity(keep * 2 + 1);
     out.extend_from_slice(&lines[..keep]);
-    out.push(format!("... ({} lines omitted) ...", lines.len() - keep * 2));
+    out.push(format!("\x1b[2;90m... ({} lines omitted) ...\x1b[0m", lines.len() - keep * 2));
     out.extend_from_slice(&lines[lines.len() - keep..]);
     out
 }
@@ -380,7 +380,7 @@ mod tests {
         let input = make_input("command_query", json!({}), &text, false);
         let out = DefaultFormatter.format(&input);
         assert_eq!(out.result_compact.len(), 6);
-        assert_eq!(out.result_compact[5], "(+15 more lines)");
+        assert!(out.result_compact[5].contains("(+15 more lines)"));
         assert_eq!(out.result_full.len(), 20);
     }
 
