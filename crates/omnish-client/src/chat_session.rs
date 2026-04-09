@@ -436,13 +436,20 @@ impl ChatSession {
         let cols = cols as usize;
         let mut count = 0usize;
 
-        for entry in &self.scroll_history[hist_start..] {
+        // Track leading completed entries so we can advance past them after
+        // rendering, avoiding redundant redraws on future spinner ticks.
+        let mut advance_lines = 0usize;
+        let mut advance_entries = 0usize;
+        let mut seen_running = false;
+
+        for (idx, entry) in self.scroll_history[hist_start..].iter().enumerate() {
             match entry {
                 ScrollEntry::ToolStatus(cts) => {
                     let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
                     let param_desc = cts.param_desc.as_deref().unwrap_or("");
                     let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Running);
                     let sf = if *icon == StatusIcon::Running { Some(self.spinner_frame) } else { None };
+                    if *icon == StatusIcon::Running { seen_running = true; }
                     let header = display::render_tool_header_with_spinner(icon, display_name, param_desc, cols, sf);
                     write_stdout(&header);
                     write_stdout("\r\n");
@@ -454,6 +461,10 @@ impl ChatSession {
                             write_stdout("\r\n");
                             count += Self::visual_rows(line, cols);
                         }
+                    }
+                    if !seen_running {
+                        advance_lines = count;
+                        advance_entries = idx + 1;
                     }
                 }
                 ScrollEntry::LlmText(text) => {
@@ -469,12 +480,23 @@ impl ChatSession {
                         write_stdout("\r\n");
                         count += Self::visual_rows(&formatted, cols);
                     }
+                    if !seen_running {
+                        advance_lines = count;
+                        advance_entries = idx + 1;
+                    }
                 }
                 _ => {}
             }
         }
 
         self.lines_printed = start_line + count;
+
+        // Advance section markers past completed entries so future spinner
+        // redraws only cover the still-running portion.
+        if advance_entries > 0 {
+            self.tool_section_start = Some(start_line + advance_lines);
+            self.tool_section_hist_idx = Some(hist_start + advance_entries);
+        }
     }
 
     /// Mark all Running tool statuses as Error and redraw.
