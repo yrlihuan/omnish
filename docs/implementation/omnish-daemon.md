@@ -1883,6 +1883,29 @@ async fn main() -> anyhow::Result<()> {
 
 ## 更新历史
 
+### 2026-04-09（12个commit自b663b65起）
+
+**守护进程到客户端配置推送 (#490):**
+- 新增 `ConfigClient` 消息和 `PushRegistry` 推送机制，守护进程主动将客户端配置（命令前缀、补全开关、ghost 超时等）推送到所有连接的客户端
+- 配置变更时通过 `ConfigWatcher` 检测并广播更新
+
+**ConfigMap 默认值层 (#490):**
+- `ConfigMap` 新增 `defaults` 层，任务默认值通过 `inject_task_defaults()` 注入而非硬编码在访问方法中
+- 各任务（eviction、hourly_summary、daily_notes、disk_cleanup、auto_update、thread_summary）的默认值统一管理
+
+**代理配置重构:**
+- `proxy`/`no_proxy` 从顶层字段迁移到 `[proxy]` 配置节（`ProxyConfig` 结构）
+- 向后兼容：旧版顶层 `proxy = "..."` 和 `no_proxy = "..."` 格式自动迁移
+
+**定时任务改进:**
+- 支持标准 Linux 5 字段 cron 格式（分 时 日 月 周），自动转换为 6 字段格式（补全秒字段）(#493)
+- auto_update 任务默认 `check_url` 设为 GitHub releases API
+
+**其他改进:**
+- `/test disconnect` 命令：daemon 延迟断开连接用于测试客户端断线恢复 (#495)
+- Menu widget 支持 Label 非交互式项目类型
+- 配置 UI 中 backend_type 值统一为 `openai-compat`（连字符）(#499)
+
 ### 2026-03-30
 
 **SharedLlmBackend 与热重载：**

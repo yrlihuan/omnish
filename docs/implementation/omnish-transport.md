@@ -40,6 +40,8 @@ RPC客户端结构，负责：
 **内部结构:**
 - `inner`: 包含发送通道、连接状态和后台任务
 - `next_id`: 原子计数器，用于生成请求ID
+- `push_rx`: 服务器主动推送消息的接收通道（`mpsc::Receiver<Message>`），用于接收 `ConfigClient` 等推送消息
+- `suppress_until`: 重连抑制时间戳（epoch millis），用于 `/test disconnect` 延迟重连
 - `ReplyTx`: 枚举类型，支持oneshot（单响应）和mpsc（多响应流）两种模式
 - 支持Unix socket和TCP连接
 
@@ -55,10 +57,17 @@ RPC服务器结构，负责：
 - 接受客户端连接
 - 为每个连接生成独立处理任务
 - 调用用户提供的消息处理器
+- 支持服务器主动推送消息到客户端
 
 **内部结构:**
 - `listener`: 监听器（Unix或TCP）
-- 为每个连接生成独立的异步任务
+- 为每个连接生成独立的异步任务，分配唯一 `conn_id`
+
+### `PushRegistry` / `OnPushConnect`
+服务器推送机制的核心类型：
+- `PushRegistry`: `Arc<Mutex<HashMap<u64, mpsc::Sender<Message>>>>`，按连接 ID 维护推送通道
+- `OnPushConnect`: 新连接注册到 PushRegistry 后的回调，用于发送初始消息（如当前客户端配置）
+- 连接断开时自动从 PushRegistry 中移除
 
 ### TLS支持
 
@@ -194,6 +203,8 @@ pub struct Frame {
 - `handler: Fn(Message, mpsc::Sender<Message>) -> Future<Output = ()>` - 消息处理回调，通过 `mpsc::Sender<Message>` 发送响应消息
 - `auth_token: Option<String>` - 认证令牌（Some时启用认证）
 - `tls_acceptor: Option<TlsAcceptor>` - TLS接受器（Some时启用TLS，仅TCP）
+- `push_registry: Option<PushRegistry>` - 推送通道注册表（Some时启用服务器主动推送）
+- `on_push_connect: Option<OnPushConnect>` - 新连接注册后的回调（用于发送初始推送消息）
 
 **返回:** `Result<()>`
 **用途:** 循环接受连接并为每个连接生成处理任务
@@ -206,7 +217,10 @@ pub struct Frame {
 **安全机制:**
 - **Unix socket**: 绑定时设置权限0600，接受连接时验证peer UID必须与服务器进程相同
 - **TCP + TLS**: 使用`tls_acceptor`对TCP连接进行TLS握手，握手失败则拒绝连接
-- **认证**: 启用`auth_token`时，客户端必须在连接后5秒内发送`Auth`消息（携带`protocol_version`），令牌匹配且协议版本一致返回`AuthResult { ok: true }`（携带服务器协议版本和守护进程版本），令牌不匹配或协议版本不一致返回`AuthResult { ok: false }`并关闭连接
+- **认证**: 启用`auth_token`时，客户端必须在连接后5秒内发送`Auth`消息（携带`protocol_version`），令牌匹配且版本兼容返回`AuthResult { ok: true }`，令牌不匹配或版本不兼容返回`AuthResult { ok: false }`
+- **推送**: 启用`push_registry`时，认证后为连接分配唯一 `conn_id` 并注册推送通道，消息循环中通过 `tokio::select!` 同时处理请求和推送；连接断开时自动清理
+- **TestDisconnect**: 收到 `TestDisconnect` 消息后延迟指定秒数断开连接，用于测试客户端断线恢复
+- **帧跳过**: `read_frame_bytes` 先读取原始字节，反序列化失败时跳过该帧（warn 日志）而非断开连接，支持与更新版本对端通信
 
 ### `RpcServer::local_tcp_addr()`
 获取TCP监听器的本地地址。
@@ -458,35 +472,23 @@ omnish-transport 支持服务器向客户端推送多个响应消息的真正流
 
 ### 协议版本校验
 
-omnish-transport在认证握手阶段进行协议版本校验，协议版本不一致的客户端将被拒绝连接。
+omnish-transport在认证握手阶段进行协议版本兼容性检查，使用 `versions_compatible(MIN_COMPATIBLE_VERSION, peer_version)` 判断对端是否在兼容范围内。
 
 **机制:**
-- 协议版本号由`omnish_protocol::message::PROTOCOL_VERSION`常量定义
+- 协议版本号由 `PROTOCOL_VERSION`（当前版本）和 `MIN_COMPATIBLE_VERSION`（最低兼容版本）两个常量定义
 - 客户端在发送`Auth`消息时携带自身的`protocol_version`字段
-- 服务器认证成功后返回`AuthResult`消息，其中包含`ok`（是否通过）、服务器`protocol_version`和`daemon_version`
-- 令牌匹配且协议版本一致时，`ok=true`，进入正常消息循环
-- 令牌匹配但协议版本不一致时，`ok=false`，服务器记录warning日志；连接保持打开以允许客户端获取更新信息
+- 服务器检查 `peer_version >= MIN_COMPATIBLE_VERSION`：兼容时 `ok=true`（即使版本不完全相同），不兼容时 `ok=false`
 - 令牌不匹配时，`ok=false`，服务器关闭连接
+- 帧反序列化失败时优雅跳过（graceful frame skip），允许忽略未知消息类型
 
-**相关数据结构:**
-```rust
-pub struct Auth {
-    pub token: String,
-    #[serde(default)]
-    pub protocol_version: u32,
-}
-
-pub struct AuthResult {
-    pub ok: bool,
-    pub protocol_version: u32,
-    #[serde(default)]
-    pub daemon_version: String,
-}
-```
+**日志行为:**
+- 版本兼容但不同：记录 info 日志（`protocol compatible`）
+- 版本不兼容：记录 warn 日志（`protocol incompatible`）
 
 **设计考虑:**
 - `Auth.protocol_version`使用`#[serde(default)]`标注，确保旧版本客户端（不发送版本号）仍能正常连接
-- 协议版本不匹配时返回`ok=false`，但保持连接打开，允许客户端通过该连接获取更新所需信息（如守护进程版本号），支持跨版本升级场景
+- 协议版本不匹配时返回`ok=false`，但保持连接打开，允许客户端通过该连接获取更新所需信息
+- 新消息变体追加到枚举末尾 + frame skip 机制，使得版本在兼容范围内的新旧客户端可以共存
 - `AuthResult.daemon_version`携带守护进程版本号，客户端可据此触发更新检查
 
 ### 重连机制与永久失败终止

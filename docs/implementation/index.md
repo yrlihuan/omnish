@@ -4,12 +4,15 @@
 
 共享配置与工具函数。
 
-- **ClientConfig** (L11-L18)：客户端配置，含 shell 设置、守护进程地址、自动补全开关、新手引导状态
-- **DaemonConfig**：守护进程配置，含监听地址、代理设置（proxy/no_proxy）、LLM/上下文/定时任务/插件/沙箱等子配置
-- **ShellConfig**：Shell 行为配置，含命令/前缀/拦截间隔/ghost-text 超时/开发者模式
+- **ClientConfig** (L11-L18)：客户端配置，含 shell 设置、守护进程地址、新手引导状态
+- **DaemonConfig**：守护进程配置，含监听地址、代理设置（ProxyConfig）、LLM/上下文/定时任务/插件/沙箱/客户端推送等子配置
+- **ShellConfig**：Shell 行为配置，含命令/前缀/拦截间隔/ghost-text 超时/开发者模式/补全开关/extended_unicode
+- **ProxyConfig**：代理配置（http_proxy/no_proxy），支持旧版字符串格式向后兼容反序列化
+- **ClientSection**：守护进程端客户端配置，通过 ConfigClient 消息推送到客户端
 - **LlmConfig / LlmBackendConfig / LangfuseConfig**：LLM 后端选择、模型参数、API 密钥获取方式及 Langfuse 可观测性集成；均派生 PartialEq 用于热重载差异检测；LlmBackendConfig 含 per-backend use_proxy 和 context_window
 - **ContextConfig / CompletionContextConfig**：补全上下文构建参数，含详细命令数、历史命令数、输出截断行数、弹性窗口范围
-- **TasksConfig**：类型别名 `HashMap<String, ConfigMap>`，每个任务以名称为键，参数由各任务内部硬编码默认值
+- **ConfigMap**：动态键值配置，维护 values + defaults 双层查询，序列化输出合并视图
+- **TasksConfig**：类型别名 `HashMap<String, ConfigMap>`，每个任务以名称为键，默认值通过 set_defaults() 注入
 - **PluginsConfig**：插件系统配置，指定启用的插件列表，插件通过 JSON-RPC 通信
 - **SandboxConfig / SandboxPluginConfig**：沙箱豁免规则，按工具名配置 permit_rules 以跳过 Landlock 沙箱
 - **omnish_dir()** (L131-L139)：获取 omnish 基础目录路径，优先级为 `$OMNISH_HOME` > `~/.omnish` > `/tmp/omnish`
@@ -21,7 +24,7 @@
 
 ## omnish-protocol
 
-客户端与守护进程之间的二进制通信协议，使用 bincode 序列化，帧以魔术字节 "OS" 验证，当前协议版本 v13。
+客户端与守护进程之间的二进制通信协议，使用 bincode 序列化，帧以魔术字节 "OS" 验证，当前协议版本 v16，最低兼容版本 v14。
 
 - **Message 枚举** (L11-L43)：定义全部消息类型，涵盖会话生命周期、终端 I/O 转发、事件通知、LLM 请求/响应、命令补全、聊天会话、工具调用转发、认证、配置管理、客户端更新等
 - **会话消息** (L45-L72)：SessionStart/SessionEnd/SessionUpdate，携带会话 ID、时间戳、退出码及 Probe 采集的属性
@@ -31,24 +34,25 @@
 - **聊天会话** (L153-L231)：ChatStart/Ready/End/Message/Response/Interrupt 管理聊天生命周期与线程恢复；ChatToolStatus 流式推送工具执行状态
 - **客户端侧工具调用** (L233-L251)：ChatToolCall/ChatToolResult 实现守护进程到客户端的工具执行转发，支持 Landlock 沙箱标记；ChatToolResult 含 `needs_summarization` 字段请求 LLM 摘要
 - **认证** (L253-L264)：Auth 发送令牌与协议版本；AuthResult 统一成功/失败响应，版本不匹配时保持连接
-- **配置管理** (L266-L304)：ConfigQuery/Response/Update/UpdateResult 实现远程配置查询与修改；ConfigItem 支持 Toggle/Select/TextInput 类型及 prefills 预填充数据
+- **配置管理** (L266-L304)：ConfigQuery/Response/Update/UpdateResult 实现远程配置查询与修改；ConfigItem 支持 Toggle/Select/TextInput/Label 类型及 prefills 预填充数据；ConfigClient 实现守护进程到客户端的配置推送
 - **客户端更新** (L306-L333)：UpdateCheck/UpdateInfo/UpdateRequest/UpdateChunk 实现版本检查与分块包下载
+- **测试辅助** (L495)：TestDisconnect 消息用于测试客户端断线恢复
 - **Frame 与序列化** (L335-L371)：帧封装请求 ID 与消息负载；消息格式为 [魔术字节(2)][长度(4)][序列化消息]
-- **协议版本管理** (L432-L449)：PROTOCOL_VERSION 常量管理版本演进（v4-v13），编译时守卫测试检测枚举变体变化
+- **协议版本管理** (L432-L449)：PROTOCOL_VERSION + MIN_COMPATIBLE_VERSION 管理兼容范围（v4-v16），编译时守卫测试检测枚举变体变化和变体索引稳定性
 
 ## omnish-transport
 
 RPC 传输层，处理 Unix socket 和 TCP 连接，提供客户端与守护进程之间的可靠通信。
 
-- **重要数据结构** (L22-L80)：`TransportAddr` 地址枚举、`RpcClient` 客户端结构（连接管理、请求 ID、ReplyTx 单响应/流响应模式）、`RpcServer` 服务器结构、TLS 支持、`Frame` 消息帧
+- **重要数据结构** (L22-L80)：`TransportAddr` 地址枚举、`RpcClient` 客户端结构（连接管理、请求 ID、ReplyTx 单响应/流响应模式、push_rx 推送接收）、`RpcServer` 服务器结构、`PushRegistry`/`OnPushConnect` 推送机制、TLS 支持、`Frame` 消息帧
 - **地址解析 parse_addr()** (L84-L93)：解析地址字符串为 TransportAddr，支持 Unix socket 路径、TCP 地址、显式协议前缀等多种格式
 - **客户端连接 API** (L94-L174)：connect/connect_unix/connect_tcp 显式协议连接、connect_with_reconnect 自动重连、call 单响应请求、send fire-and-forget、call_stream 多响应流式接收
-- **服务器 API** (L176-L215)：bind/bind_unix/bind_tcp 地址绑定与监听、serve 连接处理（支持认证令牌和 TLS，处理器通过 mpsc::Sender 实现流式传输）
+- **服务器 API** (L176-L215)：bind/bind_unix/bind_tcp 地址绑定与监听、serve 连接处理（支持认证令牌、TLS、PushRegistry 推送和 OnPushConnect 回调）
 - **客户端内部机制** (L363-L373)：读写分离、原子请求 ID、指数退避重连（支持 PermanentFailure 阈值终止）、ReplyTx 响应分发
 - **服务器内部机制** (L375-L382)：每连接独立异步任务、边接收边写入的流式转发、EMFILE/ENFILE fd 耗尽诊断
 - **消息传输协议** (L384-L393)：帧格式 `[u32长度][序列化数据]`、request_id 请求-响应匹配、多消息流式传输（Ack 结束标记）
 - **多消息流式传输机制** (L416-L457)：ReplyTx 枚举区分 Once/Stream 模式、mpsc 通道容量 128、背压机制
-- **协议版本校验** (L459-L490)：Auth 消息携带 protocol_version、版本不匹配返回 ok=false 但保持连接
+- **协议版本校验** (L459-L490)：Auth 消息携带 protocol_version、versions_compatible() 兼容范围检查、帧反序列化失败时优雅跳过
 - **重连机制与永久失败终止** (L492-L515)：指数退避（1s~30s）、PermanentFailure 连续 5 次放弃重连
 - **安全模型** (L538-L556)：Unix socket 权限 0600+peer UID 验证、TCP TLS 自签名证书加密、5 秒认证超时
 

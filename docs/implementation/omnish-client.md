@@ -19,7 +19,9 @@ omnish-client 是终端用户直接交互的客户端程序，作为PTY代理运
 11. **自更新**: `/update`命令透明自重启，支持检测磁盘二进制变更后自动更新；协议级 `UpdateCheck` 轮询守护进程获取最新版本并后台下载；下载使用 PID 隔离 tmp 文件防止多进程冲突
 12. **粘贴支持**: 括号粘贴模式、快速粘贴检测、多行粘贴折叠显示
 13. **Markdown渲染**: LLM响应使用pulldown-cmark解析并渲染为ANSI终端样式
-14. **守护进程配置**: `/config` 命令通过 Menu widget 交互式编辑 daemon.toml 配置，支持 Toggle、Select、TextInput、Submenu、Button 等项目类型；支持即时逐项保存（on_change 回调）和失败自动回滚；退出时显示配置变更 diff（变更前后值对比）；打开时自动刷新 backend use_proxy 等陈旧值；支持带点号的 backend 名称（如 gemini-3.1）
+14. **守护进程配置**: `/config` 命令通过 Menu widget 交互式编辑 daemon.toml 配置，支持 Toggle、Select、TextInput、Label、Submenu、Button 等项目类型；支持即时逐项保存（on_change 回调）和失败自动回滚；退出时显示配置变更 diff（变更前后值对比）；打开时自动刷新 backend use_proxy 等陈旧值；支持带点号的 backend 名称（如 gemini-3.1）
+15. **守护进程配置推送**: 接收 `ConfigClient` 消息并将守护进程端的客户端配置（命令前缀、补全开关、ghost 超时等）缓存到本地 `client.toml`
+16. **ANSI 样式常量**: `display.rs` 集中定义共享 ANSI 颜色/样式常量（DIM、BOLD、CYAN 等），全模块统一引用
 
 ## 重要数据结构
 
@@ -1814,6 +1816,33 @@ daemon_addr = "~/.omnish/omnish.sock"
 - 编辑器重绘使用相对光标移动代替layout.update()（issue #278）
 
 ## 更新历史
+
+### 2026-04-09（31个commit自b663b65起）
+
+**ANSI 样式重构 (#505):**
+- `display.rs` 集中定义 ANSI 颜色/样式常量（DIM、BOLD、CYAN、RESET 等），替换 12 个文件中 100+ 处硬编码转义码
+- DIM 统一为 `\x1b[2;90m`（dim + bright-black），确保在不支持 dim 属性的终端上也显示为灰色
+- 工具输出内容改用标准前景色，截断标记（"+N more lines"）采用 dim 颜色
+- Markdown 代码背景改用纯黑底（`\x1b[40m`），避免 256 色灰在 ConEmu 等终端上不协调 (#512)
+
+**工具状态显示改进 (#478, #510):**
+- 运行中工具图标显示 spinner 动画（⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏），200ms 刷新
+- `redraw_tool_section` 优化：每次重绘后将 section 标记前移到首个仍在运行的工具，避免重绘已完成工具导致的终端闪烁
+- 守护进程断开时标记运行中工具为 Error 状态并显示错误信息 (#494)
+
+**守护进程配置推送 (#490):**
+- 接收 `ConfigClient` 推送消息，将守护进程端客户端配置（命令前缀、补全开关等）缓存到 `client.toml`
+- 使用 flock + 原子重命名保证 `client.toml` 并发写安全
+
+**补全修复 (#507):**
+- 命令执行后丢弃过期的补全响应，避免显示与当前输入不匹配的补全建议
+
+**其他改进:**
+- 进入聊天模式时检测 Landlock 沙箱不可用并警告 (#509)
+- Menu widget 新增 Label 非交互式项目类型
+- extended_unicode 配置项，允许关闭扩展 Unicode 字符（如 ⎿）以适配字体不完整的终端
+- `/test disconnect` 命令用于测试客户端断线恢复 (#495)
+- tmux 窗口标题在子进程退出时不再被清空 (#500)
 
 ### 2026-03-26（43个commit自7105d6e起）
 
