@@ -128,7 +128,8 @@ enabled = true
 插件对应 `~/.omnish/plugins/{name}/` 目录下的 `{name}` 可执行文件，通过 JSON-RPC 协议与守护进程通信，在守护进程启动时加载并初始化。
 
 ### `SandboxConfig`
-沙箱规则配置，包含：
+沙箱配置，包含：
+- `backend`: 沙箱后端类型（`"bwrap"` | `"landlock"` | `"macos"`），Linux 默认 `"bwrap"`，macOS 默认 `"macos"`
 - `plugins`: 每个工具的沙箱豁免规则（`HashMap<String, SandboxPluginConfig>`，键为工具名如 `"bash"`）
 
 ### `SandboxPluginConfig`
@@ -440,4 +441,5 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 
 - **2026-03-30**: `LlmBackendConfig` 新增 `use_proxy`（是否使用全局代理）和 `context_window`（上下文窗口大小）字段；`max_content_chars` 更新为高级覆盖项，未设置时由 `context_window * 1.5` 推导；`LlmConfig`、`LangfuseConfig`、`LlmBackendConfig` 新增 `PartialEq` 派生，用于热重载配置差异检测。
 - **2026-04-02**: 统一动态配置架构——新增 `ConfigMap` 新类型（含 `get_bool`/`get_u64`/`get_string`/`get_opt_string` 访问方法）；`TasksConfig` 从带类型字段的结构体改为 `HashMap<String, ConfigMap>`，删除 `EvictionConfig`、`HourlySummaryConfig`、`DailyNotesConfig`、`DiskCleanupConfig`、`AutoUpdateConfig`、`ThreadSummaryConfig`、`PeriodicSummaryConfig` 等子结构，各任务默认值改为内部硬编码；`PluginsConfig` 从 `enabled: Vec<String>` 改为 `HashMap<String, ConfigMap>`；`ContextConfig` 移除 `hourly_summary`/`daily_summary` 死代码字段；`DaemonConfig` 移除 `tools` 字段（合并入 `plugins`）；`config_edit` 新增 `set_toml_value_nested_int()` 和引号感知的 `split_key_path()`，支持含点号的后端名称（如 `gemini-3.1`）。
+- **2026-04-09b**: `SandboxConfig` 新增 `backend` 字段（`"bwrap"` | `"landlock"` | `"macos"`），支持多后端沙箱选择，Linux 默认 `"bwrap"`，macOS 默认 `"macos"`。
 - **2026-04-09**: 配置架构重构——`proxy`/`no_proxy` 从顶层字段迁移到 `ProxyConfig` 结构（`[proxy]` 表），自定义反序列化支持旧版字符串格式向后兼容；`completion_enabled` 从 `ClientConfig` 迁移到 `ShellConfig`；新增 `extended_unicode` 配置项；`ConfigMap` 封装内部结构，新增 `defaults` 层和 `set_defaults()`/`get()`/`contains_key()`/`iter()` 方法；新增 `ClientSection` 结构支持守护进程到客户端的配置推送；`load_daemon_config()` 新增 `sanitize_toml()` 容错（处理重复表头和重复键）和 `normalize()` 旧格式迁移；新增 `string_or_bool` serde helper。

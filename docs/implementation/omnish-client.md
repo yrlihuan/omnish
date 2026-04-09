@@ -731,23 +731,25 @@ Config > LLM                          ← 面包屑（带层级指示）
 
 **字段:**
 - `plugin_bin: PathBuf` - omnish-plugin二进制路径（与omnish-client同目录）
+- `sandbox_backend: Option<SandboxBackendType>` - 沙箱后端类型，Linux 默认 bwrap，macOS 默认 macos（seatbelt）
 
 **方法:**
-- `new() -> Self` - 创建，自动查找同目录下的 `omnish-plugin` 二进制
+- `new() -> Self` - 创建，自动查找同目录下的 `omnish-plugin` 二进制，根据平台选择默认沙箱后端
 - `execute_tool(plugin_name, tool_name, input, cwd, sandboxed) -> (String, bool, bool)` - 执行工具，返回 `(content, is_error, needs_summarization)`
   - `plugin_name`: `"builtin"` 使用omnish-plugin二进制，否则在 `~/.omnish/plugins/{name}/{name}` 查找
   - `tool_name`: 工具名称
   - `input`: JSON格式的工具输入
   - `cwd`: 可选工作目录（自动注入到input中）
-  - `sandboxed`: 是否应用Landlock沙箱
+  - `sandboxed`: 是否应用平台沙箱
   - 返回值第三个字段 `needs_summarization`：工具执行结果是否需要 LLM 摘要化处理，由工具插件响应中的 `needs_summarization` 字段决定
 
-**Landlock沙箱:**
-- 通过 `pre_exec` 在子进程fork后exec前应用
-- 使用 `omnish_plugin::apply_sandbox(data_dir, cwd)` 限制文件系统访问
+**统一沙箱后端 (#511):**
+- 通过 `omnish_plugin::sandbox_command(backend, policy, executable, args)` 统一 API 构建沙箱命令
+- 支持三种后端：bwrap（Linux 默认）、Landlock（Linux 回退）、seatbelt（macOS）
+- `detect_backend()` 运行时检测后端是否可用
+- 沙箱策略通过 `plugin_policy(data_dir, cwd)` 构建，限制文件系统访问范围
 - 工具只能访问自己的数据目录（`~/.omnish/data/{plugin_name}/`）和可选的CWD目录
 - 特权模式工具（如write和edit）可以访问CWD进行文件写入（issue #219）
-- 沙箱内部重构：`apply_sandbox` 拆分为 `apply_landlock` + `common_writable_paths`，新增 `apply_lock_sandbox`（不含插件数据目录，用于 `/test lock on`）（commit c73013e）
 
 **可配置沙箱放行规则 (commit f4a4c77, #379):**
 - Snap 安装的二进制（如 glab、docker）因 `PR_SET_NO_NEW_PRIVS` 阻断 setuid 导致 Landlock 下失败
@@ -755,8 +757,10 @@ Config > LLM                          ← 面包屑（带层级指示）
 - 规则引擎在 `omnish-daemon/src/sandbox_rules.rs`，守护进程发送 `ChatToolCall` 时携带 `sandboxed` 字段
 
 **`/test lock on/off` 命令 (commit c73013e, #378):**
-- `/test lock on` — 使用 Landlock 沙箱重启 shell；`/test lock off` — 不使用沙箱重启 shell
-- 通过 `PtyProxy::respawn(pre_exec, cwd)` 在原地重启 shell 进程
+- `/test lock on` — 使用沙箱重启 shell；`/test lock off` — 不使用沙箱重启 shell
+- `handle_lock` 使用统一沙箱后端：Landlock 通过 `pre_exec` + `apply_in_process` 应用，bwrap/seatbelt 通过 `sandbox_command` 构建包装命令
+- 无可用后端时输出警告而非静默失败
+- `do_respawn` 辅助函数封装 shell 重启和锁定状态更新
 - `ChatExitAction` 枚举信号主循环执行 shell 重启
 - 当前锁定状态在 `/debug client` 输出中显示
 
@@ -1816,6 +1820,14 @@ daemon_addr = "~/.omnish/omnish.sock"
 - 编辑器重绘使用相对光标移动代替layout.update()（issue #278）
 
 ## 更新历史
+
+### 2026-04-09b（1个commit自71a3544起）
+
+**统一多后端沙箱抽象 (#511):**
+- `ClientPluginManager` 新增 `sandbox_backend` 字段，通过 `sandbox_command()` 统一 API 替代平台特定的沙箱代码（macOS `sandbox-exec` 硬编码、Linux `pre_exec` Landlock）
+- `handle_lock` 重构为多后端分发：Landlock 走 `pre_exec` + `apply_in_process`，bwrap/seatbelt 走 `sandbox_command` 构建包装命令
+- 新增 `do_respawn` 辅助函数提取 shell 重启逻辑
+- 无可用沙箱后端时输出警告
 
 ### 2026-04-09（31个commit自b663b65起）
 
