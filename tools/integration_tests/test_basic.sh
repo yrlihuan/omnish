@@ -15,6 +15,7 @@
 #   9. ESC dismisses ghost completion (#259)
 #  10. Ghost text completion via omnish_debug (#328)
 #  11. developer_mode blocks : when command line has content (#393)
+#  12. Stale completion not rendered after command execution (#507)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -33,6 +34,7 @@ Test cases:
   9. ESC dismisses ghost completion (#259)
  10. Ghost text completion via omnish_debug (#328)
  11. developer_mode blocks : when command line has content (#393)
+ 12. Stale completion not rendered after command execution (#507)
 EOF
 }
 
@@ -626,5 +628,81 @@ TOML
     fi
 }
 
-echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history, cursor, ghost-dismiss, completion, developer_mode${NC}"
-run_tests 11
+# ── Test 12: Stale completion not rendered after command execution (#507) ──
+test_12() {
+    echo -e "\n${YELLOW}=== Test 12: Stale completion not rendered after command execution (#507) ===${NC}"
+
+    restart_client
+    wait_for_client
+
+    # Type a command that triggers a DELAYED completion response (3s).
+    # Then immediately execute the command. The delayed response should
+    # arrive after the command finishes but must NOT render ghost text.
+    send_keys "omnish_debug delay 3000" 0.3
+
+    # Wait for completion request to be sent (debounce ~500ms)
+    sleep 1
+
+    # Execute the command — it will fail (not a real command), but that's fine.
+    # This sets at_prompt=false, then a new prompt appears.
+    send_enter 0.5
+
+    # Wait for the new prompt to appear
+    sleep 1
+
+    # Now wait for the delayed response to arrive (~3s from request).
+    # The response should be discarded (not at prompt when received,
+    # or pending_completion_responses cleared on PromptStart).
+    sleep 4
+
+    # Capture pane and check the prompt line is clean (no ghost text)
+    local content
+    content=$(capture_pane -10)
+    show_capture "After delayed response" "$content" 5
+
+    local last
+    last=$(last_nonempty_line "$content")
+    local stripped
+    stripped=$(echo "$last" | sed 's/\x1b\[[0-9;]*m//g')
+
+    # The last line should be a clean shell prompt, NOT containing ghost text
+    if echo "$stripped" | grep -q 'omnish_debug delay 3000 yes'; then
+        # Stale ghost text appeared — bug not fixed
+        assert_fail "Stale ghost text rendered on empty prompt after command execution"
+        send_special C-c 0.5
+        return 1
+    fi
+
+    # Verify it's a clean shell prompt
+    if is_shell_prompt "$content"; then
+        # Double check via event log that the response was actually discarded
+        enter_chat
+        send_keys "/debug events 30" 0.3
+        send_enter 2
+        local events
+        events=$(capture_pane -60)
+
+        send_special Escape 0.5
+        sleep 1.5
+
+        if echo "$events" | grep -q 'discarded (not at prompt)'; then
+            assert_pass "Stale completion discarded after command execution (#507)"
+            return 0
+        elif echo "$events" | grep -q 'rejected (stale'; then
+            assert_pass "Stale completion rejected by staleness check (#507)"
+            return 0
+        else
+            # Response might have been cleared by pending_completion_responses.clear()
+            # on PromptStart before it was even processed. This is also correct.
+            assert_pass "No stale ghost text on prompt (#507)"
+            return 0
+        fi
+    else
+        assert_fail "Expected shell prompt, got: $stripped"
+        send_special C-c 0.5
+        return 1
+    fi
+}
+
+echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history, cursor, ghost-dismiss, completion, developer_mode, stale-completion${NC}"
+run_tests 12

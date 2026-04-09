@@ -604,18 +604,27 @@ async fn handle_message(
                 req.sequence_id
             );
             // Debug shortcut: return canned suggestions for testing
+            // Supports: "omnish_debug" (immediate) and "omnish_debug delay <ms>" (delayed)
             let trimmed = req.input.trim();
             if trimmed == "omnish_debug" || trimmed.starts_with("omnish_debug ") {
-                tracing::info!("omnish_debug matched, returning canned suggestions");
+                // Parse optional delay: "omnish_debug delay 2000" → sleep 2s before responding
+                let delay_ms = trimmed.strip_prefix("omnish_debug delay ")
+                    .and_then(|s| s.trim().parse::<u64>().ok());
+                if let Some(ms) = delay_ms {
+                    tracing::info!("omnish_debug delay {}ms, seq={}", ms, req.sequence_id);
+                    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                } else {
+                    tracing::info!("omnish_debug matched, returning canned suggestions");
+                }
                 let _ = tx.send(Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
                     sequence_id: req.sequence_id,
                     suggestions: vec![
                         omnish_protocol::message::CompletionSuggestion {
-                            text: "omnish_debug yes".to_string(),
+                            text: format!("{} yes", trimmed),
                             confidence: 1.0,
                         },
                         omnish_protocol::message::CompletionSuggestion {
-                            text: "omnish_debug || echo works".to_string(),
+                            text: format!("{} || echo works", trimmed),
                             confidence: 0.9,
                         },
                     ],
