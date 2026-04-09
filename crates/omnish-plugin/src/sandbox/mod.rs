@@ -19,6 +19,33 @@ pub enum SandboxBackendType {
     MacosSeatbelt,
 }
 
+/// Result of sandbox backend detection, carrying enough information
+/// for the caller to construct appropriate user-facing messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxDetectResult {
+    /// Preferred backend is available and will be used.
+    Preferred(SandboxBackendType),
+    /// Preferred backend unavailable; fell back to another.
+    Fallback {
+        preferred: SandboxBackendType,
+        actual: SandboxBackendType,
+    },
+    /// No backend available at all.
+    Unavailable {
+        preferred: SandboxBackendType,
+    },
+}
+
+impl SandboxDetectResult {
+    /// The backend to actually use, if any.
+    pub fn backend(&self) -> Option<SandboxBackendType> {
+        match self {
+            Self::Preferred(b) | Self::Fallback { actual: b, .. } => Some(*b),
+            Self::Unavailable { .. } => None,
+        }
+    }
+}
+
 impl SandboxBackendType {
     pub fn from_config(s: &str) -> Option<Self> {
         match s {
@@ -46,14 +73,13 @@ pub fn is_available(backend: SandboxBackendType) -> bool {
     }
 }
 
-pub fn detect_backend(preferred: SandboxBackendType) -> Option<SandboxBackendType> {
+/// Detect the best available sandbox backend, starting from `preferred`.
+/// Returns a [`SandboxDetectResult`] describing what was found, without
+/// printing any messages — the caller decides how to present the outcome.
+pub fn detect_backend_status(preferred: SandboxBackendType) -> SandboxDetectResult {
     if is_available(preferred) {
-        return Some(preferred);
+        return SandboxDetectResult::Preferred(preferred);
     }
-    eprintln!(
-        "[sandbox] preferred backend {:?} not available, trying fallback",
-        preferred
-    );
 
     let fallback = match preferred {
         SandboxBackendType::Bwrap => Some(SandboxBackendType::Landlock),
@@ -64,13 +90,19 @@ pub fn detect_backend(preferred: SandboxBackendType) -> Option<SandboxBackendTyp
 
     if let Some(fb) = fallback {
         if is_available(fb) {
-            eprintln!("[sandbox] using fallback backend {:?}", fb);
-            return Some(fb);
+            return SandboxDetectResult::Fallback {
+                preferred,
+                actual: fb,
+            };
         }
     }
 
-    eprintln!("[sandbox] no sandbox backend available");
-    None
+    SandboxDetectResult::Unavailable { preferred }
+}
+
+/// Convenience wrapper: returns only the resolved backend (if any).
+pub fn detect_backend(preferred: SandboxBackendType) -> Option<SandboxBackendType> {
+    detect_backend_status(preferred).backend()
 }
 
 pub fn sandbox_command(

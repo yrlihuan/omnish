@@ -5,12 +5,7 @@ pub mod sandbox;
 pub mod tools;
 
 pub use sandbox::{
-    apply_in_process, detect_backend, is_available, lock_policy, plugin_policy, sandbox_command,
-    SandboxBackendType, SandboxPolicy,
+    apply_in_process, detect_backend, detect_backend_status, is_available, lock_policy,
+    plugin_policy, sandbox_command, SandboxBackendType, SandboxDetectResult, SandboxPolicy,
 };
-
-/// Check whether Landlock is supported (used by event log / diagnostics).
-pub fn is_landlock_supported() -> bool {
-    is_available(SandboxBackendType::Landlock)
-}
 

@@ -7,7 +7,10 @@ use std::process::{Command, Stdio};
 /// Executes client-side tools by spawning short-lived plugin processes.
 pub struct ClientPluginManager {
     plugin_bin: std::path::PathBuf,
+    /// Resolved effective backend (already checked for availability).
     sandbox_backend: Option<omnish_plugin::SandboxBackendType>,
+    /// Full detection result for caller-side messaging.
+    sandbox_status: omnish_plugin::SandboxDetectResult,
 }
 
 /// Result of executing a plugin tool.
@@ -32,12 +35,26 @@ impl ClientPluginManager {
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("omnish-plugin")))
             .unwrap_or_else(|| std::path::PathBuf::from("omnish-plugin"));
-        let backend = if cfg!(target_os = "macos") {
+        let preferred = if cfg!(target_os = "macos") {
             omnish_plugin::SandboxBackendType::from_config("macos")
         } else {
             omnish_plugin::SandboxBackendType::from_config("bwrap")
         };
-        Self { plugin_bin, sandbox_backend: backend }
+        let status = preferred
+            .map(|p| omnish_plugin::detect_backend_status(p))
+            .unwrap_or(omnish_plugin::SandboxDetectResult::Unavailable {
+                preferred: omnish_plugin::SandboxBackendType::Bwrap,
+            });
+        Self {
+            plugin_bin,
+            sandbox_backend: status.backend(),
+            sandbox_status: status,
+        }
+    }
+
+    /// Detection result for caller-side messaging.
+    pub fn sandbox_status(&self) -> omnish_plugin::SandboxDetectResult {
+        self.sandbox_status
     }
 
     /// Execute a tool via a short-lived plugin process.
@@ -88,7 +105,7 @@ impl ClientPluginManager {
         let cwd_path: Option<std::path::PathBuf> = cwd.map(std::path::PathBuf::from);
 
         let mut cmd = if sandboxed {
-            if let Some(backend) = self.sandbox_backend.and_then(omnish_plugin::detect_backend) {
+            if let Some(backend) = self.sandbox_backend {
                 let policy = omnish_plugin::plugin_policy(&data_dir, cwd_path.as_deref());
                 match omnish_plugin::sandbox_command(backend, &policy, &executable, &[]) {
                     Ok(c) => c,

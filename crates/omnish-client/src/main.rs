@@ -2267,6 +2267,35 @@ fn command_basename(cmd: &str) -> &str {
     cmd.split_whitespace().next().unwrap_or(cmd)
 }
 
+/// Build a one-time sandbox notice for the current chat entry.
+/// Returns `None` when the preferred backend is available (no notice needed).
+fn sandbox_notice(status: omnish_plugin::SandboxDetectResult) -> Option<String> {
+    use omnish_plugin::{SandboxBackendType, SandboxDetectResult};
+    match status {
+        SandboxDetectResult::Preferred(_) => None,
+        SandboxDetectResult::Fallback { preferred, actual } => {
+            let install_hint = match preferred {
+                SandboxBackendType::Bwrap => " Install with: apt install bubblewrap",
+                _ => "",
+            };
+            Some(format!(
+                "\r\n{}[omnish] sandbox: {:?} not available, using {:?}.{}{}\r\n",
+                display::DIM, preferred, actual, install_hint, display::RESET,
+            ))
+        }
+        SandboxDetectResult::Unavailable { preferred } => {
+            let install_hint = match preferred {
+                SandboxBackendType::Bwrap => " Install with: apt install bubblewrap",
+                _ => "",
+            };
+            Some(format!(
+                "\r\n{}[omnish] sandbox: no backend available, tool execution is not sandboxed.{}{}\r\n",
+                display::DIM, install_hint, display::RESET,
+            ))
+        }
+    }
+}
+
 /// Unified entry point for chat mode (new chat, resume, or timeout).
 #[allow(clippy::too_many_arguments)]
 async fn enter_chat_mode(
@@ -2286,16 +2315,6 @@ async fn enter_chat_mode(
     locked: bool,
     config: &omnish_common::config::ClientConfig,
 ) -> chat_session::ChatExitAction {
-    // One-time notice per session: warn if kernel doesn't support Landlock sandbox (#509)
-    static LANDLOCK_WARNED: AtomicBool = AtomicBool::new(false);
-    if !omnish_plugin::is_landlock_supported() && !LANDLOCK_WARNED.swap(true, Ordering::Relaxed) {
-        let msg = format!(
-            "\r\n{}[omnish] Landlock sandbox unavailable (kernel < 5.13), tool execution is not sandboxed.{}\r\n",
-            display::DIM, display::RESET,
-        );
-        nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
-    }
-
     notice_queue::defer();
     let saved_input = shell_input.input().to_string();
 
@@ -2310,6 +2329,12 @@ async fn enter_chat_mode(
         let pending_cd;
         {
             let mut session = chat_session::ChatSession::new(std::mem::take(chat_history), config.shell.extended_unicode);
+
+            // One-time sandbox notice per chat entry (#514)
+            if let Some(msg) = sandbox_notice(session.sandbox_status()) {
+                nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
+            }
+
             action = session.run(rpc, session_id, proxy, initial_msg, &dbg_fn, onboarded, col_tracker.col, col_tracker.row).await;
             let new_tid = session.thread_id().map(String::from);
             event_log::push(format!("chat exit: last_thread_id {:?} -> {:?}", last_thread_id, new_tid));

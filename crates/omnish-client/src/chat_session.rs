@@ -375,6 +375,10 @@ impl ChatSession {
         }
     }
 
+    pub fn sandbox_status(&self) -> omnish_plugin::SandboxDetectResult {
+        self.client_plugins.sandbox_status()
+    }
+
     pub fn into_history(self) -> VecDeque<String> {
         self.chat_history
     }
