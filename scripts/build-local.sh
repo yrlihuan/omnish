@@ -61,7 +61,6 @@ esac
 
 if [[ "$USE_MUSL" == true ]]; then
     TARGET="x86_64-unknown-linux-musl"
-    export CC_x86_64_unknown_linux_musl=musl-gcc
     echo "Building for $TARGET..."
     cargo build --release --target "$TARGET"
     TARGET_DIR="target/$TARGET/release"
