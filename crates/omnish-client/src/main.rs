@@ -2279,7 +2279,7 @@ fn sandbox_notice(status: omnish_plugin::SandboxDetectResult) -> Option<String> 
                 _ => "",
             };
             Some(format!(
-                "\r\n{}[omnish] sandbox: {:?} not available, fallback to {:?}.{}{}\r\n",
+                "\r\n{}[omnish] sandbox: {:?} not available, falling back to {:?}.{}{}\r\n",
                 display::DIM, preferred, actual, install_hint, display::RESET,
             ))
         }
