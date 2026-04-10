@@ -54,13 +54,15 @@ pub fn prompt_template(has_query: bool) -> &'static str {
 /// The daily-notes LLM summary prompt.
 pub const DAILY_NOTES_PROMPT: &str =
     "以下<hourly_summaries>中是今天各时段的工作摘要（每段含命令记录、会话记录和总结）。\
-     请用中文以项目符号列表形式列出今天的工作内容，每个条目包含一项主要活动或成果。适合直接作为工作日志。";
+     请根据这些信息推测用户今天实际在做的项目和目标，而不是简单罗列运行了哪些命令。\
+     用中文以项目符号列表形式总结，每个条目描述一项具体的项目活动或达成的目标。适合直接作为工作日志。";
 
 /// The periodic-summary LLM prompt template (shown by `/template`; actual interval is configured).
 pub const HOURLY_NOTES_PROMPT: &str =
     "以下<commands>中是从多台终端收集的过去N小时的命令及其简要输出（如有），\
      <conversations>中是与AI助手的对话记录（如有）。\
-     请用中文以项目符号列表形式列出这N小时的工作内容，每个条目包含一项主要活动或成果。适合直接作为工作日志。";
+     请根据这些信息推测用户实际在做的项目和目标，而不是简单罗列运行了哪些命令。\
+     用中文以项目符号列表形式总结，每个条目描述一项具体的项目活动或达成的目标。适合直接作为工作日志。";
 
 /// The thread-title LLM prompt — generates a short title for the thread.
 pub const THREAD_SUMMARY_PROMPT: &str =
