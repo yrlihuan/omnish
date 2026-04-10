@@ -305,42 +305,59 @@ fn sandbox_availability_labels(base_path: &str) -> Vec<ConfigItem> {
 
     let mut labels = Vec::new();
 
-    // bwrap
-    if omnish_plugin::is_available(SandboxBackendType::Bwrap) {
-        labels.push(label("bwrap", format!(
-            "  {}bwrap{}: {}Available{}", display::BRIGHT_WHITE, display::RESET, display::GREEN, display::RESET,
-        )));
-    } else {
-        labels.push(label("bwrap", format!(
-            "  {}bwrap{}: {}Not available{}", display::BRIGHT_WHITE, display::RESET, display::RED, display::RESET,
-        )));
-        match omnish_plugin::bwrap_unavailable_reason() {
-            Some(BwrapUnavailableReason::NotInstalled) => {
-                labels.push(label("bwrap_hint", format!(
-                    "  {}To enable: sudo apt install bubblewrap{}", display::DIM, display::RESET,
-                )));
-            }
-            Some(BwrapUnavailableReason::NamespaceDenied) => {
-                labels.push(label("bwrap_hint", format!(
-                    "  {}To enable: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0{}", display::DIM, display::RESET,
-                )));
-            }
-            None => {}
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS only seatbelt is relevant.
+        if omnish_plugin::is_available(SandboxBackendType::MacosSeatbelt) {
+            labels.push(label("macos", format!(
+                "  {}macos{}: {}Available{}", display::BRIGHT_WHITE, display::RESET, display::GREEN, display::RESET,
+            )));
+        } else {
+            labels.push(label("macos", format!(
+                "  {}macos{}: {}Not available{}", display::BRIGHT_WHITE, display::RESET, display::RED, display::RESET,
+            )));
         }
     }
 
-    // landlock
-    if omnish_plugin::is_available(SandboxBackendType::Landlock) {
-        labels.push(label("landlock", format!(
-            "  {}landlock{}: {}Available{}", display::BRIGHT_WHITE, display::RESET, display::GREEN, display::RESET,
-        )));
-    } else {
-        labels.push(label("landlock", format!(
-            "  {}landlock{}: {}Not available{}", display::BRIGHT_WHITE, display::RESET, display::RED, display::RESET,
-        )));
-        labels.push(label("landlock_hint", format!(
-            "  {}Requires kernel >= 5.13{}", display::DIM, display::RESET,
-        )));
+    #[cfg(not(target_os = "macos"))]
+    {
+        // bwrap
+        if omnish_plugin::is_available(SandboxBackendType::Bwrap) {
+            labels.push(label("bwrap", format!(
+                "  {}bwrap{}: {}Available{}", display::BRIGHT_WHITE, display::RESET, display::GREEN, display::RESET,
+            )));
+        } else {
+            labels.push(label("bwrap", format!(
+                "  {}bwrap{}: {}Not available{}", display::BRIGHT_WHITE, display::RESET, display::RED, display::RESET,
+            )));
+            match omnish_plugin::bwrap_unavailable_reason() {
+                Some(BwrapUnavailableReason::NotInstalled) => {
+                    labels.push(label("bwrap_hint", format!(
+                        "  {}To enable: sudo apt install bubblewrap{}", display::DIM, display::RESET,
+                    )));
+                }
+                Some(BwrapUnavailableReason::NamespaceDenied) => {
+                    labels.push(label("bwrap_hint", format!(
+                        "  {}To enable: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0{}", display::DIM, display::RESET,
+                    )));
+                }
+                None => {}
+            }
+        }
+
+        // landlock
+        if omnish_plugin::is_available(SandboxBackendType::Landlock) {
+            labels.push(label("landlock", format!(
+                "  {}landlock{}: {}Available{}", display::BRIGHT_WHITE, display::RESET, display::GREEN, display::RESET,
+            )));
+        } else {
+            labels.push(label("landlock", format!(
+                "  {}landlock{}: {}Not available{}", display::BRIGHT_WHITE, display::RESET, display::RED, display::RESET,
+            )));
+            labels.push(label("landlock_hint", format!(
+                "  {}Requires kernel >= 5.13{}", display::DIM, display::RESET,
+            )));
+        }
     }
 
     labels
