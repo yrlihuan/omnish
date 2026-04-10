@@ -33,6 +33,57 @@ fn load_chat_prompt() -> omnish_llm::prompt::PromptManager {
     }
 }
 
+/// Replace `<thinking>…</thinking>` / `<think>…</think>` blocks:
+/// strip the tags but keep the content so it is visible to the user.
+fn unwrap_thinking_tags(text: &str) -> String {
+    let mut result = text.to_string();
+    for (open, close) in [("<thinking>", "</thinking>"), ("<think>", "</think>")] {
+        while let Some(start) = result.find(open) {
+            if let Some(end) = result[start..].find(close) {
+                let inner = result[start + open.len()..start + end].trim();
+                result = format!("{}{}{}", &result[..start], inner, &result[start + end + close.len()..]);
+            } else {
+                // Unclosed tag — keep content after the opening tag
+                result = format!("{}{}", &result[..start], result[start + open.len()..].trim_start());
+                break;
+            }
+        }
+    }
+    result.trim().to_string()
+}
+
+/// Replace `<thinking>…</thinking>` / `<think>…</think>` blocks with a
+/// markdown blockquote section so thinking is still visible in the final response.
+fn thinking_to_markdown(text: &str) -> String {
+    let mut result = text.to_string();
+    for (open, close) in [("<thinking>", "</thinking>"), ("<think>", "</think>")] {
+        while let Some(start) = result.find(open) {
+            if let Some(end) = result[start..].find(close) {
+                let inner = result[start + open.len()..start + end].trim();
+                let replacement = if inner.is_empty() {
+                    String::new()
+                } else {
+                    format!("# Thinking\n{inner}\n")
+                };
+                result = format!("{}{}{}", &result[..start], replacement, &result[start + end + close.len()..]);
+            } else {
+                let inner = result[start + open.len()..].trim();
+                if inner.is_empty() {
+                    result.truncate(start);
+                } else {
+                    result = format!("{}# Thinking\n{inner}\n", &result[..start]);
+                }
+                break;
+            }
+        }
+    }
+    // Collapse runs of 3+ newlines to 2 (one blank line).
+    while result.contains("\n\n\n") {
+        result = result.replace("\n\n\n", "\n\n");
+    }
+    result.trim().to_string()
+}
+
 /// Cached state for a paused agent loop awaiting a client-side tool result.
 struct AgentLoopState {
     llm_req: LlmRequest,
@@ -1481,12 +1532,13 @@ async fn run_agent_loop(
                     // Send LLM's text blocks to client immediately
                     for block in &response.content {
                         if let ContentBlock::Text(text) = block {
-                            if !text.trim().is_empty()
+                            let text = unwrap_thinking_tags(text);
+                            if !text.is_empty()
                                 && tx.send(Message::ChatToolStatus(ChatToolStatus {
                                     request_id: state.cm.request_id.clone(),
                                     thread_id: state.cm.thread_id.clone(),
                                     tool_name: String::new(),
-                                    status: text.clone(),
+                                    status: text,
                                     tool_call_id: None,
                                     status_icon: None,
                                     display_name: None,
@@ -1744,7 +1796,7 @@ async fn run_agent_loop(
                 let _ = tx.send(Message::ChatResponse(ChatResponse {
                     request_id: state.cm.request_id.clone(),
                     thread_id: state.cm.thread_id.clone(),
-                    content: text,
+                    content: thinking_to_markdown(&text),
                 })).await;
                 return;
             }
@@ -2835,6 +2887,39 @@ mod tests {
     use std::sync::Arc;
     use std::time::Instant;
     use tokio::time::{sleep, Duration};
+
+    #[test]
+    fn test_unwrap_thinking_tags() {
+        // Strips tags, keeps content
+        assert_eq!(
+            unwrap_thinking_tags("<thinking>\nContinue.\n</thinking>\n\nRun #27："),
+            "Continue.\n\nRun #27："
+        );
+        assert_eq!(
+            unwrap_thinking_tags("<think>\nLet me analyze.\n</think>\nHere is the answer."),
+            "Let me analyze.\nHere is the answer."
+        );
+        assert_eq!(unwrap_thinking_tags("plain text"), "plain text");
+        assert_eq!(unwrap_thinking_tags("<thinking>foo</thinking>"), "foo");
+        // Unclosed tag — keeps content after tag
+        assert_eq!(unwrap_thinking_tags("before <thinking>rest"), "before rest");
+    }
+
+    #[test]
+    fn test_thinking_to_markdown() {
+        // Converts to heading section
+        assert_eq!(
+            thinking_to_markdown("<thinking>\nContinue.\n</thinking>\n\nRun #27："),
+            "# Thinking\nContinue.\n\nRun #27："
+        );
+        assert_eq!(
+            thinking_to_markdown("<think>\nLine 1\nLine 2\n</think>\nAnswer"),
+            "# Thinking\nLine 1\nLine 2\n\nAnswer"
+        );
+        assert_eq!(thinking_to_markdown("plain text"), "plain text");
+        // Empty thinking — removed
+        assert_eq!(thinking_to_markdown("<thinking></thinking>rest"), "rest");
+    }
 
     // Mock LLM backend that simulates network delay
     struct MockDelayedBackend {

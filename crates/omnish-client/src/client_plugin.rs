@@ -130,7 +130,7 @@ impl ClientPluginManager {
 
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::piped());
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -152,7 +152,29 @@ impl ClientPluginManager {
             let mut reader = BufReader::new(stdout);
             let mut line = String::new();
             match reader.read_line(&mut line) {
-                Ok(0) => PluginOutput { content: "Plugin produced no output".to_string(), is_error: true, needs_summarization: false },
+                Ok(0) => {
+                    // Plugin exited without writing to stdout — collect diagnostics.
+                    let status = child.wait().ok();
+                    let mut stderr_text = String::new();
+                    if let Some(mut se) = child.stderr.take() {
+                        use std::io::Read;
+                        let _ = se.read_to_string(&mut stderr_text);
+                    }
+                    let exit_info = status
+                        .and_then(|s| s.code())
+                        .map(|c| format!(" (exit code {c})"))
+                        .unwrap_or_else(|| status.map_or(String::new(), |_| " (killed by signal)".into()));
+                    let detail = if stderr_text.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {}", stderr_text.trim())
+                    };
+                    PluginOutput {
+                        content: format!("Plugin produced no output{exit_info}{detail}"),
+                        is_error: true,
+                        needs_summarization: false,
+                    }
+                }
                 Ok(_) => match serde_json::from_str::<PluginResponse>(&line) {
                     Ok(resp) => PluginOutput { content: resp.content, is_error: resp.is_error, needs_summarization: resp.needs_summarization },
                     Err(e) => PluginOutput { content: format!("Invalid plugin response: {e}"), is_error: true, needs_summarization: false },
