@@ -38,12 +38,6 @@ fn build_profile(policy: &SandboxPolicy) -> String {
     profile
 }
 
-/// Build a sandbox-exec `.sb` profile string from a SandboxPolicy.
-/// Public helper for backward compatibility.
-pub fn build_profile_from_policy(policy: &SandboxPolicy) -> String {
-    build_profile(policy)
-}
-
 /// Build a sandboxed Command using macOS sandbox-exec.
 #[cfg(target_os = "macos")]
 pub fn sandbox_command(
@@ -126,14 +120,4 @@ mod tests {
         assert!(profile.matches("(allow file-write*").count() >= 5);
     }
 
-    #[test]
-    fn test_build_profile_from_policy_public() {
-        let policy = SandboxPolicy {
-            writable_paths: vec![PathBuf::from("/tmp")],
-            deny_read: Vec::new(),
-            allow_network: true,
-        };
-        let profile = build_profile_from_policy(&policy);
-        assert!(profile.contains("(allow file-write* (subpath \"/tmp\"))"));
-    }
 }
