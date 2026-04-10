@@ -77,7 +77,7 @@ pub fn build_config_items(
 
     // Submenus and dynamic placeholders both contribute a labeled parent entry
     // to the handlers list so the client can resolve their display labels.
-    let mut handlers: Vec<ConfigHandlerInfo> = schema.iter()
+    let handlers: Vec<ConfigHandlerInfo> = schema.iter()
         .filter(|s| s.kind == "submenu" || s.kind == "dynamic")
         .map(|s| ConfigHandlerInfo {
             path: s.path.clone(),
@@ -287,10 +287,9 @@ pub fn build_config_items(
         });
     }
 
-    // Global sandbox rule form submenus (one per existing rule, plus "Add" form)
-    let (rule_items, rule_handlers) = build_global_rule_items(&config.sandbox.plugins);
-    items.extend(rule_items);
-    handlers.extend(rule_handlers);
+    // Global sandbox rule forms are now generated client-side via the
+    // _client:sandbox_rules placeholder (merged with local rules).
+    // The daemon still handles edit_global_rule/add_global_rule RPCs.
 
     (items, handlers)
 }
@@ -344,108 +343,9 @@ fn build_rules_json(plugins: &std::collections::HashMap<String, omnish_common::c
     serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
 }
 
-use omnish_common::sandbox_rule::{OPERATORS, parse_rule_parts};
-
-/// Build the 5 form field ConfigItems for a permit rule (edit or add).
-/// For edit forms, pass current field/operator/value and `with_delete=true`.
-/// For add forms, pass empty strings and `with_delete=false`.
-fn rule_form_fields(
-    prefix: &str,
-    plugin: &str,
-    field: &str,
-    operator: &str,
-    value: &str,
-    with_delete: bool,
-    scope: Option<&str>,
-) -> Vec<ConfigItem> {
-    let op_idx = OPERATORS.iter().position(|&o| o == operator).unwrap_or(0);
-    let mut items = Vec::new();
-    if let Some(s) = scope {
-        items.push(ConfigItem {
-            path: format!("{}._scope", prefix),
-            label: format!("Scope: {}", s),
-            kind: ConfigItemKind::Label,
-            prefills: vec![],
-        });
-    }
-    items.push(ConfigItem {
-        path: format!("{}.plugin", prefix),
-        label: format!("Plugin{}", if with_delete { format!(": {}", plugin) } else { String::new() }),
-        kind: if with_delete {
-            ConfigItemKind::Label
-        } else {
-            ConfigItemKind::TextInput { value: plugin.to_string() }
-        },
-        prefills: vec![],
-    });
-    items.push(ConfigItem {
-        path: format!("{}.field", prefix),
-        label: "Param name".to_string(),
-        kind: ConfigItemKind::TextInput { value: field.to_string() },
-        prefills: vec![],
-    });
-    items.push(ConfigItem {
-        path: format!("{}.operator", prefix),
-        label: "Operator".to_string(),
-        kind: ConfigItemKind::Select {
-            options: OPERATORS.iter().map(|s| s.to_string()).collect(),
-            selected: op_idx,
-        },
-        prefills: vec![],
-    });
-    items.push(ConfigItem {
-        path: format!("{}.value", prefix),
-        label: "Pattern".to_string(),
-        kind: ConfigItemKind::TextInput { value: value.to_string() },
-        prefills: vec![],
-    });
-    if with_delete {
-        items.push(ConfigItem {
-            path: format!("{}._delete", prefix),
-            label: "Delete".to_string(),
-            kind: ConfigItemKind::Toggle { value: false },
-            prefills: vec![],
-        });
-    }
-    items
-}
-
-/// Generate form submenu items for global sandbox rules (edit per-rule + add new).
-/// Returns (items, handler_infos).
-fn build_global_rule_items(
-    plugins: &std::collections::HashMap<String, omnish_common::config::SandboxPluginConfig>,
-) -> (Vec<ConfigItem>, Vec<ConfigHandlerInfo>) {
-    let mut items = Vec::new();
-    let mut handler_infos = Vec::new();
-
-    // One form submenu per existing global rule
-    let mut plugin_names: Vec<&String> = plugins.keys().collect();
-    plugin_names.sort();
-    for plugin_name in plugin_names {
-        let cfg = &plugins[plugin_name];
-        for (idx, rule) in cfg.permit_rules.iter().enumerate() {
-            let prefix = format!("sandbox.rules.{}.{}", plugin_name, idx);
-            handler_infos.push(ConfigHandlerInfo {
-                path: prefix.clone(),
-                label: format!("{} {}", plugin_name, rule),
-                handler: format!("edit_global_rule:{}:{}", plugin_name, idx),
-            });
-            let (field, operator, value) = parse_rule_parts(rule);
-            items.extend(rule_form_fields(&prefix, plugin_name, &field, &operator, &value, true, Some("global")));
-        }
-    }
-
-    // "Add global permit rule" form submenu
-    let add_prefix = "sandbox.rules.__new__global__";
-    handler_infos.push(ConfigHandlerInfo {
-        path: add_prefix.to_string(),
-        label: "Add global permit rule".to_string(),
-        handler: "add_global_rule".to_string(),
-    });
-    items.extend(rule_form_fields(add_prefix, "", "", "starts_with", "", false, None));
-
-    (items, handler_infos)
-}
+// Global rule form generation has moved to the client side
+// (sandbox_local_rule_items in chat_session.rs). The daemon still handles
+// add_global_rule / edit_global_rule RPCs via apply_config_changes.
 
 fn find_schema_item<'a>(schema: &'a [SchemaItem], path: &str) -> Option<&'a SchemaItem> {
     schema.iter().find(|s| s.path == path)
@@ -458,6 +358,29 @@ fn find_handler_for_path<'a>(schema: &'a [SchemaItem], path: &str) -> Option<&'a
         .and_then(|s| s.handler.as_deref())
 }
 
+/// Resolve handlers for dynamically-generated config items (not in the TOML schema).
+/// The client sends sandbox rule changes with well-known path prefixes.
+fn resolve_dynamic_handler(path: &str) -> Option<String> {
+    if !path.starts_with("sandbox.rules.") {
+        return None;
+    }
+    // sandbox.rules.__add__.<field> → add_global_rule
+    if path.starts_with("sandbox.rules.__add__.") {
+        return Some("add_global_rule".to_string());
+    }
+    // sandbox.rules.__edit__.<plugin>.<idx>.<field> → edit_global_rule:<plugin>:<idx>
+    if let Some(rest) = path.strip_prefix("sandbox.rules.__edit__.") {
+        // rest = "<plugin>.<idx>.<field>"
+        let mut parts = rest.splitn(3, '.');
+        let plugin = parts.next()?;
+        let idx_str = parts.next()?;
+        if idx_str.parse::<usize>().is_ok() {
+            return Some(format!("edit_global_rule:{}:{}", plugin, idx_str));
+        }
+    }
+    None
+}
+
 /// Apply config changes to daemon.toml.
 pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> anyhow::Result<()> {
     let schema = parse_schema();
@@ -468,6 +391,8 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
     for change in changes {
         if let Some(handler) = find_handler_for_path(&schema, &change.path) {
             handler_groups.entry(handler.to_string()).or_default().push(change);
+        } else if let Some(handler) = resolve_dynamic_handler(&change.path) {
+            handler_groups.entry(handler).or_default().push(change);
         } else {
             generic.push(change);
         }
@@ -699,8 +624,9 @@ mod tests {
         let config = DaemonConfig::default();
         let (_items, handlers) = build_config_items(&config, &[]);
         // Label-only submenus (llm, shell_completion, sandbox) + dynamic placeholder (plugins)
-        // + handler submenus (add_backend, add_global_rule)
-        assert_eq!(handlers.len(), 6);
+        // + handler submenu (add_backend)
+        // Note: add_global_rule is now generated client-side
+        assert_eq!(handlers.len(), 5);
         let llm = handlers.iter().find(|h| h.path == "llm").unwrap();
         assert_eq!(llm.label, "LLM");
         assert_eq!(llm.handler, "");

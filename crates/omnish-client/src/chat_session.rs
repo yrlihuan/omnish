@@ -325,41 +325,64 @@ fn rule_form_fields(
     items
 }
 
-/// Generate local sandbox rule items for the Rules submenu.
+/// Generate sandbox rule items for the Rules submenu.
 ///
-/// Emits:
-/// - Global rules as read-only Labels (daemon manages these, shown for context)
-/// - One pre-filled form submenu per existing local rule (handler "edit_local_rule:<plugin>:<idx>")
-/// - "Add local permit rule" form submenu (handler "add_local_rule")
+/// Produces a flat list directly under `sandbox.rules`:
+/// - "Add permit rule" form with Scope selector (handler "add_rule")
+/// - One pre-filled edit form per existing rule (global or local)
 ///
-/// Handler infos for the local submenus are pushed into `extra_handlers`.
+/// Handler infos for all submenus are pushed into `extra_handlers`.
 fn sandbox_local_rule_items(
     sandbox: &ClientSandboxConfig,
     extra_handlers: &mut Vec<ConfigHandlerInfo>,
     global_rules: &[GlobalRuleEntry],
 ) -> Vec<ConfigItem> {
     let mut items = Vec::new();
+    let mut seq = 0usize; // sequential numbering for flat paths
 
-    // Global rules as read-only labels (daemon manages these, shown for context)
+    // "Add permit rule" form — single entry with scope selector
+    let add_prefix = "sandbox.rules._add";
+    extra_handlers.push(ConfigHandlerInfo {
+        path: add_prefix.to_string(),
+        label: "Add permit rule".to_string(),
+        handler: "add_rule".to_string(),
+    });
+    // Scope selector as first field
+    items.push(ConfigItem {
+        path: format!("{}.scope", add_prefix),
+        label: "Scope".to_string(),
+        kind: ConfigItemKind::Select {
+            options: vec!["local".to_string(), "global".to_string()],
+            selected: 0,
+        },
+        prefills: vec![],
+    });
+    items.extend(rule_form_fields(add_prefix, "", "", "starts_with", "", false, None));
+
+    // Global rules — editable forms (changes forwarded to daemon via RPC)
     for entry in global_rules {
-        for rule in &entry.rules {
-            items.push(ConfigItem {
-                path: format!("sandbox.rules.global.{}.__label_{}", entry.plugin,
-                    rule.chars().filter(|c| c.is_alphanumeric() || *c == '_').collect::<String>()),
+        for (idx, rule) in entry.rules.iter().enumerate() {
+            let prefix = format!("sandbox.rules._r{}", seq);
+            seq += 1;
+            let handler = format!("edit_global_rule:{}:{}", entry.plugin, idx);
+            extra_handlers.push(ConfigHandlerInfo {
+                path: prefix.clone(),
                 label: format!("{} {} [global]", entry.plugin, rule),
-                kind: ConfigItemKind::Label,
-                prefills: vec![],
+                handler,
             });
+            let (field, operator, value) = parse_rule_parts(rule);
+            items.extend(rule_form_fields(&prefix, &entry.plugin, &field, &operator, &value, true, Some("global")));
         }
     }
 
-    // Existing local rules — pre-filled edit forms
+    // Local rules — editable forms (handled client-side)
     let mut plugin_names: Vec<&String> = sandbox.plugins.keys().collect();
     plugin_names.sort();
     for plugin_name in plugin_names {
         let cfg = &sandbox.plugins[plugin_name];
         for (idx, rule) in cfg.permit_rules.iter().enumerate() {
-            let prefix = format!("sandbox.rules.local.{}.{}", plugin_name, idx);
+            let prefix = format!("sandbox.rules._r{}", seq);
+            seq += 1;
             extra_handlers.push(ConfigHandlerInfo {
                 path: prefix.clone(),
                 label: format!("{} {} [local]", plugin_name, rule),
@@ -369,15 +392,6 @@ fn sandbox_local_rule_items(
             items.extend(rule_form_fields(&prefix, plugin_name, &field, &operator, &value, true, Some("local")));
         }
     }
-
-    // "Add local permit rule" form
-    let add_prefix = "sandbox.rules.local.__new__";
-    extra_handlers.push(ConfigHandlerInfo {
-        path: add_prefix.to_string(),
-        label: "Add local permit rule".to_string(),
-        handler: "add_local_rule".to_string(),
-    });
-    items.extend(rule_form_fields(add_prefix, "", "", "starts_with", "", false, None));
 
     items
 }
@@ -535,6 +549,24 @@ fn client_config_path() -> std::path::PathBuf {
     std::env::var("OMNISH_CLIENT_CONFIG")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| omnish_common::config::omnish_dir().join("client.toml"))
+}
+
+/// Send a ConfigUpdate RPC to the daemon and return Ok(()) on success, Err(message) on failure.
+fn send_config_update(
+    rt: &tokio::runtime::Handle,
+    rpc: &RpcClient,
+    changes: Vec<ConfigChange>,
+) -> Result<(), String> {
+    let result = rt.block_on(async {
+        rpc.call(Message::ConfigUpdate { changes }).await
+    });
+    match result {
+        Ok(Message::ConfigUpdateResult { ok: false, error }) => {
+            Err(format!("Handler error: {}", error.unwrap_or_default()))
+        }
+        Err(e) => Err(format!("RPC error: {}", e)),
+        _ => Ok(()),
+    }
 }
 
 trait StrOrDefault<'a> {
@@ -2784,9 +2816,52 @@ impl ChatSession {
 
             let mut handler_callback = |handler_name: &str, handler_changes: Vec<widgets::menu::MenuChange>| -> Option<Vec<widgets::menu::MenuItem>> {
                 // Local rule operations: handle client-side, then rebuild menu
-                if handler_name == "add_local_rule" {
+                if handler_name == "add_rule" {
+                    // Unified add: dispatch based on scope selector
+                    let scope = find_change_value(&handler_changes, ".scope");
+                    if scope == "global" {
+                        // Forward to daemon: rewrite paths to __add__ prefix
+                        let config_changes: Vec<ConfigChange> = handler_changes.iter()
+                            .filter_map(|mc| {
+                                if mc.path.ends_with(".scope") { return None; }
+                                // Extract field name (last segment) and remap to daemon prefix
+                                let field = mc.path.rsplit('.').next().unwrap_or(&mc.path);
+                                Some(ConfigChange {
+                                    path: format!("sandbox.rules.__add__.{}", field),
+                                    value: mc.value.clone(),
+                                })
+                            })
+                            .collect();
+                        if let Err(msg) = send_config_update(&rt, rpc_ref, config_changes) {
+                            write_stdout(&format!("{RED}{}{RESET}\r\n", msg));
+                            return None;
+                        }
+                    } else {
+                        // Local scope (default)
+                        if !add_local_rule(&handler_changes, sandbox_state_ref) {
+                            return None;
+                        }
+                    }
+                } else if handler_name == "add_local_rule" {
                     let ok = add_local_rule(&handler_changes, sandbox_state_ref);
                     if !ok { return None; }
+                } else if let Some(rest) = handler_name.strip_prefix("edit_global_rule:") {
+                    // rest = "plugin:idx" — convert to "plugin.idx" for daemon path
+                    let rest_dotted = rest.replace(':', ".");
+                    let config_changes: Vec<ConfigChange> = handler_changes.iter()
+                        .filter_map(|mc| {
+                            let field = mc.path.rsplit('.').next().unwrap_or(&mc.path);
+                            if field == "_scope" { return None; } // scope label, not a real field
+                            Some(ConfigChange {
+                                path: format!("sandbox.rules.__edit__.{}.{}", rest_dotted, field),
+                                value: mc.value.clone(),
+                            })
+                        })
+                        .collect();
+                    if let Err(msg) = send_config_update(&rt, rpc_ref, config_changes) {
+                        write_stdout(&format!("{RED}{}{RESET}\r\n", msg));
+                        return None;
+                    }
                 } else if let Some(rest) = handler_name.strip_prefix("edit_local_rule:") {
                     let parsed = rest.rfind(':').and_then(|colon| {
                         let plugin = &rest[..colon];
