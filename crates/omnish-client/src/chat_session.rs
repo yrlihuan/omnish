@@ -170,8 +170,11 @@ fn sandbox_availability_labels(base_path: &str) -> Vec<ConfigItem> {
     use omnish_plugin::{BwrapUnavailableReason, SandboxBackendType};
     use crate::display;
 
+    // Use the parent path so labels sit at the same level as "backend",
+    // not nested inside a sub-submenu.
+    let parent = base_path.rsplit_once('.').map(|(p, _)| p).unwrap_or(base_path);
     let label = |suffix: &str, text: String| ConfigItem {
-        path: format!("{}.{}", base_path, suffix),
+        path: format!("{}.__{}", parent, suffix),
         label: text,
         kind: ConfigItemKind::Label,
         prefills: vec![],
