@@ -1403,5 +1403,81 @@ test_16() {
     return 0
 }
 
-echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input, add backend, form mode, arrow keys, save failure revert, prefill breadcrumb, proxy toggle, label${NC}"
-run_tests 16
+# ── Test 17: Arrow navigation past Labels renders correctly (#522) ───────
+test_17() {
+    echo -e "\n${YELLOW}=== Test 17: Arrow navigation past Labels renders correctly (#522) ===${NC}"
+
+    restart_client
+    wait_for_client
+    open_test_menu
+
+    # Navigate Down to Telemetry (below Shell submenu).
+    # Items: [Label] LLM Shell Telemetry [Label1] [Label2] Username ...
+    # Down×3 → Telemetry
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    sleep 0.3
+
+    local content
+    content=$(capture_pane -20)
+    show_capture "At Telemetry" "$content" 10
+
+    # Down should skip the two Labels and land on Username
+    send_special Down 0.3
+    sleep 0.3
+    content=$(capture_pane -20)
+    show_capture "After Down past labels" "$content" 10
+
+    # Username should be highlighted (inverse) on its own line.
+    # If the bug is present, the rendering is corrupted — items shift position.
+    local username_line
+    username_line=$(echo "$content" | grep -n "Username" | head -1)
+    local telemetry_line
+    telemetry_line=$(echo "$content" | grep -n "Telemetry" | head -1)
+
+    if [ -z "$username_line" ]; then
+        assert_fail "Username item not found after navigating past labels"
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Now go back Up — should skip labels and land on Telemetry
+    send_special Up 0.3
+    sleep 0.3
+    content=$(capture_pane -20)
+    show_capture "After Up past labels" "$content" 10
+
+    # Verify both items are visible and on separate lines (no rendering corruption).
+    # Extract line numbers for Telemetry and Username — they must not be on the same line.
+    local tel_ln usr_ln
+    tel_ln=$(echo "$content" | grep -n "Telemetry" | head -1 | cut -d: -f1)
+    usr_ln=$(echo "$content" | grep -n "Username" | head -1 | cut -d: -f1)
+
+    if [ -z "$tel_ln" ] || [ -z "$usr_ln" ]; then
+        assert_fail "Telemetry or Username missing after Up past labels"
+        send_special Escape 0.5
+        return 1
+    fi
+
+    if [ "$tel_ln" = "$usr_ln" ]; then
+        assert_fail "Telemetry and Username on same line — display corruption (#522)"
+        send_special Escape 0.5
+        return 1
+    fi
+
+    # Verify label text is visible between them
+    if ! echo "$content" | grep -q "Info label"; then
+        assert_fail "Label text not visible between Telemetry and Username"
+        send_special Escape 0.5
+        return 1
+    fi
+
+    send_special Escape 0.5
+
+    assert_pass "Arrow navigation past Labels renders correctly (#522)"
+    return 0
+}
+
+echo -e "${YELLOW}Menu widget integration test: render, navigation, toggle, submenu, exit, cancel, text input, add backend, form mode, arrow keys, save failure revert, prefill breadcrumb, proxy toggle, label, label-skip-render${NC}"
+run_tests 17

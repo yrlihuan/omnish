@@ -2594,6 +2594,12 @@ impl ChatSession {
                 label: "Telemetry".to_string(),
                 value: false,
             },
+            MenuItem::Label {
+                label: "── Info label 1 ──".to_string(),
+            },
+            MenuItem::Label {
+                label: "── Info label 2 ──".to_string(),
+            },
             MenuItem::TextInput {
                 label: "Username".to_string(),
                 value: "user".to_string(),

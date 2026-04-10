@@ -1082,10 +1082,12 @@ fn incremental_redraw(
     let line = render_menu_item(&items[old_cursor], false);
     common::write_stdout(line.as_bytes());
 
+    // Cursor may skip over Label items, so compute the actual distance.
+    let delta = old_cursor.abs_diff(new_cursor);
     if new_cursor < old_cursor {
-        common::write_stdout(b"\x1b[1A");
+        common::write_stdout(format!("\x1b[{}A", delta).as_bytes());
     } else {
-        common::write_stdout(b"\x1b[1B");
+        common::write_stdout(format!("\x1b[{}B", delta).as_bytes());
     }
     let line = render_menu_item(&items[new_cursor], true);
     common::write_stdout(line.as_bytes());
