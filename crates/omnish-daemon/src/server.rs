@@ -33,55 +33,55 @@ fn load_chat_prompt() -> omnish_llm::prompt::PromptManager {
     }
 }
 
-/// Replace `<thinking>…</thinking>` / `<think>…</think>` blocks:
-/// strip the tags but keep the content so it is visible to the user.
+/// Strip a leading `<thinking>…</thinking>` or `<think>…</think>` block,
+/// keeping the inner content visible.  Only matches when the tag appears
+/// at the very start of the text (after whitespace) to avoid false positives.
 fn unwrap_thinking_tags(text: &str) -> String {
-    let mut result = text.to_string();
+    let trimmed = text.trim_start();
     for (open, close) in [("<thinking>", "</thinking>"), ("<think>", "</think>")] {
-        while let Some(start) = result.find(open) {
-            if let Some(end) = result[start..].find(close) {
-                let inner = result[start + open.len()..start + end].trim();
-                result = format!("{}{}{}", &result[..start], inner, &result[start + end + close.len()..]);
+        if let Some(rest) = trimmed.strip_prefix(open) {
+            return if let Some(end) = rest.find(close) {
+                let inner = rest[..end].trim();
+                let after = &rest[end + close.len()..];
+                format!("{inner}{after}").trim().to_string()
             } else {
-                // Unclosed tag — keep content after the opening tag
-                result = format!("{}{}", &result[..start], result[start + open.len()..].trim_start());
-                break;
-            }
+                rest.trim().to_string()
+            };
         }
     }
-    result.trim().to_string()
+    text.to_string()
 }
 
-/// Replace `<thinking>…</thinking>` / `<think>…</think>` blocks with a
-/// markdown blockquote section so thinking is still visible in the final response.
+/// Convert a leading `<thinking>…</thinking>` or `<think>…</think>` block
+/// into a `# Thinking` markdown section.  Only matches the tag at the very
+/// start of the text to avoid false positives.
 fn thinking_to_markdown(text: &str) -> String {
-    let mut result = text.to_string();
+    let trimmed = text.trim_start();
     for (open, close) in [("<thinking>", "</thinking>"), ("<think>", "</think>")] {
-        while let Some(start) = result.find(open) {
-            if let Some(end) = result[start..].find(close) {
-                let inner = result[start + open.len()..start + end].trim();
-                let replacement = if inner.is_empty() {
-                    String::new()
-                } else {
-                    format!("# Thinking\n{inner}\n")
-                };
-                result = format!("{}{}{}", &result[..start], replacement, &result[start + end + close.len()..]);
-            } else {
-                let inner = result[start + open.len()..].trim();
+        if let Some(rest) = trimmed.strip_prefix(open) {
+            if let Some(end) = rest.find(close) {
+                let inner = rest[..end].trim();
+                let after = rest[end + close.len()..].trim_start();
                 if inner.is_empty() {
-                    result.truncate(start);
-                } else {
-                    result = format!("{}# Thinking\n{inner}\n", &result[..start]);
+                    return after.to_string();
                 }
-                break;
+                let mut out = format!("# Thinking\n{inner}");
+                if !after.is_empty() {
+                    out.push_str("\n\n");
+                    out.push_str(after);
+                }
+                return out.trim().to_string();
+            } else {
+                // Unclosed tag
+                let inner = rest.trim();
+                if inner.is_empty() {
+                    return String::new();
+                }
+                return format!("# Thinking\n{inner}").trim().to_string();
             }
         }
     }
-    // Collapse runs of 3+ newlines to 2 (one blank line).
-    while result.contains("\n\n\n") {
-        result = result.replace("\n\n\n", "\n\n");
-    }
-    result.trim().to_string()
+    text.to_string()
 }
 
 /// Cached state for a paused agent loop awaiting a client-side tool result.
@@ -2890,7 +2890,7 @@ mod tests {
 
     #[test]
     fn test_unwrap_thinking_tags() {
-        // Strips tags, keeps content
+        // Leading tag — strips tags, keeps content
         assert_eq!(
             unwrap_thinking_tags("<thinking>\nContinue.\n</thinking>\n\nRun #27："),
             "Continue.\n\nRun #27："
@@ -2899,15 +2899,23 @@ mod tests {
             unwrap_thinking_tags("<think>\nLet me analyze.\n</think>\nHere is the answer."),
             "Let me analyze.\nHere is the answer."
         );
-        assert_eq!(unwrap_thinking_tags("plain text"), "plain text");
         assert_eq!(unwrap_thinking_tags("<thinking>foo</thinking>"), "foo");
-        // Unclosed tag — keeps content after tag
-        assert_eq!(unwrap_thinking_tags("before <thinking>rest"), "before rest");
+        // Leading whitespace before tag — still matches
+        assert_eq!(unwrap_thinking_tags("  <thinking>bar</thinking>"), "bar");
+        // Unclosed tag — treats rest as content
+        assert_eq!(unwrap_thinking_tags("<thinking>rest of text"), "rest of text");
+        // No tags
+        assert_eq!(unwrap_thinking_tags("plain text"), "plain text");
+        // Tag NOT at start — no change (avoids false positives)
+        assert_eq!(
+            unwrap_thinking_tags("before <thinking>inner</thinking> after"),
+            "before <thinking>inner</thinking> after"
+        );
     }
 
     #[test]
     fn test_thinking_to_markdown() {
-        // Converts to heading section
+        // Leading tag — converts to heading section
         assert_eq!(
             thinking_to_markdown("<thinking>\nContinue.\n</thinking>\n\nRun #27："),
             "# Thinking\nContinue.\n\nRun #27："
@@ -2916,9 +2924,15 @@ mod tests {
             thinking_to_markdown("<think>\nLine 1\nLine 2\n</think>\nAnswer"),
             "# Thinking\nLine 1\nLine 2\n\nAnswer"
         );
-        assert_eq!(thinking_to_markdown("plain text"), "plain text");
         // Empty thinking — removed
         assert_eq!(thinking_to_markdown("<thinking></thinking>rest"), "rest");
+        // No tags
+        assert_eq!(thinking_to_markdown("plain text"), "plain text");
+        // Tag NOT at start — no change
+        assert_eq!(
+            thinking_to_markdown("text <thinking>inner</thinking> more"),
+            "text <thinking>inner</thinking> more"
+        );
     }
 
     // Mock LLM backend that simulates network delay
