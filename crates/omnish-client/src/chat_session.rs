@@ -157,8 +157,10 @@ fn extract_global_rules(items: Vec<ConfigItem>) -> (Vec<ConfigItem>, Vec<GlobalR
     let mut rules = Vec::new();
     let filtered = items.into_iter().filter(|it| {
         if it.path == "sandbox.__rules_json" {
-            if let Ok(v) = serde_json::from_str::<Vec<GlobalRuleEntry>>(&it.label) {
-                rules = v;
+            if let ConfigItemKind::Data { ref value } = it.kind {
+                if let Ok(v) = serde_json::from_str::<Vec<GlobalRuleEntry>>(value) {
+                    rules = v;
+                }
             }
             false // remove from items
         } else {
@@ -282,8 +284,12 @@ fn rule_form_fields(
     }
     items.push(ConfigItem {
         path: format!("{}.plugin", prefix),
-        label: "Plugin".to_string(),
-        kind: ConfigItemKind::TextInput { value: plugin.to_string() },
+        label: format!("Plugin{}", if with_delete { format!(": {}", plugin) } else { String::new() }),
+        kind: if with_delete {
+            ConfigItemKind::Label
+        } else {
+            ConfigItemKind::TextInput { value: plugin.to_string() }
+        },
         prefills: vec![],
     });
     items.push(ConfigItem {
@@ -619,7 +625,7 @@ fn item_value(item: &ConfigItem) -> String {
                 value.clone()
             }
         }
-        ConfigItemKind::Label => String::new(),
+        ConfigItemKind::Label | ConfigItemKind::Data { .. } => String::new(),
     }
 }
 
@@ -629,11 +635,11 @@ fn compute_config_diff(old_items: &[ConfigItem], new_items: &[ConfigItem]) -> Ve
     // Skip Label items — they're non-interactive and include client-side
     // placeholders that differ between daemon response and expanded form.
     let old_map: std::collections::BTreeMap<&str, &ConfigItem> = old_items.iter()
-        .filter(|i| !matches!(i.kind, ConfigItemKind::Label))
+        .filter(|i| !matches!(i.kind, ConfigItemKind::Label | ConfigItemKind::Data { .. }))
         .map(|i| (i.path.as_str(), i))
         .collect();
     let new_map: std::collections::BTreeMap<&str, &ConfigItem> = new_items.iter()
-        .filter(|i| !matches!(i.kind, ConfigItemKind::Label))
+        .filter(|i| !matches!(i.kind, ConfigItemKind::Label | ConfigItemKind::Data { .. }))
         .map(|i| (i.path.as_str(), i))
         .collect();
 
@@ -765,6 +771,7 @@ fn build_menu_tree(
                     ConfigItemKind::Label => MenuItem::Label {
                         label: item.label.clone(),
                     },
+                    ConfigItemKind::Data { .. } => continue, // data items are invisible
                 };
                 current.push(menu_item);
 
@@ -2766,11 +2773,19 @@ impl ChatSession {
                     let ok = add_local_rule(&handler_changes, sandbox_state_ref);
                     if !ok { return None; }
                 } else if let Some(rest) = handler_name.strip_prefix("edit_local_rule:") {
-                    if let Some(colon) = rest.rfind(':') {
+                    let parsed = rest.rfind(':').and_then(|colon| {
                         let plugin = &rest[..colon];
-                        if let Ok(idx) = rest[colon+1..].parse::<usize>() {
-                            let ok = edit_local_rule(plugin, idx, &handler_changes, sandbox_state_ref);
-                            if !ok { return None; }
+                        rest[colon+1..].parse::<usize>().ok().map(|idx| (plugin, idx))
+                    });
+                    match parsed {
+                        Some((plugin, idx)) => {
+                            if !edit_local_rule(plugin, idx, &handler_changes, sandbox_state_ref) {
+                                return None;
+                            }
+                        }
+                        None => {
+                            write_stdout(&format!("{RED}Invalid handler: {}{RESET}\r\n", handler_name));
+                            return None;
                         }
                     }
                 } else {

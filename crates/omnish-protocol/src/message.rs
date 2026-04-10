@@ -5,7 +5,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version — increment on any wire format change.
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// Minimum protocol version this build can interoperate with.
 ///
@@ -33,6 +33,9 @@ pub enum ConfigItemKind {
     TextInput { value: String },
     /// Non-interactive label for displaying descriptions or section notes.
     Label,
+    /// Non-interactive data carrier — invisible in menus, used to pass
+    /// structured data (e.g. JSON) between daemon and client.
+    Data { value: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

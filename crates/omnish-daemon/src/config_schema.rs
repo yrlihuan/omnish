@@ -114,8 +114,8 @@ pub fn build_config_items(
         if s.path == "sandbox._rules" {
             items.push(ConfigItem {
                 path: "sandbox.__rules_json".to_string(),
-                label: build_rules_json(&config.sandbox.plugins),
-                kind: ConfigItemKind::Label,
+                label: String::new(),
+                kind: ConfigItemKind::Data { value: build_rules_json(&config.sandbox.plugins) },
                 prefills: vec![],
             });
             // Fall through to emit the _client:sandbox_rules placeholder label
@@ -369,8 +369,12 @@ fn rule_form_fields(
     }
     items.push(ConfigItem {
         path: format!("{}.plugin", prefix),
-        label: "Plugin".to_string(),
-        kind: ConfigItemKind::TextInput { value: plugin.to_string() },
+        label: format!("Plugin{}", if with_delete { format!(": {}", plugin) } else { String::new() }),
+        kind: if with_delete {
+            ConfigItemKind::Label
+        } else {
+            ConfigItemKind::TextInput { value: plugin.to_string() }
+        },
         prefills: vec![],
     });
     items.push(ConfigItem {
@@ -510,6 +514,7 @@ fn handle_add_global_rule(config_path: &Path, changes: &[&ConfigChange]) -> anyh
         .map(|c| c.value.as_str()).unwrap_or("").trim().to_string();
     let operator = changes.iter().find(|c| c.path.ends_with(".operator"))
         .map(|c| c.value.as_str()).unwrap_or("starts_with").trim().to_string();
+    let operator = if operator.is_empty() { "starts_with".to_string() } else { operator };
     let value = changes.iter().find(|c| c.path.ends_with(".value"))
         .map(|c| c.value.as_str()).unwrap_or("").trim().to_string();
 
@@ -542,6 +547,7 @@ fn handle_edit_global_rule(
         .map(|c| c.value.as_str()).unwrap_or("").trim().to_string();
     let operator = changes.iter().find(|c| c.path.ends_with(".operator"))
         .map(|c| c.value.as_str()).unwrap_or("starts_with").trim().to_string();
+    let operator = if operator.is_empty() { "starts_with".to_string() } else { operator };
     let value = changes.iter().find(|c| c.path.ends_with(".value"))
         .map(|c| c.value.as_str()).unwrap_or("").trim().to_string();
 

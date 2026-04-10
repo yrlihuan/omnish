@@ -407,4 +407,87 @@ mod tests {
         assert!(result.contains("[shell]"));
         assert!(result.contains("command = \"/bin/bash\""));
     }
+
+    #[test]
+    fn test_append_to_empty_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.toml");
+        fs::write(&path, "").unwrap();
+
+        append_to_toml_array(&path, "sandbox.plugins.bash.permit_rules", "command starts_with git").unwrap();
+
+        let result = fs::read_to_string(&path).unwrap();
+        let doc: toml_edit::DocumentMut = result.parse().unwrap();
+        let arr = doc["sandbox"]["plugins"]["bash"]["permit_rules"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr.get(0).unwrap().as_str(), Some("command starts_with git"));
+    }
+
+    #[test]
+    fn test_append_to_existing_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.toml");
+        fs::write(&path, "[sandbox.plugins.bash]\npermit_rules = [\"command starts_with git\"]\n").unwrap();
+
+        append_to_toml_array(&path, "sandbox.plugins.bash.permit_rules", "command contains glab").unwrap();
+
+        let result = fs::read_to_string(&path).unwrap();
+        let doc: toml_edit::DocumentMut = result.parse().unwrap();
+        let arr = doc["sandbox"]["plugins"]["bash"]["permit_rules"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr.get(1).unwrap().as_str(), Some("command contains glab"));
+    }
+
+    #[test]
+    fn test_remove_from_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.toml");
+        fs::write(&path, "[sandbox.plugins.bash]\npermit_rules = [\"a\", \"b\", \"c\"]\n").unwrap();
+
+        remove_from_toml_array(&path, "sandbox.plugins.bash.permit_rules", 1).unwrap();
+
+        let result = fs::read_to_string(&path).unwrap();
+        let doc: toml_edit::DocumentMut = result.parse().unwrap();
+        let arr = doc["sandbox"]["plugins"]["bash"]["permit_rules"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr.get(0).unwrap().as_str(), Some("a"));
+        assert_eq!(arr.get(1).unwrap().as_str(), Some("c"));
+    }
+
+    #[test]
+    fn test_remove_out_of_bounds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.toml");
+        fs::write(&path, "[sandbox.plugins.bash]\npermit_rules = [\"a\"]\n").unwrap();
+
+        let err = remove_from_toml_array(&path, "sandbox.plugins.bash.permit_rules", 5);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("out of bounds"));
+    }
+
+    #[test]
+    fn test_replace_in_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.toml");
+        fs::write(&path, "[sandbox.plugins.bash]\npermit_rules = [\"old_rule\", \"keep\"]\n").unwrap();
+
+        replace_in_toml_array(&path, "sandbox.plugins.bash.permit_rules", 0, "new_rule").unwrap();
+
+        let result = fs::read_to_string(&path).unwrap();
+        let doc: toml_edit::DocumentMut = result.parse().unwrap();
+        let arr = doc["sandbox"]["plugins"]["bash"]["permit_rules"].as_array().unwrap();
+        assert_eq!(arr.get(0).unwrap().as_str(), Some("new_rule"));
+        assert_eq!(arr.get(1).unwrap().as_str(), Some("keep"));
+    }
+
+    #[test]
+    fn test_replace_out_of_bounds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.toml");
+        fs::write(&path, "[sandbox.plugins.bash]\npermit_rules = []\n").unwrap();
+
+        let err = replace_in_toml_array(&path, "sandbox.plugins.bash.permit_rules", 0, "x");
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("out of bounds"));
+    }
 }
