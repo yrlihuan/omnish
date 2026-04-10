@@ -2517,6 +2517,15 @@ fn needs_readline_report(bytes: &[u8]) -> bool {
             0x1b if bytes.get(i + 1) == Some(&b'[') => {
                 match bytes.get(i + 2) {
                     Some(b'A') | Some(b'B') => return true, // Up / Down
+                    Some(b'D') | Some(b'F') | Some(b'H') => return true, // Left / End / Home xterm (#518)
+                    Some(b'1') if bytes.get(i + 3) == Some(&b'~') => return true, // Home VT (#518)
+                    Some(b'4') if bytes.get(i + 3) == Some(&b'~') => return true, // End VT (#518)
+                    _ => {}
+                }
+            }
+            0x1b if bytes.get(i + 1) == Some(&b'O') => {
+                match bytes.get(i + 2) {
+                    Some(b'H') | Some(b'F') => return true, // Home / End SS3 (#518)
                     _ => {}
                 }
             }
