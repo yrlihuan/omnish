@@ -318,7 +318,7 @@ fn rule_form_fields(
         items.push(ConfigItem {
             path: format!("{}._delete", prefix),
             label: "Delete".to_string(),
-            kind: ConfigItemKind::Toggle { value: false },
+            kind: ConfigItemKind::Button,
             prefills: vec![],
         });
     }
@@ -507,7 +507,7 @@ fn edit_local_rule(
     changes: &[widgets::menu::MenuChange],
     sandbox_state: &Arc<RwLock<ClientSandboxConfig>>,
 ) -> bool {
-    let delete = changes.iter().any(|c| c.path.ends_with("._delete") && c.value == "true");
+    let delete = changes.iter().any(|c| c.path.ends_with(".Delete") && c.value == "true");
     let config_path = client_config_path();
     let array_key = format!("sandbox.plugins.{}.permit_rules", plugin);
 
@@ -666,7 +666,7 @@ fn item_value(item: &ConfigItem) -> String {
                 value.clone()
             }
         }
-        ConfigItemKind::Label | ConfigItemKind::Data { .. } => String::new(),
+        ConfigItemKind::Label | ConfigItemKind::Data { .. } | ConfigItemKind::Button => String::new(),
     }
 }
 
@@ -808,6 +808,9 @@ fn build_menu_tree(
                     ConfigItemKind::TextInput { value } => MenuItem::TextInput {
                         label: item.label.clone(),
                         value: value.clone(),
+                    },
+                    ConfigItemKind::Button => MenuItem::Button {
+                        label: item.label.clone(),
                     },
                     ConfigItemKind::Label => MenuItem::Label {
                         label: item.label.clone(),

@@ -7,7 +7,7 @@
 use std::os::unix::io::AsRawFd;
 
 use super::common::{self, MAX_VISIBLE};
-use crate::display::{BOLD, BOLD_REVERSE, DIM, GRAY, GREEN, RESET};
+use crate::display::{BOLD, BOLD_REVERSE, DIM, GRAY, GREEN, RED, RESET};
 
 // ── Layout constants ────────────────────────────────────────────────────
 
@@ -171,11 +171,19 @@ fn render_menu_item(item: &MenuItem, selected: bool) -> String {
         return format!("\r  {GRAY}{}{RESET}\x1b[K", label);
     }
 
-    // Button items render without brackets, aligned with other items
+    // Button items render without brackets, aligned with other items.
+    // Destructive buttons (Delete) render in red.
     if matches!(item, MenuItem::Button { .. }) {
+        let destructive = label == "Delete";
         if selected {
+            if destructive {
+                return format!("\r{}{RED}\x1b[7m{}{RESET}\x1b[K", indent, label);
+            }
             return format!("\r{}{BOLD_REVERSE}{}{RESET}\x1b[K", indent, label);
         } else {
+            if destructive {
+                return format!("\r{}{RED}{}{RESET}\x1b[K", indent, label);
+            }
             return format!("\r{}{}\x1b[K", indent, label);
         }
     }
@@ -962,14 +970,15 @@ pub fn run_menu(
                     MenuItem::Label { .. } => {
                         // Non-interactive — do nothing
                     }
-                    MenuItem::Button { .. } => {
+                    MenuItem::Button { label: btn_label } => {
+                        let btn_label = btn_label.clone();
                         // Button confirm: trigger handler and pop level
                         if let Some(ref handler_name) = current_handler {
                             if let Some(ref mut callback) = on_handler_exit {
                                 let handler_prefix = breadcrumb_parts[1..].join(".");
                                 // Collect current item values directly (not from changes)
                                 // so that default/unchanged Select values are included.
-                                let handler_changes: Vec<MenuChange> = current_items.iter()
+                                let mut handler_changes: Vec<MenuChange> = current_items.iter()
                                     .filter_map(|item| {
                                         let (label, value) = match item {
                                             MenuItem::TextInput { label, value } => (label.clone(), value.clone()),
@@ -983,6 +992,11 @@ pub fn run_menu(
                                         })
                                     })
                                     .collect();
+                                // Include the pressed button itself as a change with value "true"
+                                handler_changes.push(MenuChange {
+                                    path: format!("{}.{}", handler_prefix, btn_label),
+                                    value: "true".to_string(),
+                                });
                                 changes.retain(|c| !c.path.starts_with(&handler_prefix));
                                 if !handler_changes.is_empty() {
                                     if let Some(new_items) = callback(handler_name, handler_changes) {
