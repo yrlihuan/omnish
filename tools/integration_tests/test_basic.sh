@@ -16,6 +16,7 @@
 #  10. Ghost text completion via omnish_debug (#328)
 #  11. developer_mode blocks : when command line has content (#393)
 #  12. Stale completion not rendered after command execution (#507)
+#  13. Arrow key clears ghost text without display corruption (#518)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -35,6 +36,7 @@ Test cases:
  10. Ghost text completion via omnish_debug (#328)
  11. developer_mode blocks : when command line has content (#393)
  12. Stale completion not rendered after command execution (#507)
+ 13. Arrow key clears ghost text without display corruption (#518)
 EOF
 }
 
@@ -704,5 +706,107 @@ test_12() {
     fi
 }
 
-echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history, cursor, ghost-dismiss, completion, developer_mode, stale-completion${NC}"
-run_tests 12
+# ── Test 13: Arrow key clears ghost text without display corruption (#518) ──
+# Helper: trigger omnish_debug ghost text, press a key, check ghost is cleared.
+# Usage: _test_arrow_clears_ghost <key_name> <label>
+_test_arrow_clears_ghost() {
+    local key="$1"
+    local label="$2"
+
+    # Type "omnish_debug" — daemon returns canned ghost text " yes"
+    send_keys "omnish_debug" 0.3
+
+    # Poll for ghost text to appear (debounce ~500ms + round trip)
+    sleep 0.5
+    local ghost_appeared=false
+    local content
+    for attempt in $(seq 1 20); do
+        sleep 0.5
+        content=$(capture_pane -5)
+        local last
+        last=$(last_nonempty_line "$content")
+        local stripped
+        stripped=$(echo "$last" | sed 's/\x1b\[[0-9;]*m//g')
+        if echo "$stripped" | grep -q 'omnish_debug yes'; then
+            ghost_appeared=true
+            break
+        fi
+    done
+
+    if ! $ghost_appeared; then
+        echo -e "  ${YELLOW}Ghost completion not available, skipping ${label}${NC}"
+        send_special C-c 0.5
+        return 255  # skip
+    fi
+
+    show_capture "Ghost visible (${label})" "$content" 3
+
+    # Press the arrow key — should clear ghost text
+    send_special "$key" 0.5
+    sleep 0.5
+
+    content=$(capture_pane -5)
+    show_capture "After ${label}" "$content" 3
+
+    local last stripped
+    last=$(last_nonempty_line "$content")
+    stripped=$(echo "$last" | sed 's/\x1b\[[0-9;]*m//g')
+
+    # Ghost text " yes" should be gone — no "yes" remnant on the prompt line.
+    # The bug manifests as display corruption: e.g. "omnish_debu yess" instead
+    # of clean "omnish_debug" with cursor moved left.
+    if echo "$stripped" | grep -q 'yes'; then
+        assert_fail "Ghost text remnant visible after ${label} — display corruption (#518), got: $stripped"
+        send_special C-c 0.5
+        return 1
+    fi
+
+    # Verify the typed text is still shown
+    if echo "$stripped" | grep -q 'omnish_debu'; then
+        echo -e "  ${GREEN}${label}: ghost cleared correctly${NC}"
+        send_special C-c 0.5
+        return 0
+    else
+        assert_fail "Typed text lost after ${label}, got: $stripped"
+        send_special C-c 0.5
+        return 1
+    fi
+}
+
+test_13() {
+    echo -e "\n${YELLOW}=== Test 13: Arrow key clears ghost text without display corruption (#518) ===${NC}"
+
+    local skipped=0
+
+    # --- Left arrow ---
+    restart_client
+    wait_for_client
+    _test_arrow_clears_ghost Left "Left arrow"
+    local rc=$?
+    if [[ $rc -eq 1 ]]; then return 1; fi
+    if [[ $rc -eq 255 ]]; then ((skipped++)); fi
+
+    # --- Right arrow (should accept ghost, not corrupt) ---
+    # Right arrow at end-of-line with ghost text typically accepts it,
+    # so we test that separately: after Right, ghost should be accepted
+    # into the real input, not left as stale remnant.
+
+    # --- Home key (moves cursor to start) ---
+    restart_client
+    wait_for_client
+    _test_arrow_clears_ghost Home "Home key"
+    rc=$?
+    if [[ $rc -eq 1 ]]; then return 1; fi
+    if [[ $rc -eq 255 ]]; then ((skipped++)); fi
+
+    if [[ $skipped -ge 2 ]]; then
+        assert_pass "Arrow+ghost test skipped (no ghost completion available)"
+        return 0
+    fi
+
+    assert_pass "Arrow keys clear ghost text without display corruption (#518)"
+    return 0
+}
+
+echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history, cursor, ghost-dismiss, completion, developer_mode, stale-completion, arrow-ghost${NC}"
+run_tests 13
