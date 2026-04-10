@@ -483,8 +483,8 @@ mod tests {
     fn test_build_config_items_returns_handlers() {
         let config = DaemonConfig::default();
         let (_items, handlers) = build_config_items(&config, &[]);
-        // Label-only submenus (llm, shell_completion) + handler submenu (add_backend)
-        assert_eq!(handlers.len(), 3);
+        // Label-only submenus (llm, shell_completion, sandbox) + handler submenu (add_backend)
+        assert_eq!(handlers.len(), 4);
         let llm = handlers.iter().find(|h| h.path == "llm").unwrap();
         assert_eq!(llm.label, "LLM");
         assert_eq!(llm.handler, "");

@@ -42,6 +42,19 @@ label = "Ghost text timeout (ms)"
 kind = "text"
 toml_key = "client.ghost_timeout_ms"
 
+# ── General > Sandbox ─────────────────────────────────
+[[items]]
+path = "general.sandbox"
+label = "Sandbox"
+kind = "submenu"
+
+[[items]]
+path = "general.sandbox.backend"
+label = "Default engine (linux)"
+kind = "select"
+toml_key = "sandbox.backend"
+options = ["bwrap", "landlock"]
+
 # ── General > Auto Update ────────────────────────────
 [[items]]
 path = "general.auto_update.enabled"
