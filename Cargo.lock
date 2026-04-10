@@ -1128,6 +1128,7 @@ dependencies = [
  "anyhow",
  "dirs",
  "flate2",
+ "fs2",
  "hex",
  "rand 0.8.5",
  "serde",
