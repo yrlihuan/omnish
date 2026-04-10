@@ -1,9 +1,11 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
+
+use omnish_common::config::ClientSandboxConfig;
 
 use omnish_protocol::message::*;
 use omnish_protocol::message::{ChatToolStatus, StatusIcon};
@@ -67,6 +69,9 @@ pub struct ChatSession {
     tool_section_hist_idx: Option<usize>,
     /// Current spinner animation frame index (for running tool icons).
     spinner_frame: usize,
+    /// Client-local sandbox config (enabled + preferred backend). Shared with
+    /// main event loop so menu edits persist across chat sessions.
+    sandbox_state: Arc<RwLock<ClientSandboxConfig>>,
 }
 
 fn write_stdout(s: &str) {
@@ -144,12 +149,25 @@ struct ConfigDiff {
 /// Convention: a Label item with `label = "_client:<key>"` is a placeholder.
 /// The client replaces it with locally-detected data (potentially multiple items).
 /// This keeps daemon in control of menu structure while client provides local info.
-fn expand_client_placeholders(items: Vec<ConfigItem>) -> Vec<ConfigItem> {
+///
+/// `local_paths` is populated with item paths that represent client-local config
+/// (i.e. should be saved to client.toml instead of sent to the daemon via RPC).
+fn expand_client_placeholders(
+    items: Vec<ConfigItem>,
+    sandbox: &ClientSandboxConfig,
+    local_paths: &mut std::collections::HashSet<String>,
+) -> Vec<ConfigItem> {
     let mut result = Vec::with_capacity(items.len());
     for item in items {
         if let ConfigItemKind::Label = &item.kind {
             if let Some(key) = item.label.strip_prefix("_client:") {
-                result.extend(resolve_client_placeholder(&item.path, key));
+                let expanded = resolve_client_placeholder(&item.path, key, sandbox);
+                if key == "sandbox_config" {
+                    for it in &expanded {
+                        local_paths.insert(it.path.clone());
+                    }
+                }
+                result.extend(expanded);
                 continue;
             }
         }
@@ -158,11 +176,116 @@ fn expand_client_placeholders(items: Vec<ConfigItem>) -> Vec<ConfigItem> {
     result
 }
 
-/// Resolve a single client-side placeholder into concrete label items.
-fn resolve_client_placeholder(base_path: &str, key: &str) -> Vec<ConfigItem> {
+/// Resolve a single client-side placeholder into concrete items.
+fn resolve_client_placeholder(base_path: &str, key: &str, sandbox: &ClientSandboxConfig) -> Vec<ConfigItem> {
     match key {
         "sandbox_availability" => sandbox_availability_labels(base_path),
+        "sandbox_config" => sandbox_config_items(base_path, sandbox),
         _ => vec![],
+    }
+}
+
+/// Generate Toggle + Select items for client-local sandbox config.
+/// Paths use `sandbox.__enabled` / `sandbox.__backend` so they nest under
+/// the existing Sandbox submenu in the config tree.
+fn sandbox_config_items(base_path: &str, state: &ClientSandboxConfig) -> Vec<ConfigItem> {
+    let parent = base_path.rsplit_once('.').map(|(p, _)| p).unwrap_or(base_path);
+    let options: Vec<String> = if cfg!(target_os = "macos") {
+        vec!["macos".to_string()]
+    } else {
+        vec!["bwrap".to_string(), "landlock".to_string()]
+    };
+    let selected = options.iter().position(|o| o == &state.backend).unwrap_or(0);
+    vec![
+        ConfigItem {
+            path: format!("{}.__enabled", parent),
+            label: "Enabled".to_string(),
+            kind: ConfigItemKind::Toggle { value: state.enabled },
+            prefills: vec![],
+        },
+        ConfigItem {
+            path: format!("{}.__backend", parent),
+            label: "Backend".to_string(),
+            kind: ConfigItemKind::Select { options, selected },
+            prefills: vec![],
+        },
+    ]
+}
+
+/// Save a client-local sandbox config change to client.toml and update the in-memory state.
+///
+/// `schema_path` is the item path like `sandbox.__enabled` / `sandbox.__backend`.
+/// Uses a `.toml.lock` file (same convention as `save_client_config_cache`) to
+/// prevent concurrent clobber with daemon-pushed client config writes.
+/// Returns true on success, false on error.
+fn save_local_sandbox_config(
+    schema_path: &str,
+    value: &str,
+    sandbox_state: &Arc<RwLock<ClientSandboxConfig>>,
+) -> bool {
+    use fs2::FileExt;
+    use toml_edit::DocumentMut;
+
+    // Resolve the toml key and parse the typed value before acquiring the lock.
+    enum Change { Enabled(bool), Backend(String) }
+    let change = if schema_path.ends_with(".__enabled") {
+        match value.parse::<bool>() {
+            Ok(b) => Change::Enabled(b),
+            Err(_) => {
+                write_stdout(&format!("{RED}Invalid boolean: {}{RESET}\r\n", value));
+                return false;
+            }
+        }
+    } else if schema_path.ends_with(".__backend") {
+        Change::Backend(value.to_string())
+    } else {
+        write_stdout(&format!("{RED}Unknown local config path: {}{RESET}\r\n", schema_path));
+        return false;
+    };
+
+    let config_path = std::env::var("OMNISH_CLIENT_CONFIG")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| omnish_common::config::omnish_dir().join("client.toml"));
+    let lock_path = config_path.with_extension("toml.lock");
+
+    let result: anyhow::Result<()> = (|| {
+        let lock_file = std::fs::File::create(&lock_path)?;
+        lock_file.lock_exclusive()?;
+
+        let content = if config_path.exists() {
+            std::fs::read_to_string(&config_path)?
+        } else {
+            String::new()
+        };
+        let mut doc = content.parse::<DocumentMut>()?;
+
+        match &change {
+            Change::Enabled(v) => {
+                omnish_common::config_edit::set_toml_nested_in_doc(&mut doc, "sandbox.enabled", toml_edit::value(*v))?;
+            }
+            Change::Backend(v) => {
+                omnish_common::config_edit::set_toml_nested_in_doc(&mut doc, "sandbox.backend", toml_edit::value(v.as_str()))?;
+            }
+        }
+
+        let output = doc.to_string();
+        let output = if output.ends_with('\n') { output } else { format!("{}\n", output) };
+        std::fs::write(&config_path, output)?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            match change {
+                Change::Enabled(v) => sandbox_state.write().unwrap().enabled = v,
+                Change::Backend(v) => sandbox_state.write().unwrap().backend = v,
+            }
+            true
+        }
+        Err(e) => {
+            write_stdout(&format!("{RED}Failed to save sandbox config: {}{RESET}\r\n", e));
+            false
+        }
     }
 }
 
@@ -436,7 +559,17 @@ fn build_menu_tree(
 }
 
 impl ChatSession {
-    pub fn new(chat_history: VecDeque<String>, extended_unicode: bool, sandbox_backend: Option<&str>) -> Self {
+    pub fn new(
+        chat_history: VecDeque<String>,
+        extended_unicode: bool,
+        sandbox_state: Arc<RwLock<ClientSandboxConfig>>,
+    ) -> Self {
+        // Snapshot sandbox config for ClientPluginManager; subsequent menu
+        // edits only affect the NEXT chat session.
+        let (sandbox_enabled, sandbox_backend) = {
+            let s = sandbox_state.read().unwrap();
+            (s.enabled, s.backend.clone())
+        };
         Self {
             current_thread_id: None,
             cached_thread_ids: Vec::new(),
@@ -449,7 +582,10 @@ impl ChatSession {
             thinking_visible: false,
             has_activity: false,
             pending_input: None,
-            client_plugins: Arc::new(client_plugin::ClientPluginManager::new(sandbox_backend)),
+            client_plugins: Arc::new(client_plugin::ClientPluginManager::new(
+                sandbox_enabled,
+                &sandbox_backend,
+            )),
             ghost_hint_shown: false,
             pending_model: None,
             resumed_model: None,
@@ -460,6 +596,7 @@ impl ChatSession {
             tool_section_start: None,
             tool_section_hist_idx: None,
             spinner_frame: 0,
+            sandbox_state,
         }
     }
 
@@ -2335,7 +2472,9 @@ impl ChatSession {
         };
 
         // Expand client-side placeholders (label = "_client:<key>")
-        let items = expand_client_placeholders(items);
+        let sandbox_snapshot = self.sandbox_state.read().unwrap().clone();
+        let mut local_paths = std::collections::HashSet::<String>::new();
+        let items = expand_client_placeholders(items, &sandbox_snapshot, &mut local_paths);
 
         if items.is_empty() {
             write_stdout(&format!("{DIM}No configurable items.{RESET}\r\n"));
@@ -2350,6 +2489,8 @@ impl ChatSession {
 
         let rpc_ref = rpc;
         let path_map_ref = &path_map;
+        let local_paths_ref = &local_paths;
+        let sandbox_state_ref = &self.sandbox_state;
 
         let result = tokio::task::block_in_place(|| {
             let rt = tokio::runtime::Handle::current();
@@ -2357,11 +2498,13 @@ impl ChatSession {
             let mut handler_callback = |_handler_name: &str, handler_changes: Vec<widgets::menu::MenuChange>| -> Option<Vec<widgets::menu::MenuItem>> {
                 let pm = path_map_ref.borrow();
                 let config_changes: Vec<ConfigChange> = handler_changes.iter()
-                    .map(|mc| {
+                    .filter_map(|mc| {
                         let schema_path = pm.get(&mc.path)
                             .cloned()
                             .unwrap_or_else(|| mc.path.clone());
-                        ConfigChange { path: schema_path, value: mc.value.clone() }
+                        // Skip local-only items in RPC batch
+                        if local_paths_ref.contains(&schema_path) { return None; }
+                        Some(ConfigChange { path: schema_path, value: mc.value.clone() })
                     })
                     .collect();
                 drop(pm);
@@ -2377,7 +2520,10 @@ impl ChatSession {
                         });
                         match query_result {
                             Ok(Message::ConfigResponse { items, handlers: new_handlers }) => {
-                                let (new_tree, new_map) = build_menu_tree(&items, &new_handlers);
+                                let sandbox = sandbox_state_ref.read().unwrap().clone();
+                                let mut lp = std::collections::HashSet::new();
+                                let expanded = expand_client_placeholders(items, &sandbox, &mut lp);
+                                let (new_tree, new_map) = build_menu_tree(&expanded, &new_handlers);
                                 *path_map_ref.borrow_mut() = new_map;
                                 Some(new_tree)
                             }
@@ -2399,6 +2545,12 @@ impl ChatSession {
                     .cloned()
                     .unwrap_or_else(|| change.path.clone());
                 drop(pm);
+
+                // Client-local paths: save to client.toml, skip RPC
+                if local_paths_ref.contains(&schema_path) {
+                    return save_local_sandbox_config(&schema_path, &change.value, sandbox_state_ref);
+                }
+
                 let config_changes = vec![ConfigChange { path: schema_path, value: change.value.clone() }];
                 let update_result = rt.block_on(async {
                     rpc_ref.call(Message::ConfigUpdate { changes: config_changes }).await
@@ -2423,7 +2575,10 @@ impl ChatSession {
         // Show diff of changes on exit
         match result {
             widgets::menu::MenuResult::Done(_) | widgets::menu::MenuResult::Cancelled => {
-                if let Ok(Message::ConfigResponse { items: final_items, .. }) = rpc.call(Message::ConfigQuery).await {
+                if let Ok(Message::ConfigResponse { items: final_raw, .. }) = rpc.call(Message::ConfigQuery).await {
+                    let sandbox = self.sandbox_state.read().unwrap().clone();
+                    let mut lp = std::collections::HashSet::new();
+                    let final_items = expand_client_placeholders(final_raw, &sandbox, &mut lp);
                     let diff = compute_config_diff(&initial_items, &final_items);
                     if !diff.is_empty() {
                         display_config_diff(&diff);

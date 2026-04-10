@@ -378,47 +378,25 @@ async fn async_main() -> Result<i32> {
     let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr.clone(), tool_registry.clone(), server_opts, formatter_mgr, Arc::clone(&update_cache));
 
     // Push client-relevant config changes to all connected clients via push_registry.
-    // Watches both [client] and [sandbox] sections since sandbox.backend is pushed to clients.
+    // Only watches [client] section; sandbox settings are now client-local.
     {
         let client_rx = config_watcher.subscribe(config_watcher::ConfigSection::Client);
-        let sandbox_rx = config_watcher.subscribe(config_watcher::ConfigSection::Sandbox);
         let push_reg = server.push_registry.clone();
         tokio::spawn(async move {
             let mut client_rx = client_rx;
-            let mut sandbox_rx = sandbox_rx;
-            // `prev` tracks the full DaemonConfig so diff_client_config can detect
-            // changes from either section. Both watch channels carry the complete config.
             let mut prev = client_rx.borrow_and_update().clone();
-            loop {
-                tokio::select! {
-                    Ok(()) = client_rx.changed() => {
-                        let config = client_rx.borrow_and_update().clone();
-                        let changes = crate::server::diff_client_config(&prev, &config);
-                        if !changes.is_empty() {
-                            let msg = omnish_protocol::message::Message::ConfigClient { changes };
-                            let registry = push_reg.lock().await;
-                            for (_, push_tx) in registry.iter() {
-                                let _ = push_tx.send(msg.clone()).await;
-                            }
-                            tracing::info!("pushed client config to {} connections", registry.len());
-                        }
-                        prev = config;
+            while client_rx.changed().await.is_ok() {
+                let config = client_rx.borrow_and_update().clone();
+                let changes = crate::server::diff_client_config(&prev, &config);
+                if !changes.is_empty() {
+                    let msg = omnish_protocol::message::Message::ConfigClient { changes };
+                    let registry = push_reg.lock().await;
+                    for (_, push_tx) in registry.iter() {
+                        let _ = push_tx.send(msg.clone()).await;
                     }
-                    Ok(()) = sandbox_rx.changed() => {
-                        let config = sandbox_rx.borrow_and_update().clone();
-                        let changes = crate::server::diff_client_config(&prev, &config);
-                        if !changes.is_empty() {
-                            let msg = omnish_protocol::message::Message::ConfigClient { changes };
-                            let registry = push_reg.lock().await;
-                            for (_, push_tx) in registry.iter() {
-                                let _ = push_tx.send(msg.clone()).await;
-                            }
-                            tracing::info!("pushed sandbox_backend to {} connections", registry.len());
-                        }
-                        prev = config;
-                    }
-                    else => break,
+                    tracing::info!("pushed client config to {} connections", registry.len());
                 }
+                prev = config;
             }
         });
     }

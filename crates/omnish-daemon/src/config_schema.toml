@@ -181,21 +181,25 @@ kind = "dynamic"
 source = "plugins"
 
 # ── Sandbox ──────────────────────────────────────────
+# Sandbox settings are entirely client-local (per-host).
+# The submenu is daemon-side for structure, but its contents come from
+# client-side placeholder expansion reading ClientConfig.sandbox.
 [[items]]
 path = "sandbox"
 label = "Sandbox"
 kind = "submenu"
 
+# Client-side placeholder: expands to Toggle (enabled) + Select (backend)
+# bound to ClientConfig.sandbox. Changes write directly to client.toml
+# under keys "sandbox.enabled" and "sandbox.backend" (item paths are
+# sandbox.__enabled / sandbox.__backend in the menu tree).
 [[items]]
-path = "sandbox.backend"
-label = "Default backend (linux)"
-kind = "select"
-toml_key = "sandbox.backend"
-options = ["bwrap", "landlock"]
+path = "sandbox._config"
+label = "_client:sandbox_config"
+kind = "label"
 
 # Client-side placeholder: client detects local sandbox availability
 # and replaces this label with colored status lines.
-# Convention: label = "_client:<key>" marks a placeholder for client injection.
 [[items]]
 path = "sandbox._availability"
 label = "_client:sandbox_availability"

@@ -34,6 +34,8 @@ pub enum SandboxDetectResult {
     Unavailable {
         preferred: SandboxBackendType,
     },
+    /// Sandbox explicitly disabled by client configuration.
+    Disabled,
 }
 
 impl SandboxDetectResult {
@@ -41,7 +43,7 @@ impl SandboxDetectResult {
     pub fn backend(&self) -> Option<SandboxBackendType> {
         match self {
             Self::Preferred(b) | Self::Fallback { actual: b, .. } => Some(*b),
-            Self::Unavailable { .. } => None,
+            Self::Unavailable { .. } | Self::Disabled => None,
         }
     }
 }

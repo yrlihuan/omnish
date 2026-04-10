@@ -146,6 +146,38 @@ pub struct ClientConfig {
     pub daemon_addr: String,
     #[serde(default)]
     pub onboarded: bool,
+    #[serde(default)]
+    pub sandbox: ClientSandboxConfig,
+}
+
+/// Client-local sandbox settings. Per-host because sandbox capability
+/// depends on kernel/OS features (bwrap, landlock, seatbelt).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ClientSandboxConfig {
+    /// Master on/off switch for all client-side sandbox usage.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Preferred backend: "bwrap" | "landlock" | "macos".
+    /// Client-side availability detection may override this at runtime.
+    #[serde(default = "default_client_sandbox_backend")]
+    pub backend: String,
+}
+
+fn default_client_sandbox_backend() -> String {
+    if cfg!(target_os = "macos") {
+        "macos".to_string()
+    } else {
+        "bwrap".to_string()
+    }
+}
+
+impl Default for ClientSandboxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            backend: default_client_sandbox_backend(),
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -158,6 +190,7 @@ impl Default for ClientConfig {
             shell: ShellConfig::default(),
             daemon_addr: default_socket_path(),
             onboarded: false,
+            sandbox: ClientSandboxConfig::default(),
         }
     }
 }
@@ -277,32 +310,16 @@ pub type TasksConfig = HashMap<String, ConfigMap>;
 // Sandbox config
 // ---------------------------------------------------------------------------
 
-fn default_sandbox_backend() -> String {
-    if cfg!(target_os = "macos") {
-        "macos".to_string()
-    } else {
-        "bwrap".to_string()
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 pub struct SandboxConfig {
-    /// Sandbox backend: "bwrap" | "landlock" | "macos"
-    #[serde(default = "default_sandbox_backend")]
-    pub backend: String,
     /// Per-tool permit rules. Key is tool_name (e.g. "bash").
     /// When any rule matches, the tool runs without Landlock sandbox.
+    ///
+    /// Note: The sandbox backend selection and on/off switch live on the
+    /// client side (`ClientConfig.sandbox`) because sandbox capability is
+    /// host-specific. This struct only holds daemon-wide permit rules.
     #[serde(default)]
     pub plugins: HashMap<String, SandboxPluginConfig>,
-}
-
-impl Default for SandboxConfig {
-    fn default() -> Self {
-        Self {
-            backend: default_sandbox_backend(),
-            plugins: HashMap::new(),
-        }
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]

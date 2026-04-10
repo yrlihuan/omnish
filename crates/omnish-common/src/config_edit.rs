@@ -81,18 +81,13 @@ pub fn split_key_path(key: &str) -> Vec<String> {
     segments
 }
 
-fn set_toml_value_nested_inner(
-    path: &Path,
+/// Set a nested key inside an already-parsed `DocumentMut`.
+/// Intermediate tables are created as needed.
+pub fn set_toml_nested_in_doc(
+    doc: &mut toml_edit::DocumentMut,
     key: &str,
     value: toml_edit::Item,
 ) -> anyhow::Result<()> {
-    let content = if path.exists() {
-        std::fs::read_to_string(path)?
-    } else {
-        String::new()
-    };
-    let mut doc = content.parse::<toml_edit::DocumentMut>()?;
-
     let segments = split_key_path(key);
     if segments.len() == 1 {
         doc[&segments[0]] = value;
@@ -109,6 +104,22 @@ fn set_toml_value_nested_inner(
         }
         table[&leaf[0]] = value;
     }
+    Ok(())
+}
+
+fn set_toml_value_nested_inner(
+    path: &Path,
+    key: &str,
+    value: toml_edit::Item,
+) -> anyhow::Result<()> {
+    let content = if path.exists() {
+        std::fs::read_to_string(path)?
+    } else {
+        String::new()
+    };
+    let mut doc = content.parse::<toml_edit::DocumentMut>()?;
+
+    set_toml_nested_in_doc(&mut doc, key, value)?;
 
     let output = doc.to_string();
     let output = if output.ends_with('\n') {

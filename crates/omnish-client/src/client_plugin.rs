@@ -31,14 +31,27 @@ struct PluginResponse {
 
 impl ClientPluginManager {
     /// Create a new plugin manager.
-    /// Precedence: `backend_name` (from daemon config push) → platform default (bwrap / macos).
-    pub fn new(backend_name: Option<&str>) -> Self {
+    ///
+    /// - `enabled`: master switch for client-side sandbox. When `false`, all
+    ///   tool execution bypasses sandbox regardless of the backend selection.
+    /// - `backend_name`: preferred backend from `ClientConfig.sandbox.backend`.
+    ///   Availability detection may still mark it unavailable at runtime.
+    pub fn new(enabled: bool, backend_name: &str) -> Self {
         let plugin_bin = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("omnish-plugin")))
             .unwrap_or_else(|| std::path::PathBuf::from("omnish-plugin"));
-        let preferred = backend_name
-            .and_then(omnish_plugin::SandboxBackendType::from_config)
+
+        if !enabled {
+            // Sandbox explicitly disabled — report as disabled detection result.
+            return Self {
+                plugin_bin,
+                sandbox_backend: None,
+                sandbox_status: omnish_plugin::SandboxDetectResult::Disabled,
+            };
+        }
+
+        let preferred = omnish_plugin::SandboxBackendType::from_config(backend_name)
             .or_else(|| if cfg!(target_os = "macos") {
                 omnish_plugin::SandboxBackendType::from_config("macos")
             } else {
