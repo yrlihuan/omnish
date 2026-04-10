@@ -1,4 +1,9 @@
 use omnish_common::config::{ClientConfig, DaemonConfig};
+use std::sync::Mutex;
+
+/// Tests that mutate env vars (OMNISH_*_CONFIG) must hold this lock to avoid
+/// racing with each other (env vars are process-global).
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_parse_client_config() {
@@ -52,6 +57,7 @@ fn test_daemon_config_defaults() {
 
 #[test]
 fn test_load_client_config_missing_file_returns_default() {
+    let _lock = ENV_LOCK.lock().unwrap();
     std::env::set_var("OMNISH_CLIENT_CONFIG", "/tmp/nonexistent-omnish-test-client.toml");
     let config = omnish_common::config::load_client_config().unwrap();
     assert_eq!(config.shell.command_prefix, ":");
@@ -60,6 +66,7 @@ fn test_load_client_config_missing_file_returns_default() {
 
 #[test]
 fn test_load_daemon_config_missing_file_returns_default() {
+    let _lock = ENV_LOCK.lock().unwrap();
     std::env::set_var("OMNISH_DAEMON_CONFIG", "/tmp/nonexistent-omnish-test-daemon.toml");
     let config = omnish_common::config::load_daemon_config().unwrap();
     assert_eq!(config.llm.default, "claude");
@@ -68,6 +75,7 @@ fn test_load_daemon_config_missing_file_returns_default() {
 
 #[test]
 fn test_load_daemon_config_duplicate_table_recovers() {
+    let _lock = ENV_LOCK.lock().unwrap();
     let path = "/tmp/omnish-test-dup-section.toml";
     std::fs::write(
         path,
