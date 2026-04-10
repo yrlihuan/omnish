@@ -4,12 +4,14 @@
 # Fields:
 #   path         — dot-separated menu hierarchy (e.g., "proxy.http_proxy")
 #   label        — display name in menu
-#   kind         — text | select | toggle | submenu
+#   kind         — text | select | toggle | submenu | dynamic
 #   toml_key     — actual daemon.toml key path (leaf items without handler)
 #   options_from — (select) TOML table whose keys become options at runtime
 #   options      — (select) static option list
 #   handler      — (submenu) Rust function name for grouped change handling
 #   default      — fallback value when toml_key is absent from config
+#   source       — (dynamic) marker identifying which dynamic items to expand
+#                  at this position. Known sources: "plugins"
 
 # ── General > Hotkeys ─────────────────────────────────
 [[items]]
@@ -41,27 +43,6 @@ path = "general.shell_completion.ghost_timeout_ms"
 label = "Ghost text timeout (ms)"
 kind = "text"
 toml_key = "client.ghost_timeout_ms"
-
-# ── General > Sandbox ─────────────────────────────────
-[[items]]
-path = "general.sandbox"
-label = "Sandbox"
-kind = "submenu"
-
-[[items]]
-path = "general.sandbox.backend"
-label = "Default backend (linux)"
-kind = "select"
-toml_key = "sandbox.backend"
-options = ["bwrap", "landlock"]
-
-# Client-side placeholder: client detects local sandbox availability
-# and replaces this label with colored status lines.
-# Convention: label = "_client:<key>" marks a placeholder for client injection.
-[[items]]
-path = "general.sandbox._availability"
-label = "_client:sandbox_availability"
-kind = "label"
 
 # ── General > Auto Update ────────────────────────────
 [[items]]
@@ -191,3 +172,31 @@ path = "tasks.daily_summary.enabled"
 label = "Enabled"
 kind = "toggle"
 toml_key = "tasks.daily_notes.enabled"
+
+# ── Plugins (dynamic: expanded from plugin metadata at runtime) ──
+[[items]]
+path = "plugins"
+label = "Plugins"
+kind = "dynamic"
+source = "plugins"
+
+# ── Sandbox ──────────────────────────────────────────
+[[items]]
+path = "sandbox"
+label = "Sandbox"
+kind = "submenu"
+
+[[items]]
+path = "sandbox.backend"
+label = "Default backend (linux)"
+kind = "select"
+toml_key = "sandbox.backend"
+options = ["bwrap", "landlock"]
+
+# Client-side placeholder: client detects local sandbox availability
+# and replaces this label with colored status lines.
+# Convention: label = "_client:<key>" marks a placeholder for client injection.
+[[items]]
+path = "sandbox._availability"
+label = "_client:sandbox_availability"
+kind = "label"

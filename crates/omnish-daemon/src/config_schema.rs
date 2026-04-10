@@ -30,6 +30,8 @@ struct SchemaItem {
     pub handler: Option<String>,
     #[serde(default)]
     pub default: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 fn parse_schema() -> Vec<SchemaItem> {
@@ -73,8 +75,10 @@ pub fn build_config_items(
     let config_value = toml::Value::try_from(config)
         .expect("DaemonConfig must be Serializable");
 
+    // Submenus and dynamic placeholders both contribute a labeled parent entry
+    // to the handlers list so the client can resolve their display labels.
     let handlers: Vec<ConfigHandlerInfo> = schema.iter()
-        .filter(|s| s.kind == "submenu")
+        .filter(|s| s.kind == "submenu" || s.kind == "dynamic")
         .map(|s| ConfigHandlerInfo {
             path: s.path.clone(),
             label: s.label.clone(),
@@ -92,6 +96,16 @@ pub fn build_config_items(
     let mut items = Vec::new();
     for s in &schema {
         if s.kind == "submenu" {
+            continue;
+        }
+
+        // Dynamic placeholder: expand runtime items at this position
+        if s.kind == "dynamic" {
+            match s.source.as_deref() {
+                Some("plugins") => items.extend(build_plugin_items(config, plugin_metas)),
+                Some(other) => tracing::warn!("unknown dynamic source: {}", other),
+                None => tracing::warn!("dynamic item {} missing source field", s.path),
+            }
             continue;
         }
 
@@ -261,7 +275,15 @@ pub fn build_config_items(
         });
     }
 
-    // ── Plugin items ──────────────────────────────────────────
+    (items, handlers)
+}
+
+/// Build plugin config items from plugin metadata.
+fn build_plugin_items(
+    config: &DaemonConfig,
+    plugin_metas: &[omnish_daemon::plugin::PluginConfigMeta],
+) -> Vec<ConfigItem> {
+    let mut items = Vec::new();
     for meta in plugin_metas {
         let plugin_cfg = config.plugins.get(&meta.name);
 
@@ -292,8 +314,7 @@ pub fn build_config_items(
             });
         }
     }
-
-    (items, handlers)
+    items
 }
 
 /// Generate colored availability labels for sandbox engines.
@@ -485,8 +506,9 @@ mod tests {
     fn test_build_config_items_returns_handlers() {
         let config = DaemonConfig::default();
         let (_items, handlers) = build_config_items(&config, &[]);
-        // Label-only submenus (llm, shell_completion, sandbox) + handler submenu (add_backend)
-        assert_eq!(handlers.len(), 4);
+        // Label-only submenus (llm, shell_completion, sandbox) + dynamic placeholder (plugins)
+        // + handler submenu (add_backend)
+        assert_eq!(handlers.len(), 5);
         let llm = handlers.iter().find(|h| h.path == "llm").unwrap();
         assert_eq!(llm.label, "LLM");
         assert_eq!(llm.handler, "");
