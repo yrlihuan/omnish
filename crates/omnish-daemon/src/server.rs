@@ -67,7 +67,7 @@ fn thinking_to_markdown(text: &str) -> String {
                 }
                 let mut out = format!("# Thinking\n{inner}");
                 if !after.is_empty() {
-                    out.push_str("\n\n");
+                    out.push_str("\n\n# Response\n");
                     out.push_str(after);
                 }
                 return out.trim().to_string();
@@ -2918,11 +2918,11 @@ mod tests {
         // Leading tag — converts to heading section
         assert_eq!(
             thinking_to_markdown("<thinking>\nContinue.\n</thinking>\n\nRun #27："),
-            "# Thinking\nContinue.\n\nRun #27："
+            "# Thinking\nContinue.\n\n# Response\nRun #27："
         );
         assert_eq!(
             thinking_to_markdown("<think>\nLine 1\nLine 2\n</think>\nAnswer"),
-            "# Thinking\nLine 1\nLine 2\n\nAnswer"
+            "# Thinking\nLine 1\nLine 2\n\n# Response\nAnswer"
         );
         // Empty thinking — removed
         assert_eq!(thinking_to_markdown("<thinking></thinking>rest"), "rest");
