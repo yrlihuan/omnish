@@ -356,14 +356,15 @@ fn rule_form_fields(
     operator: &str,
     value: &str,
     with_delete: bool,
+    scope: Option<&str>,
 ) -> Vec<ConfigItem> {
     let op_idx = OPERATORS.iter().position(|&o| o == operator).unwrap_or(0);
     let mut items = Vec::new();
-    if with_delete {
+    if let Some(s) = scope {
         items.push(ConfigItem {
-            path: format!("{}._delete", prefix),
-            label: "Delete".to_string(),
-            kind: ConfigItemKind::Toggle { value: false },
+            path: format!("{}._scope", prefix),
+            label: format!("Scope: {}", s),
+            kind: ConfigItemKind::Label,
             prefills: vec![],
         });
     }
@@ -398,6 +399,14 @@ fn rule_form_fields(
         kind: ConfigItemKind::TextInput { value: value.to_string() },
         prefills: vec![],
     });
+    if with_delete {
+        items.push(ConfigItem {
+            path: format!("{}._delete", prefix),
+            label: "Delete".to_string(),
+            kind: ConfigItemKind::Toggle { value: false },
+            prefills: vec![],
+        });
+    }
     items
 }
 
@@ -422,7 +431,7 @@ fn build_global_rule_items(
                 handler: format!("edit_global_rule:{}:{}", plugin_name, idx),
             });
             let (field, operator, value) = parse_rule_parts(rule);
-            items.extend(rule_form_fields(&prefix, plugin_name, &field, &operator, &value, true));
+            items.extend(rule_form_fields(&prefix, plugin_name, &field, &operator, &value, true, Some("global")));
         }
     }
 
@@ -433,7 +442,7 @@ fn build_global_rule_items(
         label: "Add global permit rule".to_string(),
         handler: "add_global_rule".to_string(),
     });
-    items.extend(rule_form_fields(add_prefix, "", "", "starts_with", "", false));
+    items.extend(rule_form_fields(add_prefix, "", "", "starts_with", "", false, None));
 
     (items, handler_infos)
 }
