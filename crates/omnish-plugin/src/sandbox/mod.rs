@@ -64,6 +64,8 @@ pub struct SandboxPolicy {
     pub allow_network: bool,
 }
 
+pub use bwrap::BwrapUnavailableReason;
+
 pub fn is_available(backend: SandboxBackendType) -> bool {
     match backend {
         SandboxBackendType::Bwrap => bwrap::is_available(),
@@ -71,6 +73,11 @@ pub fn is_available(backend: SandboxBackendType) -> bool {
         #[cfg(target_os = "macos")]
         SandboxBackendType::MacosSeatbelt => true,
     }
+}
+
+/// Returns the reason bwrap is unavailable, or `None` if it works.
+pub fn bwrap_unavailable_reason() -> Option<BwrapUnavailableReason> {
+    bwrap::unavailable_reason()
 }
 
 /// Detect the best available sandbox backend, starting from `preferred`.

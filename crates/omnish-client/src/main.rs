@@ -2277,29 +2277,39 @@ fn command_basename(cmd: &str) -> &str {
 /// Build a one-time sandbox notice for the current chat entry.
 /// Returns `None` when the preferred backend is available (no notice needed).
 fn sandbox_notice(status: omnish_plugin::SandboxDetectResult) -> Option<String> {
-    use omnish_plugin::{SandboxBackendType, SandboxDetectResult};
+    use omnish_plugin::SandboxDetectResult;
     match status {
         SandboxDetectResult::Preferred(_) => None,
         SandboxDetectResult::Fallback { preferred, actual } => {
-            let install_hint = match preferred {
-                SandboxBackendType::Bwrap => " To enable bwrap: apt install bubblewrap",
-                _ => "",
-            };
+            let hint = bwrap_hint(preferred);
             Some(format!(
                 "\r\n{}[omnish] sandbox: {:?} not available, falling back to {:?}.{}{}\r\n",
-                display::DIM, preferred, actual, install_hint, display::RESET,
+                display::DIM, preferred, actual, hint, display::RESET,
             ))
         }
         SandboxDetectResult::Unavailable { preferred } => {
-            let install_hint = match preferred {
-                SandboxBackendType::Bwrap => " To enable bwrap: apt install bubblewrap",
-                _ => "",
-            };
+            let hint = bwrap_hint(preferred);
             Some(format!(
                 "\r\n{}[omnish] sandbox: no backend available, tool execution is not sandboxed.{}{}\r\n",
-                display::DIM, install_hint, display::RESET,
+                display::DIM, hint, display::RESET,
             ))
         }
+    }
+}
+
+fn bwrap_hint(preferred: omnish_plugin::SandboxBackendType) -> &'static str {
+    use omnish_plugin::{BwrapUnavailableReason, SandboxBackendType};
+    if preferred != SandboxBackendType::Bwrap {
+        return "";
+    }
+    match omnish_plugin::bwrap_unavailable_reason() {
+        Some(BwrapUnavailableReason::NotInstalled) => {
+            " Install bwrap: sudo apt install bubblewrap"
+        }
+        Some(BwrapUnavailableReason::NamespaceDenied) => {
+            " bwrap blocked by AppArmor. To allow: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"
+        }
+        None => "",
     }
 }
 

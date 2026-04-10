@@ -4,8 +4,40 @@ use super::SandboxPolicy;
 use std::path::Path;
 use std::process::Command;
 
+/// Why bwrap is not available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BwrapUnavailableReason {
+    /// bwrap binary not found.
+    NotInstalled,
+    /// bwrap exists but cannot create user namespaces (e.g. AppArmor restriction).
+    NamespaceDenied,
+}
+
 pub fn is_available() -> bool {
-    which::which("bwrap").is_ok()
+    unavailable_reason().is_none()
+}
+
+/// Returns `None` if bwrap is available, or the reason it is not.
+pub fn unavailable_reason() -> Option<BwrapUnavailableReason> {
+    if which::which("bwrap").is_err() {
+        return Some(BwrapUnavailableReason::NotInstalled);
+    }
+    // Probe whether bwrap can actually create namespaces.
+    // On systems with AppArmor restricting unprivileged user namespaces,
+    // bwrap fails at runtime with "setting up uid map: Permission denied".
+    let ok = std::process::Command::new("bwrap")
+        .args(["--ro-bind", "/", "/", "--", "/bin/true"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok {
+        None
+    } else {
+        Some(BwrapUnavailableReason::NamespaceDenied)
+    }
 }
 
 pub fn sandbox_command(
