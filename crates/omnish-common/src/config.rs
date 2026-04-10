@@ -161,6 +161,10 @@ pub struct ClientSandboxConfig {
     /// Client-side availability detection may override this at runtime.
     #[serde(default = "default_client_sandbox_backend")]
     pub backend: String,
+    /// Per-tool permit rules (host-local). Merged with daemon-side rules
+    /// at runtime; these take precedence for local exemptions.
+    #[serde(default)]
+    pub plugins: HashMap<String, SandboxPluginConfig>,
 }
 
 fn default_client_sandbox_backend() -> String {
@@ -176,6 +180,7 @@ impl Default for ClientSandboxConfig {
         Self {
             enabled: true,
             backend: default_client_sandbox_backend(),
+            plugins: HashMap::new(),
         }
     }
 }

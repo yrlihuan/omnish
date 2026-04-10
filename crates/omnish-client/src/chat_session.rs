@@ -8,7 +8,7 @@ use uuid::Uuid;
 use omnish_common::config::ClientSandboxConfig;
 
 use omnish_protocol::message::*;
-use omnish_protocol::message::{ChatToolStatus, StatusIcon};
+use omnish_protocol::message::{ChatToolStatus, ConfigHandlerInfo, StatusIcon};
 use omnish_pty::proxy::PtyProxy;
 use omnish_transport::rpc_client::RpcClient;
 
@@ -144,6 +144,30 @@ struct ConfigDiff {
     new_value: String,
 }
 
+/// Parsed global rule entry from the daemon's JSON data item.
+#[derive(serde::Deserialize, Clone)]
+struct GlobalRuleEntry {
+    plugin: String,
+    rules: Vec<String>,
+}
+
+/// Pre-scan items for `sandbox.__rules_json` data item; return parsed entries
+/// and the items list with the data item removed.
+fn extract_global_rules(items: Vec<ConfigItem>) -> (Vec<ConfigItem>, Vec<GlobalRuleEntry>) {
+    let mut rules = Vec::new();
+    let filtered = items.into_iter().filter(|it| {
+        if it.path == "sandbox.__rules_json" {
+            if let Ok(v) = serde_json::from_str::<Vec<GlobalRuleEntry>>(&it.label) {
+                rules = v;
+            }
+            false // remove from items
+        } else {
+            true
+        }
+    }).collect();
+    (filtered, rules)
+}
+
 /// Expand client-side placeholder labels in config items.
 ///
 /// Convention: a Label item with `label = "_client:<key>"` is a placeholder.
@@ -152,19 +176,34 @@ struct ConfigDiff {
 ///
 /// `local_paths` is populated with item paths that represent client-local config
 /// (i.e. should be saved to client.toml instead of sent to the daemon via RPC).
+///
+/// `extra_handlers` receives ConfigHandlerInfo entries for locally-generated
+/// handler submenus (local sandbox rules) that `build_menu_tree` needs.
 fn expand_client_placeholders(
     items: Vec<ConfigItem>,
     sandbox: &ClientSandboxConfig,
     local_paths: &mut std::collections::HashSet<String>,
+    extra_handlers: &mut Vec<ConfigHandlerInfo>,
+    global_rules: &[GlobalRuleEntry],
 ) -> Vec<ConfigItem> {
     let mut result = Vec::with_capacity(items.len());
     for item in items {
         if let ConfigItemKind::Label = &item.kind {
             if let Some(key) = item.label.strip_prefix("_client:") {
-                let expanded = resolve_client_placeholder(&item.path, key, sandbox);
+                let expanded = resolve_client_placeholder(
+                    &item.path, key, sandbox, extra_handlers, global_rules
+                );
                 if key == "sandbox_config" {
                     for it in &expanded {
                         local_paths.insert(it.path.clone());
+                    }
+                }
+                if key == "sandbox_rules" {
+                    for it in &expanded {
+                        // Local rule items have paths starting with sandbox.rules.local.
+                        if it.path.starts_with("sandbox.rules.local.") {
+                            local_paths.insert(it.path.clone());
+                        }
                     }
                 }
                 result.extend(expanded);
@@ -177,10 +216,17 @@ fn expand_client_placeholders(
 }
 
 /// Resolve a single client-side placeholder into concrete items.
-fn resolve_client_placeholder(base_path: &str, key: &str, sandbox: &ClientSandboxConfig) -> Vec<ConfigItem> {
+fn resolve_client_placeholder(
+    base_path: &str,
+    key: &str,
+    sandbox: &ClientSandboxConfig,
+    extra_handlers: &mut Vec<ConfigHandlerInfo>,
+    global_rules: &[GlobalRuleEntry],
+) -> Vec<ConfigItem> {
     match key {
         "sandbox_availability" => sandbox_availability_labels(base_path),
         "sandbox_config" => sandbox_config_items(base_path, sandbox),
+        "sandbox_rules" => sandbox_local_rule_items(sandbox, extra_handlers, global_rules),
         _ => vec![],
     }
 }
@@ -210,6 +256,136 @@ fn sandbox_config_items(base_path: &str, state: &ClientSandboxConfig) -> Vec<Con
             prefills: vec![],
         },
     ]
+}
+
+const OPERATORS: &[&str] = &["starts_with", "contains", "equals", "matches"];
+
+/// Generate local sandbox rule items for the Rules submenu.
+///
+/// Emits:
+/// - One pre-filled form submenu per existing local rule (handler "edit_local_rule:<plugin>:<idx>")
+/// - "Add local permit rule" form submenu (handler "add_local_rule")
+/// - Mirrors of global rules as read-only Labels (no handler, just display)
+///
+/// Handler infos for the local submenus are pushed into `extra_handlers`.
+fn sandbox_local_rule_items(
+    sandbox: &ClientSandboxConfig,
+    extra_handlers: &mut Vec<ConfigHandlerInfo>,
+    global_rules: &[GlobalRuleEntry],
+) -> Vec<ConfigItem> {
+    let mut items = Vec::new();
+
+    // Global rules as read-only labels (daemon manages these, shown for context)
+    for entry in global_rules {
+        for rule in &entry.rules {
+            items.push(ConfigItem {
+                path: format!("sandbox.rules.global.{}.__label_{}", entry.plugin,
+                    rule.chars().filter(|c| c.is_alphanumeric() || *c == '_').collect::<String>()),
+                label: format!("{} {} [global]", entry.plugin, rule),
+                kind: ConfigItemKind::Label,
+                prefills: vec![],
+            });
+        }
+    }
+
+    // Existing local rules — pre-filled edit forms
+    let mut plugin_names: Vec<&String> = sandbox.plugins.keys().collect();
+    plugin_names.sort();
+    for plugin_name in plugin_names {
+        let cfg = &sandbox.plugins[plugin_name];
+        for (idx, rule) in cfg.permit_rules.iter().enumerate() {
+            let prefix = format!("sandbox.rules.local.{}.{}", plugin_name, idx);
+            let handler = format!("edit_local_rule:{}:{}", plugin_name, idx);
+            let label = format!("{} {} [local]", plugin_name, rule);
+
+            extra_handlers.push(ConfigHandlerInfo {
+                path: prefix.clone(),
+                label: label.clone(),
+                handler: handler,
+            });
+
+            let (field, operator, value) = parse_rule_parts(rule);
+            items.push(ConfigItem {
+                path: format!("{}._delete", prefix),
+                label: "Delete".to_string(),
+                kind: ConfigItemKind::Toggle { value: false },
+                prefills: vec![],
+            });
+            items.push(ConfigItem {
+                path: format!("{}.plugin", prefix),
+                label: "Plugin".to_string(),
+                kind: ConfigItemKind::TextInput { value: plugin_name.clone() },
+                prefills: vec![],
+            });
+            items.push(ConfigItem {
+                path: format!("{}.field", prefix),
+                label: "Param name".to_string(),
+                kind: ConfigItemKind::TextInput { value: field },
+                prefills: vec![],
+            });
+            let op_idx = OPERATORS.iter().position(|&o| o == operator.as_str()).unwrap_or(0);
+            items.push(ConfigItem {
+                path: format!("{}.operator", prefix),
+                label: "Operator".to_string(),
+                kind: ConfigItemKind::Select {
+                    options: OPERATORS.iter().map(|s| s.to_string()).collect(),
+                    selected: op_idx,
+                },
+                prefills: vec![],
+            });
+            items.push(ConfigItem {
+                path: format!("{}.value", prefix),
+                label: "Pattern".to_string(),
+                kind: ConfigItemKind::TextInput { value },
+                prefills: vec![],
+            });
+        }
+    }
+
+    // "Add local permit rule" form
+    let add_prefix = "sandbox.rules.local.__new__";
+    extra_handlers.push(ConfigHandlerInfo {
+        path: add_prefix.to_string(),
+        label: "Add local permit rule".to_string(),
+        handler: "add_local_rule".to_string(),
+    });
+    items.push(ConfigItem {
+        path: format!("{}.plugin", add_prefix),
+        label: "Plugin".to_string(),
+        kind: ConfigItemKind::TextInput { value: String::new() },
+        prefills: vec![],
+    });
+    items.push(ConfigItem {
+        path: format!("{}.field", add_prefix),
+        label: "Param name".to_string(),
+        kind: ConfigItemKind::TextInput { value: String::new() },
+        prefills: vec![],
+    });
+    items.push(ConfigItem {
+        path: format!("{}.operator", add_prefix),
+        label: "Operator".to_string(),
+        kind: ConfigItemKind::Select {
+            options: OPERATORS.iter().map(|s| s.to_string()).collect(),
+            selected: 0,
+        },
+        prefills: vec![],
+    });
+    items.push(ConfigItem {
+        path: format!("{}.value", add_prefix),
+        label: "Pattern".to_string(),
+        kind: ConfigItemKind::TextInput { value: String::new() },
+        prefills: vec![],
+    });
+
+    items
+}
+
+fn parse_rule_parts(rule: &str) -> (String, String, String) {
+    let mut parts = rule.splitn(3, ' ');
+    let field = parts.next().unwrap_or("").to_string();
+    let operator = parts.next().unwrap_or("starts_with").to_string();
+    let value = parts.next().unwrap_or("").to_string();
+    (field, operator, value)
 }
 
 /// Save a client-local sandbox config change to client.toml and update the in-memory state.
@@ -286,6 +462,93 @@ fn save_local_sandbox_config(
             write_stdout(&format!("{RED}Failed to save sandbox config: {}{RESET}\r\n", e));
             false
         }
+    }
+}
+
+/// Add a local permit rule to client.toml and update sandbox_state in-memory.
+fn add_local_rule(
+    changes: &[widgets::menu::MenuChange],
+    sandbox_state: &Arc<RwLock<ClientSandboxConfig>>,
+) -> bool {
+    let plugin = find_change_value(changes, ".plugin").trim().to_string();
+    let field   = find_change_value(changes, ".field").trim().to_string();
+    let operator = find_change_value(changes, ".operator").trim().to_string();
+    let value   = find_change_value(changes, ".value").trim().to_string();
+
+    if plugin.is_empty() { write_stdout(&format!("{RED}Plugin is required{RESET}\r\n")); return false; }
+    if field.is_empty()  { write_stdout(&format!("{RED}Param name is required{RESET}\r\n")); return false; }
+    if value.is_empty()  { write_stdout(&format!("{RED}Pattern is required{RESET}\r\n")); return false; }
+
+    let rule = format!("{} {} {}", field, operator.as_str().if_empty("starts_with"), value);
+    let config_path = client_config_path();
+    let array_key = format!("sandbox.plugins.{}.permit_rules", plugin);
+    if let Err(e) = omnish_common::config_edit::append_to_toml_array(&config_path, &array_key, &rule) {
+        write_stdout(&format!("{RED}Failed to save rule: {}{RESET}\r\n", e));
+        return false;
+    }
+    sandbox_state.write().unwrap()
+        .plugins.entry(plugin).or_default()
+        .permit_rules.push(rule);
+    true
+}
+
+/// Edit or delete a local permit rule in client.toml and update sandbox_state.
+fn edit_local_rule(
+    plugin: &str,
+    idx: usize,
+    changes: &[widgets::menu::MenuChange],
+    sandbox_state: &Arc<RwLock<ClientSandboxConfig>>,
+) -> bool {
+    let delete = changes.iter().any(|c| c.path.ends_with("._delete") && c.value == "true");
+    let config_path = client_config_path();
+    let array_key = format!("sandbox.plugins.{}.permit_rules", plugin);
+
+    if delete {
+        if let Err(e) = omnish_common::config_edit::remove_from_toml_array(&config_path, &array_key, idx) {
+            write_stdout(&format!("{RED}Failed to delete rule: {}{RESET}\r\n", e));
+            return false;
+        }
+        let mut guard = sandbox_state.write().unwrap();
+        if let Some(cfg) = guard.plugins.get_mut(plugin) {
+            if idx < cfg.permit_rules.len() { cfg.permit_rules.remove(idx); }
+        }
+        return true;
+    }
+
+    let field    = find_change_value(changes, ".field").trim().to_string();
+    let operator = find_change_value(changes, ".operator").trim().to_string();
+    let value    = find_change_value(changes, ".value").trim().to_string();
+    if field.is_empty() { write_stdout(&format!("{RED}Param name is required{RESET}\r\n")); return false; }
+    if value.is_empty() { write_stdout(&format!("{RED}Pattern is required{RESET}\r\n")); return false; }
+
+    let rule = format!("{} {} {}", field, operator.as_str().if_empty("starts_with"), value);
+    if let Err(e) = omnish_common::config_edit::replace_in_toml_array(&config_path, &array_key, idx, &rule) {
+        write_stdout(&format!("{RED}Failed to update rule: {}{RESET}\r\n", e));
+        return false;
+    }
+    let mut guard = sandbox_state.write().unwrap();
+    if let Some(cfg) = guard.plugins.get_mut(plugin) {
+        if idx < cfg.permit_rules.len() { cfg.permit_rules[idx] = rule; }
+    }
+    true
+}
+
+fn find_change_value<'a>(changes: &'a [widgets::menu::MenuChange], suffix: &str) -> &'a str {
+    changes.iter().find(|c| c.path.ends_with(suffix)).map(|c| c.value.as_str()).unwrap_or("")
+}
+
+fn client_config_path() -> std::path::PathBuf {
+    std::env::var("OMNISH_CLIENT_CONFIG")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| omnish_common::config::omnish_dir().join("client.toml"))
+}
+
+trait StrOrDefault<'a> {
+    fn if_empty(self, default: &'a str) -> &'a str;
+}
+impl<'a> StrOrDefault<'a> for &'a str {
+    fn if_empty(self, default: &'a str) -> &'a str {
+        if self.is_empty() { default } else { self }
     }
 }
 
@@ -2491,7 +2754,13 @@ impl ChatSession {
         // Expand client-side placeholders (label = "_client:<key>")
         let sandbox_snapshot = self.sandbox_state.read().unwrap().clone();
         let mut local_paths = std::collections::HashSet::<String>::new();
-        let items = expand_client_placeholders(items, &sandbox_snapshot, &mut local_paths);
+        let mut extra_handlers: Vec<ConfigHandlerInfo> = Vec::new();
+        let (items, global_rules) = extract_global_rules(items);
+        let items = expand_client_placeholders(
+            items, &sandbox_snapshot, &mut local_paths, &mut extra_handlers, &global_rules
+        );
+        let mut all_handlers = handlers;
+        all_handlers.extend(extra_handlers);
 
         if items.is_empty() {
             write_stdout(&format!("{DIM}No configurable items.{RESET}\r\n"));
@@ -2501,7 +2770,7 @@ impl ChatSession {
         // Snapshot initial state for diff computation on exit
         let initial_items = items.clone();
 
-        let (mut menu_items, path_map_initial) = build_menu_tree(&items, &handlers);
+        let (mut menu_items, path_map_initial) = build_menu_tree(&items, &all_handlers);
         let path_map = RefCell::new(path_map_initial);
 
         let rpc_ref = rpc;
@@ -2512,45 +2781,66 @@ impl ChatSession {
         let result = tokio::task::block_in_place(|| {
             let rt = tokio::runtime::Handle::current();
 
-            let mut handler_callback = |_handler_name: &str, handler_changes: Vec<widgets::menu::MenuChange>| -> Option<Vec<widgets::menu::MenuItem>> {
-                let pm = path_map_ref.borrow();
-                let config_changes: Vec<ConfigChange> = handler_changes.iter()
-                    .filter_map(|mc| {
-                        let schema_path = pm.get(&mc.path)
-                            .cloned()
-                            .unwrap_or_else(|| mc.path.clone());
-                        // Skip local-only items in RPC batch
-                        if local_paths_ref.contains(&schema_path) { return None; }
-                        Some(ConfigChange { path: schema_path, value: mc.value.clone() })
-                    })
-                    .collect();
-                drop(pm);
-
-                let update_result = rt.block_on(async {
-                    rpc_ref.call(Message::ConfigUpdate { changes: config_changes }).await
-                });
-
-                match update_result {
-                    Ok(Message::ConfigUpdateResult { ok: true, .. }) => {
-                        let query_result = rt.block_on(async {
-                            rpc_ref.call(Message::ConfigQuery).await
-                        });
-                        match query_result {
-                            Ok(Message::ConfigResponse { items, handlers: new_handlers }) => {
-                                let sandbox = sandbox_state_ref.read().unwrap().clone();
-                                let mut lp = std::collections::HashSet::new();
-                                let expanded = expand_client_placeholders(items, &sandbox, &mut lp);
-                                let (new_tree, new_map) = build_menu_tree(&expanded, &new_handlers);
-                                *path_map_ref.borrow_mut() = new_map;
-                                Some(new_tree)
-                            }
-                            _ => None,
+            let mut handler_callback = |handler_name: &str, handler_changes: Vec<widgets::menu::MenuChange>| -> Option<Vec<widgets::menu::MenuItem>> {
+                // Local rule operations: handle client-side, then rebuild menu
+                if handler_name == "add_local_rule" {
+                    let ok = add_local_rule(&handler_changes, sandbox_state_ref);
+                    if !ok { return None; }
+                } else if let Some(rest) = handler_name.strip_prefix("edit_local_rule:") {
+                    if let Some(colon) = rest.rfind(':') {
+                        let plugin = &rest[..colon];
+                        if let Ok(idx) = rest[colon+1..].parse::<usize>() {
+                            let ok = edit_local_rule(plugin, idx, &handler_changes, sandbox_state_ref);
+                            if !ok { return None; }
                         }
                     }
-                    Ok(Message::ConfigUpdateResult { ok: false, error }) => {
-                        write_stdout(&format!("{RED}Handler error: {}{RESET}\r\n",
-                            error.unwrap_or_default()));
-                        None
+                } else {
+                    // Global/daemon operation
+                    let pm = path_map_ref.borrow();
+                    let config_changes: Vec<ConfigChange> = handler_changes.iter()
+                        .filter_map(|mc| {
+                            let schema_path = pm.get(&mc.path)
+                                .cloned()
+                                .unwrap_or_else(|| mc.path.clone());
+                            if local_paths_ref.contains(&schema_path) { return None; }
+                            Some(ConfigChange { path: schema_path, value: mc.value.clone() })
+                        })
+                        .collect();
+                    drop(pm);
+
+                    let update_result = rt.block_on(async {
+                        rpc_ref.call(Message::ConfigUpdate { changes: config_changes }).await
+                    });
+                    match update_result {
+                        Ok(Message::ConfigUpdateResult { ok: false, error }) => {
+                            write_stdout(&format!("{RED}Handler error: {}{RESET}\r\n",
+                                error.unwrap_or_default()));
+                            return None;
+                        }
+                        Err(e) => {
+                            write_stdout(&format!("{RED}RPC error: {}{RESET}\r\n", e));
+                            return None;
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Re-query and rebuild menu after any handler operation
+                let query_result = rt.block_on(async {
+                    rpc_ref.call(Message::ConfigQuery).await
+                });
+                match query_result {
+                    Ok(Message::ConfigResponse { items, handlers: new_handlers }) => {
+                        let sandbox = sandbox_state_ref.read().unwrap().clone();
+                        let mut lp = std::collections::HashSet::new();
+                        let mut eh: Vec<ConfigHandlerInfo> = Vec::new();
+                        let (items, gr) = extract_global_rules(items);
+                        let expanded = expand_client_placeholders(items, &sandbox, &mut lp, &mut eh, &gr);
+                        let mut merged = new_handlers;
+                        merged.extend(eh);
+                        let (new_tree, new_map) = build_menu_tree(&expanded, &merged);
+                        *path_map_ref.borrow_mut() = new_map;
+                        Some(new_tree)
                     }
                     _ => None,
                 }
@@ -2595,7 +2885,9 @@ impl ChatSession {
                 if let Ok(Message::ConfigResponse { items: final_raw, .. }) = rpc.call(Message::ConfigQuery).await {
                     let sandbox = self.sandbox_state.read().unwrap().clone();
                     let mut lp = std::collections::HashSet::new();
-                    let final_items = expand_client_placeholders(final_raw, &sandbox, &mut lp);
+                    let mut eh = Vec::new();
+                    let (final_raw, gr) = extract_global_rules(final_raw);
+                    let final_items = expand_client_placeholders(final_raw, &sandbox, &mut lp, &mut eh, &gr);
                     let diff = compute_config_diff(&initial_items, &final_items);
                     if !diff.is_empty() {
                         display_config_diff(&diff);

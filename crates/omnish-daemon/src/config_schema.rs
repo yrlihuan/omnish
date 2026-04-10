@@ -77,7 +77,7 @@ pub fn build_config_items(
 
     // Submenus and dynamic placeholders both contribute a labeled parent entry
     // to the handlers list so the client can resolve their display labels.
-    let handlers: Vec<ConfigHandlerInfo> = schema.iter()
+    let mut handlers: Vec<ConfigHandlerInfo> = schema.iter()
         .filter(|s| s.kind == "submenu" || s.kind == "dynamic")
         .map(|s| ConfigHandlerInfo {
             path: s.path.clone(),
@@ -107,6 +107,18 @@ pub fn build_config_items(
                 None => tracing::warn!("dynamic item {} missing source field", s.path),
             }
             continue;
+        }
+
+        // sandbox._rules placeholder: inject rules JSON data item so the client
+        // can read current global rules during placeholder expansion.
+        if s.path == "sandbox._rules" {
+            items.push(ConfigItem {
+                path: "sandbox.__rules_json".to_string(),
+                label: build_rules_json(&config.sandbox.plugins),
+                kind: ConfigItemKind::Label,
+                prefills: vec![],
+            });
+            // Fall through to emit the _client:sandbox_rules placeholder label
         }
 
         let under_handler = handler_paths.iter().any(|hp| s.path.starts_with(hp) && s.path != *hp);
@@ -275,6 +287,11 @@ pub fn build_config_items(
         });
     }
 
+    // Global sandbox rule form submenus (one per existing rule, plus "Add" form)
+    let (rule_items, rule_handlers) = build_global_rule_items(&config.sandbox.plugins);
+    items.extend(rule_items);
+    handlers.extend(rule_handlers);
+
     (items, handlers)
 }
 
@@ -317,7 +334,129 @@ fn build_plugin_items(
     items
 }
 
-/// Generate colored availability labels for sandbox engines.
+/// Serialize current global sandbox rules to JSON for the client data item.
+/// Format: `[{"plugin":"bash","rules":["command starts_with glab"]}, ...]`
+fn build_rules_json(plugins: &std::collections::HashMap<String, omnish_common::config::SandboxPluginConfig>) -> String {
+    let entries: Vec<serde_json::Value> = plugins.iter()
+        .filter(|(_, cfg)| !cfg.permit_rules.is_empty())
+        .map(|(name, cfg)| serde_json::json!({ "plugin": name, "rules": cfg.permit_rules }))
+        .collect();
+    serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
+}
+
+const OPERATORS: &[&str] = &["starts_with", "contains", "equals", "matches"];
+
+/// Generate form submenu items for global sandbox rules (edit per-rule + add new).
+/// Returns (items, handler_infos).
+fn build_global_rule_items(
+    plugins: &std::collections::HashMap<String, omnish_common::config::SandboxPluginConfig>,
+) -> (Vec<ConfigItem>, Vec<ConfigHandlerInfo>) {
+    let mut items = Vec::new();
+    let mut handler_infos = Vec::new();
+
+    // One form submenu per existing global rule
+    let mut plugin_names: Vec<&String> = plugins.keys().collect();
+    plugin_names.sort();
+    for plugin_name in plugin_names {
+        let cfg = &plugins[plugin_name];
+        for (idx, rule) in cfg.permit_rules.iter().enumerate() {
+            let prefix = format!("sandbox.rules.{}.{}", plugin_name, idx);
+            let handler = format!("edit_global_rule:{}:{}", plugin_name, idx);
+            let label = format!("{} {}", plugin_name, rule);
+
+            handler_infos.push(ConfigHandlerInfo {
+                path: prefix.clone(),
+                label: label.clone(),
+                handler: handler,
+            });
+
+            // Parse rule into parts for pre-filling the form
+            let (field, operator, value) = parse_rule_string(rule);
+            items.push(ConfigItem {
+                path: format!("{}._delete", prefix),
+                label: "Delete".to_string(),
+                kind: ConfigItemKind::Toggle { value: false },
+                prefills: vec![],
+            });
+            items.push(ConfigItem {
+                path: format!("{}.plugin", prefix),
+                label: "Plugin".to_string(),
+                kind: ConfigItemKind::TextInput { value: plugin_name.clone() },
+                prefills: vec![],
+            });
+            items.push(ConfigItem {
+                path: format!("{}.field", prefix),
+                label: "Param name".to_string(),
+                kind: ConfigItemKind::TextInput { value: field },
+                prefills: vec![],
+            });
+            let op_idx = OPERATORS.iter().position(|&o| o == operator).unwrap_or(0);
+            items.push(ConfigItem {
+                path: format!("{}.operator", prefix),
+                label: "Operator".to_string(),
+                kind: ConfigItemKind::Select {
+                    options: OPERATORS.iter().map(|s| s.to_string()).collect(),
+                    selected: op_idx,
+                },
+                prefills: vec![],
+            });
+            items.push(ConfigItem {
+                path: format!("{}.value", prefix),
+                label: "Pattern".to_string(),
+                kind: ConfigItemKind::TextInput { value },
+                prefills: vec![],
+            });
+        }
+    }
+
+    // "Add global permit rule" form submenu
+    let add_prefix = "sandbox.rules.__new__global__";
+    handler_infos.push(ConfigHandlerInfo {
+        path: add_prefix.to_string(),
+        label: "Add global permit rule".to_string(),
+        handler: "add_global_rule".to_string(),
+    });
+    items.push(ConfigItem {
+        path: format!("{}.plugin", add_prefix),
+        label: "Plugin".to_string(),
+        kind: ConfigItemKind::TextInput { value: String::new() },
+        prefills: vec![],
+    });
+    items.push(ConfigItem {
+        path: format!("{}.field", add_prefix),
+        label: "Param name".to_string(),
+        kind: ConfigItemKind::TextInput { value: String::new() },
+        prefills: vec![],
+    });
+    items.push(ConfigItem {
+        path: format!("{}.operator", add_prefix),
+        label: "Operator".to_string(),
+        kind: ConfigItemKind::Select {
+            options: OPERATORS.iter().map(|s| s.to_string()).collect(),
+            selected: 0,
+        },
+        prefills: vec![],
+    });
+    items.push(ConfigItem {
+        path: format!("{}.value", add_prefix),
+        label: "Pattern".to_string(),
+        kind: ConfigItemKind::TextInput { value: String::new() },
+        prefills: vec![],
+    });
+
+    (items, handler_infos)
+}
+
+/// Parse a rule string like "command starts_with glab" into (field, operator, value).
+/// Returns empty strings if parsing fails.
+fn parse_rule_string(rule: &str) -> (String, String, String) {
+    let mut parts = rule.splitn(3, ' ');
+    let field = parts.next().unwrap_or("").to_string();
+    let operator = parts.next().unwrap_or("").to_string();
+    let value = parts.next().unwrap_or("").to_string();
+    (field, operator, value)
+}
+
 fn find_schema_item<'a>(schema: &'a [SchemaItem], path: &str) -> Option<&'a SchemaItem> {
     schema.iter().find(|s| s.path == path)
 }
@@ -367,12 +506,73 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
     }
 
     for (handler, changes) in &handler_groups {
-        match handler.as_str() {
-            "add_backend" => handle_add_backend(config_path, changes)?,
-            other => anyhow::bail!("unknown handler: {}", other),
+        if handler == "add_backend" {
+            handle_add_backend(config_path, changes)?;
+        } else if handler == "add_global_rule" {
+            handle_add_global_rule(config_path, changes)?;
+        } else if handler.starts_with("edit_global_rule:") {
+            // handler format: "edit_global_rule:<plugin>:<index>"
+            let rest = &handler["edit_global_rule:".len()..];
+            let colon = rest.rfind(':').ok_or_else(|| anyhow::anyhow!("malformed handler: {}", handler))?;
+            let plugin = &rest[..colon];
+            let idx: usize = rest[colon+1..].parse()
+                .map_err(|_| anyhow::anyhow!("invalid index in handler: {}", handler))?;
+            handle_edit_global_rule(config_path, plugin, idx, changes)?;
+        } else {
+            anyhow::bail!("unknown handler: {}", handler);
         }
     }
 
+    Ok(())
+}
+
+fn handle_add_global_rule(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::Result<()> {
+    let plugin = changes.iter().find(|c| c.path.ends_with(".plugin"))
+        .map(|c| c.value.as_str()).unwrap_or("").trim().to_string();
+    let field = changes.iter().find(|c| c.path.ends_with(".field"))
+        .map(|c| c.value.as_str()).unwrap_or("").trim().to_string();
+    let operator = changes.iter().find(|c| c.path.ends_with(".operator"))
+        .map(|c| c.value.as_str()).unwrap_or("starts_with").trim().to_string();
+    let value = changes.iter().find(|c| c.path.ends_with(".value"))
+        .map(|c| c.value.as_str()).unwrap_or("").trim().to_string();
+
+    if plugin.is_empty() { anyhow::bail!("add_global_rule: plugin is required"); }
+    if field.is_empty()  { anyhow::bail!("add_global_rule: field is required"); }
+    if value.is_empty()  { anyhow::bail!("add_global_rule: pattern is required"); }
+
+    let rule = format!("{} {} {}", field, operator, value);
+    let array_key = format!("sandbox.plugins.{}.permit_rules", plugin);
+    omnish_common::config_edit::append_to_toml_array(config_path, &array_key, &rule)?;
+    Ok(())
+}
+
+fn handle_edit_global_rule(
+    config_path: &Path,
+    plugin: &str,
+    idx: usize,
+    changes: &[&ConfigChange],
+) -> anyhow::Result<()> {
+    let delete = changes.iter().find(|c| c.path.ends_with("._delete"))
+        .map(|c| c.value == "true").unwrap_or(false);
+    let array_key = format!("sandbox.plugins.{}.permit_rules", plugin);
+
+    if delete {
+        omnish_common::config_edit::remove_from_toml_array(config_path, &array_key, idx)?;
+        return Ok(());
+    }
+
+    let field = changes.iter().find(|c| c.path.ends_with(".field"))
+        .map(|c| c.value.as_str()).unwrap_or("").trim().to_string();
+    let operator = changes.iter().find(|c| c.path.ends_with(".operator"))
+        .map(|c| c.value.as_str()).unwrap_or("starts_with").trim().to_string();
+    let value = changes.iter().find(|c| c.path.ends_with(".value"))
+        .map(|c| c.value.as_str()).unwrap_or("").trim().to_string();
+
+    if field.is_empty() { anyhow::bail!("edit_global_rule: field is required"); }
+    if value.is_empty() { anyhow::bail!("edit_global_rule: pattern is required"); }
+
+    let rule = format!("{} {} {}", field, operator, value);
+    omnish_common::config_edit::replace_in_toml_array(config_path, &array_key, idx, &rule)?;
     Ok(())
 }
 
@@ -507,8 +707,8 @@ mod tests {
         let config = DaemonConfig::default();
         let (_items, handlers) = build_config_items(&config, &[]);
         // Label-only submenus (llm, shell_completion, sandbox) + dynamic placeholder (plugins)
-        // + handler submenu (add_backend)
-        assert_eq!(handlers.len(), 5);
+        // + handler submenus (add_backend, add_global_rule)
+        assert_eq!(handlers.len(), 6);
         let llm = handlers.iter().find(|h| h.path == "llm").unwrap();
         assert_eq!(llm.label, "LLM");
         assert_eq!(llm.handler, "");

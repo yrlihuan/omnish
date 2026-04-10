@@ -198,6 +198,15 @@ path = "sandbox._config"
 label = "_client:sandbox_config"
 kind = "label"
 
+# Client-side placeholder: expands to the Rules submenu containing
+# global rules (from daemon.toml) merged with local rules (from client.toml),
+# plus an "Add permit rule" form. The daemon injects a sandbox.__rules_json
+# data item immediately before this placeholder so the client can read it.
+[[items]]
+path = "sandbox._rules"
+label = "_client:sandbox_rules"
+kind = "label"
+
 # Client-side placeholder: client detects local sandbox availability
 # and replaces this label with colored status lines.
 [[items]]

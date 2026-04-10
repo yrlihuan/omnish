@@ -169,6 +169,91 @@ pub fn set_toml_value(path: &Path, key: &str, value: impl Into<TomlValue>) -> an
     Ok(())
 }
 
+// ── TOML array operations (file-locked) ──────────────────────────────────────
+
+/// Navigate to a nested table by dot-separated key path, creating intermediate
+/// tables as needed. Returns a mutable reference to the leaf table item (array).
+fn get_or_create_array<'a>(
+    doc: &'a mut toml_edit::DocumentMut,
+    key: &str,
+) -> anyhow::Result<&'a mut toml_edit::Array> {
+    let segments = split_key_path(key);
+    if segments.is_empty() {
+        anyhow::bail!("empty key");
+    }
+    let (parents, leaf_slice) = segments.split_at(segments.len() - 1);
+    let leaf = &leaf_slice[0];
+
+    let mut table = doc.as_table_mut();
+    for seg in parents {
+        if !table.contains_key(seg.as_str()) {
+            table.insert(seg, toml_edit::Item::Table(toml_edit::Table::new()));
+        }
+        table = table[seg.as_str()]
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("{} is not a table", seg))?;
+    }
+
+    // Create array if it doesn't exist
+    if !table.contains_key(leaf.as_str()) {
+        table.insert(leaf, toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new())));
+    }
+    table[leaf.as_str()]
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("{} is not an array", leaf))
+}
+
+fn with_locked_doc<F>(path: &Path, f: F) -> anyhow::Result<()>
+where
+    F: FnOnce(&mut toml_edit::DocumentMut) -> anyhow::Result<()>,
+{
+    use fs2::FileExt;
+    let lock_path = path.with_extension("toml.lock");
+    let lock_file = std::fs::File::create(&lock_path)?;
+    lock_file.lock_exclusive()?;
+
+    let content = if path.exists() { std::fs::read_to_string(path)? } else { String::new() };
+    let mut doc = content.parse::<toml_edit::DocumentMut>()?;
+    f(&mut doc)?;
+    let output = doc.to_string();
+    let output = if output.ends_with('\n') { output } else { format!("{}\n", output) };
+    std::fs::write(path, output)?;
+    Ok(())
+}
+
+/// Append a string value to a TOML array at the given dot-separated key path.
+pub fn append_to_toml_array(path: &Path, key: &str, value: &str) -> anyhow::Result<()> {
+    with_locked_doc(path, |doc| {
+        let arr = get_or_create_array(doc, key)?;
+        arr.push(value);
+        Ok(())
+    })
+}
+
+/// Remove the element at `index` from a TOML array at the given key path.
+pub fn remove_from_toml_array(path: &Path, key: &str, index: usize) -> anyhow::Result<()> {
+    with_locked_doc(path, |doc| {
+        let arr = get_or_create_array(doc, key)?;
+        if index >= arr.len() {
+            anyhow::bail!("index {} out of bounds (len={})", index, arr.len());
+        }
+        arr.remove(index);
+        Ok(())
+    })
+}
+
+/// Replace the element at `index` in a TOML array at the given key path.
+pub fn replace_in_toml_array(path: &Path, key: &str, index: usize, value: &str) -> anyhow::Result<()> {
+    with_locked_doc(path, |doc| {
+        let arr = get_or_create_array(doc, key)?;
+        if index >= arr.len() {
+            anyhow::bail!("index {} out of bounds (len={})", index, arr.len());
+        }
+        arr.replace(index, value);
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
