@@ -344,7 +344,58 @@ fn build_rules_json(plugins: &std::collections::HashMap<String, omnish_common::c
     serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
 }
 
-const OPERATORS: &[&str] = &["starts_with", "contains", "equals", "matches"];
+use omnish_common::sandbox_rule::{OPERATORS, parse_rule_parts};
+
+/// Build the 5 form field ConfigItems for a permit rule (edit or add).
+/// For edit forms, pass current field/operator/value and `with_delete=true`.
+/// For add forms, pass empty strings and `with_delete=false`.
+fn rule_form_fields(
+    prefix: &str,
+    plugin: &str,
+    field: &str,
+    operator: &str,
+    value: &str,
+    with_delete: bool,
+) -> Vec<ConfigItem> {
+    let op_idx = OPERATORS.iter().position(|&o| o == operator).unwrap_or(0);
+    let mut items = Vec::new();
+    if with_delete {
+        items.push(ConfigItem {
+            path: format!("{}._delete", prefix),
+            label: "Delete".to_string(),
+            kind: ConfigItemKind::Toggle { value: false },
+            prefills: vec![],
+        });
+    }
+    items.push(ConfigItem {
+        path: format!("{}.plugin", prefix),
+        label: "Plugin".to_string(),
+        kind: ConfigItemKind::TextInput { value: plugin.to_string() },
+        prefills: vec![],
+    });
+    items.push(ConfigItem {
+        path: format!("{}.field", prefix),
+        label: "Param name".to_string(),
+        kind: ConfigItemKind::TextInput { value: field.to_string() },
+        prefills: vec![],
+    });
+    items.push(ConfigItem {
+        path: format!("{}.operator", prefix),
+        label: "Operator".to_string(),
+        kind: ConfigItemKind::Select {
+            options: OPERATORS.iter().map(|s| s.to_string()).collect(),
+            selected: op_idx,
+        },
+        prefills: vec![],
+    });
+    items.push(ConfigItem {
+        path: format!("{}.value", prefix),
+        label: "Pattern".to_string(),
+        kind: ConfigItemKind::TextInput { value: value.to_string() },
+        prefills: vec![],
+    });
+    items
+}
 
 /// Generate form submenu items for global sandbox rules (edit per-rule + add new).
 /// Returns (items, handler_infos).
@@ -361,51 +412,13 @@ fn build_global_rule_items(
         let cfg = &plugins[plugin_name];
         for (idx, rule) in cfg.permit_rules.iter().enumerate() {
             let prefix = format!("sandbox.rules.{}.{}", plugin_name, idx);
-            let handler = format!("edit_global_rule:{}:{}", plugin_name, idx);
-            let label = format!("{} {}", plugin_name, rule);
-
             handler_infos.push(ConfigHandlerInfo {
                 path: prefix.clone(),
-                label: label.clone(),
-                handler: handler,
+                label: format!("{} {}", plugin_name, rule),
+                handler: format!("edit_global_rule:{}:{}", plugin_name, idx),
             });
-
-            // Parse rule into parts for pre-filling the form
-            let (field, operator, value) = parse_rule_string(rule);
-            items.push(ConfigItem {
-                path: format!("{}._delete", prefix),
-                label: "Delete".to_string(),
-                kind: ConfigItemKind::Toggle { value: false },
-                prefills: vec![],
-            });
-            items.push(ConfigItem {
-                path: format!("{}.plugin", prefix),
-                label: "Plugin".to_string(),
-                kind: ConfigItemKind::TextInput { value: plugin_name.clone() },
-                prefills: vec![],
-            });
-            items.push(ConfigItem {
-                path: format!("{}.field", prefix),
-                label: "Param name".to_string(),
-                kind: ConfigItemKind::TextInput { value: field },
-                prefills: vec![],
-            });
-            let op_idx = OPERATORS.iter().position(|&o| o == operator).unwrap_or(0);
-            items.push(ConfigItem {
-                path: format!("{}.operator", prefix),
-                label: "Operator".to_string(),
-                kind: ConfigItemKind::Select {
-                    options: OPERATORS.iter().map(|s| s.to_string()).collect(),
-                    selected: op_idx,
-                },
-                prefills: vec![],
-            });
-            items.push(ConfigItem {
-                path: format!("{}.value", prefix),
-                label: "Pattern".to_string(),
-                kind: ConfigItemKind::TextInput { value },
-                prefills: vec![],
-            });
+            let (field, operator, value) = parse_rule_parts(rule);
+            items.extend(rule_form_fields(&prefix, plugin_name, &field, &operator, &value, true));
         }
     }
 
@@ -416,45 +429,9 @@ fn build_global_rule_items(
         label: "Add global permit rule".to_string(),
         handler: "add_global_rule".to_string(),
     });
-    items.push(ConfigItem {
-        path: format!("{}.plugin", add_prefix),
-        label: "Plugin".to_string(),
-        kind: ConfigItemKind::TextInput { value: String::new() },
-        prefills: vec![],
-    });
-    items.push(ConfigItem {
-        path: format!("{}.field", add_prefix),
-        label: "Param name".to_string(),
-        kind: ConfigItemKind::TextInput { value: String::new() },
-        prefills: vec![],
-    });
-    items.push(ConfigItem {
-        path: format!("{}.operator", add_prefix),
-        label: "Operator".to_string(),
-        kind: ConfigItemKind::Select {
-            options: OPERATORS.iter().map(|s| s.to_string()).collect(),
-            selected: 0,
-        },
-        prefills: vec![],
-    });
-    items.push(ConfigItem {
-        path: format!("{}.value", add_prefix),
-        label: "Pattern".to_string(),
-        kind: ConfigItemKind::TextInput { value: String::new() },
-        prefills: vec![],
-    });
+    items.extend(rule_form_fields(add_prefix, "", "", "starts_with", "", false));
 
     (items, handler_infos)
-}
-
-/// Parse a rule string like "command starts_with glab" into (field, operator, value).
-/// Returns empty strings if parsing fails.
-fn parse_rule_string(rule: &str) -> (String, String, String) {
-    let mut parts = rule.splitn(3, ' ');
-    let field = parts.next().unwrap_or("").to_string();
-    let operator = parts.next().unwrap_or("").to_string();
-    let value = parts.next().unwrap_or("").to_string();
-    (field, operator, value)
 }
 
 fn find_schema_item<'a>(schema: &'a [SchemaItem], path: &str) -> Option<&'a SchemaItem> {
