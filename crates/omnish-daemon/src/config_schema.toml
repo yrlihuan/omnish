@@ -50,7 +50,7 @@ kind = "submenu"
 
 [[items]]
 path = "general.sandbox.backend"
-label = "Default engine (linux)"
+label = "Default backend (linux)"
 kind = "select"
 toml_key = "sandbox.backend"
 options = ["bwrap", "landlock"]
