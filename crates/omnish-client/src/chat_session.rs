@@ -244,10 +244,14 @@ fn item_value(item: &ConfigItem) -> String {
 /// Compute diff between two config item snapshots by matching on `path`.
 /// Uses BTreeMap for deterministic traversal order and sorts output by label.
 fn compute_config_diff(old_items: &[ConfigItem], new_items: &[ConfigItem]) -> Vec<ConfigDiff> {
+    // Skip Label items — they're non-interactive and include client-side
+    // placeholders that differ between daemon response and expanded form.
     let old_map: std::collections::BTreeMap<&str, &ConfigItem> = old_items.iter()
+        .filter(|i| !matches!(i.kind, ConfigItemKind::Label))
         .map(|i| (i.path.as_str(), i))
         .collect();
     let new_map: std::collections::BTreeMap<&str, &ConfigItem> = new_items.iter()
+        .filter(|i| !matches!(i.kind, ConfigItemKind::Label))
         .map(|i| (i.path.as_str(), i))
         .collect();
 
