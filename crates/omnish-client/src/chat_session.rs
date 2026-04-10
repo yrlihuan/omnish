@@ -318,7 +318,7 @@ fn rule_form_fields(
         items.push(ConfigItem {
             path: format!("{}._delete", prefix),
             label: "Delete".to_string(),
-            kind: ConfigItemKind::Button,
+            kind: ConfigItemKind::Toggle { value: false },
             prefills: vec![],
         });
     }
@@ -666,7 +666,7 @@ fn item_value(item: &ConfigItem) -> String {
                 value.clone()
             }
         }
-        ConfigItemKind::Label | ConfigItemKind::Data { .. } | ConfigItemKind::Button => String::new(),
+        ConfigItemKind::Label | ConfigItemKind::Data { .. } => String::new(),
     }
 }
 
@@ -794,28 +794,30 @@ fn build_menu_tree(
         for (i, seg) in segments.iter().enumerate() {
             if i == segments.len() - 1 {
                 // Leaf item
-                let menu_item = match &item.kind {
-                    ConfigItemKind::Toggle { value } => MenuItem::Toggle {
-                        label: item.label.clone(),
-                        value: *value,
-                    },
-                    ConfigItemKind::Select { options, selected } => MenuItem::Select {
-                        label: item.label.clone(),
-                        options: options.clone(),
-                        selected: *selected,
-                        prefills: item.prefills.clone(),
-                    },
-                    ConfigItemKind::TextInput { value } => MenuItem::TextInput {
-                        label: item.label.clone(),
-                        value: value.clone(),
-                    },
-                    ConfigItemKind::Button => MenuItem::Button {
-                        label: item.label.clone(),
-                    },
-                    ConfigItemKind::Label => MenuItem::Label {
-                        label: item.label.clone(),
-                    },
-                    ConfigItemKind::Data { .. } => continue, // data items are invisible
+                // ._delete toggles render as destructive Buttons
+                let menu_item = if item.path.ends_with("._delete") {
+                    MenuItem::Button { label: item.label.clone() }
+                } else {
+                    match &item.kind {
+                        ConfigItemKind::Toggle { value } => MenuItem::Toggle {
+                            label: item.label.clone(),
+                            value: *value,
+                        },
+                        ConfigItemKind::Select { options, selected } => MenuItem::Select {
+                            label: item.label.clone(),
+                            options: options.clone(),
+                            selected: *selected,
+                            prefills: item.prefills.clone(),
+                        },
+                        ConfigItemKind::TextInput { value } => MenuItem::TextInput {
+                            label: item.label.clone(),
+                            value: value.clone(),
+                        },
+                        ConfigItemKind::Label => MenuItem::Label {
+                            label: item.label.clone(),
+                        },
+                        ConfigItemKind::Data { .. } => continue, // data items are invisible
+                    }
                 };
                 current.push(menu_item);
 
