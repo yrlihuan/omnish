@@ -45,7 +45,7 @@ impl ClientPluginManager {
                 omnish_plugin::SandboxBackendType::from_config("bwrap")
             });
         let status = preferred
-            .map(|p| omnish_plugin::detect_backend_status(p))
+            .map(omnish_plugin::detect_backend_status)
             .unwrap_or(omnish_plugin::SandboxDetectResult::Unavailable {
                 preferred: omnish_plugin::SandboxBackendType::Bwrap,
             });

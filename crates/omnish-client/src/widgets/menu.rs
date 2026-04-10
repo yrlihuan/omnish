@@ -162,8 +162,12 @@ fn render_menu_item(item: &MenuItem, selected: bool) -> String {
         MenuItem::Label { .. } => String::new(),
     };
 
-    // Label items render in dim gray, never highlighted
+    // Label items render in dim gray, never highlighted.
+    // If the label already contains ANSI escape codes, render it raw.
     if matches!(item, MenuItem::Label { .. }) {
+        if label.contains('\x1b') {
+            return format!("\r  {}{RESET}\x1b[K", label);
+        }
         return format!("\r  {GRAY}{}{RESET}\x1b[K", label);
     }
 

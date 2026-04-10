@@ -201,6 +201,7 @@ pub fn build_config_items(
             kind,
             prefills: vec![],
         });
+
     }
 
     // Dynamic items: existing backends (sorted by name)
@@ -295,6 +296,7 @@ pub fn build_config_items(
     (items, handlers)
 }
 
+/// Generate colored availability labels for sandbox engines.
 fn find_schema_item<'a>(schema: &'a [SchemaItem], path: &str) -> Option<&'a SchemaItem> {
     schema.iter().find(|s| s.path == path)
 }

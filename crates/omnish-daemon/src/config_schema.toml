@@ -55,6 +55,14 @@ kind = "select"
 toml_key = "sandbox.backend"
 options = ["bwrap", "landlock"]
 
+# Client-side placeholder: client detects local sandbox availability
+# and replaces this label with colored status lines.
+# Convention: label = "_client:<key>" marks a placeholder for client injection.
+[[items]]
+path = "general.sandbox._availability"
+label = "_client:sandbox_availability"
+kind = "label"
+
 # ── General > Auto Update ────────────────────────────
 [[items]]
 path = "general.auto_update.enabled"

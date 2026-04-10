@@ -139,6 +139,87 @@ struct ConfigDiff {
     new_value: String,
 }
 
+/// Expand client-side placeholder labels in config items.
+///
+/// Convention: a Label item with `label = "_client:<key>"` is a placeholder.
+/// The client replaces it with locally-detected data (potentially multiple items).
+/// This keeps daemon in control of menu structure while client provides local info.
+fn expand_client_placeholders(items: Vec<ConfigItem>) -> Vec<ConfigItem> {
+    let mut result = Vec::with_capacity(items.len());
+    for item in items {
+        if let ConfigItemKind::Label = &item.kind {
+            if let Some(key) = item.label.strip_prefix("_client:") {
+                result.extend(resolve_client_placeholder(&item.path, key));
+                continue;
+            }
+        }
+        result.push(item);
+    }
+    result
+}
+
+/// Resolve a single client-side placeholder into concrete label items.
+fn resolve_client_placeholder(base_path: &str, key: &str) -> Vec<ConfigItem> {
+    match key {
+        "sandbox_availability" => sandbox_availability_labels(base_path),
+        _ => vec![],
+    }
+}
+
+fn sandbox_availability_labels(base_path: &str) -> Vec<ConfigItem> {
+    use omnish_plugin::{BwrapUnavailableReason, SandboxBackendType};
+    use crate::display;
+
+    let label = |suffix: &str, text: String| ConfigItem {
+        path: format!("{}.{}", base_path, suffix),
+        label: text,
+        kind: ConfigItemKind::Label,
+        prefills: vec![],
+    };
+
+    let mut labels = Vec::new();
+
+    // bwrap
+    if omnish_plugin::is_available(SandboxBackendType::Bwrap) {
+        labels.push(label("bwrap", format!(
+            "  {}bwrap{}: {}Available{}", display::BRIGHT_WHITE, display::RESET, display::GREEN, display::RESET,
+        )));
+    } else {
+        labels.push(label("bwrap", format!(
+            "  {}bwrap{}: {}Not available{}", display::BRIGHT_WHITE, display::RESET, display::RED, display::RESET,
+        )));
+        match omnish_plugin::bwrap_unavailable_reason() {
+            Some(BwrapUnavailableReason::NotInstalled) => {
+                labels.push(label("bwrap_hint", format!(
+                    "  {}To enable: sudo apt install bubblewrap{}", display::DIM, display::RESET,
+                )));
+            }
+            Some(BwrapUnavailableReason::NamespaceDenied) => {
+                labels.push(label("bwrap_hint", format!(
+                    "  {}To enable: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0{}", display::DIM, display::RESET,
+                )));
+            }
+            None => {}
+        }
+    }
+
+    // landlock
+    if omnish_plugin::is_available(SandboxBackendType::Landlock) {
+        labels.push(label("landlock", format!(
+            "  {}landlock{}: {}Available{}", display::BRIGHT_WHITE, display::RESET, display::GREEN, display::RESET,
+        )));
+    } else {
+        labels.push(label("landlock", format!(
+            "  {}landlock{}: {}Not available{}", display::BRIGHT_WHITE, display::RESET, display::RED, display::RESET,
+        )));
+        labels.push(label("landlock_hint", format!(
+            "  {}Requires kernel >= 5.13{}", display::DIM, display::RESET,
+        )));
+    }
+
+    labels
+}
+
 /// Extract the current value string from a ConfigItem.
 fn item_value(item: &ConfigItem) -> String {
     match &item.kind {
@@ -2245,6 +2326,9 @@ impl ChatSession {
                 return;
             }
         };
+
+        // Expand client-side placeholders (label = "_client:<key>")
+        let items = expand_client_placeholders(items);
 
         if items.is_empty() {
             write_stdout(&format!("{DIM}No configurable items.{RESET}\r\n"));
