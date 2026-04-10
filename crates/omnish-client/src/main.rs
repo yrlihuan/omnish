@@ -617,6 +617,7 @@ async fn main() -> Result<()> {
     let mut prefix_bytes: Vec<u8> = config.shell.command_prefix.as_bytes().to_vec();
     let mut completion_enabled = config.shell.completion_enabled;
     let mut ghost_timeout_ms = config.shell.ghost_timeout_ms;
+    let mut sandbox_backend: Option<String> = None;
     let mut alt_screen_detector = AltScreenDetector::new();
     let mut col_tracker = if let Some(ref r) = resume_args {
         let t = CursorTracker::with_position(r.cursor_col, r.cursor_row);
@@ -853,7 +854,7 @@ async fn main() -> Result<()> {
                             None, &daemon_conn, &mut chat_history, &mut last_thread_id,
                             &session_id, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
-                            &onboarded, locked, &config,
+                            &onboarded, locked, &config, sandbox_backend.as_deref(),
                         ).await;
                         if let chat_session::ChatExitAction::Lock(lock) = exit_action {
                             handle_lock(&mut proxy, &mut master_fd, &mut locked, lock, &shell, &shell_args_ref, &session_id);
@@ -1048,7 +1049,7 @@ async fn main() -> Result<()> {
                             initial, &daemon_conn, &mut chat_history, &mut last_thread_id,
                             &session_id, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
-                            &onboarded, locked, &config,
+                            &onboarded, locked, &config, sandbox_backend.as_deref(),
                         ).await;
                         if let chat_session::ChatExitAction::Lock(lock) = exit_action {
                             handle_lock(&mut proxy, &mut master_fd, &mut locked, lock, &shell, &shell_args_ref, &session_id);
@@ -1067,7 +1068,7 @@ async fn main() -> Result<()> {
                             Some(resume_cmd), &daemon_conn, &mut chat_history, &mut last_thread_id,
                             &session_id, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
-                            &onboarded, locked, &config,
+                            &onboarded, locked, &config, sandbox_backend.as_deref(),
                         ).await;
                         if let chat_session::ChatExitAction::Lock(lock) = exit_action {
                             handle_lock(&mut proxy, &mut master_fd, &mut locked, lock, &shell, &shell_args_ref, &session_id);
@@ -1485,6 +1486,7 @@ async fn main() -> Result<()> {
                         &mut completion_enabled,
                         &mut ghost_timeout_ms,
                         &mut prefix_bytes,
+                        &mut sandbox_backend,
                     );
                 }
             }
@@ -1530,6 +1532,7 @@ fn apply_client_config_changes(
     completion_enabled: &mut bool,
     ghost_timeout_ms: &mut u64,
     prefix_bytes: &mut Vec<u8>,
+    sandbox_backend: &mut Option<String>,
 ) {
     let mut any_changed = false;
     for change in changes {
@@ -1566,6 +1569,10 @@ fn apply_client_config_changes(
                     interceptor.set_developer_mode(v);
                     any_changed = true;
                 }
+            }
+            "client.sandbox_backend" => {
+                *sandbox_backend = Some(change.value.clone());
+                // Not cached to client.toml — sandbox_backend lives in daemon.toml [sandbox].
             }
             _ => {} // unknown paths silently ignored
         }
@@ -2314,6 +2321,7 @@ async fn enter_chat_mode(
     onboarded: &AtomicBool,
     locked: bool,
     config: &omnish_common::config::ClientConfig,
+    sandbox_backend: Option<&str>,
 ) -> chat_session::ChatExitAction {
     notice_queue::defer();
     let saved_input = shell_input.input().to_string();
@@ -2328,7 +2336,7 @@ async fn enter_chat_mode(
         let action;
         let pending_cd;
         {
-            let mut session = chat_session::ChatSession::new(std::mem::take(chat_history), config.shell.extended_unicode);
+            let mut session = chat_session::ChatSession::new(std::mem::take(chat_history), config.shell.extended_unicode, sandbox_backend);
 
             // One-time sandbox notice per chat entry (#514)
             if let Some(msg) = sandbox_notice(session.sandbox_status()) {

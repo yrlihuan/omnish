@@ -156,39 +156,43 @@ fn merge_tool_params(target: &mut serde_json::Value, params: &HashMap<String, se
     }
 }
 
-/// Compare two ClientSection values and return a list of changes.
-pub fn diff_client_section(old: &omnish_common::config::ClientSection, new: &omnish_common::config::ClientSection) -> Vec<ConfigChange> {
+/// Compare two DaemonConfig values and return client-relevant changes.
+pub fn diff_client_config(old: &omnish_common::config::DaemonConfig, new: &omnish_common::config::DaemonConfig) -> Vec<ConfigChange> {
     let mut changes = Vec::new();
-    if old.command_prefix != new.command_prefix {
-        changes.push(ConfigChange { path: "client.command_prefix".into(), value: new.command_prefix.clone() });
+    if old.client.command_prefix != new.client.command_prefix {
+        changes.push(ConfigChange { path: "client.command_prefix".into(), value: new.client.command_prefix.clone() });
     }
-    if old.resume_prefix != new.resume_prefix {
-        changes.push(ConfigChange { path: "client.resume_prefix".into(), value: new.resume_prefix.clone() });
+    if old.client.resume_prefix != new.client.resume_prefix {
+        changes.push(ConfigChange { path: "client.resume_prefix".into(), value: new.client.resume_prefix.clone() });
     }
-    if old.completion_enabled != new.completion_enabled {
-        changes.push(ConfigChange { path: "client.completion_enabled".into(), value: new.completion_enabled.to_string() });
+    if old.client.completion_enabled != new.client.completion_enabled {
+        changes.push(ConfigChange { path: "client.completion_enabled".into(), value: new.client.completion_enabled.to_string() });
     }
-    if old.ghost_timeout_ms != new.ghost_timeout_ms {
-        changes.push(ConfigChange { path: "client.ghost_timeout_ms".into(), value: new.ghost_timeout_ms.to_string() });
+    if old.client.ghost_timeout_ms != new.client.ghost_timeout_ms {
+        changes.push(ConfigChange { path: "client.ghost_timeout_ms".into(), value: new.client.ghost_timeout_ms.to_string() });
     }
-    if old.intercept_gap_ms != new.intercept_gap_ms {
-        changes.push(ConfigChange { path: "client.intercept_gap_ms".into(), value: new.intercept_gap_ms.to_string() });
+    if old.client.intercept_gap_ms != new.client.intercept_gap_ms {
+        changes.push(ConfigChange { path: "client.intercept_gap_ms".into(), value: new.client.intercept_gap_ms.to_string() });
     }
-    if old.developer_mode != new.developer_mode {
-        changes.push(ConfigChange { path: "client.developer_mode".into(), value: new.developer_mode.to_string() });
+    if old.client.developer_mode != new.client.developer_mode {
+        changes.push(ConfigChange { path: "client.developer_mode".into(), value: new.client.developer_mode.to_string() });
+    }
+    if old.sandbox.backend != new.sandbox.backend {
+        changes.push(ConfigChange { path: "client.sandbox_backend".into(), value: new.sandbox.backend.clone() });
     }
     changes
 }
 
-/// Build a full set of config changes from a ClientSection (for initial push).
-pub fn full_client_changes(cs: &omnish_common::config::ClientSection) -> Vec<ConfigChange> {
+/// Build a full set of client-relevant config changes (for initial push).
+pub fn full_client_changes(cfg: &omnish_common::config::DaemonConfig) -> Vec<ConfigChange> {
     vec![
-        ConfigChange { path: "client.command_prefix".into(), value: cs.command_prefix.clone() },
-        ConfigChange { path: "client.resume_prefix".into(), value: cs.resume_prefix.clone() },
-        ConfigChange { path: "client.completion_enabled".into(), value: cs.completion_enabled.to_string() },
-        ConfigChange { path: "client.ghost_timeout_ms".into(), value: cs.ghost_timeout_ms.to_string() },
-        ConfigChange { path: "client.intercept_gap_ms".into(), value: cs.intercept_gap_ms.to_string() },
-        ConfigChange { path: "client.developer_mode".into(), value: cs.developer_mode.to_string() },
+        ConfigChange { path: "client.command_prefix".into(), value: cfg.client.command_prefix.clone() },
+        ConfigChange { path: "client.resume_prefix".into(), value: cfg.client.resume_prefix.clone() },
+        ConfigChange { path: "client.completion_enabled".into(), value: cfg.client.completion_enabled.to_string() },
+        ConfigChange { path: "client.ghost_timeout_ms".into(), value: cfg.client.ghost_timeout_ms.to_string() },
+        ConfigChange { path: "client.intercept_gap_ms".into(), value: cfg.client.intercept_gap_ms.to_string() },
+        ConfigChange { path: "client.developer_mode".into(), value: cfg.client.developer_mode.to_string() },
+        ConfigChange { path: "client.sandbox_backend".into(), value: cfg.sandbox.backend.clone() },
     ]
 }
 
@@ -452,7 +456,7 @@ impl DaemonServer {
             Box::pin(async move {
                 let changes = {
                     let cfg = config.read().unwrap();
-                    full_client_changes(&cfg.client)
+                    full_client_changes(&cfg)
                 };
                 let _ = push_tx.send(Message::ConfigClient { changes }).await;
             })

@@ -30,16 +30,20 @@ struct PluginResponse {
 }
 
 impl ClientPluginManager {
-    pub fn new() -> Self {
+    /// Create a new plugin manager.
+    /// Precedence: `backend_name` (from daemon config push) → platform default (bwrap / macos).
+    pub fn new(backend_name: Option<&str>) -> Self {
         let plugin_bin = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("omnish-plugin")))
             .unwrap_or_else(|| std::path::PathBuf::from("omnish-plugin"));
-        let preferred = if cfg!(target_os = "macos") {
-            omnish_plugin::SandboxBackendType::from_config("macos")
-        } else {
-            omnish_plugin::SandboxBackendType::from_config("bwrap")
-        };
+        let preferred = backend_name
+            .and_then(omnish_plugin::SandboxBackendType::from_config)
+            .or_else(|| if cfg!(target_os = "macos") {
+                omnish_plugin::SandboxBackendType::from_config("macos")
+            } else {
+                omnish_plugin::SandboxBackendType::from_config("bwrap")
+            });
         let status = preferred
             .map(|p| omnish_plugin::detect_backend_status(p))
             .unwrap_or(omnish_plugin::SandboxDetectResult::Unavailable {

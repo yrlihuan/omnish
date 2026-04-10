@@ -348,7 +348,7 @@ fn build_menu_tree(
 }
 
 impl ChatSession {
-    pub fn new(chat_history: VecDeque<String>, extended_unicode: bool) -> Self {
+    pub fn new(chat_history: VecDeque<String>, extended_unicode: bool, sandbox_backend: Option<&str>) -> Self {
         Self {
             current_thread_id: None,
             cached_thread_ids: Vec::new(),
@@ -361,7 +361,7 @@ impl ChatSession {
             thinking_visible: false,
             has_activity: false,
             pending_input: None,
-            client_plugins: Arc::new(client_plugin::ClientPluginManager::new()),
+            client_plugins: Arc::new(client_plugin::ClientPluginManager::new(sandbox_backend)),
             ghost_hint_shown: false,
             pending_model: None,
             resumed_model: None,
