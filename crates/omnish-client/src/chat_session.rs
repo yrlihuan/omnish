@@ -507,7 +507,7 @@ fn edit_local_rule(
     changes: &[widgets::menu::MenuChange],
     sandbox_state: &Arc<RwLock<ClientSandboxConfig>>,
 ) -> bool {
-    let delete = changes.iter().any(|c| c.path.ends_with(".Delete") && c.value == "true");
+    let delete = changes.iter().any(|c| c.path.ends_with("._delete") && c.value == "true");
     let config_path = client_config_path();
     let array_key = format!("sandbox.plugins.{}.permit_rules", plugin);
 
@@ -850,11 +850,14 @@ fn build_menu_tree(
                     None => {
                         let handler = submenu_lookup.get(schema_path_so_far.as_str())
                             .and_then(|(name, _)| if name.is_empty() { None } else { Some(name.to_string()) });
+                        // Submenus with a handler are forms: fields filled by the user
+                        // are collected and dispatched to the handler on Done/ESC.
+                        let form_mode = handler.is_some();
                         current.push(MenuItem::Submenu {
                             label: label.clone(),
                             children: Vec::new(),
                             handler,
-                            form_mode: seg == "__new__",
+                            form_mode,
                         });
                         current.len() - 1
                     }
@@ -2820,13 +2823,27 @@ impl ChatSession {
             let rt = tokio::runtime::Handle::current();
 
             let mut handler_callback = |handler_name: &str, handler_changes: Vec<widgets::menu::MenuChange>| -> Option<Vec<widgets::menu::MenuItem>> {
+                // MenuChange paths come from build_path (display labels joined by '.'),
+                // e.g. "Sandbox.Rules.Add permit rule.Plugin". Translate to schema paths
+                // (e.g. "sandbox.rules._add.plugin") via path_map so downstream logic
+                // can match on the stable schema field suffix.
+                let translated_changes: Vec<widgets::menu::MenuChange> = {
+                    let pm = path_map_ref.borrow();
+                    handler_changes.iter()
+                        .map(|mc| widgets::menu::MenuChange {
+                            path: pm.get(&mc.path).cloned().unwrap_or_else(|| mc.path.clone()),
+                            value: mc.value.clone(),
+                        })
+                        .collect()
+                };
+
                 // Local rule operations: handle client-side, then rebuild menu
                 if handler_name == "add_rule" {
                     // Unified add: dispatch based on scope selector
-                    let scope = find_change_value(&handler_changes, ".scope");
+                    let scope = find_change_value(&translated_changes, ".scope");
                     if scope == "global" {
                         // Forward to daemon: rewrite paths to __add__ prefix
-                        let config_changes: Vec<ConfigChange> = handler_changes.iter()
+                        let config_changes: Vec<ConfigChange> = translated_changes.iter()
                             .filter_map(|mc| {
                                 if mc.path.ends_with(".scope") { return None; }
                                 // Extract field name (last segment) and remap to daemon prefix
@@ -2843,17 +2860,17 @@ impl ChatSession {
                         }
                     } else {
                         // Local scope (default)
-                        if !add_local_rule(&handler_changes, sandbox_state_ref) {
+                        if !add_local_rule(&translated_changes, sandbox_state_ref) {
                             return None;
                         }
                     }
                 } else if handler_name == "add_local_rule" {
-                    let ok = add_local_rule(&handler_changes, sandbox_state_ref);
+                    let ok = add_local_rule(&translated_changes, sandbox_state_ref);
                     if !ok { return None; }
                 } else if let Some(rest) = handler_name.strip_prefix("edit_global_rule:") {
                     // rest = "plugin:idx" — convert to "plugin.idx" for daemon path
                     let rest_dotted = rest.replace(':', ".");
-                    let config_changes: Vec<ConfigChange> = handler_changes.iter()
+                    let config_changes: Vec<ConfigChange> = translated_changes.iter()
                         .filter_map(|mc| {
                             let field = mc.path.rsplit('.').next().unwrap_or(&mc.path);
                             if field == "_scope" { return None; } // scope label, not a real field
@@ -2874,7 +2891,7 @@ impl ChatSession {
                     });
                     match parsed {
                         Some((plugin, idx)) => {
-                            if !edit_local_rule(plugin, idx, &handler_changes, sandbox_state_ref) {
+                            if !edit_local_rule(plugin, idx, &translated_changes, sandbox_state_ref) {
                                 return None;
                             }
                         }

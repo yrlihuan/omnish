@@ -468,7 +468,7 @@ fn handle_edit_global_rule(
     idx: usize,
     changes: &[&ConfigChange],
 ) -> anyhow::Result<()> {
-    let delete = changes.iter().find(|c| c.path.ends_with(".Delete"))
+    let delete = changes.iter().find(|c| c.path.ends_with("._delete"))
         .map(|c| c.value == "true").unwrap_or(false);
     let array_key = format!("sandbox.plugins.{}.permit_rules", plugin);
 
