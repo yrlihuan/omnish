@@ -1556,7 +1556,24 @@ impl ChatSession {
                                 let plugins = Arc::clone(&self.client_plugins);
                                 let tool_name = tc.tool_name.clone();
                                 let plugin_name = tc.plugin_name.clone();
-                                let sandboxed = tc.sandboxed;
+                                let mut sandboxed = tc.sandboxed;
+                                if sandboxed {
+                                    // Daemon only checks global rules; also check client-local rules.
+                                    let local_sandbox = self.sandbox_state.read().unwrap();
+                                    if let Some(plugin_cfg) = local_sandbox.plugins.get(&tc.tool_name) {
+                                        let input: serde_json::Value =
+                                            serde_json::from_str(&tc.input).unwrap_or_default();
+                                        if let Some(rule) = omnish_common::sandbox_rule::check_bypass_raw(
+                                            &plugin_cfg.permit_rules, &input,
+                                        ) {
+                                            sandboxed = false;
+                                            crate::event_log::push(format!(
+                                                "tool '{}' sandbox bypassed by local rule: {}",
+                                                tc.tool_name, rule,
+                                            ));
+                                        }
+                                    }
+                                }
                                 if !sandboxed {
                                     crate::event_log::push(format!(
                                         "tool '{}' running without sandbox (permit rule match)",
