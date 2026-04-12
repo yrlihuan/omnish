@@ -266,21 +266,17 @@ test_4() {
     # Form field order: Scope / Plugin / Param name / Operator / Pattern / Done
     # Cursor starts on Scope (Select, default "local"). Change to "global".
     send_enter 0.5          # open Scope picker
-    send_special Down 0.2   # local -> global
-    send_enter 0.5          # confirm → auto-advance to Plugin
-    # Plugin (Select, default "bash") — open picker, confirm default
+    pick_option "global" 0.5  # confirm → auto-advance to Plugin
+    # Plugin (Select) — pick "bash"
     send_enter 0.5          # open Plugin picker
-    send_enter 0.5          # confirm "bash" → prefill applied, cursor stays
+    pick_option "bash" 0.5  # confirm → prefill applied, cursor stays
     send_special Down 0.3   # advance to Param name
-    # Param name (Select, default "command") — open picker, confirm default
+    # Param name (Select) — pick "command"
     send_enter 0.5          # open Param name picker
-    send_enter 0.5          # confirm "command" → auto-advance to Operator
-    # Operator (Select) — open picker, Down x3 -> matches
-    send_enter 0.5
-    send_special Down 0.2
-    send_special Down 0.2
-    send_special Down 0.2
-    send_enter 0.5          # confirm → auto-advance to Pattern (no auto-edit)
+    pick_option "command" 0.5  # confirm → auto-advance to Operator
+    # Operator (Select) — pick "matches"
+    send_enter 0.5          # open Operator picker
+    pick_option "matches" 0.5  # confirm → auto-advance to Pattern (no auto-edit)
     send_enter 0.5          # open text edit for Pattern
     send_keys "sudo route.*" 0.3
     send_enter 0.5          # confirm → auto-advance to Done
@@ -381,19 +377,16 @@ test_5() {
 
     # Scope defaults to "local" — skip with Down → auto-advance to Plugin
     send_special Down 0.3
-    # Plugin (Select, default "bash") — open picker, confirm default
-    send_enter 0.5
-    send_enter 0.5          # confirm → prefill applied, cursor stays
+    # Plugin (Select) — pick "bash"
+    send_enter 0.5          # open Plugin picker
+    pick_option "bash" 0.5  # confirm → prefill applied, cursor stays
     send_special Down 0.3   # advance to Param name
-    # Param name (Select, default "command") — open picker, confirm default
-    send_enter 0.5
-    send_enter 0.5          # confirm → auto-advance to Operator
-    # Operator (Select) — open picker, Down x3 -> matches
-    send_enter 0.5
-    send_special Down 0.2
-    send_special Down 0.2
-    send_special Down 0.2
-    send_enter 0.5          # confirm → auto-advance to Pattern (no auto-edit)
+    # Param name (Select) — pick "command"
+    send_enter 0.5          # open Param name picker
+    pick_option "command" 0.5  # confirm → auto-advance to Operator
+    # Operator (Select) — pick "matches"
+    send_enter 0.5          # open Operator picker
+    pick_option "matches" 0.5  # confirm → auto-advance to Pattern (no auto-edit)
     send_enter 0.5          # open text edit for Pattern
     send_keys "sudo route.*" 0.3
     send_enter 0.5          # confirm → auto-advance to Done
@@ -522,17 +515,16 @@ test_6() {
 
     send_enter 0.8  # open "Add permit rule" form
 
-    # Scope → global
-    send_enter 0.5
-    send_special Down 0.2
-    send_enter 0.5          # confirm → auto-advance to Plugin
-    # Plugin (Select, default "bash") — open picker, confirm default
-    send_enter 0.5
-    send_enter 0.5          # confirm → prefill applied, cursor stays
+    # Scope — pick "global"
+    send_enter 0.5          # open Scope picker
+    pick_option "global" 0.5  # confirm → auto-advance to Plugin
+    # Plugin (Select) — pick "bash"
+    send_enter 0.5          # open Plugin picker
+    pick_option "bash" 0.5  # confirm → prefill applied, cursor stays
     send_special Down 0.3   # advance to Param name
-    # Param name (Select, default "command") — open picker, confirm default
-    send_enter 0.5
-    send_enter 0.5          # confirm → auto-advance to Operator
+    # Param name (Select) — pick "command"
+    send_enter 0.5          # open Param name picker
+    pick_option "command" 0.5  # confirm → auto-advance to Operator
     # Operator (Select) — keep starts_with (default), skip with Down
     send_special Down 0.3   # advance to Pattern (no auto-edit)
     # Pattern — open text edit manually
@@ -693,13 +685,13 @@ test_7() {
 
     # Scope defaults to "local" — skip with Down → auto-advance to Plugin
     send_special Down 0.3
-    # Plugin (Select, default "bash") — open picker, confirm default
-    send_enter 0.5
-    send_enter 0.5          # confirm → prefill applied, cursor stays
+    # Plugin (Select) — pick "bash"
+    send_enter 0.5          # open Plugin picker
+    pick_option "bash" 0.5  # confirm → prefill applied, cursor stays
     send_special Down 0.3   # advance to Param name
-    # Param name (Select, default "command") — open picker, confirm default
-    send_enter 0.5
-    send_enter 0.5          # confirm → auto-advance to Operator
+    # Param name (Select) — pick "command"
+    send_enter 0.5          # open Param name picker
+    pick_option "command" 0.5  # confirm → auto-advance to Operator
     # Operator (Select) — keep starts_with (default), skip with Down
     send_special Down 0.3   # advance to Pattern (no auto-edit)
     # Pattern — open text edit manually

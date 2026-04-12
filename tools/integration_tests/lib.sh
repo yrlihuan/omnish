@@ -178,6 +178,126 @@ send_backspace() {
     send_special BSpace "${1:-0.5}"
 }
 
+# ── Picker helpers ──────────────────────────────────────────────────────
+
+# pick_option <target_text> [wait=0.5]
+#   Reads the currently open picker from the pane, navigates to the option
+#   matching <target_text>, and confirms with Enter.
+#   Must be called after the picker has been opened (send_enter on a Select).
+#   Returns 1 if the target option is not found.
+pick_option() {
+    local target="$1"
+    local wait="${2:-0.5}"
+
+    sleep 0.3  # let picker render
+    local content
+    content=$(capture_pane -30)
+
+    # Picker format (rendered by picker.rs):
+    #   Title
+    #   ──────────
+    #   > selected_option     ("> " prefix)
+    #     other_option         ("  " prefix)
+    #   ──────────
+    #   ↑↓ move  Enter confirm  ESC cancel
+    #
+    # Locate the picker by finding the hint line, then scanning upward
+    # for the two ─── separators that bracket the items.
+
+    local -a lines
+    mapfile -t lines <<< "$content"
+    local total=${#lines[@]}
+
+    # Find hint line (last line containing both "confirm" and "cancel")
+    local hint_idx=-1
+    for ((i = total - 1; i >= 0; i--)); do
+        if [[ "${lines[$i]}" == *confirm* && "${lines[$i]}" == *cancel* ]]; then
+            hint_idx=$i
+            break
+        fi
+    done
+    if [[ $hint_idx -eq -1 ]]; then
+        echo -e "  ${RED}pick_option: picker hint line not found${NC}"
+        show_capture "Picker pane" "$content" 15
+        return 1
+    fi
+
+    # Find bottom separator (first ─ line above hint)
+    local bottom_sep=-1
+    for ((i = hint_idx - 1; i >= 0; i--)); do
+        if [[ "${lines[$i]}" == *─* ]]; then
+            bottom_sep=$i; break
+        fi
+    done
+
+    # Find top separator (next ─ line above items)
+    local top_sep=-1
+    for ((i = bottom_sep - 1; i >= 0; i--)); do
+        if [[ "${lines[$i]}" == *─* ]]; then
+            top_sep=$i; break
+        fi
+    done
+
+    if [[ $top_sep -eq -1 || $bottom_sep -eq -1 ]]; then
+        echo -e "  ${RED}pick_option: picker separators not found${NC}"
+        show_capture "Picker pane" "$content" 15
+        return 1
+    fi
+
+    # Parse items between separators
+    local current_idx=-1
+    local target_idx=-1
+    local idx=0
+
+    for ((i = top_sep + 1; i < bottom_sep; i++)); do
+        local line="${lines[$i]}"
+        # Strip leading/trailing whitespace
+        local trimmed
+        trimmed=$(echo "$line" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+        [[ -z "$trimmed" ]] && continue
+
+        # Detect current selection ("> " prefix)
+        if [[ "$trimmed" == ">"* ]]; then
+            current_idx=$idx
+        fi
+
+        # Extract option text (remove "> " or leading spaces)
+        local item_text
+        item_text=$(echo "$trimmed" | sed 's/^> //' | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+
+        if [[ "$item_text" == "$target" ]]; then
+            target_idx=$idx
+        fi
+
+        idx=$((idx + 1))
+    done
+
+    if [[ $target_idx -eq -1 ]]; then
+        echo -e "  ${RED}pick_option: '$target' not found in picker options${NC}"
+        for ((i = top_sep + 1; i < bottom_sep; i++)); do
+            echo -e "    option: '${lines[$i]}'"
+        done
+        return 1
+    fi
+
+    [[ $current_idx -eq -1 ]] && current_idx=0
+
+    echo -e "  Picking: ${YELLOW}${target}${NC} (from=${current_idx}, to=${target_idx})"
+
+    local delta=$((target_idx - current_idx))
+    if [[ $delta -gt 0 ]]; then
+        for _ in $(seq 1 $delta); do
+            send_special Down 0.15
+        done
+    elif [[ $delta -lt 0 ]]; then
+        for _ in $(seq 1 $((-delta))); do
+            send_special Up 0.15
+        done
+    fi
+
+    send_enter "$wait"
+}
+
 # ── Pane capture ─────────────────────────────────────────────────────────
 
 # capture_pane [history_lines=-100]
