@@ -331,10 +331,11 @@ test_4() {
     send_enter 0.8
 
     # Edit form: Scope(L) / Plugin(L) / Param name(T) / Operator(S) / Pattern(T) / Delete(B)
-    # Cursor starts at Param name (first_interactive skips Labels), auto-edit active.
-    send_enter 0.5          # confirm "command", advance to Operator
-    send_special Down 0.3   # advance to Pattern, auto-edit triggers
-    send_enter 0.5          # confirm pattern, advance to Delete button
+    # Cursor starts at Param name (first_interactive skips Labels).
+    # Edit forms don't auto-edit — navigate to Delete button directly.
+    send_special Down 0.3   # Param name -> Operator
+    send_special Down 0.3   # Operator -> Pattern
+    send_special Down 0.3   # Pattern -> Delete button
     send_enter 0.5          # press Delete button -> submits form with _delete=true
 
     sleep 1.5
@@ -435,9 +436,10 @@ test_5() {
     send_enter 0.8
 
     # Edit form: Scope(L) / Plugin(L) / Param name(T) / Operator(S) / Pattern(T) / Delete(B)
-    send_enter 0.5          # confirm "command", advance to Operator
-    send_special Down 0.3   # advance to Pattern, auto-edit triggers
-    send_enter 0.5          # confirm pattern, advance to Delete button
+    # Edit forms don't auto-edit — navigate to Delete button directly.
+    send_special Down 0.3   # Param name -> Operator
+    send_special Down 0.3   # Operator -> Pattern
+    send_special Down 0.3   # Pattern -> Delete button
     send_enter 0.5          # press Delete button -> submits with _delete=true
 
     sleep 0.5

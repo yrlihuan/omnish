@@ -825,6 +825,8 @@ pub fn run_menu(
                         let label_clone = label.clone();
                         let entering_form = *form_mode;
                         let snapshot = if entering_form { snapshot_fields(children) } else { vec![] };
+                        // Edit forms have pre-populated TextInputs — don't auto-edit.
+                        let has_prefilled = children.iter().any(|c| matches!(c, MenuItem::TextInput { value, .. } if !value.is_empty()));
 
                         let cleanup = render_cleanup(last_item_count);
                         common::write_stdout(cleanup.as_bytes());
@@ -840,9 +842,9 @@ pub fn run_menu(
                         cursor = first_interactive(children);
                         scroll_offset = 0;
                         needs_redraw = true;
-                        pending_auto_edit = entering_form;
+                        pending_auto_edit = entering_form && !has_prefilled;
                         auto_edit_advance = true;
-                        form_auto_edit_active = true;
+                        form_auto_edit_active = !has_prefilled;
                         continue;
                     }
                     MenuItem::Toggle { label, value } => {
