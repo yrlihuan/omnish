@@ -343,6 +343,29 @@ fn build_rules_json(plugins: &std::collections::HashMap<String, omnish_common::c
     serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
 }
 
+/// Build a Data item containing tool names and their input_schema property names.
+/// Format: `{"bash":["command","cwd",...],"grep":["pattern","path",...]}`
+/// Only includes client-side tools (the ones that get sandboxed).
+pub fn build_tool_params_item(
+    tool_registry: &omnish_daemon::tool_registry::ToolRegistry,
+) -> ConfigItem {
+    let mut map = serde_json::Map::new();
+    for def in tool_registry.all_defs() {
+        if let Some(props) = def.input_schema.get("properties").and_then(|p| p.as_object()) {
+            let params: Vec<serde_json::Value> = props.keys()
+                .map(|k| serde_json::Value::String(k.clone()))
+                .collect();
+            map.insert(def.name, serde_json::Value::Array(params));
+        }
+    }
+    ConfigItem {
+        path: "sandbox.__tool_params_json".to_string(),
+        label: String::new(),
+        kind: ConfigItemKind::Data { value: serde_json::Value::Object(map).to_string() },
+        prefills: vec![],
+    }
+}
+
 // Global rule form generation has moved to the client side
 // (sandbox_local_rule_items in chat_session.rs). The daemon still handles
 // add_global_rule / edit_global_rule RPCs via apply_config_changes.

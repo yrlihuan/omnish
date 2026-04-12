@@ -151,10 +151,14 @@ struct GlobalRuleEntry {
     rules: Vec<String>,
 }
 
-/// Pre-scan items for `sandbox.__rules_json` data item; return parsed entries
-/// and the items list with the data item removed.
-fn extract_global_rules(items: Vec<ConfigItem>) -> (Vec<ConfigItem>, Vec<GlobalRuleEntry>) {
+/// Tool name → list of input parameter names (from tool input_schema).
+type ToolParamsMap = std::collections::HashMap<String, Vec<String>>;
+
+/// Pre-scan items for `sandbox.__rules_json` and `sandbox.__tool_params_json`
+/// data items; return parsed entries and the items list with data items removed.
+fn extract_global_rules(items: Vec<ConfigItem>) -> (Vec<ConfigItem>, Vec<GlobalRuleEntry>, ToolParamsMap) {
     let mut rules = Vec::new();
+    let mut tool_params = ToolParamsMap::new();
     let filtered = items.into_iter().filter(|it| {
         if it.path == "sandbox.__rules_json" {
             if let ConfigItemKind::Data { ref value } = it.kind {
@@ -162,12 +166,19 @@ fn extract_global_rules(items: Vec<ConfigItem>) -> (Vec<ConfigItem>, Vec<GlobalR
                     rules = v;
                 }
             }
-            false // remove from items
-        } else {
-            true
+            return false;
         }
+        if it.path == "sandbox.__tool_params_json" {
+            if let ConfigItemKind::Data { ref value } = it.kind {
+                if let Ok(v) = serde_json::from_str::<ToolParamsMap>(value) {
+                    tool_params = v;
+                }
+            }
+            return false;
+        }
+        true
     }).collect();
-    (filtered, rules)
+    (filtered, rules, tool_params)
 }
 
 /// Expand client-side placeholder labels in config items.
@@ -187,13 +198,14 @@ fn expand_client_placeholders(
     local_paths: &mut std::collections::HashSet<String>,
     extra_handlers: &mut Vec<ConfigHandlerInfo>,
     global_rules: &[GlobalRuleEntry],
+    tool_params: &ToolParamsMap,
 ) -> Vec<ConfigItem> {
     let mut result = Vec::with_capacity(items.len());
     for item in items {
         if let ConfigItemKind::Label = &item.kind {
             if let Some(key) = item.label.strip_prefix("_client:") {
                 let expanded = resolve_client_placeholder(
-                    &item.path, key, sandbox, extra_handlers, global_rules
+                    &item.path, key, sandbox, extra_handlers, global_rules, tool_params
                 );
                 if key == "sandbox_config" {
                     for it in &expanded {
@@ -224,11 +236,12 @@ fn resolve_client_placeholder(
     sandbox: &ClientSandboxConfig,
     extra_handlers: &mut Vec<ConfigHandlerInfo>,
     global_rules: &[GlobalRuleEntry],
+    tool_params: &ToolParamsMap,
 ) -> Vec<ConfigItem> {
     match key {
         "sandbox_availability" => sandbox_availability_labels(base_path),
         "sandbox_config" => sandbox_config_items(base_path, sandbox),
-        "sandbox_rules" => sandbox_local_rule_items(sandbox, extra_handlers, global_rules),
+        "sandbox_rules" => sandbox_local_rule_items(sandbox, extra_handlers, global_rules, tool_params),
         _ => vec![],
     }
 }
@@ -272,6 +285,7 @@ fn rule_form_fields(
     value: &str,
     with_delete: bool,
     scope: Option<&str>,
+    tool_params: &ToolParamsMap,
 ) -> Vec<ConfigItem> {
     let op_idx = OPERATORS.iter().position(|&o| o == operator).unwrap_or(0);
     let mut items = Vec::new();
@@ -283,22 +297,77 @@ fn rule_form_fields(
             prefills: vec![],
         });
     }
-    items.push(ConfigItem {
-        path: format!("{}.plugin", prefix),
-        label: format!("Plugin{}", if with_delete { format!(": {}", plugin) } else { String::new() }),
-        kind: if with_delete {
-            ConfigItemKind::Label
-        } else {
-            ConfigItemKind::TextInput { value: plugin.to_string() }
-        },
-        prefills: vec![],
-    });
-    items.push(ConfigItem {
-        path: format!("{}.field", prefix),
-        label: "Param name".to_string(),
-        kind: ConfigItemKind::TextInput { value: field.to_string() },
-        prefills: vec![],
-    });
+
+    // Build sorted tool name list for the Plugin selector
+    let mut tool_names: Vec<&String> = tool_params.keys().collect();
+    tool_names.sort();
+
+    if with_delete {
+        // Edit form: Plugin is read-only label
+        items.push(ConfigItem {
+            path: format!("{}.plugin", prefix),
+            label: format!("Plugin: {}", plugin),
+            kind: ConfigItemKind::Label,
+            prefills: vec![],
+        });
+    } else if tool_names.is_empty() {
+        // No tool metadata available — fall back to TextInput
+        items.push(ConfigItem {
+            path: format!("{}.plugin", prefix),
+            label: "Plugin".to_string(),
+            kind: ConfigItemKind::TextInput { value: plugin.to_string() },
+            prefills: vec![],
+        });
+    } else {
+        // Add form with tool metadata: Plugin is a Select with prefills
+        let options: Vec<String> = tool_names.iter().map(|s| s.to_string()).collect();
+        let selected = options.iter().position(|s| s == plugin).unwrap_or(0);
+
+        // Build prefills: when plugin changes, update Param name options
+        let prefills: Vec<(String, Vec<(String, String)>)> = options.iter().map(|tool_name| {
+            let params = tool_params.get(tool_name.as_str())
+                .map(|v| v.join(","))
+                .unwrap_or_default();
+            (tool_name.clone(), vec![
+                ("Param name".to_string(), params),
+            ])
+        }).collect();
+
+        items.push(ConfigItem {
+            path: format!("{}.plugin", prefix),
+            label: "Plugin".to_string(),
+            kind: ConfigItemKind::Select { options, selected },
+            prefills,
+        });
+    }
+
+    // Param name: Select if we know the params for the current/default plugin, else TextInput
+    let effective_plugin = if plugin.is_empty() {
+        tool_names.first().map(|s| s.as_str()).unwrap_or("")
+    } else {
+        plugin
+    };
+    let current_params = tool_params.get(effective_plugin);
+    if let Some(params) = current_params.filter(|p| !p.is_empty() && !with_delete) {
+        let selected = params.iter().position(|p| p == field).unwrap_or(0);
+        items.push(ConfigItem {
+            path: format!("{}.field", prefix),
+            label: "Param name".to_string(),
+            kind: ConfigItemKind::Select {
+                options: params.clone(),
+                selected,
+            },
+            prefills: vec![],
+        });
+    } else {
+        items.push(ConfigItem {
+            path: format!("{}.field", prefix),
+            label: "Param name".to_string(),
+            kind: ConfigItemKind::TextInput { value: field.to_string() },
+            prefills: vec![],
+        });
+    }
+
     items.push(ConfigItem {
         path: format!("{}.operator", prefix),
         label: "Operator".to_string(),
@@ -336,6 +405,7 @@ fn sandbox_local_rule_items(
     sandbox: &ClientSandboxConfig,
     extra_handlers: &mut Vec<ConfigHandlerInfo>,
     global_rules: &[GlobalRuleEntry],
+    tool_params: &ToolParamsMap,
 ) -> Vec<ConfigItem> {
     let mut items = Vec::new();
     let mut seq = 0usize; // sequential numbering for flat paths
@@ -357,7 +427,7 @@ fn sandbox_local_rule_items(
         },
         prefills: vec![],
     });
-    items.extend(rule_form_fields(add_prefix, "", "", "starts_with", "", false, None));
+    items.extend(rule_form_fields(add_prefix, "", "", "starts_with", "", false, None, tool_params));
 
     // Global rules — editable forms (changes forwarded to daemon via RPC)
     for entry in global_rules {
@@ -371,7 +441,7 @@ fn sandbox_local_rule_items(
                 handler,
             });
             let (field, operator, value) = parse_rule_parts(rule);
-            items.extend(rule_form_fields(&prefix, &entry.plugin, &field, &operator, &value, true, Some("global")));
+            items.extend(rule_form_fields(&prefix, &entry.plugin, &field, &operator, &value, true, Some("global"), tool_params));
         }
     }
 
@@ -389,7 +459,7 @@ fn sandbox_local_rule_items(
                 handler: format!("edit_local_rule:{}:{}", plugin_name, idx),
             });
             let (field, operator, value) = parse_rule_parts(rule);
-            items.extend(rule_form_fields(&prefix, plugin_name, &field, &operator, &value, true, Some("local")));
+            items.extend(rule_form_fields(&prefix, plugin_name, &field, &operator, &value, true, Some("local"), tool_params));
         }
     }
 
@@ -2813,9 +2883,9 @@ impl ChatSession {
         let sandbox_snapshot = self.sandbox_state.read().unwrap().clone();
         let mut local_paths = std::collections::HashSet::<String>::new();
         let mut extra_handlers: Vec<ConfigHandlerInfo> = Vec::new();
-        let (items, global_rules) = extract_global_rules(items);
+        let (items, global_rules, tool_params) = extract_global_rules(items);
         let items = expand_client_placeholders(
-            items, &sandbox_snapshot, &mut local_paths, &mut extra_handlers, &global_rules
+            items, &sandbox_snapshot, &mut local_paths, &mut extra_handlers, &global_rules, &tool_params
         );
         let mut all_handlers = handlers;
         all_handlers.extend(extra_handlers);
@@ -2957,8 +3027,8 @@ impl ChatSession {
                         let sandbox = sandbox_state_ref.read().unwrap().clone();
                         let mut lp = std::collections::HashSet::new();
                         let mut eh: Vec<ConfigHandlerInfo> = Vec::new();
-                        let (items, gr) = extract_global_rules(items);
-                        let expanded = expand_client_placeholders(items, &sandbox, &mut lp, &mut eh, &gr);
+                        let (items, gr, tp) = extract_global_rules(items);
+                        let expanded = expand_client_placeholders(items, &sandbox, &mut lp, &mut eh, &gr, &tp);
                         let mut merged = new_handlers;
                         merged.extend(eh);
                         let (new_tree, new_map) = build_menu_tree(&expanded, &merged);
@@ -3009,8 +3079,8 @@ impl ChatSession {
                     let sandbox = self.sandbox_state.read().unwrap().clone();
                     let mut lp = std::collections::HashSet::new();
                     let mut eh = Vec::new();
-                    let (final_raw, gr) = extract_global_rules(final_raw);
-                    let final_items = expand_client_placeholders(final_raw, &sandbox, &mut lp, &mut eh, &gr);
+                    let (final_raw, gr, tp) = extract_global_rules(final_raw);
+                    let final_items = expand_client_placeholders(final_raw, &sandbox, &mut lp, &mut eh, &gr, &tp);
                     let diff = compute_config_diff(&initial_items, &final_items);
                     if !diff.is_empty() {
                         display_config_diff(&diff);

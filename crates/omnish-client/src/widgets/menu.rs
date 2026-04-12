@@ -921,7 +921,11 @@ pub fn run_menu(
                                                     *v = value.clone();
                                                 }
                                                 MenuItem::Select { label: l, options: opts, selected: sel, .. } if l == sibling_label => {
-                                                    if let Some(pos) = opts.iter().position(|o| o == value) {
+                                                    if value.contains(',') {
+                                                        // Comma-separated: replace options list
+                                                        *opts = value.split(',').map(|s| s.to_string()).collect();
+                                                        *sel = 0;
+                                                    } else if let Some(pos) = opts.iter().position(|o| o == value) {
                                                         *sel = pos;
                                                     }
                                                 }
