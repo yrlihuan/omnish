@@ -460,6 +460,33 @@ struct NavEntry {
     parent_index: usize,
     cursor: usize,
     scroll_offset: usize,
+    /// Snapshot of form field values at entry time, restored on ESC.
+    form_snapshot: Vec<FieldSnapshot>,
+}
+
+/// Snapshot of a single form field for restore-on-ESC.
+enum FieldSnapshot {
+    TextInput(String),
+    Select(usize),
+    Skip,
+}
+
+fn snapshot_fields(items: &[MenuItem]) -> Vec<FieldSnapshot> {
+    items.iter().map(|item| match item {
+        MenuItem::TextInput { value, .. } => FieldSnapshot::TextInput(value.clone()),
+        MenuItem::Select { selected, .. } => FieldSnapshot::Select(*selected),
+        _ => FieldSnapshot::Skip,
+    }).collect()
+}
+
+fn restore_fields(items: &mut [MenuItem], snapshot: &[FieldSnapshot]) {
+    for (item, snap) in items.iter_mut().zip(snapshot.iter()) {
+        match (item, snap) {
+            (MenuItem::TextInput { value, .. }, FieldSnapshot::TextInput(orig)) => *value = orig.clone(),
+            (MenuItem::Select { selected, .. }, FieldSnapshot::Select(orig)) => *selected = *orig,
+            _ => {}
+        }
+    }
 }
 
 /// Dispatch a non-form-mode change: call `on_change` if provided, otherwise
@@ -764,19 +791,12 @@ pub fn run_menu(
                         }
                     }
 
-                    // Reset form fields before popping (prevents stale data on re-entry)
-                    if in_form_mode {
-                        for item in current_items.iter_mut() {
-                            match item {
-                                MenuItem::TextInput { value, .. } => *value = String::new(),
-                                MenuItem::Select { selected, .. } => *selected = 0,
-                                _ => {}
-                            }
-                        }
-                    }
-
-                    // Normal pop
+                    // Restore form fields from snapshot (preserves edit form
+                    // prefills while resetting add form partial input).
                     let entry = nav_stack.pop().unwrap();
+                    if !entry.form_snapshot.is_empty() {
+                        restore_fields(current_items, &entry.form_snapshot);
+                    }
                     cursor = entry.cursor;
                     scroll_offset = entry.scroll_offset;
                     breadcrumb_parts.pop();
@@ -804,6 +824,7 @@ pub fn run_menu(
                         }
                         let label_clone = label.clone();
                         let entering_form = *form_mode;
+                        let snapshot = if entering_form { snapshot_fields(children) } else { vec![] };
 
                         let cleanup = render_cleanup(last_item_count);
                         common::write_stdout(cleanup.as_bytes());
@@ -812,6 +833,7 @@ pub fn run_menu(
                             parent_index: cursor,
                             cursor,
                             scroll_offset,
+                            form_snapshot: snapshot,
                         });
                         breadcrumb_parts.push(label_clone);
 
