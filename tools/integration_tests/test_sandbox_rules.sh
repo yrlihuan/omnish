@@ -6,6 +6,7 @@
 #   1-3. UI structure: Sandbox submenu layout, single Add form, Scope selector
 #   4.   Global rule: add via /config, verify in daemon.toml and menu, delete
 #   5.   Local rule:  add via /config, verify in client.toml and menu, delete
+#   6.   Runtime: verify sandbox blocks sudo, add rule, verify bypass works
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -18,6 +19,7 @@ Test cases:
   3. Add permit rule form has Scope selector as first field
   4. Global sandbox permit rule: add via /config, verify in daemon.toml and menu, delete
   5. Local sandbox permit rule: add via /config, verify in client.toml and menu, delete
+  6. Runtime sandbox bypass: verify sudo blocked, add rule, verify bypass, cleanup
 EOF
 }
 
@@ -454,5 +456,176 @@ test_5() {
     return 0
 }
 
+# ── Test 6: Runtime sandbox bypass after adding permit rule ────────────────
+# Requires LLM cooperation and sandbox (bwrap/landlock) to be active.
+# Uses "sudo -n id" which is not in existing rules.
+# Sandbox sets no_new_privs → sudo fails with "nosuid" error.
+# After adding permit rule, sandbox is bypassed → no "nosuid" error.
+
+test_6() {
+    echo -e "\n${YELLOW}=== Test 6: Runtime sandbox bypass with permit rule ===${NC}"
+
+    restart_client
+    wait_for_client
+
+    # ── Step 1: Verify sandbox blocks "sudo -n id" (no matching rule) ──
+    echo -e "  ${YELLOW}--- Step 1: Verify sandbox blocks sudo -n id ---${NC}"
+    enter_chat
+    send_keys "Run this exact command with the bash tool: sudo -n id" 0.3
+    send_enter 0.3
+
+    if ! wait_for_chat_response 60; then
+        show_capture "After blocked attempt" "$(capture_pane -50)" 25
+        assert_fail "Step 1: no LLM response (timeout)"
+        return 1
+    fi
+
+    local content
+    content=$(capture_pane -50)
+    show_capture "Blocked attempt" "$content" 25
+
+    local stripped
+    stripped=$(echo "$content" | sed 's/\x1b\[[0-9;]*m//g')
+
+    # Check that the LLM actually made a bash tool call
+    if ! echo "$stripped" | grep -qiE 'Bash\(|● .*bash'; then
+        echo -e "  ${YELLOW}LLM did not make a bash tool call — skipping test${NC}"
+        send_special Escape 0.5
+        sleep 1.5
+        assert_pass "Step 1: skipped (LLM did not run bash tool)"
+        return 0
+    fi
+
+    if echo "$stripped" | grep -qi "nosuid\|effective uid is not 0\|no new privileges"; then
+        assert_pass "Step 1: sandbox blocked sudo (privilege error detected)"
+    else
+        echo -e "  ${YELLOW}Warning: sandbox error not found — sandbox may be inactive${NC}"
+    fi
+
+    # Exit chat → shell prompt
+    send_special Escape 0.5
+    sleep 1.5  # exceed intercept_gap_ms
+
+    # ── Step 2: Add global permit rule for "sudo -n" via /config ──
+    echo -e "  ${YELLOW}--- Step 2: Add permit rule ---${NC}"
+    open_config
+    navigate_to_rules
+
+    send_enter 0.8  # open "Add permit rule" form
+
+    # Scope → global
+    send_enter 0.5
+    send_special Down 0.2
+    send_enter 0.5
+    # Down → Plugin (auto-edit)
+    send_special Down 0.3
+    send_keys "bash" 0.3
+    send_enter 0.5
+    # Param name (auto-edit)
+    send_keys "command" 0.3
+    send_enter 0.5
+    # Operator (Select) — keep starts_with (default), skip with Down
+    send_special Down 0.3
+    # Pattern (auto-edit)
+    send_keys "sudo -n" 0.3
+    send_enter 0.5
+    # Done → submit
+    send_enter 1.5
+
+    sleep 1
+    if grep -q 'command starts_with sudo -n' "$DAEMON_TOML"; then
+        assert_pass "Step 2: permit rule added to daemon.toml"
+    else
+        show_capture "daemon.toml" "$(cat "$DAEMON_TOML")" 30
+        assert_fail "Step 2: permit rule not found in daemon.toml"
+        return 1
+    fi
+
+    # Submit returns to Config top-level menu. ESC to exit config, ESC to exit chat.
+    send_special Escape 0.5
+    send_special Escape 0.5
+    sleep 2  # wait for daemon hot-reload
+
+    # ── Step 3: Verify sudo bypasses sandbox with new rule ──
+    echo -e "  ${YELLOW}--- Step 3: Verify sudo bypasses sandbox ---${NC}"
+    enter_chat
+    send_keys "Run this exact command with the bash tool: sudo -n id" 0.3
+    send_enter 0.3
+
+    local step3_ok=true
+    if ! wait_for_chat_response 60; then
+        show_capture "After bypass attempt" "$(capture_pane -30)" 25
+        assert_fail "Step 3: no LLM response (timeout)"
+        step3_ok=false
+    else
+        content=$(capture_pane -30)
+        show_capture "Bypass attempt" "$content" 25
+
+        stripped=$(echo "$content" | sed 's/\x1b\[[0-9;]*m//g')
+
+        # Extract only the LAST tool call output (after last "Bash(sudo") to
+        # avoid matching Step 1's stale "no new privileges" in scrollback.
+        local last_tool_output
+        last_tool_output=$(echo "$stripped" | sed -n '/Bash(sudo/,$ p' | tail -n +1 | head -10)
+
+        if echo "$last_tool_output" | grep -qi "nosuid\|effective uid is not 0\|no new privileges"; then
+            assert_fail "Step 3: sandbox still blocking (privilege error after rule added)"
+            step3_ok=false
+        else
+            assert_pass "Step 3: sudo ran without sandbox error (bypass confirmed)"
+        fi
+    fi
+
+    # Exit chat → shell prompt
+    send_special Escape 0.5
+    sleep 1.5
+
+    # ── Step 4: Clean up — delete the permit rule ──
+    echo -e "  ${YELLOW}--- Step 4: Delete permit rule ---${NC}"
+    open_config
+    navigate_to_rules
+
+    local i
+    for i in $(seq 1 20); do
+        send_special Down 0.15
+    done
+    sleep 0.3
+
+    content=$(capture_pane -25)
+    show_capture "At rule for delete" "$content" 15
+    if echo "$content" | grep -q "sudo -n"; then
+        send_enter 0.8
+
+        content=$(capture_pane -25)
+        show_capture "Edit form for delete" "$content" 15
+
+        # Edit form (no auto-edit): Down to Delete button
+        send_special Down 0.3
+        send_special Down 0.3
+        send_special Down 0.3
+        send_enter 0.5
+        sleep 1.5
+    fi
+
+    # Verify cleanup — fall back to sed if menu delete didn't work
+    if ! grep -q 'command starts_with sudo -n' "$DAEMON_TOML"; then
+        assert_pass "Step 4: permit rule removed from daemon.toml"
+    else
+        echo -e "  ${YELLOW}Menu delete failed, cleaning up via sed${NC}"
+        sed -i '/"command starts_with sudo -n"/d' "$DAEMON_TOML"
+        if ! grep -q 'command starts_with sudo -n' "$DAEMON_TOML"; then
+            assert_pass "Step 4: permit rule removed (fallback)"
+        else
+            assert_fail "Step 4: permit rule still in daemon.toml"
+        fi
+    fi
+
+    if $step3_ok; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 echo -e "${YELLOW}Sandbox permit rule integration tests (#522)${NC}"
-run_tests 5
+run_tests 6
