@@ -267,21 +267,23 @@ test_4() {
     # Cursor starts on Scope (Select, default "local"). Change to "global".
     send_enter 0.5          # open Scope picker
     send_special Down 0.2   # local -> global
-    send_enter 0.5          # confirm
-    send_special Down 0.3   # advance to Plugin (TextInput, auto-edit)
-    send_keys "bash" 0.3
+    send_enter 0.5          # confirm → auto-advance to Plugin
+    # Plugin (Select, default "bash") — open picker, confirm default
+    send_enter 0.5          # open Plugin picker
+    send_enter 0.5          # confirm "bash" → prefill applied, cursor stays
+    send_special Down 0.3   # advance to Param name
+    # Param name (Select, default "command") — open picker, confirm default
+    send_enter 0.5          # open Param name picker
+    send_enter 0.5          # confirm "command" → auto-advance to Operator
+    # Operator (Select) — open picker, Down x3 -> matches
     send_enter 0.5
-    send_keys "command" 0.3
-    send_enter 0.5
-    # Operator (Select) -- press Enter to open picker
-    send_enter 0.5
-    # Down x3 -> matches (starts_with, contains, equals, matches)
     send_special Down 0.2
     send_special Down 0.2
     send_special Down 0.2
-    send_enter 0.5
+    send_enter 0.5          # confirm → auto-advance to Pattern (no auto-edit)
+    send_enter 0.5          # open text edit for Pattern
     send_keys "sudo route.*" 0.3
-    send_enter 0.5
+    send_enter 0.5          # confirm → auto-advance to Done
 
     content=$(capture_pane -25)
     show_capture "Add form (filled)" "$content" 15
@@ -377,19 +379,24 @@ test_5() {
     content=$(capture_pane -25)
     show_capture "Add form (initial)" "$content" 15
 
-    # Scope defaults to "local" -- press Down to skip.
+    # Scope defaults to "local" — skip with Down → auto-advance to Plugin
     send_special Down 0.3
-    send_keys "bash" 0.3
+    # Plugin (Select, default "bash") — open picker, confirm default
     send_enter 0.5
-    send_keys "command" 0.3
+    send_enter 0.5          # confirm → prefill applied, cursor stays
+    send_special Down 0.3   # advance to Param name
+    # Param name (Select, default "command") — open picker, confirm default
     send_enter 0.5
+    send_enter 0.5          # confirm → auto-advance to Operator
+    # Operator (Select) — open picker, Down x3 -> matches
     send_enter 0.5
     send_special Down 0.2
     send_special Down 0.2
     send_special Down 0.2
-    send_enter 0.5
+    send_enter 0.5          # confirm → auto-advance to Pattern (no auto-edit)
+    send_enter 0.5          # open text edit for Pattern
     send_keys "sudo route.*" 0.3
-    send_enter 0.5
+    send_enter 0.5          # confirm → auto-advance to Done
 
     content=$(capture_pane -25)
     show_capture "Add form (filled)" "$content" 15
@@ -518,19 +525,20 @@ test_6() {
     # Scope → global
     send_enter 0.5
     send_special Down 0.2
+    send_enter 0.5          # confirm → auto-advance to Plugin
+    # Plugin (Select, default "bash") — open picker, confirm default
     send_enter 0.5
-    # Down → Plugin (auto-edit)
-    send_special Down 0.3
-    send_keys "bash" 0.3
+    send_enter 0.5          # confirm → prefill applied, cursor stays
+    send_special Down 0.3   # advance to Param name
+    # Param name (Select, default "command") — open picker, confirm default
     send_enter 0.5
-    # Param name (auto-edit)
-    send_keys "command" 0.3
-    send_enter 0.5
+    send_enter 0.5          # confirm → auto-advance to Operator
     # Operator (Select) — keep starts_with (default), skip with Down
-    send_special Down 0.3
-    # Pattern (auto-edit)
+    send_special Down 0.3   # advance to Pattern (no auto-edit)
+    # Pattern — open text edit manually
+    send_enter 0.5          # open text edit
     send_keys "sudo -n" 0.3
-    send_enter 0.5
+    send_enter 0.5          # confirm → auto-advance to Done
     # Done → submit
     send_enter 1.5
 
@@ -683,19 +691,21 @@ test_7() {
 
     send_enter 0.8  # open "Add permit rule" form
 
-    # Scope defaults to "local" — skip with Down
+    # Scope defaults to "local" — skip with Down → auto-advance to Plugin
     send_special Down 0.3
-    # Plugin (auto-edit)
-    send_keys "bash" 0.3
+    # Plugin (Select, default "bash") — open picker, confirm default
     send_enter 0.5
-    # Param name (auto-edit)
-    send_keys "command" 0.3
+    send_enter 0.5          # confirm → prefill applied, cursor stays
+    send_special Down 0.3   # advance to Param name
+    # Param name (Select, default "command") — open picker, confirm default
     send_enter 0.5
+    send_enter 0.5          # confirm → auto-advance to Operator
     # Operator (Select) — keep starts_with (default), skip with Down
-    send_special Down 0.3
-    # Pattern (auto-edit)
+    send_special Down 0.3   # advance to Pattern (no auto-edit)
+    # Pattern — open text edit manually
+    send_enter 0.5          # open text edit
     send_keys "sudo -n" 0.3
-    send_enter 0.5
+    send_enter 0.5          # confirm → auto-advance to Done
     # Done → submit
     send_enter 1.5
 
