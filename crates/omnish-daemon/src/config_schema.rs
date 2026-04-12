@@ -425,9 +425,8 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
             handle_add_backend(config_path, changes)?;
         } else if handler == "add_global_rule" {
             handle_add_global_rule(config_path, changes)?;
-        } else if handler.starts_with("edit_global_rule:") {
+        } else if let Some(rest) = handler.strip_prefix("edit_global_rule:") {
             // handler format: "edit_global_rule:<plugin>:<index>"
-            let rest = &handler["edit_global_rule:".len()..];
             let colon = rest.rfind(':').ok_or_else(|| anyhow::anyhow!("malformed handler: {}", handler))?;
             let plugin = &rest[..colon];
             let idx: usize = rest[colon+1..].parse()

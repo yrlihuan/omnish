@@ -1,4 +1,4 @@
-/// Shared sandbox permit-rule utilities used by both daemon and client.
+//! Shared sandbox permit-rule utilities used by both daemon and client.
 
 pub const OPERATORS: &[&str] = &["starts_with", "contains", "equals", "matches"];
 
