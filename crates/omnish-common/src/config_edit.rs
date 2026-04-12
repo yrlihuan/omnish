@@ -242,6 +242,28 @@ pub fn remove_from_toml_array(path: &Path, key: &str, index: usize) -> anyhow::R
     })
 }
 
+/// Remove a nested TOML table (or key) at the given dot-separated key path.
+///
+/// For example, `remove_toml_table(path, "llm.backends.claude")` removes
+/// the `[llm.backends.claude]` table and all its contents.
+pub fn remove_toml_table(path: &Path, key: &str) -> anyhow::Result<()> {
+    with_locked_doc(path, |doc| {
+        let segments = split_key_path(key);
+        if segments.is_empty() {
+            anyhow::bail!("empty key path");
+        }
+        let (parents, leaf) = segments.split_at(segments.len() - 1);
+        let mut table = doc.as_table_mut();
+        for seg in parents {
+            table = table.get_mut(seg)
+                .and_then(|v| v.as_table_mut())
+                .ok_or_else(|| anyhow::anyhow!("table '{}' not found in path '{}'", seg, key))?;
+        }
+        table.remove(&leaf[0]);
+        Ok(())
+    })
+}
+
 /// Replace the element at `index` in a TOML array at the given key path.
 pub fn replace_in_toml_array(path: &Path, key: &str, index: usize, value: &str) -> anyhow::Result<()> {
     with_locked_doc(path, |doc| {
@@ -489,5 +511,24 @@ mod tests {
         let err = replace_in_toml_array(&path, "sandbox.plugins.bash.permit_rules", 0, "x");
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("out of bounds"));
+    }
+
+    #[test]
+    fn test_remove_toml_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.toml");
+        fs::write(&path, "\
+[llm]\ndefault = \"claude\"\n\n\
+[llm.backends.claude]\nbackend_type = \"anthropic\"\nmodel = \"claude-sonnet\"\n\n\
+[llm.backends.openai]\nbackend_type = \"openai-compat\"\nmodel = \"gpt-4o\"\n").unwrap();
+
+        remove_toml_table(&path, "llm.backends.claude").unwrap();
+
+        let result = fs::read_to_string(&path).unwrap();
+        assert!(!result.contains("[llm.backends.claude]"), "claude backend table should be removed");
+        assert!(!result.contains("claude-sonnet"), "claude model should be removed");
+        assert!(result.contains("[llm.backends.openai]"), "openai backend should remain");
+        assert!(result.contains("gpt-4o"), "openai model should remain");
+        assert!(result.contains("default"), "default setting should remain");
     }
 }

@@ -77,7 +77,7 @@ pub fn build_config_items(
 
     // Submenus and dynamic placeholders both contribute a labeled parent entry
     // to the handlers list so the client can resolve their display labels.
-    let handlers: Vec<ConfigHandlerInfo> = schema.iter()
+    let mut handlers: Vec<ConfigHandlerInfo> = schema.iter()
         .filter(|s| s.kind == "submenu" || s.kind == "dynamic")
         .map(|s| ConfigHandlerInfo {
             path: s.path.clone(),
@@ -285,6 +285,19 @@ pub fn build_config_items(
             },
             prefills: vec![],
         });
+        items.push(ConfigItem {
+            path: format!("{}._delete", prefix),
+            label: "Delete".to_string(),
+            kind: ConfigItemKind::Toggle { value: false },
+            prefills: vec![],
+        });
+
+        // Register as handler submenu so the Delete button works (form_mode).
+        handlers.push(ConfigHandlerInfo {
+            path: format!("llm.backends.{}", quoted),
+            label: name.to_string(),
+            handler: "edit_backend".to_string(),
+        });
     }
 
     // Global sandbox rule forms are now generated client-side via the
@@ -384,6 +397,14 @@ fn find_handler_for_path<'a>(schema: &'a [SchemaItem], path: &str) -> Option<&'a
 /// Resolve handlers for dynamically-generated config items (not in the TOML schema).
 /// The client sends sandbox rule changes with well-known path prefixes.
 fn resolve_dynamic_handler(path: &str) -> Option<String> {
+    // Existing backend edit: llm.backends.<name>.<field> (not __new__)
+    if let Some(rest) = path.strip_prefix("llm.backends.") {
+        let segments = omnish_common::config_edit::split_key_path(rest);
+        if segments.len() >= 2 && segments[0] != "__new__" {
+            return Some("edit_backend".to_string());
+        }
+    }
+
     if !path.starts_with("sandbox.rules.") {
         return None;
     }
@@ -444,7 +465,9 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
     }
 
     for (handler, changes) in &handler_groups {
-        if handler == "add_backend" {
+        if handler == "edit_backend" {
+            handle_edit_backend(config_path, changes)?;
+        } else if handler == "add_backend" {
             handle_add_backend(config_path, changes)?;
         } else if handler == "add_global_rule" {
             handle_add_global_rule(config_path, changes)?;
@@ -512,6 +535,60 @@ fn handle_edit_global_rule(
 
     let rule = format!("{} {} {}", field, operator, value);
     omnish_common::config_edit::replace_in_toml_array(config_path, &array_key, idx, &rule)?;
+    Ok(())
+}
+
+fn handle_edit_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::Result<()> {
+    // Detect backend name from any change path: llm.backends.<name>.<field>
+    let backend_path = changes.iter()
+        .find_map(|c| {
+            let rest = c.path.strip_prefix("llm.backends.")?;
+            // rest = "<name>.<field>" — find the name (may be quoted)
+            let segments = omnish_common::config_edit::split_key_path(rest);
+            if segments.len() >= 2 {
+                let name = &segments[0];
+                let quoted = if name.contains('.') { format!("\"{}\"", name) } else { name.clone() };
+                Some(format!("llm.backends.{}", quoted))
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| anyhow::anyhow!("edit_backend: cannot determine backend name"))?;
+
+    let delete = changes.iter()
+        .find(|c| c.path.ends_with("._delete"))
+        .map(|c| c.value == "true")
+        .unwrap_or(false);
+
+    if delete {
+        omnish_common::config_edit::remove_toml_table(config_path, &backend_path)?;
+        return Ok(());
+    }
+
+    // Apply field changes normally
+    for change in changes {
+        if change.path.ends_with("._delete") {
+            continue;
+        }
+        let field = change.path.rsplit('.').next().unwrap_or("");
+        if field.is_empty() {
+            continue;
+        }
+        let toml_key = &change.path;
+        if field == "use_proxy" {
+            let bool_val: bool = change.value.parse().unwrap_or(false);
+            omnish_common::config_edit::set_toml_value_nested_bool(config_path, toml_key, bool_val)?;
+        } else if field == "context_window" {
+            if let Ok(int_val) = change.value.parse::<i64>() {
+                omnish_common::config_edit::set_toml_value_nested_int(config_path, toml_key, int_val)?;
+            } else if change.value.is_empty() {
+                // Empty context_window: remove the key
+                continue;
+            }
+        } else {
+            omnish_common::config_edit::set_toml_value_nested(config_path, toml_key, &change.value)?;
+        }
+    }
     Ok(())
 }
 
@@ -669,15 +746,18 @@ mod tests {
             context_window: None,
             max_content_chars: None,
         });
-        let (items, _handlers) = build_config_items(&config, &[]);
+        let (items, handlers) = build_config_items(&config, &[]);
         assert!(items.iter().any(|i| i.path == "llm.backends.claude.backend_type"));
         assert!(items.iter().any(|i| i.path == "llm.backends.claude.model"));
         assert!(items.iter().any(|i| i.path == "llm.backends.claude.api_key_cmd"));
+        assert!(items.iter().any(|i| i.path == "llm.backends.claude._delete" && i.label == "Delete"));
         let model_item = items.iter().find(|i| i.path == "llm.backends.claude.model").unwrap();
         match &model_item.kind {
             ConfigItemKind::TextInput { value } => assert_eq!(value, "claude-sonnet-4-5-20250929"),
             _ => panic!("expected TextInput"),
         }
+        let edit_handler = handlers.iter().find(|h| h.path == "llm.backends.claude").unwrap();
+        assert_eq!(edit_handler.handler, "edit_backend");
     }
 
     #[test]
