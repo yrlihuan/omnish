@@ -1,5 +1,61 @@
 # Changelog
 
+## v0.8.9 (2026-04-13)
+
+### Features
+- **config**: Add Delete button for LLM backend editing
+- **sandbox**: Use Select pickers for Plugin and Param name in rule forms
+- **sandbox**: Unified sandbox rules menu with single Add form and scope selector (#522)
+- **sandbox**: Move enabled/backend to client-local config (#520)
+- **sandbox**: Push sandbox.backend from daemon to client (#514)
+- **sandbox**: Show sandbox engine availability in /config menu (#517)
+- **config**: Add Sandbox section to config menu (#514)
+- **config**: Promote Sandbox to root menu, add dynamic plugins placeholder
+- **sandbox**: Unified multi-backend sandbox abstraction (#511)
+- **sandbox**: Warn on chat entry when Landlock sandbox is unavailable (#509)
+- **config**: Add extended_unicode config for terminals with limited font coverage
+
+### Fixes
+- **ghost**: Clear wrapped ghost text on next line to prevent stale remnants (#526)
+- **config**: Skip unmapped handler changes to prevent spurious daemon.toml writes
+- **config**: Restore form field values on ESC instead of clearing (#525)
+- **sandbox**: Support client-local permit rules for bypass (#522)
+- **menu**: Disable auto-edit for pre-populated edit forms
+- **menu**: Replace Delete toggle with red Button in rule edit forms (#522)
+- **menu**: Incremental redraw skips correct distance over Label items (#522)
+- **sandbox**: Stabilize rule handler path matching via schema paths
+- **sandbox**: Fix reorder sandbox Rules below availability labels (#522)
+- **chat**: Strip thinking blocks from LLM summary responses (#527)
+- **chat**: Add Response heading to distinguish from Thinking section (#516)
+- **chat**: Only match thinking tags at start of text (#516)
+- **plugin**: Improve "no output" diagnostics; display thinking tags (#515, #516)
+- **sandbox**: Verify bwrap can create namespaces in is_available (#515)
+- **config**: Exclude Label items from config diff to avoid false changes (#519)
+- **display**: Truncate_cols now skips ANSI escape sequences when calculating width (#513)
+- **display**: Use plain black background for code in markdown rendering (#512)
+- **display**: Eliminate terminal flicker during long tool-use sequences (#510)
+- **display**: Use bright-black instead of dim for notice text (#505)
+- **display**: Centralize ANSI color constants in display.rs (#505)
+- **ghost**: Clear ghost text on Left/Home/End arrow keys (#518)
+- **ghost**: Discard stale completion responses after command execution (#507)
+- **transport**: Add conn_id and path info to RPC connection error logs (#506)
+- **summary**: Improve hourly/daily summary prompts to focus on projects and goals (#523)
+- **test**: Fix flaky test_external_formatter_sequential ETXTBSY race (#528)
+- **test**: Serialize config tests that mutate env vars
+- **build**: Conditionally import BwrapUnavailableReason to avoid unused import warning on macOS
+
+### Refactor
+- **sandbox**: Deduplicate rule utilities into omnish-common
+- **sandbox**: Address code review issues in permit rules implementation
+- Move extended_unicode config under [shell] section
+
+### CI & Tests
+- Add integration tests for sandbox rules, config backend, picker selection
+- Add test_config_backend.sh to integration test pipeline
+
+### Docs
+- Update implementation docs for sandbox, config, and thinking tag changes
+
 ## v0.8.8 (2026-04-08)
 
 ### Features
