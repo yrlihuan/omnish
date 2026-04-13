@@ -23,11 +23,26 @@ impl ExternalFormatter {
         let (tx, mut rx) =
             mpsc::channel::<(serde_json::Value, oneshot::Sender<ExternalResponse>)>(32);
 
-        let mut child = tokio::process::Command::new(binary)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
+        // Retry on ETXTBSY — transient race between file close and execve
+        // that can occur when the binary was just written (e.g. in tests).
+        let mut child = {
+            let mut attempts = 0;
+            loop {
+                match tokio::process::Command::new(binary)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                {
+                    Ok(c) => break c,
+                    Err(e) if e.raw_os_error() == Some(26) && attempts < 3 => { // ETXTBSY
+                        attempts += 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        };
 
         let mut stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
@@ -131,13 +146,19 @@ impl FormatterManager {
         }
     }
 
-    pub async fn register_external(&mut self, name: &str, binary: &str) {
+    pub async fn register_external(
+        &mut self,
+        name: &str,
+        binary: &str,
+    ) -> Result<(), std::io::Error> {
         match ExternalFormatter::start(binary).await {
             Ok(ext) => {
                 self.externals.insert(name.to_string(), ext);
+                Ok(())
             }
             Err(e) => {
                 tracing::warn!("failed to start formatter '{}' ({}): {}", name, binary, e);
+                Err(e)
             }
         }
     }
@@ -200,26 +221,35 @@ mod tests {
         assert!(!out.result_compact.is_empty());
     }
 
+    /// Write a test script, sync to disk, and set executable permission.
+    /// The sync prevents ETXTBSY when spawn() races with the write close.
+    fn write_test_script(path: &std::path::Path, content: &str) {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f.sync_all().unwrap();
+        drop(f);
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     #[tokio::test]
     async fn test_external_formatter_echo() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("test_fmt");
-        std::fs::write(
+        write_test_script(
             &script,
             r#"#!/bin/bash
 while IFS= read -r line; do
     echo '{"summary":"test summary","compact":["compact line"],"full":["full line 1","full line 2"]}'
 done
 "#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
 
         let mut mgr = FormatterManager::new();
         mgr.register_external("test_fmt", script.to_str().unwrap())
-            .await;
+            .await
+            .unwrap();
 
         let input = FormatInput {
             tool_name: "test_tool".into(),
@@ -237,11 +267,9 @@ done
 
     #[tokio::test]
     async fn test_external_formatter_sequential() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("counter_fmt");
-        std::fs::write(
+        write_test_script(
             &script,
             r#"#!/bin/bash
 n=0
@@ -250,13 +278,12 @@ while IFS= read -r line; do
     echo "{\"summary\":\"call $n\",\"compact\":[\"call $n\"],\"full\":[\"call $n\"]}"
 done
 "#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
 
         let mut mgr = FormatterManager::new();
         mgr.register_external("counter", script.to_str().unwrap())
-            .await;
+            .await
+            .unwrap();
 
         let input = FormatInput {
             tool_name: "t".into(),

@@ -372,7 +372,7 @@ async fn async_main() -> Result<i32> {
             tracing::warn!("formatter '{}' has non-UTF-8 binary path, skipping", name);
             continue;
         };
-        formatter_mgr.register_external(&name, path).await;
+        let _ = formatter_mgr.register_external(&name, path).await;
     }
     let formatter_mgr = Arc::new(formatter_mgr);
     let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr.clone(), tool_registry.clone(), server_opts, formatter_mgr, Arc::clone(&update_cache));
