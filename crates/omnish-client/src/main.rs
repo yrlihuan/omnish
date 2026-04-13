@@ -650,11 +650,6 @@ async fn main() -> Result<()> {
     // Deferred ghost text render — rendered after next PTY display_data write
     // so bash's readline redraw (after bind-x hook) doesn't overwrite it.
     let mut deferred_ghost: Option<String> = None;
-    // Display width of the deferred ghost suffix, for wrap detection at flush time
-    let mut deferred_ghost_width: usize = 0;
-    // Whether the currently-rendered ghost text wrapped to the next terminal line.
-    // Set at render time, used at clear time to decide whether to erase the next line.
-    let mut ghost_wrapped = false;
     // When we triggered readline report (for timeout)
     let mut readline_trigger_time: Option<std::time::Instant> = None;
     let in_tmux = std::env::var("TMUX").is_ok();
@@ -956,8 +951,7 @@ async fn main() -> Result<()> {
                         } else if bytes == [0x1b] && shell_completer.ghost().is_some() {
                             // Bare ESC dismisses ghost text — consume the key (don't forward to PTY)
                             if shell_completer.dismiss() {
-                                nix::unistd::write(std::io::stdout(), display::erase_ghost_text(ghost_wrapped)).ok();
-                                ghost_wrapped = false;
+                                nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
                                 if let Some(ref rpc) = daemon_conn {
                                     let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
                                     send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd);
@@ -989,8 +983,7 @@ async fn main() -> Result<()> {
                                             send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd);
                                         }
                                         shell_completer.clear();
-                                        nix::unistd::write(std::io::stdout(), display::erase_ghost_text(ghost_wrapped)).ok();
-                                        ghost_wrapped = false;
+                                        nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
                                     }
                                 } else if bytes.contains(&0x12) {
                                     // Ctrl+R enters isearch mode (different keymap)
@@ -1006,8 +999,7 @@ async fn main() -> Result<()> {
                                             send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd);
                                         }
                                         shell_completer.clear();
-                                        nix::unistd::write(std::io::stdout(), display::erase_ghost_text(ghost_wrapped)).ok();
-                                        ghost_wrapped = false;
+                                        nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
                                     }
                                 }
                             }
@@ -1020,8 +1012,7 @@ async fn main() -> Result<()> {
                             if let Some((input, seq)) = shell_input.take_change() {
                                 if shell_completer.on_input_changed(input, seq) {
                                     // Ghost was cleared — erase stale ghost text from screen
-                                    nix::unistd::write(std::io::stdout(), display::erase_ghost_text(ghost_wrapped)).ok();
-                                    ghost_wrapped = false;
+                                    nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
                                     // Send completion summary (ignored - user typed different input)
                                     if let Some(ref rpc) = daemon_conn {
                                         let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
@@ -1111,8 +1102,7 @@ async fn main() -> Result<()> {
                         // Bare ESC dismisses ghost text — consume the key
                         if bytes == [0x1b] && shell_completer.ghost().is_some() {
                             if shell_completer.dismiss() {
-                                nix::unistd::write(std::io::stdout(), display::erase_ghost_text(ghost_wrapped)).ok();
-                                ghost_wrapped = false;
+                                nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
                                 if let Some(ref rpc) = daemon_conn {
                                     let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
                                     send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd);
@@ -1166,32 +1156,26 @@ async fn main() -> Result<()> {
 
                     nix::unistd::write(std::io::stdout(), display_data)?;
 
-                    // Track cursor position on display (stripped) data — must happen
-                    // before ghost rendering so col_tracker.col reflects where the
-                    // ghost text starts (needed for wrap detection).
-                    col_tracker.feed(display_data);
-                    notice_queue::set_cursor_row(col_tracker.row);
-
                     // Render ghost text after display_data write.
                     // Priority 1: deferred ghost (just set during this or prior RL processing).
                     // Priority 2: re-render active ghost — handles the case where bash's
                     // readline redraw is split across multiple PTY reads and a trailing
                     // fragment overwrites the previously-rendered ghost.
                     if let Some(ghost_render) = deferred_ghost.take() {
-                        let cols = get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
-                        ghost_wrapped = col_tracker.col as usize + deferred_ghost_width > cols;
                         nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
                     } else if !display_data.is_empty()
                         && shell_input.at_prompt()
                         && shell_input.cursor_at_end()
                     {
                         if let Some(suffix) = shell_completer.ghost() {
-                            let cols = get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
-                            ghost_wrapped = col_tracker.col as usize + display::display_width(suffix) > cols;
                             let ghost_render = display::render_ghost_text(suffix);
                             nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
                         }
                     }
+
+                    // Track cursor position on display (stripped) data
+                    col_tracker.feed(display_data);
+                    notice_queue::set_cursor_row(col_tracker.row);
 
                     // Detect alternate screen transitions
                     if let Some(active) = alt_screen_detector.feed(display_data) {
@@ -1310,7 +1294,6 @@ async fn main() -> Result<()> {
                                             if let Some(ghost) = shell_completer.on_response(&resp, current) {
                                                 // Defer rendering until after bash's readline
                                                 // redraw (which arrives in the next PTY read).
-                                                deferred_ghost_width = display::display_width(ghost);
                                                 deferred_ghost = Some(display::render_ghost_text(ghost));
                                             }
                                         }
@@ -1319,8 +1302,7 @@ async fn main() -> Result<()> {
                                         pending_completion_responses.clear();
                                         if shell_completer.ghost().is_some() {
                                             shell_completer.clear();
-                                            nix::unistd::write(std::io::stdout(), display::erase_ghost_text(ghost_wrapped)).ok();
-                                            ghost_wrapped = false;
+                                            nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
                                         }
                                     }
                                     readline_triggered_for_completions = false;
@@ -1331,8 +1313,7 @@ async fn main() -> Result<()> {
                                     let had_ghost = shell_completer.ghost().is_some();
                                     if shell_completer.on_input_changed(input, seq) {
                                         event_log::push(format!("on_input_changed cleared ghost input={:?}", input));
-                                        nix::unistd::write(std::io::stdout(), display::erase_ghost_text(ghost_wrapped)).ok();
-                                        ghost_wrapped = false;
+                                        nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
                                     } else if had_ghost {
                                         event_log::push(format!("on_input_changed kept ghost input={:?}", input));
                                     }
@@ -1385,8 +1366,6 @@ async fn main() -> Result<()> {
                     // the readline redraw will arrive and line 891 will flush it.
                     if !display_data.is_empty() {
                         if let Some(ghost_render) = deferred_ghost.take() {
-                            let cols = get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
-                            ghost_wrapped = col_tracker.col as usize + deferred_ghost_width > cols;
                             event_log::push("flushing deferred ghost (same read)");
                             nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
                         }
@@ -1487,8 +1466,6 @@ async fn main() -> Result<()> {
                         let current = shell_input.input();
                         for resp in pending_completion_responses.drain(..) {
                             if let Some(ghost) = shell_completer.on_response(&resp, current) {
-                                let cols = get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
-                                ghost_wrapped = col_tracker.col as usize + display::display_width(ghost) > cols;
                                 let ghost_render = display::render_ghost_text(ghost);
                                 nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
                             }
@@ -1525,8 +1502,7 @@ async fn main() -> Result<()> {
                 send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd);
             }
             shell_completer.clear();
-            nix::unistd::write(std::io::stdout(), display::erase_ghost_text(ghost_wrapped)).ok();
-            ghost_wrapped = false;
+            nix::unistd::write(std::io::stdout(), b"\x1b[K").ok();
         }
 
         // Check if PTY hung up

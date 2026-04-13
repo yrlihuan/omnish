@@ -168,34 +168,17 @@ pub fn render_error(msg: &str) -> String {
 
 /// Render ghost text (completion suggestion) in dim gray after the cursor.
 /// Uses save/restore cursor so the cursor stays at the real input position.
+/// Auto-wrap is disabled so ghost text that would exceed the terminal width
+/// is truncated at the right edge instead of wrapping to the next line.
+/// This prevents stale wrapped remnants that `\x1b[K` (erase-to-EOL) cannot reach.
 /// Returns empty string if ghost is empty.
 pub fn render_ghost_text(ghost: &str) -> String {
     if ghost.is_empty() {
         return String::new();
     }
-    format!("\x1b7{DIM}{}{RESET}\x1b8", ghost)
-}
-
-/// Erase ghost text from the terminal.
-///
-/// When ghost text wraps to the next line (prompt + input + ghost > terminal
-/// width), a plain `\x1b[K` only clears the current line.  The wrapped
-/// portion on the next line remains as a stale artifact.
-///
-/// This function erases the current line from the cursor **and** one line
-/// below, then restores the cursor position so the prompt is untouched.
-/// `wrapped` should be `true` when the caller knows the ghost text crossed
-/// a line boundary; when `false`, only `\x1b[K` is emitted.
-pub fn erase_ghost_text(wrapped: bool) -> &'static [u8] {
-    if wrapped {
-        // \x1b[K   — erase from cursor to end of current line
-        // \x1b[1B  — move cursor down one line
-        // \r\x1b[K — move to column 0, erase that line
-        // \x1b[1A  — move cursor back up one line
-        b"\x1b[K\x1b[1B\r\x1b[K\x1b[1A"
-    } else {
-        b"\x1b[K"
-    }
+    // \x1b[?7l = disable auto-wrap (DECAWM off)
+    // \x1b[?7h = re-enable auto-wrap (DECAWM on)
+    format!("\x1b7\x1b[?7l{DIM}{}{RESET}\x1b[?7h\x1b8", ghost)
 }
 
 /// Spinner frames for running tool status animation.

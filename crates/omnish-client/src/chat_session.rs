@@ -2999,11 +2999,9 @@ impl ChatSession {
                     let pm = path_map_ref.borrow();
                     let config_changes: Vec<ConfigChange> = handler_changes.iter()
                         .filter_map(|mc| {
-                            let schema_path = match pm.get(&mc.path) {
-                                Some(p) => p.clone(),
-                                // Skip changes with no schema mapping (e.g. auto-appended Done button)
-                                None => return None,
-                            };
+                            let schema_path = pm.get(&mc.path)
+                                .cloned()
+                                .unwrap_or_else(|| mc.path.clone());
                             if local_paths_ref.contains(&schema_path) { return None; }
                             Some(ConfigChange { path: schema_path, value: mc.value.clone() })
                         })
