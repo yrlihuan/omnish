@@ -78,7 +78,7 @@ test_1() {
     # Auto-exit: inspection command as first action should return to shell (issue #148)
     # Check if shell prompt (contains "$ " or "# " for root) appears in last few lines.
     # Ghost text may follow the prompt so we can't require it at line end.
-    if echo "$content" | tail -3 | grep -qE '[\$#] '; then
+    if echo "$content" | tail -3 | grep -qE '[\$#%] '; then
         assert_pass "/debug client shows output and auto-exits chat"
         return 0
     else
@@ -107,7 +107,7 @@ test_2() {
         return 1
     fi
 
-    if echo "$content" | tail -3 | grep -qE '[\$#] '; then
+    if echo "$content" | tail -3 | grep -qE '[\$#%] '; then
         assert_pass "/debug session shows output and auto-exits chat"
         return 0
     else
@@ -138,7 +138,7 @@ test_3() {
         return 1
     fi
 
-    if echo "$content" | tail -3 | grep -qE '[\$#] '; then
+    if echo "$content" | tail -3 | grep -qE '[\$#%] '; then
         assert_pass "/context | tail -n 10 produces output and auto-exits chat"
         return 0
     else
@@ -310,8 +310,9 @@ test_5() {
     show_capture "After Arrow Down" "$content" 5
 
     last_line=$(last_nonempty_line "$content")
-    # After Down, the command line should be empty (just the prompt ending with $ or #)
-    if echo "$last_line" | grep -qE '[\$#] $'; then
+    # After Down, the command line should be empty (just the prompt ending with $ or # or %)
+    # Zsh may leave trailing spaces after clearing the command, so allow optional trailing whitespace
+    if echo "$last_line" | grep -qE '[\$#%]\s*$'; then
         assert_pass "Arrow Up/Down history navigation works correctly"
         return 0
     else
@@ -405,7 +406,7 @@ test_8() {
     show_capture "After entering chat" "$content" 5
 
     # The shell prompt (ending with "$ " or "# " for root) should still be visible above "> "
-    if echo "$content" | grep -qE '[\$#] ' && echo "$content" | grep -qE '^\s*> '; then
+    if echo "$content" | grep -qE '[\$#%] ' && echo "$content" | grep -qE '^\s*> '; then
         assert_pass "Shell prompt preserved above chat prompt"
         send_special Escape 0.5
         sleep 1.5
