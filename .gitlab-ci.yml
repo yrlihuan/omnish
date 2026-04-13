@@ -74,6 +74,7 @@ integration-test:
     - bash tools/integration_tests/verify_picker_selection.sh
     - bash tools/integration_tests/test_config_push.sh
     - bash tools/integration_tests/test_sandbox_rules.sh
+    - bash tools/integration_tests/test_config_backend.sh
   after_script:
     - kill $(pgrep -f omnish-daemon) 2>/dev/null || true
   rules:
