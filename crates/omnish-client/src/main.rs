@@ -486,7 +486,12 @@ async fn main() -> Result<()> {
 
     // Resolve shell and hook args early so they're available for respawn.
     let shell = resolve_shell(&config.shell.command);
+
+    // Install shell-specific OSC 133 hook
     let osc133_rcfile = shell_hook::install_bash_hook(&shell);
+    let osc133_zdotdir = shell_hook::install_zsh_hook(&shell);
+    let osc133_hook_installed = osc133_rcfile.is_some() || osc133_zdotdir.is_some();
+
     let shell_args: Vec<String> = if let Some(ref rcfile) = osc133_rcfile {
         vec!["--rcfile".to_string(), rcfile.to_string_lossy().to_string()]
     } else {
@@ -500,7 +505,7 @@ async fn main() -> Result<()> {
         // Resume mode: reconstruct PtyProxy from passed fd/pid
         let proxy = unsafe { PtyProxy::from_raw_fd(resume.master_fd, resume.child_pid) };
         notice(&format!("[omnish] Resumed (pid={}, fd={})", resume.child_pid, resume.master_fd));
-        (resume.session_id.clone(), proxy, osc133_rcfile.is_some())
+        (resume.session_id.clone(), proxy, osc133_hook_installed)
     } else {
         // Normal startup: spawn a new shell
         let session_id = Uuid::new_v4().to_string()[..8].to_string();
@@ -509,7 +514,14 @@ async fn main() -> Result<()> {
         child_env.insert("OMNISH_SESSION_ID".to_string(), session_id.clone());
         child_env.insert("SHELL".to_string(), shell.clone());
 
-        let osc133_hook_installed = osc133_rcfile.is_some();
+        if let Some(ref zdotdir) = osc133_zdotdir {
+            // Preserve original ZDOTDIR so the hook can source the user's .zshrc
+            if let Ok(orig) = std::env::var("ZDOTDIR") {
+                child_env.insert("OMNISH_ORIG_ZDOTDIR".to_string(), orig);
+            }
+            child_env.insert("ZDOTDIR".to_string(), zdotdir.to_string_lossy().to_string());
+        }
+
         let proxy = PtyProxy::spawn_with_env(&shell, &shell_args_ref, child_env)?;
         // Print welcome message for first-time users
         if !config.onboarded {
