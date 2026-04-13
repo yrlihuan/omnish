@@ -150,6 +150,59 @@ pub fn install_bash_hook(shell: &str) -> Option<PathBuf> {
     Some(rcfile_path)
 }
 
+/// Install the zsh OSC 133 hook.
+/// Returns the ZDOTDIR path containing a `.zshrc` that sources the hook,
+/// or None if the shell is not zsh.
+pub fn install_zsh_hook(shell: &str) -> Option<PathBuf> {
+    if !shell.ends_with("zsh") {
+        return None;
+    }
+
+    let dir = omnish_common::config::omnish_dir().join("hooks");
+    std::fs::create_dir_all(&dir).ok()?;
+
+    // Write the hook script (only if content differs or file doesn't exist)
+    let hook_path = dir.join("zsh_hook.zsh");
+    let should_write = match std::fs::read(&hook_path) {
+        Ok(existing) => existing != ZSH_HOOK.as_bytes(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+    };
+    if should_write {
+        std::fs::write(&hook_path, ZSH_HOOK).ok()?;
+    }
+
+    // Create a ZDOTDIR with a .zshrc that sources user config then our hook.
+    // Zsh doesn't have --rcfile; ZDOTDIR is the standard override mechanism.
+    let zdotdir = dir.join("zdotdir");
+    std::fs::create_dir_all(&zdotdir).ok()?;
+
+    let zshrc_path = zdotdir.join(".zshrc");
+    let mut content = String::new();
+    // Source user's original .zshrc from their real home or original ZDOTDIR
+    content.push_str(
+        "# Source user's .zshrc from original ZDOTDIR (or HOME)\n\
+         if [[ -f \"${OMNISH_ORIG_ZDOTDIR:-$HOME}/.zshrc\" ]]; then\n\
+         \tsource \"${OMNISH_ORIG_ZDOTDIR:-$HOME}/.zshrc\"\n\
+         fi\n"
+    );
+    content.push_str(&format!(
+        "source \"{}\"\n",
+        hook_path.to_string_lossy()
+    ));
+
+    let should_write_rc = match std::fs::read(&zshrc_path) {
+        Ok(existing) => existing != content.as_bytes(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+    };
+    if should_write_rc {
+        std::fs::write(&zshrc_path, &content).ok()?;
+    }
+
+    Some(zdotdir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,5 +246,29 @@ mod tests {
         assert!(ZSH_HOOK.contains("133;C"));
         assert!(ZSH_HOOK.contains("133;D"));
         assert!(ZSH_HOOK.contains("133;RL"));
+    }
+
+    #[test]
+    fn test_zsh_returns_zdotdir() {
+        let result = install_zsh_hook("/bin/zsh");
+        assert!(result.is_some());
+        let zdotdir = result.unwrap();
+        assert!(zdotdir.exists());
+        assert!(zdotdir.is_dir());
+        // Must contain a .zshrc that sources the hook
+        let zshrc = zdotdir.join(".zshrc");
+        assert!(zshrc.exists());
+        let content = std::fs::read_to_string(&zshrc).unwrap();
+        assert!(content.contains("zsh_hook.zsh"), "zshrc should source hook: {content}");
+    }
+
+    #[test]
+    fn test_zsh_hook_preserves_original_zdotdir() {
+        let result = install_zsh_hook("/usr/bin/zsh");
+        assert!(result.is_some());
+        let zdotdir = result.unwrap();
+        let zshrc = zdotdir.join(".zshrc");
+        let content = std::fs::read_to_string(&zshrc).unwrap();
+        assert!(content.contains("OMNISH_ORIG_ZDOTDIR"), "should reference original ZDOTDIR: {content}");
     }
 }
