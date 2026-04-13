@@ -53,6 +53,54 @@ fi
 trap '__omnish_preexec' DEBUG
 "#;
 
+const ZSH_HOOK: &str = r#"
+# omnish shell integration — OSC 133 semantic prompts for zsh
+emulate -L zsh
+
+__omnish_preexec_fired=0
+__omnish_in_precmd=0
+
+__omnish_precmd() {
+  emulate -L zsh
+  local ec=$?
+  __omnish_in_precmd=1
+  __omnish_preexec_fired=0
+  printf '\033]133;D;%d\007' "$ec"
+  printf '\033]133;A\007'
+  __omnish_in_precmd=0
+}
+
+__omnish_preexec() {
+  emulate -L zsh
+  [[ "$__omnish_in_precmd" == "1" ]] && return
+  [[ "$__omnish_preexec_fired" == "1" ]] && return
+  __omnish_preexec_fired=1
+  # $1 is the full command string (zsh passes it natively)
+  local cmd_esc="${1//;/\\;}"
+  cmd_esc="${cmd_esc//$'\n'/\\n}"
+  local pwd_esc="${PWD//;/\\;}"
+  # Original input from history (preserves aliases unexpanded)
+  local orig_esc
+  orig_esc="$(fc -ln -1)"
+  orig_esc="${orig_esc## }"
+  orig_esc="${orig_esc//;/\\;}"
+  orig_esc="${orig_esc//$'\n'/\\n}"
+  printf '\033]133;B;%s;cwd:%s;orig:%s\007' "$cmd_esc" "$pwd_esc" "$orig_esc"
+  printf '\033]133;C\007'
+}
+
+# ZLE widget for readline reporting (bound to same key as bash)
+__omnish-rl-report() {
+  printf '\033]133;RL;%s;%s\007' "$BUFFER" "$CURSOR"
+}
+zle -N __omnish-rl-report
+bindkey '\e[13337~' __omnish-rl-report
+
+# Append to hook arrays (coexists with oh-my-zsh/prezto/p10k)
+precmd_functions+=(__omnish_precmd)
+preexec_functions+=(__omnish_preexec)
+"#;
+
 /// Generate an rcfile that sources the user's original bashrc then loads the OSC 133 hook.
 /// Returns the rcfile path, or None if the shell is not bash.
 pub fn install_bash_hook(shell: &str) -> Option<PathBuf> {
@@ -136,5 +184,14 @@ mod tests {
     fn test_hook_content_includes_cwd() {
         assert!(BASH_HOOK.contains("PWD"));
         assert!(BASH_HOOK.contains("cwd:"));
+    }
+
+    #[test]
+    fn test_zsh_hook_content_has_osc133_sequences() {
+        assert!(ZSH_HOOK.contains("133;A"));
+        assert!(ZSH_HOOK.contains("133;B"));
+        assert!(ZSH_HOOK.contains("133;C"));
+        assert!(ZSH_HOOK.contains("133;D"));
+        assert!(ZSH_HOOK.contains("133;RL"));
     }
 }
