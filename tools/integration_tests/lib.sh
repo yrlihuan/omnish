@@ -32,7 +32,21 @@ CLIENT="$PROJECT_ROOT/target/release/omnish"
 
 # ── Tmux config (override default shell to avoid running installed omnish) ──
 TMUX_CONF="$(mktemp /tmp/omnish-test-tmux.XXXXXX.conf)"
-echo "set -g default-shell /bin/bash" > "$TMUX_CONF"
+# ── Shell selection (TEST_SHELL env var, default: bash) ─────────────────
+TEST_SHELL="${TEST_SHELL:-bash}"
+_resolve_test_shell() {
+    case "$TEST_SHELL" in
+        bash) echo "/bin/bash" ;;
+        zsh)  echo "/bin/zsh" ;;
+        *)    echo "/bin/$TEST_SHELL" ;;
+    esac
+}
+TEST_SHELL_PATH="$(_resolve_test_shell)"
+if [[ ! -x "$TEST_SHELL_PATH" ]]; then
+    echo -e "${YELLOW}SKIP: $TEST_SHELL_PATH not found${NC}"
+    exit 0
+fi
+echo "set -g default-shell $TEST_SHELL_PATH" > "$TMUX_CONF"
 
 # Shorthand: all tmux calls go through this to ensure correct config + socket.
 _tmux() {
@@ -87,6 +101,7 @@ test_init() {
     mkdir -p "$SOCKET_DIR"
 
     _check_deps
+    echo -e "${YELLOW}Shell: $TEST_SHELL ($TEST_SHELL_PATH)${NC}"
 
     # Parse common flags; remaining args are ignored (caller can parse more)
     while [[ $# -gt 0 ]]; do
@@ -327,11 +342,12 @@ is_chat_prompt() {
 }
 
 # is_shell_prompt <content>
-#   Returns 0 if the last non-empty line looks like a shell prompt ending in $ or #.
+#   Returns 0 if the last non-empty line looks like a shell prompt.
+#   Matches bash ($ or #) and zsh (% or #) prompt endings.
 is_shell_prompt() {
     local last
     last=$(last_nonempty_line "$1")
-    echo "$last" | grep -qE '[\$#] $|\$$|\#$'
+    echo "$last" | grep -qE '[\$#%] $|[\$#%]$'
 }
 
 # ── Waiting helpers ──────────────────────────────────────────────────────
