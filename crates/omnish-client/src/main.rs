@@ -872,7 +872,7 @@ async fn main() -> Result<()> {
                         event_log::push("chat mode enter (timeout)");
                         let exit_action = enter_chat_mode(
                             None, &daemon_conn, &mut chat_history, &mut last_thread_id,
-                            &session_id, &proxy, &shell_input, &interceptor, &shell_completer,
+                            &session_id, &shell, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
                             &onboarded, locked, &config, Arc::clone(&sandbox_state),
                         ).await;
@@ -1071,7 +1071,7 @@ async fn main() -> Result<()> {
                         let initial = if msg.trim().is_empty() { None } else { Some(msg) };
                         let exit_action = enter_chat_mode(
                             initial, &daemon_conn, &mut chat_history, &mut last_thread_id,
-                            &session_id, &proxy, &shell_input, &interceptor, &shell_completer,
+                            &session_id, &shell, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
                             &onboarded, locked, &config, Arc::clone(&sandbox_state),
                         ).await;
@@ -1090,7 +1090,7 @@ async fn main() -> Result<()> {
                         };
                         let exit_action = enter_chat_mode(
                             Some(resume_cmd), &daemon_conn, &mut chat_history, &mut last_thread_id,
-                            &session_id, &proxy, &shell_input, &interceptor, &shell_completer,
+                            &session_id, &shell, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
                             &onboarded, locked, &config, Arc::clone(&sandbox_state),
                         ).await;
@@ -2365,6 +2365,7 @@ async fn enter_chat_mode(
     chat_history: &mut VecDeque<String>,
     last_thread_id: &mut Option<String>,
     session_id: &str,
+    shell: &str,
     proxy: &PtyProxy,
     shell_input: &shell_input::ShellInputTracker,
     interceptor: &interceptor::InputInterceptor,
@@ -2423,7 +2424,15 @@ async fn enter_chat_mode(
 
     nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
     notice_queue::flush();
-    proxy.write_all(b"\x15\x0b").ok(); // Ctrl-U + Ctrl-K: clear line
+    // Clear the shell command line before restoring state.
+    // Bash readline: Ctrl-U (kill backward) + Ctrl-K (kill forward)
+    // Zsh ZLE: Ctrl-U alone does kill-whole-line (both directions);
+    //   sending Ctrl-K to zsh may leak as "^K" command when ZLE isn't ready.
+    if shell.ends_with("zsh") {
+        proxy.write_all(b"\x15").ok();
+    } else {
+        proxy.write_all(b"\x15\x0b").ok();
+    }
     // Execute pending cd (from resume mismatch) before restoring input
     if let Some(ref dir) = pending_cd {
         proxy.write_all(format!("cd {}\r", dir).as_bytes()).ok();
