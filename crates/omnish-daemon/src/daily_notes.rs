@@ -131,7 +131,7 @@ async fn generate_daily_note(
             extra_messages: vec![],
         };
         match backend.complete(&req).await {
-            Ok(resp) => Some(resp.text()),
+            Ok(resp) => Some(crate::strip_thinking_block(&resp.text())),
             Err(e) => {
                 tracing::warn!("daily notes: LLM summary failed, skipping: {}", e);
                 None

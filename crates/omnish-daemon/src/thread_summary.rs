@@ -4,6 +4,7 @@ use omnish_common::config::ConfigMap;
 use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
 use tokio_cron_scheduler::Job;
 
+
 pub struct ThreadSummaryTask {
     config: ConfigMap,
     schedule: String,
@@ -120,7 +121,7 @@ async fn generate_thread_summaries(
 
         match backend.complete(&req).await {
             Ok(resp) => {
-                let summary = resp.text().trim().to_string();
+                let summary = crate::strip_thinking_block(&resp.text()).trim().to_string();
                 if !summary.is_empty() {
                     let mut updated_meta = meta;
                     updated_meta.summary = Some(summary);
