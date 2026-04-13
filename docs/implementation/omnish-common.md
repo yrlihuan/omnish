@@ -13,8 +13,15 @@ omnish-common 包含客户端和守护进程共享的配置结构和工具函数
 - `shell`: Shell配置（`ShellConfig`类型）
 - `daemon_addr`: 守护进程地址（默认：`~/.omnish/omnish.sock`）
 - `onboarded`: 用户是否已完成新手引导（默认：`false`）；首次进入聊天后自动写入 `true`
+- `sandbox`: 客户端本地沙箱配置（`ClientSandboxConfig`类型）
 
 注意：`auto_update` 字段已从 `ClientConfig` 中移除，自动更新功能统一由守护进程端的 `TasksConfig.auto_update` 管理。
+
+### `ClientSandboxConfig`
+客户端本地沙箱设置。因沙箱能力取决于内核/OS 特性（bwrap、landlock、seatbelt），故按主机配置，包含：
+- `enabled`: 总开关，控制所有客户端侧沙箱（默认：`true`）
+- `backend`: 首选沙箱后端（`"bwrap"` | `"landlock"` | `"macos"`），Linux 默认 `"bwrap"`，macOS 默认 `"macos"`；运行时可用性检测可能覆盖此值
+- `plugins`: 客户端本地的每工具豁免规则（`HashMap<String, SandboxPluginConfig>`），与守护进程端规则在运行时合并，客户端规则优先
 
 ### `DaemonConfig`
 守护进程配置结构（派生`Serialize`和`Deserialize`，所有子结构同样），包含：
@@ -128,8 +135,7 @@ enabled = true
 插件对应 `~/.omnish/plugins/{name}/` 目录下的 `{name}` 可执行文件，通过 JSON-RPC 协议与守护进程通信，在守护进程启动时加载并初始化。
 
 ### `SandboxConfig`
-沙箱配置，包含：
-- `backend`: 沙箱后端类型（`"bwrap"` | `"landlock"` | `"macos"`），Linux 默认 `"bwrap"`，macOS 默认 `"macos"`
+守护进程端沙箱配置，仅包含守护进程全局的豁免规则（`backend` 和 `enabled` 已移至客户端侧 `ClientSandboxConfig`）：
 - `plugins`: 每个工具的沙箱豁免规则（`HashMap<String, SandboxPluginConfig>`，键为工具名如 `"bash"`）
 
 ### `SandboxPluginConfig`
@@ -218,6 +224,27 @@ LLM后端具体配置（派生`PartialEq`，用于热重载配置差异检测）
 **典型用途:**
 - `/config` 命令修改daemon嵌套配置项（如 `"tasks.daily_notes.enabled"` → `true`）
 - 修改含点号名称的后端配置（如 `"llm.backends.\"gemini-3.1\".model"` → `"gemini-3.1-pro"`）
+
+### `set_toml_nested_in_doc()`
+在已解析的 `DocumentMut` 上设置嵌套键值，自动创建中间表。从 `set_toml_value_nested_inner` 中提取，供外部调用方复用。
+
+### TOML 数组与表操作
+文件锁定（`with_locked_doc`，基于 `fs2::FileExt`）的原子操作系列：
+- `append_to_toml_array(path, key, value)`: 向点分隔路径的 TOML 数组追加字符串元素，数组不存在时自动创建
+- `remove_from_toml_array(path, key, index)`: 按索引删除数组元素，越界时报错
+- `replace_in_toml_array(path, key, index, value)`: 按索引替换数组元素
+- `remove_toml_table(path, key)`: 删除点分隔路径指定的嵌套表（如删除某个 LLM backend）
+
+**典型用途:**
+- `/config` 菜单中沙箱豁免规则的增删改
+- LLM backend 的删除
+
+## sandbox_rule 模块
+
+沙箱豁免规则的共享工具函数，供守护进程和客户端共用：
+- `OPERATORS`: 支持的运算符常量列表（`starts_with`、`contains`、`equals`、`matches`）
+- `parse_rule_parts(rule)`: 将规则字符串（如 `"command starts_with glab"`）解析为 `(field, operator, value)` 三元组，operator 缺省时默认为 `"starts_with"`
+- `check_bypass_raw(rules, input)`: 检查规则列表中是否有任一匹配给定工具输入（OR 逻辑），返回首个匹配的规则字符串
 
 ## 使用示例
 

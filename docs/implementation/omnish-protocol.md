@@ -279,6 +279,7 @@ LLM响应消息，包含：
 - `Select { options: Vec<String>, selected: usize }`: 选择类型
 - `TextInput { value: String }`: 文本输入类型
 - `Label`: 非交互式标签，用于显示描述或分节说明
+- `Data { value: String }`: 非交互式数据载体，菜单中不可见，用于在守护进程与客户端之间传递结构化数据（如 JSON）
 
 ### `ConfigChange`
 配置变更项，用于`ConfigUpdate`消息：
@@ -434,7 +435,7 @@ let restored_frame = Frame::from_bytes(&frame_bytes).unwrap();
 
 ## 协议版本管理
 
-协议版本通过`PROTOCOL_VERSION`（当前值16）和`MIN_COMPATIBLE_VERSION`（当前值14）两个常量定义。服务器接受对端版本 >= MIN_COMPATIBLE_VERSION 的连接。`versions_compatible(my_min, peer_version)` 函数封装此判断。
+协议版本通过`PROTOCOL_VERSION`（当前值17）和`MIN_COMPATIBLE_VERSION`（当前值14）两个常量定义。服务器接受对端版本 >= MIN_COMPATIBLE_VERSION 的连接。`versions_compatible(my_min, peer_version)` 函数封装此判断。
 
 **追加规则：** 新 Message 变体**必须**追加到枚举末尾。bincode 使用 u32 变体索引序列化枚举，在中间插入会移位已有索引，导致旧版客户端解析失败。`variant_indices_are_stable` 测试锁定关键消息的变体索引。
 
@@ -454,4 +455,5 @@ let restored_frame = Frame::from_bytes(&frame_bytes).unwrap();
 - v14: 引入`MIN_COMPATIBLE_VERSION`常量和`versions_compatible()`函数，实现兼容版本范围检测；新增`ConfigClient`消息，支持守护进程主动推送配置变更到客户端；新增`ConfigItemKind::Label`非交互式标签变体
 - v15: 新增`TestDisconnect`消息，用于`/test disconnect`命令测试客户端断线恢复
 - v16: 帧反序列化失败时优雅跳过（graceful frame skip），允许与更新版本的对端通信时忽略未知消息
+- v17: 新增`ConfigItemKind::Data`非交互式数据载体变体，用于在守护进程与客户端之间传递结构化数据（如 JSON）
 

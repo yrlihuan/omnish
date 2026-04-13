@@ -611,7 +611,7 @@ Today's date: 2026-03-15
 
 **流式消息（Streaming）：**
 - 智能体循环的所有消息通过 `mpsc::Sender<Vec<Message>>` **增量推送**给客户端，而不是等待循环结束后一次性返回
-- LLM 的文本块（如 "I'll run this command"）通过 `ChatToolStatus` 实时转发给客户端显示
+- LLM 的文本块（如 "I'll run this command"）通过 `ChatToolStatus` 实时转发给客户端显示（经 `unwrap_thinking_tags()` 剥离 `<thinking>` 标签后仅保留内容）
 - 每个工具调用在**调用前**发送一条 `ChatToolStatus`（`Running` 状态，含 `param_desc`）
 - 每个工具调用在**完成后**再发送一条 `ChatToolStatus`（`Success`/`Error` 状态，含 `result_compact`/`result_full`）
 - `ChatToolStatus` 结构化字段：`tool_call_id`、`status_icon`（`StatusIcon` 枚举）、`display_name`、`param_desc`、`result_compact`（`Vec<String>`）、`result_full`（`Vec<String>`）
@@ -869,21 +869,27 @@ Assistant: {{final response}}
 编译期通过 `include_str!()` 内嵌，每个条目包含：
 - `path` — 点分隔的菜单层级路径（如 `"proxy.http_proxy"`、`"llm.use_cases.chat"`）
 - `label` — 菜单显示名称
-- `kind` — 配置项类型：`text`（文本输入）、`select`（下拉选择）、`toggle`（布尔开关）、`submenu`（子菜单）
+- `kind` — 配置项类型：`text`（文本输入）、`select`（下拉选择）、`toggle`（布尔开关）、`submenu`（子菜单）、`dynamic`（运行时动态展开占位符）
 - `toml_key` — 实际 `daemon.toml` 中的键路径（叶子项）
 - `options_from` — （select 类型）运行时从 TOML 表的键名动态生成选项（如 `"llm.backends"` 自动列出已配置的后端名）
 - `options` — （select 类型）静态选项列表
 - `handler` — （submenu 类型）Rust 处理函数名，用于分组变更的批量处理（如 `"add_backend"`）
+- `source` — （dynamic 类型）标识在此位置展开哪类动态内容，已知值：`"plugins"`
 
 **当前模式覆盖的配置项：**
 - 代理设置：`proxy`（HTTP 代理）、`no_proxy`
 - LLM use case 路由：`completion`、`analysis`、`chat` 后端选择（选项从已配置后端动态生成；支持点分隔的后端名如 `provider.model`）
 - 新增 LLM 后端：`add_backend` 子菜单，首项为 Provider 预设选择器（选项从 `omnish_llm::presets::chat_providers()` 动态生成，"custom" 置顶），选中预设后通过 `ConfigItem.prefills` 自动填充 name、backend_type、model、base_url、context_window；提交时 `provider` 字段被跳过不写入 TOML，纯 `api_key` 输入自动转换为 `api_key_cmd = "echo {key}"`
-- 动态项：已存在的后端自动生成编辑条目（`llm.backends.<name>.backend_type/model/api_key_cmd/base_url/use_proxy/context_window`），后端按名称排序以确保 UI 顺序一致
+- 动态项：已存在的后端自动生成编辑条目（`llm.backends.<name>.backend_type/model/api_key_cmd/base_url/use_proxy/context_window`）和 Delete 按钮（`llm.backends.<name>._delete`），后端按名称排序以确保 UI 顺序一致。每个后端注册为 `edit_backend` handler 子菜单
 - 每个后端新增 `use_proxy`（Toggle 类型）和 `context_window`（TextInput 类型）配置项
-- **插件配置项**（动态生成）：遍历 `PluginManager::config_meta()` 为每个非 builtin 插件生成：
+- **插件配置项**（`build_plugin_items()` 函数，由 `dynamic` kind + `source = "plugins"` 触发）：遍历 `PluginManager::config_meta()` 为每个非 builtin 插件生成：
   - `plugins.<name>.enabled`（Toggle）— 插件启用/禁用开关
   - `plugins.<name>.<param>`（TextInput）— 插件声明的 `config_params` 参数（如 `api_key`）
+- **沙箱配置**（`config_schema.toml` 中 `sandbox` submenu）：
+  - `sandbox._config` — 客户端侧占位符（`_client:sandbox_config`），展开为 enabled/backend 配置项，变更写入 `client.toml`
+  - `sandbox._availability` — 客户端侧占位符（`_client:sandbox_availability`），展开为彩色可用性状态行
+  - `sandbox._rules` — 客户端侧占位符（`_client:sandbox_rules`），展开为全局+本地合并的规则列表和 "Add permit rule" 表单；守护进程在此之前注入 `sandbox.__rules_json` Data 项（`build_rules_json()` 序列化当前全局规则）
+  - `build_tool_params_item()` — 注入 `sandbox.__tool_params_json` Data 项，包含所有客户端工具的 input_schema 参数名，供规则表单的 Param name Select picker 使用
 
 **核心函数：**
 
@@ -896,15 +902,25 @@ Assistant: {{final response}}
 - 返回 `(Vec<ConfigItem>, Vec<ConfigHandlerInfo>)`
 
 **`apply_config_changes(config_path, changes)`** — 将配置变更写入 `daemon.toml`
-- 将变更按是否属于某个 handler 分组
+- 将变更按是否属于某个 handler 分组（schema 中的 handler + `resolve_dynamic_handler()` 动态解析）
 - 普通变更：根据 kind 调用 `set_toml_value_nested()` 或 `set_toml_value_nested_bool()` 直接写入；路径以 `.use_proxy` 结尾或 `plugins.<name>.enabled` 格式时自动推断为 "toggle" 类型
-- handler 变更：分组后调用对应处理函数（如 `handle_add_backend` 将新后端的各字段写入 `llm.backends.<name>.*`，并将纯 `api_key` 输入转换为 `api_key_cmd = "echo {key}"`）
+- handler 变更：分组后调用对应处理函数：
+  - `handle_add_backend` — 将新后端的各字段写入 `llm.backends.<name>.*`，纯 `api_key` 自动转换为 `api_key_cmd = "echo {key}"`
+  - `handle_edit_backend` — 修改已有后端字段；检测 `._delete` 按钮变更时调用 `remove_toml_table()` 删除整个后端表
+  - `handle_add_global_rule` — 从表单字段（plugin/field/operator/value）组装规则字符串，追加到 `sandbox.plugins.<plugin>.permit_rules` 数组
+  - `handle_edit_global_rule` — 按 plugin 和 index 修改或删除（`._delete`）已有全局规则
+
+**`resolve_dynamic_handler(path)`** — 为动态生成的配置项路径解析 handler 名称
+- `llm.backends.<name>.<field>`（非 `__new__`）→ `"edit_backend"`
+- `sandbox.rules.__add__.<field>` → `"add_global_rule"`
+- `sandbox.rules.__edit__.<plugin>.<idx>.<field>` → `"edit_global_rule:<plugin>:<idx>"`
 
 ### ConfigQuery/ConfigUpdate 消息处理
 
 **`ConfigQuery`** — 客户端请求配置菜单数据
 - 从 `ServerOpts.daemon_config` 读取当前配置
 - 调用 `build_config_items()` 生成配置项列表和 handler 信息
+- 注入 `build_tool_params_item()` 到 items 末尾（工具参数元数据，供客户端沙箱规则表单使用）
 - 返回 `ConfigResponse { items, handlers }`
 
 **`ConfigUpdate { changes }`** — 客户端提交配置变更
@@ -1017,6 +1033,7 @@ session_evict_hours = 48  # 默认：48小时后驱逐
 - 使用 `max_content_chars()` 控制上下文大小
 - 支持上下文大小限制和内容精简
 - 如果没有命令或上下文为空会自动跳过
+- LLM 响应经 `strip_thinking_block()` 去除 `<thinking>` 标签（#527）
 - **午夜特殊处理**：在 00:xx 执行时，保存为前一天的 `24.md`（而非 `00.md`），使得在 00:10 运行的 daily_notes 任务可以包含这最后一份摘要
 
 **相关配置:**
@@ -1035,6 +1052,7 @@ max_line_width = 128    # 每行最大字符数
 - 完全依赖小时摘要（不再收集原始命令和对话数据）
 - 使用 `SharedLlmBackend`（通过 `llm_holder.read().unwrap().get_backend(UseCase::Analysis)` 获取后端）
 - 若当天无小时摘要或无可用 LLM 后端，自动跳过
+- LLM 响应经 `strip_thinking_block()` 去除 `<thinking>` 标签（#527）
 - 输出格式简化为：`# {date} 工作日报\n\n{llm_summary}\n`
 **相关配置:**
 ```toml
@@ -1059,7 +1077,7 @@ schedule = "0 0 */6 * * *"  # Cron 表达式，默认每6小时
 **功能:** 扫描所有对话线程，为有新对话轮次的线程生成或更新摘要，存储到线程的 `.meta.json` sidecar 文件中（`ThreadMeta.summary` 字段）
 **特点:**
 - 只对有内容（`rounds > 0`）且摘要已过期（新增轮次超过阈值）的线程生成摘要
-- 调用 LLM 后端生成简短摘要文本，使用 `SharedLlmBackend` 和 `max_content_chars()`
+- 调用 LLM 后端生成简短摘要文本，使用 `SharedLlmBackend` 和 `max_content_chars()`；LLM 响应经 `strip_thinking_block()` 去除 `<thinking>` 标签（#527）
 - 无 LLM 后端时自动跳过
 **实现:** 通过 `ThreadSummaryTask` 实现 `ScheduledTask` trait
 
@@ -1492,7 +1510,7 @@ max_line_width = 128
    - DaemonTool 直接执行，执行前后各发送一条 `ChatToolStatus`
    - 有 ClientTool 时暂停循环，调用 `persist_unsaved()` 保存进度，将 state 存入 `pending_agent_loops`，返回 `ChatToolCall` 消息；暂停前调用 `update_thread_usage()`
 7. 全部为 DaemonTool 时继续循环
-8. 无工具调用时存储消息、调用 `update_thread_usage()` 并返回最终响应（含 thinking 块时以内容数组存储，否则以纯字符串存储）
+8. 无工具调用时存储消息、调用 `update_thread_usage()` 并返回最终响应（含 thinking 块时以内容数组存储，否则以纯字符串存储）；最终文本经 `thinking_to_markdown()` 将 `<thinking>` 块转换为 `# Thinking` markdown 区段
 9. API 错误时：截断错误消息（最多 200 字符）、追加 `<event>api error</event>` 标记、持久化对话、保存用量后退出
 10. 达到最大迭代次数时存储消息、保存用量并返回错误提示
 
@@ -1538,6 +1556,13 @@ max_line_width = 128
 **缓存命中率公式:** `cache_read_input_tokens / (input_tokens + cache_read_input_tokens + cache_creation_input_tokens) * 100%`
 
 **token 格式化:** `format_tokens()` 辅助函数将数值转换为 K/M 后缀（如 `1.5K`、`2.3M`）
+
+### Thinking 标签处理（#527, #516）
+
+三个函数处理 LLM 响应中 `<thinking>`/`<think>` 标签（仅匹配文本起始位置，避免误匹配）：
+- `strip_thinking_block(text)` — 移除 thinking 块，仅保留 closing tag 之后的文本。用于 hourly_summary、daily_notes、thread_summary 等摘要任务
+- `unwrap_thinking_tags(text)` — 剥离标签但保留 thinking 内容。用于智能体循环中间的 ChatToolStatus 文本转发
+- `thinking_to_markdown(text)` — 将 thinking 块转换为 `# Thinking` / `# Response` markdown 区段。用于最终 ChatResponse
 
 ### `build_chat_setup()`
 构建聊天所需的共享状态（工具列表和系统提示词），被 `handle_chat_message()` 和 `/template chat` 共同使用。

@@ -132,6 +132,7 @@ Shell完成建议处理器，管理LLM驱动的命令完成。
 - 短前缀优先第二建议：当第一个建议是短前缀时偏好第二个（issue #95）
 - `/update`后防洪：防止 `/update` 执行后因状态重置导致的完成请求洪泛（issue #224）
 - 空输入补全拒绝修复：被拒绝后又恢复为空输入的补全请求不再重复发送（commit 1b3b09f, 644a7f9）
+- Left/Home/End 箭头键清除幽灵文本（#518）：`needs_readline_report()` 扩展识别 Left、Home、End 按键（xterm/VT/SS3 格式），触发 readline 报告以检测光标位置变化并清除过时的幽灵文本
 
 ### `ShellInputTracker`
 Shell命令行输入跟踪器，通过观察转发的字节和OSC 133状态转换跟踪当前shell命令行输入。
@@ -538,10 +539,10 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 
 **`MenuItem` 枚举:**
 - `Submenu { label, children: Vec<MenuItem>, handler: Option<String>, form_mode: bool }` - 子菜单。`handler` 标识回调处理器名称，`form_mode` 为true时 TextInput 项自动进入编辑并按Enter后光标自动前进到下一项
-- `Select { label, options: Vec<String>, selected: usize, prefills: Vec<(String, Vec<(String, String)>)> }` - 固定选项选择（Enter 打开 picker 子选择器）。`prefills` 非空时，选中某选项后按 label 匹配自动填充同级 TextInput/Select 项的值，并禁用 auto-edit（用户可自由导航修改）
+- `Select { label, options: Vec<String>, selected: usize, prefills: Vec<(String, Vec<(String, String)>)> }` - 固定选项选择（Enter 打开 picker 子选择器）。`prefills` 非空时，选中某选项后按 label 匹配自动填充同级 TextInput/Select 项的值，并禁用 auto-edit（用户可自由导航修改）。prefill 值含逗号时替换目标 Select 的整个 options 列表（用于沙箱规则的参数名动态选项）
 - `Toggle { label, value: bool }` - 布尔开关（Enter 立即翻转）
 - `TextInput { label, value: String }` - 自由文本输入（Enter 进入内联编辑器）
-- `Button { label }` - 操作按钮（Enter 确认，等同于 ESC 返回上一级并触发 handler 回调）。form_mode 子菜单自动在末尾追加 "Done" 按钮（commit 3d4c1be, #451）
+- `Button { label }` - 操作按钮（Enter 确认，等同于 ESC 返回上一级并触发 handler 回调）。form_mode 子菜单自动在末尾追加 "Done" 按钮（commit 3d4c1be, #451）。label 为 "Delete" 的按钮渲染为红色（破坏性操作高亮）。Button 确认时，将按钮自身作为 `MenuChange`（path 为 `handler_prefix.label`，value 为 `"true"`）加入 handler 变更列表
 
 **`MenuResult` 枚举:**
 - `Done(Vec<MenuChange>)` - 用户正常退出（顶层 ESC），包含所有修改
@@ -590,9 +591,14 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 - Select：若 `dispatch_change()` 返回 false，自动回滚 `*selected = old_selected`
 - TextInput：若 `dispatch_change()` 返回 false，自动回滚 `*value = old_text`
 
-**Form 字段重置:**
-- TextInput 和 Select 项在导航栈 pop 时重置（防止重新进入子菜单时显示过期数据）
-- Button 确认时也触发重置
+**Form 字段快照与恢复 (#525):**
+- 进入 form-mode 子菜单时，`NavEntry` 保存所有 TextInput/Select 项的快照（`FieldSnapshot`）
+- ESC 返回时从快照恢复字段值（保留 edit form 预填充值，同时重置 add form 的部分输入）
+- 替代了原来的"清空所有字段"策略，解决了 ESC 后编辑表单丢失预填充值的问题
+
+**预填充表单的自动编辑抑制:**
+- 进入含预填充 TextInput 值的 form-mode 子菜单时，禁用 auto-edit（`pending_auto_edit = false`）
+- 用户可自由导航修改已填充的字段，而不是被强制进入第一个字段的编辑模式
 
 #### Handler 子菜单
 
@@ -660,7 +666,7 @@ Config > LLM                          ← 面包屑（带层级指示）
 
 #### 增量渲染
 
-- 上下移动光标时仅重绘旧、新两行（`incremental_redraw`）
+- 上下移动光标时仅重绘旧、新两行（`incremental_redraw`）；光标跳过 Label 项时正确计算实际行距（`abs_diff`）而非固定 1 行
 - Toggle 翻转时仅重绘当前行
 - 滚动视口变化时全量重绘
 - 编辑模式仅重绘编辑行（无垂直移动）
@@ -731,10 +737,12 @@ Config > LLM                          ← 面包屑（带层级指示）
 
 **字段:**
 - `plugin_bin: PathBuf` - omnish-plugin二进制路径（与omnish-client同目录）
-- `sandbox_backend: Option<SandboxBackendType>` - 沙箱后端类型，Linux 默认 bwrap，macOS 默认 macos（seatbelt）
+- `sandbox_backend: Option<SandboxBackendType>` - 解析后的有效沙箱后端（已检测可用性）
+- `sandbox_status: SandboxDetectResult` - 完整检测结果，供调用方生成用户通知
 
 **方法:**
-- `new() -> Self` - 创建，自动查找同目录下的 `omnish-plugin` 二进制，根据平台选择默认沙箱后端
+- `new(enabled: bool, backend_name: &str) -> Self` - 创建，`enabled` 为客户端总开关，`backend_name` 为首选后端名称；自动执行运行时可用性检测（`detect_backend_status`），回退或标记为不可用
+- `sandbox_status() -> SandboxDetectResult` - 返回沙箱检测结果（Preferred/Fallback/Unavailable/Disabled），供调用方显示通知
 - `execute_tool(plugin_name, tool_name, input, cwd, sandboxed) -> (String, bool, bool)` - 执行工具，返回 `(content, is_error, needs_summarization)`
   - `plugin_name`: `"builtin"` 使用omnish-plugin二进制，否则在 `~/.omnish/plugins/{name}/{name}` 查找
   - `tool_name`: 工具名称
@@ -746,15 +754,27 @@ Config > LLM                          ← 面包屑（带层级指示）
 **统一沙箱后端 (#511):**
 - 通过 `omnish_plugin::sandbox_command(backend, policy, executable, args)` 统一 API 构建沙箱命令
 - 支持三种后端：bwrap（Linux 默认）、Landlock（Linux 回退）、seatbelt（macOS）
-- `detect_backend()` 运行时检测后端是否可用
+- `detect_backend_status()` 运行时检测后端可用性，返回 `SandboxDetectResult`（Preferred/Fallback/Unavailable/Disabled）
 - 沙箱策略通过 `plugin_policy(data_dir, cwd)` 构建，限制文件系统访问范围
 - 工具只能访问自己的数据目录（`~/.omnish/data/{plugin_name}/`）和可选的CWD目录
 - 特权模式工具（如write和edit）可以访问CWD进行文件写入（issue #219）
 
-**可配置沙箱放行规则 (commit f4a4c77, #379):**
+**可配置沙箱放行规则 (#379, #522):**
 - Snap 安装的二进制（如 glab、docker）因 `PR_SET_NO_NEW_PRIVS` 阻断 setuid 导致 Landlock 下失败
-- 在 `daemon.toml` 中配置 `[sandbox_permit]` 规则，可按工具名和输入字段匹配（`starts_with`、`contains`、`equals`、`matches`）有选择地绕过沙箱
-- 规则引擎在 `omnish-daemon/src/sandbox_rules.rs`，守护进程发送 `ChatToolCall` 时携带 `sandboxed` 字段
+- 守护进程端规则在 `daemon.toml` 的 `[sandbox.plugins]`，客户端本地规则在 `client.toml` 的 `[sandbox.plugins]`
+- 规则匹配支持 `starts_with`、`contains`、`equals`、`matches`（正则），运算符和解析逻辑在 `omnish-common::sandbox_rule` 共享模块中
+- 客户端本地规则与守护进程规则在运行时合并，客户端规则优先用于本地豁免
+- 守护进程发送 `ChatToolCall` 时携带 `sandboxed` 字段
+
+**沙箱通知 (#514):**
+- 每次进入聊天模式时通过 `sandbox_notice()` 检查沙箱状态并显示一次性通知
+- 通知级别：Fallback（首选后端不可用，已回退）、Unavailable（无可用后端）、Disabled（被客户端配置禁用）
+- bwrap 不可用时提供具体原因和解决方案提示（未安装 → apt install、AppArmor 阻止 → sysctl 命令）
+
+**沙箱配置客户端本地化 (#520):**
+- `enabled` 和 `backend` 从 `daemon.toml` 的 `SandboxConfig` 移至 `client.toml` 的 `ClientSandboxConfig`，因沙箱能力取决于主机内核/OS 特性
+- `sandbox_state: Arc<RwLock<ClientSandboxConfig>>` 在主事件循环中共享，菜单编辑可实时更新
+- 变更通过 `save_local_sandbox_config()` 持久化到 `client.toml`（使用 `.toml.lock` 文件锁防并发）
 
 **`/test lock on/off` 命令 (commit c73013e, #378):**
 - `/test lock on` — 使用沙箱重启 shell；`/test lock off` — 不使用沙箱重启 shell
@@ -763,6 +783,10 @@ Config > LLM                          ← 面包屑（带层级指示）
 - `do_respawn` 辅助函数封装 shell 重启和锁定状态更新
 - `ChatExitAction` 枚举信号主循环执行 shell 重启
 - 当前锁定状态在 `/debug client` 输出中显示
+
+**"no output" 诊断 (#515):**
+- 插件进程无 stdout 输出时，收集 stderr 和退出码生成详细诊断信息（如 `"Plugin produced no output (exit code 1): error message"`）
+- stderr 从 `Stdio::inherit()` 改为 `Stdio::piped()`，用于诊断采集
 
 **协议格式:**
 - 请求: `{"name": "tool_name", "input": {...}}`
@@ -1402,12 +1426,12 @@ omnish-client 包含客户端事件日志系统，用于调试和监控异步事
 - `render_input_echo(user_input: &[u8]) -> String` - 渲染输入回显
 - `render_response(content: &str) -> String` - 渲染LLM响应（Markdown → ANSI）
 - `render_error(msg: &str) -> String` - 渲染错误消息（红色 `[omnish] ...`）
-- `render_ghost_text(ghost: &str) -> String` - 渲染幽灵文本建议（dim灰色，save/restore光标）
+- `render_ghost_text(ghost: &str) -> String` - 渲染幽灵文本建议（dim灰色，save/restore光标，DECAWM off/on 禁用自动换行防止超宽幽灵文本残留 #526）
 - `render_chat_history(last_exchange: Option<&(String, String)>, earlier_count: u32) -> String` - 渲染聊天历史（用于恢复对话时显示上下文）
 - `render_tool_header(icon: &StatusIcon, display_name: &str, param_desc: &str, max_cols: usize) -> String` - 渲染工具状态头行（inline模式，param_desc截断到可用宽度）
 - `render_tool_header_full(icon: &StatusIcon, display_name: &str, param_desc: &str) -> String` - 渲染工具状态头行（browse模式，param_desc不截断）
 - `render_tool_output(lines: &[String]) -> Vec<String>` - 渲染工具输出行（`⎿` gutter格式，dim样式）
-- `truncate_cols(s: &str, max_cols: usize) -> String` - CJK感知截断（全角字符占2列，超出用 `…`）
+- `truncate_cols(s: &str, max_cols: usize) -> String` - CJK感知截断（全角字符占2列，超出用 `…`），跳过 ANSI 转义序列不计入宽度 (#513)
 - `display_width(s: &str) -> usize` - 计算字符串显示宽度（剥离ANSI序列，CJK全角算2列）
 
 **工具状态显示格式:**
