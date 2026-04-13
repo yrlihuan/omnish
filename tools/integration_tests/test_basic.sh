@@ -42,14 +42,17 @@ EOF
 
 test_init "basic" "$@"
 
-# Count [N] lines from only the LATEST /thread list output in a capture buffer.
-# Strips ANSI codes, then uses awk to reset count on each "> /thread list" line
-# (excluding "> /thread del ..."), so only the final listing is counted.
-_count_thread_lines() {
+# Extract the highest [N] index from the LATEST /thread list output.
+# This equals the total thread count and is independent of capture size.
+# Strips ANSI codes, resets on each "> /thread list" line.
+_max_thread_index() {
     echo "$1" | sed 's/\x1b\[[0-9;]*m//g' | awk '
-        /^>? *\/thread list[[:space:]]*$/ { c=0; next }
-        /^\s*\[[0-9]+\]/ { c++ }
-        END { print c }
+        /^>? *\/thread list[[:space:]]*$/ { max=0 }
+        /^\s*\[[0-9]+\]/ {
+            n = $0; sub(/.*\[/, "", n); sub(/\].*/, "", n)
+            if (n+0 > max) max = n+0
+        }
+        END { print max }
     '
 }
 
@@ -211,7 +214,7 @@ test_4() {
     show_capture "/thread list listing" "$threads_before" 10
 
     local thread_count
-    thread_count=$(_count_thread_lines "$threads_before")
+    thread_count=$(_max_thread_index "$threads_before")
     if [[ $thread_count -lt 2 ]]; then
         assert_fail "Expected at least 2 threads, found $thread_count"
         return 1
@@ -262,7 +265,7 @@ test_4() {
     show_capture "/thread list after delete" "$threads_after" 10
 
     local thread_count_after
-    thread_count_after=$(_count_thread_lines "$threads_after")
+    thread_count_after=$(_max_thread_index "$threads_after")
 
     if [[ $thread_count_after -lt $thread_count ]]; then
         assert_pass "Thread count decreased after delete ($thread_count -> $thread_count_after)"
