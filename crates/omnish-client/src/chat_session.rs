@@ -154,6 +154,17 @@ struct GlobalRuleEntry {
 /// Tool name → list of input parameter names (from tool input_schema).
 type ToolParamsMap = std::collections::HashMap<String, Vec<String>>;
 
+/// Parameters for building a permit rule form.
+struct RuleFormParams<'a> {
+    prefix: &'a str,
+    plugin: &'a str,
+    field: &'a str,
+    operator: &'a str,
+    value: &'a str,
+    with_delete: bool,
+    scope: Option<&'a str>,
+}
+
 /// Pre-scan items for `sandbox.__rules_json` and `sandbox.__tool_params_json`
 /// data items; return parsed entries and the items list with data items removed.
 fn extract_global_rules(items: Vec<ConfigItem>) -> (Vec<ConfigItem>, Vec<GlobalRuleEntry>, ToolParamsMap) {
@@ -278,20 +289,14 @@ use omnish_common::sandbox_rule::{OPERATORS, parse_rule_parts};
 /// Build the ConfigItems for a permit rule form (edit or add).
 /// `with_delete=true` prepends a Delete toggle (for edit forms).
 fn rule_form_fields(
-    prefix: &str,
-    plugin: &str,
-    field: &str,
-    operator: &str,
-    value: &str,
-    with_delete: bool,
-    scope: Option<&str>,
+    params: RuleFormParams<'_>,
     tool_params: &ToolParamsMap,
 ) -> Vec<ConfigItem> {
-    let op_idx = OPERATORS.iter().position(|&o| o == operator).unwrap_or(0);
+    let op_idx = OPERATORS.iter().position(|&o| o == params.operator).unwrap_or(0);
     let mut items = Vec::new();
-    if let Some(s) = scope {
+    if let Some(s) = params.scope {
         items.push(ConfigItem {
-            path: format!("{}._scope", prefix),
+            path: format!("{}._scope", params.prefix),
             label: format!("Scope: {}", s),
             kind: ConfigItemKind::Label,
             prefills: vec![],
@@ -302,39 +307,39 @@ fn rule_form_fields(
     let mut tool_names: Vec<&String> = tool_params.keys().collect();
     tool_names.sort();
 
-    if with_delete {
+    if params.with_delete {
         // Edit form: Plugin is read-only label
         items.push(ConfigItem {
-            path: format!("{}.plugin", prefix),
-            label: format!("Plugin: {}", plugin),
+            path: format!("{}.plugin", params.prefix),
+            label: format!("Plugin: {}", params.plugin),
             kind: ConfigItemKind::Label,
             prefills: vec![],
         });
     } else if tool_names.is_empty() {
         // No tool metadata available — fall back to TextInput
         items.push(ConfigItem {
-            path: format!("{}.plugin", prefix),
+            path: format!("{}.plugin", params.prefix),
             label: "Plugin".to_string(),
-            kind: ConfigItemKind::TextInput { value: plugin.to_string() },
+            kind: ConfigItemKind::TextInput { value: params.plugin.to_string() },
             prefills: vec![],
         });
     } else {
         // Add form with tool metadata: Plugin is a Select with prefills
         let options: Vec<String> = tool_names.iter().map(|s| s.to_string()).collect();
-        let selected = options.iter().position(|s| s == plugin).unwrap_or(0);
+        let selected = options.iter().position(|s| s == params.plugin).unwrap_or(0);
 
         // Build prefills: when plugin changes, update Param name options
         let prefills: Vec<(String, Vec<(String, String)>)> = options.iter().map(|tool_name| {
-            let params = tool_params.get(tool_name.as_str())
+            let param_csv = tool_params.get(tool_name.as_str())
                 .map(|v| v.join(","))
                 .unwrap_or_default();
             (tool_name.clone(), vec![
-                ("Param name".to_string(), params),
+                ("Param name".to_string(), param_csv),
             ])
         }).collect();
 
         items.push(ConfigItem {
-            path: format!("{}.plugin", prefix),
+            path: format!("{}.plugin", params.prefix),
             label: "Plugin".to_string(),
             kind: ConfigItemKind::Select { options, selected },
             prefills,
@@ -342,34 +347,34 @@ fn rule_form_fields(
     }
 
     // Param name: Select if we know the params for the current/default plugin, else TextInput
-    let effective_plugin = if plugin.is_empty() {
+    let effective_plugin = if params.plugin.is_empty() {
         tool_names.first().map(|s| s.as_str()).unwrap_or("")
     } else {
-        plugin
+        params.plugin
     };
     let current_params = tool_params.get(effective_plugin);
-    if let Some(params) = current_params.filter(|p| !p.is_empty() && !with_delete) {
-        let selected = params.iter().position(|p| p == field).unwrap_or(0);
+    if let Some(param_list) = current_params.filter(|p| !p.is_empty() && !params.with_delete) {
+        let selected = param_list.iter().position(|p| p == params.field).unwrap_or(0);
         items.push(ConfigItem {
-            path: format!("{}.field", prefix),
+            path: format!("{}.field", params.prefix),
             label: "Param name".to_string(),
             kind: ConfigItemKind::Select {
-                options: params.clone(),
+                options: param_list.clone(),
                 selected,
             },
             prefills: vec![],
         });
     } else {
         items.push(ConfigItem {
-            path: format!("{}.field", prefix),
+            path: format!("{}.field", params.prefix),
             label: "Param name".to_string(),
-            kind: ConfigItemKind::TextInput { value: field.to_string() },
+            kind: ConfigItemKind::TextInput { value: params.field.to_string() },
             prefills: vec![],
         });
     }
 
     items.push(ConfigItem {
-        path: format!("{}.operator", prefix),
+        path: format!("{}.operator", params.prefix),
         label: "Operator".to_string(),
         kind: ConfigItemKind::Select {
             options: OPERATORS.iter().map(|s| s.to_string()).collect(),
@@ -378,14 +383,14 @@ fn rule_form_fields(
         prefills: vec![],
     });
     items.push(ConfigItem {
-        path: format!("{}.value", prefix),
+        path: format!("{}.value", params.prefix),
         label: "Pattern".to_string(),
-        kind: ConfigItemKind::TextInput { value: value.to_string() },
+        kind: ConfigItemKind::TextInput { value: params.value.to_string() },
         prefills: vec![],
     });
-    if with_delete {
+    if params.with_delete {
         items.push(ConfigItem {
-            path: format!("{}._delete", prefix),
+            path: format!("{}._delete", params.prefix),
             label: "Delete".to_string(),
             kind: ConfigItemKind::Toggle { value: false },
             prefills: vec![],
@@ -427,7 +432,7 @@ fn sandbox_local_rule_items(
         },
         prefills: vec![],
     });
-    items.extend(rule_form_fields(add_prefix, "", "", "starts_with", "", false, None, tool_params));
+    items.extend(rule_form_fields(RuleFormParams { prefix: add_prefix, plugin: "", field: "", operator: "starts_with", value: "", with_delete: false, scope: None, }, tool_params));
 
     // Global rules — editable forms (changes forwarded to daemon via RPC)
     for entry in global_rules {
@@ -441,7 +446,7 @@ fn sandbox_local_rule_items(
                 handler,
             });
             let (field, operator, value) = parse_rule_parts(rule);
-            items.extend(rule_form_fields(&prefix, &entry.plugin, &field, &operator, &value, true, Some("global"), tool_params));
+            items.extend(rule_form_fields(RuleFormParams { prefix: &prefix, plugin: &entry.plugin, field: &field, operator: &operator, value: &value, with_delete: true, scope: Some("global"), }, tool_params));
         }
     }
 
@@ -459,7 +464,7 @@ fn sandbox_local_rule_items(
                 handler: format!("edit_local_rule:{}:{}", plugin_name, idx),
             });
             let (field, operator, value) = parse_rule_parts(rule);
-            items.extend(rule_form_fields(&prefix, plugin_name, &field, &operator, &value, true, Some("local"), tool_params));
+            items.extend(rule_form_fields(RuleFormParams { prefix: &prefix, plugin: plugin_name, field: &field, operator: &operator, value: &value, with_delete: true, scope: Some("local"), }, tool_params));
         }
     }
 
