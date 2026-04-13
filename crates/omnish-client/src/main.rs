@@ -2301,10 +2301,13 @@ fn sandbox_notice(status: omnish_plugin::SandboxDetectResult) -> Option<String> 
 }
 
 fn bwrap_hint(preferred: omnish_plugin::SandboxBackendType) -> &'static str {
-    use omnish_plugin::{BwrapUnavailableReason, SandboxBackendType};
+    use omnish_plugin::SandboxBackendType;
+    #[cfg(not(target_os = "macos"))]
+    use omnish_plugin::BwrapUnavailableReason;
     if preferred != SandboxBackendType::Bwrap {
         return "";
     }
+    #[cfg(not(target_os = "macos"))]
     match omnish_plugin::bwrap_unavailable_reason() {
         Some(BwrapUnavailableReason::NotInstalled) => {
             " Install bwrap: sudo apt install bubblewrap"
@@ -2314,6 +2317,8 @@ fn bwrap_hint(preferred: omnish_plugin::SandboxBackendType) -> &'static str {
         }
         None => "",
     }
+    #[cfg(target_os = "macos")]
+    ""
 }
 
 /// Unified entry point for chat mode (new chat, resume, or timeout).

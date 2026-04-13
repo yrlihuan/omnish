@@ -649,7 +649,9 @@ impl<'a> StrOrDefault<'a> for &'a str {
 }
 
 fn sandbox_availability_labels(base_path: &str) -> Vec<ConfigItem> {
-    use omnish_plugin::{BwrapUnavailableReason, SandboxBackendType};
+    use omnish_plugin::SandboxBackendType;
+    #[cfg(not(target_os = "macos"))]
+    use omnish_plugin::BwrapUnavailableReason;
     use crate::display;
 
     // Use the parent path so labels sit at the same level as "backend",
