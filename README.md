@@ -71,7 +71,7 @@ All settings are managed through `~/.omnish/daemon.toml` (or `$OMNISH_DAEMON_CON
 
 **Client-only config** — `~/.omnish/client.toml` (or `$OMNISH_CLIENT_CONFIG`):
 
-Only needed to override the daemon address (e.g., for remote TCP connections):
+Per-host settings (daemon address, sandbox preferences). Usually only needed for remote TCP connections:
 
 ```toml
 daemon_addr = "~/.omnish/omnish.sock"  # or "server-ip:9800" for TCP
@@ -205,7 +205,7 @@ Session data is stored under `~/.omnish/`:
 ~/.omnish/
 ├── install.sh               # installer (also used for --upgrade)
 ├── deploy.sh                # client deployment script
-├── client.toml              # client-only config (optional, for daemon_addr override)
+├── client.toml              # per-host client config (daemon_addr, sandbox)
 ├── daemon.toml              # all configuration (daemon, client, LLM, tasks)
 ├── omnish.sock              # Unix domain socket
 ├── auth_token               # shared auth token (0600)
