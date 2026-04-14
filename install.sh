@@ -856,6 +856,16 @@ fi
 
 # ── Systemd service ──────────────────────────────────────────────────────────
 
+# Ensure XDG_RUNTIME_DIR is set — required by systemctl --user.
+# Missing when switching users via su/sudo without a full login session.
+if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
+    _uid=$(id -u)
+    if [[ -d "/run/user/${_uid}" ]]; then
+        export XDG_RUNTIME_DIR="/run/user/${_uid}"
+    fi
+    unset _uid
+fi
+
 SERVICE_DIR="$HOME/.config/systemd/user"
 SERVICE_FILE="$SERVICE_DIR/omnish-daemon.service"
 
