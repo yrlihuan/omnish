@@ -267,21 +267,55 @@ const COMMANDS: &[CommandEntry] = &[
 /// Chat-mode-only commands (not in COMMANDS registry).
 pub const CHAT_ONLY_COMMANDS: &[&str] = &["/resume", "/model", "/test lock", "/test disconnect"];
 
-/// Return all command paths for ghost-text completion.
+/// Priority order for ghost-text completion (first match wins).
+const COMPLETION_PRIORITY: &[&str] = &[
+    "/config",
+    "/help",
+    "/resume",
+    "/model",
+    "/thread",
+    "/debug",
+    "/test",
+    "/context",
+    "/template",
+];
+
+/// Return all command paths for ghost-text completion, ordered by priority.
 pub fn completable_commands() -> Vec<String> {
-    let mut cmds: Vec<String> = COMMANDS.iter().map(|e| e.path.to_string()).collect();
+    // Collect all raw commands first.
+    let mut all: Vec<String> = COMMANDS.iter().map(|e| e.path.to_string()).collect();
     for name in omnish_llm::template::TEMPLATE_NAMES {
-        cmds.push(format!("/template {}", name));
-        cmds.push(format!("/context {}", name));
+        all.push(format!("/template {}", name));
+        all.push(format!("/context {}", name));
     }
-    // /integrate subcommands
     for sub in &["tmux", "screen", "ssh"] {
-        cmds.push(format!("/integrate {}", sub));
+        all.push(format!("/integrate {}", sub));
     }
     for cmd in CHAT_ONLY_COMMANDS {
-        cmds.push(cmd.to_string());
+        all.push(cmd.to_string());
     }
-    cmds
+
+    // Re-order by priority: commands matching each priority prefix come first,
+    // preserving relative order within each group.
+    let mut result = Vec::with_capacity(all.len());
+    for prefix in COMPLETION_PRIORITY {
+        // Exact match first (e.g. "/config" before "/config foo").
+        if let Some(pos) = all.iter().position(|c| c.as_str() == *prefix) {
+            result.push(all.remove(pos));
+        }
+        // Then subcommands (e.g. "/thread list", "/debug events").
+        let mut i = 0;
+        while i < all.len() {
+            if all[i].starts_with(prefix) && all[i].as_bytes().get(prefix.len()) == Some(&b' ') {
+                result.push(all.remove(i));
+            } else {
+                i += 1;
+            }
+        }
+    }
+    // Append remaining commands not covered by priority list.
+    result.append(&mut all);
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -690,5 +724,19 @@ mod tests {
             }
             _ => panic!("expected DaemonQuery"),
         }
+    }
+
+    #[test]
+    fn test_completable_commands_priority_order() {
+        let cmds = completable_commands();
+        let pos = |s: &str| cmds.iter().position(|c| c == s).unwrap();
+        assert!(pos("/config") < pos("/help"));
+        assert!(pos("/help") < pos("/resume"));
+        assert!(pos("/resume") < pos("/model"));
+        assert!(pos("/model") < pos("/thread list"));
+        assert!(pos("/thread list") < pos("/debug"));
+        assert!(pos("/debug") < pos("/test lock"));
+        assert!(pos("/test lock") < pos("/context"));
+        assert!(pos("/context") < pos("/template"));
     }
 }
