@@ -59,9 +59,9 @@ fn render_item(text: &str, selected: bool, checked: bool, multi: bool, disabled_
 /// Render the hint line at the bottom, with optional scroll-down indicator.
 fn render_hint(multi: bool, remaining_below: usize) -> String {
     let hint = if multi {
-        "\u{2191}\u{2193} move  Space select  Enter confirm  ESC cancel"
+        "\u{2191}\u{2193} move  Space select  Enter confirm  ESC/Ctrl-C cancel"
     } else {
-        "\u{2191}\u{2193} move  Enter confirm  ESC cancel"
+        "\u{2191}\u{2193} move  Enter confirm  ESC/Ctrl-C cancel"
     };
     if remaining_below > 0 {
         format!("\r{}{}  (\u{25bc} {} more){}\x1b[K", crate::display::DIM, hint, remaining_below, crate::display::RESET)
@@ -209,6 +209,13 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
             _ => break,
         };
         match byte[0] {
+                0x03 => {
+                    // Ctrl+C — cancel
+                    let cleanup = render_cleanup(items.len());
+                    common::write_stdout(cleanup.as_bytes());
+                    common::write_stdout(b"\x1b[?25h");
+                    return None;
+                }
                 0x1b => {
                     // Arrow keys may arrive as a single 3-byte read (\x1b[A or \x1bOA),
                     // so check buf first before reading more from stdin.
@@ -435,7 +442,7 @@ mod tests {
     #[test]
     fn test_render_hint_with_scroll_indicator() {
         let output = render_hint(false, 5);
-        assert!(output.contains("ESC cancel"), "should contain hint text");
+        assert!(output.contains("ESC/Ctrl-C cancel"), "should contain hint text");
         assert!(output.contains("\u{25bc} 5 more"), "should show scroll-down indicator");
     }
 
