@@ -3838,9 +3838,30 @@ fn parse_key_after_esc(stdin_fd: i32) -> Option<KeyEvent> {
         return Some(KeyEvent::Esc);
     }
 
+    // Accept both CSI ('[') and SS3 ('O') introducer bytes.
+    // SS3 is sent when DECCKM (application cursor key mode) is active,
+    // which zsh enables by default.
+    let is_ss3 = b[0] == b'O';
     match b[0] {
-        b'[' => {}
+        b'[' | b'O' => {}
         _ => return None,
+    }
+
+    // SS3 sequences are always 1 final byte (no params), e.g. \x1bOA
+    if is_ss3 {
+        if nix::unistd::read(stdin_fd, &mut b) != Ok(1) {
+            return None;
+        }
+        let final_byte = b[0];
+        return match final_byte {
+            b'A' => Some(KeyEvent::ArrowUp),
+            b'B' => Some(KeyEvent::ArrowDown),
+            b'C' => Some(KeyEvent::ArrowRight),
+            b'D' => Some(KeyEvent::ArrowLeft),
+            b'H' => Some(KeyEvent::Home),
+            b'F' => Some(KeyEvent::End),
+            _ => None,
+        };
     }
 
     let mut params = Vec::new();
