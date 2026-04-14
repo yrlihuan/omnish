@@ -1236,7 +1236,13 @@ async fn handle_chat_message(
     let prior_len = extra_messages.len();
 
     // User message (clean, without system-reminder)
-    extra_messages.push(serde_json::json!({"role": "user", "content": cm.query}));
+    let user_msg = serde_json::json!({"role": "user", "content": cm.query});
+    extra_messages.push(user_msg.clone());
+
+    // Persist user message immediately so /resume works even if the agent loop
+    // hasn't finished (each message is handled in its own spawned task, so
+    // ChatEnd can race with the agent loop).
+    conv_mgr.append_messages(&cm.thread_id, &[user_msg]);
 
     let llm_req = LlmRequest {
         context: String::new(),
@@ -1254,7 +1260,7 @@ async fn handle_chat_message(
 
     let state = AgentLoopState {
         llm_req,
-        saved_up_to: prior_len,
+        saved_up_to: prior_len + 1, // user message already persisted
         pending_tool_calls: vec![],
         completed_results: vec![],
         iteration: 0,
@@ -1393,13 +1399,62 @@ async fn handle_tool_result(
     cancel_flags.lock().await.remove(&req_id);
 }
 
-/// Update thread meta with the most recent API call's usage after an agent loop run.
-/// Resets totals when the model changes.
-/// `last_response` — the final LLM API call's usage (stored as usage_last, added to usage_total).
-/// `model` — config backend name used to detect model switches.
-/// Persist token usage for a thread.
+/// Persist unsaved messages, sanitizing any trailing orphaned tool_use blocks.
 ///
-/// `last_response` — usage from the most recent API call (shown in `/thread stats`).
+/// If the last unsaved assistant message contains tool_use blocks without
+/// corresponding tool_result, this adds "user interrupted" results so the
+/// persisted conversation is always valid for LLM replay.
+///
+/// Note: when called after a tx.send() failure mid-tool-execution, any
+/// already-completed tool results in the caller's local `tool_results` vec
+/// have not yet been merged into `extra_messages`. This function marks all
+/// tool_use IDs as "user interrupted", losing those results. This is
+/// acceptable for error recovery (client disconnect) — the alternative of
+/// threading partial results through every call site adds complexity for a
+/// rare edge case where the client is already gone.
+fn persist_unsaved_sanitized(
+    state: &mut AgentLoopState,
+    conv_mgr: &omnish_daemon::conversation_mgr::ConversationManager,
+) {
+    // Check whether the tail of extra_messages ends with an assistant message
+    // containing tool_use blocks (i.e. no tool_result follows).
+    let last_is_tool_use = state.llm_req.extra_messages.last().is_some_and(|msg| {
+        msg.get("role").and_then(|r| r.as_str()) == Some("assistant")
+            && msg.get("content").and_then(|c| c.as_array()).is_some_and(|blocks| {
+                blocks.iter().any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+            })
+    });
+
+    if last_is_tool_use {
+        // Extract tool_use ids from the assistant message
+        let tool_ids: Vec<String> = state.llm_req.extra_messages.last().unwrap()
+            .get("content").unwrap().as_array().unwrap()
+            .iter()
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+            .filter_map(|b| b.get("id").and_then(|id| id.as_str()).map(String::from))
+            .collect();
+
+        let result_content: Vec<serde_json::Value> = tool_ids.iter().map(|id| {
+            serde_json::json!({
+                "type": "tool_result",
+                "tool_use_id": id,
+                "content": "user interrupted",
+                "is_error": true,
+            })
+        }).collect();
+
+        state.llm_req.extra_messages.push(serde_json::json!({
+            "role": "user",
+            "content": result_content,
+        }));
+    }
+
+    persist_unsaved(state, conv_mgr, &[
+        serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
+    ]);
+    update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
+}
+
 /// Persist unsaved messages from the agent loop to the conversation thread.
 /// Appends `suffix` messages (e.g. event markers) after the unsaved slice.
 /// Updates `saved_up_to` to reflect what has been persisted.
@@ -1416,8 +1471,13 @@ fn persist_unsaved(
     state.saved_up_to = state.llm_req.extra_messages.len();
 }
 
+/// Update thread meta with the most recent API call's usage after an agent loop run.
+/// Resets totals when the model changes.
+///
+/// `last_response` — the final LLM API call's usage (stored as usage_last, added to usage_total).
 /// `cumulative`    — total usage across all API calls in this agent loop iteration
 ///                   (added to the running thread total).
+/// `model`         — config backend name used to detect model switches.
 fn update_thread_usage(
     conv_mgr: &omnish_daemon::conversation_mgr::ConversationManager,
     thread_id: &str,
@@ -1484,11 +1544,7 @@ async fn run_agent_loop(
         // Check if user interrupted (Ctrl+C)
         if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
             tracing::info!("Agent loop cancelled by user at iteration {} (thread={})", iteration, state.cm.thread_id);
-            // Store partial state: everything from this exchange so far
-            persist_unsaved(&mut state, conv_mgr, &[
-                serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
-            ]);
-            update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
+            persist_unsaved_sanitized(&mut state, conv_mgr);
             return;
         }
 
@@ -1544,7 +1600,10 @@ async fn run_agent_loop(
                                     param_desc: None,
                                     result_compact: None,
                                     result_full: None,
-                                })).await.is_err() { return; }
+                                })).await.is_err() {
+                                    persist_unsaved_sanitized(&mut state, conv_mgr);
+                                    return;
+                                }
                         }
                     }
 
@@ -1572,7 +1631,10 @@ async fn run_agent_loop(
                             param_desc: Some(param_desc),
                             result_compact: None,
                             result_full: None,
-                        })).await.is_err() { return; }
+                        })).await.is_err() {
+                            persist_unsaved_sanitized(&mut state, conv_mgr);
+                            return;
+                        }
 
                         let ptype = tool_registry.plugin_type(&tc.name);
                         if ptype == Some(PluginType::ClientTool) {
@@ -1614,7 +1676,10 @@ async fn run_agent_loop(
                                 input: serde_json::to_string(&merged_input).unwrap_or_default(),
                                 plugin_name: tool_registry.plugin_name(&tc.name).unwrap_or_else(|| "builtin".to_string()),
                                 sandboxed: matched_rule.is_none(),
-                            })).await.is_err() { return; }
+                            })).await.is_err() {
+                                persist_unsaved_sanitized(&mut state, conv_mgr);
+                                return;
+                            }
                             has_client_tools = true;
                         } else {
                             // Daemon-side tool: execute directly
@@ -1692,7 +1757,10 @@ async fn run_agent_loop(
                                 param_desc: Some(tool_registry.status_text(&tc.name, &tc.input)),
                                 result_compact: Some(post_out.result_compact),
                                 result_full: Some(post_out.result_full),
-                            })).await.is_err() { return; }
+                            })).await.is_err() {
+                                persist_unsaved_sanitized(&mut state, conv_mgr);
+                                return;
+                            }
 
                             tool_results.push(result);
                         }
