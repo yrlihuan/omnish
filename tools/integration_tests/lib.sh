@@ -344,10 +344,11 @@ is_chat_prompt() {
 # is_shell_prompt <content>
 #   Returns 0 if the last non-empty line looks like a shell prompt.
 #   Matches bash ($ or #) and zsh (% or #) prompt endings.
+#   Also matches when ghost text (completion suggestion) follows the prompt.
 is_shell_prompt() {
     local last
     last=$(last_nonempty_line "$1")
-    echo "$last" | grep -qE '[\$#%] $|[\$#%]$'
+    echo "$last" | grep -qE '[\$#%] |[\$#%]$'
 }
 
 # ── Waiting helpers ──────────────────────────────────────────────────────
