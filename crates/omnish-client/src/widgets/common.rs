@@ -25,6 +25,7 @@ pub fn write_stdout(data: &[u8]) {
 
 /// Parse escape sequence after ESC byte.
 /// Uses poll with 50ms timeout to distinguish bare ESC from arrow keys.
+/// Supports both CSI (\x1b[) and SS3 (\x1bO) cursor key encodings.
 pub fn parse_esc_seq(stdin_fd: i32) -> Option<[u8; 2]> {
     let mut pfd = libc::pollfd {
         fd: stdin_fd,
@@ -39,7 +40,11 @@ pub fn parse_esc_seq(stdin_fd: i32) -> Option<[u8; 2]> {
     if nix::unistd::read(stdin_fd, &mut seq[0..1]) != Ok(1) {
         return None;
     }
-    if seq[0] == b'[' && nix::unistd::read(stdin_fd, &mut seq[1..2]) == Ok(1) {
+    // Accept both CSI (0x5b '[') and SS3 (0x4f 'O') introducer bytes.
+    // SS3 is used when DECCKM (application cursor key mode) is active,
+    // which zsh enables by default.
+    if (seq[0] == b'[' || seq[0] == b'O') && nix::unistd::read(stdin_fd, &mut seq[1..2]) == Ok(1) {
+        seq[0] = b'['; // normalize to CSI for callers
         return Some(seq);
     }
     None

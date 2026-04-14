@@ -201,12 +201,24 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
     common::write_stdout(full.as_bytes());
 
     let stdin_fd = std::io::stdin().as_raw_fd();
-    let mut byte = [0u8; 1];
+    let mut byte = [0u8; 3];
 
-    while let Ok(1) = nix::unistd::read(stdin_fd, &mut byte) {
+    loop {
+        let n = match nix::unistd::read(stdin_fd, &mut byte) {
+            Ok(n) if n > 0 => n,
+            _ => break,
+        };
         match byte[0] {
                 0x1b => {
-                    if let Some(seq) = parse_esc_seq(stdin_fd) {
+                    // Arrow keys may arrive as a single 3-byte read (\x1b[A or \x1bOA),
+                    // so check buf first before reading more from stdin.
+                    // Support both CSI (\x1b[) and SS3 (\x1bO) cursor key encodings.
+                    let seq = if n >= 3 && (byte[1] == b'[' || byte[1] == b'O') {
+                        Some([b'[', byte[2]])
+                    } else {
+                        parse_esc_seq(stdin_fd)
+                    };
+                    if let Some(seq) = seq {
                         if seq[0] == b'[' {
                             match seq[1] {
                                 b'A' if cursor > 0 => { // Up arrow

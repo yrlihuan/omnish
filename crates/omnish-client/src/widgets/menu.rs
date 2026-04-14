@@ -391,10 +391,11 @@ fn run_text_edit(
                 return None;
             }
             0x1b => {
-                // Arrow keys may arrive as a single 3-byte read (\x1b[A),
+                // Arrow keys may arrive as a single 3-byte read (\x1b[A or \x1bOA),
                 // so check buf first before reading more from stdin.
-                let seq = if n >= 3 && buf[1] == b'[' {
-                    Some([buf[1], buf[2]])
+                // Support both CSI (\x1b[) and SS3 (\x1bO) cursor key encodings.
+                let seq = if n >= 3 && (buf[1] == b'[' || buf[1] == b'O') {
+                    Some([b'[', buf[2]])
                 } else {
                     common::parse_esc_seq(stdin_fd)
                 };
@@ -591,7 +592,7 @@ pub fn run_menu(
     }
 
     let stdin_fd = std::io::stdin().as_raw_fd();
-    let mut byte = [0u8; 1];
+    let mut byte = [0u8; 3];
 
     let mut last_item_count = items.len();
     let mut needs_redraw = false;
@@ -683,9 +684,10 @@ pub fn run_menu(
             }
         }
 
-        if nix::unistd::read(stdin_fd, &mut byte) != Ok(1) {
-            break;
-        }
+        let n = match nix::unistd::read(stdin_fd, &mut byte) {
+            Ok(n) if n > 0 => n,
+            _ => break,
+        };
 
         match byte[0] {
             0x03 => {
@@ -696,7 +698,15 @@ pub fn run_menu(
                 return MenuResult::Cancelled;
             }
             0x1b => {
-                if let Some(seq) = common::parse_esc_seq(stdin_fd) {
+                // Arrow keys may arrive as a single 3-byte read (\x1b[A or \x1bOA),
+                // so check buf first before reading more from stdin.
+                // Support both CSI (\x1b[) and SS3 (\x1bO) cursor key encodings.
+                let seq = if n >= 3 && (byte[1] == b'[' || byte[1] == b'O') {
+                    Some([b'[', byte[2]])
+                } else {
+                    common::parse_esc_seq(stdin_fd)
+                };
+                if let Some(seq) = seq {
                     if seq[0] == b'[' {
                         let vis = visible_count(current_items.len());
                         match seq[1] {
