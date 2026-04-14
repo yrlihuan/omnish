@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.8.10 (2026-04-14)
+
+### Features
+- **zsh**: Full zsh shell hook support with ZDOTDIR mechanism and OSC 133 integration (#462)
+- **ci**: Add Linux ARM (aarch64) release build to GitHub Actions
+
+### Fixes
+- **menu/picker**: Support SS3 (application mode) arrow keys for zsh compatibility (#462)
+- **chat**: Support SS3 arrow keys in chat input for zsh (#462)
+- **ghost**: Flush deferred ghost text immediately after OSC processing (#462)
+- **chat**: Avoid sending Ctrl-K to zsh when exiting chat mode (#462)
+- **test**: Adjust integration tests for zsh prompt compatibility (#462)
+- **test**: Allow ghost text after shell prompt in is_shell_prompt check
+- **test**: Use max thread index instead of line count for thread list test
+
 ## v0.8.9 (2026-04-13)
 
 ### Features
