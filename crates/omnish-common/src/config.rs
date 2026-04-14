@@ -528,7 +528,7 @@ pub struct ShellConfig {
     /// Use extended Unicode characters (e.g. ⎿) in the UI.
     /// Set to false for terminals lacking font support (e.g. ConEmu with default fonts).
     /// In the future this may be set automatically via terminal detection.
-    #[serde(default = "default_true", deserialize_with = "string_or_bool::deserialize")]
+    #[serde(default, deserialize_with = "string_or_bool::deserialize")]
     pub extended_unicode: bool,
 }
 
@@ -542,7 +542,7 @@ impl Default for ShellConfig {
             ghost_timeout_ms: default_ghost_timeout_ms(),
             developer_mode: default_developer_mode(),
             completion_enabled: true,
-            extended_unicode: true,
+            extended_unicode: false,
         }
     }
 }

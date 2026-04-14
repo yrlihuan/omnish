@@ -85,7 +85,7 @@ test_2() {
     send_keys ":" 0.5
     wait_for_prompt
 
-    # Generate a string ~500 chars long — at 80 cols, prefix "  ⎿  " = 5 chars,
+    # Generate a string ~500 chars long — at 80 cols, prefix "  └  " = 5 chars,
     # so content area is 75 chars/row. 3 rows = 225 chars. 500 chars >> 3 rows.
     local long_str
     long_str=$(seq -s '' 1 200 | head -c 500)
@@ -107,12 +107,12 @@ test_2() {
     local stripped
     stripped=$(echo "$content" | sed 's/\x1b\[[0-9;]*m//g')
 
-    # Find the ⎿ output line and check it ends with …
+    # Find the └ output line and check it ends with …
     local output_line
-    output_line=$(echo "$stripped" | grep '⎿' | head -1)
+    output_line=$(echo "$stripped" | grep '└' | head -1)
 
     if [[ -z "$output_line" ]]; then
-        assert_fail "No tool output line (⎿) found"
+        assert_fail "No tool output line (└) found"
         return 1
     fi
 
