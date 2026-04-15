@@ -26,6 +26,14 @@ label = "Resume chat"
 kind = "text"
 toml_key = "client.resume_prefix"
 
+# ── General > Language ─────────────────────────────────
+[[items]]
+path = "general.language"
+label = "Language"
+kind = "select"
+toml_key = "client.language"
+options = ["en", "zh"]
+
 # ── General > Completion ──────────────────────────────
 [[items]]
 path = "general.shell_completion"

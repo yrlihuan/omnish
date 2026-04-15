@@ -6,6 +6,7 @@ mod completion;
 pub mod event_log;
 mod ghost_complete;
 mod display;
+mod i18n;
 mod interceptor;
 mod markdown;
 mod probe;
@@ -467,6 +468,8 @@ async fn main() -> Result<()> {
     }
 
     let config = load_client_config().unwrap_or_default();
+    let lang = std::env::var("OMNISH_LANG").unwrap_or_else(|_| config.shell.language.clone());
+    i18n::init(&lang);
     let onboarded = Arc::new(AtomicBool::new(config.onboarded));
     let resume_args = parse_resume_args();
 
@@ -1606,6 +1609,10 @@ fn apply_client_config_changes(
                     any_changed = true;
                 }
             }
+            "client.language" => {
+                i18n::init(&change.value);
+                any_changed = true;
+            }
             _ => {} // unknown paths silently ignored
         }
     }
@@ -1668,6 +1675,7 @@ fn save_client_config_cache(changes: &[omnish_protocol::message::ConfigChange]) 
                     continue;
                 }
             }
+            "client.language" => ("shell.language", toml_edit::value(&change.value)),
             _ => continue,
         };
 
@@ -2416,7 +2424,7 @@ async fn enter_chat_mode(
         }
         (action, pending_cd)
     } else {
-        let err = display::render_error("Daemon not connected");
+        let err = display::render_error(i18n::t("error.daemon_not_connected"));
         nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
         (chat_session::ChatExitAction::Normal, None)
     };
@@ -2802,7 +2810,7 @@ async fn send_daemon_query(
         }
         _ => {
             nix::unistd::write(std::io::stdout(), status.clear().as_bytes()).ok();
-            let err = display::render_error("Failed to receive response");
+            let err = display::render_error(i18n::t("error.failed_receive_response_main"));
             nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
         }
     }
@@ -2891,7 +2899,7 @@ pub(crate) async fn handle_slash_command(
                         nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
                     }
                     _ => {
-                        let err = display::render_error("Failed to receive response");
+                        let err = display::render_error(i18n::t("error.failed_receive_response_main"));
                         nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
                     }
                 }

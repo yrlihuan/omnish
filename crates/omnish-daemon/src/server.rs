@@ -228,6 +228,9 @@ pub fn diff_client_config(old: &omnish_common::config::DaemonConfig, new: &omnis
     if old.client.developer_mode != new.client.developer_mode {
         changes.push(ConfigChange { path: "client.developer_mode".into(), value: new.client.developer_mode.to_string() });
     }
+    if old.client.language != new.client.language {
+        changes.push(ConfigChange { path: "client.language".into(), value: new.client.language.clone() });
+    }
     changes
 }
 
@@ -240,6 +243,7 @@ pub fn full_client_changes(cfg: &omnish_common::config::DaemonConfig) -> Vec<Con
         ConfigChange { path: "client.ghost_timeout_ms".into(), value: cfg.client.ghost_timeout_ms.to_string() },
         ConfigChange { path: "client.intercept_gap_ms".into(), value: cfg.client.intercept_gap_ms.to_string() },
         ConfigChange { path: "client.developer_mode".into(), value: cfg.client.developer_mode.to_string() },
+        ConfigChange { path: "client.language".into(), value: cfg.client.language.clone() },
     ]
 }
 

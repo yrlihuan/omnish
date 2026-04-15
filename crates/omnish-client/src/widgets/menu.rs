@@ -141,14 +141,14 @@ fn render_menu_item(item: &MenuItem, selected: bool) -> String {
     let suffix = match item {
         MenuItem::Toggle { value, .. } => {
             if *value {
-                format!(" {GREEN}[ON]{RESET}")
+                format!(" {GREEN}{}{RESET}", crate::i18n::t("on"))
             } else {
-                format!(" {GRAY}[OFF]{RESET}")
+                format!(" {GRAY}{}{RESET}", crate::i18n::t("off"))
             }
         }
         MenuItem::TextInput { value, .. } => {
             if value.is_empty() {
-                format!(" {GRAY}(empty){RESET}")
+                format!(" {GRAY}{}{RESET}", crate::i18n::t("empty"))
             } else {
                 format!(" {GRAY}\"{}\"{RESET}", value)
             }
@@ -174,7 +174,7 @@ fn render_menu_item(item: &MenuItem, selected: bool) -> String {
     // Button items render without brackets, aligned with other items.
     // Destructive buttons (Delete) render in red.
     if matches!(item, MenuItem::Button { .. }) {
-        let destructive = label == "Delete";
+        let destructive = label == "Delete" || label == crate::i18n::t("config.delete");
         if selected {
             if destructive {
                 return format!("\r{}{RED}\x1b[7m{}{RESET}\x1b[K", indent, label);
@@ -196,23 +196,25 @@ fn render_menu_item(item: &MenuItem, selected: bool) -> String {
 }
 
 fn render_hint(remaining_below: usize, item: Option<&MenuItem>) -> String {
+    use crate::i18n::{t, tf};
     let action = match item {
-        None => "confirm",  // editing mode
-        Some(MenuItem::Submenu { .. }) => "open",
-        Some(MenuItem::Toggle { .. }) => "toggle",
-        Some(MenuItem::Select { .. }) => "select",
-        Some(MenuItem::TextInput { .. }) => "edit",
-        Some(MenuItem::Button { .. }) => "confirm",
+        None => t("confirm"),  // editing mode
+        Some(MenuItem::Submenu { .. }) => t("open"),
+        Some(MenuItem::Toggle { .. }) => t("toggle"),
+        Some(MenuItem::Select { .. }) => t("select"),
+        Some(MenuItem::TextInput { .. }) => t("edit"),
+        Some(MenuItem::Button { .. }) => t("confirm"),
         Some(MenuItem::Label { .. }) => "",
     };
     let hint = match item {
-        None => format!("Enter {}  ESC cancel", action),
-        Some(_) => format!("\u{2191}\u{2193} move  Enter {}  ESC back  ^C quit", action),
+        None => tf("hint.enter_confirm_esc_cancel", &[("action", action)]),
+        Some(_) => tf("hint.menu_nav", &[("action", action)]),
     };
     if remaining_below > 0 {
+        let more = tf("hint.more_below", &[("n", &remaining_below.to_string())]);
         format!(
-            "\r{}{}  (\u{25bc} {} more){}\x1b[K",
-            crate::display::DIM, hint, remaining_below, crate::display::RESET
+            "\r{}{}  ({}){}\x1b[K",
+            crate::display::DIM, hint, more, crate::display::RESET
         )
     } else {
         format!("\r{}{}{}\x1b[K", crate::display::DIM, hint, crate::display::RESET)

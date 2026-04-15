@@ -530,6 +530,9 @@ pub struct ShellConfig {
     /// In the future this may be set automatically via terminal detection.
     #[serde(default, deserialize_with = "string_or_bool::deserialize")]
     pub extended_unicode: bool,
+    /// UI language: "en" or "zh".
+    #[serde(default = "default_language")]
+    pub language: String,
 }
 
 impl Default for ShellConfig {
@@ -543,6 +546,7 @@ impl Default for ShellConfig {
             developer_mode: default_developer_mode(),
             completion_enabled: true,
             extended_unicode: false,
+            language: default_language(),
         }
     }
 }
@@ -562,6 +566,12 @@ pub struct ClientSection {
     pub intercept_gap_ms: u64,
     #[serde(default = "default_developer_mode", deserialize_with = "string_or_bool::deserialize")]
     pub developer_mode: bool,
+    #[serde(default = "default_language")]
+    pub language: String,
+}
+
+fn default_language() -> String {
+    "en".to_string()
 }
 
 impl Default for ClientSection {
@@ -573,6 +583,7 @@ impl Default for ClientSection {
             ghost_timeout_ms: default_ghost_timeout_ms(),
             intercept_gap_ms: default_intercept_gap_ms(),
             developer_mode: default_developer_mode(),
+            language: default_language(),
         }
     }
 }

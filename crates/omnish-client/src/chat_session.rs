@@ -122,7 +122,7 @@ fn is_sensitive_path(path: &str) -> bool {
 /// Mask a sensitive value for display.
 fn mask_sensitive_value(old: &str) -> (String, String) {
     if old.is_empty() {
-        ("(empty)".into(), "***hidden***".into())
+        (crate::i18n::t("empty").to_string(), "***hidden***".into())
     } else {
         (format!("***{} chars***", old.len()), "***hidden***".into())
     }
@@ -276,13 +276,13 @@ fn sandbox_config_items(base_path: &str, state: &ClientSandboxConfig) -> Vec<Con
     vec![
         ConfigItem {
             path: format!("{}.__enabled", parent),
-            label: "Enabled".to_string(),
+            label: crate::i18n::t("config.enabled").to_string(),
             kind: ConfigItemKind::Toggle { value: state.enabled },
             prefills: vec![],
         },
         ConfigItem {
             path: format!("{}.__backend", parent),
-            label: "Backend".to_string(),
+            label: crate::i18n::t("config.backend").to_string(),
             kind: ConfigItemKind::Select { options, selected },
             prefills: vec![],
         },
@@ -324,7 +324,7 @@ fn rule_form_fields(
         // No tool metadata available — fall back to TextInput
         items.push(ConfigItem {
             path: format!("{}.plugin", params.prefix),
-            label: "Plugin".to_string(),
+            label: crate::i18n::t("config.plugin").to_string(),
             kind: ConfigItemKind::TextInput { value: params.plugin.to_string() },
             prefills: vec![],
         });
@@ -339,13 +339,13 @@ fn rule_form_fields(
                 .map(|v| v.join(","))
                 .unwrap_or_default();
             (tool_name.clone(), vec![
-                ("Param name".to_string(), param_csv),
+                (crate::i18n::t("config.param_name").to_string(), param_csv),
             ])
         }).collect();
 
         items.push(ConfigItem {
             path: format!("{}.plugin", params.prefix),
-            label: "Plugin".to_string(),
+            label: crate::i18n::t("config.plugin").to_string(),
             kind: ConfigItemKind::Select { options, selected },
             prefills,
         });
@@ -362,7 +362,7 @@ fn rule_form_fields(
         let selected = param_list.iter().position(|p| p == params.field).unwrap_or(0);
         items.push(ConfigItem {
             path: format!("{}.field", params.prefix),
-            label: "Param name".to_string(),
+            label: crate::i18n::t("config.param_name").to_string(),
             kind: ConfigItemKind::Select {
                 options: param_list.clone(),
                 selected,
@@ -372,7 +372,7 @@ fn rule_form_fields(
     } else {
         items.push(ConfigItem {
             path: format!("{}.field", params.prefix),
-            label: "Param name".to_string(),
+            label: crate::i18n::t("config.param_name").to_string(),
             kind: ConfigItemKind::TextInput { value: params.field.to_string() },
             prefills: vec![],
         });
@@ -380,7 +380,7 @@ fn rule_form_fields(
 
     items.push(ConfigItem {
         path: format!("{}.operator", params.prefix),
-        label: "Operator".to_string(),
+        label: crate::i18n::t("config.operator").to_string(),
         kind: ConfigItemKind::Select {
             options: OPERATORS.iter().map(|s| s.to_string()).collect(),
             selected: op_idx,
@@ -389,14 +389,14 @@ fn rule_form_fields(
     });
     items.push(ConfigItem {
         path: format!("{}.value", params.prefix),
-        label: "Pattern".to_string(),
+        label: crate::i18n::t("config.pattern").to_string(),
         kind: ConfigItemKind::TextInput { value: params.value.to_string() },
         prefills: vec![],
     });
     if params.with_delete {
         items.push(ConfigItem {
             path: format!("{}._delete", params.prefix),
-            label: "Delete".to_string(),
+            label: crate::i18n::t("config.delete").to_string(),
             kind: ConfigItemKind::Toggle { value: false },
             prefills: vec![],
         });
@@ -424,13 +424,13 @@ fn sandbox_local_rule_items(
     let add_prefix = "sandbox.rules._add";
     extra_handlers.push(ConfigHandlerInfo {
         path: add_prefix.to_string(),
-        label: "Add permit rule".to_string(),
+        label: crate::i18n::t("config.add_permit_rule").to_string(),
         handler: "add_rule".to_string(),
     });
     // Scope selector as first field
     items.push(ConfigItem {
         path: format!("{}.scope", add_prefix),
-        label: "Scope".to_string(),
+        label: crate::i18n::t("config.scope").to_string(),
         kind: ConfigItemKind::Select {
             options: vec!["local".to_string(), "global".to_string()],
             selected: 0,
@@ -743,7 +743,7 @@ fn item_value(item: &ConfigItem) -> String {
         }
         ConfigItemKind::TextInput { value } => {
             if value.is_empty() {
-                "(empty)".to_string()
+                crate::i18n::t("empty").to_string()
             } else {
                 value.clone()
             }
@@ -877,26 +877,27 @@ fn build_menu_tree(
             if i == segments.len() - 1 {
                 // Leaf item
                 // ._delete toggles render as destructive Buttons
+                let translated = crate::i18n::translate_label(&item.label);
                 let menu_item = if item.path.ends_with("._delete") {
-                    MenuItem::Button { label: item.label.clone() }
+                    MenuItem::Button { label: translated.clone() }
                 } else {
                     match &item.kind {
                         ConfigItemKind::Toggle { value } => MenuItem::Toggle {
-                            label: item.label.clone(),
+                            label: translated.clone(),
                             value: *value,
                         },
                         ConfigItemKind::Select { options, selected } => MenuItem::Select {
-                            label: item.label.clone(),
+                            label: translated.clone(),
                             options: options.clone(),
                             selected: *selected,
                             prefills: item.prefills.clone(),
                         },
                         ConfigItemKind::TextInput { value } => MenuItem::TextInput {
-                            label: item.label.clone(),
+                            label: translated.clone(),
                             value: value.clone(),
                         },
                         ConfigItemKind::Label => MenuItem::Label {
-                            label: item.label.clone(),
+                            label: translated.clone(),
                         },
                         ConfigItemKind::Data { .. } => continue, // data items are invisible
                     }
@@ -921,8 +922,8 @@ fn build_menu_tree(
                 // Intermediate segment — find or create submenu
                 let schema_path_so_far = segments[..=i].join(".");
                 let label = submenu_lookup.get(schema_path_so_far.as_str())
-                    .map(|(_, lbl)| lbl.to_string())
-                    .unwrap_or_else(|| segment_to_label(seg));
+                    .map(|(_, lbl)| crate::i18n::translate_label(lbl))
+                    .unwrap_or_else(|| crate::i18n::translate_label(&segment_to_label(seg)));
 
                 let pos = current.iter().position(|m| {
                     matches!(m, MenuItem::Submenu { label: l, .. } if *l == label)
@@ -1437,7 +1438,7 @@ impl ChatSession {
                         }
                     }
                     _ => {
-                        write_stdout(&display::render_error("Failed to get context"));
+                        write_stdout(&display::render_error(crate::i18n::t("error.failed_get_context")));
                     }
                 }
                 if auto_exit { break; }
@@ -1490,7 +1491,7 @@ impl ChatSession {
                         }
                     }
                     _ => {
-                        write_stdout(&display::render_error("Failed to start chat session"));
+                        write_stdout(&display::render_error(crate::i18n::t("error.failed_start_chat")));
                         continue;
                     }
                 }
@@ -1822,7 +1823,7 @@ impl ChatSession {
                         }
                     }
                     Err(_) => {
-                        write_stdout(&display::render_error("Failed to receive chat response"));
+                        write_stdout(&display::render_error(crate::i18n::t("error.failed_receive_response")));
                     }
                 }
             }
@@ -1858,8 +1859,9 @@ impl ChatSession {
                     self.tool_section_start = None;
                     self.tool_section_hist_idx = None;
                     self.print_line("");
-                    self.print_line(&format!("{BRIGHT_WHITE}●{RESET} User interrupted. What should I do instead?"));
-                    self.push_entry(ScrollEntry::Response("User interrupted. What should I do instead?".to_string()));
+                    let msg = crate::i18n::t("chat.user_interrupted");
+                    self.print_line(&format!("{BRIGHT_WHITE}●{RESET} {msg}"));
+                    self.push_entry(ScrollEntry::Response(msg.to_string()));
 
                     Self::send_interrupt(&req_id, session_id, self.current_thread_id.as_deref().unwrap(), trimmed, rpc);
                 }
@@ -1945,7 +1947,7 @@ impl ChatSession {
                     }
                 }
                 _ => {
-                    write_stdout(&display::render_error("Failed to list conversations"));
+                    write_stdout(&display::render_error(crate::i18n::t("error.failed_list_conversations")));
                     return;
                 }
             }
@@ -2023,23 +2025,22 @@ impl ChatSession {
                                 }
                             }
                             _ => {
-                                write_stdout(&display::render_error(&format!(
-                                    "Failed to delete conversation [{}]",
-                                    i
-                                )));
+                                write_stdout(&display::render_error(
+                                    &crate::i18n::tf("error.failed_delete_conversation", &[("n", &i.to_string())])
+                                ));
                             }
                         }
                     }
                     if !deleted.is_empty() {
                         let nums: Vec<String> = deleted.iter().map(|i| format!("[{}]", i)).collect();
-                        let msg = format!("Deleted conversation {}", nums.join(", "));
+                        let msg = crate::i18n::tf("chat.deleted_conversation", &[("nums", &nums.join(", "))]);
                         write_stdout(&display::render_response(&msg));
                     }
                 }
             }
             None => {
                 write_stdout(&display::render_error(
-                    "Invalid index expression (use N, 1,2,3 or 1-3,5)",
+                    crate::i18n::t("error.invalid_index_expression"),
                 ));
             }
         }
@@ -2073,7 +2074,7 @@ impl ChatSession {
                 }
             }
             _ => {
-                write_stdout(&display::render_error("Failed to list conversations"));
+                write_stdout(&display::render_error(crate::i18n::t("error.failed_list_conversations")));
             }
         }
     }
@@ -2089,7 +2090,7 @@ impl ChatSession {
             "on" => Some(false),
             "off" => Some(true),
             _ => {
-                write_stdout(&display::render_error("Usage: /thread sandbox [on|off]"));
+                write_stdout(&display::render_error(crate::i18n::t("error.usage_thread_sandbox")));
                 return;
             }
         };
@@ -2138,7 +2139,7 @@ impl ChatSession {
                 write_stdout(&display::render_response(&display_text));
             }
             _ => {
-                write_stdout(&display::render_error("Failed to update sandbox state"));
+                write_stdout(&display::render_error(crate::i18n::t("error.failed_update_sandbox")));
             }
         }
     }
@@ -2164,7 +2165,7 @@ impl ChatSession {
                 }
                 Ok(i) if i >= 1 => {
                     if self.cached_thread_ids.is_empty() {
-                        write_stdout(&display::render_error("No conversation to resume"));
+                        write_stdout(&display::render_error(crate::i18n::t("error.no_conversation_to_resume")));
                     } else {
                         write_stdout(&display::render_error(&format!(
                             "Index {} out of range ({} conversations)",
@@ -2174,7 +2175,7 @@ impl ChatSession {
                     None
                 }
                 _ => {
-                    write_stdout(&display::render_error("Invalid index"));
+                    write_stdout(&display::render_error(crate::i18n::t("error.invalid_index")));
                     None
                 }
             }
@@ -2218,7 +2219,7 @@ impl ChatSession {
     async fn show_resume_picker(&mut self, session_id: &str, rpc: &RpcClient) -> Option<String> {
         self.fetch_thread_ids(session_id, rpc).await;
         if self.cached_thread_ids.is_empty() {
-            write_stdout(&display::render_error("No conversations to resume"));
+            write_stdout(&display::render_error(crate::i18n::t("error.no_conversations_to_resume")));
             return None;
         }
         let rid = Uuid::new_v4().to_string()[..8].to_string();
@@ -2240,7 +2241,7 @@ impl ChatSession {
                     let items: Vec<&str> =
                         item_strings.iter().map(|s| s.as_str()).collect();
                     if items.is_empty() {
-                        write_stdout(&display::render_error("No conversations to resume"));
+                        write_stdout(&display::render_error(crate::i18n::t("error.no_conversations_to_resume")));
                         return None;
                     }
                     // Build disabled flags from locked_threads
@@ -2258,12 +2259,12 @@ impl ChatSession {
                         _ => None,
                     }
                 } else {
-                    write_stdout(&display::render_error("No conversations to resume"));
+                    write_stdout(&display::render_error(crate::i18n::t("error.no_conversations_to_resume")));
                     None
                 }
             }
             _ => {
-                write_stdout(&display::render_error("Failed to list conversations"));
+                write_stdout(&display::render_error(crate::i18n::t("error.failed_list_conversations")));
                 None
             }
         }
@@ -2277,11 +2278,11 @@ impl ChatSession {
             return;
         }
         if ready.error.is_some() {
-            write_stdout(&display::render_error("Failed to resume conversation"));
+            write_stdout(&display::render_error(crate::i18n::t("error.failed_resume")));
             return;
         }
         if ready.thread_id.is_empty() {
-            write_stdout(&display::render_error("Failed to resume conversation"));
+            write_stdout(&display::render_error(crate::i18n::t("error.failed_resume")));
             return;
         }
 
@@ -2473,7 +2474,7 @@ impl ChatSession {
                                 return true;
                             }
                         }
-                        write_stdout(&display::render_error("Failed to resume conversation"));
+                        write_stdout(&display::render_error(crate::i18n::t("error.failed_resume")));
                     }
                     return false;
                 }
@@ -2520,16 +2521,16 @@ impl ChatSession {
             }
             Ok(Ok(msg)) => {
                 crate::event_log::push(format!("resume_tid: unexpected response {:?}", std::mem::discriminant(&msg)));
-                write_stdout(&display::render_error("Failed to resume conversation"));
+                write_stdout(&display::render_error(crate::i18n::t("error.failed_resume")));
             }
             Ok(Err(e)) => {
                 crate::event_log::push(format!("resume_tid: RPC error: {}", e));
-                write_stdout(&display::render_error("Failed to resume conversation"));
+                write_stdout(&display::render_error(crate::i18n::t("error.failed_resume")));
             }
             Err(_) => {
                 let connected = rpc.is_connected().await;
                 crate::event_log::push(format!("resume_tid: timed out waiting for daemon response (connected={})", connected));
-                write_stdout(&display::render_error("Resume timed out — daemon may be busy"));
+                write_stdout(&display::render_error(crate::i18n::t("error.resume_timed_out")));
             }
         }
         crate::event_log::push("resume_tid: done");
@@ -2618,7 +2619,7 @@ impl ChatSession {
         let models = match models {
             Some(m) if !m.is_empty() => m,
             _ => {
-                write_stdout(&display::render_error("No LLM backends available"));
+                write_stdout(&display::render_error(crate::i18n::t("error.no_llm_backends")));
                 return;
             }
         };
@@ -2656,7 +2657,7 @@ impl ChatSession {
                             write_stdout(&format!("{DIM}Switched to {}{RESET}\r\n", display_name));
                         }
                         _ => {
-                            write_stdout(&display::render_error("Failed to switch model"));
+                            write_stdout(&display::render_error(crate::i18n::t("error.failed_switch_model")));
                         }
                     }
                 } else {
@@ -2679,8 +2680,8 @@ impl ChatSession {
         let idx = selected_idx.min(items.len().saturating_sub(1));
         let result = widgets::picker::pick_one_at("Select model:", &refs, idx);
         let msg = match result {
-            Some(idx) => format!("Selected: {}", items[idx]),
-            None => "Cancelled".to_string(),
+            Some(idx) => crate::i18n::tf("chat.selected", &[("item", &items[idx])]),
+            None => crate::i18n::t("chat.cancelled").to_string(),
         };
         write_stdout(&format!("{DIM}{}{RESET}\r\n", msg));
     }
@@ -2723,11 +2724,18 @@ impl ChatSession {
         use std::cell::RefCell;
         use widgets::menu::{MenuChange, MenuItem, MenuResult};
 
-        let make_add_item = || MenuItem::Submenu {
-            label: "Add backend".to_string(),
+        let make_add_item = || {
+            use crate::i18n::t;
+            let name = t("config.name");
+            let btype = t("config.backend_type");
+            let model = t("config.model");
+            let base_url = t("config.base_url");
+            let ctx_win = t("config.context_window");
+            MenuItem::Submenu {
+            label: t("config.add_backend").to_string(),
             children: vec![
                 MenuItem::Select {
-                    label: "Provider".to_string(),
+                    label: t("config.provider").to_string(),
                     options: vec![
                         "custom".to_string(),
                         "anthropic".to_string(),
@@ -2738,32 +2746,32 @@ impl ChatSession {
                     selected: 0,
                     prefills: vec![
                         ("anthropic".to_string(), vec![
-                            ("Name".to_string(), "anthropic".to_string()),
-                            ("Backend type".to_string(), "anthropic".to_string()),
-                            ("Model".to_string(), "claude-sonnet-4-5-20250929".to_string()),
-                            ("Base URL".to_string(), "".to_string()),
-                            ("Context window".to_string(), "200000".to_string()),
+                            (name.to_string(), "anthropic".to_string()),
+                            (btype.to_string(), "anthropic".to_string()),
+                            (model.to_string(), "claude-sonnet-4-5-20250929".to_string()),
+                            (base_url.to_string(), "".to_string()),
+                            (ctx_win.to_string(), "200000".to_string()),
                         ]),
                         ("openai".to_string(), vec![
-                            ("Name".to_string(), "openai".to_string()),
-                            ("Backend type".to_string(), "openai-compat".to_string()),
-                            ("Model".to_string(), "gpt-4o".to_string()),
-                            ("Base URL".to_string(), "https://api.openai.com/v1".to_string()),
-                            ("Context window".to_string(), "128000".to_string()),
+                            (name.to_string(), "openai".to_string()),
+                            (btype.to_string(), "openai-compat".to_string()),
+                            (model.to_string(), "gpt-4o".to_string()),
+                            (base_url.to_string(), "https://api.openai.com/v1".to_string()),
+                            (ctx_win.to_string(), "128000".to_string()),
                         ]),
                         ("openrouter".to_string(), vec![
-                            ("Name".to_string(), "openrouter".to_string()),
-                            ("Backend type".to_string(), "openai-compat".to_string()),
-                            ("Model".to_string(), "".to_string()),
-                            ("Base URL".to_string(), "https://openrouter.ai/api/v1".to_string()),
-                            ("Context window".to_string(), "200000".to_string()),
+                            (name.to_string(), "openrouter".to_string()),
+                            (btype.to_string(), "openai-compat".to_string()),
+                            (model.to_string(), "".to_string()),
+                            (base_url.to_string(), "https://openrouter.ai/api/v1".to_string()),
+                            (ctx_win.to_string(), "200000".to_string()),
                         ]),
                         ("deepseek".to_string(), vec![
-                            ("Name".to_string(), "deepseek".to_string()),
-                            ("Backend type".to_string(), "anthropic".to_string()),
-                            ("Model".to_string(), "deepseek-chat".to_string()),
-                            ("Base URL".to_string(), "https://api.deepseek.com/anthropic".to_string()),
-                            ("Context window".to_string(), "131072".to_string()),
+                            (name.to_string(), "deepseek".to_string()),
+                            (btype.to_string(), "anthropic".to_string()),
+                            (model.to_string(), "deepseek-chat".to_string()),
+                            (base_url.to_string(), "https://api.deepseek.com/anthropic".to_string()),
+                            (ctx_win.to_string(), "131072".to_string()),
                         ]),
                     ],
                 },
@@ -2771,39 +2779,39 @@ impl ChatSession {
                     label: "──────────────────────────────".to_string(),
                 },
                 MenuItem::TextInput {
-                    label: "Name".to_string(),
+                    label: name.to_string(),
                     value: String::new(),
                 },
                 MenuItem::Select {
-                    label: "Backend type".to_string(),
+                    label: btype.to_string(),
                     options: vec!["anthropic".to_string(), "openai-compat".to_string()],
                     selected: 0,
                     prefills: vec![],
                 },
                 MenuItem::TextInput {
-                    label: "Model".to_string(),
+                    label: model.to_string(),
                     value: String::new(),
                 },
                 MenuItem::TextInput {
-                    label: "API key".to_string(),
+                    label: t("config.api_key").to_string(),
                     value: String::new(),
                 },
                 MenuItem::TextInput {
-                    label: "Base URL".to_string(),
+                    label: base_url.to_string(),
                     value: String::new(),
                 },
                 MenuItem::Toggle {
-                    label: "Use proxy".to_string(),
+                    label: t("config.use_proxy").to_string(),
                     value: false,
                 },
                 MenuItem::TextInput {
-                    label: "Context window".to_string(),
+                    label: ctx_win.to_string(),
                     value: String::new(),
                 },
             ],
             handler: Some("add_backend".to_string()),
             form_mode: true,
-        };
+        }};
 
         let mut items = vec![
             MenuItem::Label {

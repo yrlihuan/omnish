@@ -59,11 +59,11 @@ fn debug_usage(_args: &str) -> String {
             &e.path["/debug ".len()..]
         })
         .collect();
-    format!("Usage: /debug <{}> [> file.txt]", subs.join("|"))
+    crate::i18n::tf("command.usage_debug", &[("subs", &subs.join("|"))])
 }
 
 fn thread_usage(_args: &str) -> String {
-    let mut output = String::from("Usage: /thread <subcommand>\n\nSubcommands:\n");
+    let mut output = crate::i18n::t("command.usage_thread").to_string();
     for entry in COMMANDS {
         if entry.path.starts_with("/thread ") && !entry.help.is_empty() {
             let sub = &entry.path["/thread ".len()..];
@@ -86,10 +86,11 @@ fn integrate_command(args: &str) -> String {
 
     let target = args.trim();
     if target.is_empty() {
-        return "Usage: /integrate <tmux|screen|ssh>\n\
+        return format!("{}\n\
                 \n  tmux   — inject default-shell into ~/.tmux.conf\
                 \n  screen — inject shell setting into ~/.screenrc\
-                \n  ssh    — show SSH config snippet for RemoteCommand".to_string();
+                \n  ssh    — show SSH config snippet for RemoteCommand",
+                crate::i18n::t("command.usage_integrate"));
     }
 
     match target {

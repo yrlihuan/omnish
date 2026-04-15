@@ -59,12 +59,13 @@ fn render_item(text: &str, selected: bool, checked: bool, multi: bool, disabled_
 /// Render the hint line at the bottom, with optional scroll-down indicator.
 fn render_hint(multi: bool, remaining_below: usize) -> String {
     let hint = if multi {
-        "\u{2191}\u{2193} move  Space select  Enter confirm  ESC/Ctrl-C cancel"
+        crate::i18n::t("hint.picker_multi")
     } else {
-        "\u{2191}\u{2193} move  Enter confirm  ESC/Ctrl-C cancel"
+        crate::i18n::t("hint.picker_single")
     };
     if remaining_below > 0 {
-        format!("\r{}{}  (\u{25bc} {} more){}\x1b[K", crate::display::DIM, hint, remaining_below, crate::display::RESET)
+        let more = crate::i18n::tf("hint.more_below", &[("n", &remaining_below.to_string())]);
+        format!("\r{}{}  ({}){}\x1b[K", crate::display::DIM, hint, more, crate::display::RESET)
     } else {
         format!("\r{}{}{}\x1b[K", crate::display::DIM, hint, crate::display::RESET)
     }
