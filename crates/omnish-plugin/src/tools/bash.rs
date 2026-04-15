@@ -23,8 +23,21 @@ impl BashTool {
             .arg(command)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        let mut cwd_note = String::new();
         if let Some(cwd) = cwd {
-            cmd.current_dir(cwd);
+            if std::path::Path::new(cwd).is_dir() {
+                cmd.current_dir(cwd);
+            } else {
+                let fallback = std::env::var("HOME")
+                    .ok()
+                    .filter(|h| std::path::Path::new(h).is_dir())
+                    .unwrap_or_else(|| "/".to_string());
+                cwd_note = format!(
+                    "[Note: working directory '{}' no longer exists, using '{}' instead]\n",
+                    cwd, fallback
+                );
+                cmd.current_dir(&fallback);
+            }
         }
         let mut child = match cmd.spawn()
         {
@@ -102,6 +115,10 @@ impl BashTool {
         let exit_code = output.status.code().unwrap_or(-1);
         if exit_code != 0 {
             content.push_str(&format!("\n[exit code: {}]", exit_code));
+        }
+
+        if !cwd_note.is_empty() {
+            content = format!("{}{}", cwd_note, content);
         }
 
         ToolResult {
@@ -193,5 +210,14 @@ mod tests {
         let result = tool.run("sleep 10", 1, None, None);
         assert!(result.is_error);
         assert!(result.content.contains("timed out"));
+    }
+
+    #[test]
+    fn test_invalid_cwd_fallback() {
+        let tool = BashTool::new();
+        let result = tool.run("echo ok", 10, Some("/nonexistent_dir_12345"), None);
+        assert!(!result.is_error);
+        assert!(result.content.contains("no longer exists"));
+        assert!(result.content.contains("ok"));
     }
 }
