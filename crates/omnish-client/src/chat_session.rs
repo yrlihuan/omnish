@@ -1796,6 +1796,9 @@ impl ChatSession {
 
             if interrupted {
                 self.erase_thinking();
+                self.mark_running_tools_error();
+                self.tool_section_start = None;
+                self.tool_section_hist_idx = None;
                 self.print_line("");
                 self.print_line(&format!("{BRIGHT_WHITE}●{RESET} User interrupted. What should I do instead?"));
                 self.push_entry(ScrollEntry::Response("User interrupted. What should I do instead?".to_string()));
