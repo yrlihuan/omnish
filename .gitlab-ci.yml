@@ -26,6 +26,47 @@ test:
       when: never
     - when: always
 
+.integration_tests: &integration_tests
+  - bash tools/integration_tests/test_basic.sh
+  - bash tools/integration_tests/test_tool_display.sh
+  - bash tools/integration_tests/test_spinner.sh
+  - bash tools/integration_tests/verify_issue_127.sh
+  - bash tools/integration_tests/verify_issue_144.sh
+  - bash tools/integration_tests/verify_issue_147.sh
+  - bash tools/integration_tests/verify_issue_149.sh
+  - bash tools/integration_tests/verify_issue_286.sh
+  - bash tools/integration_tests/verify_issue_288.sh
+  - bash tools/integration_tests/verify_issue_354.sh
+  - bash tools/integration_tests/verify_resume_shortcut.sh
+  - bash tools/integration_tests/verify_scroll_view.sh
+  - bash tools/integration_tests/test_menu.sh
+  - bash tools/integration_tests/verify_issue_180.sh
+  - bash tools/integration_tests/verify_issue_184.sh
+  - bash tools/integration_tests/verify_issue_337.sh
+  - bash tools/integration_tests/verify_issue_342.sh
+  - bash tools/integration_tests/verify_picker_selection.sh
+  - bash tools/integration_tests/test_config_push.sh
+  - bash tools/integration_tests/test_sandbox_rules.sh
+  - bash tools/integration_tests/test_config_backend.sh
+  - bash tools/integration_tests/test_config_after_interrupt.sh
+
+.setup_daemon: &setup_daemon
+  - cargo build --release
+  - mkdir -p ~/.omnish
+  - echo "$DAEMON_TOML" > ~/.omnish/daemon.toml
+  - mkdir -p ~/.omnish/bin
+  - cp target/release/omnish-plugin ~/.omnish/bin/
+  - cp -r plugins/ ~/.omnish/plugins/
+  - ./target/release/omnish-daemon --init
+  - export OMNISH_SOCKET="$HOME/.omnish/omnish.sock"
+  - ./target/release/omnish-daemon &
+  - |
+    for i in $(seq 1 10); do
+      [ -S "$OMNISH_SOCKET" ] && break
+      sleep 1
+    done
+  - bash tools/integration_tests/prepare_threads.sh
+
 integration-test:
   stage: test
   image: docker.nv/ubuntu_2404_runner:latest
@@ -33,49 +74,8 @@ integration-test:
     - apt-get update -qq && apt-get install -y -qq tmux locales >/dev/null 2>&1
     - locale-gen en_US.UTF-8
     - export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
-    - cargo build --release
-    # Setup omnish environment
-    - mkdir -p ~/.omnish
-    - echo "$DAEMON_TOML" > ~/.omnish/daemon.toml
-    - mkdir -p ~/.omnish/bin
-    - cp target/release/omnish-plugin ~/.omnish/bin/
-    - cp -r plugins/ ~/.omnish/plugins/
-    - ./target/release/omnish-daemon --init
-    # Start daemon in background and wait for socket
-    # OMNISH_SOCKET overrides listen_addr from daemon.toml (~ is not expanded by Rust)
-    - export OMNISH_SOCKET="$HOME/.omnish/omnish.sock"
-    - ./target/release/omnish-daemon &
-    - |
-      for i in $(seq 1 10); do
-        [ -S "$OMNISH_SOCKET" ] && break
-        sleep 1
-      done
-    # Populate chat threads for a more realistic test environment
-    - bash tools/integration_tests/prepare_threads.sh
-    # Run integration tests
-    - bash tools/integration_tests/test_basic.sh
-    - bash tools/integration_tests/test_tool_display.sh
-    - bash tools/integration_tests/test_spinner.sh
-    # Issue verification tests
-    - bash tools/integration_tests/verify_issue_127.sh
-    - bash tools/integration_tests/verify_issue_144.sh
-    - bash tools/integration_tests/verify_issue_147.sh
-    - bash tools/integration_tests/verify_issue_149.sh
-    - bash tools/integration_tests/verify_issue_286.sh
-    - bash tools/integration_tests/verify_issue_288.sh
-    - bash tools/integration_tests/verify_issue_354.sh
-    - bash tools/integration_tests/verify_resume_shortcut.sh
-    - bash tools/integration_tests/verify_scroll_view.sh
-    - bash tools/integration_tests/test_menu.sh
-    - bash tools/integration_tests/verify_issue_180.sh
-    - bash tools/integration_tests/verify_issue_184.sh
-    - bash tools/integration_tests/verify_issue_337.sh
-    - bash tools/integration_tests/verify_issue_342.sh
-    - bash tools/integration_tests/verify_picker_selection.sh
-    - bash tools/integration_tests/test_config_push.sh
-    - bash tools/integration_tests/test_sandbox_rules.sh
-    - bash tools/integration_tests/test_config_backend.sh
-    - bash tools/integration_tests/test_config_after_interrupt.sh
+    - *setup_daemon
+    - *integration_tests
   after_script:
     - kill $(pgrep -f omnish-daemon) 2>/dev/null || true
   rules:
@@ -88,47 +88,9 @@ integration-test-zsh:
     - apt-get update -qq && apt-get install -y -qq tmux zsh locales >/dev/null 2>&1
     - locale-gen en_US.UTF-8
     - export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
-    - cargo build --release
-    # Setup omnish environment
-    - mkdir -p ~/.omnish
-    - echo "$DAEMON_TOML" > ~/.omnish/daemon.toml
-    - mkdir -p ~/.omnish/bin
-    - cp target/release/omnish-plugin ~/.omnish/bin/
-    - cp -r plugins/ ~/.omnish/plugins/
-    - ./target/release/omnish-daemon --init
-    # Start daemon in background and wait for socket
-    - export OMNISH_SOCKET="$HOME/.omnish/omnish.sock"
-    - ./target/release/omnish-daemon &
-    - |
-      for i in $(seq 1 10); do
-        [ -S "$OMNISH_SOCKET" ] && break
-        sleep 1
-      done
-    - bash tools/integration_tests/prepare_threads.sh
-    # Run integration tests under zsh
+    - *setup_daemon
     - export TEST_SHELL=zsh
-    - bash tools/integration_tests/test_basic.sh
-    - bash tools/integration_tests/test_tool_display.sh
-    - bash tools/integration_tests/test_spinner.sh
-    - bash tools/integration_tests/verify_issue_127.sh
-    - bash tools/integration_tests/verify_issue_144.sh
-    - bash tools/integration_tests/verify_issue_147.sh
-    - bash tools/integration_tests/verify_issue_149.sh
-    - bash tools/integration_tests/verify_issue_286.sh
-    - bash tools/integration_tests/verify_issue_288.sh
-    - bash tools/integration_tests/verify_issue_354.sh
-    - bash tools/integration_tests/verify_resume_shortcut.sh
-    - bash tools/integration_tests/verify_scroll_view.sh
-    - bash tools/integration_tests/test_menu.sh
-    - bash tools/integration_tests/verify_issue_180.sh
-    - bash tools/integration_tests/verify_issue_184.sh
-    - bash tools/integration_tests/verify_issue_337.sh
-    - bash tools/integration_tests/verify_issue_342.sh
-    - bash tools/integration_tests/verify_picker_selection.sh
-    - bash tools/integration_tests/test_config_push.sh
-    - bash tools/integration_tests/test_sandbox_rules.sh
-    - bash tools/integration_tests/test_config_backend.sh
-    - bash tools/integration_tests/test_config_after_interrupt.sh
+    - *integration_tests
   after_script:
     - kill $(pgrep -f omnish-daemon) 2>/dev/null || true
   rules:
