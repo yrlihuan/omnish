@@ -1833,8 +1833,15 @@ impl ChatSession {
                     // No LLM output yet — treat as input cancellation:
                     // erase thinking indicator and user echo line, restore input for editing.
                     self.erase_thinking();
-                    // Erase the user echo line (">"  + text + the \r\n after it)
-                    write_stdout("\x1b[1A\r\x1b[K");
+                    // Erase the user echo (may span multiple visual rows)
+                    let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
+                    let cols = cols as usize;
+                    let echo_rows: usize = input.split('\n').map(|line| {
+                        // Each editor line has a 2-char prefix: "> " or "  "
+                        let dw = 2 + display::display_width(line);
+                        if dw == 0 || cols == 0 { 1 } else { dw.div_ceil(cols) }
+                    }).sum();
+                    write_stdout(&display::erase_lines(echo_rows));
                     // Remove the UserInput entry we just pushed
                     if matches!(self.scroll_history.last(), Some(ScrollEntry::UserInput(_))) {
                         self.scroll_history.pop();

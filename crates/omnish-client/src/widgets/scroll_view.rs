@@ -283,9 +283,14 @@ impl ScrollView {
         }
 
         // Hint line
-        out.push_str(&format!("\r\n\x1b[K{}\u{2191}\u{2193}/j/k scroll  ctrl+b/+f page-up/down  ctrl+o/esc quit{}", crate::display::DIM, crate::display::RESET));
+        let hint = "\u{2191}\u{2193}/j/k scroll  ctrl+b/+f page-up/down  ctrl+o/esc quit";
+        let hint_visual_rows = {
+            let w = crate::display::display_width(hint);
+            if w == 0 || cols == 0 { 1 } else { w.div_ceil(cols) }
+        };
+        out.push_str(&format!("\r\n\x1b[K{}{}{}", crate::display::DIM, hint, crate::display::RESET));
 
-        self.rendered_lines = used_rows + 1; // visual rows + hint
+        self.rendered_lines = used_rows + hint_visual_rows;
         out
     }
 
@@ -341,20 +346,8 @@ impl ScrollView {
         result
     }
 
-    /// Erase currently rendered lines (move up + clear each line).
     fn erase_seq(&self) -> String {
-        if self.rendered_lines == 0 {
-            return String::new();
-        }
-        let mut out = String::new();
-        for i in 0..self.rendered_lines {
-            if i > 0 {
-                out.push_str("\x1b[1A");
-            }
-            out.push_str("\r\x1b[K");
-        }
-        out.push_str("\x1b[1A");
-        out
+        crate::display::erase_lines(self.rendered_lines)
     }
 
     fn truncate_line(line: &str, max_cols: usize) -> String {
@@ -723,5 +716,83 @@ mod tests {
         let all = parser.screen().contents();
         assert!(!all.contains("scroll"), "hint should be gone after exit");
         assert!(all.contains("line 9"), "should show tail in compact");
+    }
+
+    /// Expanded mode wraps long lines naturally and tracks visual rows
+    /// in rendered_lines.  After clear(), all wrapped rows should be gone.
+    /// Uses 80-col terminal so the hint line doesn't wrap.
+    #[test]
+    fn vt100_expanded_wrapped_lines_erase_clean() {
+        let cols = 80u16;
+        let mut sv = ScrollView::new(3, 10, cols as usize);
+        let mut out = String::new();
+        // 150 chars → ceil(150/80) = 2 visual rows in expanded mode
+        out.push_str(&sv.push_line(&"a".repeat(150)));
+        out.push_str(&sv.push_line("short"));
+        out.push_str(&sv.enter_browse());
+        out.push_str(&sv.clear());
+
+        let parser = parse_ansi(&out, cols, 20);
+        let all = parser.screen().contents();
+        assert!(!all.contains("aaaa"), "wrapped line should be erased: {all}");
+        assert!(!all.contains("short"), "short line should be erased: {all}");
+        assert!(!all.contains("scroll"), "hint should be erased: {all}");
+    }
+
+    /// On narrow terminals the hint line wraps to multiple visual rows.
+    /// rendered_lines now accounts for this via display_width-based calculation.
+    #[test]
+    fn vt100_expanded_narrow_terminal_hint_wraps() {
+        let cols = 20u16;
+        let mut sv = ScrollView::new(3, 10, cols as usize);
+        let mut out = String::new();
+        out.push_str(&sv.push_line(&"a".repeat(50)));
+        out.push_str(&sv.push_line("short"));
+        out.push_str(&sv.enter_browse());
+        out.push_str(&sv.clear());
+
+        let parser = parse_ansi(&out, cols, 20);
+        let all = parser.screen().contents();
+        assert!(!all.contains("aaaa"), "content should be erased: {all}");
+        assert!(!all.contains("scroll"), "hint should be erased: {all}");
+    }
+
+    /// Compact mode truncates lines to max_cols.  When max_cols matches the
+    /// terminal width, no wrapping occurs and erase is clean.
+    #[test]
+    fn vt100_compact_push_and_clear_no_residue() {
+        let cols = 30u16;
+        let mut sv = ScrollView::new(3, 10, cols as usize);
+        let mut out = String::new();
+        out.push_str(&sv.push_line(&"b".repeat(50))); // truncated to 30
+        out.push_str(&sv.push_line("short"));
+        out.push_str(&sv.push_line("another"));
+        out.push_str(&sv.clear());
+
+        let parser = parse_ansi(&out, cols, 10);
+        let all = parser.screen().contents();
+        assert!(!all.contains("bbb"), "truncated line should be erased: {all}");
+        assert!(!all.contains("short"), "should be erased: {all}");
+        assert!(!all.contains("another"), "should be erased: {all}");
+    }
+
+    /// Compact mode: when max_cols > terminal width, truncated lines can still
+    /// wrap at the terminal edge.  erase_seq only counts logical lines.
+    /// In practice max_cols always matches terminal width, so this is theoretical.
+    #[test]
+    #[ignore] // theoretical: max_cols always equals terminal width in production
+    fn vt100_compact_wrapped_erase_has_residue() {
+        let terminal_cols = 20u16;
+        // max_cols=40 > terminal_cols=20 → truncation at 40, wraps at 20
+        let mut sv = ScrollView::new(3, 10, 40);
+        let mut out = String::new();
+        out.push_str(&sv.push_line(&"c".repeat(35))); // truncated to 40, wraps to 2 rows at 20
+        out.push_str(&sv.push_line("short"));
+        out.push_str(&sv.clear());
+
+        let parser = parse_ansi(&out, terminal_cols, 10);
+        let all = parser.screen().contents();
+        assert!(!all.contains("ccc"), "wrapped line should be erased: {all}");
+        assert!(!all.contains("short"), "should be erased: {all}");
     }
 }

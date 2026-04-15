@@ -104,6 +104,32 @@ pub fn display_width(s: &str) -> usize {
     width
 }
 
+/// Build an ANSI sequence that erases `n` visual rows from the current cursor
+/// position upward, then moves the cursor one more row up so it returns to
+/// the position it occupied before those rows were rendered.
+///
+/// Rendering convention: content is printed below the cursor with `\r\n`
+/// prefixes, so N rows of output occupy rows R+1 … R+N (where R is the
+/// cursor row before the first `\r\n`).  After rendering, the cursor sits
+/// at row R+N.  This function clears each row from bottom to top, then
+/// moves up one more to return to row R.
+///
+/// Returns an empty string when `n == 0`.
+pub fn erase_lines(n: usize) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    for i in 0..n {
+        if i > 0 {
+            out.push_str("\x1b[1A"); // cursor up
+        }
+        out.push_str("\r\x1b[K"); // CR + erase to EOL
+    }
+    out.push_str("\x1b[1A"); // one more up to return to origin
+    out
+}
+
 /// Render a plain separator line spanning `cols` columns (dim ─ characters).
 pub fn render_separator_plain(cols: u16) -> String {
     format!("{DIM}{}{RESET}", "─".repeat(cols as usize))
@@ -802,5 +828,43 @@ mod tests {
         assert!(row.contains("cargo test"), "divergent input should be visible");
         // Ghost text " run" must NOT be visible
         assert!(!row.contains("run"), "ghost text should be erased after divergent input");
+    }
+
+    // -- erase_lines tests --
+
+    #[test]
+    fn erase_lines_zero_is_empty() {
+        assert_eq!(erase_lines(0), "");
+    }
+
+    #[test]
+    fn erase_lines_one_clears_and_moves_up() {
+        let seq = erase_lines(1);
+        // Should clear 1 row then move up once
+        assert_eq!(seq, "\r\x1b[K\x1b[1A");
+    }
+
+    #[test]
+    fn erase_lines_three() {
+        let seq = erase_lines(3);
+        // row 3: \r\x1b[K], up, row 2: \r\x1b[K], up, row 1: \r\x1b[K], final up
+        let expected = "\r\x1b[K\x1b[1A\r\x1b[K\x1b[1A\r\x1b[K\x1b[1A";
+        assert_eq!(seq, expected);
+    }
+
+    /// vt100: erase_lines(3) after rendering 3 lines leaves the screen blank.
+    #[test]
+    fn vt100_erase_lines_clears_all_rows() {
+        let cols = 40u16;
+        let mut parser = vt100::Parser::new(10, cols, 0);
+        // Render 3 lines below cursor (matching render_seq pattern)
+        parser.process(b"\r\n\x1b[Kline one");
+        parser.process(b"\r\n\x1b[Kline two");
+        parser.process(b"\r\n\x1b[Kline three");
+        // Erase
+        parser.process(erase_lines(3).as_bytes());
+
+        let all = parser.screen().contents();
+        assert!(!all.contains("line"), "all lines should be erased: {all:?}");
     }
 }
