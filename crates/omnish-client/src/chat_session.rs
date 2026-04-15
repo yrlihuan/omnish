@@ -1273,9 +1273,9 @@ impl ChatSession {
                         write_stdout(&format!("\x1b7{DIM}{}{RESET}\x1b8", hint));
                     }
                 }
-                crate::event_log::push(format!("chat_loop: entering read_input allow_backspace_exit={}", !self.has_activity));
+                crate::event_log::push(format!("chat_loop: entering read_input_with allow_backspace_exit={}", !self.has_activity));
                 let result = self.read_input_with(!self.has_activity, initial.as_deref());
-                crate::event_log::push(format!("chat_loop: read_input returned {}", if result.is_some() { "Some" } else { "None" }));
+                crate::event_log::push(format!("chat_loop: read_input_with returned {}", if result.is_some() { "Some" } else { "None" }));
                 match result {
                     Some(line) => {
                         write_stdout("\r\n");
@@ -1815,16 +1815,7 @@ impl ChatSession {
                     // Restore input for re-editing
                     self.cancelled_input = Some(input.clone());
 
-                    let interrupt_msg = Message::ChatInterrupt(omnish_protocol::message::ChatInterrupt {
-                        request_id: req_id.clone(),
-                        session_id: session_id.to_string(),
-                        thread_id: self.current_thread_id.clone().unwrap(),
-                        query: String::new(),
-                    });
-                    let rpc_clone = rpc.clone();
-                    tokio::spawn(async move {
-                        let _ = rpc_clone.call(interrupt_msg).await;
-                    });
+                    Self::send_interrupt(&req_id, session_id, self.current_thread_id.as_deref().unwrap(), "", rpc);
                 } else {
                     self.erase_thinking();
                     self.mark_running_tools_error();
@@ -1834,16 +1825,7 @@ impl ChatSession {
                     self.print_line(&format!("{BRIGHT_WHITE}●{RESET} User interrupted. What should I do instead?"));
                     self.push_entry(ScrollEntry::Response("User interrupted. What should I do instead?".to_string()));
 
-                    let interrupt_msg = Message::ChatInterrupt(omnish_protocol::message::ChatInterrupt {
-                        request_id: req_id.clone(),
-                        session_id: session_id.to_string(),
-                        thread_id: self.current_thread_id.clone().unwrap(),
-                        query: trimmed.to_string(),
-                    });
-                    let rpc_clone = rpc.clone();
-                    tokio::spawn(async move {
-                        let _ = rpc_clone.call(interrupt_msg).await;
-                    });
+                    Self::send_interrupt(&req_id, session_id, self.current_thread_id.as_deref().unwrap(), trimmed, rpc);
                 }
             }
         }
@@ -1857,6 +1839,19 @@ impl ChatSession {
             let _ = rpc.call(msg).await;
         }
         exit_action
+    }
+
+    fn send_interrupt(req_id: &str, session_id: &str, thread_id: &str, query: &str, rpc: &RpcClient) {
+        let msg = Message::ChatInterrupt(ChatInterrupt {
+            request_id: req_id.to_string(),
+            session_id: session_id.to_string(),
+            thread_id: thread_id.to_string(),
+            query: query.to_string(),
+        });
+        let rpc = rpc.clone();
+        tokio::spawn(async move {
+            let _ = rpc.call(msg).await;
+        });
     }
 
     // ── Command handlers ─────────────────────────────────────────────────
