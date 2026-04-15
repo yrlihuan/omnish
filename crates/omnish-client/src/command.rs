@@ -62,6 +62,17 @@ fn debug_usage(_args: &str) -> String {
     format!("Usage: /debug <{}> [> file.txt]", subs.join("|"))
 }
 
+fn thread_usage(_args: &str) -> String {
+    let mut output = String::from("Usage: /thread <subcommand>\n\nSubcommands:\n");
+    for entry in COMMANDS {
+        if entry.path.starts_with("/thread ") && !entry.help.is_empty() {
+            let sub = &entry.path["/thread ".len()..];
+            output.push_str(&format!("  {} — {}\n", sub, entry.help));
+        }
+    }
+    output
+}
+
 fn integrate_command(args: &str) -> String {
     let omnish_bin = {
         let home = std::env::var("OMNISH_HOME")
@@ -147,8 +158,21 @@ fn integrate_command(args: &str) -> String {
 fn help_command(_args: &str) -> String {
     let mut output = String::from("Available commands:\n");
     for entry in COMMANDS {
-        if !entry.help.is_empty() {
-            output.push_str(&format!("  {} — {}\n", entry.path, entry.help));
+        if entry.help.is_empty() {
+            continue;
+        }
+        // Hide /debug subcommands — /debug itself shows them via its usage handler.
+        if entry.path.starts_with("/debug ") {
+            continue;
+        }
+        output.push_str(&format!("  {} — {}\n", entry.path, entry.help));
+        // Show /thread subcommands inline under /thread.
+        if entry.path == "/thread" {
+            for sub in COMMANDS {
+                if sub.path.starts_with("/thread ") && !sub.help.is_empty() {
+                    output.push_str(&format!("    {} — {}\n", sub.path, sub.help));
+                }
+            }
         }
     }
     // Chat-mode-only commands not in the registry.
@@ -230,6 +254,11 @@ const COMMANDS: &[CommandEntry] = &[
         path: "/sessions",
         kind: CommandKind::Daemon("sessions"),
         help: "List sessions",
+    },
+    CommandEntry {
+        path: "/thread",
+        kind: CommandKind::Local(thread_usage),
+        help: "Manage conversation threads",
     },
     CommandEntry {
         path: "/thread list",
@@ -726,6 +755,48 @@ mod tests {
                 assert!(redirect.is_none());
             }
             _ => panic!("expected DaemonQuery"),
+        }
+    }
+
+    #[test]
+    fn test_thread_no_args_shows_usage() {
+        match dispatch("/thread") {
+            ChatAction::Command { result, .. } => {
+                assert!(result.contains("Usage"));
+                assert!(result.contains("list"));
+                assert!(result.contains("stats"));
+                assert!(result.contains("del"));
+            }
+            _ => panic!("expected Command"),
+        }
+    }
+
+    #[test]
+    fn test_help_hides_debug_subcommands() {
+        match dispatch("/help") {
+            ChatAction::Command { result, .. } => {
+                assert!(result.contains("/debug"));
+                assert!(!result.contains("/debug events"));
+                assert!(!result.contains("/debug client"));
+                assert!(!result.contains("/debug session"));
+                assert!(!result.contains("/debug daemon"));
+                assert!(!result.contains("/debug commands"));
+                assert!(!result.contains("/debug command"));
+            }
+            _ => panic!("expected Command"),
+        }
+    }
+
+    #[test]
+    fn test_help_shows_thread_subcommands() {
+        match dispatch("/help") {
+            ChatAction::Command { result, .. } => {
+                assert!(result.contains("/thread"));
+                assert!(result.contains("/thread list"));
+                assert!(result.contains("/thread stats"));
+                assert!(result.contains("/thread del"));
+            }
+            _ => panic!("expected Command"),
         }
     }
 
