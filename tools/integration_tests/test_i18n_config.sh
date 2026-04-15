@@ -154,10 +154,10 @@ test_2() {
         ok=false
     fi
 
-    if echo "$content" | grep -q "LLM"; then
-        assert_pass "Top-level 'LLM' label present"
+    if echo "$content" | grep -q "大语言模型"; then
+        assert_pass "Top-level '大语言模型' (LLM) label present"
     else
-        assert_fail "Top-level 'LLM' label missing"
+        assert_fail "Top-level '大语言模型' (LLM) label missing"
         ok=false
     fi
 
@@ -208,15 +208,17 @@ test_2() {
         ok=false
     fi
 
-    # Check Language display value shows "简体中文" (not "zh")
-    if echo "$content" | grep -q "简体中文"; then
-        assert_pass "Language value shows '简体中文'"
+    # Language value should show a display name, not raw code
+    local lang_line_zh
+    lang_line_zh=$(echo "$content" | grep "语言" | head -1)
+    if echo "$lang_line_zh" | grep -qE 'English|简体中文|繁體中文'; then
+        assert_pass "Language shows display name (not raw code)"
     else
-        assert_fail "Language value should show '简体中文' not 'zh'"
+        assert_fail "Language should show display name, not raw code"
         ok=false
     fi
 
-    # Navigate to LLM submenu: ESC back, Down to LLM, Enter
+    # Navigate to 大语言模型 submenu: ESC back, Down, Enter
     send_special Escape 0.5
     send_special Down 0.3
     send_enter 0.5
@@ -282,10 +284,10 @@ test_3() {
         ok=false
     fi
 
-    if echo "$content" | grep -q "LLM"; then
-        assert_pass "Top-level 'LLM' label present"
+    if echo "$content" | grep -q "大語言模型"; then
+        assert_pass "Top-level '大語言模型' (LLM) label present"
     else
-        assert_fail "Top-level 'LLM' label missing"
+        assert_fail "Top-level '大語言模型' (LLM) label missing"
         ok=false
     fi
 

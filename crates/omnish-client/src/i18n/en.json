@@ -79,7 +79,7 @@
   "config.proxy": "Proxy",
   "config.use_cases": "Use Cases",
   "config.backends": "Backends",
-  "config.tasks": "Tasks",
+  "config.tasks": "Scheduled tasks",
   "config.hourly_summary": "Hourly Summary",
   "config.daily_summary": "Daily Summary",
   "config.rules": "Rules",
