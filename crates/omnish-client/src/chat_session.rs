@@ -945,7 +945,7 @@ fn build_menu_tree(
                         .unwrap_or_else(|| crate::i18n::translate_label(&segment_to_label(s)));
                     display_parts.push(label);
                 }
-                display_parts.push(item.label.clone());
+                display_parts.push(crate::i18n::translate_label(&item.label));
                 let display_key = display_parts.join(".");
                 path_map.insert(display_key, item.path.clone());
             } else {
