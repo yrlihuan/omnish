@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn test_builtin_provider_prefix_match() {
         let p = BuiltinProvider::new();
-        assert_eq!(p.suggest("/con"), Some("/context".to_string()));
+        assert_eq!(p.suggest("/con"), Some("/config".to_string()));
     }
 
     #[test]
