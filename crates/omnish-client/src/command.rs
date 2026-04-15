@@ -151,6 +151,9 @@ fn help_command(_args: &str) -> String {
             output.push_str(&format!("  {} — {}\n", entry.path, entry.help));
         }
     }
+    // Chat-mode-only commands not in the registry.
+    output.push_str("  /resume — Resume a previous conversation thread\n");
+    output.push_str("  /model — Switch LLM model\n");
     output
 }
 
