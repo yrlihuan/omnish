@@ -133,7 +133,7 @@ fn mask_sensitive_value(old: &str) -> (String, String) {
 fn item_display_label(segments: Vec<String>, item_label: &str) -> String {
     let parts: Vec<String> = segments.into_iter()
         .filter(|s| s != "__new__")
-        .map(|s| segment_to_label(&s))
+        .map(|s| crate::i18n::translate_label(&segment_to_label(&s)))
         .collect();
     match parts.len() {
         0 => item_label.to_string(),
@@ -302,7 +302,7 @@ fn rule_form_fields(
     if let Some(s) = params.scope {
         items.push(ConfigItem {
             path: format!("{}._scope", params.prefix),
-            label: format!("Scope: {}", s),
+            label: crate::i18n::tf("sandbox.scope_label", &[("scope", s)]),
             kind: ConfigItemKind::Label,
             prefills: vec![],
         });
@@ -674,6 +674,8 @@ fn sandbox_availability_labels(base_path: &str) -> Vec<ConfigItem> {
         prefills: vec![],
     };
 
+    let avail = crate::i18n::t("sandbox.available");
+    let not_avail = crate::i18n::t("sandbox.not_available");
     let mut labels = Vec::new();
 
     #[cfg(target_os = "macos")]
@@ -681,11 +683,11 @@ fn sandbox_availability_labels(base_path: &str) -> Vec<ConfigItem> {
         // On macOS only seatbelt is relevant.
         if omnish_plugin::is_available(SandboxBackendType::MacosSeatbelt) {
             labels.push(label("macos", format!(
-                "  {}macos{}: {}Available{}", display::BRIGHT_WHITE, display::RESET, display::GREEN, display::RESET,
+                "  {}macos{}: {}{}{}", display::BRIGHT_WHITE, display::RESET, display::GREEN, avail, display::RESET,
             )));
         } else {
             labels.push(label("macos", format!(
-                "  {}macos{}: {}Not available{}", display::BRIGHT_WHITE, display::RESET, display::RED, display::RESET,
+                "  {}macos{}: {}{}{}", display::BRIGHT_WHITE, display::RESET, display::RED, not_avail, display::RESET,
             )));
         }
     }
@@ -695,21 +697,21 @@ fn sandbox_availability_labels(base_path: &str) -> Vec<ConfigItem> {
         // bwrap
         if omnish_plugin::is_available(SandboxBackendType::Bwrap) {
             labels.push(label("bwrap", format!(
-                "  {}bwrap{}: {}Available{}", display::BRIGHT_WHITE, display::RESET, display::GREEN, display::RESET,
+                "  {}bwrap{}: {}{}{}", display::BRIGHT_WHITE, display::RESET, display::GREEN, avail, display::RESET,
             )));
         } else {
             labels.push(label("bwrap", format!(
-                "  {}bwrap{}: {}Not available{}", display::BRIGHT_WHITE, display::RESET, display::RED, display::RESET,
+                "  {}bwrap{}: {}{}{}", display::BRIGHT_WHITE, display::RESET, display::RED, not_avail, display::RESET,
             )));
             match omnish_plugin::bwrap_unavailable_reason() {
                 Some(BwrapUnavailableReason::NotInstalled) => {
                     labels.push(label("bwrap_hint", format!(
-                        "  {}To enable: sudo apt install bubblewrap{}", display::DIM, display::RESET,
+                        "  {}{}{}", display::DIM, crate::i18n::t("sandbox.hint_install_bwrap"), display::RESET,
                     )));
                 }
                 Some(BwrapUnavailableReason::NamespaceDenied) => {
                     labels.push(label("bwrap_hint", format!(
-                        "  {}To enable: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0{}", display::DIM, display::RESET,
+                        "  {}{}{}", display::DIM, crate::i18n::t("sandbox.hint_ns_denied"), display::RESET,
                     )));
                 }
                 None => {}
@@ -719,14 +721,14 @@ fn sandbox_availability_labels(base_path: &str) -> Vec<ConfigItem> {
         // landlock
         if omnish_plugin::is_available(SandboxBackendType::Landlock) {
             labels.push(label("landlock", format!(
-                "  {}landlock{}: {}Available{}", display::BRIGHT_WHITE, display::RESET, display::GREEN, display::RESET,
+                "  {}landlock{}: {}{}{}", display::BRIGHT_WHITE, display::RESET, display::GREEN, avail, display::RESET,
             )));
         } else {
             labels.push(label("landlock", format!(
-                "  {}landlock{}: {}Not available{}", display::BRIGHT_WHITE, display::RESET, display::RED, display::RESET,
+                "  {}landlock{}: {}{}{}", display::BRIGHT_WHITE, display::RESET, display::RED, not_avail, display::RESET,
             )));
             labels.push(label("landlock_hint", format!(
-                "  {}Requires kernel >= 5.13{}", display::DIM, display::RESET,
+                "  {}{}{}", display::DIM, crate::i18n::t("sandbox.hint_landlock_kernel"), display::RESET,
             )));
         }
     }
@@ -911,8 +913,8 @@ fn build_menu_tree(
                     if j > 0 { schema_prefix.push('.'); }
                     schema_prefix.push_str(s);
                     let label = submenu_lookup.get(schema_prefix.as_str())
-                        .map(|(_, lbl)| lbl.to_string())
-                        .unwrap_or_else(|| segment_to_label(s));
+                        .map(|(_, lbl)| crate::i18n::translate_label(lbl))
+                        .unwrap_or_else(|| crate::i18n::translate_label(&segment_to_label(s)));
                     display_parts.push(label);
                 }
                 display_parts.push(item.label.clone());

@@ -832,7 +832,7 @@ pub fn run_menu(
                         }
                         // Auto-append Confirm button for form_mode submenus
                         if *form_mode && !matches!(children.last(), Some(MenuItem::Button { .. })) {
-                            children.push(MenuItem::Button { label: "Done".to_string() });
+                            children.push(MenuItem::Button { label: crate::i18n::t("config.done").to_string() });
                         }
                         let label_clone = label.clone();
                         let entering_form = *form_mode;
