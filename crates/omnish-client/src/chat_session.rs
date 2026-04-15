@@ -72,6 +72,8 @@ pub struct ChatSession {
     /// Client-local sandbox config (enabled + preferred backend). Shared with
     /// main event loop so menu edits persist across chat sessions.
     sandbox_state: Arc<RwLock<ClientSandboxConfig>>,
+    /// Input text to restore into the editor after an early Ctrl-C cancellation.
+    cancelled_input: Option<String>,
 }
 
 fn write_stdout(s: &str) {
@@ -989,6 +991,7 @@ impl ChatSession {
             tool_section_hist_idx: None,
             spinner_frame: 0,
             sandbox_state,
+            cancelled_input: None,
         }
     }
 
@@ -1255,8 +1258,9 @@ impl ChatSession {
                 (msg, true)
             } else {
                 write_stdout(&format!("{CYAN}> {RESET}"));
-                // Show ghost hint on first prompt
-                if show_ghost_hint && !self.ghost_hint_shown {
+                let initial = self.cancelled_input.take();
+                // Show ghost hint on first prompt (only if no cancelled input to restore)
+                if initial.is_none() && show_ghost_hint && !self.ghost_hint_shown {
                     self.ghost_hint_shown = true;
                     let hint = if let Some(ref model) = self.resumed_model {
                         format!("model for conversation: {}", model)
@@ -1270,7 +1274,7 @@ impl ChatSession {
                     }
                 }
                 crate::event_log::push(format!("chat_loop: entering read_input allow_backspace_exit={}", !self.has_activity));
-                let result = self.read_input(!self.has_activity);
+                let result = self.read_input_with(!self.has_activity, initial.as_deref());
                 crate::event_log::push(format!("chat_loop: read_input returned {}", if result.is_some() { "Some" } else { "None" }));
                 match result {
                     Some(line) => {
@@ -1487,6 +1491,7 @@ impl ChatSession {
 
             let rpc_result = rpc.call_stream(chat_msg);
             let mut interrupted = false;
+            let mut got_first_output = false;
 
             async fn wait_cancel(rx: &mut tokio::sync::watch::Receiver<bool>) {
                 loop {
@@ -1529,6 +1534,7 @@ impl ChatSession {
                                     msg = rx.recv() => {
                                         match msg {
                                             Some(Message::ChatToolStatus(cts)) => {
+                                                got_first_output = true;
                                                 self.erase_thinking();
                                                 if cts.tool_name.is_empty() {
                                                     // LLM intermediate text
@@ -1573,6 +1579,7 @@ impl ChatSession {
                                                 tool_calls.push(tc);
                                             }
                                             Some(Message::ChatResponse(resp)) if resp.request_id == req_id => {
+                                                got_first_output = true;
                                                 self.erase_thinking();
                                                 self.tool_section_start = None;
                                                 self.tool_section_hist_idx = None;
@@ -1795,24 +1802,49 @@ impl ChatSession {
             let _ = stop_tx.send(());
 
             if interrupted {
-                self.erase_thinking();
-                self.mark_running_tools_error();
-                self.tool_section_start = None;
-                self.tool_section_hist_idx = None;
-                self.print_line("");
-                self.print_line(&format!("{BRIGHT_WHITE}●{RESET} User interrupted. What should I do instead?"));
-                self.push_entry(ScrollEntry::Response("User interrupted. What should I do instead?".to_string()));
+                if !got_first_output {
+                    // No LLM output yet — treat as input cancellation:
+                    // erase thinking indicator and user echo line, restore input for editing.
+                    self.erase_thinking();
+                    // Erase the user echo line (">"  + text + the \r\n after it)
+                    write_stdout("\x1b[1A\r\x1b[K");
+                    // Remove the UserInput entry we just pushed
+                    if matches!(self.scroll_history.last(), Some(ScrollEntry::UserInput(_))) {
+                        self.scroll_history.pop();
+                    }
+                    // Restore input for re-editing
+                    self.cancelled_input = Some(input.clone());
 
-                let interrupt_msg = Message::ChatInterrupt(omnish_protocol::message::ChatInterrupt {
-                    request_id: req_id.clone(),
-                    session_id: session_id.to_string(),
-                    thread_id: self.current_thread_id.clone().unwrap(),
-                    query: trimmed.to_string(),
-                });
-                let rpc_clone = rpc.clone();
-                tokio::spawn(async move {
-                    let _ = rpc_clone.call(interrupt_msg).await;
-                });
+                    let interrupt_msg = Message::ChatInterrupt(omnish_protocol::message::ChatInterrupt {
+                        request_id: req_id.clone(),
+                        session_id: session_id.to_string(),
+                        thread_id: self.current_thread_id.clone().unwrap(),
+                        query: String::new(),
+                    });
+                    let rpc_clone = rpc.clone();
+                    tokio::spawn(async move {
+                        let _ = rpc_clone.call(interrupt_msg).await;
+                    });
+                } else {
+                    self.erase_thinking();
+                    self.mark_running_tools_error();
+                    self.tool_section_start = None;
+                    self.tool_section_hist_idx = None;
+                    self.print_line("");
+                    self.print_line(&format!("{BRIGHT_WHITE}●{RESET} User interrupted. What should I do instead?"));
+                    self.push_entry(ScrollEntry::Response("User interrupted. What should I do instead?".to_string()));
+
+                    let interrupt_msg = Message::ChatInterrupt(omnish_protocol::message::ChatInterrupt {
+                        request_id: req_id.clone(),
+                        session_id: session_id.to_string(),
+                        thread_id: self.current_thread_id.clone().unwrap(),
+                        query: trimmed.to_string(),
+                    });
+                    let rpc_clone = rpc.clone();
+                    tokio::spawn(async move {
+                        let _ = rpc_clone.call(interrupt_msg).await;
+                    });
+                }
             }
         }
 
@@ -3156,12 +3188,15 @@ impl ChatSession {
 
     // ── Input handling ───────────────────────────────────────────────────
 
-    fn read_input(&mut self, allow_backspace_exit: bool) -> Option<String> {
+    fn read_input_with(&mut self, allow_backspace_exit: bool, initial: Option<&str>) -> Option<String> {
         use unicode_width::UnicodeWidthChar;
         use widgets::line_editor::LineEditor;
 
         let stdin_fd = std::io::stdin().as_raw_fd();
         let mut editor = LineEditor::new();
+        if let Some(text) = initial {
+            editor.set_content(text);
+        }
         let mut byte = [0u8; 1];
         let mut has_ghost = false;
         let mut ghost_text = String::new();
@@ -3310,6 +3345,11 @@ impl ChatSession {
         let disable_paste = || {
             write_stdout("\x1b[?2004l");
         };
+
+        // If initial content was provided, render it immediately.
+        if initial.is_some() {
+            redraw(&editor, "", false);
+        }
 
         loop {
             // Paste buffer finalization on timeout

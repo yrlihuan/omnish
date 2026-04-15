@@ -48,7 +48,7 @@ test:
   - bash tools/integration_tests/test_config_push.sh
   - bash tools/integration_tests/test_sandbox_rules.sh
   - bash tools/integration_tests/test_config_backend.sh
-  - bash tools/integration_tests/test_config_after_interrupt.sh
+  - bash tools/integration_tests/test_chat_interrupt.sh
 
 .setup_daemon: &setup_daemon
   - cargo build --release
