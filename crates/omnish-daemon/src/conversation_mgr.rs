@@ -36,6 +36,10 @@ pub struct ThreadMeta {
     /// Last system-reminder content (for change detection).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_reminder: Option<String>,
+    /// Per-thread sandbox override. When Some(true), daemon forces
+    /// ChatToolCall.sandboxed=false for this thread, bypassing permit_rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_disabled: Option<bool>,
 }
 
 pub struct ConversationManager {
@@ -209,6 +213,14 @@ impl ConversationManager {
         }
     }
 
+    /// Set per-thread sandbox override and persist. `disabled=true` sets the
+    /// override; `disabled=false` clears it (back to default "sandbox on").
+    pub fn set_sandbox_disabled(&self, thread_id: &str, disabled: bool) {
+        let mut meta = self.load_meta(thread_id);
+        meta.sandbox_disabled = if disabled { Some(true) } else { None };
+        self.save_meta(thread_id, &meta);
+    }
+
     /// Load thread metadata from the sidecar `.meta.json` file.
     pub fn load_meta(&self, thread_id: &str) -> ThreadMeta {
         let path = self.threads_dir.join(format!("{}.meta.json", thread_id));
@@ -231,6 +243,11 @@ impl ConversationManager {
         entries.first().map(|e| {
             e.path().file_stem().unwrap().to_string_lossy().to_string()
         })
+    }
+
+    /// Check whether a thread exists (has been created and not deleted).
+    pub fn thread_exists(&self, thread_id: &str) -> bool {
+        self.threads.lock().unwrap().contains_key(thread_id)
     }
 
     /// List all conversations, sorted by modification time (newest first).
@@ -719,6 +736,21 @@ mod tests {
     }
 
     #[test]
+    fn test_set_sandbox_disabled_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+
+        let tid = mgr.create_thread(ThreadMeta::default());
+        assert_eq!(mgr.load_meta(&tid).sandbox_disabled, None);
+
+        mgr.set_sandbox_disabled(&tid, true);
+        assert_eq!(mgr.load_meta(&tid).sandbox_disabled, Some(true));
+
+        mgr.set_sandbox_disabled(&tid, false);
+        assert_eq!(mgr.load_meta(&tid).sandbox_disabled, None);
+    }
+
+    #[test]
     fn test_sanitize_orphaned_tool_use_no_result() {
         // assistant(tool_use) with no following tool_result → inject synthetic result
         let mut msgs = vec![
@@ -792,6 +824,28 @@ mod tests {
         assert_eq!(content.len(), 2);
         assert_eq!(content[1]["tool_use_id"], "toolu_2");
         assert_eq!(content[1]["is_error"], true);
+    }
+
+    #[test]
+    fn test_thread_meta_sandbox_disabled_roundtrip() {
+        // Default ThreadMeta: sandbox_disabled is None and omitted from JSON.
+        let meta = ThreadMeta::default();
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(!json.contains("sandbox_disabled"),
+            "absent flag must not appear in JSON, got: {}", json);
+
+        // sandbox_disabled=Some(true) roundtrips.
+        let meta_off = ThreadMeta { sandbox_disabled: Some(true), ..ThreadMeta::default() };
+        let json = serde_json::to_string(&meta_off).unwrap();
+        assert!(json.contains("\"sandbox_disabled\":true"),
+            "flag must appear when set, got: {}", json);
+        let parsed: ThreadMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.sandbox_disabled, Some(true));
+
+        // JSON without the field loads as None (pre-feature threads).
+        let legacy = "{}";
+        let parsed: ThreadMeta = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.sandbox_disabled, None);
     }
 
     #[test]

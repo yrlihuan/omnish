@@ -746,6 +746,7 @@ async fn handle_message(
                         thread_summary: None,
                         error: Some("not_found".to_string()),
                         error_display: Some("Conversation not found".to_string()),
+                        sandbox_disabled: None,
                     })
                 } else if let Err(owner) = try_claim_thread(active_threads, tid, &cs.session_id).await {
                     tracing::debug!("[ChatStart] thread locked by session={}", owner);
@@ -762,6 +763,7 @@ async fn handle_message(
                         thread_summary: None,
                         error: Some("thread_locked".to_string()),
                         error_display: err.get("display").and_then(|d| d.as_str()).map(String::from),
+                        sandbox_disabled: None,
                     })
                 } else {
                     tracing::debug!("[ChatStart] claimed thread={}, reconstructing history", tid);
@@ -795,6 +797,7 @@ async fn handle_message(
                         thread_summary: old_meta.summary,
                         error: None,
                         error_display: None,
+                        sandbox_disabled: old_meta.sandbox_disabled,
                     })
                 }
             } else if cs.new_thread {
@@ -813,6 +816,7 @@ async fn handle_message(
                     thread_summary: None,
                     error: None,
                     error_display: None,
+                    sandbox_disabled: None,
                 })
             } else {
                 // Resume latest thread
@@ -835,6 +839,7 @@ async fn handle_message(
                                 thread_summary: None,
                                 error: Some("thread_locked".to_string()),
                                 error_display: err.get("display").and_then(|d| d.as_str()).map(String::from),
+                                sandbox_disabled: None,
                             })
                         } else {
                             let old_meta = conv_mgr.load_meta(&tid);
@@ -867,6 +872,7 @@ async fn handle_message(
                                 thread_summary: old_meta.summary,
                                 error: None,
                                 error_display: None,
+                                sandbox_disabled: old_meta.sandbox_disabled,
                             })
                         }
                     }
@@ -884,6 +890,7 @@ async fn handle_message(
                             thread_summary: None,
                             error: None,
                             error_display: None,
+                            sandbox_disabled: None,
                         })
                     }
                 }
@@ -1668,6 +1675,16 @@ async fn run_agent_loop(
                                     serde_json::to_string(&tc.input).unwrap_or_default(),
                                 );
                             }
+                            let thread_sandbox_off = conv_mgr
+                                .load_meta(&state.cm.thread_id)
+                                .sandbox_disabled
+                                .unwrap_or(false);
+                            if thread_sandbox_off {
+                                tracing::warn!(
+                                    "thread sandbox disabled: thread={}, tool={}",
+                                    state.cm.thread_id, tc.name
+                                );
+                            }
                             if tx.send(Message::ChatToolCall(ChatToolCall {
                                 request_id: state.cm.request_id.clone(),
                                 thread_id: state.cm.thread_id.clone(),
@@ -1675,7 +1692,7 @@ async fn run_agent_loop(
                                 tool_call_id: tc.id.clone(),
                                 input: serde_json::to_string(&merged_input).unwrap_or_default(),
                                 plugin_name: tool_registry.plugin_name(&tc.name).unwrap_or_else(|| "builtin".to_string()),
-                                sandboxed: matched_rule.is_none(),
+                                sandboxed: matched_rule.is_none() && !thread_sandbox_off,
                             })).await.is_err() {
                                 persist_unsaved_sanitized(&mut state, conv_mgr);
                                 return;
@@ -2269,6 +2286,41 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             omnish_llm::template::TEMPLATE_NAMES.join("|")
         ));
     }
+    // Handle /thread sandbox — query or set per-thread sandbox override.
+    // Queries embed the thread_id as ":<tid>" suffix, matching /context chat.
+    if let Some(rest) = sub.strip_prefix("thread sandbox") {
+        let rest = rest.trim_start();
+        let (action, tid) = if let Some(tid) = rest.strip_prefix(":") {
+            ("query", tid)
+        } else if let Some(tid) = rest.strip_prefix("on:") {
+            ("on", tid)
+        } else if let Some(tid) = rest.strip_prefix("off:") {
+            ("off", tid)
+        } else {
+            return cmd_display("Usage: __cmd:thread sandbox[ on|off]:<tid>");
+        };
+        if tid.is_empty() {
+            return cmd_display("Error: missing thread_id");
+        }
+        if !conv_mgr.thread_exists(tid) {
+            return cmd_display("Error: thread not found");
+        }
+        let display = match action {
+            "on" => {
+                conv_mgr.set_sandbox_disabled(tid, false);
+                format!("sandbox enabled for thread {}", &tid[..8.min(tid.len())])
+            }
+            "off" => {
+                conv_mgr.set_sandbox_disabled(tid, true);
+                format!("sandbox disabled for thread {}", &tid[..8.min(tid.len())])
+            }
+            _ => {
+                let off = conv_mgr.load_meta(tid).sandbox_disabled.unwrap_or(false);
+                format!("sandbox: {}", if off { "off" } else { "on" })
+            }
+        };
+        return cmd_display(display);
+    }
     match sub {
         "context" => {
             // Default to completion context (most common LLM use case)
@@ -2472,6 +2524,9 @@ async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads
         } else {
             output.push_str("  (no usage data)\n");
         }
+        if meta.sandbox_disabled == Some(true) {
+            output.push_str("  sandbox: off\n");
+        }
 
         return cmd_display(output);
     }
@@ -2537,6 +2592,9 @@ async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads
             ));
         } else {
             output.push_str("       (no usage data)\n");
+        }
+        if meta.sandbox_disabled == Some(true) {
+            output.push_str("       sandbox: off\n");
         }
     }
     cmd_display(output)

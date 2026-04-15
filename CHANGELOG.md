@@ -3,6 +3,7 @@
 ## v0.8.10 (2026-04-14)
 
 ### Features
+- **chat**: `/thread sandbox on|off` per-thread sandbox override — disables Landlock/bwrap for all tool calls in a thread; persists across resume (#535)
 - **zsh**: Full zsh shell hook support with ZDOTDIR mechanism and OSC 133 integration (#462)
 - **ci**: Add Linux ARM (aarch64) release build to GitHub Actions
 

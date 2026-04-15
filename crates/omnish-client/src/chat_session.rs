@@ -74,6 +74,9 @@ pub struct ChatSession {
     sandbox_state: Arc<RwLock<ClientSandboxConfig>>,
     /// Input text to restore into the editor after an early Ctrl-C cancellation.
     cancelled_input: Option<String>,
+    /// Buffered /thread sandbox preference before a thread exists. Applied
+    /// right after ChatReady for a new thread, then cleared.
+    pending_sandbox_off: Option<bool>,
 }
 
 fn write_stdout(s: &str) {
@@ -992,6 +995,7 @@ impl ChatSession {
             spinner_frame: 0,
             sandbox_state,
             cancelled_input: None,
+            pending_sandbox_off: None,
         }
     }
 
@@ -1320,6 +1324,15 @@ impl ChatSession {
                 continue;
             }
 
+            // /thread sandbox [on|off]
+            if trimmed == "/thread sandbox"
+                || trimmed == "/thread sandbox on"
+                || trimmed == "/thread sandbox off"
+            {
+                self.handle_thread_sandbox(trimmed, session_id, rpc).await;
+                continue;
+            }
+
             // /resume_tid <thread_id> (internal — used by :: resume shortcut)
             if let Some(tid) = trimmed.strip_prefix("/resume_tid ") {
                 if !self.handle_resume_tid(tid.trim(), session_id, rpc).await && is_fast_resume {
@@ -1459,6 +1472,20 @@ impl ChatSession {
                 match rpc.call(start_msg).await {
                     Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
                         self.current_thread_id = Some(ready.thread_id);
+                        // Apply buffered /thread sandbox preference
+                        if let Some(off) = self.pending_sandbox_off.take() {
+                            let arg = if off { "off" } else { "on" };
+                            let query = format!("__cmd:thread sandbox {}:{}",
+                                arg, self.current_thread_id.as_deref().unwrap());
+                            let rid2 = Uuid::new_v4().to_string()[..8].to_string();
+                            let req = Message::Request(Request {
+                                request_id: rid2,
+                                session_id: session_id.to_string(),
+                                query,
+                                scope: RequestScope::AllSessions,
+                            });
+                            let _ = rpc.call(req).await;
+                        }
                     }
                     _ => {
                         write_stdout(&display::render_error("Failed to start chat session"));
@@ -2038,6 +2065,71 @@ impl ChatSession {
         }
     }
 
+    async fn handle_thread_sandbox(&mut self, trimmed: &str, session_id: &str, rpc: &RpcClient) {
+        let sub = trimmed
+            .strip_prefix("/thread sandbox")
+            .map(|s| s.trim())
+            .unwrap_or("");
+
+        let desired_off: Option<bool> = match sub {
+            "" => None,       // query only
+            "on" => Some(false),
+            "off" => Some(true),
+            _ => {
+                write_stdout(&display::render_error("Usage: /thread sandbox [on|off]"));
+                return;
+            }
+        };
+
+        // No active thread: buffer the preference for apply-after-create.
+        if self.current_thread_id.is_none() {
+            match desired_off {
+                Some(off) => {
+                    self.pending_sandbox_off = Some(off);
+                    let state = if off { "off" } else { "on" };
+                    write_stdout(&display::render_response(&format!("sandbox: {}", state)));
+                }
+                None => {
+                    let msg = match self.pending_sandbox_off {
+                        Some(true) => "no active thread; pending: off".to_string(),
+                        Some(false) => "no active thread; pending: on".to_string(),
+                        None => "no active thread".to_string(),
+                    };
+                    write_stdout(&display::render_response(&msg));
+                }
+            }
+            return;
+        }
+
+        let tid = self.current_thread_id.as_deref().unwrap();
+        let query = match desired_off {
+            Some(true) => format!("__cmd:thread sandbox off:{}", tid),
+            Some(false) => format!("__cmd:thread sandbox on:{}", tid),
+            None => format!("__cmd:thread sandbox:{}", tid),
+        };
+
+        let rid = Uuid::new_v4().to_string()[..8].to_string();
+        let request = Message::Request(Request {
+            request_id: rid.clone(),
+            session_id: session_id.to_string(),
+            query,
+            scope: RequestScope::AllSessions,
+        });
+        match rpc.call(request).await {
+            Ok(Message::Response(resp)) if resp.request_id == rid => {
+                let display_text = if let Some(json) = super::parse_cmd_response(&resp.content) {
+                    super::cmd_display_str(&json)
+                } else {
+                    resp.content
+                };
+                write_stdout(&display::render_response(&display_text));
+            }
+            _ => {
+                write_stdout(&display::render_error("Failed to update sandbox state"));
+            }
+        }
+    }
+
     async fn handle_resume(&mut self, trimmed: &str, session_id: &str, rpc: &RpcClient) -> bool {
         // Resolve which thread_id to resume, then delegate to handle_resume_tid
         let tid: Option<String> = if let Some(idx_str) = trimmed.strip_prefix("/resume ") {
@@ -2316,6 +2408,13 @@ impl ChatSession {
         // Store non-default model name for ghost hint
         if let Some(model) = ready.model_name {
             self.resumed_model = Some(model);
+        }
+
+        // Warn if sandbox is disabled for this thread
+        if ready.sandbox_disabled == Some(true) {
+            write_stdout(&format!(
+                "{DIM}sandbox: disabled for this thread, tool execution is not sandboxed.{RESET}\r\n"
+            ));
         }
     }
 
