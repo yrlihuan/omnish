@@ -70,6 +70,7 @@ fn thread_usage(_args: &str) -> String {
             output.push_str(&format!("  {} — {}\n", sub, entry.help));
         }
     }
+    output.push_str("  sandbox [on|off] — Toggle sandbox enforcement for current thread (chat mode)\n");
     output
 }
 
@@ -173,6 +174,7 @@ fn help_command(_args: &str) -> String {
                     output.push_str(&format!("    {} — {}\n", sub.path, sub.help));
                 }
             }
+            output.push_str("    /thread sandbox [on|off] — Toggle sandbox enforcement for current thread (chat mode)\n");
         }
     }
     // Chat-mode-only commands not in the registry.
@@ -297,7 +299,15 @@ const COMMANDS: &[CommandEntry] = &[
 ];
 
 /// Chat-mode-only commands (not in COMMANDS registry).
-pub const CHAT_ONLY_COMMANDS: &[&str] = &["/resume", "/model", "/test lock", "/test disconnect"];
+pub const CHAT_ONLY_COMMANDS: &[&str] = &[
+    "/resume",
+    "/model",
+    "/thread sandbox",
+    "/thread sandbox on",
+    "/thread sandbox off",
+    "/test lock",
+    "/test disconnect",
+];
 
 /// Priority order for ghost-text completion (first match wins).
 const COMPLETION_PRIORITY: &[&str] = &[
@@ -766,6 +776,7 @@ mod tests {
                 assert!(result.contains("list"));
                 assert!(result.contains("stats"));
                 assert!(result.contains("del"));
+                assert!(result.contains("sandbox"));
             }
             _ => panic!("expected Command"),
         }
@@ -795,6 +806,7 @@ mod tests {
                 assert!(result.contains("/thread list"));
                 assert!(result.contains("/thread stats"));
                 assert!(result.contains("/thread del"));
+                assert!(result.contains("/thread sandbox"));
             }
             _ => panic!("expected Command"),
         }
