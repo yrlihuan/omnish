@@ -1233,6 +1233,14 @@ async fn handle_chat_message(
 
     // Load prior conversation history as raw JSON
     let mut extra_messages = conv_mgr.load_raw_messages(&cm.thread_id);
+
+    // Sanitize orphaned tool_use blocks that can appear when a ChatInterrupt
+    // races with a new ChatMessage (both are dispatched concurrently).
+    if omnish_daemon::conversation_mgr::sanitize_orphaned_tool_use(&mut extra_messages) {
+        tracing::warn!("Sanitized orphaned tool_use blocks before chat (thread={})", cm.thread_id);
+        conv_mgr.replace_messages(&cm.thread_id, &extra_messages);
+    }
+
     // Strip internal metadata fields that must not be sent to the LLM API
     for msg in &mut extra_messages {
         if let Some(obj) = msg.as_object_mut() {

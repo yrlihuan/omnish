@@ -84,7 +84,7 @@ fn extract_tool_result_ids(msg: &serde_json::Value) -> HashSet<String> {
 /// tool_result blocks in the following message. Inject synthetic error
 /// tool_result messages so the API never sees orphaned tool_use blocks.
 /// Returns true if any changes were made.
-fn sanitize_orphaned_tool_use(msgs: &mut Vec<serde_json::Value>) -> bool {
+pub fn sanitize_orphaned_tool_use(msgs: &mut Vec<serde_json::Value>) -> bool {
     let mut changed = false;
     let mut i = 0;
     while i < msgs.len() {
@@ -342,9 +342,6 @@ impl ConversationManager {
     }
 
     /// Load all messages as raw JSON for LLM context.
-    /// Note: orphaned tool_use blocks are only sanitized at startup (in `new()`),
-    /// not here — during runtime an orphaned tail tool_use means tools are actively
-    /// executing, and sanitizing it would inject a phantom "interrupted" result.
     pub fn load_raw_messages(&self, thread_id: &str) -> Vec<serde_json::Value> {
         let threads = self.threads.lock().unwrap();
         let msgs = match threads.get(thread_id) {
@@ -352,6 +349,13 @@ impl ConversationManager {
             None => return Vec::new(),
         };
         msgs.clone()
+    }
+
+    /// Replace the in-memory cache and rewrite the JSONL file for a thread.
+    pub fn replace_messages(&self, thread_id: &str, msgs: &[serde_json::Value]) {
+        let mut threads = self.threads.lock().unwrap();
+        threads.insert(thread_id.to_string(), msgs.to_vec());
+        Self::rewrite_thread_file(&self.threads_dir, thread_id, msgs);
     }
 
     /// Get all user-assistant exchanges in a thread, ordered chronologically.
