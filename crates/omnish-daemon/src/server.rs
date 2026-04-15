@@ -2890,6 +2890,12 @@ async fn handle_completion_request(
         extra_messages: vec![],
     };
 
+    let prompt_words = prompt_clone.split_whitespace().count();
+    tracing::info!(
+        "Completion LLM request started (session={}, sequence_id={}, input_len={}, prompt_words={})",
+        req.session_id, req.sequence_id, req.input.len(), prompt_words
+    );
+
     let start = std::time::Instant::now();
     let result = backend.complete(&llm_req).await;
     let duration = start.elapsed();
@@ -2917,13 +2923,13 @@ async fn handle_completion_request(
             if duration_secs > 1.5 {
                 // Slow requests (>1.5s) logged as WARN so tracing colors them
                 tracing::warn!(
-                    "Completion LLM request completed in {} (session={}, model={}, sequence_id={}, input_len={}{})",
-                    duration_str, req.session_id, response.model, req.sequence_id, req.input.len(), cache_info
+                    "Completion LLM request completed in {} (session={}, model={}, sequence_id={}, input_len={}, prompt_words={}{})",
+                    duration_str, req.session_id, response.model, req.sequence_id, req.input.len(), prompt_words, cache_info
                 );
             } else {
                 tracing::info!(
-                    "Completion LLM request completed in {} (session={}, model={}, sequence_id={}, input_len={}{})",
-                    duration_str, req.session_id, response.model, req.sequence_id, req.input.len(), cache_info
+                    "Completion LLM request completed in {} (session={}, model={}, sequence_id={}, input_len={}, prompt_words={}{})",
+                    duration_str, req.session_id, response.model, req.sequence_id, req.input.len(), prompt_words, cache_info
                 );
             }
             tracing::debug!("Completion LLM raw response: {:?}", response.text());
@@ -2936,8 +2942,8 @@ async fn handle_completion_request(
         }
         Err(e) => {
             tracing::warn!(
-                "Completion LLM request failed after {} (session={}, sequence_id={}, input_len={}, error={})",
-                duration_str, req.session_id, req.sequence_id, req.input.len(), e
+                "Completion LLM request failed after {} (session={}, sequence_id={}, input_len={}, prompt_words={}, error={})",
+                duration_str, req.session_id, req.sequence_id, req.input.len(), prompt_words, e
             );
         }
     }
