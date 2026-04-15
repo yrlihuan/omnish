@@ -530,8 +530,9 @@ pub struct ShellConfig {
     /// In the future this may be set automatically via terminal detection.
     #[serde(default, deserialize_with = "string_or_bool::deserialize")]
     pub extended_unicode: bool,
-    /// UI language: "en" or "zh".
-    #[serde(default = "default_language")]
+    /// UI language: "en", "zh", or "zh-tw".
+    /// Client-side default is "en"; the daemon pushes its locale-detected value.
+    #[serde(default = "default_language_en")]
     pub language: String,
 }
 
@@ -546,7 +547,7 @@ impl Default for ShellConfig {
             developer_mode: default_developer_mode(),
             completion_enabled: true,
             extended_unicode: false,
-            language: default_language(),
+            language: default_language_en(),
         }
     }
 }
@@ -566,12 +567,35 @@ pub struct ClientSection {
     pub intercept_gap_ms: u64,
     #[serde(default = "default_developer_mode", deserialize_with = "string_or_bool::deserialize")]
     pub developer_mode: bool,
-    #[serde(default = "default_language")]
+    /// UI language. Defaults to system locale detection on daemon side.
+    #[serde(default = "default_language_locale")]
     pub language: String,
 }
 
-fn default_language() -> String {
+fn default_language_en() -> String {
     "en".to_string()
+}
+
+fn default_language_locale() -> String {
+    detect_system_language()
+}
+
+/// Detect language from system locale env vars (LC_ALL > LC_MESSAGES > LANG).
+/// Returns "zh", "zh-tw", or "en".
+fn detect_system_language() -> String {
+    let locale = std::env::var("LC_ALL")
+        .or_else(|_| std::env::var("LC_MESSAGES"))
+        .or_else(|_| std::env::var("LANG"))
+        .unwrap_or_default()
+        .to_lowercase();
+    // e.g. "zh_cn.utf-8", "zh_tw.utf-8", "zh_hk.utf-8", "en_us.utf-8"
+    if locale.starts_with("zh_tw") || locale.starts_with("zh_hk") {
+        "zh-tw".to_string()
+    } else if locale.starts_with("zh") {
+        "zh".to_string()
+    } else {
+        "en".to_string()
+    }
 }
 
 impl Default for ClientSection {
@@ -583,7 +607,7 @@ impl Default for ClientSection {
             ghost_timeout_ms: default_ghost_timeout_ms(),
             intercept_gap_ms: default_intercept_gap_ms(),
             developer_mode: default_developer_mode(),
-            language: default_language(),
+            language: default_language_locale(),
         }
     }
 }
