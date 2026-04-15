@@ -1610,7 +1610,10 @@ fn apply_client_config_changes(
                 }
             }
             "client.language" => {
-                i18n::init(&change.value);
+                // OMNISH_LANG env var overrides daemon-pushed language
+                if std::env::var("OMNISH_LANG").is_err() {
+                    i18n::init(&change.value);
+                }
                 any_changed = true;
             }
             _ => {} // unknown paths silently ignored

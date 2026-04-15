@@ -95,6 +95,22 @@ fn strip_date_suffix(model: &str) -> &str {
     model
 }
 
+/// Map language code to display name for the language selector.
+fn lang_code_to_display(code: &str) -> &str {
+    match code {
+        "zh" => "简体中文",
+        _ => "English",
+    }
+}
+
+/// Map language display name back to code for config storage.
+fn lang_display_to_code(display: &str) -> &str {
+    match display {
+        "简体中文" => "zh",
+        _ => "en",
+    }
+}
+
 /// Convert path segment to display label: capitalize first letter, _ -> space.
 fn segment_to_label(seg: &str) -> String {
     seg.replace('_', " ")
@@ -779,6 +795,9 @@ fn compute_config_diff(old_items: &[ConfigItem], new_items: &[ConfigItem]) -> Ve
             if real_old != real_new {
                 let (old_display, new_display) = if is_sensitive_path(path) {
                     mask_sensitive_value(&real_old)
+                } else if *path == "general.language" {
+                    (lang_code_to_display(&real_old).to_string(),
+                     lang_code_to_display(&real_new).to_string())
                 } else {
                     (real_old, real_new)
                 };
@@ -888,11 +907,18 @@ fn build_menu_tree(
                             label: translated.clone(),
                             value: *value,
                         },
-                        ConfigItemKind::Select { options, selected } => MenuItem::Select {
-                            label: translated.clone(),
-                            options: options.clone(),
-                            selected: *selected,
-                            prefills: item.prefills.clone(),
+                        ConfigItemKind::Select { options, selected } => {
+                            let display_options = if item.path == "general.language" {
+                                options.iter().map(|o| lang_code_to_display(o).to_string()).collect()
+                            } else {
+                                options.clone()
+                            };
+                            MenuItem::Select {
+                                label: translated.clone(),
+                                options: display_options,
+                                selected: *selected,
+                                prefills: item.prefills.clone(),
+                            }
                         },
                         ConfigItemKind::TextInput { value } => MenuItem::TextInput {
                             label: translated.clone(),
@@ -3212,7 +3238,13 @@ impl ChatSession {
                     return save_local_sandbox_config(&schema_path, &change.value, sandbox_state_ref);
                 }
 
-                let config_changes = vec![ConfigChange { path: schema_path, value: change.value.clone() }];
+                // Map display names back to stored values
+                let value = if schema_path == "general.language" {
+                    lang_display_to_code(&change.value).to_string()
+                } else {
+                    change.value.clone()
+                };
+                let config_changes = vec![ConfigChange { path: schema_path, value }];
                 let update_result = rt.block_on(async {
                     rpc_ref.call(Message::ConfigUpdate { changes: config_changes }).await
                 });
