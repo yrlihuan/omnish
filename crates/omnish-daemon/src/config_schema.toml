@@ -32,7 +32,7 @@ path = "general.language"
 label = "Language"
 kind = "select"
 toml_key = "client.language"
-options = ["en", "zh"]
+options = ["en", "zh", "zh-tw"]
 
 # ── General > Completion ──────────────────────────────
 [[items]]

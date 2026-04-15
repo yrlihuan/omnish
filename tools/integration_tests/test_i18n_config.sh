@@ -4,7 +4,8 @@
 #
 # Tests:
 #   1. English (default): config menu labels are in English, Language shows "English"
-#   2. Chinese (OMNISH_LANG=zh): config menu labels are in Chinese, Language shows "简体中文"
+#   2. Simplified Chinese (OMNISH_LANG=zh): labels in simplified Chinese
+#   3. Traditional Chinese (OMNISH_LANG=zh-tw): labels in traditional Chinese
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -13,7 +14,8 @@ show_usage() {
     cat <<EOF
 Test cases:
   1. English config menu labels (default language)
-  2. Chinese config menu labels (OMNISH_LANG=zh)
+  2. Simplified Chinese config menu labels (OMNISH_LANG=zh)
+  3. Traditional Chinese config menu labels (OMNISH_LANG=zh-tw)
 EOF
 }
 
@@ -103,22 +105,22 @@ test_1() {
         ok=false
     fi
 
-    # Language value should show a display name (English or 简体中文), not raw code (en/zh)
+    # Language value should show a display name, not raw code (en/zh/zh-tw)
     local lang_line
     lang_line=$(echo "$content" | grep "Language" | head -1)
-    if echo "$lang_line" | grep -qE 'English|简体中文'; then
+    if echo "$lang_line" | grep -qE 'English|简体中文|繁體中文'; then
         assert_pass "Language shows display name (not raw code)"
     else
-        assert_fail "Language should show 'English' or '简体中文', not raw code"
+        assert_fail "Language should show display name, not raw code"
         ok=false
     fi
 
     # Verify raw codes are NOT shown
-    if echo "$lang_line" | grep -qE '\[en\]|\[zh\]'; then
-        assert_fail "Language shows raw code [en] or [zh]"
+    if echo "$lang_line" | grep -qE '\[en\]|\[zh\]|\[zh-tw\]'; then
+        assert_fail "Language shows raw code"
         ok=false
     else
-        assert_pass "Language does not show raw code [en]/[zh]"
+        assert_pass "Language does not show raw code"
     fi
 
     # Exit config: ESC back to General, ESC back to top, ESC exit
@@ -257,4 +259,99 @@ test_2() {
     $ok
 }
 
-run_tests 2
+# ── Test 3: Traditional Chinese config menu labels ────────────────────
+test_3() {
+    echo -e "\n${YELLOW}=== Test 3: Traditional Chinese config menu labels (OMNISH_LANG=zh-tw) ===${NC}"
+
+    start_client_lang "zh-tw"
+    wait_for_client
+
+    open_config
+
+    local content
+    content=$(capture_pane -30)
+    show_capture "Config top level (zh-tw)" "$content" 15
+
+    local ok=true
+
+    # Check top-level submenu labels in Traditional Chinese
+    if echo "$content" | grep -q "一般"; then
+        assert_pass "Top-level '一般' (General) label present"
+    else
+        assert_fail "Top-level '一般' (General) label missing"
+        ok=false
+    fi
+
+    if echo "$content" | grep -q "LLM"; then
+        assert_pass "Top-level 'LLM' label present"
+    else
+        assert_fail "Top-level 'LLM' label missing"
+        ok=false
+    fi
+
+    if echo "$content" | grep -q "沙箱"; then
+        assert_pass "Top-level '沙箱' (Sandbox) label present"
+    else
+        assert_fail "Top-level '沙箱' (Sandbox) label missing"
+        ok=false
+    fi
+
+    # Enter 一般 (General) submenu
+    send_enter 0.5
+    content=$(capture_pane -30)
+    show_capture "General submenu (zh-tw)" "$content" 15
+
+    if echo "$content" | grep -q "快速鍵"; then
+        assert_pass "General > '快速鍵' (Hotkeys) label present"
+    else
+        assert_fail "General > '快速鍵' (Hotkeys) label missing"
+        ok=false
+    fi
+
+    if echo "$content" | grep -q "語言"; then
+        assert_pass "General > '語言' (Language) label present"
+    else
+        assert_fail "General > '語言' (Language) label missing"
+        ok=false
+    fi
+
+    if echo "$content" | grep -q "補全"; then
+        assert_pass "General > '補全' (Completion) label present"
+    else
+        assert_fail "General > '補全' (Completion) label missing"
+        ok=false
+    fi
+
+    if echo "$content" | grep -q "自動更新"; then
+        assert_pass "General > '自動更新' (Auto Update) label present"
+    else
+        assert_fail "General > '自動更新' (Auto Update) label missing"
+        ok=false
+    fi
+
+    if echo "$content" | grep -q "代理"; then
+        assert_pass "General > '代理' (Proxy) label present"
+    else
+        assert_fail "General > '代理' (Proxy) label missing"
+        ok=false
+    fi
+
+    # Language value should show a display name, not raw code
+    local lang_line
+    lang_line=$(echo "$content" | grep "語言" | head -1)
+    if echo "$lang_line" | grep -qE 'English|简体中文|繁體中文'; then
+        assert_pass "Language shows display name (not raw code)"
+    else
+        assert_fail "Language should show display name, not raw code"
+        ok=false
+    fi
+
+    # Exit config
+    send_special Escape 0.3
+    send_special Escape 0.3
+    send_special Escape 0.3
+
+    $ok
+}
+
+run_tests 3

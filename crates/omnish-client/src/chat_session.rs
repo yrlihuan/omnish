@@ -99,6 +99,7 @@ fn strip_date_suffix(model: &str) -> &str {
 fn lang_code_to_display(code: &str) -> &str {
     match code {
         "zh" => "简体中文",
+        "zh-tw" => "繁體中文",
         _ => "English",
     }
 }
@@ -107,6 +108,7 @@ fn lang_code_to_display(code: &str) -> &str {
 fn lang_display_to_code(display: &str) -> &str {
     match display {
         "简体中文" => "zh",
+        "繁體中文" => "zh-tw",
         _ => "en",
     }
 }
