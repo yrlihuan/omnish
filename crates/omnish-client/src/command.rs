@@ -265,7 +265,7 @@ const COMMANDS: &[CommandEntry] = &[
     CommandEntry {
         path: "/thread list",
         kind: CommandKind::Daemon("conversations"),
-        help: "List all conversation threads",
+        help: "List recent threads (default 20, /thread list N for more)",
     },
     CommandEntry {
         path: "/thread stats",

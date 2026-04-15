@@ -477,14 +477,14 @@ _kill_cleanup_client() {
 }
 
 # _count_threads
-#   Start a cleanup client, enter chat, run /thread list, count [N] lines, kill it.
+#   Start a cleanup client, enter chat, run /thread list 9999, count [N] lines, kill it.
 #   Polls up to 5s for /thread list output to appear before counting.
 #   Prints the count to stdout.
 _count_threads() {
     _start_cleanup_client
     _tmux send-keys -t "$_CLEANUP_PANE" -- ":" 2>/dev/null
     sleep 0.5
-    _tmux send-keys -t "$_CLEANUP_PANE" -- "/thread list" 2>/dev/null
+    _tmux send-keys -t "$_CLEANUP_PANE" -- "/thread list 9999" 2>/dev/null
     _tmux send-keys -t "$_CLEANUP_PANE" Enter 2>/dev/null
     # Poll for output (either [N] lines or "No conversations") up to 5s
     local content="" count=0
@@ -518,10 +518,10 @@ _cleanup_new_threads() {
     fi
 
     _start_cleanup_client
-    # Enter chat, list threads
+    # Enter chat, list all threads
     _tmux send-keys -t "$_CLEANUP_PANE" -- ":" 2>/dev/null
     sleep 0.5
-    _tmux send-keys -t "$_CLEANUP_PANE" -- "/thread list" 2>/dev/null
+    _tmux send-keys -t "$_CLEANUP_PANE" -- "/thread list 9999" 2>/dev/null
     _tmux send-keys -t "$_CLEANUP_PANE" Enter 2>/dev/null
     sleep 1
     local content

@@ -1318,9 +1318,11 @@ impl ChatSession {
                 continue;
             }
 
-            // /thread list
-            if trimmed == "/thread list" {
-                self.handle_thread_list(session_id, rpc).await;
+            // /thread list [N]
+            if trimmed == "/thread list" || trimmed.starts_with("/thread list ") {
+                let limit = trimmed.strip_prefix("/thread list")
+                    .and_then(|s| s.trim().parse::<usize>().ok());
+                self.handle_thread_list(session_id, rpc, limit).await;
                 continue;
             }
 
@@ -2043,12 +2045,16 @@ impl ChatSession {
         }
     }
 
-    async fn handle_thread_list(&mut self, session_id: &str, rpc: &RpcClient) {
+    async fn handle_thread_list(&mut self, session_id: &str, rpc: &RpcClient, limit: Option<usize>) {
+        let query = match limit {
+            Some(n) => format!("__cmd:conversations {}", n),
+            None => "__cmd:conversations".to_string(),
+        };
         let request_id = Uuid::new_v4().to_string()[..8].to_string();
         let request = Message::Request(Request {
             request_id: request_id.clone(),
             session_id: session_id.to_string(),
-            query: "__cmd:conversations".to_string(),
+            query,
             scope: RequestScope::AllSessions,
         });
         match rpc.call(request).await {

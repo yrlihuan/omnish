@@ -2338,7 +2338,11 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             }
         }
         "sessions" => cmd_display(mgr.format_sessions_list(&req.session_id).await),
-        "conversations" => format_conversations_json(conv_mgr, active_threads).await,
+        s if s == "conversations" || s.starts_with("conversations ") => {
+            let limit = s.strip_prefix("conversations ")
+                .and_then(|n| n.trim().parse::<usize>().ok());
+            format_conversations_json(conv_mgr, active_threads, limit).await
+        }
         "conversations stats" => format_thread_stats(conv_mgr, active_threads, &req.session_id).await,
         "session" => match get_session_debug_info(&req.session_id, mgr).await {
             Ok(info) => cmd_display(info),
@@ -2414,11 +2418,16 @@ async fn handle_template(name: &str, mgr: &SessionManager, tool_registry: &omnis
 }
 
 /// Format the list of conversations as JSON with display string, thread_ids, and locked status.
-async fn format_conversations_json(conv_mgr: &Arc<ConversationManager>, active_threads: &ActiveThreads) -> serde_json::Value {
+/// When `limit` is None, defaults to 20 most recent threads.
+async fn format_conversations_json(conv_mgr: &Arc<ConversationManager>, active_threads: &ActiveThreads, limit: Option<usize>) -> serde_json::Value {
     let conversations = conv_mgr.list_conversations();
     if conversations.is_empty() {
         return cmd_display("No conversations yet. Start a chat with :");
     }
+
+    let total = conversations.len();
+    let limit = limit.unwrap_or(20);
+    let shown: Vec<_> = conversations.into_iter().take(limit).collect();
 
     let locked_set: std::collections::HashSet<String> = {
         let threads = active_threads.lock().await;
@@ -2428,7 +2437,7 @@ async fn format_conversations_json(conv_mgr: &Arc<ConversationManager>, active_t
     let mut output = String::from("Conversations:\n");
     let mut thread_ids = Vec::new();
     let mut locked_threads = Vec::new();
-    for (i, (thread_id, modified, exchange_count, last_question)) in conversations.into_iter().enumerate() {
+    for (i, (thread_id, modified, exchange_count, last_question)) in shown.into_iter().enumerate() {
         let time_ago = format_relative_time(modified);
 
         let meta = conv_mgr.load_meta(&thread_id);
@@ -2465,6 +2474,9 @@ async fn format_conversations_json(conv_mgr: &Arc<ConversationManager>, active_t
 
         thread_ids.push(thread_id);
         locked_threads.push(is_locked);
+    }
+    if total > thread_ids.len() {
+        output.push_str(&format!("  ({} total, showing {}. Use /thread list N to see more)\n", total, thread_ids.len()));
     }
     serde_json::json!({
         "display": output,
