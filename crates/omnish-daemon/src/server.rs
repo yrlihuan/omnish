@@ -2904,16 +2904,26 @@ async fn handle_completion_request(
 
     match &result {
         Ok(response) => {
+            let cache_info = if let Some(ref u) = response.usage {
+                let total_input = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens;
+                if total_input > 0 {
+                    format!(", cache={:.1}%", (u.cache_read_input_tokens as f64 / total_input as f64) * 100.0)
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
             if duration_secs > 1.5 {
                 // Slow requests (>1.5s) logged as WARN so tracing colors them
                 tracing::warn!(
-                    "Completion LLM request completed in {} (session={}, model={}, sequence_id={}, input_len={})",
-                    duration_str, req.session_id, response.model, req.sequence_id, req.input.len()
+                    "Completion LLM request completed in {} (session={}, model={}, sequence_id={}, input_len={}{})",
+                    duration_str, req.session_id, response.model, req.sequence_id, req.input.len(), cache_info
                 );
             } else {
                 tracing::info!(
-                    "Completion LLM request completed in {} (session={}, model={}, sequence_id={}, input_len={})",
-                    duration_str, req.session_id, response.model, req.sequence_id, req.input.len()
+                    "Completion LLM request completed in {} (session={}, model={}, sequence_id={}, input_len={}{})",
+                    duration_str, req.session_id, response.model, req.sequence_id, req.input.len(), cache_info
                 );
             }
             tracing::debug!("Completion LLM raw response: {:?}", response.text());
