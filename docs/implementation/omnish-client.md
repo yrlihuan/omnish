@@ -22,6 +22,7 @@ omnish-client 是终端用户直接交互的客户端程序，作为PTY代理运
 14. **守护进程配置**: `/config` 命令通过 Menu widget 交互式编辑 daemon.toml 配置，支持 Toggle、Select、TextInput、Label、Submenu、Button 等项目类型；支持即时逐项保存（on_change 回调）和失败自动回滚；退出时显示配置变更 diff（变更前后值对比）；打开时自动刷新 backend use_proxy 等陈旧值；支持带点号的 backend 名称（如 gemini-3.1）
 15. **守护进程配置推送**: 接收 `ConfigClient` 消息并将守护进程端的客户端配置（命令前缀、补全开关、ghost 超时等）缓存到本地 `client.toml`
 16. **ANSI 样式常量**: `display.rs` 集中定义共享 ANSI 颜色/样式常量（DIM、BOLD、CYAN 等），全模块统一引用
+17. **i18n 多语言**: `i18n.rs` 提供编译期内嵌的翻译系统，`t()`/`tf()`/`translate_label()` API；语言包 JSON 编译进二进制（`en/zh/zh-tw/ja/ko/fr/es/ar`）；语言由 `OMNISH_LANG` 环境变量或 `/config` 菜单切换；客户端默认 `en`，由守护进程通过 `ConfigClient` 推送其检测到的系统语言覆盖
 
 ## 重要数据结构
 
@@ -410,7 +411,7 @@ omnish-client 提供了一个交互式选择器组件，用于在终端中进行
 
 **`pick_one(title: &str, items: &[&str]) -> Option<usize>`**
 - 单选模式，返回选中项的索引（从0开始）
-- 用户按ESC取消时返回None
+- 用户按 ESC 或 Ctrl-C 取消时返回 None（commit b0142f9, #532）
 - 用于 `/resume` 命令选择对话
 
 **`pick_one_at(title: &str, items: &[&str], initial: usize) -> Option<usize>`**
@@ -420,7 +421,7 @@ omnish-client 提供了一个交互式选择器组件，用于在终端中进行
 
 **`pick_many(title: &str, items: &[&str]) -> Option<Vec<usize>>`**
 - 多选模式，返回选中项的索引列表（从0开始）
-- 用户按ESC取消时返回None
+- 用户按 ESC 或 Ctrl-C 取消时返回 None（commit b0142f9, #532）
 - 用于 `/thread del` 命令删除多个对话
 
 #### 使用场景
@@ -680,6 +681,30 @@ Config > LLM                          ← 面包屑（带层级指示）
 **方法:**
 - `new(lines: Vec<String>) -> Self` - 创建
 - `lines() -> &[String]` - 获取内容行
+
+## i18n 多语言 (`i18n.rs`)
+
+客户端 UI 翻译系统，编译期内嵌的语言包 JSON。
+
+**公共 API:**
+- `t(key)` — 查表翻译静态 key
+- `tf(key, args)` — 带位置参数的翻译（`{0}`/`{1}` 占位）
+- `translate_label(en_text)` — 英文回退式翻译：若当前语言有匹配条目则返回译文，否则返回原英文（用于 daemon 传来的英文 label 本地化）
+- `available_languages() -> Vec<(&str, &str)>` — 返回 `(code, display_name)` 列表，用于 `/config` 语言选择器
+- `set_language(code)` / `current_language()` — 运行时语言切换，配合 `ConfigClient` 推送与 `OMNISH_LANG` 环境变量
+
+**语言包:**
+- 编译期嵌入 `i18n/*.json`（`en/zh/zh-tw/ja/ko/fr/es/ar`），通过 `include_str!` 打包
+- 所有 UI 字符串（错误、提示、config 标签、菜单、picker hint、状态消息）统一走翻译
+- 覆盖范围：`main.rs` 启动提示、`chat_session.rs` 多轮聊天消息、`command.rs` `/help` 文案、`widgets/menu.rs`/`picker.rs` hint 与按钮、sandbox 标签和 "Done" 按钮
+
+**默认语言策略:**
+- 客户端默认 `en`，首次连接守护进程时由 `ConfigClient.language` 覆盖为守护进程 `detect_system_language()` 结果
+- 该双端协商保证客户端和守护进程始终使用同一语言（除非用户显式通过 `OMNISH_LANG` 或 `/config` 指定）
+
+**测试策略:**
+- Widget 单元测试在测试入口调用 `set_language("en")` 初始化，避免全局状态竞争（commit c3aeeeb）
+- 集成测试 `test_i18n_config.sh` 验证语言选择器显示名、切换流程和翻译覆盖
 
 ## Markdown 渲染 (`markdown.rs`)
 
@@ -1111,13 +1136,15 @@ Config > LLM                          ← 面包屑（带层级指示）
 
 **线程管理命令:**
 - `/resume [N]` — 恢复对话。无参数时使用picker选择器交互式选择（issue #157），显示所有会话的线程（issue #220）；带编号时使用 `cached_thread_ids` 缓存的索引（issue #133），自动获取并显示最后一轮对话（issue #137），使用ScrollView显示历史（issue #275）
-- `/thread list` — 列出所有对话线程（原 `/conversations` 命令，commit b2f5a6f, 096b094），同时缓存线程ID供 `/resume N` 使用，刷新缓存以保持索引稳定（issue #150）
+- `/thread list [N]` — 列出对话线程（原 `/conversations` 命令，commit b2f5a6f, 096b094），默认仅显示最近 20 条，截断时给出总数和提示；`N` 参数显式请求更多（commit 0d0c6be, #542）。同时缓存线程ID供 `/resume N` 使用，刷新缓存以保持索引稳定（issue #150）
 - `/thread stats` — 显示线程 token 使用统计（commit f043224, #442）。在聊天模式中有活跃线程时仅显示当前线程统计；否则显示所有线程。统计包括：当前模型、上次交互 token 数（context）、累计 token 数（total）、缓存命中率（cache hit rate）。转发到守护进程命令 `__cmd:conversations stats`
 - `/thread del [N]` 或 `/thread del 1,2-4,5` — 删除对话线程（原 `/conversations del`，commit 096b094）
   - 无参数时使用多选picker交互式选择要删除的线程（commit 3743aec）
   - 带单个编号时删除指定序号的线程（issue #142）
   - 支持多索引语法：逗号分隔和范围语法，如 `1,2-4,5` 删除序号1, 2, 3, 4, 5的线程（issue #156）
   - 索引按数值排序而非字典序（fix f7b4ebb）
+- `/thread sandbox [on|off]` — 线程级沙箱覆盖开关（commit eeba721, #535）。无参数查询当前状态；`on` 恢复沙箱执行，`off` 关闭 Landlock/bwrap 强制。状态写入 `ThreadMeta.sandbox_disabled` 并随 `ChatReady` 同步回客户端，resume 时以黄色警告提示。尚未建线程时指令缓冲在客户端，新建线程后随第一条 `ChatMessage` 前下发生效
+- `/thread help` — 显示线程相关命令清单（commit fc9ba99）
 
 **模型选择命令:**
 - `/model` — 显示所有已配置LLM backend的picker选择器（commit 2a2e8d0），选中后切换当前线程使用的模型
@@ -1152,8 +1179,11 @@ Config > LLM                          ← 面包屑（带层级指示）
 聊天等待LLM响应或工具执行时，用户可按Ctrl-C中断：
 - 使用 `tokio::select!` 竞赛RPC调用和 `wait_for_ctrl_c()` 阻塞任务
 - `wait_for_ctrl_c()` 在 `spawn_blocking` 中运行，使用 `poll` 以100ms超时监控stdin
-- 中断后发送 `ChatInterrupt` 消息到守护进程记录中断事件
+- 中断后发送 `ChatInterrupt` 消息到守护进程记录中断事件（去重：避免与 ESC/自动取消路径重复发送，commit ce10d81）
 - 支持中断Agent工具调用循环（issue #241），清除状态并显示 "(interrupted)"
+- **早期 Ctrl-C 作为输入取消（#536）**：若 LLM 尚未产生任何输出就被中断，不生成 "User interrupted" 消息，而是将用户输入文本恢复到编辑器供再次编辑。已发出 `ChatInterrupt` 的情况下擦除已回显的用户输入行（含换行）后重置 LineEditor，避免用户输入丢失
+- **多行擦除（#537）**：输入跨行时（如终端宽度内换行）需按可视行数清除。`display::erase_lines(n)` 统一了多行擦除逻辑，`chat_session` 早期取消路径按输入宽度计算可视行数，widget 清理（line_status/scroll_view hint）也复用该函数
+- **工具区状态重置（#534）**：Ctrl-C 中断正在运行的工具后必须清空 `tool_section_start`。否则后续 spinner tick 会以过期起始行调用 `redraw_tool_section()`，导致光标上跳并擦除下一次用户输入的回显
 
 ### 守护进程JSON响应解析
 守护进程命令响应使用JSON格式（issue #134），包含 `display` 字段用于显示和可选的结构化数据字段：
@@ -1433,6 +1463,7 @@ omnish-client 包含客户端事件日志系统，用于调试和监控异步事
 - `render_tool_output(lines: &[String]) -> Vec<String>` - 渲染工具输出行（`⎿` gutter格式，dim样式）
 - `truncate_cols(s: &str, max_cols: usize) -> String` - CJK感知截断（全角字符占2列，超出用 `…`），跳过 ANSI 转义序列不计入宽度 (#513)
 - `display_width(s: &str) -> usize` - 计算字符串显示宽度（剥离ANSI序列，CJK全角算2列）
+- `erase_lines(n: usize) -> String` - 擦除光标上方 n 行并复位到行首，共享的多行擦除工具（commit 157c42a, #537）；被 `chat_session` 早期取消、`line_status` 清理、`scroll_view` hint wrap 计算复用
 
 **工具状态显示格式:**
 ```
@@ -1459,7 +1490,7 @@ omnish-client 包含客户端事件日志系统，用于调试和监控异步事
 - `parse_limit(input: &str) -> (&str, Option<OutputLimit>)` - 解析 `| head` / `| tail` 管道后缀
 - `parse_limit_pub(input: &str) -> (&str, Option<OutputLimit>)` - `parse_limit` 的公开包装（用于 `main.rs` 中聊天模式的 `/context`）
 - `apply_limit(text: &str, limit: &OutputLimit) -> String` - 对输出文本应用行数限制
-- `completable_commands() -> Vec<String>` - 返回所有可完成命令路径，用于幽灵文本建议（包含聊天专用命令）
+- `completable_commands() -> Vec<String>` - 返回所有可完成命令路径，用于幽灵文本建议（包含聊天专用命令）。补全顺序按使用频率排序：`/config` > `/help` > `/resume` > `/model` > `/thread` > `/debug` > `/test` > `/context` > `/template`（commit 0a8a7bc, #533）
 
 **支持命令:**
 - `/help` - 显示所有可用命令
@@ -1703,13 +1734,20 @@ daemon_addr = "~/.omnish/omnish.sock"
 通过shell hook和OSC 133终端控制序列实现命令跟踪和CWD（当前工作目录）跟踪：
 
 **Shell Hook机制:**
-- 安装Bash shell hook，通过`PROMPT_COMMAND`和`DEBUG` trap集成
+- 支持 Bash 和 Zsh 两种 shell（#462）：
+  - Bash：`install_bash_hook()` 通过 `PROMPT_COMMAND` 和 `DEBUG` trap 安装；`main.rs` 启动 bash 时通过 `BASH_ENV` 注入 hook
+  - Zsh：`ZSH_HOOK` 常量 + `install_zsh_hook()` 通过 `ZDOTDIR` 临时目录写入 `.zshenv`/`.zshrc`，在 shell spawn 时设置 `ZDOTDIR` 指向该目录，利用 `preexec`/`precmd`/`chpwd` zle widgets 触发相同 OSC 133 序列
 - 发送OSC 133序列：`B;command_text;cwd:/path;orig:original_input`（命令开始，包含`$BASH_COMMAND`、工作目录、`history 1`原始输入）、`D;exit_code`（命令结束）、`A`（提示开始）、`C`（输出开始）
 - `RL;content;point` - readline状态报告（`$READLINE_LINE`和`$READLINE_POINT`）
 - 使用复合赋值`__omnish_last_ec=$? __omnish_in_precmd=1`立即捕获退出码，避免被`PROMPT_COMMAND`中的其他命令覆盖
 - 对命令和PWD中的分号进行转义，确保OSC 133解析正确
 - `NoReadline` 事件检测bash无readline支持（bind -x不可用，issue #226）
 - Shell hook 警告（如 readline 不可用）重定向到事件日志（`event_log`），不再直接输出到终端（commit e855123）
+
+**Zsh 兼容性注意事项（#462）:**
+- **SS3 光标键**：zsh 默认启用 DECCKM（application cursor key mode），方向键以 `\x1bO[A-D]`（SS3）而非 `\x1b[[A-D]`（CSI）发送。`parse_key_after_esc()` 同时识别 SS3 和 CSI（menu/picker/chat_session 均适配）
+- **退出时避免发送 Ctrl-K**：zsh 的 `kill-whole-line`（Ctrl-U）已清理整行，Ctrl-K 会在 ZLE 未就绪时泄漏为命令，因此仅向 bash 发送
+- **ghost text 延迟刷新**：zsh ZLE 在 widget 执行后不重绘，原先依赖 `display_data` 非空作为触发条件会导致 ghost 被 set 但不 flush；改为 OSC 处理完毕后立即 flush
 
 **CWD跟踪:**
 - 实时跟踪命令执行时的当前工作目录

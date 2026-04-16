@@ -361,11 +361,15 @@ Langfuse可观测性配置结构体：
 
 ### 常量
 
-- `DAILY_NOTES_PROMPT` — 每日工作总结的LLM提示（中文），基于`<hourly_summaries>`中各时段工作摘要生成项目符号列表格式的工作日志（已简化，不再直接引用原始命令和对话记录）
-- `HOURLY_NOTES_PROMPT` — 定期总结的LLM提示模板（中文），提示中用"N小时"占位（实际间隔由配置决定），使用XML标签 `<commands>`、`<conversations>` 包裹上下文（issue #96）
+- `DAILY_NOTES_PROMPT` — 每日工作总结的LLM提示（英文基底），以项目/目标为主线汇总各时段 `<hourly_summaries>`，通过 `append_language_instruction()` 注入目标语言
+- `HOURLY_NOTES_PROMPT` — 定期总结的LLM提示模板（英文基底），聚焦当前项目与目标进展，用"N小时"占位（实际间隔由配置决定），使用XML标签 `<commands>`、`<conversations>` 包裹上下文（issue #96），通过 `append_language_instruction()` 注入目标语言
+- `THREAD_SUMMARY_PROMPT` — 线程标题生成提示（英文基底），输出 ≤20 字标题；由 `append_language_instruction()` 决定输出语言
 - `CHAT_PROMPT_JSON` — 编译内嵌的chat提示词JSON（来自`assets/chat.json`），通过`include_str!`编译到二进制
 - `CHAT_OVERRIDE_EXAMPLE` — `chat.override.json`示例文件内容（来自`assets/chat.override.json.example`）
 - `TEMPLATE_NAMES` — 已知模板名列表：`["chat", "chat-system", "auto-complete", "daily-notes", "hourly-notes"]`
+
+### `append_language_instruction(prompt, language)`
+在提示词末尾追加语言指令。支持 `en`/`zh`/`zh-tw`/`ja`/`ko`/`fr`/`es`/`ar`，无匹配时回退英文。统一用于 daemon 端定时任务（daily/hourly/thread summary），保证 prompt 主体为英文基底、输出语言由 `daemon_config.client.language` 决定。
 
 ### `template_by_name()`
 根据名称返回模板内容（用于 `/template <name>` 命令）。

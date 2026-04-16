@@ -177,6 +177,7 @@ LLM响应消息，包含：
 - `thread_summary`: 对话线程的摘要说明（可选，`#[serde(default)]`，在恢复会话提示中展示）
 - `error`: 线程无法进入时的错误键（可选，`#[serde(default)]`，例如 `"thread_locked"`）
 - `error_display`: 人类可读的错误说明（可选，`#[serde(default)]`）
+- `sandbox_disabled`: 线程级沙箱覆盖状态（`bool`，`#[serde(default)]`，v18 新增），为 `true` 表示该线程已通过 `/thread sandbox off` 关闭 Landlock/bwrap 强制，客户端据此在 resume 时给出黄色警告
 
 ### `ChatEnd`
 聊天会话结束通知（客户端退出聊天模式时发送），包含：
@@ -435,7 +436,7 @@ let restored_frame = Frame::from_bytes(&frame_bytes).unwrap();
 
 ## 协议版本管理
 
-协议版本通过`PROTOCOL_VERSION`（当前值17）和`MIN_COMPATIBLE_VERSION`（当前值14）两个常量定义。服务器接受对端版本 >= MIN_COMPATIBLE_VERSION 的连接。`versions_compatible(my_min, peer_version)` 函数封装此判断。
+协议版本通过`PROTOCOL_VERSION`（当前值18）和`MIN_COMPATIBLE_VERSION`（当前值14）两个常量定义。服务器接受对端版本 >= MIN_COMPATIBLE_VERSION 的连接。`versions_compatible(my_min, peer_version)` 函数封装此判断。
 
 **追加规则：** 新 Message 变体**必须**追加到枚举末尾。bincode 使用 u32 变体索引序列化枚举，在中间插入会移位已有索引，导致旧版客户端解析失败。`variant_indices_are_stable` 测试锁定关键消息的变体索引。
 
@@ -456,4 +457,5 @@ let restored_frame = Frame::from_bytes(&frame_bytes).unwrap();
 - v15: 新增`TestDisconnect`消息，用于`/test disconnect`命令测试客户端断线恢复
 - v16: 帧反序列化失败时优雅跳过（graceful frame skip），允许与更新版本的对端通信时忽略未知消息
 - v17: 新增`ConfigItemKind::Data`非交互式数据载体变体，用于在守护进程与客户端之间传递结构化数据（如 JSON）
+- v18: `ChatReady`新增`sandbox_disabled`字段（`#[serde(default)]`），用于将线程级沙箱覆盖状态透传给客户端，支持 `/thread sandbox on|off` 命令的 resume 路径
 

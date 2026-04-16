@@ -192,6 +192,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
   - `usage_last`: `Option<ThreadUsage>` - 最近一次 LLM API 调用的 token 用量（用于 `/thread stats` 的 context 列）
   - `usage_total`: `Option<ThreadUsage>` - 当前模型的累计 token 用量（切换模型时重置）
   - `last_model`: `Option<String>` - 产生 `usage_last`/`usage_total` 的模型名称（用于检测模型切换）
+  - `sandbox_disabled`: `bool`（`#[serde(default)]`）- 线程级沙箱覆盖。为 `true` 时 `ChatToolCall.sandboxed` 强制置 `false`，对应 `/thread sandbox on|off` 命令。通过 `set_sandbox_disabled()` 修改并持久化；`ChatReady.sandbox_disabled` 同步回客户端以支持 resume 路径显示警告
 - **线程用量结构体**（`ThreadUsage`）：存储 token 用量的四维度计数：
   - `input_tokens`: 输入 token 数
   - `output_tokens`: 输出 token 数
@@ -509,6 +510,7 @@ pub trait ToolFormatter: Send + Sync {
 
 - `ExternalFormatter` 内部使用 `mpsc` 队列序列化请求（保证顺序）
 - 每次格式化调用超时 5 秒，超时返回 `"Formatter timeout"`
+- `register_external()` 返回 `Result` 以便失败快速暴露（测试可感知）；`spawn()` 遇到 `ETXTBSY`（刚写入脚本的 close/execve 内核竞态）时最多重试 3 次
 - 子进程启动失败时记录警告并跳过（不影响其他格式化器）
 
 #### 格式化器选择顺序
@@ -858,6 +860,9 @@ Assistant: {{final response}}
 - **线程级模型选择**：`ChatMessage.model` 字段指定模型名时，保存到 `ThreadMeta.model`，后续对话从元数据中读取并通过 `backend.get_backend_by_name()` 解析为具体后端
 - 所有消息（包括工具调用）以原始 JSON 格式存储，用户消息只包含纯查询文本（不再附加 `<system-reminder>`）
 - thinking 块以完整 `ContentBlock::Thinking` 数组存储到对话历史，供后续轮次使用
+- **用户消息立即持久化**：`handle_chat_message()` 进入智能体循环前**立即**将用户消息写入线程。由于每条 RPC 消息在独立 `spawn` 任务中处理，`ChatEnd` 可能与智能体循环并发到达，若不立刻持久化则 `/resume` 会看到空线程并返回 "Conversation not found"
+- **加载时消毒**：`load_thread()` 每次加载线程都会调用 `sanitize_orphaned_tool_use()`，防止 `ChatInterrupt` 与 `ChatMessage` 竞争时遗留孤立 `tool_use` 块导致 API 400 错误
+- **早退路径消毒**：智能体循环内所有早期返回路径（客户端断开、超时、API 错误）通过 `persist_unsaved_sanitized()` 保存进度，对尾部孤立 `tool_use` 注入 "user interrupted" `tool_result` 后落盘，保证磁盘上对话状态始终对 API 有效
 
 ## 配置管理（/config 菜单）
 
@@ -1034,6 +1039,8 @@ session_evict_hours = 48  # 默认：48小时后驱逐
 - 支持上下文大小限制和内容精简
 - 如果没有命令或上下文为空会自动跳过
 - LLM 响应经 `strip_thinking_block()` 去除 `<thinking>` 标签（#527）
+- **i18n**：提示词为英文基底，通过 `template::append_language_instruction()` 根据 `daemon_config.client.language` 注入语言指令（支持 en/zh/zh-tw/ja/ko/fr/es/ar）；Markdown 标题、表头等生成内容也按语言本地化
+- **提示词聚焦（#523）**：prompt 以项目与目标进展为主线，而非逐条罗列命令/对话
 - **午夜特殊处理**：在 00:xx 执行时，保存为前一天的 `24.md`（而非 `00.md`），使得在 00:10 运行的 daily_notes 任务可以包含这最后一份摘要
 
 **相关配置:**
@@ -1053,7 +1060,9 @@ max_line_width = 128    # 每行最大字符数
 - 使用 `SharedLlmBackend`（通过 `llm_holder.read().unwrap().get_backend(UseCase::Analysis)` 获取后端）
 - 若当天无小时摘要或无可用 LLM 后端，自动跳过
 - LLM 响应经 `strip_thinking_block()` 去除 `<thinking>` 标签（#527）
-- 输出格式简化为：`# {date} 工作日报\n\n{llm_summary}\n`
+- **i18n**：prompt 英文基底 + `append_language_instruction()` 注入语言；标题（如 "工作日报" / "Daily Notes"）按 `client.language` 本地化
+- **提示词聚焦（#523）**：以项目/目标为主线汇总各时段 hourly summary
+- 输出格式简化为：`# {date} {localized title}\n\n{llm_summary}\n`
 **相关配置:**
 ```toml
 [tasks.daily_notes]
@@ -1893,11 +1902,12 @@ async fn main() -> anyhow::Result<()> {
 - `__cmd:sessions` — 列出所有活跃会话
 - `__cmd:session` — 显示当前会话调试信息
 - `__cmd:daemon` — 显示守护进程版本号及当前定时任务列表（等同于 `/debug daemon`）
-- `__cmd:conversations` — 列出所有聊天对话（含 `thread_ids` 数组），按修改时间降序排列，显示相对时间（如 "12s ago"、"1h ago"）、交换次数、最后问题
+- `__cmd:conversations` / `__cmd:conversations N` — 列出聊天对话，默认仅返回 20 条最近线程并在截断时给出总数提示，支持 `__cmd:conversations N` 显式请求更多；含 `thread_ids` 数组，按修改时间降序排列，显示相对时间（如 "12s ago"、"1h ago"）、交换次数、最后问题
 - `__cmd:resume` — 恢复最近的对话（等同于 `__cmd:resume 1`），返回结构化历史（`history` 数组含 `user_input`、`llm_text`、`tool_status`、`response`、`separator` 类型条目）及 `thread_id`
 - `__cmd:resume N` — 按索引恢复指定对话（1-based），返回结构化历史及 `thread_id`
 - `__cmd:resume_tid <thread_id>` — 按线程 ID 恢复对话（跨删除操作稳定），返回结构化历史
-- `__cmd:conversations stats` — 显示线程 token 用量统计（`/thread stats`）：当前活跃线程仅显示自身，无活跃线程时显示全部。每个线程显示模型名、context tokens（最近一次调用）、total tokens（累计）、cache 命中率
+- `__cmd:conversations stats` — 显示线程 token 用量统计（`/thread stats`）：当前活跃线程仅显示自身，无活跃线程时显示全部。每个线程显示模型名、context tokens（最近一次调用）、total tokens（累计）、cache 命中率、`sandbox: off`（若该线程已通过 `/thread sandbox off` 关闭沙箱）
+- `__cmd:thread sandbox[ on|off]:<thread_id>` — 切换线程级沙箱覆盖，无参数返回当前状态；写入 `ThreadMeta.sandbox_disabled` 并持久化
 - `__cmd:conversations del <thread_id>` — 按线程 ID 删除对话，返回 `deleted_thread_id`
 - `__cmd:models [thread_id]` — 列出所有可用后端（含 `name`、`model`、`selected` 字段），可选传入线程 ID 以显示该线程的当前模型选择
 - `__cmd:tasks [disable <name>]` — 查看或管理定时任务
