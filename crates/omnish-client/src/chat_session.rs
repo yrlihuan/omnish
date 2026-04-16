@@ -100,6 +100,11 @@ fn lang_code_to_display(code: &str) -> &str {
     match code {
         "zh" => "简体中文",
         "zh-tw" => "繁體中文",
+        "ja" => "日本語",
+        "ko" => "한국어",
+        "fr" => "Français",
+        "es" => "Español",
+        "ar" => "العربية",
         _ => "English",
     }
 }
@@ -109,6 +114,11 @@ fn lang_display_to_code(display: &str) -> &str {
     match display {
         "简体中文" => "zh",
         "繁體中文" => "zh-tw",
+        "日本語" => "ja",
+        "한국어" => "ko",
+        "Français" => "fr",
+        "Español" => "es",
+        "العربية" => "ar",
         _ => "en",
     }
 }

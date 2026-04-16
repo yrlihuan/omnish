@@ -77,6 +77,11 @@ fn daily_note_title(language: &str) -> &'static str {
     match language {
         "zh" => "工作日报",
         "zh-tw" => "工作日報",
+        "ja" => "業務日報",
+        "ko" => "업무 일지",
+        "fr" => "Rapport de travail quotidien",
+        "es" => "Informe diario de trabajo",
+        "ar" => "تقرير العمل اليومي",
         _ => "Daily Work Report",
     }
 }

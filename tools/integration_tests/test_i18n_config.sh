@@ -108,7 +108,7 @@ test_1() {
     # Language value should show a display name, not raw code (en/zh/zh-tw)
     local lang_line
     lang_line=$(echo "$content" | grep "Language" | head -1)
-    if echo "$lang_line" | grep -qE 'English|简体中文|繁體中文'; then
+    if echo "$lang_line" | grep -qE 'English|简体中文|繁體中文|日本語|한국어|Français|Español|العربية'; then
         assert_pass "Language shows display name (not raw code)"
     else
         assert_fail "Language should show display name, not raw code"
@@ -341,7 +341,7 @@ test_3() {
     # Language value should show a display name, not raw code
     local lang_line
     lang_line=$(echo "$content" | grep "語言" | head -1)
-    if echo "$lang_line" | grep -qE 'English|简体中文|繁體中文'; then
+    if echo "$lang_line" | grep -qE 'English|简体中文|繁體中文|日本語|한국어|Français|Español|العربية'; then
         assert_pass "Language shows display name (not raw code)"
     else
         assert_fail "Language should show display name, not raw code"

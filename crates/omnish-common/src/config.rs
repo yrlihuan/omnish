@@ -581,18 +581,27 @@ fn default_language_locale() -> String {
 }
 
 /// Detect language from system locale env vars (LC_ALL > LC_MESSAGES > LANG).
-/// Returns "zh", "zh-tw", or "en".
 fn detect_system_language() -> String {
     let locale = std::env::var("LC_ALL")
         .or_else(|_| std::env::var("LC_MESSAGES"))
         .or_else(|_| std::env::var("LANG"))
         .unwrap_or_default()
         .to_lowercase();
-    // e.g. "zh_cn.utf-8", "zh_tw.utf-8", "zh_hk.utf-8", "en_us.utf-8"
+    // e.g. "zh_cn.utf-8", "zh_tw.utf-8", "ja_jp.utf-8", "ko_kr.utf-8"
     if locale.starts_with("zh_tw") || locale.starts_with("zh_hk") {
         "zh-tw".to_string()
     } else if locale.starts_with("zh") {
         "zh".to_string()
+    } else if locale.starts_with("ja") {
+        "ja".to_string()
+    } else if locale.starts_with("ko") {
+        "ko".to_string()
+    } else if locale.starts_with("fr") {
+        "fr".to_string()
+    } else if locale.starts_with("es") {
+        "es".to_string()
+    } else if locale.starts_with("ar") {
+        "ar".to_string()
     } else {
         "en".to_string()
     }

@@ -75,11 +75,15 @@ pub const THREAD_SUMMARY_PROMPT: &str =
      Output only the title itself, without quotes or prefixes.";
 
 /// Append a language instruction to a prompt.
-/// `language` should be "en", "zh", or "zh-tw".
 pub fn append_language_instruction(prompt: &str, language: &str) -> String {
     let instruction = match language {
         "zh" => "请用中文回答。",
         "zh-tw" => "請用繁體中文回答。",
+        "ja" => "日本語で回答してください。",
+        "ko" => "한국어로 답변해 주세요.",
+        "fr" => "Répondez en français.",
+        "es" => "Responde en español.",
+        "ar" => "أجب باللغة العربية.",
         _ => "Respond in English.",
     };
     format!("{}\n\n{}", prompt, instruction)

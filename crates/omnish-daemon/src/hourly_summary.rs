@@ -108,6 +108,21 @@ fn section_title(section: &str, language: &str) -> &'static str {
         ("commands", "zh-tw") => "命令記錄",
         ("conversations", "zh-tw") => "會話記錄",
         ("summary", "zh-tw") => "工作總結",
+        ("commands", "ja") => "コマンドログ",
+        ("conversations", "ja") => "会話ログ",
+        ("summary", "ja") => "作業まとめ",
+        ("commands", "ko") => "명령 기록",
+        ("conversations", "ko") => "대화 기록",
+        ("summary", "ko") => "작업 요약",
+        ("commands", "fr") => "Journal des commandes",
+        ("conversations", "fr") => "Journal des conversations",
+        ("summary", "fr") => "Résumé du travail",
+        ("commands", "es") => "Registro de comandos",
+        ("conversations", "es") => "Registro de conversaciones",
+        ("summary", "es") => "Resumen del trabajo",
+        ("commands", "ar") => "سجل الأوامر",
+        ("conversations", "ar") => "سجل المحادثات",
+        ("summary", "ar") => "ملخص العمل",
         ("commands", _) => "Command Log",
         ("conversations", _) => "Conversation Log",
         ("summary", _) => "Work Summary",
@@ -120,6 +135,11 @@ fn main_title(date_str: &str, hour_str: &str, language: &str) -> String {
     match language {
         "zh" => format!("{} {}:00 时工作摘要", date_str, hour_str),
         "zh-tw" => format!("{} {}:00 時工作摘要", date_str, hour_str),
+        "ja" => format!("{} {}:00 作業サマリー", date_str, hour_str),
+        "ko" => format!("{} {}:00 작업 요약", date_str, hour_str),
+        "fr" => format!("Résumé horaire — {} {}:00", date_str, hour_str),
+        "es" => format!("Resumen por hora — {} {}:00", date_str, hour_str),
+        "ar" => format!("ملخص العمل — {} {}:00", date_str, hour_str),
         _ => format!("Hourly Work Summary — {} {}:00", date_str, hour_str),
     }
 }
@@ -129,6 +149,8 @@ fn table_header(language: &str) -> &'static str {
     match language {
         "zh" => "| 时间 | 主机:工作目录 | 命令 |\n|------|--------------|------|",
         "zh-tw" => "| 時間 | 主機:工作目錄 | 命令 |\n|------|--------------|------|",
+        "ja" => "| 時刻 | ホスト:作業ディレクトリ | コマンド |\n|------|--------------------------|---------|",
+        "ko" => "| 시간 | 호스트:작업 디렉토리 | 명령 |\n|------|--------------------------|---------|",
         _ => "| Time | Host:Working Directory | Command |\n|------|--------------------------|---------|",
     }
 }
