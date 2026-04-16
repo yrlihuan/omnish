@@ -1207,6 +1207,7 @@ mod tests {
 
     #[test]
     fn test_render_menu_item_toggle_on() {
+        crate::i18n::init("en");
         let item = MenuItem::Toggle {
             label: "Enabled".to_string(),
             value: true,
@@ -1219,6 +1220,7 @@ mod tests {
 
     #[test]
     fn test_render_menu_item_toggle_off() {
+        crate::i18n::init("en");
         let item = MenuItem::Toggle {
             label: "Enabled".to_string(),
             value: false,
@@ -1254,6 +1256,7 @@ mod tests {
 
     #[test]
     fn test_render_menu_item_text_input_empty() {
+        crate::i18n::init("en");
         let item = MenuItem::TextInput {
             label: "Proxy".to_string(),
             value: String::new(),
@@ -1266,6 +1269,7 @@ mod tests {
 
     #[test]
     fn test_render_hint_toggle() {
+        crate::i18n::init("en");
         let item = MenuItem::Toggle { label: "X".to_string(), value: true };
         let hint = render_hint(0, Some(&item));
         assert!(hint.contains("move"));
@@ -1275,6 +1279,7 @@ mod tests {
 
     #[test]
     fn test_render_hint_submenu() {
+        crate::i18n::init("en");
         let item = MenuItem::Submenu { label: "X".to_string(), children: vec![], handler: None, form_mode: false };
         let hint = render_hint(0, Some(&item));
         assert!(hint.contains("open"));
@@ -1282,6 +1287,7 @@ mod tests {
 
     #[test]
     fn test_render_hint_select() {
+        crate::i18n::init("en");
         let item = MenuItem::Select { label: "X".to_string(), options: vec![], selected: 0, prefills: vec![] };
         let hint = render_hint(0, Some(&item));
         assert!(hint.contains("select"));
@@ -1289,6 +1295,7 @@ mod tests {
 
     #[test]
     fn test_render_hint_text_input() {
+        crate::i18n::init("en");
         let item = MenuItem::TextInput { label: "X".to_string(), value: String::new() };
         let hint = render_hint(0, Some(&item));
         assert!(hint.contains("edit"));
@@ -1296,6 +1303,7 @@ mod tests {
 
     #[test]
     fn test_render_hint_editing() {
+        crate::i18n::init("en");
         let hint = render_hint(0, None);
         assert!(hint.contains("confirm"));
         assert!(hint.contains("cancel"));
@@ -1304,6 +1312,7 @@ mod tests {
 
     #[test]
     fn test_render_hint_with_scroll() {
+        crate::i18n::init("en");
         let item = MenuItem::Toggle { label: "X".to_string(), value: true };
         let hint = render_hint(5, Some(&item));
         assert!(hint.contains("5 more"));

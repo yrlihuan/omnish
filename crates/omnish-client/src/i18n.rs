@@ -122,7 +122,7 @@ mod tests {
         assert_eq!(t("confirm"), "确认");
         assert_eq!(translate_label("Completion enabled"), "启用补全");
         assert_eq!(translate_label("Ghost text timeout (ms)"), "幽灵文本超时 (毫秒)");
-        assert_eq!(translate_label("LLM"), "LLM");
+        assert_eq!(translate_label("LLM"), "大语言模型");
 
         // Traditional Chinese
         init("zh-tw");

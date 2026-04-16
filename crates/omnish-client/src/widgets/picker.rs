@@ -427,6 +427,7 @@ mod tests {
 
     #[test]
     fn test_render_hint_single() {
+        crate::i18n::init("en");
         let output = render_hint(false, 0);
         assert!(output.contains("Enter confirm"), "single mode hint should contain 'Enter confirm'");
         assert!(!output.contains("Space"), "single mode hint should NOT contain 'Space'");
@@ -435,6 +436,7 @@ mod tests {
 
     #[test]
     fn test_render_hint_multi() {
+        crate::i18n::init("en");
         let output = render_hint(true, 0);
         assert!(output.contains("Space select"), "multi mode hint should contain 'Space select'");
         assert!(output.contains("Enter confirm"), "multi mode hint should contain 'Enter confirm'");
@@ -442,6 +444,7 @@ mod tests {
 
     #[test]
     fn test_render_hint_with_scroll_indicator() {
+        crate::i18n::init("en");
         let output = render_hint(false, 5);
         assert!(output.contains("ESC/Ctrl-C cancel"), "should contain hint text");
         assert!(output.contains("\u{25bc} 5 more"), "should show scroll-down indicator");
@@ -494,6 +497,7 @@ mod tests {
 
     #[test]
     fn test_render_full_multi_select() {
+        crate::i18n::init("en");
         let cols: u16 = 60;
         let items = vec!["First", "Second"];
         let checked = vec![true, false];
@@ -552,6 +556,7 @@ mod tests {
 
     #[test]
     fn test_render_full_with_scroll_shows_viewport() {
+        crate::i18n::init("en");
         let cols: u16 = 60;
         let items: Vec<&str> = (0..15).map(|i| match i {
             0 => "Item-00", 1 => "Item-01", 2 => "Item-02", 3 => "Item-03",
