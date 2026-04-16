@@ -284,14 +284,27 @@ fn render_cleanup(total_items: usize) -> String {
 
 /// Render a text input line in edit mode.
 /// Keeps the same layout as the menu item: `  {label} {value}` with value highlighted.
+///
+/// Uses display width (not byte length) so CJK / fullwidth labels and values
+/// are measured in terminal columns — required for correct truncation when
+/// the line would overflow `cols`.
 fn render_edit_line(label: &str, text: &str, cols: u16) -> String {
+    use crate::display::display_width;
     let indent = "  ";
-    let prefix_len = indent.len() + label.len() + 1; // "  " + label + " "
-    let available = (cols as usize).saturating_sub(prefix_len + 1);
+    let prefix_cols = indent.len() + display_width(label) + 1; // "  " + label + " "
+    let available = (cols as usize).saturating_sub(prefix_cols + 1);
 
+    // Truncate from the left by dropping chars until the display width fits.
     let chars: Vec<char> = text.chars().collect();
-    let display_text: String = if chars.len() > available {
-        chars[chars.len() - available..].iter().collect()
+    let total_width: usize = chars.iter().map(|c| char_width(*c)).sum();
+    let display_text: String = if total_width > available {
+        let mut dropped = 0usize;
+        let mut start = 0usize;
+        while start < chars.len() && total_width - dropped > available {
+            dropped += char_width(chars[start]);
+            start += 1;
+        }
+        chars[start..].iter().collect()
     } else {
         text.to_string()
     };
@@ -304,18 +317,37 @@ fn render_edit_line(label: &str, text: &str, cols: u16) -> String {
     )
 }
 
+/// Display width of a single char (0 for control chars).
+fn char_width(c: char) -> usize {
+    use unicode_width::UnicodeWidthChar;
+    c.width().unwrap_or(0)
+}
+
 /// Compute terminal column for the cursor within the edit line.
+///
+/// All offsets are in display columns, not bytes or chars, so CJK / fullwidth
+/// characters (which occupy 2 columns each) land the cursor correctly.
 fn edit_cursor_col(label: &str, text: &str, char_cursor: usize, cols: u16) -> usize {
-    let prefix_len = 2 + label.len() + 1; // "  " + label + " "
-    let available = (cols as usize).saturating_sub(prefix_len + 1);
+    use crate::display::display_width;
+    let prefix_cols = 2 + display_width(label) + 1; // "  " + label + " "
+    let available = (cols as usize).saturating_sub(prefix_cols + 1);
+
+    // Mirror render_edit_line's left-truncation, measured in display columns.
     let chars: Vec<char> = text.chars().collect();
-    let display_offset = if chars.len() > available {
-        chars.len() - available
-    } else {
-        0
-    };
-    let visual_pos = char_cursor.saturating_sub(display_offset);
-    prefix_len + visual_pos
+    let total_width: usize = chars.iter().map(|c| char_width(*c)).sum();
+    let mut display_offset = 0usize;
+    if total_width > available {
+        let mut dropped = 0usize;
+        while display_offset < chars.len() && total_width - dropped > available {
+            dropped += char_width(chars[display_offset]);
+            display_offset += 1;
+        }
+    }
+
+    // Cursor column = prefix + display width of visible text up to char_cursor.
+    let start = display_offset.min(char_cursor);
+    let visible_width: usize = chars[start..char_cursor].iter().map(|c| char_width(*c)).sum();
+    prefix_cols + visible_width
 }
 
 /// Run inline text editor. Returns Some(new_value) on Enter, None on ESC/Ctrl-C.
@@ -1377,5 +1409,50 @@ mod tests {
         let col = edit_cursor_col("Proxy", "hello", 0, 40);
         // 2 + 5 + 1 + 0 = 8
         assert_eq!(col, 8);
+    }
+
+    /// Regression test for issue #549: CJK label caused the cursor to land
+    /// past the end of the value because `label.len()` (bytes) was used
+    /// instead of display width.
+    #[test]
+    fn test_edit_cursor_col_cjk_label() {
+        // "模型" = 2 chars, 6 UTF-8 bytes, 4 display columns.
+        // Layout: "  模型 deepseek-v4-pro"
+        // Expected: indent(2) + label_cols(4) + space(1) + text_cols(15) = 22
+        let col = edit_cursor_col("模型", "deepseek-v4-pro", 15, 80);
+        assert_eq!(col, 22);
+
+        // Cursor at start of text
+        let col = edit_cursor_col("模型", "deepseek-v4-pro", 0, 80);
+        // 2 + 4 + 1 = 7
+        assert_eq!(col, 7);
+    }
+
+    /// CJK characters in the value itself must also be measured in display
+    /// columns, not char count.
+    #[test]
+    fn test_edit_cursor_col_cjk_value() {
+        // label "Name" (ASCII, 4 cols); value "你好world" (2 CJK + 5 ASCII = 9 cols, 7 chars).
+        // Cursor after "你好wo" (char 4 → 2+2+1+1 = 6 display cols).
+        // Expected: indent(2) + 4 + space(1) + 6 = 13
+        let col = edit_cursor_col("Name", "你好world", 4, 80);
+        assert_eq!(col, 13);
+
+        // Cursor at end of value (char 7 → 9 display cols).
+        // Expected: 2 + 4 + 1 + 9 = 16
+        let col = edit_cursor_col("Name", "你好world", 7, 80);
+        assert_eq!(col, 16);
+    }
+
+    /// Left-truncation when the full line would exceed `cols` must also be
+    /// measured in display columns.
+    #[test]
+    fn test_edit_cursor_col_truncation() {
+        // cols=15, label "X" (1 col). prefix = 2+1+1 = 4, available = 15-4-1 = 10.
+        // text = "0123456789abcdef" (16 ASCII chars, 16 cols). Left-truncate to last 10.
+        // With cursor at end (char 16), visible portion is chars[6..16] = "6789abcdef" → 10 cols.
+        // Expected column: prefix(4) + 10 = 14.
+        let col = edit_cursor_col("X", "0123456789abcdef", 16, 15);
+        assert_eq!(col, 14);
     }
 }
