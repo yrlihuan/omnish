@@ -830,9 +830,12 @@ pub fn run_menu(
                         if children.is_empty() {
                             continue;
                         }
-                        // Auto-append Confirm button for form_mode submenus
-                        if *form_mode && !matches!(children.last(), Some(MenuItem::Button { .. })) {
-                            children.push(MenuItem::Button { label: crate::i18n::t("config.done").to_string() });
+                        // Auto-append Done button for form_mode submenus
+                        if *form_mode {
+                            let done_label = crate::i18n::t("config.done").to_string();
+                            if !children.iter().any(|c| matches!(c, MenuItem::Button { label } if *label == done_label)) {
+                                children.push(MenuItem::Button { label: done_label });
+                            }
                         }
                         let label_clone = label.clone();
                         let entering_form = *form_mode;
