@@ -3,7 +3,7 @@ use crate::session_mgr::SessionManager;
 use crate::task_mgr::{ScheduledTask, TaskContext};
 use chrono::Local;
 use omnish_common::config::ConfigMap;
-use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
+use omnish_llm::{backend::{LlmBackend, LlmRequest, TriggerType, UseCase}, template};
 use std::path::{Path, PathBuf};
 use tokio_cron_scheduler::Job;
 
@@ -44,14 +44,16 @@ impl ScheduledTask for DailyNotesTask {
         let conv_mgr = ctx.conv_mgr.clone();
         let llm_holder = ctx.llm_backend.clone();
         let notes_dir = ctx.daemon.omnish_dir.join("notes");
+        let daemon_config = ctx.daemon_config.clone();
         Ok(Job::new_async_tz(self.schedule(), Local, move |_uuid, _lock| {
             let mgr = mgr.clone();
             let conv_mgr = conv_mgr.clone();
             let llm = llm_holder.read().unwrap().get_backend(UseCase::Analysis);
             let dir = notes_dir.clone();
+            let language = daemon_config.read().unwrap().client.language.clone();
             Box::pin(async move {
                 tracing::debug!("task [daily_notes] started");
-                if let Err(e) = generate_daily_note(&mgr, &conv_mgr, Some(llm.as_ref()), &dir).await {
+                if let Err(e) = generate_daily_note(&mgr, &conv_mgr, Some(llm.as_ref()), &dir, &language).await {
                     tracing::warn!("task [daily_notes] failed: {}", e);
                 }
                 tracing::debug!("task [daily_notes] finished");
@@ -68,6 +70,15 @@ pub fn build_daily_context(notes_dir: &Path, date: &str) -> String {
         return String::new();
     }
     format!("<hourly_summaries>\n{}</hourly_summaries>", hourly_context)
+}
+
+/// Get the daily note title in the given language.
+fn daily_note_title(language: &str) -> &'static str {
+    match language {
+        "zh" => "工作日报",
+        "zh-tw" => "工作日報",
+        _ => "Daily Work Report",
+    }
 }
 
 /// Read all hourly note files for the given date (YYYY-MM-DD) and concatenate them.
@@ -102,6 +113,7 @@ async fn generate_daily_note(
     _conv_mgr: &ConversationManager,
     llm_backend: Option<&dyn LlmBackend>,
     notes_dir: &PathBuf,
+    language: &str,
 ) -> anyhow::Result<()> {
     // Daily notes runs at 00:10 and summarizes the previous day
     let yesterday = (Local::now() - chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
@@ -119,7 +131,7 @@ async fn generate_daily_note(
 
         let req = LlmRequest {
             context: llm_context,
-            query: Some(omnish_llm::template::DAILY_NOTES_PROMPT.to_string()),
+            query: Some(template::append_language_instruction(template::DAILY_NOTES_PROMPT, language)),
             trigger: TriggerType::AutoPattern,
             session_ids: vec![],
             use_case,
@@ -151,7 +163,7 @@ async fn generate_daily_note(
     };
 
     // Write file — only the LLM summary, no raw commands/conversations
-    let md = format!("# {} 工作日报\n\n{}\n", yesterday, summary);
+    let md = format!("# {} {}\n\n{}\n", yesterday, daily_note_title(language), summary);
     std::fs::create_dir_all(notes_dir)?;
     let file_path = notes_dir.join(format!("{}.md", yesterday));
     std::fs::write(&file_path, &md)?;
@@ -180,7 +192,7 @@ mod tests {
         let notes_dir = dir.path().join("notes");
 
         // No hourly summaries → should skip without error
-        generate_daily_note(&mgr, &conv_mgr, None, &notes_dir).await.unwrap();
+        generate_daily_note(&mgr, &conv_mgr, None, &notes_dir, "en").await.unwrap();
         let yesterday = (Local::now() - chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
         assert!(!notes_dir.join(format!("{}.md", yesterday)).exists());
     }
@@ -194,7 +206,7 @@ mod tests {
 
         // Create hourly summary but no LLM → should skip file write
         write_hourly_file(&notes_dir, "10", "# 2026-03-30 10:00 时工作摘要\n\n- did stuff");
-        generate_daily_note(&mgr, &conv_mgr, None, &notes_dir).await.unwrap();
+        generate_daily_note(&mgr, &conv_mgr, None, &notes_dir, "en").await.unwrap();
         let yesterday = (Local::now() - chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
         assert!(!notes_dir.join(format!("{}.md", yesterday)).exists());
     }
@@ -234,7 +246,7 @@ mod tests {
         write_hourly_file(&notes_dir, "14", "# 14:00 摘要\n\n## 命令记录\n| 14:30 | host:/proj | git push |\n\n## 工作总结\n\n- 推送代码");
 
         let mock_llm: &dyn LlmBackend = &MockLlm;
-        generate_daily_note(&mgr, &conv_mgr, Some(mock_llm), &notes_dir)
+        generate_daily_note(&mgr, &conv_mgr, Some(mock_llm), &notes_dir, "zh")
             .await
             .unwrap();
 
@@ -245,5 +257,21 @@ mod tests {
         // Daily notes should only contain LLM summary, not raw hourly content
         assert!(!content.contains("cargo build"));
         assert!(!content.contains("git push"));
+
+        // Also verify English title
+        let notes_dir2 = dir.path().join("notes2");
+        write_hourly_file_in(&notes_dir2, "10", "# summary\n\n- built project");
+        generate_daily_note(&mgr, &conv_mgr, Some(mock_llm), &notes_dir2, "en")
+            .await
+            .unwrap();
+        let content2 = std::fs::read_to_string(notes_dir2.join(format!("{}.md", yesterday))).unwrap();
+        assert!(content2.contains("Daily Work Report"));
+    }
+
+    fn write_hourly_file_in(notes_dir: &Path, hour: &str, content: &str) {
+        let yesterday = (Local::now() - chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+        let hourly_dir = notes_dir.join("hourly").join(&yesterday);
+        std::fs::create_dir_all(&hourly_dir).unwrap();
+        std::fs::write(hourly_dir.join(format!("{}.md", hour)), content).unwrap();
     }
 }

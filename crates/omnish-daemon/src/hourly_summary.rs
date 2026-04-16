@@ -3,7 +3,7 @@ use crate::session_mgr::SessionManager;
 use crate::task_mgr::{ScheduledTask, TaskContext};
 use chrono::Local;
 use omnish_common::config::ConfigMap;
-use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
+use omnish_llm::{backend::{LlmBackend, LlmRequest, TriggerType, UseCase}, template};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_cron_scheduler::Job;
@@ -45,14 +45,16 @@ impl ScheduledTask for HourlySummaryTask {
         let conv_mgr = ctx.conv_mgr.clone();
         let llm_holder = ctx.llm_backend.clone();
         let notes_dir = ctx.daemon.omnish_dir.join("notes");
+        let daemon_config = ctx.daemon_config.clone();
         Ok(Job::new_async(self.schedule(), move |_uuid, _lock| {
             let mgr = mgr.clone();
             let conv_mgr = conv_mgr.clone();
             let llm = llm_holder.read().unwrap().get_backend(UseCase::Analysis);
             let dir = notes_dir.clone();
+            let language = daemon_config.read().unwrap().client.language.clone();
             Box::pin(async move {
                 tracing::debug!("task [hourly_summary] started");
-                if let Err(e) = generate_hourly_summary(&mgr, &conv_mgr, Some(llm.as_ref()), &dir).await {
+                if let Err(e) = generate_hourly_summary(&mgr, &conv_mgr, Some(llm.as_ref()), &dir, &language).await {
                     tracing::warn!("task [hourly_summary] failed: {}", e);
                 }
                 tracing::debug!("task [hourly_summary] finished");
@@ -97,12 +99,47 @@ pub fn build_hourly_context(
     (context, table_md)
 }
 
+/// Get section title in the given language.
+fn section_title(section: &str, language: &str) -> &'static str {
+    match (section, language) {
+        ("commands", "zh") => "命令记录",
+        ("conversations", "zh") => "会话记录",
+        ("summary", "zh") => "工作总结",
+        ("commands", "zh-tw") => "命令記錄",
+        ("conversations", "zh-tw") => "會話記錄",
+        ("summary", "zh-tw") => "工作總結",
+        ("commands", _) => "Command Log",
+        ("conversations", _) => "Conversation Log",
+        ("summary", _) => "Work Summary",
+        (_, _) => "Work Summary", // fallback
+    }
+}
+
+/// Format the main title for the hourly summary.
+fn main_title(date_str: &str, hour_str: &str, language: &str) -> String {
+    match language {
+        "zh" => format!("{} {}:00 时工作摘要", date_str, hour_str),
+        "zh-tw" => format!("{} {}:00 時工作摘要", date_str, hour_str),
+        _ => format!("Hourly Work Summary — {} {}:00", date_str, hour_str),
+    }
+}
+
+/// Get the table header row for the command log.
+fn table_header(language: &str) -> &'static str {
+    match language {
+        "zh" => "| 时间 | 主机:工作目录 | 命令 |\n|------|--------------|------|",
+        "zh-tw" => "| 時間 | 主機:工作目錄 | 命令 |\n|------|--------------|------|",
+        _ => "| Time | Host:Working Directory | Command |\n|------|--------------------------|---------|",
+    }
+}
+
 /// Generate the hourly summary file with LLM summary.
 async fn generate_hourly_summary(
     mgr: &SessionManager,
     conv_mgr: &ConversationManager,
     llm_backend: Option<&dyn LlmBackend>,
     summaries_dir: &Path,
+    language: &str,
 ) -> anyhow::Result<()> {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -123,9 +160,7 @@ async fn generate_hourly_summary(
 
     let (context, table_md) = build_hourly_context(&commands, &conversations_md);
 
-    let prompt = "以下<commands>中是从多台终端收集的过去4小时的命令及其简要输出（如有），\
-         <conversations>中是与AI助手的对话记录（如有）。\
-         请用中文以项目符号列表形式列出这4小时的工作内容，每个条目包含一项主要活动或成果。适合直接作为工作日志。".to_string();
+    let prompt = template::append_language_instruction(template::HOURLY_NOTES_PROMPT, language);
 
     // Try LLM summary
     let summary = if let Some(backend) = llm_backend {
@@ -179,18 +214,17 @@ async fn generate_hourly_summary(
     let file_path = date_dir.join(&filename);
 
     // Build markdown content: commands + conversations + LLM summary
-    let mut md = format!("# {} {}:00 时工作摘要\n", date_str, hour_str);
+    let mut md = format!("# {}\n", main_title(&date_str, &hour_str, language));
     if !table_md.is_empty() {
-        md.push_str("\n## 命令记录\n");
-        md.push_str("| 时间 | 主机:工作目录 | 命令 |\n");
-        md.push_str("|------|--------------|------|\n");
+        md.push_str(&format!("\n## {}\n", section_title("commands", language)));
+        md.push_str(&format!("{}\n", table_header(language)));
         md.push_str(&table_md);
     }
     if !conversations_md.is_empty() {
-        md.push_str("\n## 会话记录\n\n");
+        md.push_str(&format!("\n## {}\n\n", section_title("conversations", language)));
         md.push_str(&conversations_md);
     }
-    md.push_str("\n## 工作总结\n\n");
+    md.push_str(&format!("\n## {}\n\n", section_title("summary", language)));
     md.push_str(&summary);
 
     // Write file
@@ -213,7 +247,7 @@ mod tests {
         let summaries_dir = dir.path().join("summaries");
 
         // No commands or conversations -> should skip without error
-        generate_hourly_summary(&mgr, &conv_mgr, None, &summaries_dir).await.unwrap();
+        generate_hourly_summary(&mgr, &conv_mgr, None, &summaries_dir, "en").await.unwrap();
         assert!(!summaries_dir.exists());
     }
 

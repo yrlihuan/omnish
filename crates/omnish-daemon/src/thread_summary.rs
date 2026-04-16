@@ -1,7 +1,7 @@
 use crate::conversation_mgr::ConversationManager;
 use crate::task_mgr::{ScheduledTask, TaskContext};
 use omnish_common::config::ConfigMap;
-use omnish_llm::backend::{LlmBackend, LlmRequest, TriggerType, UseCase};
+use omnish_llm::{backend::{LlmBackend, LlmRequest, TriggerType, UseCase}, template};
 use tokio_cron_scheduler::Job;
 
 
@@ -40,12 +40,14 @@ impl ScheduledTask for ThreadSummaryTask {
     fn create_job(&self, ctx: &TaskContext) -> anyhow::Result<Job> {
         let conv_mgr = ctx.conv_mgr.clone();
         let llm_holder = ctx.llm_backend.clone();
+        let daemon_config = ctx.daemon_config.clone();
         Ok(Job::new_async(self.schedule(), move |_uuid, _lock| {
             let conv_mgr = conv_mgr.clone();
             let llm = llm_holder.read().unwrap().get_backend(UseCase::Chat);
+            let language = daemon_config.read().unwrap().client.language.clone();
             Box::pin(async move {
                 tracing::debug!("task [thread_summary] started");
-                if let Err(e) = generate_thread_summaries(&conv_mgr, Some(llm.as_ref())).await {
+                if let Err(e) = generate_thread_summaries(&conv_mgr, Some(llm.as_ref()), &language).await {
                     tracing::warn!("task [thread_summary] failed: {}", e);
                 }
                 tracing::debug!("task [thread_summary] finished");
@@ -58,6 +60,7 @@ impl ScheduledTask for ThreadSummaryTask {
 async fn generate_thread_summaries(
     conv_mgr: &ConversationManager,
     llm_backend: Option<&dyn LlmBackend>,
+    language: &str,
 ) -> anyhow::Result<()> {
     let backend = match llm_backend {
         Some(b) => b,
@@ -107,7 +110,7 @@ async fn generate_thread_summaries(
         let max_content_chars = backend.max_content_chars();
         let req = LlmRequest {
             context: format!("<conversation>\n{}</conversation>", conversation_text),
-            query: Some(omnish_llm::template::THREAD_SUMMARY_PROMPT.to_string()),
+            query: Some(template::append_language_instruction(template::THREAD_SUMMARY_PROMPT, language)),
             trigger: TriggerType::AutoPattern,
             session_ids: vec![],
             use_case,
@@ -168,7 +171,7 @@ mod tests {
         conv_mgr.append_messages(&id, &[user_msg("hello"), assistant_msg("hi")]);
 
         // No LLM → should succeed without generating summary
-        generate_thread_summaries(&conv_mgr, None).await.unwrap();
+        generate_thread_summaries(&conv_mgr, None, "en").await.unwrap();
         let meta = conv_mgr.load_meta(&id);
         assert!(meta.summary.is_none());
     }
@@ -180,7 +183,7 @@ mod tests {
         let _id = conv_mgr.create_thread(ThreadMeta::default());
 
         // Empty thread → should be skipped
-        generate_thread_summaries(&conv_mgr, None).await.unwrap();
+        generate_thread_summaries(&conv_mgr, None, "en").await.unwrap();
     }
 
     #[test]

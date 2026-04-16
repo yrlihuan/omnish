@@ -51,24 +51,39 @@ pub fn prompt_template(has_query: bool) -> &'static str {
     }
 }
 
-/// The daily-notes LLM summary prompt.
+/// The daily-notes LLM summary prompt (English base).
 pub const DAILY_NOTES_PROMPT: &str =
-    "以下<hourly_summaries>中是今天各时段的工作摘要（每段含命令记录、会话记录和总结）。\
-     请根据这些信息推测用户今天实际在做的项目和目标，而不是简单罗列运行了哪些命令。\
-     用中文以项目符号列表形式总结，每个条目描述一项具体的项目活动或达成的目标。适合直接作为工作日志。";
+    "Below are <hourly_summaries> of today's work (each includes command logs, conversation logs, and summaries). \
+     Based on this information, infer what projects and goals the user was actually working on today, \
+     rather than simply listing which commands were run. \
+     Summarize in bullet points, with each item describing a specific project activity or goal achieved. \
+     Suitable as a work log directly.";
 
-/// The periodic-summary LLM prompt template (shown by `/template`; actual interval is configured).
+/// The periodic-summary LLM prompt template (English base).
 pub const HOURLY_NOTES_PROMPT: &str =
-    "以下<commands>中是从多台终端收集的过去N小时的命令及其简要输出（如有），\
-     <conversations>中是与AI助手的对话记录（如有）。\
-     请根据这些信息推测用户实际在做的项目和目标，而不是简单罗列运行了哪些命令。\
-     用中文以项目符号列表形式总结，每个条目描述一项具体的项目活动或达成的目标。适合直接作为工作日志。";
+    "Below are <commands> collected from multiple terminals over the past N hours (with brief output if available), \
+     and <conversations> with the AI assistant (if available). \
+     Based on this information, infer what projects and goals the user is actually working on, \
+     rather than simply listing which commands were run. \
+     Summarize in bullet points, with each item describing a specific project activity or goal achieved. \
+     Suitable as a work log directly.";
 
-/// The thread-title LLM prompt — generates a short title for the thread.
+/// The thread-title LLM prompt (English base) — generates a short title for the thread.
 pub const THREAD_SUMMARY_PROMPT: &str =
-    "以下<conversation>中是一段用户与AI助手的对话记录。\
-     请用中文生成一个简短标题（不超过20字），概括这段对话的主题。\
-     只输出标题本身，不要加引号或前缀。";
+    "Below is a <conversation> between a user and an AI assistant. \
+     Generate a short title (no more than 10 words) that summarizes the topic of this conversation. \
+     Output only the title itself, without quotes or prefixes.";
+
+/// Append a language instruction to a prompt.
+/// `language` should be "en", "zh", or "zh-tw".
+pub fn append_language_instruction(prompt: &str, language: &str) -> String {
+    let instruction = match language {
+        "zh" => "请用中文回答。",
+        "zh-tw" => "請用繁體中文回答。",
+        _ => "Respond in English.",
+    };
+    format!("{}\n\n{}", prompt, instruction)
+}
 
 /// Known template names for `/template <name>`.
 pub const TEMPLATE_NAMES: &[&str] = &["chat", "chat-system", "auto-complete", "daily-notes", "hourly-notes"];
