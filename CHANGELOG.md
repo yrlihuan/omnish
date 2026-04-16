@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.8.11 (2026-04-16)
+
+### Features
+- **i18n**: Multi-language support with English/Simplified Chinese/Traditional Chinese/Japanese/Korean/French/Spanish/Arabic packs; daemon detects system locale and pushes to client (#544, #529)
+- **i18n**: Translate config menu submenus, sandbox labels, LLM/Tasks labels, and Done button to Chinese (#544)
+- **i18n**: Display native names in language selector, integration test for language switching (#544)
+- **i18n**: Daemon scheduled tasks (daily/hourly/thread summary) honor configured language (#529)
+- **chat**: `/thread sandbox on|off` per-thread sandbox override — disables Landlock/bwrap for all tool calls in a thread; persists across resume (#535)
+- **chat**: `/thread list N` to show up to N most recent threads (default 20) (#542)
+- **chat**: Treat early Ctrl-C as input cancellation instead of sending to daemon (#536)
+- **chat**: Prioritize chat command completion order (#533)
+- **picker**: Support Ctrl-C to cancel picker widget (#532)
+- **completion**: Add `prompt_words` and cache rate to completion LLM log messages (#524, #541)
+
+### Fixes
+- **chat**: Persist user message immediately and sanitize orphaned tool_use on disconnect (#531)
+- **chat**: Sanitize orphaned tool_use before sending chat to API (#543)
+- **chat**: Reset tool section state on Ctrl-C interrupt (#534)
+- **chat**: Deduplicate interrupt sending and restore CI comments
+- **chat**: Correct multi-line erasure for early cancel and widget clear (#537)
+- **chat**: Add `/thread sandbox` to help output and completions
+- **chat**: Add `/thread help` and improve `/help` output
+- **chat**: Show `/resume` and `/model` in `/help` output
+- **i18n**: Detect system locale only on daemon side for language default; fix path_map leaf label mismatch (#544)
+- **i18n**: Translate "工作階段" to "會話" in zh-tw pack (#529)
+- **plugin**: Bash tool falls back to `$HOME` when CWD no longer exists (#540)
+- **display**: Default `extended_unicode` to false for better terminal compatibility
+- **systemd**: Set `XDG_RUNTIME_DIR` for `systemctl --user` under su/sudo
+- **test**: Init i18n to English in widget tests to avoid global state race (#529)
+- **test**: Make early-interrupt and erase-lines tests robust against fast LLM responses (#536, #546)
+- **test**: Update ghost_complete test to match new completion priority
+
 ## v0.8.10 (2026-04-14)
 
 ### Features
