@@ -3161,6 +3161,16 @@ mod tests {
         assert!(parse_completion_suggestions("   ").unwrap().is_empty());
     }
 
+    #[test]
+    fn test_parse_completion_suggestions_code_fenced() {
+        // Issue #548: some models wrap the JSON in ```json...``` fences
+        let input = "```json\n[\"cd workspace/\", \"cd workspace/omnish\"]```";
+        let result = parse_completion_suggestions(input).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].text, "cd workspace/");
+        assert_eq!(result[1].text, "cd workspace/omnish");
+    }
+
     #[tokio::test]
     async fn test_concurrent_completion_requests() {
         // Create a real SessionManager with temp directory
