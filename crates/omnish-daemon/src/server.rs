@@ -1987,16 +1987,17 @@ async fn try_warmup_kv_cache(
         }
     };
 
-    let prompt = omnish_llm::template::build_simple_completion_content(&new_context, "", 0);
+    let (system_prompt, user_input) =
+        omnish_llm::template::build_completion_parts("", 0);
     let req = LlmRequest {
-        context: String::new(),
-        query: Some(prompt),
+        context: new_context,
+        query: Some(user_input),
         trigger: TriggerType::Manual,
         session_ids: vec![session_id.to_string()],
         use_case: UseCase::Completion,
         max_content_chars: max_chars,
         conversation: vec![],
-        system_prompt: None,
+        system_prompt: Some(system_prompt),
         enable_thinking: Some(false), // Disable thinking for completion
         tools: vec![],
         extra_messages: vec![],
@@ -2876,25 +2877,28 @@ async fn handle_completion_request(
         );
     }
 
-    let prompt =
-        omnish_llm::template::build_simple_completion_content(&context, &req.input, req.cursor_pos);
-    let prompt_clone = prompt.clone();
+    let (system_prompt, user_input) =
+        omnish_llm::template::build_completion_parts(&req.input, req.cursor_pos);
+    let context_for_sample = context.clone();
+    let prompt_for_sample = format!("{}\n\n{}\n\n{}", system_prompt, context_for_sample, user_input);
+
+    let prompt_words = system_prompt.split_whitespace().count()
+        + context.split_whitespace().count()
+        + user_input.split_whitespace().count();
 
     let llm_req = LlmRequest {
-        context: String::new(),
-        query: Some(prompt),
+        context,
+        query: Some(user_input),
         trigger: TriggerType::Manual,
         session_ids: vec![req.session_id.clone()],
         use_case,
         max_content_chars: max_context_chars,
         conversation: vec![],
-        system_prompt: None,
+        system_prompt: Some(system_prompt),
         enable_thinking: Some(false), // Disable thinking for completion requests
         tools: vec![],
         extra_messages: vec![],
     };
-
-    let prompt_words = prompt_clone.split_whitespace().count();
     tracing::info!(
         "Completion LLM request started (session={}, sequence_id={}, input_len={}, prompt_words={})",
         req.session_id, req.sequence_id, req.input.len(), prompt_words
@@ -2976,8 +2980,8 @@ async fn handle_completion_request(
     let suggestion_texts: Vec<String> = suggestions.iter().map(|s| s.text.clone()).collect();
     mgr.store_pending_sample(omnish_store::sample::PendingSample {
         session_id: req.session_id.clone(),
-        context,
-        prompt: prompt_clone,
+        context: context_for_sample,
+        prompt: prompt_for_sample,
         suggestions: suggestion_texts,
         input: req.input.clone(),
         cwd: req.cwd.clone(),

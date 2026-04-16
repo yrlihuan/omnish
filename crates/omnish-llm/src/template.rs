@@ -13,33 +13,33 @@ pub fn build_user_content(context: &str, query: Option<&str>) -> String {
     }
 }
 
-/// Build the user-content prompt for shell command completion (up to 2 suggestions, JSON array).
+/// Static instruction text for completion requests (used as system prompt).
+pub const COMPLETION_INSTRUCTIONS: &str = "\
+You are a shell command completion engine.\n\
+Use <recent> and their output to understand what the user is doing, \
+then predict or complete the command.\n\n\
+Reply with a JSON array of up to 2 FULL commands:\n\
+[\"<command1>\", \"<command2>\"]\n\
+- 1st: the most likely completion (only if high confidence).\n\
+- 2nd: a longer command that completes the entire task end-to-end. \n\
+Do NOT include `&&` unless the user input already contains `&&`.\n\
+Return [] if no good completion exists.\n\
+Do not include any other text outside the JSON array.";
+
+/// Build the completion prompt parts: (system_prompt, user_input).
 ///
-/// Instructions are placed first, then context, then input — this ordering maximizes
-/// prefix stability across consecutive requests for better KV cache hit rates.
-pub fn build_simple_completion_content(context: &str, input: &str, cursor_pos: usize) -> String {
-    // Unified template: instructions + context form a stable prefix for KV cache,
-    // only the trailing input line varies between requests.
-    let input_line = if input.is_empty() {
+/// - system_prompt: static instructions (never changes, cached)
+/// - user_input: current input line (changes every keystroke, not cached)
+///
+/// Context (command history) is passed separately via `LlmRequest.context` and
+/// cached via Anthropic cache_control on a dedicated user message content block.
+pub fn build_completion_parts(input: &str, cursor_pos: usize) -> (String, String) {
+    let user = if input.is_empty() {
         "Current input: (empty — user just returned to the shell prompt)".to_string()
     } else {
         format!("Current input: `{}`\nCursor position: {}", input, cursor_pos)
     };
-    format!(
-        "You are a shell command completion engine.\n\
-         Use <recent> and their output to understand what the user is doing, \
-         then predict or complete the command.\n\n\
-         Reply with a JSON array of up to 2 FULL commands:\n\
-         [\"<command1>\", \"<command2>\"]\n\
-         - 1st: the most likely completion (only if high confidence).\n\
-         - 2nd: a longer command that completes the entire task end-to-end. \n\
-         Do NOT include `&&` unless the user input already contains `&&`.\n\
-         Return [] if no good completion exists.\n\
-         Do not include any other text outside the JSON array.\n\n\
-         {}\n\n\
-         {}",
-        context, input_line
-    )
+    (COMPLETION_INSTRUCTIONS.to_string(), user)
 }
 
 /// Return the prompt template with `{context}` and `{query}` placeholders.
@@ -98,7 +98,10 @@ pub fn template_by_name(name: &str) -> Option<String> {
     match name {
         "chat-system" => Some(crate::prompt::PromptManager::default_chat().build()),
         "chat" => Some("(handled by daemon — use /template chat)".to_string()),
-        "auto-complete" => Some(build_simple_completion_content("{context}", "{input}", 0)),
+        "auto-complete" => {
+            let (sys, usr) = build_completion_parts("{input}", 0);
+            Some(format!("[system]\n{}\n\n[user block 1 — cached]\n{{context}}\n\n[user block 2]\n{}", sys, usr))
+        }
         "daily-notes" => Some(DAILY_NOTES_PROMPT.to_string()),
         "hourly-notes" => Some(HOURLY_NOTES_PROMPT.to_string()),
         _ => None,
@@ -130,40 +133,30 @@ mod tests {
     }
 
     #[test]
-    fn test_simple_completion_instructions_before_context() {
-        let context = "$ ls\nfile.txt";
-        let result = build_simple_completion_content(context, "git", 3);
-        let instructions_pos = result.find("You are a shell command completion engine").unwrap();
-        let context_pos = result.find(context).unwrap();
-        let input_pos = result.find("Current input: `git`").unwrap();
-        assert!(instructions_pos < context_pos,
-            "Instructions should appear before context");
-        assert!(context_pos < input_pos,
-            "Context should appear before input");
+    fn test_completion_parts_instructions_are_static() {
+        let (system, _) = build_completion_parts("git", 3);
+        assert!(system.contains("You are a shell command completion engine"));
     }
 
     #[test]
-    fn test_simple_completion_empty_input_instructions_first() {
-        let context = "$ ls\nfile.txt";
-        let result = build_simple_completion_content(context, "", 0);
-        let instructions_pos = result.find("You are a shell command completion engine").unwrap();
-        let context_pos = result.find(context).unwrap();
-        assert!(instructions_pos < context_pos,
-            "Instructions should appear before context for empty input too");
+    fn test_completion_parts_user_input() {
+        let (_, user) = build_completion_parts("git", 3);
+        assert!(user.contains("Current input: `git`"));
+        assert!(user.contains("Cursor position: 3"));
     }
 
-    /// KV cache stability: empty-input and non-empty-input prompts must share
-    /// the same prefix up to (and including) the context, so the LLM server
-    /// can reuse cached KV state from warmup requests.
     #[test]
-    fn test_simple_completion_prefix_stable_across_inputs() {
-        let context = "<history>\nls\ngit status\n</history>";
-        let empty = build_simple_completion_content(context, "", 0);
-        let typed = build_simple_completion_content(context, "git", 3);
-        // Find where context ends in both strings
-        let ctx_end_empty = empty.find(context).unwrap() + context.len();
-        let ctx_end_typed = typed.find(context).unwrap() + context.len();
-        assert_eq!(&empty[..ctx_end_empty], &typed[..ctx_end_typed],
-            "Instruction + context prefix must be identical for KV cache reuse");
+    fn test_completion_parts_empty_input() {
+        let (_, user) = build_completion_parts("", 0);
+        assert!(user.contains("empty"));
+    }
+
+    /// System prompt (instructions) is a constant — identical for every call.
+    #[test]
+    fn test_completion_instructions_static() {
+        let (sys_a, _) = build_completion_parts("", 0);
+        let (sys_b, _) = build_completion_parts("git", 3);
+        assert_eq!(sys_a, sys_b,
+            "Instructions must be identical regardless of input");
     }
 }

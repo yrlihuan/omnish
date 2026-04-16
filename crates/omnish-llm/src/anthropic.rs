@@ -58,12 +58,22 @@ impl LlmBackend for AnthropicBackend {
         let client = &self.client;
 
         let messages: Vec<serde_json::Value> = if req.conversation.is_empty() && req.extra_messages.is_empty() {
-            // Existing single-turn behavior
-            let user_content = crate::template::build_user_content(
-                &req.context,
-                req.query.as_deref(),
-            );
-            vec![serde_json::json!({"role": "user", "content": user_content})]
+            // Single-turn: build user message with content blocks for cache_control
+            if !req.context.is_empty() && req.query.is_some() {
+                // Context + query as separate content blocks; cache_control on
+                // the context block so it survives across requests with varying input.
+                let query = req.query.as_deref().unwrap();
+                vec![serde_json::json!({"role": "user", "content": [
+                    {"type": "text", "text": req.context, "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": query},
+                ]})]
+            } else {
+                let user_content = crate::template::build_user_content(
+                    &req.context,
+                    req.query.as_deref(),
+                );
+                vec![serde_json::json!({"role": "user", "content": user_content})]
+            }
         } else {
             // Multi-turn: conversation history + current query + extra (tool) messages
             let mut msgs = Vec::new();
@@ -100,10 +110,17 @@ impl LlmBackend for AnthropicBackend {
         body_map.insert("max_tokens".to_string(), serde_json::Value::Number(8192.into()));
         body_map.insert("messages".to_string(), serde_json::Value::Array(messages));
 
-        // Add system prompt if provided (array format with cache_control for prompt caching)
+        // Add system prompt if provided (array format with cache_control for prompt caching).
+        // Completion instructions are a compile-time constant — use 1h TTL.
+        // Chat/analysis system prompts may change per request — use default 5m TTL.
         if let Some(ref system) = req.system_prompt {
+            let cache_control = if req.use_case == crate::backend::UseCase::Completion {
+                serde_json::json!({"type": "ephemeral", "ttl": 3600})
+            } else {
+                serde_json::json!({"type": "ephemeral"})
+            };
             body_map.insert("system".to_string(), serde_json::json!([
-                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+                {"type": "text", "text": system, "cache_control": cache_control}
             ]));
         }
 
