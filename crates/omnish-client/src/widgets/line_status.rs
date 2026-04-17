@@ -357,7 +357,7 @@ mod tests {
     }
 
     /// Regression: after clear(), the line that held "(thinking...)" must be
-    /// fully erased — no residual characters when the LLM response is short.
+    /// fully erased - no residual characters when the LLM response is short.
     #[test]
     fn clear_erases_text_completely() {
         let cols: u16 = 40;

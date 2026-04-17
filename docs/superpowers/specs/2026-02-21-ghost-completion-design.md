@@ -98,7 +98,7 @@ When input changes, the existing `render_input_echo` already clears to end of li
 
 Tab (0x09) in chat/buffering mode:
 1. Check if `GhostCompleter` has an active suggestion
-2. If yes: append ghost suffix to interceptor buffer, return `Buffering(updated_buf)` — main loop re-renders echo + queries new ghost
+2. If yes: append ghost suffix to interceptor buffer, return `Buffering(updated_buf)` - main loop re-renders echo + queries new ghost
 3. If no: ignore Tab (don't forward to PTY)
 
 Tab outside chat mode: forward to PTY as normal (preserves shell Tab completion).
@@ -123,7 +123,7 @@ User presses Tab
 
 ### File Plan
 
-- `crates/omnish-client/src/ghost_complete.rs` — GhostCompleter + CompletionProvider trait + BuiltinProvider
-- `crates/omnish-client/src/display.rs` — add `render_ghost_text()`
-- `crates/omnish-client/src/interceptor.rs` — Tab handling in chat mode
-- `crates/omnish-client/src/main.rs` — wire completer into Buffering action handler
+- `crates/omnish-client/src/ghost_complete.rs` - GhostCompleter + CompletionProvider trait + BuiltinProvider
+- `crates/omnish-client/src/display.rs` - add `render_ghost_text()`
+- `crates/omnish-client/src/interceptor.rs` - Tab handling in chat mode
+- `crates/omnish-client/src/main.rs` - wire completer into Buffering action handler

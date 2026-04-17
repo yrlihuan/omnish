@@ -1,6 +1,6 @@
 # omnish
 
-AI-powered shell for software development. omnish wraps your terminal as a transparent PTY proxy, providing an inline coding assistant with full context of your development workflow — commands, outputs, errors, and project state across all terminals.
+AI-powered shell for software development. omnish wraps your terminal as a transparent PTY proxy, providing an inline coding assistant with full context of your development workflow - commands, outputs, errors, and project state across all terminals.
 
 ## Architecture
 
@@ -24,22 +24,22 @@ AI-powered shell for software development. omnish wraps your terminal as a trans
 └──────────────────────────────────────────────┘
 ```
 
-- **omnish** (client) — PTY proxy per terminal. Spawns your shell via `forkpty()`, forwards all I/O transparently, and sends a copy to the daemon.
-- **omnishd** (daemon) — Aggregates sessions, stores streams, detects shell prompts to segment commands, runs scheduled tasks, dispatches LLM queries.
+- **omnish** (client) - PTY proxy per terminal. Spawns your shell via `forkpty()`, forwards all I/O transparently, and sends a copy to the daemon.
+- **omnishd** (daemon) - Aggregates sessions, stores streams, detects shell prompts to segment commands, runs scheduled tasks, dispatches LLM queries.
 
 For detailed module documentation and implementation details, see the [module documentation](docs/implementation/).
 
 ## Features
 
-- **Coding agent** — LLM agent with built-in tools: read/write/edit files, run shell commands, glob/grep search, stream results back inline. Ask it to fix a bug, refactor code, or explore unfamiliar codebases.
-- **Ghost completion** — LLM-powered inline command suggestions as you type, context-aware of recent outputs and errors.
-- **Chat mode** — Type `:` to ask about build failures, debug errors, or get explanations — with full context of what just happened across all terminals.
-- **Zero interference** — All programs (vim, ssh, htop, etc.) behave identically. omnish is invisible until you need it.
-- **Per-thread model selection** — Switch LLM backend mid-conversation with `/model`.
-- **Multi-backend LLM** — Anthropic, OpenAI, DeepSeek, Moonshot, OpenRouter, or any OpenAI-compatible API.
-- **Scheduled tasks** — Hourly/daily work summaries, thread summaries, session cleanup.
-- **Auto-update** — Daemon periodically checks for new releases and distributes to client machines.
-- **Cross-platform** — Linux and macOS.
+- **Coding agent** - LLM agent with built-in tools: read/write/edit files, run shell commands, glob/grep search, stream results back inline. Ask it to fix a bug, refactor code, or explore unfamiliar codebases.
+- **Ghost completion** - LLM-powered inline command suggestions as you type, context-aware of recent outputs and errors.
+- **Chat mode** - Type `:` to ask about build failures, debug errors, or get explanations - with full context of what just happened across all terminals.
+- **Zero interference** - All programs (vim, ssh, htop, etc.) behave identically. omnish is invisible until you need it.
+- **Per-thread model selection** - Switch LLM backend mid-conversation with `/model`.
+- **Multi-backend LLM** - Anthropic, OpenAI, DeepSeek, Moonshot, OpenRouter, or any OpenAI-compatible API.
+- **Scheduled tasks** - Hourly/daily work summaries, thread summaries, session cleanup.
+- **Auto-update** - Daemon periodically checks for new releases and distributes to client machines.
+- **Cross-platform** - Linux and macOS.
 
 ## Installation
 
@@ -69,7 +69,7 @@ cargo build --release
 
 All settings are managed through `~/.omnish/daemon.toml` (or `$OMNISH_DAEMON_CONFIG`). Client settings (hotkeys, completion, etc.) are stored in the `[client]` section and pushed to clients at connect time. Use `:config` inside omnish to edit settings interactively.
 
-**Client-only config** — `~/.omnish/client.toml` (or `$OMNISH_CLIENT_CONFIG`):
+**Client-only config** - `~/.omnish/client.toml` (or `$OMNISH_CLIENT_CONFIG`):
 
 Per-host settings (daemon address, sandbox preferences). Usually only needed for remote TCP connections:
 
@@ -77,7 +77,7 @@ Per-host settings (daemon address, sandbox preferences). Usually only needed for
 daemon_addr = "~/.omnish/omnish.sock"  # or "server-ip:9800" for TCP
 ```
 
-**Daemon config** — `~/.omnish/daemon.toml`:
+**Daemon config** - `~/.omnish/daemon.toml`:
 
 ```toml
 listen_addr = "~/.omnish/omnish.sock"  # or "0.0.0.0:9800" for TCP

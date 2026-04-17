@@ -1,4 +1,4 @@
-# LLM Cache Hint — 缓存策略上移
+# LLM Cache Hint - 缓存策略上移
 
 - Issue: #550
 - Date: 2026-04-17

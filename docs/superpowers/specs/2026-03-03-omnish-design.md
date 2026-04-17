@@ -27,9 +27,9 @@ A transparent shell wrapper that captures I/O from running programs, aggregates 
 └─────────────────────────────────────────────────┘
 ```
 
-- **omnish (client)** — User's login shell or shell entry point. Uses `forkpty()` to spawn the real shell, acting as a transparent PTY proxy. Provides inline ghost-text completion and chat mode via `::` prefix interception. All daemon communication is async.
-- **omnishd (daemon)** — Long-running process that receives I/O streams from all terminals via Unix socket, handles storage, command tracking, context building, LLM dispatch, and scheduled tasks (daily notes, hourly summaries, session eviction).
-- **Communication** — Client and daemon communicate via `$XDG_RUNTIME_DIR/omnish.sock` by default. The transport layer is abstracted to support future TCP/HTTP for cross-machine aggregation.
+- **omnish (client)** - User's login shell or shell entry point. Uses `forkpty()` to spawn the real shell, acting as a transparent PTY proxy. Provides inline ghost-text completion and chat mode via `::` prefix interception. All daemon communication is async.
+- **omnishd (daemon)** - Long-running process that receives I/O streams from all terminals via Unix socket, handles storage, command tracking, context building, LLM dispatch, and scheduled tasks (daily notes, hourly summaries, session eviction).
+- **Communication** - Client and daemon communicate via `$XDG_RUNTIME_DIR/omnish.sock` by default. The transport layer is abstracted to support future TCP/HTTP for cross-machine aggregation.
 
 ## Client: PTY Proxy Layer
 
@@ -62,34 +62,34 @@ omnish client:
 
 The client generates a bash hook (`~/.local/share/omnish/hooks/bash_hook.sh`) that provides:
 
-- **OSC 133 semantic prompts** — `133;A` (PromptStart), `133;B` (CommandStart with `$BASH_COMMAND`, `cwd`, and original user input from `history 1`), `133;C` (OutputStart), `133;D` (CommandEnd with exit code)
-- **Readline reporter** — bound to `\e[13337~`, reports `READLINE_LINE` and `READLINE_POINT` via `133;RL` for accurate input tracking
+- **OSC 133 semantic prompts** - `133;A` (PromptStart), `133;B` (CommandStart with `$BASH_COMMAND`, `cwd`, and original user input from `history 1`), `133;C` (OutputStart), `133;D` (CommandEnd with exit code)
+- **Readline reporter** - bound to `\e[13337~`, reports `READLINE_LINE` and `READLINE_POINT` via `133;RL` for accurate input tracking
 
 ### Input Interception
 
 The `InputInterceptor` is a byte-level state machine with:
 
-- **Configurable prefix** — `::` by default (from `config.shell.command_prefix`)
-- **Time-gap guard** — only intercept if sufficient idle time elapsed (avoids catching mid-command `:` in vim, etc.)
-- **Suppression** — disabled when `at_prompt=false` (child process running) or alt-screen active (TUI apps)
-- **ESC sequence filter** — handles arrow keys, bracketed paste, function keys without breaking state
-- **Chat mode** — once prefix matched, accumulates input until Enter, supports backspace and Tab completion
+- **Configurable prefix** - `::` by default (from `config.shell.command_prefix`)
+- **Time-gap guard** - only intercept if sufficient idle time elapsed (avoids catching mid-command `:` in vim, etc.)
+- **Suppression** - disabled when `at_prompt=false` (child process running) or alt-screen active (TUI apps)
+- **ESC sequence filter** - handles arrow keys, bracketed paste, function keys without breaking state
+- **Chat mode** - once prefix matched, accumulates input until Enter, supports backspace and Tab completion
 
 ### Ghost-Text Completion
 
 Two layers of ghost-text (dim inline suggestions):
 
-1. **Shell completion** (`ShellCompleter`) — daemon-backed LLM completions for shell commands. Flow: input change → debounced request → daemon completes via LLM → response queued → readline report triggered → ghost rendered. Tab accepts by injecting suffix to PTY.
-2. **Chat completion** (`GhostCompleter`) — local builtin provider for `/` commands in chat mode (e.g., type `/tem` → ghost shows `plate`). Tab accepts by injecting into interceptor buffer.
+1. **Shell completion** (`ShellCompleter`) - daemon-backed LLM completions for shell commands. Flow: input change → debounced request → daemon completes via LLM → response queued → readline report triggered → ghost rendered. Tab accepts by injecting suffix to PTY.
+2. **Chat completion** (`GhostCompleter`) - local builtin provider for `/` commands in chat mode (e.g., type `/tem` → ghost shows `plate`). Tab accepts by injecting into interceptor buffer.
 
 ### Shell Input Tracking
 
 `ShellInputTracker` maintains real-time state of the shell input line:
 
-- `input` / `cursor_pos` — from readline reports (`133;RL`)
-- `at_prompt` — true after PromptStart/CommandEnd, false after Enter key
-- `sequence_id` — monotonic counter, used to match completion requests to input state
-- `pending_rl_report` — prevents duplicate readline triggers
+- `input` / `cursor_pos` - from readline reports (`133;RL`)
+- `at_prompt` - true after PromptStart/CommandEnd, false after Enter key
+- `sequence_id` - monotonic counter, used to match completion requests to input state
+- `pending_rl_report` - prevents duplicate readline triggers
 
 ### Probes
 
@@ -110,9 +110,9 @@ Ring buffer (200 capacity) records key client events with elapsed-time prefixes 
 
 ### Key Design Points
 
-- **Zero-interference principle** — PTY proxy is fully transparent. `cat`, `vim`, `htop`, `ssh`, and any program must behave identically. All daemon communication is async, never blocking the main I/O path.
-- **Graceful degradation** — When daemon is unreachable, omnish still works as a normal shell. I/O messages are buffered (up to 10,000) and flushed on reconnect.
-- **Alt-screen awareness** — Detects alternate screen transitions (vim, less, htop) to suppress I/O reporting and interceptor during TUI sessions.
+- **Zero-interference principle** - PTY proxy is fully transparent. `cat`, `vim`, `htop`, `ssh`, and any program must behave identically. All daemon communication is async, never blocking the main I/O path.
+- **Graceful degradation** - When daemon is unreachable, omnish still works as a normal shell. I/O messages are buffered (up to 10,000) and flushed on reconnect.
+- **Alt-screen awareness** - Detects alternate screen transitions (vim, less, htop) to suppress I/O reporting and interceptor during TUI sessions.
 
 ## Command Tracker (omnish-tracker)
 
@@ -127,8 +127,8 @@ CommandTracker state machine:
 ```
 
 Two detection modes:
-- **OSC 133 mode** (primary) — uses semantic prompt markers from bash hook
-- **Regex fallback** — prompt pattern detection for shells without OSC 133 support
+- **OSC 133 mode** (primary) - uses semantic prompt markers from bash hook
+- **Regex fallback** - prompt pattern detection for shells without OSC 133 support
 
 ### Command Line Resolution
 
@@ -184,16 +184,16 @@ Payload serialized with bincode. Message types:
 
 ```
 omnishd
-├── Session Manager    — manage lifecycle of all active sessions
-├── Stream Store       — persist raw I/O streams + command records
-├── Context Builder    — build LLM context from stored data
-├── LLM Dispatcher     — dispatch LLM requests, manage backends
-├── Task Manager       — cron-scheduled periodic tasks
-│   ├── Daily Notes    — generate daily work summaries
-│   ├── Hourly Summary — generate hourly activity digests
-│   ├── Eviction       — clean up inactive sessions
-│   └── Disk Cleanup   — remove old session data
-└── Command Handler    — handle /debug, /context, /sessions, etc.
+├── Session Manager    - manage lifecycle of all active sessions
+├── Stream Store       - persist raw I/O streams + command records
+├── Context Builder    - build LLM context from stored data
+├── LLM Dispatcher     - dispatch LLM requests, manage backends
+├── Task Manager       - cron-scheduled periodic tasks
+│   ├── Daily Notes    - generate daily work summaries
+│   ├── Hourly Summary - generate hourly activity digests
+│   ├── Eviction       - clean up inactive sessions
+│   └── Disk Cleanup   - remove old session data
+└── Command Handler    - handle /debug, /context, /sessions, etc.
 ```
 
 ### Session Manager
@@ -219,19 +219,19 @@ Each client connection maps to a session with metadata (PID, tty, shell type, ho
 
 Orchestrates building LLM context from stored commands:
 
-1. **Strategy selection** — `RecentCommands` selects N most recent commands across sessions
-2. **Elastic window** — splits budget between "history" (command-line only, many commands) and "detailed" (full output, fewer commands), with minimum guarantees for current session
-3. **Stream reading** — reads actual output bytes from `stream.bin` at recorded offsets
-4. **Formatting** — strips ANSI, adds hostname/cwd labels, truncates long lines, formats as XML-tagged blocks (`<recent>` with `<cmd>` entries)
+1. **Strategy selection** - `RecentCommands` selects N most recent commands across sessions
+2. **Elastic window** - splits budget between "history" (command-line only, many commands) and "detailed" (full output, fewer commands), with minimum guarantees for current session
+3. **Stream reading** - reads actual output bytes from `stream.bin` at recorded offsets
+4. **Formatting** - strips ANSI, adds hostname/cwd labels, truncates long lines, formats as XML-tagged blocks (`<recent>` with `<cmd>` entries)
 
 ### Task Manager
 
 Cron-scheduled tasks via tokio-cron-scheduler:
 
-- **Daily notes** — generates work diary at configurable hour (default 18:00)
-- **Hourly summary** — generates activity digest every hour
-- **Eviction** — removes sessions inactive beyond configurable hours
-- **Disk cleanup** — removes old session data on configurable cron schedule
+- **Daily notes** - generates work diary at configurable hour (default 18:00)
+- **Hourly summary** - generates activity digest every hour
+- **Eviction** - removes sessions inactive beyond configurable hours
+- **Disk cleanup** - removes old session data on configurable cron schedule
 
 ## LLM Engine: Remote Multi-Backend
 
@@ -251,10 +251,10 @@ struct LlmRequest {
 
 ### Backends
 
-- `AnthropicBackend` — Claude API (native messages format)
-- `OpenAiCompatBackend` — OpenAI-compatible API (covers OpenAI, DeepSeek, and other compatible services)
+- `AnthropicBackend` - Claude API (native messages format)
+- `OpenAiCompatBackend` - OpenAI-compatible API (covers OpenAI, DeepSeek, and other compatible services)
 
-API keys resolved via `api_key_cmd` (e.g., `pass show anthropic/api-key`) — no plaintext keys in config.
+API keys resolved via `api_key_cmd` (e.g., `pass show anthropic/api-key`) - no plaintext keys in config.
 
 ### Use Cases
 
@@ -371,16 +371,16 @@ omnish/
 
 ### Key Dependencies
 
-- `nix` — PTY and signal handling (`"term"` feature for PTY support)
-- `tokio` — async runtime (daemon server loop, client async I/O, channels)
-- `serde` + `bincode` — protocol serialization
-- `reqwest` — HTTP LLM API calls (`rustls-tls` feature to avoid OpenSSL dependency)
-- `toml` — config parsing
-- `tokio-cron-scheduler` — daemon task scheduling
-- `uuid` — session ID generation
+- `nix` - PTY and signal handling (`"term"` feature for PTY support)
+- `tokio` - async runtime (daemon server loop, client async I/O, channels)
+- `serde` + `bincode` - protocol serialization
+- `reqwest` - HTTP LLM API calls (`rustls-tls` feature to avoid OpenSSL dependency)
+- `toml` - config parsing
+- `tokio-cron-scheduler` - daemon task scheduling
+- `uuid` - session ID generation
 
 ### Build Notes
 
 - Requires `clang` for ring/rustls compilation
 - `nix` 0.29: PTY support uses `"term"` feature (not `"pty"`)
-- `std::process::exit()` skips Drop destructors — always explicitly drop RAII guards (like RawModeGuard) before calling it
+- `std::process::exit()` skips Drop destructors - always explicitly drop RAII guards (like RawModeGuard) before calling it

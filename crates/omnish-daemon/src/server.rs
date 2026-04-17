@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_rustls::TlsAcceptor;
 
 /// Load chat system prompt: base from embedded JSON, with optional user overrides
-/// from ~/.omnish/prompts/chat.override.json (same fragment format — matching names replace).
+/// from ~/.omnish/prompts/chat.override.json (same fragment format - matching names replace).
 fn load_chat_prompt() -> omnish_llm::prompt::PromptManager {
     let base = omnish_llm::prompt::PromptManager::default_chat();
     let override_path = omnish_common::config::omnish_dir().join("prompts/chat.override.json");
@@ -974,11 +974,11 @@ async fn handle_message(
                 ]);
                 update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
             } else if let Some(flag) = cancel_flags.lock().await.get(&ci.request_id) {
-                // Agent loop is running daemon-side tools — signal it to stop.
+                // Agent loop is running daemon-side tools - signal it to stop.
                 // The loop will store partial state to conversation when it detects the flag.
                 flag.store(true, std::sync::atomic::Ordering::Relaxed);
             } else {
-                // Loop already finished — just record the interrupt
+                // Loop already finished - just record the interrupt
                 conv_mgr.append_messages(&ci.thread_id, &[
                     serde_json::json!({"role": "user", "content": ci.query}),
                     serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
@@ -1197,7 +1197,7 @@ async fn handle_chat_message(
         conv_mgr.save_meta(&cm.thread_id, &meta);
     }
 
-    // Model-only message (no query) — just acknowledge
+    // Model-only message (no query) - just acknowledge
     if cm.query.is_empty() {
         let _ = tx.send(Message::Ack).await;
         return;
@@ -1306,7 +1306,7 @@ async fn handle_chat_message(
     run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, opts, tx, cancel_flag).await;
 }
 
-/// Handle a ChatToolResult from the client — accumulate results, resume when all are received.
+/// Handle a ChatToolResult from the client - accumulate results, resume when all are received.
 #[allow(clippy::too_many_arguments)]
 async fn handle_tool_result(
     tr: ChatToolResult,
@@ -1390,11 +1390,11 @@ async fn handle_tool_result(
     let all_complete = state.pending_tool_calls.iter().all(|tc| completed_ids.contains(&tc.id));
 
     if !all_complete {
-        // More results expected — keep waiting (status already sent via tx)
+        // More results expected - keep waiting (status already sent via tx)
         return;
     }
 
-    // All tool calls complete — remove state and continue agent loop
+    // All tool calls complete - remove state and continue agent loop
     let mut state = map.remove(&tr.request_id).unwrap();
     drop(map);
 
@@ -1423,7 +1423,7 @@ async fn handle_tool_result(
     state.completed_results.clear();
     state.iteration += 1;
 
-    // Continue agent loop — register cancel flag so ChatInterrupt can signal it
+    // Continue agent loop - register cancel flag so ChatInterrupt can signal it
     let req_id = state.cm.request_id.clone();
     let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     cancel_flags.lock().await.insert(req_id.clone(), flag.clone());
@@ -1441,7 +1441,7 @@ async fn handle_tool_result(
 /// already-completed tool results in the caller's local `tool_results` vec
 /// have not yet been merged into `extra_messages`. This function marks all
 /// tool_use IDs as "user interrupted", losing those results. This is
-/// acceptable for error recovery (client disconnect) — the alternative of
+/// acceptable for error recovery (client disconnect) - the alternative of
 /// threading partial results through every call site adds complexity for a
 /// rare edge case where the client is already gone.
 fn persist_unsaved_sanitized(
@@ -1513,10 +1513,10 @@ fn persist_unsaved(
 /// Update thread meta with the most recent API call's usage after an agent loop run.
 /// Resets totals when the model changes.
 ///
-/// `last_response` — the final LLM API call's usage (stored as usage_last, added to usage_total).
-/// `cumulative`    — total usage across all API calls in this agent loop iteration
+/// `last_response` - the final LLM API call's usage (stored as usage_last, added to usage_total).
+/// `cumulative`    - total usage across all API calls in this agent loop iteration
 ///                   (added to the running thread total).
-/// `model`         — config backend name used to detect model switches.
+/// `model`         - config backend name used to detect model switches.
 fn update_thread_usage(
     conv_mgr: &omnish_daemon::conversation_mgr::ConversationManager,
     thread_id: &str,
@@ -1546,7 +1546,7 @@ fn update_thread_usage(
             cache_creation_input_tokens: prev.cache_creation_input_tokens + cumulative.cache_creation_input_tokens,
         }
     } else {
-        // Model switched — start fresh with this loop's cumulative usage
+        // Model switched - start fresh with this loop's cumulative usage
         ThreadUsage {
             input_tokens: cumulative.input_tokens,
             output_tokens: cumulative.output_tokens,
@@ -1630,7 +1630,7 @@ async fn run_agent_loop(
                     }
 
                     // Build assistant message preserving original block order
-                    // (thinking, text, tool_use — order matters for DeepSeek-compatible APIs)
+                    // (thinking, text, tool_use - order matters for DeepSeek-compatible APIs)
                     let assistant_content: Vec<serde_json::Value> = response
                         .content
                         .iter()
@@ -1837,7 +1837,7 @@ async fn run_agent_loop(
                     }
 
                     if cancelled {
-                        // Cancelled mid-tool-execution — store partial state
+                        // Cancelled mid-tool-execution - store partial state
                         tracing::info!("Agent loop cancelled during tool execution (thread={})", state.cm.thread_id);
                         // Build tool results for completed tools + "user interrupted" for the rest
                         let completed_ids: std::collections::HashSet<&str> = tool_results
@@ -1882,7 +1882,7 @@ async fn run_agent_loop(
                         // disconnects or the daemon restarts while waiting for tool results.
                         persist_unsaved(&mut state, conv_mgr, &[]);
 
-                        // Pause loop — client will execute tools in parallel and send results back
+                        // Pause loop - client will execute tools in parallel and send results back
                         state.pending_tool_calls = tool_calls.iter().map(|tc| (*tc).clone()).collect();
                         state.completed_results = tool_results;
                         state.iteration = iteration;
@@ -1891,7 +1891,7 @@ async fn run_agent_loop(
                         return; // tx dropped → Ack sent by spawn_connection
                     }
 
-                    // All tools were daemon-side — build tool_result and continue
+                    // All tools were daemon-side - build tool_result and continue
                     let result_content: Vec<serde_json::Value> = tool_results
                         .iter()
                         .map(|r| {
@@ -1914,7 +1914,7 @@ async fn run_agent_loop(
                     continue;
                 }
 
-                // EndTurn or MaxTokens — extract final text and store
+                // EndTurn or MaxTokens - extract final text and store
                 let text = response.text();
                 tracing::info!(
                     "Chat LLM completed in {:?} ({} tool iterations, thread={})",
@@ -1959,7 +1959,7 @@ async fn run_agent_loop(
                     state.llm_retries += 1;
                     let backoff = std::time::Duration::from_secs(5 * state.llm_retries as u64);
                     tracing::warn!(
-                        "LLM connection error (retry {}/2, thread={}): {} — retrying in {}s",
+                        "LLM connection error (retry {}/2, thread={}): {} - retrying in {}s",
                         state.llm_retries, state.cm.thread_id, err_str, backoff.as_secs()
                     );
                     tokio::time::sleep(backoff).await;
@@ -1975,9 +1975,9 @@ async fn run_agent_loop(
                     &err_str
                 };
                 let user_msg = if is_connection {
-                    format!("Connection to the AI service was lost: {}. Your progress has been saved — you can continue by sending another message.", display_err)
+                    format!("Connection to the AI service was lost: {}. Your progress has been saved - you can continue by sending another message.", display_err)
                 } else {
-                    format!("AI service returned an error: {}. Your progress has been saved — you can continue by sending another message.", display_err)
+                    format!("AI service returned an error: {}. Your progress has been saved - you can continue by sending another message.", display_err)
                 };
 
                 // Persist a short event marker (like the cancel paths) so the
@@ -2002,7 +2002,7 @@ async fn run_agent_loop(
         }
     }
 
-    // Exhausted iterations — store what we have
+    // Exhausted iterations - store what we have
     tracing::warn!(
         "Agent loop exhausted {} iterations (thread={})",
         max_iterations,
@@ -2258,7 +2258,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
     let session_attrs = mgr.get_session_attrs(&req.session_id).await;
     let reminder = command_query_tool.build_system_reminder(5, &session_attrs, false);
 
-    // Handle /context chat:<thread_id> — show conversation context + system-reminder
+    // Handle /context chat:<thread_id> - show conversation context + system-reminder
     if let Some(thread_id) = sub.strip_prefix("context chat:") {
         let msgs = conv_mgr.load_raw_messages(thread_id);
         let mut output = format!("Chat thread: {}\n\n", thread_id);
@@ -2278,7 +2278,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
         return cmd_display(output);
     }
 
-    // Handle /context chat (without thread_id) — show only system-reminder
+    // Handle /context chat (without thread_id) - show only system-reminder
     if sub == "context chat" {
         return cmd_display(reminder);
     }
@@ -2306,7 +2306,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             None => cmd_display("No conversations yet. Start a chat with :"),
         };
     }
-    // Handle /conversations del <thread_id> — delete a conversation by thread ID
+    // Handle /conversations del <thread_id> - delete a conversation by thread ID
     if let Some(tid) = sub.strip_prefix("conversations del ") {
         let tid = tid.trim();
         if conv_mgr.delete_thread(tid) {
@@ -2318,7 +2318,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             return cmd_display("Conversation not found");
         }
     }
-    // Handle /model — list available backends with selected flag
+    // Handle /model - list available backends with selected flag
     if sub == "models" || sub.starts_with("models ") {
         let thread_id = sub.strip_prefix("models ").unwrap_or("").trim();
 
@@ -2357,7 +2357,7 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             omnish_llm::template::TEMPLATE_NAMES.join("|")
         ));
     }
-    // Handle /thread sandbox — query or set per-thread sandbox override.
+    // Handle /thread sandbox - query or set per-thread sandbox override.
     // Queries embed the thread_id as ":<tid>" suffix, matching /context chat.
     if let Some(rest) = sub.strip_prefix("thread sandbox") {
         let rest = rest.trim_start();
@@ -3118,7 +3118,7 @@ mod tests {
 
     #[test]
     fn test_unwrap_thinking_tags() {
-        // Leading tag — strips tags, keeps content
+        // Leading tag - strips tags, keeps content
         assert_eq!(
             unwrap_thinking_tags("<thinking>\nContinue.\n</thinking>\n\nRun #27："),
             "Continue.\n\nRun #27："
@@ -3128,13 +3128,13 @@ mod tests {
             "Let me analyze.\nHere is the answer."
         );
         assert_eq!(unwrap_thinking_tags("<thinking>foo</thinking>"), "foo");
-        // Leading whitespace before tag — still matches
+        // Leading whitespace before tag - still matches
         assert_eq!(unwrap_thinking_tags("  <thinking>bar</thinking>"), "bar");
-        // Unclosed tag — treats rest as content
+        // Unclosed tag - treats rest as content
         assert_eq!(unwrap_thinking_tags("<thinking>rest of text"), "rest of text");
         // No tags
         assert_eq!(unwrap_thinking_tags("plain text"), "plain text");
-        // Tag NOT at start — no change (avoids false positives)
+        // Tag NOT at start - no change (avoids false positives)
         assert_eq!(
             unwrap_thinking_tags("before <thinking>inner</thinking> after"),
             "before <thinking>inner</thinking> after"
@@ -3143,7 +3143,7 @@ mod tests {
 
     #[test]
     fn test_thinking_to_markdown() {
-        // Leading tag — converts to heading section
+        // Leading tag - converts to heading section
         assert_eq!(
             thinking_to_markdown("<thinking>\nContinue.\n</thinking>\n\nRun #27："),
             "# Thinking\nContinue.\n\n# Response\nRun #27："
@@ -3152,11 +3152,11 @@ mod tests {
             thinking_to_markdown("<think>\nLine 1\nLine 2\n</think>\nAnswer"),
             "# Thinking\nLine 1\nLine 2\n\n# Response\nAnswer"
         );
-        // Empty thinking — removed
+        // Empty thinking - removed
         assert_eq!(thinking_to_markdown("<thinking></thinking>rest"), "rest");
         // No tags
         assert_eq!(thinking_to_markdown("plain text"), "plain text");
-        // Tag NOT at start — no change
+        // Tag NOT at start - no change
         assert_eq!(
             thinking_to_markdown("text <thinking>inner</thinking> more"),
             "text <thinking>inner</thinking> more"

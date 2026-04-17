@@ -3,8 +3,8 @@
 # test_disconnect.sh - Integration test for daemon disconnect handling (#494, #495)
 #
 # Test cases:
-#   1. Disconnect during tool execution — error feedback and prompt recovery
-#   2. Disconnect + reconnect — chat resumes normally
+#   1. Disconnect during tool execution - error feedback and prompt recovery
+#   2. Disconnect + reconnect - chat resumes normally
 #   3. Disconnect during tool execution → reconnect → chat resumes
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -36,13 +36,13 @@ test_1() {
     send_keys "运行 sleep 15" 0.3
     send_enter 0.3
 
-    # Wait for spinner — confirms tool started
+    # Wait for spinner - confirms tool started
     local waited=0
     local content=""
     while [[ $waited -lt 30 ]]; do
         content=$(capture_pane -20)
         if echo "$content" | grep -qE '(⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏).*Bash'; then
-            echo -e "  Spinner detected — tool is running"
+            echo -e "  Spinner detected - tool is running"
             break
         fi
         sleep 0.5
@@ -135,7 +135,7 @@ test_3() {
     send_enter 0.3
     wait_for_prompt 1
 
-    # Run a 15s tool — disconnect fires during execution
+    # Run a 15s tool - disconnect fires during execution
     send_keys "运行 sleep 15" 0.3
     send_enter 0.3
 
@@ -145,7 +145,7 @@ test_3() {
     while [[ $waited -lt 30 ]]; do
         content=$(capture_pane -20)
         if echo "$content" | grep -qE '(⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏).*Bash'; then
-            echo -e "  Spinner detected — tool is running"
+            echo -e "  Spinner detected - tool is running"
             break
         fi
         sleep 0.5

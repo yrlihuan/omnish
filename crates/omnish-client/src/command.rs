@@ -7,7 +7,7 @@ pub enum ChatAction {
         redirect: Option<String>,
         limit: Option<OutputLimit>,
     },
-    /// Not a command — forward as normal LLM query.
+    /// Not a command - forward as normal LLM query.
     #[allow(dead_code)]
     LlmQuery(String),
     /// A `/` command that needs daemon data. Contains the query to send, optional redirect,
@@ -37,7 +37,7 @@ pub enum OutputLimitKind {
 // ---------------------------------------------------------------------------
 
 enum CommandKind {
-    /// Client-side command — handler receives the remainder after the command path.
+    /// Client-side command - handler receives the remainder after the command path.
     Local(fn(&str) -> String),
     /// Forwarded to daemon as `__cmd:{key}`.
     Daemon(&'static str),
@@ -67,10 +67,10 @@ fn thread_usage(_args: &str) -> String {
     for entry in COMMANDS {
         if entry.path.starts_with("/thread ") && !entry.help.is_empty() {
             let sub = &entry.path["/thread ".len()..];
-            output.push_str(&format!("  {} — {}\n", sub, entry.help));
+            output.push_str(&format!("  {} - {}\n", sub, entry.help));
         }
     }
-    output.push_str("  sandbox [on|off] — Toggle sandbox enforcement for current thread (chat mode)\n");
+    output.push_str("  sandbox [on|off] - Toggle sandbox enforcement for current thread (chat mode)\n");
     output
 }
 
@@ -87,9 +87,9 @@ fn integrate_command(args: &str) -> String {
     let target = args.trim();
     if target.is_empty() {
         return format!("{}\n\
-                \n  tmux   — inject default-shell into ~/.tmux.conf\
-                \n  screen — inject shell setting into ~/.screenrc\
-                \n  ssh    — show SSH config snippet for RemoteCommand",
+                \n  tmux   - inject default-shell into ~/.tmux.conf\
+                \n  screen - inject shell setting into ~/.screenrc\
+                \n  ssh    - show SSH config snippet for RemoteCommand",
                 crate::i18n::t("command.usage_integrate"));
     }
 
@@ -163,24 +163,24 @@ fn help_command(_args: &str) -> String {
         if entry.help.is_empty() {
             continue;
         }
-        // Hide /debug subcommands — /debug itself shows them via its usage handler.
+        // Hide /debug subcommands - /debug itself shows them via its usage handler.
         if entry.path.starts_with("/debug ") {
             continue;
         }
-        output.push_str(&format!("  {} — {}\n", entry.path, entry.help));
+        output.push_str(&format!("  {} - {}\n", entry.path, entry.help));
         // Show /thread subcommands inline under /thread.
         if entry.path == "/thread" {
             for sub in COMMANDS {
                 if sub.path.starts_with("/thread ") && !sub.help.is_empty() {
-                    output.push_str(&format!("    {} — {}\n", sub.path, sub.help));
+                    output.push_str(&format!("    {} - {}\n", sub.path, sub.help));
                 }
             }
-            output.push_str("    /thread sandbox [on|off] — Toggle sandbox enforcement for current thread (chat mode)\n");
+            output.push_str("    /thread sandbox [on|off] - Toggle sandbox enforcement for current thread (chat mode)\n");
         }
     }
     // Chat-mode-only commands not in the registry.
-    output.push_str("  /resume — Resume a previous conversation thread\n");
-    output.push_str("  /model — Switch LLM model\n");
+    output.push_str("  /resume - Resume a previous conversation thread\n");
+    output.push_str("  /model - Switch LLM model\n");
     output
 }
 
@@ -291,7 +291,7 @@ const COMMANDS: &[CommandEntry] = &[
         help: "Integrate omnish with tmux, screen, or ssh",
     },
     // /update is handled client-side (exec_update needs proxy fd/pid).
-    // Hidden from /help — auto-update handles this transparently.
+    // Hidden from /help - auto-update handles this transparently.
     CommandEntry {
         path: "/update",
         kind: CommandKind::Daemon("update"),
@@ -504,7 +504,7 @@ pub fn dispatch(msg: &str) -> ChatAction {
             }
         }
     } else {
-        // Unknown /command — treat as LLM query.
+        // Unknown /command - treat as LLM query.
         ChatAction::LlmQuery(msg.to_string())
     }
 }

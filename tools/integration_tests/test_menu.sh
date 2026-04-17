@@ -133,16 +133,16 @@ test_2() {
     local content
     content=$(capture_pane -20)
 
-    # Move Down — cursor should move to Shell
+    # Move Down - cursor should move to Shell
     send_special Down 0.3
     content=$(capture_pane -20)
     show_capture "After Down" "$content" 10
 
-    # Move Down again — cursor on Telemetry
+    # Move Down again - cursor on Telemetry
     send_special Down 0.3
     content=$(capture_pane -20)
 
-    # Move Up — cursor back on Shell
+    # Move Up - cursor back on Shell
     send_special Up 0.3
     content=$(capture_pane -20)
     show_capture "After Up" "$content" 10
@@ -177,7 +177,7 @@ test_3() {
     content=$(capture_pane -20)
     show_capture "Before toggle" "$content" 10
 
-    # Telemetry starts as OFF — press Enter to toggle ON
+    # Telemetry starts as OFF - press Enter to toggle ON
     if ! echo "$content" | grep -q "\[OFF\]"; then
         assert_fail "Telemetry initial value not OFF"
         send_special Escape 0.5
@@ -219,7 +219,7 @@ test_4() {
     wait_for_client
     open_test_menu
 
-    # LLM is first item — press Enter to drill in
+    # LLM is first item - press Enter to drill in
     send_enter 1
 
     local content
@@ -374,7 +374,7 @@ test_7() {
         return 1
     fi
 
-    # Type some text — first clear existing with backspace x4 ("user" = 4 chars)
+    # Type some text - first clear existing with backspace x4 ("user" = 4 chars)
     send_special BSpace 0.1
     send_special BSpace 0.1
     send_special BSpace 0.1
@@ -420,7 +420,7 @@ test_7() {
         return 1
     fi
 
-    # Exit menu — with immediate save, change was already dispatched
+    # Exit menu - with immediate save, change was already dispatched
     send_special Escape 0.5
 
     assert_pass "TextInput: ESC cancels, Enter saves value"
@@ -582,7 +582,7 @@ test_9() {
         return 1
     fi
 
-    # Select "anthropic" (Down x1 from "custom") — triggers prefill
+    # Select "anthropic" (Down x1 from "custom") - triggers prefill
     send_special Down 0.3
     send_enter 0.5
 
@@ -659,7 +659,7 @@ test_10() {
     send_enter 0.5
     send_enter 0.5
 
-    # 2. Now in Name (TextInput, auto-edit in form_mode) — type without pressing Enter
+    # 2. Now in Name (TextInput, auto-edit in form_mode) - type without pressing Enter
     send_keys "test-be" 0.3
 
     content=$(capture_pane -20)
@@ -755,7 +755,7 @@ test_11() {
     cursor_x_end=$(_tmux display-message -p -t "$PANE" '#{cursor_x}')
     echo -e "  Cursor X at end of text: $cursor_x_end"
 
-    # Press Left arrow — cursor should move left
+    # Press Left arrow - cursor should move left
     send_special Left 0.3
     local cursor_x_left
     cursor_x_left=$(_tmux display-message -p -t "$PANE" '#{cursor_x}')
@@ -770,7 +770,7 @@ test_11() {
         return 1
     fi
 
-    # Press Right arrow — cursor should move back right
+    # Press Right arrow - cursor should move back right
     send_special Right 0.3
     local cursor_x_right
     cursor_x_right=$(_tmux display-message -p -t "$PANE" '#{cursor_x}')
@@ -785,7 +785,7 @@ test_11() {
         return 1
     fi
 
-    # Type a char at mid-position — move Left twice, then insert 'X'
+    # Type a char at mid-position - move Left twice, then insert 'X'
     # Cursor is at end (pos 4). Left x2 → pos 2 (between 's' and 'e')
     send_special Left 0.2
     send_special Left 0.2
@@ -832,7 +832,7 @@ test_11() {
 
     send_keys "test" 0.3
 
-    # Press Up arrow — should exit edit and move cursor UP (to Provider), not bounce back
+    # Press Up arrow - should exit edit and move cursor UP (to Provider), not bounce back
     send_special Up 0.5
 
     content=$(capture_pane -20)
@@ -847,7 +847,7 @@ test_11() {
     fi
 
     # The cursor should be on Provider (first item), not bounced back to Model
-    # Press Down — if cursor is on Provider, Down takes us to Model.
+    # Press Down - if cursor is on Provider, Down takes us to Model.
     # If bounce happened, cursor would already be on Model and Down goes to API key.
     send_special Down 0.3
     # Now enter edit on current item to see which field we're on
@@ -1161,7 +1161,7 @@ test_14() {
     # Provider (Select with prefills): Enter opens picker
     send_enter 0.5
 
-    # Select "anthropic" (non-custom, 2nd item: Down x1) — this triggers prefill
+    # Select "anthropic" (non-custom, 2nd item: Down x1) - this triggers prefill
     send_special Down 0.3
     send_enter 0.5
 
@@ -1359,7 +1359,7 @@ test_16() {
     echo -e "  ${GREEN}Top-level label rendered${NC}"
 
     # Cursor should start on LLM (first interactive item), not on the label.
-    # Press Up — cursor should stay on LLM (nowhere to go, label is skipped).
+    # Press Up - cursor should stay on LLM (nowhere to go, label is skipped).
     send_special Up 0.3
     content=$(capture_pane -20)
     # LLM should still be visible and menu intact
@@ -1370,7 +1370,7 @@ test_16() {
     fi
     echo -e "  ${GREEN}Up from first item stays put (label skipped)${NC}"
 
-    # Enter LLM submenu — should see the label inside
+    # Enter LLM submenu - should see the label inside
     send_enter 0.5
     content=$(capture_pane -20)
     show_capture "LLM submenu with label" "$content" 10
@@ -1384,7 +1384,7 @@ test_16() {
     echo -e "  ${GREEN}Submenu label rendered${NC}"
 
     # Cursor should be on Default backend (first interactive), not the label.
-    # Press Up — should stay on Default backend.
+    # Press Up - should stay on Default backend.
     send_special Up 0.3
     content=$(capture_pane -20)
     if ! echo "$content" | grep -q "Default backend"; then
@@ -1430,7 +1430,7 @@ test_17() {
     show_capture "After Down past labels" "$content" 10
 
     # Username should be highlighted (inverse) on its own line.
-    # If the bug is present, the rendering is corrupted — items shift position.
+    # If the bug is present, the rendering is corrupted - items shift position.
     local username_line
     username_line=$(echo "$content" | grep -n "Username" | head -1)
     local telemetry_line
@@ -1442,14 +1442,14 @@ test_17() {
         return 1
     fi
 
-    # Now go back Up — should skip labels and land on Telemetry
+    # Now go back Up - should skip labels and land on Telemetry
     send_special Up 0.3
     sleep 0.3
     content=$(capture_pane -20)
     show_capture "After Up past labels" "$content" 10
 
     # Verify both items are visible and on separate lines (no rendering corruption).
-    # Extract line numbers for Telemetry and Username — they must not be on the same line.
+    # Extract line numbers for Telemetry and Username - they must not be on the same line.
     local tel_ln usr_ln
     tel_ln=$(echo "$content" | grep -n "Telemetry" | head -1 | cut -d: -f1)
     usr_ln=$(echo "$content" | grep -n "Username" | head -1 | cut -d: -f1)
@@ -1461,7 +1461,7 @@ test_17() {
     fi
 
     if [ "$tel_ln" = "$usr_ln" ]; then
-        assert_fail "Telemetry and Username on same line — display corruption (#522)"
+        assert_fail "Telemetry and Username on same line - display corruption (#522)"
         send_special Escape 0.5
         return 1
     fi

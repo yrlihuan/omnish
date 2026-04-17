@@ -112,9 +112,9 @@ shell提示检测器，使用正则表达式检测常见shell提示模式。
 
 确定最终 `command_line` 的优先级：
 
-1. **`osc_original_input`**（最高）— `history 1` 原始输入，保留别名（如 `ll`）
-2. **`osc_command_line`** — `$BASH_COMMAND`，已展开别名（如 `ls -la`）
-3. **`extract_command_line()`**（回退）— 从原始PTY输入字节回放编辑操作重建
+1. **`osc_original_input`**（最高）- `history 1` 原始输入，保留别名（如 `ll`）
+2. **`osc_command_line`** - `$BASH_COMMAND`，已展开别名（如 `ls -la`）
+3. **`extract_command_line()`**（回退）- 从原始PTY输入字节回放编辑操作重建
 
 ### `CommandTracker::feed_output_raw()`
 在OSC 133模式下收集原始输出。

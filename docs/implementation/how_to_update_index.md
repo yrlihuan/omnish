@@ -1,7 +1,7 @@
 ## Updating index.md
 Update index.md. This document describes the main components in each module doc and their functional responsibilities.
 For each component, focus on its functional responsibilities. The description should cover the key points of all sub-features.
-Avoid redundant information and keep the file small — index.md is loaded as a reference by the LLM in every task.
+Avoid redundant information and keep the file small - index.md is loaded as a reference by the LLM in every task.
 For incremental updates, do NOT include every change in the module docs. Ignore implementation details.
 
 ### What belongs in index.md

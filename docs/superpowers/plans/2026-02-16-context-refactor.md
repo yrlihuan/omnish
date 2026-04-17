@@ -117,14 +117,14 @@ Key changes from current code:
 - New `build_context()` free function as orchestrator
 - `strip_ansi` moved from `recent.rs` to `lib.rs` (public, used by orchestrator)
 
-**Step 2: Verify it compiles (will fail — recent.rs uses old trait, that's Task 2)**
+**Step 2: Verify it compiles (will fail - recent.rs uses old trait, that's Task 2)**
 
 Run: `cargo check -p omnish-context 2>&1 | head -5`
 Expected: errors in recent.rs (expected, fixed in Task 2)
 
 **Step 3: Commit**
 
-Do NOT commit yet — wait for Task 2 to fix recent.rs first.
+Do NOT commit yet - wait for Task 2 to fix recent.rs first.
 
 ---
 

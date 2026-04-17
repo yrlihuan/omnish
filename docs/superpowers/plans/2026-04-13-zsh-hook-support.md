@@ -12,10 +12,10 @@
 
 ## File Structure
 
-- **Modify:** `crates/omnish-client/src/shell_hook.rs` — add `ZSH_HOOK` constant and `install_zsh_hook()`
-- **Modify:** `crates/omnish-client/src/main.rs` — shell type detection, zsh hook installation, `ZDOTDIR` env setup
-- **Modify:** `tools/integration_tests/lib.sh` — `TEST_SHELL` parameterization, zsh prompt detection
-- **Modify:** `.gitlab-ci.yml` — new `integration-test-zsh` job
+- **Modify:** `crates/omnish-client/src/shell_hook.rs` - add `ZSH_HOOK` constant and `install_zsh_hook()`
+- **Modify:** `crates/omnish-client/src/main.rs` - shell type detection, zsh hook installation, `ZDOTDIR` env setup
+- **Modify:** `tools/integration_tests/lib.sh` - `TEST_SHELL` parameterization, zsh prompt detection
+- **Modify:** `.gitlab-ci.yml` - new `integration-test-zsh` job
 
 ---
 
@@ -30,7 +30,7 @@ Add below `BASH_HOOK` in `shell_hook.rs`:
 
 ```rust
 const ZSH_HOOK: &str = r#"
-# omnish shell integration — OSC 133 semantic prompts for zsh
+# omnish shell integration - OSC 133 semantic prompts for zsh
 emulate -L zsh
 
 __omnish_preexec_fired=0
@@ -145,7 +145,7 @@ Add to the existing test module:
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-client --release -- shell_hook`
-Expected: FAIL — `install_zsh_hook` not found.
+Expected: FAIL - `install_zsh_hook` not found.
 
 - [ ] **Step 3: Implement install_zsh_hook()**
 
@@ -208,7 +208,7 @@ pub fn install_zsh_hook(shell: &str) -> Option<PathBuf> {
 
 - [ ] **Step 4: Update test_non_bash_returns_none to reflect new behavior**
 
-The existing test `test_non_bash_returns_none` asserts that zsh returns None from `install_bash_hook`. This is still correct — `install_bash_hook("/bin/zsh")` should return None. No change needed.
+The existing test `test_non_bash_returns_none` asserts that zsh returns None from `install_bash_hook`. This is still correct - `install_bash_hook("/bin/zsh")` should return None. No change needed.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -478,7 +478,7 @@ git commit -m "ci: add integration-test-zsh job (#462)"
 
 ### Task 6: Manual end-to-end validation
 
-This task is manual — run omnish under zsh locally and verify the hook works.
+This task is manual - run omnish under zsh locally and verify the hook works.
 
 - [ ] **Step 1: Build**
 
@@ -493,8 +493,8 @@ SHELL=/bin/zsh ./target/release/omnish
 
 Verify:
 1. Zsh prompt appears normally
-2. Run a command (e.g. `ls`) — check that omnish tracks it (`:` → `/debug session` should show command count > 0)
-3. Enter chat mode with `:` — verify it works
+2. Run a command (e.g. `ls`) - check that omnish tracks it (`:` → `/debug session` should show command count > 0)
+3. Enter chat mode with `:` - verify it works
 4. Ghost text completions appear (requires daemon with LLM configured)
 
 - [ ] **Step 3: Run integration tests under both shells**

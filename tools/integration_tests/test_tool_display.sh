@@ -54,7 +54,7 @@ test_1() {
     local stripped
     stripped=$(echo "$content" | sed 's/\x1b\[[0-9;]*m//g')
 
-    # Count "● Bash(" occurrences — each tool execution should have exactly one
+    # Count "● Bash(" occurrences - each tool execution should have exactly one
     local header_count
     header_count=$(echo "$stripped" | grep -cE '● Bash\(' || true)
 
@@ -85,7 +85,7 @@ test_2() {
     send_keys ":" 0.5
     wait_for_prompt
 
-    # Generate a string ~500 chars long — at 80 cols, prefix "  └  " (or "  ⎿  ") = 5 chars,
+    # Generate a string ~500 chars long - at 80 cols, prefix "  └  " (or "  ⎿  ") = 5 chars,
     # so content area is 75 chars/row. 3 rows = 225 chars. 500 chars >> 3 rows.
     local long_str
     long_str=$(seq -s '' 1 200 | head -c 500)
@@ -125,7 +125,7 @@ test_2() {
     else
         # Check if the full 500-char string is present (not truncated)
         if echo "$output_line" | grep -q "$long_str"; then
-            assert_fail "Output not truncated — full string present"
+            assert_fail "Output not truncated - full string present"
             return 1
         fi
         assert_pass "Output appears truncated (no … but string is shorter)"

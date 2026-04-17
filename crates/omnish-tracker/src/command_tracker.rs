@@ -215,7 +215,7 @@ impl CommandTracker {
                 }
             }
             Osc133EventKind::OutputStart => {
-                // No special action — output collection happens via feed_output_raw
+                // No special action - output collection happens via feed_output_raw
             }
             Osc133EventKind::CommandEnd { exit_code } => {
                 if let Some(pending) = self.pending.take() {
@@ -260,11 +260,11 @@ fn extract_command_line(input: &[u8]) -> Option<String> {
         }
         match esc_state {
             1 => {
-                // After ESC: if '[' start CSI, otherwise single-char escape — skip both
+                // After ESC: if '[' start CSI, otherwise single-char escape - skip both
                 if b == b'[' {
                     esc_state = 2;
                 } else {
-                    esc_state = 0; // ESC + one char (e.g. ESC O A) — done
+                    esc_state = 0; // ESC + one char (e.g. ESC O A) - done
                 }
                 continue;
             }
@@ -272,7 +272,7 @@ fn extract_command_line(input: &[u8]) -> Option<String> {
                 // Inside CSI: consume parameter bytes (0x20..=0x3f) and
                 // terminate on a letter (0x40..=0x7e)
                 if (0x40..=0x7e).contains(&b) {
-                    esc_state = 0; // final byte — sequence complete
+                    esc_state = 0; // final byte - sequence complete
                 }
                 continue;
             }
@@ -411,7 +411,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Bug reproduction tests — based on real terminal data from omnish-commands
+    // Bug reproduction tests - based on real terminal data from omnish-commands
     // -----------------------------------------------------------------------
 
     /// Bug 1: extract_command_line includes interactive keystrokes after \r.
@@ -625,7 +625,7 @@ mod tests {
 
     #[test]
     fn test_esc_skipped_in_extract() {
-        // Arrow up sends ESC [ A — extract_command_line should skip the whole sequence
+        // Arrow up sends ESC [ A - extract_command_line should skip the whole sequence
         let result = extract_command_line(b"\x1b[A\r");
         assert_eq!(result, None, "ESC sequences should not produce command text");
 
@@ -804,7 +804,7 @@ mod tests {
         );
         // Now pending is None
 
-        // CommandStart arrives without a pending — should recover
+        // CommandStart arrives without a pending - should recover
         tracker.feed_osc133(
             Osc133Event {
                 kind: Osc133EventKind::CommandStart {

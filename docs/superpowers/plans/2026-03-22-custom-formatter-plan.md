@@ -36,8 +36,8 @@
 - [ ] **Step 1: Create `crates/omnish-plugin/src/formatter.rs`**
 
 Move from `crates/omnish-daemon/src/formatter.rs`:
-- `FormatInput` struct (remove `display_name` and `status_template` — those are handled by ToolRegistry, not formatter)
-- `FormatOutput` struct (remove `status_icon` and `param_desc` — `status_icon` is derived from output/is_error by caller, `param_desc` from ToolRegistry)
+- `FormatInput` struct (remove `display_name` and `status_template` - those are handled by ToolRegistry, not formatter)
+- `FormatOutput` struct (remove `status_icon` and `param_desc` - `status_icon` is derived from output/is_error by caller, `param_desc` from ToolRegistry)
 - `ToolFormatter` trait
 - Helper functions: `head_lines`, `all_lines`, `truncate_lines`
 - `DefaultFormatter`, `ReadFormatter`, `EditFormatter` (and their helpers: `edit_summary`, `parse_replace_count`, `format_numbered_diff`)
@@ -238,7 +238,7 @@ let status_icon = if result.is_error { StatusIcon::Error } else { StatusIcon::Su
 
 The `param_desc` is already computed separately via `tool_registry.status_text()` at some call sites; at others, use `interpolate_template` (which already exists in tool_registry.rs).
 
-For the pre-execution case (output=None), no formatter call is needed — just send Running icon with param_desc.
+For the pre-execution case (output=None), no formatter call is needed - just send Running icon with param_desc.
 
 - [ ] **Step 3: Remove old `formatter.rs` and its `pub mod` declaration**
 
@@ -400,7 +400,7 @@ impl ExternalFormatter {
                     _ => break,
                 }
             }
-            // Channel closed or process died — kill child
+            // Channel closed or process died - kill child
             let _ = child.kill().await;
         });
 

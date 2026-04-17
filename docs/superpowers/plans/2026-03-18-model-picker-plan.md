@@ -205,7 +205,7 @@ impl MultiBackend {
                 // Check use-case backends first, then check if it matches default
                 backends.values().next().cloned()
             })
-            // For now, we need a different approach — store named backends separately
+            // For now, we need a different approach - store named backends separately
     }
 }
 ```
@@ -241,7 +241,7 @@ for (name, cfg) in &llm_config.backends {
 }
 ```
 
-Note: backends are already created in the use_case loop — to avoid double-creation, create all backends once, then map use_cases to them:
+Note: backends are already created in the use_case loop - to avoid double-creation, create all backends once, then map use_cases to them:
 
 ```rust
 // First pass: create all backends
@@ -307,7 +307,7 @@ git commit -m "feat: add list_backends and get_backend_by_name to MultiBackend (
 
 - [ ] **Step 1: Store LlmConfig in DaemonServer**
 
-Not LlmConfig directly — store a reference to the `MultiBackend` (which already has `list_backends`). Actually, the LLM backend is already stored as `Option<Arc<dyn LlmBackend>>`. We need to downcast to `MultiBackend` — that's messy.
+Not LlmConfig directly - store a reference to the `MultiBackend` (which already has `list_backends`). Actually, the LLM backend is already stored as `Option<Arc<dyn LlmBackend>>`. We need to downcast to `MultiBackend` - that's messy.
 
 Better approach: pass `handle_builtin_command` the `llm` reference, and add a `list_backends` method to the `LlmBackend` trait (with a default empty implementation), so `MultiBackend` can override it.
 
@@ -389,7 +389,7 @@ if let Some(ref model_name) = cm.model {
     conv_mgr.save_meta(&cm.thread_id, &meta);
 }
 
-// Model-only message (no query) — just acknowledge
+// Model-only message (no query) - just acknowledge
 if cm.query.is_empty() {
     return vec![Message::Ack];
 }
@@ -588,7 +588,7 @@ async fn handle_model(&mut self, session_id: &str, rpc: &RpcClient) {
             let display_name = &item_strings[idx];
 
             if let Some(ref tid) = self.current_thread_id {
-                // Existing thread — send model-only ChatMessage
+                // Existing thread - send model-only ChatMessage
                 let rid = Uuid::new_v4().to_string()[..8].to_string();
                 let msg = Message::ChatMessage(omnish_protocol::message::ChatMessage {
                     request_id: rid.clone(),
@@ -606,12 +606,12 @@ async fn handle_model(&mut self, session_id: &str, rpc: &RpcClient) {
                     }
                 }
             } else {
-                // New thread — defer model selection to first message
+                // New thread - defer model selection to first message
                 self.pending_model = Some(name);
                 write_stdout(&format!("\x1b[2;90mModel set to {} (will apply on first message)\x1b[0m\r\n", display_name));
             }
         }
-        _ => {} // ESC or no selection — do nothing
+        _ => {} // ESC or no selection - do nothing
     }
 }
 ```
@@ -662,12 +662,12 @@ Expected: PASS
 
 1. Start daemon, start client
 2. Enter chat mode (`:`)
-3. Type `/model` — should show picker with backends from `daemon.toml`, current one pre-selected
-4. Select a different model — should show "Switched to ..."
-5. Send a message — should use the selected model (check daemon logs)
-6. Exit chat, re-enter, `/resume` the thread — model should still be set
-7. Type `/model` on a fresh thread (before first message) — should show picker, selection deferred
-8. Send first message — should use the selected model
+3. Type `/model` - should show picker with backends from `daemon.toml`, current one pre-selected
+4. Select a different model - should show "Switched to ..."
+5. Send a message - should use the selected model (check daemon logs)
+6. Exit chat, re-enter, `/resume` the thread - model should still be set
+7. Type `/model` on a fresh thread (before first message) - should show picker, selection deferred
+8. Send first message - should use the selected model
 
 - [ ] **Step 4: Commit and close issue**
 

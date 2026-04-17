@@ -349,7 +349,7 @@ fn spawn_connection<R, W, F>(
                     let buf = match io_result {
                         Ok(b) => b,
                         Err(e) => {
-                            // IO error (EOF, connection reset, etc.) — close connection
+                            // IO error (EOF, connection reset, etc.) - close connection
                             let msg = e.to_string().to_lowercase();
                             if !msg.contains("eof") && !msg.contains("end of file") {
                                 tracing::warn!("conn#{}: read_frame failed: {}", conn_id, e);
@@ -362,7 +362,7 @@ fn spawn_connection<R, W, F>(
                         Ok(f) => f,
                         Err(e) => {
                             // Deserialization error (e.g. unknown message variant from
-                            // a newer peer) — skip this frame, keep connection alive.
+                            // a newer peer) - skip this frame, keep connection alive.
                             tracing::debug!("frame deserialization error ({} bytes), skipping: {}", buf.len(), e);
                             continue;
                         }
@@ -387,7 +387,7 @@ fn spawn_connection<R, W, F>(
                         let (tx, mut rx) = mpsc::channel::<Message>(16);
                         let request_id = frame.request_id;
 
-                        // Spawn handler — it sends messages through tx
+                        // Spawn handler - it sends messages through tx
                         tokio::spawn(async move {
                             handler(frame.payload, tx).await;
                             // tx is dropped when handler completes
@@ -577,7 +577,7 @@ mod tests {
             })),
         );
 
-        // Each client gets its own response — no cross-talk
+        // Each client gets its own response - no cross-talk
         match resp_a.unwrap() {
             Message::Response(r) => assert_eq!(r.content, "echo: from A"),
             other => panic!("expected Response, got {:?}", other),
@@ -836,13 +836,13 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        // Connect but don't send anything — server should timeout after 5s
+        // Connect but don't send anything - server should timeout after 5s
         let client = RpcClient::connect_unix(&sock_str).await.unwrap();
 
         // Wait for server to timeout the connection
         tokio::time::sleep(std::time::Duration::from_secs(6)).await;
 
-        // Now try to send something — should fail since server closed the connection
+        // Now try to send something - should fail since server closed the connection
         let resp = client
             .call(Message::SessionStart(SessionStart {
                 session_id: "s1".into(),

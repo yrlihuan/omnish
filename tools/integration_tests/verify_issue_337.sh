@@ -10,7 +10,7 @@
 #
 # Tests that:
 #   1. Open /test picker 8 (pre-selected at scrolled position)
-#   2. Press Up arrow — no duplicate items should appear
+#   2. Press Up arrow - no duplicate items should appear
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -82,7 +82,7 @@ test_1() {
     show_capture "Picker (pre-selected at 8)" "$picker1" 15
 
     if echo "$stripped1" | grep -q "▲.*more"; then
-        echo -e "  ${GREEN}Scroll indicator (▲) detected — scroll scenario active${NC}"
+        echo -e "  ${GREEN}Scroll indicator (▲) detected - scroll scenario active${NC}"
     fi
 
     # Verify no duplicates in initial render

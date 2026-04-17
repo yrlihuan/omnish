@@ -63,7 +63,7 @@ fn test_session_start_without_parent() {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-protocol`
-Expected: FAIL — `parent_session_id` field does not exist
+Expected: FAIL - `parent_session_id` field does not exist
 
 **Step 3: Add field to `SessionStart`**
 
@@ -129,7 +129,7 @@ fn test_session_meta_with_parent() {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-store`
-Expected: FAIL — `parent_session_id` field does not exist
+Expected: FAIL - `parent_session_id` field does not exist
 
 **Step 3: Add field to `SessionMeta`**
 
@@ -188,7 +188,7 @@ async fn test_session_register_with_parent() {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-daemon`
-Expected: FAIL — `register` doesn't accept `parent_session_id`
+Expected: FAIL - `register` doesn't accept `parent_session_id`
 
 **Step 3: Update `register` signature and implementation**
 
@@ -266,7 +266,7 @@ fn test_pty_env_var_propagated() {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-pty`
-Expected: FAIL — `spawn_with_env` doesn't exist
+Expected: FAIL - `spawn_with_env` doesn't exist
 
 **Step 3: Add `spawn_with_env` to `PtyProxy`**
 

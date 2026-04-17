@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 const BASH_HOOK: &str = r#"
-# omnish shell integration — OSC 133 semantic prompts
+# omnish shell integration - OSC 133 semantic prompts
 __omnish_preexec_fired=0
 __omnish_in_precmd=0
 
@@ -12,10 +12,10 @@ __omnish_prompt_cmd() {
   printf '\033]133;A\007'
 }
 # Bracket PROMPT_COMMAND:
-#   1. __omnish_last_ec=$? — capture exit code (must be first; assignments reset $?)
+#   1. __omnish_last_ec=$? - capture exit code (must be first; assignments reset $?)
 #      Also sets in_precmd guard in same compound assignment to avoid extra $? reset.
 #   2. <user's PROMPT_COMMAND entries>
-#   3. __omnish_prompt_cmd — emit OSC 133 D+A, reset flags
+#   3. __omnish_prompt_cmd - emit OSC 133 D+A, reset flags
 # Strip trailing semicolons/whitespace to avoid ";;" syntax errors.
 __omnish_pc="$PROMPT_COMMAND"
 while [[ "$__omnish_pc" =~ [[:space:]\;]$ ]]; do __omnish_pc="${__omnish_pc%?}"; done
@@ -54,7 +54,7 @@ trap '__omnish_preexec' DEBUG
 "#;
 
 const ZSH_HOOK: &str = r#"
-# omnish shell integration — OSC 133 semantic prompts for zsh
+# omnish shell integration - OSC 133 semantic prompts for zsh
 emulate -L zsh
 
 __omnish_preexec_fired=0
@@ -116,7 +116,7 @@ pub fn install_bash_hook(shell: &str) -> Option<PathBuf> {
     let should_write = match std::fs::read(&hook_path) {
         Ok(existing) => existing != BASH_HOOK.as_bytes(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
-        Err(_) => false, // other error (e.g., permission) — skip writing
+        Err(_) => false, // other error (e.g., permission) - skip writing
     };
     if should_write {
         std::fs::write(&hook_path, BASH_HOOK).ok()?;
@@ -141,7 +141,7 @@ pub fn install_bash_hook(shell: &str) -> Option<PathBuf> {
     let should_write_rc = match std::fs::read(&rcfile_path) {
         Ok(existing) => existing != content.as_bytes(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
-        Err(_) => false, // other error — skip writing
+        Err(_) => false, // other error - skip writing
     };
     if should_write_rc {
         std::fs::write(&rcfile_path, &content).ok()?;

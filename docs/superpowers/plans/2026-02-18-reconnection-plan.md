@@ -70,7 +70,7 @@ async fn test_register_idempotent_reuses_existing_session() {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-daemon test_register_idempotent`
-Expected: FAIL — second `register()` overwrites session, losing the command.
+Expected: FAIL - second `register()` overwrites session, losing the command.
 
 **Step 3: Implement idempotent register**
 
@@ -150,7 +150,7 @@ git commit -m "feat(daemon): make register() idempotent for reconnection support
 **Files:**
 - Modify: `crates/omnish-transport/src/rpc_client.rs`
 
-This task restructures RpcClient's internals so that the connection (mpsc sender, background tasks) can be replaced at runtime. No new public API yet — just internal refactoring.
+This task restructures RpcClient's internals so that the connection (mpsc sender, background tasks) can be replaced at runtime. No new public API yet - just internal refactoring.
 
 **Step 1: Run existing tests to establish baseline**
 
@@ -368,7 +368,7 @@ Add to the tests module in `rpc_client.rs`:
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-transport test_rpc_client_reconnects -- --nocapture`
-Expected: FAIL — `connect_unix_with_reconnect` doesn't exist.
+Expected: FAIL - `connect_unix_with_reconnect` doesn't exist.
 
 **Step 3: Implement `connect_unix_with_reconnect`**
 
@@ -408,7 +408,7 @@ impl RpcClient {
         // Spawn reconnect monitor
         let inner_ref = client.inner.clone();
         let addr = addr.to_string();
-        let next_id_ref = Arc::new(AtomicU64::new(0)); // shared with client? No — we need to detect disconnection.
+        let next_id_ref = Arc::new(AtomicU64::new(0)); // shared with client? No - we need to detect disconnection.
         // Actually, we monitor the write/read tasks. When they exit, inner.connected becomes false.
         // We need a notification mechanism. Let's use a watch channel.
 
@@ -514,7 +514,7 @@ This is getting complex in the plan text. Let me restructure. The key insight is
 2. Loop: try to reconnect with backoff
 3. On success: create new Inner, call on_reconnect, replace client.inner
 
-Since `on_reconnect` receives `&RpcClient`, we need a temporary client wrapping the new inner for the callback. But simpler: `on_reconnect` just needs `call()`. So we can pass the new inner's tx channel directly, or better — create a temporary RpcClient pointing at the new inner, call on_reconnect, then if successful, swap the client's inner.
+Since `on_reconnect` receives `&RpcClient`, we need a temporary client wrapping the new inner for the callback. But simpler: `on_reconnect` just needs `call()`. So we can pass the new inner's tx channel directly, or better - create a temporary RpcClient pointing at the new inner, call on_reconnect, then if successful, swap the client's inner.
 
 Let me write the actual implementation more carefully:
 
@@ -600,7 +600,7 @@ Let me write the actual implementation more carefully:
                 continue;
             }
 
-            // Success — swap inner
+            // Success - swap inner
             let new_inner = Arc::try_unwrap(temp_client.inner)
                 .expect("temp_client is sole owner")
                 .into_inner();

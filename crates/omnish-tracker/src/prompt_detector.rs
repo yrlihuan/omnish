@@ -107,7 +107,7 @@ pub fn strip_ansi(data: &[u8]) -> Vec<u8> {
                     i += 1;
                 }
             } else {
-                // Other ESC sequence (e.g. ESC c) — skip ESC + one byte
+                // Other ESC sequence (e.g. ESC c) - skip ESC + one byte
                 i += 2;
             }
         } else {

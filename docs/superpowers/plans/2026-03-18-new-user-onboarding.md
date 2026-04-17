@@ -4,7 +4,7 @@
 
 **Goal:** Guide new users through omnish's key features via install.sh summary and a first-launch welcome message.
 
-**Architecture:** Two-phase approach — install.sh prints post-install summary (directory, deployed clients, startup command), and the omnish client prints a welcome message on first launch. The `onboarded` flag is tracked in `client.toml` using `toml_edit` for format-preserving writes.
+**Architecture:** Two-phase approach - install.sh prints post-install summary (directory, deployed clients, startup command), and the omnish client prints a welcome message on first launch. The `onboarded` flag is tracked in `client.toml` using `toml_edit` for format-preserving writes.
 
 **Tech Stack:** Rust, toml_edit, bash (install.sh)
 

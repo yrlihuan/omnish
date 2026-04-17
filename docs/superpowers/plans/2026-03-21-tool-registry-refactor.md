@@ -4,7 +4,7 @@
 
 **Goal:** Extract a unified ToolRegistry from PluginManager that manages metadata for ALL tools (plugin tools + built-in tools like CommandQueryTool) so that server.rs doesn't need `is_command_query` branching.
 
-**Architecture:** ToolRegistry owns all tool metadata (definitions, display_name, formatter, status_template, custom status_text). PluginManager retains plugin loading/disk scanning/executable paths. Server uses ToolRegistry uniformly for both plugin and built-in tools — tool execution dispatch remains in server.rs.
+**Architecture:** ToolRegistry owns all tool metadata (definitions, display_name, formatter, status_template, custom status_text). PluginManager retains plugin loading/disk scanning/executable paths. Server uses ToolRegistry uniformly for both plugin and built-in tools - tool execution dispatch remains in server.rs.
 
 **Tech Stack:** Rust, serde_json, existing PluginManager/formatter/CommandQueryTool infrastructure.
 
@@ -147,7 +147,7 @@ mod tests {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-daemon tool_registry`
-Expected: FAIL — module doesn't exist yet
+Expected: FAIL - module doesn't exist yet
 
 - [ ] **Step 3: Write ToolRegistry implementation**
 
@@ -181,9 +181,9 @@ pub struct ToolMeta {
 /// only `update_overrides()` is called at runtime (RwLock-protected fields).
 ///
 /// Provides:
-/// - `display_name()`, `formatter_name()`, `status_text()` — UI metadata
-/// - `plugin_type()`, `plugin_name()` — execution routing
-/// - `all_defs()` — tool definitions for LLM prompt (with description overrides)
+/// - `display_name()`, `formatter_name()`, `status_text()` - UI metadata
+/// - `plugin_type()`, `plugin_name()` - execution routing
+/// - `all_defs()` - tool definitions for LLM prompt (with description overrides)
 ///
 /// Does NOT own:
 /// - Tool execution logic (server.rs decides how to call tools)
@@ -365,7 +365,7 @@ fn test_register_all_populates_registry() {
     // Custom plugin tool
     assert_eq!(reg.display_name("my_tool"), "MyTool");
     assert_eq!(reg.formatter_name("my_tool"), "default");
-    // Built-in tool (from embedded tool.json — "bash" has display_name "Bash")
+    // Built-in tool (from embedded tool.json - "bash" has display_name "Bash")
     assert_eq!(reg.display_name("bash"), "Bash");
     // Definitions should be registered
     let defs = reg.all_defs();
@@ -377,7 +377,7 @@ fn test_register_all_populates_registry() {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-daemon test_register_all`
-Expected: FAIL — `register_all` doesn't exist
+Expected: FAIL - `register_all` doesn't exist
 
 - [ ] **Step 3: Implement register_all on PluginManager**
 
@@ -458,15 +458,15 @@ fn test_register_custom_status_text() {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-daemon test_register_command_query`
-Expected: FAIL — `register` doesn't exist
+Expected: FAIL - `register` doesn't exist
 
 - [ ] **Step 3: Implement CommandQueryTool::register()**
 
-Add a static method that registers both tool metadata and definitions. The tool definitions here are the canonical source — the existing `definitions()` instance method will be removed in Task 7.
+Add a static method that registers both tool metadata and definitions. The tool definitions here are the canonical source - the existing `definitions()` instance method will be removed in Task 7.
 
 ```rust
 /// Register command query tool metadata and definitions with a ToolRegistry.
-/// This is a static method — it doesn't need a CommandQueryTool instance.
+/// This is a static method - it doesn't need a CommandQueryTool instance.
 pub fn register(registry: &mut crate::tool_registry::ToolRegistry) {
     use crate::tool_registry::{ToolMeta, CustomStatusFn};
     use std::sync::Arc;
@@ -565,7 +565,7 @@ git commit -m "feat: add CommandQueryTool::register() for ToolRegistry"
 
 ---
 
-### Task 4: Wire ToolRegistry into Server — Replace Metadata Queries
+### Task 4: Wire ToolRegistry into Server - Replace Metadata Queries
 
 **Files:**
 - Modify: `crates/omnish-daemon/src/server.rs`
@@ -614,9 +614,9 @@ To:
 let tools = tool_registry.all_defs();
 ```
 
-Update `build_chat_setup` signature to accept `&ToolRegistry` instead of `&PluginManager` (for the tools list only — the function still creates `CommandQueryTool` for execution).
+Update `build_chat_setup` signature to accept `&ToolRegistry` instead of `&PluginManager` (for the tools list only - the function still creates `CommandQueryTool` for execution).
 
-- [ ] **Step 3: Update `run_agent_loop` pre-execution metadata — remove `is_command_query` branches**
+- [ ] **Step 3: Update `run_agent_loop` pre-execution metadata - remove `is_command_query` branches**
 
 Replace the pre-execution metadata block (lines ~1130-1152):
 
@@ -654,11 +654,11 @@ let mut fmt_out = fmt.format(&FormatInput {
 fmt_out.param_desc = tool_registry.status_text(&tc.name, &tc.input);
 ```
 
-Note: `status_text()` is now called unconditionally — for plugin tools it interpolates the template (same result as before), for built-in tools it calls the custom function.
+Note: `status_text()` is now called unconditionally - for plugin tools it interpolates the template (same result as before), for built-in tools it calls the custom function.
 
 - [ ] **Step 4: Update `run_agent_loop` post-execution metadata block (lines ~1225-1259)**
 
-Same pattern — remove `is_command_query` check, use `tool_registry` uniformly:
+Same pattern - remove `is_command_query` check, use `tool_registry` uniformly:
 
 ```rust
 let post_fmt = formatter::get_formatter(tool_registry.formatter_name(&tc.name));
@@ -699,7 +699,7 @@ let status_template = tool_registry.status_template(&tc.name).to_string();
 
 Update `handle_tool_result` signature to accept `&Arc<ToolRegistry>`.
 
-- [ ] **Step 6: Update execution dispatch — use plugin_type for routing**
+- [ ] **Step 6: Update execution dispatch - use plugin_type for routing**
 
 The execution dispatch (line ~1212) uses `is_command_query` to decide whether to call `command_query_tool.execute()` or `plugin_executable()`. Replace with `plugin_type()` check:
 
@@ -721,7 +721,7 @@ let mut result = if tc.name == "omnish_list_history" || tc.name == "omnish_get_o
 To:
 ```rust
 let mut result = if tool_registry.plugin_type(&tc.name).is_some() {
-    // Plugin tool — execute via plugin executable
+    // Plugin tool - execute via plugin executable
     if let Some(exe) = plugin_mgr.plugin_executable(&tc.name) {
         execute_daemon_plugin(&exe, &tc.name, &merged_input).await
     } else {
@@ -732,7 +732,7 @@ let mut result = if tool_registry.plugin_type(&tc.name).is_some() {
         }
     }
 } else if tool_registry.is_known(&tc.name) {
-    // Known built-in tool (no plugin) — execute directly
+    // Known built-in tool (no plugin) - execute directly
     state.command_query_tool.execute(&tc.name, &merged_input)
 } else {
     // Completely unknown tool
@@ -833,9 +833,9 @@ let param_desc = if param_desc.is_empty() { fmt_out.param_desc } else { param_de
 - [ ] **Step 3: Update all callers of reconstruct_history**
 
 There are 3 call sites:
-1. `build_resume_response()` at line ~1613 — update signature to take `&ToolRegistry`
-2. ChatStart handler at line ~578 — pass `tool_registry` instead of `plugin_mgr`
-3. ChatStart auto-resume handler at line ~653 — pass `tool_registry` instead of `plugin_mgr`
+1. `build_resume_response()` at line ~1613 - update signature to take `&ToolRegistry`
+2. ChatStart handler at line ~578 - pass `tool_registry` instead of `plugin_mgr`
+3. ChatStart auto-resume handler at line ~653 - pass `tool_registry` instead of `plugin_mgr`
 
 Update `build_resume_response`:
 ```rust
@@ -950,30 +950,30 @@ Remove these methods (now served by ToolRegistry):
 Also remove the now-unused `interpolate_template` function from `plugin.rs` (the canonical version is in `tool_registry.rs`).
 
 Keep:
-- `load()` — plugin loading from disk
-- `plugin_executable()` — returns executable path for a tool's plugin
-- `reload_overrides()` — re-reads override files (now returns tuple)
-- `watch_with()` — file watcher
-- `register_all()` — populates ToolRegistry
+- `load()` - plugin loading from disk
+- `plugin_executable()` - returns executable path for a tool's plugin
+- `reload_overrides()` - re-reads override files (now returns tuple)
+- `watch_with()` - file watcher
+- `register_all()` - populates ToolRegistry
 
 - [ ] **Step 2: Remove redundant methods from CommandQueryTool**
 
 Remove these methods (now served by ToolRegistry):
-- `definitions()` — tool defs are now registered via `CommandQueryTool::register()`
-- `display_name()` — now in registry
-- `status_text()` — now in registry via `custom_status`
+- `definitions()` - tool defs are now registered via `CommandQueryTool::register()`
+- `display_name()` - now in registry
+- `status_text()` - now in registry via `custom_status`
 
 Keep:
-- `new()` — creates instance with live command data
-- `list_history()` — used by server for `/history` command
-- `build_system_reminder()` — used by server for system-reminder injection
-- `execute()` — executes tool calls at runtime
-- `register()` — registers metadata with ToolRegistry
+- `new()` - creates instance with live command data
+- `list_history()` - used by server for `/history` command
+- `build_system_reminder()` - used by server for system-reminder injection
+- `execute()` - executes tool calls at runtime
+- `register()` - registers metadata with ToolRegistry
 
 - [ ] **Step 3: Update any remaining references in server.rs**
 
 Ensure server.rs no longer calls any removed PluginManager or CommandQueryTool methods. The only PluginManager methods server.rs should call are:
-- `plugin_executable()` — for tool execution
+- `plugin_executable()` - for tool execution
 
 - [ ] **Step 4: Update tests**
 

@@ -6,8 +6,8 @@
 # visual rows (from wrapping or multi-line input).
 #
 # Test cases:
-#   1. Early cancel with wrapping input — check for orphaned echo lines
-#   2. Early cancel with short input — baseline (single row, should work)
+#   1. Early cancel with wrapping input - check for orphaned echo lines
+#   2. Early cancel with short input - baseline (single row, should work)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -15,8 +15,8 @@ source "$SCRIPT_DIR/lib.sh"
 show_usage() {
     cat <<EOF
 Test cases:
-  1. Early cancel with wrapping input — orphaned line detection (#537)
-  2. Early cancel with short input — baseline (single row)
+  1. Early cancel with wrapping input - orphaned line detection (#537)
+  2. Early cancel with short input - baseline (single row)
 EOF
 }
 
@@ -44,7 +44,7 @@ test_1() {
     send_keys "$msg" 0.3
     send_enter 0.1
 
-    # Cancel early — before the LLM has a chance to respond.
+    # Cancel early - before the LLM has a chance to respond.
     sleep 0.1
     echo -e "  Sending Ctrl-C to cancel early..."
     send_special C-c 1
@@ -75,7 +75,7 @@ test_1() {
     fi
 }
 
-# ── Test 2: Early cancel with short (non-wrapping) input — baseline ─────
+# ── Test 2: Early cancel with short (non-wrapping) input - baseline ─────
 # A short input fits on 1 visual row.  The existing single-line erase is
 # sufficient, so this should always pass.
 test_2() {

@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: Create `omnish-store/src/sample.rs` — types and edit distance
+### Task 1: Create `omnish-store/src/sample.rs` - types and edit distance
 
 **Files:**
 - Create: `crates/omnish-store/src/sample.rs`
@@ -316,7 +316,7 @@ pub struct SessionManager {
     history_frozen_until: RwLock<Option<u64>>,
     last_completion_context: RwLock<String>,
     sample_writer: mpsc::Sender<CompletionSample>,        // NEW
-    last_sample_time: Mutex<Option<Instant>>,              // NEW — global rate limit
+    last_sample_time: Mutex<Option<Instant>>,              // NEW - global rate limit
 }
 ```
 

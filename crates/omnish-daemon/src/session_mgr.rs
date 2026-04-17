@@ -929,7 +929,7 @@ impl SessionManager {
             (cmds, path, hostnames)
         };
 
-        // Build context outside all locks — expensive I/O happens here
+        // Build context outside all locks - expensive I/O happens here
         let reader = FileStreamReader { stream_path };
         let cc = &self.context_config;
 
@@ -1044,7 +1044,7 @@ impl SessionManager {
             (cmds, path, hostnames)
         };
 
-        // Build context outside all locks — expensive I/O happens here
+        // Build context outside all locks - expensive I/O happens here
         let reader = FileStreamReader { stream_path };
         let cc = &self.context_config;
 
@@ -1396,7 +1396,7 @@ impl SessionManager {
         let total = selected_commands.len();
         let strategy = RecentCommands::new(total);
 
-        // No character limit — build directly
+        // No character limit - build directly
         if max_context_chars.is_none() {
             return omnish_context::build_context_with_session(
                 &strategy,
@@ -1412,7 +1412,7 @@ impl SessionManager {
             .await;
         }
 
-        // With character limit — reduce detailed first, then history
+        // With character limit - reduce detailed first, then history
         let max_chars = max_context_chars.unwrap();
         let mut current_detailed = detailed_count;
         let mut current_history = total.saturating_sub(detailed_count);
@@ -1471,7 +1471,7 @@ impl SessionManager {
         let old_context = std::mem::replace(&mut *cached, new_context.clone());
 
         if old_context.is_empty() {
-            // First build — no previous context to compare against
+            // First build - no previous context to compare against
             return Ok(None);
         }
 

@@ -12,10 +12,10 @@
 
 ## File Structure
 
-- **Create:** `install.sh` — main install script (root of repo)
-- **Create:** `scripts/build-tar.sh` — helper to build the tar archive in CI
-- **Modify:** `.gitlab-ci.yml` — update build-release to produce tar.gz
-- **Modify:** `crates/omnish-daemon/src/main.rs` — add `--init-credentials` flag
+- **Create:** `install.sh` - main install script (root of repo)
+- **Create:** `scripts/build-tar.sh` - helper to build the tar archive in CI
+- **Modify:** `.gitlab-ci.yml` - update build-release to produce tar.gz
+- **Modify:** `crates/omnish-daemon/src/main.rs` - add `--init-credentials` flag
 
 ---
 

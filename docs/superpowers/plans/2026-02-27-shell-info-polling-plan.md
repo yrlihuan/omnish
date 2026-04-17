@@ -49,7 +49,7 @@ Add to the existing `#[cfg(test)] mod tests` block in `probe.rs`:
 ```rust
 #[test]
 fn test_shell_cwd_probe_returns_path_for_self() {
-    // Use our own PID — /proc/self/cwd should be readable
+    // Use our own PID - /proc/self/cwd should be readable
     let pid = std::process::id();
     let probe = ShellCwdProbe(pid);
     assert_eq!(probe.key(), "shell_cwd");
@@ -85,7 +85,7 @@ fn test_child_process_probe_returns_string_or_empty() {
 **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p omnish-client -- probe`
-Expected: FAIL — `ShellCwdProbe` and `ChildProcessProbe` not defined
+Expected: FAIL - `ShellCwdProbe` and `ChildProcessProbe` not defined
 
 **Step 3: Implement `ShellCwdProbe`**
 
@@ -198,7 +198,7 @@ fn test_frame_with_session_update() {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-protocol -- test_frame_with_session_update`
-Expected: FAIL — `SessionUpdate` not defined
+Expected: FAIL - `SessionUpdate` not defined
 
 **Step 3: Add SessionUpdate struct and message variant**
 

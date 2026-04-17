@@ -6,7 +6,7 @@ Manage system prompt as composable named fragments instead of a monolithic const
 
 ## Architecture
 
-`PromptManager` in `crates/omnish-llm/src/prompt.rs` — ordered named fragments, joined with `\n\n`.
+`PromptManager` in `crates/omnish-llm/src/prompt.rs` - ordered named fragments, joined with `\n\n`.
 
 ```rust
 pub struct PromptManager {

@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Add inline ghost text completion to omnish's `:` chat mode — gray suggestions appear after cursor, Tab accepts.
+**Goal:** Add inline ghost text completion to omnish's `:` chat mode - gray suggestions appear after cursor, Tab accepts.
 
 **Architecture:** A standalone `GhostCompleter` struct holds `CompletionProvider` trait objects. On each `Buffering` action in main.rs, the completer is queried and ghost text is rendered via save/restore cursor + dim gray ANSI. Tab in chat mode triggers accept, appending ghost suffix to the buffer.
 
@@ -126,7 +126,7 @@ mod tests {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-client ghost_complete 2>&1 | tail -5`
-Expected: Compilation error — `ghost_complete` module not found.
+Expected: Compilation error - `ghost_complete` module not found.
 
 **Step 3: Write the implementation**
 
@@ -356,7 +356,7 @@ fn test_tab_not_in_chat_forwards() {
 fn test_tab_during_prefix_buffering() {
     let mut ic = new_interceptor("::");
     ic.feed_byte(b':');
-    // Still matching prefix (not yet in chat) — Tab should forward
+    // Still matching prefix (not yet in chat) - Tab should forward
     // because we don't have enough context to complete yet
     assert_eq!(ic.feed_byte(b'\t'), InterceptAction::Forward(vec![b':', b'\t']));
 }
@@ -425,7 +425,7 @@ git commit -m "feat(client): add Tab action to InputInterceptor for completion"
 **Files:**
 - Modify: `crates/omnish-client/src/main.rs`
 
-**Step 1: No unit test needed** — this is integration wiring in the main loop. Verified by existing tests passing + manual testing.
+**Step 1: No unit test needed** - this is integration wiring in the main loop. Verified by existing tests passing + manual testing.
 
 **Step 2: Add completer initialization after interceptor creation (~line 104)**
 

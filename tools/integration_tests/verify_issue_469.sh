@@ -13,7 +13,7 @@
 #       Config > Llm > Backends
 #
 # This test uses the real /config menu but does NOT complete the
-# add-backend flow — ESC exits the form and the handler fails safely
+# add-backend flow - ESC exits the form and the handler fails safely
 # because only the Provider change is sent (Name is missing).
 #
 # Test cases:
@@ -114,7 +114,7 @@ test_1() {
     content=$(capture_pane -20)
     show_capture "After provider select" "$content" 14
 
-    # Verify prefill worked — Provider should not be "custom"
+    # Verify prefill worked - Provider should not be "custom"
     if echo "$content" | grep "Provider" | grep -q "custom"; then
         assert_fail "Provider still shows 'custom' after selection"
         send_special Escape 0.5
@@ -131,7 +131,7 @@ test_1() {
     content=$(capture_pane -20)
     show_capture "After ESC from form" "$content" 15
 
-    # Count breadcrumb lines — should be exactly 1 line containing "Config"
+    # Count breadcrumb lines - should be exactly 1 line containing "Config"
     # The bug shows two lines like:
     #   Config > Llm > Backends > Add backend
     #   Config > Llm > Backends

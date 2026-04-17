@@ -13,7 +13,7 @@ fi
 {
 # omnish installer
 #
-# Downloads and installs omnish — a transparent shell wrapper with PTY proxy,
+# Downloads and installs omnish - a transparent shell wrapper with PTY proxy,
 # inline LLM completion, and multi-terminal context aggregation.
 #
 # This script will:
@@ -346,7 +346,7 @@ elif [[ -z "${EXTRACTED:-}" ]]; then
         fi
         if [[ -n "$CURRENT_VERSION" ]] && ! is_newer_version "$VERSION" "$CURRENT_VERSION"; then
             info "Already up to date ($(normalize_version "$CURRENT_VERSION"))"
-            exit 2  # No update needed — daemon skips deploy
+            exit 2  # No update needed - daemon skips deploy
         fi
         info "Update available: $(normalize_version "${CURRENT_VERSION:-unknown}") -> $(normalize_version "$VERSION")"
     fi
@@ -856,7 +856,7 @@ fi
 
 # ── Systemd service ──────────────────────────────────────────────────────────
 
-# Ensure XDG_RUNTIME_DIR is set — required by systemctl --user.
+# Ensure XDG_RUNTIME_DIR is set - required by systemctl --user.
 # Missing when switching users via su/sudo without a full login session.
 if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
     _uid=$(id -u)
@@ -903,7 +903,7 @@ UNIT
         if command -v loginctl &>/dev/null && ! loginctl show-user "$USER" --property=Linger 2>/dev/null | grep -q 'yes'; then
             info "Enabling lingering for $USER (so daemon runs at boot without login)..."
             sudo loginctl enable-linger "$USER" 2>/dev/null \
-                || warn "Could not enable linger — run: sudo loginctl enable-linger $USER"
+                || warn "Could not enable linger - run: sudo loginctl enable-linger $USER"
         fi
     fi
 fi
@@ -926,7 +926,7 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
             echo "" >> "$PROFILE"
             echo "# omnish" >> "$PROFILE"
             echo "$PATH_LINE" >> "$PROFILE"
-            info "Added to ${PROFILE} — restart your shell or run: source ${PROFILE}"
+            info "Added to ${PROFILE} - restart your shell or run: source ${PROFILE}"
         fi
     else
         echo ""

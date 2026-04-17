@@ -103,7 +103,7 @@ test_1() {
 test_2() {
     echo -e "\n${YELLOW}=== Test 2: /thread sandbox on clears override ===${NC}"
 
-    # Continue from test_1 — same thread should still be active
+    # Continue from test_1 - same thread should still be active
     local content
     content=$(capture_pane -5)
     if ! is_chat_prompt "$content"; then
@@ -135,7 +135,7 @@ test_2() {
         return 1
     fi
 
-    # Check meta file — sandbox_disabled should be absent or not true
+    # Check meta file - sandbox_disabled should be absent or not true
     sleep 0.5
     local meta_file
     meta_file=$(latest_meta_file)
@@ -159,7 +159,7 @@ test_2() {
 test_3() {
     echo -e "\n${YELLOW}=== Test 3: /thread sandbox shows current state ===${NC}"
 
-    # Continue from test_2 — sandbox should be on
+    # Continue from test_2 - sandbox should be on
     local content
     content=$(capture_pane -5)
     if ! is_chat_prompt "$content"; then
@@ -174,7 +174,7 @@ test_3() {
         fi
     fi
 
-    # Query sandbox state — should be "on" (from test_2)
+    # Query sandbox state - should be "on" (from test_2)
     send_keys "/thread sandbox" 0.3
     send_enter 1
 
@@ -210,7 +210,7 @@ test_3() {
 test_4() {
     echo -e "\n${YELLOW}=== Test 4: /thread stats shows sandbox: off ===${NC}"
 
-    # Continue from test_3 — sandbox should be off
+    # Continue from test_3 - sandbox should be off
     local content
     content=$(capture_pane -5)
     if ! is_chat_prompt "$content"; then

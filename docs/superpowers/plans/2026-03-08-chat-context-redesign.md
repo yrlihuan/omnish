@@ -9,7 +9,7 @@ Maximize KV cache hit rate on resume by ensuring the messages sent to the LLM AP
 1. **Storage format**: Raw API message JSON (serde_json::Value), one per line in JSONL. Content can be String or Vec<ContentBlock>, matching Anthropic API format exactly.
 2. **No backward compat**: Old format `.jsonl` files are ignored. Clean start.
 3. **Single source of truth**: All display functions (get_last_exchange, /conversations, etc.) extract text from the raw JSON.
-4. **Context injection**: Recent command list appended to the user's query as `<system-reminder>` — only affects the last user message, preserving KV cache prefix for all prior messages.
+4. **Context injection**: Recent command list appended to the user's query as `<system-reminder>` - only affects the last user message, preserving KV cache prefix for all prior messages.
 5. **Conversation replay**: All messages (including tool_use/tool_result) go through `LlmRequest.extra_messages`. `LlmRequest.conversation` is not used for chat.
 6. **Backend unchanged**: `anthropic.rs` needs no changes.
 
@@ -33,14 +33,14 @@ Message types are distinguishable by structure:
 ## ConversationManager API
 
 Old:
-- `append_exchange(thread_id, query, response)` — store Q&A text pair
-- `load_messages(thread_id) -> Vec<ChatTurn>` — return text pairs
+- `append_exchange(thread_id, query, response)` - store Q&A text pair
+- `load_messages(thread_id) -> Vec<ChatTurn>` - return text pairs
 - `get_last_exchange(thread_id) -> (Option<(String, String)>, u32)`
 
 New:
-- `append_messages(thread_id, &[serde_json::Value])` — append raw API messages
-- `load_raw_messages(thread_id) -> Vec<serde_json::Value>` — return messages for API replay
-- `get_last_exchange(thread_id) -> (Option<(String, String)>, u32)` — same signature, extracts text from raw JSON internally
+- `append_messages(thread_id, &[serde_json::Value])` - append raw API messages
+- `load_raw_messages(thread_id) -> Vec<serde_json::Value>` - return messages for API replay
+- `get_last_exchange(thread_id) -> (Option<(String, String)>, u32)` - same signature, extracts text from raw JSON internally
 
 ## handle_chat_message Flow
 
@@ -48,7 +48,7 @@ New:
 2. Build user message: `query + "\n\n<system-reminder>" + command_list + "</system-reminder>"` → append to `extra_messages`
 3. Send to LLM (query=None since user message is already in extra_messages, conversation=empty)
 4. Agent loop: append assistant response and tool_result messages to `extra_messages`
-5. On completion: `append_messages(thread_id, &new_messages)` — store only the messages added in this turn
+5. On completion: `append_messages(thread_id, &new_messages)` - store only the messages added in this turn
 
 ## System Prompt Update
 
@@ -60,7 +60,7 @@ Add to CHAT_SYSTEM_PROMPT Guidelines:
 You have access to the command_query tool to inspect command output:
 - Use get_output(seq) to retrieve the full output of a specific command
 - The recent command list is provided at the end of the user's message in <system-reminder>
-- You do NOT need to call list_history — the command list is already provided
+- You do NOT need to call list_history - the command list is already provided
 ```
 
 ## Files Changed

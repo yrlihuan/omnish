@@ -119,7 +119,7 @@ pub fn load(
 
 Changes:
 1. Parse `config_params` from tool.json, store in `PluginInfo`.
-2. Check `plugins_config[dir_name]["enabled"]` — if explicitly `false`, skip loading tools. Still parse `config_params` so the config menu can show the plugin.
+2. Check `plugins_config[dir_name]["enabled"]` - if explicitly `false`, skip loading tools. Still parse `config_params` so the config menu can show the plugin.
 3. Merge non-`enabled` params from `plugins_config` as override params (replaces current `tools` config role).
 
 ## Files Changed

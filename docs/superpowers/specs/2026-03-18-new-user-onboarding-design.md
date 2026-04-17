@@ -1,4 +1,4 @@
-# New User Onboarding — Design Spec
+# New User Onboarding - Design Spec
 
 **Issue:** #317
 **Date:** 2026-03-18

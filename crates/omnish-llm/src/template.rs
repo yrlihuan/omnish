@@ -35,7 +35,7 @@ Do not include any other text outside the JSON array.";
 /// cached via Anthropic cache_control on a dedicated user message content block.
 pub fn build_completion_parts(input: &str, cursor_pos: usize) -> (String, String) {
     let user = if input.is_empty() {
-        "Current input: (empty — user just returned to the shell prompt)".to_string()
+        "Current input: (empty - user just returned to the shell prompt)".to_string()
     } else {
         format!("Current input: `{}`\nCursor position: {}", input, cursor_pos)
     };
@@ -68,7 +68,7 @@ pub const HOURLY_NOTES_PROMPT: &str =
      Summarize in bullet points, with each item describing a specific project activity or goal achieved. \
      Suitable as a work log directly.";
 
-/// The thread-title LLM prompt (English base) — generates a short title for the thread.
+/// The thread-title LLM prompt (English base) - generates a short title for the thread.
 pub const THREAD_SUMMARY_PROMPT: &str =
     "Below is a <conversation> between a user and an AI assistant. \
      Generate a short title (no more than 10 words) that summarizes the topic of this conversation. \
@@ -97,10 +97,10 @@ pub const TEMPLATE_NAMES: &[&str] = &["chat", "chat-system", "auto-complete", "d
 pub fn template_by_name(name: &str) -> Option<String> {
     match name {
         "chat-system" => Some(crate::prompt::PromptManager::default_chat().build()),
-        "chat" => Some("(handled by daemon — use /template chat)".to_string()),
+        "chat" => Some("(handled by daemon - use /template chat)".to_string()),
         "auto-complete" => {
             let (sys, usr) = build_completion_parts("{input}", 0);
-            Some(format!("[system]\n{}\n\n[user block 1 — cached]\n{{context}}\n\n[user block 2]\n{}", sys, usr))
+            Some(format!("[system]\n{}\n\n[user block 1 - cached]\n{{context}}\n\n[user block 2]\n{}", sys, usr))
         }
         "daily-notes" => Some(DAILY_NOTES_PROMPT.to_string()),
         "hourly-notes" => Some(HOURLY_NOTES_PROMPT.to_string()),
@@ -151,7 +151,7 @@ mod tests {
         assert!(user.contains("empty"));
     }
 
-    /// System prompt (instructions) is a constant — identical for every call.
+    /// System prompt (instructions) is a constant - identical for every call.
     #[test]
     fn test_completion_instructions_static() {
         let (sys_a, _) = build_completion_parts("", 0);

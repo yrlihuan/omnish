@@ -6,10 +6,10 @@
 # Bug: the second response replaces the scroll_view entirely, losing the first.
 #
 # Test cases:
-#   1. Two simple Q&A rounds — both user inputs remain visible
-#   2. Three bash tool calls with 40-line output each — all results preserved,
+#   1. Two simple Q&A rounds - both user inputs remain visible
+#   2. Three bash tool calls with 40-line output each - all results preserved,
 #      prompt near screen bottom
-#   3. Three short bash commands — all three "● bash(" visible on screen
+#   3. Three short bash commands - all three "● bash(" visible on screen
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -17,16 +17,16 @@ source "$SCRIPT_DIR/lib.sh"
 show_usage() {
     cat <<EOF
 Test cases:
-  1. Two Q&A in one session — both user inputs visible after second response
-  2. Three bash runs (40 lines each) — all outputs preserved, prompt near bottom
-  3. Three short bash runs — all three "● bash(" visible on screen
+  1. Two Q&A in one session - both user inputs visible after second response
+  2. Three bash runs (40 lines each) - all outputs preserved, prompt near bottom
+  3. Three short bash runs - all three "● bash(" visible on screen
 EOF
 }
 
 test_init "issue286" "$@"
 
 test_1() {
-    echo -e "\n${YELLOW}=== Test 1: Two Q&A — both outputs preserved ===${NC}"
+    echo -e "\n${YELLOW}=== Test 1: Two Q&A - both outputs preserved ===${NC}"
 
     restart_client
     wait_for_client
@@ -78,7 +78,7 @@ test_1() {
         sleep 1.5
         return 0
     else
-        assert_fail "Q1 visible=$has_q1, Q2 visible=$has_q2 — first output lost"
+        assert_fail "Q1 visible=$has_q1, Q2 visible=$has_q2 - first output lost"
         send_special Escape 0.5
         sleep 1.5
         return 1
@@ -113,13 +113,13 @@ test_2() {
     local content=$(capture_pane -500)
     show_capture "After 3 rounds" "$content" 30
 
-    # Count separator lines (────) — expect at least 3 (one per response)
+    # Count separator lines (────) - expect at least 3 (one per response)
     local sep_count
     sep_count=$(echo "$content" | grep -c '────') || true
     echo -e "  Separator lines: $sep_count"
 
     if [[ $sep_count -lt 3 ]]; then
-        assert_fail "Expected at least 3 separator lines, got $sep_count — earlier outputs lost"
+        assert_fail "Expected at least 3 separator lines, got $sep_count - earlier outputs lost"
         send_special Escape 0.5
         sleep 1.5
         return 1
@@ -142,7 +142,7 @@ test_2() {
         sleep 1.5
         return 0
     elif [[ -n "$prompt_line" ]]; then
-        assert_fail "Prompt at line $prompt_line/$rows — expected in lower half"
+        assert_fail "Prompt at line $prompt_line/$rows - expected in lower half"
         send_special Escape 0.5
         sleep 1.5
         return 1
@@ -155,7 +155,7 @@ test_2() {
 }
 
 test_3() {
-    echo -e "\n${YELLOW}=== Test 3: Three short bash — all outputs visible on screen ===${NC}"
+    echo -e "\n${YELLOW}=== Test 3: Three short bash - all outputs visible on screen ===${NC}"
 
     restart_client
     wait_for_client

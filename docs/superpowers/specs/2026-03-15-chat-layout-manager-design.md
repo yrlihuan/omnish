@@ -1,4 +1,4 @@
-# Chat Layout Manager — Region-based Widget Layout
+# Chat Layout Manager - Region-based Widget Layout
 
 ## Goal
 
@@ -38,9 +38,9 @@ Region {
 
 Typical chat mode region stack:
 ```
-regions[0]: "scroll_view"   — 8 lines (compact tail + hint)
-regions[1]: "editor"        — 1 line  ("> " + input)
-regions[2]: "status"        — 0 lines (hidden until thinking)
+regions[0]: "scroll_view"   - 8 lines (compact tail + hint)
+regions[1]: "editor"        - 1 line  ("> " + input)
+regions[2]: "status"        - 0 lines (hidden until thinking)
 ```
 
 ### Cursor management
@@ -78,7 +78,7 @@ impl ChatLayout {
     fn region_offset(&self, id: &str) -> usize;
 
     /// Redraw all regions top-to-bottom. Assumes cursor is at the layout origin.
-    /// Does not clear the screen — caller erases if needed.
+    /// Does not clear the screen - caller erases if needed.
     fn redraw_all(&self) -> String;
 
     /// Position cursor at the last row of a specific region.
@@ -97,7 +97,7 @@ Existing widgets gain methods to produce line-based output for ChatLayout:
 | LineEditor | `render(prefix, ghost) -> Vec<String>` | Merges `> ` prefix into editor output. Returns styled lines with prefix, user text, and dim ghost text. |
 | LineStatus | `lines() -> Vec<String>` | Accessor for current styled status lines. |
 | Picker | No change | Uses interactive takeover path (erase layout, run picker, redraw_all). |
-| TextView (new) | Trivial data holder | `struct TextView { lines: Vec<String> }` — stores pre-styled lines, provides `lines() -> &[String]`. No truncation or wrapping logic; callers pre-format content. |
+| TextView (new) | Trivial data holder | `struct TextView { lines: Vec<String> }` - stores pre-styled lines, provides `lines() -> &[String]`. No truncation or wrapping logic; callers pre-format content. |
 
 ### Chat prompt merger
 

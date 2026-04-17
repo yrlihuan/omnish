@@ -2,11 +2,11 @@
 
 ## Problem
 
-The daemon's auto-update currently distributes binaries to remote client machines via SSH (`deploy.sh`). This requires SSH access, pre-configured host lists, and external scripts. The daemon and client already have a persistent protocol channel — binary distribution should use it.
+The daemon's auto-update currently distributes binaries to remote client machines via SSH (`deploy.sh`). This requires SSH access, pre-configured host lists, and external scripts. The daemon and client already have a persistent protocol channel - binary distribution should use it.
 
 ## Solution
 
-Add a client-initiated update polling mechanism over the existing daemon-client protocol. The daemon caches full release packages and serves them to clients on request. The existing mtime-based `execvp()` trigger and SSH deploy remain untouched — this is an additional distribution channel.
+Add a client-initiated update polling mechanism over the existing daemon-client protocol. The daemon caches full release packages and serves them to clients on request. The existing mtime-based `execvp()` trigger and SSH deploy remain untouched - this is an additional distribution channel.
 
 ## Flow
 
@@ -98,7 +98,7 @@ This prevents multiple clients of the same platform from triggering redundant do
 
 ### UpdateRequest handler
 
-1. Verify the requested `version` matches the cached package version. If mismatched (race — package was replaced between check and request), send `UpdateChunk { error: Some("version mismatch"), done: true, .. }`.
+1. Verify the requested `version` matches the cached package version. If mismatched (race - package was replaced between check and request), send `UpdateChunk { error: Some("version mismatch"), done: true, .. }`.
 2. Open the cached package file for the requested `(os, arch)`.
 3. Stream the file in 64KB chunks as `UpdateChunk` messages. First chunk includes `total_size` and `checksum`; subsequent chunks only carry `data`.
 4. If no cached package exists: send `UpdateChunk { error: Some("not available"), done: true, .. }`.
@@ -106,7 +106,7 @@ This prevents multiple clients of the same platform from triggering redundant do
 
 All chunks must be sent within a single handler invocation (the RPC server sends an `Ack` end-of-stream sentinel when the handler returns).
 
-Multiple concurrent `UpdateRequest`s from different clients each get their own read stream — no conflict since the file is read-only.
+Multiple concurrent `UpdateRequest`s from different clients each get their own read stream - no conflict since the file is read-only.
 
 ## Client Side
 
@@ -120,7 +120,7 @@ A flag (e.g., `update_in_progress: AtomicBool`) prevents concurrent downloads.
 
 ### Polling
 
-Simple periodic timer (e.g., every 60 seconds). Sends `UpdateCheck { os, arch, current_version }` to daemon over the existing connection. No idle/prompt/alt-screen guards — those conditions only matter for the `execvp()` trigger in the mtime check.
+Simple periodic timer (e.g., every 60 seconds). Sends `UpdateCheck { os, arch, current_version }` to daemon over the existing connection. No idle/prompt/alt-screen guards - those conditions only matter for the `execvp()` trigger in the mtime check.
 
 ### Download flow
 
@@ -158,8 +158,8 @@ Protocol version is bumped to 10. If a v10 client connects to a v9 daemon, the c
 
 ## Files to Modify
 
-- `crates/omnish-protocol/src/message.rs` — add 4 new message variants, bump protocol version
-- `crates/omnish-daemon/src/auto_update.rs` — package caching after self-update, background download for other platforms
-- `crates/omnish-daemon/src/server.rs` — handle `UpdateCheck` and `UpdateRequest` messages
-- `crates/omnish-client/src/main.rs` — periodic `UpdateCheck` polling, background download/extract flow
-- `crates/omnish-common/src/config.rs` — no changes expected (reuses existing `auto_update` config)
+- `crates/omnish-protocol/src/message.rs` - add 4 new message variants, bump protocol version
+- `crates/omnish-daemon/src/auto_update.rs` - package caching after self-update, background download for other platforms
+- `crates/omnish-daemon/src/server.rs` - handle `UpdateCheck` and `UpdateRequest` messages
+- `crates/omnish-client/src/main.rs` - periodic `UpdateCheck` polling, background download/extract flow
+- `crates/omnish-common/src/config.rs` - no changes expected (reuses existing `auto_update` config)

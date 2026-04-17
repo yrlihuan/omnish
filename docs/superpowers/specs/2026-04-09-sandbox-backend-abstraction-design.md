@@ -282,6 +282,6 @@ pub use sandbox::{
 | `omnish-client/src/main.rs` | handle_lock 适配新接口 |
 
 不变的文件：
-- `omnish-daemon/src/sandbox_rules.rs` — permit_rules 逻辑不变
-- `omnish-protocol/src/message.rs` — ChatToolCall.sandboxed 不变
-- `omnish-client/src/chat_session.rs` — /test lock 解析不变
+- `omnish-daemon/src/sandbox_rules.rs` - permit_rules 逻辑不变
+- `omnish-protocol/src/message.rs` - ChatToolCall.sandboxed 不变
+- `omnish-client/src/chat_session.rs` - /test lock 解析不变

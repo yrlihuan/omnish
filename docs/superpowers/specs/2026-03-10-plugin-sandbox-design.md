@@ -6,13 +6,13 @@ Restrict external plugin subprocess write access to designated directories only,
 
 ## Design Decisions
 
-1. **Landlock via `pre_exec`** — applied between fork and exec of plugin subprocess
-2. **Write-only restriction** — plugins can read the entire filesystem, writes limited to:
+1. **Landlock via `pre_exec`** - applied between fork and exec of plugin subprocess
+2. **Write-only restriction** - plugins can read the entire filesystem, writes limited to:
    - `~/.omnish/data/{plugin_name}/` (plugin data directory, auto-created)
    - `/tmp` (temporary files)
-3. **External plugins only** — built-in plugins share the daemon process; Landlock is process-level so cannot isolate them
-4. **Refuse on unsupported kernel** — if Landlock is unavailable (kernel < 5.13 or disabled), refuse to load the plugin with an error log
-5. **Convention-based data path** — plugins infer their data directory as `~/.omnish/data/{name}/`; no explicit passing needed
+3. **External plugins only** - built-in plugins share the daemon process; Landlock is process-level so cannot isolate them
+4. **Refuse on unsupported kernel** - if Landlock is unavailable (kernel < 5.13 or disabled), refuse to load the plugin with an error log
+5. **Convention-based data path** - plugins infer their data directory as `~/.omnish/data/{name}/`; no explicit passing needed
 
 ## Implementation
 
@@ -26,7 +26,7 @@ In `ExternalPlugin::spawn()`, before `Command::spawn()`:
 
 ## Crate
 
-`landlock` — safe Rust bindings for Landlock LSM.
+`landlock` - safe Rust bindings for Landlock LSM.
 
 ## Files Changed
 

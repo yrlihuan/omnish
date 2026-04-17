@@ -108,7 +108,7 @@ test_2() {
     show_capture "After Ctrl-U" "$content" 5
 
     # After Ctrl-U, "Xhello world!" should be gone from the prompt line.
-    # The content before Ctrl-U had "Xhello world!" — verify it's no longer there.
+    # The content before Ctrl-U had "Xhello world!" - verify it's no longer there.
     if echo "$content" | grep -q 'Xhello world'; then
         assert_fail "Ctrl-U did not kill line (text still visible)"
         send_special Escape 0.5

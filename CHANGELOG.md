@@ -7,7 +7,7 @@
 - **i18n**: Translate config menu submenus, sandbox labels, LLM/Tasks labels, and Done button to Chinese (#544)
 - **i18n**: Display native names in language selector, integration test for language switching (#544)
 - **i18n**: Daemon scheduled tasks (daily/hourly/thread summary) honor configured language (#529)
-- **chat**: `/thread sandbox on|off` per-thread sandbox override — disables Landlock/bwrap for all tool calls in a thread; persists across resume (#535)
+- **chat**: `/thread sandbox on|off` per-thread sandbox override - disables Landlock/bwrap for all tool calls in a thread; persists across resume (#535)
 - **chat**: `/thread list N` to show up to N most recent threads (default 20) (#542)
 - **chat**: Treat early Ctrl-C as input cancellation instead of sending to daemon (#536)
 - **chat**: Prioritize chat command completion order (#533)
@@ -35,7 +35,7 @@
 ## v0.8.10 (2026-04-14)
 
 ### Features
-- **chat**: `/thread sandbox on|off` per-thread sandbox override — disables Landlock/bwrap for all tool calls in a thread; persists across resume (#535)
+- **chat**: `/thread sandbox on|off` per-thread sandbox override - disables Landlock/bwrap for all tool calls in a thread; persists across resume (#535)
 - **zsh**: Full zsh shell hook support with ZDOTDIR mechanism and OSC 133 integration (#462)
 - **ci**: Add Linux ARM (aarch64) release build to GitHub Actions
 
@@ -200,17 +200,17 @@
 - **sandbox**: Switch macOS profile from deny-default to allow-default (#437)
 - **sandbox**: Add sysctl-read and missing permissions to macOS sandbox profile (#437)
 - **config**: Add default values for LLM backend config fields (#440)
-- **client**: Remove client-side auto_update config — update checks always enabled (#433)
+- **client**: Remove client-side auto_update config - update checks always enabled (#433)
 - **transport**: Stop reconnect loop after repeated auth failures (#431)
 - **transport**: Reject clients with mismatched protocol version (#346)
 - **client**: Correct notice message on protocol mismatch
 - **sandbox**: Upgrade Landlock ABI from V1 to V5 to fix EXDEV
 - **client**: Suppress notices during alternate screen (vim, less, htop)
-- **client**: Ghost text rendering fixes — deferred render, readline redraw handling
+- **client**: Ghost text rendering fixes - deferred render, readline redraw handling
 - **daemon**: Retry on LLM connection errors and save progress on failure (#407)
 - **client**: Show resume picker when `::` has no last_thread_id (#406)
-- **client**: Invert developer_mode semantics — default blocks chat when line has content (#393)
-- **daemon**: EMFILE handling — dump fd stats instead of crashing
+- **client**: Invert developer_mode semantics - default blocks chat when line has content (#393)
+- **daemon**: EMFILE handling - dump fd stats instead of crashing
 - **menu**: Navigation rendering, batched ASCII input, text editor quality improvements
 - **tool**: Remove `[stderr]` prefix from bash tool output (#427)
 
@@ -226,8 +226,8 @@
 ## v0.8.4 (2026-03-23)
 
 ### Features
-- **plugin**: Web search formatter — strips HTML tags, shows clean `[Title](URL)` with descriptions (#405)
-- **client**: `/test multi_level_picker` — 3-level cascading picker for testing menu interactions
+- **plugin**: Web search formatter - strips HTML tags, shows clean `[Title](URL)` with descriptions (#405)
+- **client**: `/test multi_level_picker` - 3-level cascading picker for testing menu interactions
 
 ### Fixes
 - **plugin**: Formatter must output single-line JSON (`jq -c`) to match daemon's line-based protocol
@@ -260,7 +260,7 @@
 
 ### Refactoring
 - **plugin**: Move ToolFormatter trait and built-in formatters (Default, Read, Edit) to omnish-plugin
-- **daemon**: Simplify FormatInput/FormatOutput — remove fields handled by caller (status_icon, param_desc, display_name, status_template)
+- **daemon**: Simplify FormatInput/FormatOutput - remove fields handled by caller (status_icon, param_desc, display_name, status_template)
 - **daemon**: Replace formatter.rs with FormatterManager, decouple StatusIcon from formatters
 
 ### Other
@@ -274,7 +274,7 @@
 ## v0.8.2 (2026-03-21)
 
 ### Features
-- **daemon**: ToolRegistry for unified tool metadata management — replaces scattered display_name/status_text methods
+- **daemon**: ToolRegistry for unified tool metadata management - replaces scattered display_name/status_text methods
 - **daemon**: PluginManager.register_all() and CommandQueryTool::register() for ToolRegistry population
 - **client**: `/debug commands` to show recent shell command history
 - **client**: `/debug command <seq>` to show full command details and output
@@ -282,7 +282,7 @@
 - **client**: Truncate long tool results to head 20 + tail 20 when >50 lines (#387)
 - **client**: Stream agent loop messages and add daemon-side cancel (#384)
 - **client**: Improve Ctrl+C interrupt display and resume cd (#384, #372, #383)
-- **client**: Completion cursor awareness — suppress ghost text when cursor not at end of line (#66)
+- **client**: Completion cursor awareness - suppress ghost text when cursor not at end of line (#66)
 - **daemon**: Increase agent tool call limit from 30 to 100
 - **plugin**: Add well-known writable paths to sandbox (#383)
 
@@ -328,8 +328,8 @@
 ## v0.8.0 (2026-03-18)
 
 ### Features
-- **daemon**: Incremental tool status updates during parallel tool use — each tool sends status as it completes (#344)
-- **client**: Parallel tool status redraw — full section erase-and-rerender approach with `redraw_tool_section()`, intermediate results processed from `rpc.call()` (#342)
+- **daemon**: Incremental tool status updates during parallel tool use - each tool sends status as it completes (#344)
+- **client**: Parallel tool status redraw - full section erase-and-rerender approach with `redraw_tool_section()`, intermediate results processed from `rpc.call()` (#342)
 - **client**: `/test picker` command for integration tests (#343)
 
 ### Fixes
@@ -437,7 +437,7 @@
 - **install**: Bash re-exec guard for sh/dash invocations
 
 ### Fixes
-- **llm**: Tolerate individual backend init failures — bad config no longer breaks all backends (#315)
+- **llm**: Tolerate individual backend init failures - bad config no longer breaks all backends (#315)
 - **install**: Skip deploy when `--upgrade` finds no update (exit code 2)
 - **install**: Skip manual PATH hint when user declines shell profile update
 
@@ -451,7 +451,7 @@
 ### Features
 - **daemon**: Include thread conversations in hourly notes context (#251)
 - **client**: Configurable `resume_prefix` for resuming last thread (#314)
-- **client**: Improve ctrl+o hint — show "to expand", hide in browse mode (#299)
+- **client**: Improve ctrl+o hint - show "to expand", hide in browse mode (#299)
 - **plugin**: Add git repo root to sandbox writable paths (#312)
 - **install**: Private IP selection, auto-update prompt, cleaner output
 
@@ -530,11 +530,11 @@
 - **client**: Handle visual line wrapping in editor redraw (#283)
 - **client**: Panic on CJK char boundary when truncating tool status (#288)
 - **client**: Let long lines wrap in browse mode instead of clipping (#288)
-- **client**: ESC dismiss — consume key and flush DSR detector (#259)
+- **client**: ESC dismiss - consume key and flush DSR detector (#259)
 - **client**: Include user input lines in chat browse history (#290)
 - **client**: Color only the > prompt, not user text in browse history (#290)
 - **daemon**: Read formatter shows "Read N lines" in compact output (#294)
-- **daemon**: Edit context diff — tool returns snippet, formatter parses it (#295)
+- **daemon**: Edit context diff - tool returns snippet, formatter parses it (#295)
 - **plugin**: Add /dev/null to Landlock writable paths (#273)
 
 ### Performance
@@ -557,7 +557,7 @@
 ### Features
 - **plugin**: Add grep tool with regex search, glob/type filters, context lines, multiline mode, and pagination (#271)
 - **plugin**: Add glob tool for file pattern matching (#265)
-- **plugin**: Update bash tool description and timeout handling — timeout now in milliseconds, 30000 char truncation (#268)
+- **plugin**: Update bash tool description and timeout handling - timeout now in milliseconds, 30000 char truncation (#268)
 - **plugin**: Update read tool limits to 2000 lines / 2000 chars per line (#267)
 - **plugin**: Update edit tool description with usage guidelines (#269)
 - **plugin**: Update write tool description (#270)
@@ -578,7 +578,7 @@
 ## v0.6.2 (2026-03-13)
 
 ### Features
-- **llm**: Parse usage from LLM API responses — input/output tokens, cache read/creation tokens from both Anthropic and OpenAI-compat backends (issue #263)
+- **llm**: Parse usage from LLM API responses - input/output tokens, cache read/creation tokens from both Anthropic and OpenAI-compat backends (issue #263)
 - **llm**: Enable thinking mode for chat (issue #262)
 - **client**: Add configurable shortcut to resume last conversation (issue #261)
 - **daemon**: Add system-reminder to `/context chat` display
@@ -612,8 +612,8 @@
 ## v0.6.0 (2026-03-11)
 
 ### Features
-- **client**: Transparent self-restart via `execvp` with `/update` command — preserves PTY connection across binary updates (issue #217)
-- **client**: Auto-update when binary changes on disk — periodic mtime check with idle detection (issue #223)
+- **client**: Transparent self-restart via `execvp` with `/update` command - preserves PTY connection across binary updates (issue #217)
+- **client**: Auto-update when binary changes on disk - periodic mtime check with idle detection (issue #223)
 - **client**: `/update auto` runtime toggle for auto-update (not persisted)
 - **plugin**: Add privileged mode for `write` and `edit` tools to bypass Landlock sandbox (issue #219)
 - **tools**: Add `edit` tool for exact string replacement (issue #216)
@@ -646,7 +646,7 @@
 
 ### Features
 - **client**: Rename binary from `omnish-client` to `omnish` (issue #200)
-- **plugin**: Sandbox external plugins with Landlock — restrict write access to plugin data dir and /tmp (issue #176)
+- **plugin**: Sandbox external plugins with Landlock - restrict write access to plugin data dir and /tmp (issue #176)
 - **plugin**: Add `omnish-plugin` binary crate for official plugins via subprocess + JSON-RPC (issue #198)
 - **plugin**: Let plugins provide their own system prompt fragments (issue #199)
 - **plugin**: Support customized prompts via `PROMPT.md` / `PROMPT_*.md` files (issue #209)
@@ -676,7 +676,7 @@
 ### Features
 - **protocol**: Add protocol version mismatch warning between client and daemon (issue #117)
 - **plugin**: Add PluginType classification (DaemonTool/ClientTool) for client-side tool execution (issue #195)
-- **daemon**: Built-in bash tool for chat agent — executes commands on the user's machine
+- **daemon**: Built-in bash tool for chat agent - executes commands on the user's machine
 - **daemon**: Agent loop pause/resume architecture for forwarding tool calls to client
 - **protocol**: Add ChatToolCall and ChatToolResult messages for client-side tool forwarding
 
@@ -689,7 +689,7 @@
 
 ### Features
 - **llm**: Save full LLM request payloads to `~/.omnish/logs/messages/` with timestamp filenames, rolling to keep last 30 (issue #170)
-- **client**: Paste blocks integrated into LineEditor as FFFC placeholders — cursor can navigate around paste blocks and insert text before/after them (issue #188)
+- **client**: Paste blocks integrated into LineEditor as FFFC placeholders - cursor can navigate around paste blocks and insert text before/after them (issue #188)
 
 ### Bug Fixes
 - **client**: Exec shell directly when stdin is not a tty (issue #193)
@@ -706,10 +706,10 @@
 ## v0.5.1 (2026-03-09)
 
 ### Features
-- **widgets**: `LineEditor` — full-featured chat input with cursor movement (←/→/↑/↓, Home/End, Ctrl-A/E), word jump (Ctrl-←/→), word delete, and multi-line editing (issue #180)
+- **widgets**: `LineEditor` - full-featured chat input with cursor movement (←/→/↑/↓, Home/End, Ctrl-A/E), word jump (Ctrl-←/→), word delete, and multi-line editing (issue #180)
 - **client**: Multi-line paste via bracketed paste mode; fast-paste detection as fallback; large pastes collapsed to `[pasted text N chars]` marker
 - **client**: Shift+Enter / Ctrl+J inserts newline in chat input
-- **widgets**: `LineStatus` — temporary single-line status display that erases itself completely on `clear()`, fixing residual `(thinking...)` and tool-status lines (issue #183)
+- **widgets**: `LineStatus` - temporary single-line status display that erases itself completely on `clear()`, fixing residual `(thinking...)` and tool-status lines (issue #183)
 
 ### Bug Fixes
 - **client**: Paste block backspace display and cursor positioning
@@ -728,7 +728,7 @@
 ## v0.5.0 (2026-03-08)
 
 ### Features
-- **daemon**: Agent loop with tool execution — LLM can call `command_query` tool to inspect command output, up to 5 iterations (issue #161)
+- **daemon**: Agent loop with tool execution - LLM can call `command_query` tool to inspect command output, up to 5 iterations (issue #161)
 - **daemon**: Rewrite ConversationManager to raw JSON storage format for KV cache-optimized conversation replay (issue #166)
 - **protocol**: ChatToolStatus message type for streaming tool-use status to client
 - **transport**: Streaming multi-message RPC responses with end-of-stream sentinel
@@ -741,7 +741,7 @@
 
 ### Bug Fixes
 - **llm**: Use config `base_url` for Anthropic backend, upgrade API version to 2024-04-04
-- **transport**: Fix stream memory leak — add Ack sentinel for multi-message RPC cleanup
+- **transport**: Fix stream memory leak - add Ack sentinel for multi-message RPC cleanup
 - **daemon**: Don't persist `<system-reminder>` in thread JSONL files (issue #169)
 - **daemon**: Replace newlines in `/thread list` question preview
 - **client**: Sort picker indices numerically, not lexicographically
@@ -774,7 +774,7 @@
 
 ### Features
 - **client**: Multi-turn chat mode with `/chat`, `/resume`, `/conversations`, `/threads` (issue #110, #111, #121, #128, #129)
-- **client**: Deferred thread creation — thread only created on first message (issue #130)
+- **client**: Deferred thread creation - thread only created on first message (issue #130)
 - **client**: `/context` in chat mode shows current thread's conversation (issue #136)
 - **client**: Ctrl-C interrupts pending chat LLM request (issue #123)
 - **client**: Ctrl-D and backspace-on-empty exit chat mode (issue #120, #124)

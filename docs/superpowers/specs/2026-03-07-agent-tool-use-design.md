@@ -198,8 +198,8 @@ Client <- ChatToolStatus (render hint)
 
 ## 10. What Does NOT Change
 
-- Shell completion (auto-complete) — no tools involved
-- Non-chat LLM requests (`handle_llm_request`) — unchanged
-- Chat with empty tools list — identical to current behavior
-- OpenAI-compatible backend — no tool support, falls back to current behavior
-- Transport layer — framed protocol already supports sequential messages
+- Shell completion (auto-complete) - no tools involved
+- Non-chat LLM requests (`handle_llm_request`) - unchanged
+- Chat with empty tools list - identical to current behavior
+- OpenAI-compatible backend - no tool support, falls back to current behavior
+- Transport layer - framed protocol already supports sequential messages

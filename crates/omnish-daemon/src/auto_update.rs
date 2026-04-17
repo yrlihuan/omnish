@@ -142,7 +142,7 @@ impl ScheduledTask for AutoUpdateTask {
                     }
                 }
 
-                // Server binary was updated — restart to use the new binary
+                // Server binary was updated - restart to use the new binary
                 tracing::info!("task [auto_update] upgrade complete, requesting daemon restart");
                 restart_signal.notify_one();
             })

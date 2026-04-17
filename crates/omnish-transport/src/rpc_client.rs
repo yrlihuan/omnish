@@ -626,7 +626,7 @@ impl RpcClient {
                         }
                         ReplyTx::Stream(tx) => {
                             if matches!(frame.payload, Message::Ack) {
-                                // End-of-stream sentinel — remove entry, dropping sender
+                                // End-of-stream sentinel - remove entry, dropping sender
                                 map.remove(&frame.request_id);
                                 None
                             } else {
@@ -635,7 +635,7 @@ impl RpcClient {
                             }
                         }
                         ReplyTx::None => {
-                            // Fire-and-forget — discard response, clean up
+                            // Fire-and-forget - discard response, clean up
                             map.remove(&frame.request_id);
                             None
                         }

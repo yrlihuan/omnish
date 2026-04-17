@@ -563,7 +563,7 @@ mod tests {
         out.push('\r');
         out.push_str(content);
         out.push_str("\x1b[J");
-        // After writing 20 chars: cursor at (1, 0) — auto-wrapped
+        // After writing 20 chars: cursor at (1, 0) - auto-wrapped
         let write_end_row = display_width / cols; // = 1
         let target_row = cursor_display / cols; // = 1
         let target_col = cursor_display % cols; // = 0

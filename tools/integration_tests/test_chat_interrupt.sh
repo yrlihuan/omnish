@@ -19,7 +19,7 @@ EOF
 
 test_init "chat-interrupt" "$@"
 
-# ── Test 1: Late interrupt — next input echo displayed correctly (#534) ──
+# ── Test 1: Late interrupt - next input echo displayed correctly (#534) ──
 test_1() {
     echo -e "\n${YELLOW}=== Test 1: Late interrupt during tool execution (#534) ===${NC}"
 
@@ -78,7 +78,7 @@ test_1() {
     fi
 }
 
-# ── Test 2: Early interrupt — input restored for re-editing (#536) ───────
+# ── Test 2: Early interrupt - input restored for re-editing (#536) ───────
 test_2() {
     echo -e "\n${YELLOW}=== Test 2: Early interrupt before LLM output (#536) ===${NC}"
 
@@ -98,7 +98,7 @@ test_2() {
     echo -e "  Sending Ctrl-C to cancel early..."
     send_special C-c 1
 
-    # Capture the pane — the input should be restored in the editor
+    # Capture the pane - the input should be restored in the editor
     local content
     content=$(capture_pane -10)
     show_capture "After early Ctrl-C" "$content" 5

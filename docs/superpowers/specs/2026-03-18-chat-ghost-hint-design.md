@@ -1,4 +1,4 @@
-# Chat Mode Ghost Text Hint — Design Spec
+# Chat Mode Ghost Text Hint - Design Spec
 
 **Issue**: #334
 **Goal**: Show a dim ghost text hint on the first chat prompt to indicate the current model and guide the user.
@@ -13,7 +13,7 @@ When entering chat mode, the first empty prompt line shows a ghost hint after `>
 The hint:
 - Renders in dim gray (`\x1b[2;90m`) using save/restore cursor so the cursor stays at `> ` position
 - Disappears on the first keystroke (clear to end of line)
-- Never reappears after being dismissed — one-shot only
+- Never reappears after being dismissed - one-shot only
 
 ## Protocol Change
 

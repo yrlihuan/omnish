@@ -1,4 +1,4 @@
-# `/update` — Transparent Client Self-Restart
+# `/update` - Transparent Client Self-Restart
 
 ## Problem
 
@@ -34,7 +34,7 @@ Register `/update` command. Uses `Daemon` kind but intercepted client-side in `m
 - Intercept `/update` in `handle_slash_command`: version check + exec
 
 ### `proxy.rs`
-Add `PtyProxy::from_raw(fd: RawFd, pid: i32)` — wraps existing fd+pid without spawning.
+Add `PtyProxy::from_raw(fd: RawFd, pid: i32)` - wraps existing fd+pid without spawning.
 
 ## State Across Exec
 
@@ -50,5 +50,5 @@ Add `PtyProxy::from_raw(fd: RawFd, pid: i32)` — wraps existing fd+pid without 
 
 - **Same version**: print "already up to date", no exec
 - **Binary not found**: print error, continue
-- **Exec fails**: execvp only returns on error — print error, continue old version
+- **Exec fails**: execvp only returns on error - print error, continue old version
 - **Not at prompt**: `/update` only reachable at prompt (interceptor guard)

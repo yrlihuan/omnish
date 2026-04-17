@@ -281,7 +281,7 @@ pub fn lock_policy(cwd: Option<&Path>) -> SandboxPolicy {
 }
 ```
 
-- [ ] **Step 3: Build (will fail — backend modules not yet created)**
+- [ ] **Step 3: Build (will fail - backend modules not yet created)**
 
 Run: `cargo build --release 2>&1 | tail -5`
 Expected: compilation errors about missing `bwrap`, `landlock`, `seatbelt` modules. This confirms the module structure is wired up.
@@ -295,7 +295,7 @@ git commit -m "feat(sandbox): add mod.rs with SandboxPolicy and public API (back
 
 ---
 
-### Task 3: Create `sandbox/landlock.rs` — migrate existing Landlock code
+### Task 3: Create `sandbox/landlock.rs` - migrate existing Landlock code
 
 **Files:**
 - Create: `crates/omnish-plugin/src/sandbox/landlock.rs`
@@ -409,7 +409,7 @@ fn apply_landlock(writable_paths: &[&Path]) -> Result<(), String> {
 }
 ```
 
-- [ ] **Step 2: Build (will still fail — bwrap and seatbelt modules missing)**
+- [ ] **Step 2: Build (will still fail - bwrap and seatbelt modules missing)**
 
 Run: `cargo build --release 2>&1 | tail -5`
 Expected: errors about missing `bwrap` and/or `seatbelt` modules, but no errors from `landlock.rs`.
@@ -423,7 +423,7 @@ git commit -m "feat(sandbox): add landlock backend module (migrated from lib.rs)
 
 ---
 
-### Task 4: Create `sandbox/seatbelt.rs` — migrate existing macOS code
+### Task 4: Create `sandbox/seatbelt.rs` - migrate existing macOS code
 
 **Files:**
 - Create: `crates/omnish-plugin/src/sandbox/seatbelt.rs`
@@ -527,7 +527,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Build (will still fail — bwrap module missing on Linux)**
+- [ ] **Step 2: Build (will still fail - bwrap module missing on Linux)**
 
 Run: `cargo build --release 2>&1 | tail -5`
 Expected: error about missing `bwrap` module only. `seatbelt.rs` compiles (or is skipped on Linux via `cfg`).
@@ -541,7 +541,7 @@ git commit -m "feat(sandbox): add macOS seatbelt backend module (migrated from l
 
 ---
 
-### Task 5: Create `sandbox/bwrap.rs` — new bubblewrap backend
+### Task 5: Create `sandbox/bwrap.rs` - new bubblewrap backend
 
 **Files:**
 - Create: `crates/omnish-plugin/src/sandbox/bwrap.rs`
@@ -594,7 +594,7 @@ pub fn sandbox_command(
     // Writable paths: bind-mount each path read-write over the read-only root
     for path in &policy.writable_paths {
         let path_str = path.to_string_lossy();
-        // Skip /dev/* paths — --dev /dev already handles them
+        // Skip /dev/* paths - --dev /dev already handles them
         if path_str.starts_with("/dev/") || path_str == "/dev" {
             continue;
         }
@@ -775,7 +775,7 @@ Expected: existing tests pass. (macOS seatbelt profile tests now live in `seatbe
 
 - [ ] **Step 5: Remove old tests from `lib.rs`**
 
-Remove the `#[cfg(test)] mod tests { ... }` block from `lib.rs` — those tests are now covered by `seatbelt.rs::tests`.
+Remove the `#[cfg(test)] mod tests { ... }` block from `lib.rs` - those tests are now covered by `seatbelt.rs::tests`.
 
 - [ ] **Step 6: Build and test again**
 
@@ -900,7 +900,7 @@ impl ClientPluginManager {
                     }
                 }
             } else {
-                // No sandbox available — run without
+                // No sandbox available - run without
                 Command::new(&executable)
             }
         } else {
@@ -1248,10 +1248,10 @@ which bwrap
 Test with a sandboxed command manually:
 
 ```bash
-# Should succeed — /tmp is writable
+# Should succeed - /tmp is writable
 bwrap --new-session --die-with-parent --ro-bind / / --dev /dev --bind /tmp /tmp -- touch /tmp/sandbox-test && echo "OK" && rm /tmp/sandbox-test
 
-# Should fail — / is read-only
+# Should fail - / is read-only
 bwrap --new-session --die-with-parent --ro-bind / / --dev /dev -- touch /sandbox-test 2>&1 || echo "BLOCKED (expected)"
 ```
 

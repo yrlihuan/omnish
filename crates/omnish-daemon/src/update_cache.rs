@@ -16,9 +16,9 @@ const STARTUP_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
 /// Manages the package cache at ~/.omnish/updates/{os}-{arch}/
 pub struct UpdateCache {
     cache_dir: PathBuf,
-    /// Cached latest version per platform — refreshed by `scan_updates()`
+    /// Cached latest version per platform - refreshed by `scan_updates()`
     latest_versions: Mutex<HashMap<(String, String), String>>,
-    /// Known client platforms — populated by UpdateCheck messages
+    /// Known client platforms - populated by UpdateCheck messages
     known_platforms: Mutex<HashSet<(String, String)>>,
     /// Per-host transfer lock: only one transfer per host within cooldown period
     transfer_locks: Mutex<HashMap<String, Instant>>,
@@ -308,7 +308,7 @@ impl UpdateCache {
             let asset = match asset {
                 Some(a) => a,
                 None => {
-                    // No asset for this platform — not an error
+                    // No asset for this platform - not an error
                     results.push((os.clone(), arch.clone(), Ok(false)));
                     continue;
                 }

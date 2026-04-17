@@ -41,7 +41,7 @@ CompletionSuggestion {
 ## Daemon Side
 
 1. Receive `CompletionRequest`.
-2. Call `resolve_context()` — same context pipeline as chat (last 10 commands
+2. Call `resolve_context()` - same context pipeline as chat (last 10 commands
    with output, grouped by session).
 3. Build a completion-specific prompt:
    ```

@@ -5,7 +5,7 @@
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
-// ANSI style codes — shared constants from display, plus markdown-only styles
+// ANSI style codes - shared constants from display, plus markdown-only styles
 const RESET: &str = crate::display::RESET;
 const BOLD: &str = crate::display::BOLD;
 const DIM: &str = crate::display::DIM;
@@ -86,7 +86,7 @@ pub fn render(content: &str) -> String {
                     let _ = dest_url; // consumed in TagEnd
                 }
                 Tag::Table(_) | Tag::TableHead | Tag::TableRow | Tag::TableCell => {
-                    // Basic table support — just separate cells with |
+                    // Basic table support - just separate cells with |
                     if matches!(tag, Tag::TableCell) {
                         out.push_str("| ");
                     }

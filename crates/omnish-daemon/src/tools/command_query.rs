@@ -236,7 +236,7 @@ impl CommandQueryTool {
     }
 
     /// Register command query tool metadata and definitions with a ToolRegistry.
-    /// This is a static method — it doesn't need a CommandQueryTool instance.
+    /// This is a static method - it doesn't need a CommandQueryTool instance.
     pub fn register(registry: &crate::tool_registry::ToolRegistry) {
         use crate::tool_registry::{ToolMeta, CustomStatusFn};
         use std::sync::Arc;

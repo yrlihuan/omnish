@@ -102,7 +102,7 @@ fn resolve_shell(config_shell: &str) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("");
     if exe_name.starts_with("omnish") {
-        // $SHELL points to omnish — fall back to config, then common defaults
+        // $SHELL points to omnish - fall back to config, then common defaults
         if !config_shell.is_empty()
             && !std::path::Path::new(config_shell)
                 .file_name()
@@ -178,7 +178,7 @@ mod notice_queue {
     pub fn set_alt_screen(active: bool) {
         ALT_SCREEN.store(active, Ordering::Relaxed);
         if !active {
-            // Leaving alt screen — flush queued notices
+            // Leaving alt screen - flush queued notices
             let msgs: Vec<String> = {
                 match QUEUE.lock() {
                     Ok(mut q) => q.drain(..).collect(),
@@ -313,7 +313,7 @@ fn exec_update(proxy: &PtyProxy, session_id: &str, cursor_col: u16, cursor_row: 
         std::ffi::CString::new(format!("--session-id={}", session_id)).unwrap(),
     ];
 
-    // execvp replaces this process — only returns on error
+    // execvp replaces this process - only returns on error
     let _ = nix::unistd::execvp(&exe_cstr, &args);
     notice(&format!("[omnish] exec failed: {}", std::io::Error::last_os_error()));
 }
@@ -474,7 +474,7 @@ async fn main() -> Result<()> {
     let resume_args = parse_resume_args();
 
     // If stdin is not a terminal (e.g. rsync over SSH, piped commands),
-    // exec the underlying shell directly — omnish requires a PTY.
+    // exec the underlying shell directly - omnish requires a PTY.
     if resume_args.is_none() && !nix::unistd::isatty(0).unwrap_or(false) {
         let shell = resolve_shell(&config.shell.command);
         let shell_cstr = std::ffi::CString::new(shell.as_str()).expect("shell path");
@@ -662,7 +662,7 @@ async fn main() -> Result<()> {
     let mut pending_completion_responses: Vec<omnish_protocol::message::CompletionResponse> = Vec::new();
     // Whether we've triggered a readline report for pending completions
     let mut readline_triggered_for_completions = false;
-    // Deferred ghost text render — rendered after next PTY display_data write
+    // Deferred ghost text render - rendered after next PTY display_data write
     // so bash's readline redraw (after bind-x hook) doesn't overwrite it.
     let mut deferred_ghost: Option<String> = None;
     // Display width of the deferred ghost suffix, for wrap detection at flush time
@@ -752,7 +752,7 @@ async fn main() -> Result<()> {
                     if let Some(current) = current_mtime {
                         if current != *startup_mtime {
                             exec_update(&proxy, &session_id, col_tracker.col, col_tracker.row, last_thread_id.as_deref());
-                            // exec_update only returns on error — reset timer
+                            // exec_update only returns on error - reset timer
                         }
                         exe_mtime = current_mtime;
                     }
@@ -893,7 +893,7 @@ async fn main() -> Result<()> {
             if n == 0 {
                 break;
             }
-            deferred_ghost = None; // User typed — cancel pending ghost render
+            deferred_ghost = None; // User typed - cancel pending ghost render
 
             // Suppress interceptor when not at prompt (child process running:
             // ssh, python REPL, etc.) so ':' is forwarded to the child.
@@ -916,7 +916,7 @@ async fn main() -> Result<()> {
                         // Byte consumed, still accumulating DSR response
                     }
                     None => {
-                        // Not a DSR byte — check if detector aborted mid-sequence
+                        // Not a DSR byte - check if detector aborted mid-sequence
                         if !dsr_detector.buf.is_empty() {
                             // Replay buffered bytes (includes current byte already)
                             let replay = dsr_detector.take_buf();
@@ -929,7 +929,7 @@ async fn main() -> Result<()> {
                 }
             }
 
-            // Flush bare ESC from DSR detector — a standalone ESC not followed
+            // Flush bare ESC from DSR detector - a standalone ESC not followed
             // by '[' in the same read() is a user keypress, not a DSR response.
             if let Some(flushed) = dsr_detector.flush_bare_esc() {
                 filtered_input.extend_from_slice(&flushed);
@@ -938,17 +938,17 @@ async fn main() -> Result<()> {
                 match interceptor.feed_byte(byte) {
                     InterceptAction::Buffering(buf) => {
                         if buf == prefix_bytes {
-                            // Full prefix matched — start timer for double-prefix detection.
+                            // Full prefix matched - start timer for double-prefix detection.
                             // No visual feedback yet; chat prompt appears on timeout or Enter.
                             shell_completer.clear();
                             prefix_match_time = Some(std::time::Instant::now());
                         } else if buf.len() > prefix_bytes.len() && buf.starts_with(&prefix_bytes) {
-                            // Additional input after prefix — cancel timer
+                            // Additional input after prefix - cancel timer
                             prefix_match_time = None;
                         }
                     }
                     InterceptAction::Backspace(_buf) => {
-                        // No visual prompt to update — prefix buffering is invisible
+                        // No visual prompt to update - prefix buffering is invisible
                     }
                     InterceptAction::Forward(bytes) => {
                         // Check if Tab should be intercepted for shell completion
@@ -969,7 +969,7 @@ async fn main() -> Result<()> {
                                 }
                             }
                         } else if bytes == [0x1b] && shell_completer.ghost().is_some() {
-                            // Bare ESC dismisses ghost text — consume the key (don't forward to PTY)
+                            // Bare ESC dismisses ghost text - consume the key (don't forward to PTY)
                             if shell_completer.dismiss() {
                                 nix::unistd::write(std::io::stdout(), display::erase_ghost_text(ghost_wrapped)).ok();
                                 ghost_wrapped = false;
@@ -986,7 +986,7 @@ async fn main() -> Result<()> {
 
                             if shell_input.at_prompt() {
                                 if needs_readline_report(&bytes) {
-                                    // Tab, Up, Down modify readline state — send
+                                    // Tab, Up, Down modify readline state - send
                                     // trigger so bash reports the real READLINE_LINE.
                                     // Note: Tab trigger removed here - now triggered on completion response
                                     // to avoid interfering with bash completion list display (issue #23)
@@ -1034,7 +1034,7 @@ async fn main() -> Result<()> {
                             shell_completer.note_activity();
                             if let Some((input, seq)) = shell_input.take_change() {
                                 if shell_completer.on_input_changed(input, seq) {
-                                    // Ghost was cleared — erase stale ghost text from screen
+                                    // Ghost was cleared - erase stale ghost text from screen
                                     nix::unistd::write(std::io::stdout(), display::erase_ghost_text(ghost_wrapped)).ok();
                                     ghost_wrapped = false;
                                     // Send completion summary (ignored - user typed different input)
@@ -1063,7 +1063,7 @@ async fn main() -> Result<()> {
                         }
                     }
                     InterceptAction::Cancel => {
-                        // ESC pressed — reset state, no UI to dismiss
+                        // ESC pressed - reset state, no UI to dismiss
                         prefix_match_time = None;
                         completer.clear();
                     }
@@ -1110,7 +1110,7 @@ async fn main() -> Result<()> {
                         }
                     }
                     InterceptAction::Pending => {
-                        // ESC sequence in progress — no UI update needed
+                        // ESC sequence in progress - no UI update needed
                     }
                 }
             }
@@ -1123,7 +1123,7 @@ async fn main() -> Result<()> {
                         completer.clear();
                     }
                     InterceptAction::Forward(bytes) => {
-                        // Bare ESC dismisses ghost text — consume the key
+                        // Bare ESC dismisses ghost text - consume the key
                         if bytes == [0x1b] && shell_completer.ghost().is_some() {
                             if shell_completer.dismiss() {
                                 nix::unistd::write(std::io::stdout(), display::erase_ghost_text(ghost_wrapped)).ok();
@@ -1181,7 +1181,7 @@ async fn main() -> Result<()> {
 
                     nix::unistd::write(std::io::stdout(), display_data)?;
 
-                    // Track cursor position on display (stripped) data — must happen
+                    // Track cursor position on display (stripped) data - must happen
                     // before ghost rendering so col_tracker.col reflects where the
                     // ghost text starts (needed for wrap detection).
                     col_tracker.feed(display_data);
@@ -1189,7 +1189,7 @@ async fn main() -> Result<()> {
 
                     // Render ghost text after display_data write.
                     // Priority 1: deferred ghost (just set during this or prior RL processing).
-                    // Priority 2: re-render active ghost — handles the case where bash's
+                    // Priority 2: re-render active ghost - handles the case where bash's
                     // readline redraw is split across multiple PTY reads and a trailing
                     // fragment overwrites the previously-rendered ghost.
                     if let Some(ghost_render) = deferred_ghost.take() {
@@ -1217,7 +1217,7 @@ async fn main() -> Result<()> {
                     // Notify interceptor of output (resets chat state)
                     interceptor.note_output(display_data);
 
-                    // Send IoData to daemon (throttled) — skip while alternate screen
+                    // Send IoData to daemon (throttled) - skip while alternate screen
                     // is active (vim, less, htop, etc.) to avoid storing TUI noise.
                     if let Some(ref rpc) = daemon_conn {
                         if !alt_screen_detector.is_active() && throttle.should_send(n) {
@@ -1330,7 +1330,7 @@ async fn main() -> Result<()> {
                                             }
                                         }
                                     } else {
-                                        // Cursor not at end — discard pending completions
+                                        // Cursor not at end - discard pending completions
                                         pending_completion_responses.clear();
                                         if shell_completer.ghost().is_some() {
                                             shell_completer.clear();
@@ -1455,7 +1455,7 @@ async fn main() -> Result<()> {
                 continue;
             }
 
-            // In isearch mode (Ctrl+R) — discard to avoid "cannot find keymap" error (issue #88)
+            // In isearch mode (Ctrl+R) - discard to avoid "cannot find keymap" error (issue #88)
             if shell_input.in_isearch() || shell_input.pending_rl_report() {
                 event_log::push(format!("completion response seq={} discarded (isearch)", resp.sequence_id));
                 continue;
@@ -1825,7 +1825,7 @@ async fn connect_daemon(
                                 result.protocol_version,
                                 behind
                             ));
-                            // Don't fail — keep connection alive for update messages
+                            // Don't fail - keep connection alive for update messages
                             return Ok(());
                         }
                     }
@@ -2077,7 +2077,7 @@ impl CursorTracker {
                     self.utf8_buf[self.utf8_len as usize] = byte;
                     self.utf8_len += 1;
                     if self.utf8_len == self.utf8_need {
-                        // Complete character — decode and measure width
+                        // Complete character - decode and measure width
                         if let Ok(s) = std::str::from_utf8(&self.utf8_buf[..self.utf8_len as usize]) {
                             if let Some(ch) = s.chars().next() {
                                 self.col += ch.width().unwrap_or(0) as u16;
@@ -2087,7 +2087,7 @@ impl CursorTracker {
                         self.utf8_len = 0;
                     }
                 } else {
-                    // Invalid continuation — discard partial and re-process this byte
+                    // Invalid continuation - discard partial and re-process this byte
                     self.utf8_need = 0;
                     self.utf8_len = 0;
                     self.process_normal(byte);
@@ -2129,28 +2129,28 @@ impl CursorTracker {
     /// Parse CSI final byte and update row/col accordingly.
     fn finish_csi(&mut self, final_byte: u8) {
         match final_byte {
-            // CUU — Cursor Up: \x1b[nA
+            // CUU - Cursor Up: \x1b[nA
             b'A' => {
                 let n = self.parse_csi_param_1().max(1);
                 self.row = self.row.saturating_sub(n);
             }
-            // CUB — Cursor Back: \x1b[nD  (handled here for completeness)
-            // CUD — Cursor Down: \x1b[nB
+            // CUB - Cursor Back: \x1b[nD  (handled here for completeness)
+            // CUD - Cursor Down: \x1b[nB
             b'B' => {
                 let n = self.parse_csi_param_1().max(1);
                 self.row = self.row.saturating_add(n);
             }
-            // CUP / HVP — Cursor Position: \x1b[n;mH or \x1b[n;mf
+            // CUP / HVP - Cursor Position: \x1b[n;mH or \x1b[n;mf
             b'H' | b'f' => {
                 let (r, c) = self.parse_csi_param_2();
                 // CSI params are 1-based, convert to 0-based
                 self.row = r.max(1) - 1;
                 self.col = c.max(1) - 1;
             }
-            // SD — Scroll Down: \x1b[nT — content moves down, cursor row unchanged
+            // SD - Scroll Down: \x1b[nT - content moves down, cursor row unchanged
             // but conceptually row 0 content is now new
-            // SU — Scroll Up: \x1b[nS — content moves up
-            // IL — Insert Line: \x1b[nL — inserts lines at cursor, pushes down
+            // SU - Scroll Up: \x1b[nS - content moves up
+            // IL - Insert Line: \x1b[nL - inserts lines at cursor, pushes down
             // These don't move the cursor position itself.
             _ => {}
         }
@@ -2183,7 +2183,7 @@ impl CursorTracker {
             b'\n' => { self.row = self.row.saturating_add(1); }
             0x08 => self.col = self.col.saturating_sub(1),
             0x20..=0x7e => self.col += 1,
-            // UTF-8 start bytes — begin accumulation
+            // UTF-8 start bytes - begin accumulation
             0xc0..=0xdf => {
                 self.utf8_buf[0] = byte;
                 self.utf8_len = 1;
@@ -2225,9 +2225,9 @@ impl DsrDetector {
     }
 
     /// Feed a byte. Returns:
-    /// - `Some(Some((row, col)))` — complete DSR response parsed, byte consumed
-    /// - `Some(None)` — byte is part of an in-progress DSR response, consumed
-    /// - `None` — byte is not part of a DSR response, should be forwarded
+    /// - `Some(Some((row, col)))` - complete DSR response parsed, byte consumed
+    /// - `Some(None)` - byte is part of an in-progress DSR response, consumed
+    /// - `None` - byte is not part of a DSR response, should be forwarded
     fn feed(&mut self, byte: u8) -> Option<Option<(u16, u16)>> {
         match self.state {
             DsrState::Normal => {
@@ -2246,7 +2246,7 @@ impl DsrDetector {
                     self.state = DsrState::Csi;
                     Some(None)
                 } else {
-                    // Not a CSI — abort, bytes need to be replayed
+                    // Not a CSI - abort, bytes need to be replayed
                     self.state = DsrState::Normal;
                     None // signal caller to replay buf
                 }
@@ -2844,7 +2844,7 @@ pub(crate) async fn handle_slash_command(
             if let Some(path) = redirect.as_deref() {
                 handle_command_result(&display_result, Some(path), cwd);
             } else {
-                // Command output is plain text — skip markdown rendering
+                // Command output is plain text - skip markdown rendering
                 // Single-line output: no leading blank line; multi-line: add one for readability
                 let is_multiline = display_result.contains('\n');
                 let prefix = if is_multiline { "\r\n" } else { "" };
@@ -2865,7 +2865,7 @@ pub(crate) async fn handle_slash_command(
                 if let Some(path) = redirect.as_deref() {
                     handle_command_result(&display_result, Some(path), cwd);
                 } else {
-                    // Plain text output — skip markdown rendering to preserve blank lines
+                    // Plain text output - skip markdown rendering to preserve blank lines
                     let output = format!("\r\n{}\r\n", display_result.replace('\n', "\r\n"));
                     nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
                 }
@@ -2897,7 +2897,7 @@ pub(crate) async fn handle_slash_command(
                         } else {
                             display
                         };
-                        // Command output is plain text — skip markdown rendering
+                        // Command output is plain text - skip markdown rendering
                         let output = format!("\r\n{}\r\n", display.replace('\n', "\r\n"));
                         nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
                     }
@@ -3135,7 +3135,7 @@ mod tests {
     #[test]
     fn test_col_tracker_cjk_wide_chars() {
         let mut t = CursorTracker::new();
-        // Chinese characters are fullwidth — each occupies 2 columns
+        // Chinese characters are fullwidth - each occupies 2 columns
         t.feed("你好".as_bytes());
         assert_eq!(t.col, 4); // 2 chars × 2 columns each
 
@@ -3162,11 +3162,11 @@ mod tests {
     #[test]
     fn test_col_tracker_emoji() {
         let mut t = CursorTracker::new();
-        // ❯ (U+276F) is narrow — width 1
+        // ❯ (U+276F) is narrow - width 1
         t.feed("❯ ".as_bytes());
         assert_eq!(t.col, 2); // ❯ (1) + space (1)
 
-        // 🚀 (U+1F680) is a wide emoji — width 2
+        // 🚀 (U+1F680) is a wide emoji - width 2
         t = CursorTracker::new();
         t.feed("🚀x".as_bytes());
         assert_eq!(t.col, 3); // 🚀 (2) + x (1)
@@ -3190,7 +3190,7 @@ mod tests {
         t.feed(b"line1\r\nline2\r\nline3");
         assert_eq!(t.row, 2);
         assert_eq!(t.col, 5);
-        // \x1b[H — cursor to (0,0)
+        // \x1b[H - cursor to (0,0)
         t.feed(b"\x1b[H");
         assert_eq!(t.row, 0);
         assert_eq!(t.col, 0);
@@ -3199,7 +3199,7 @@ mod tests {
     #[test]
     fn test_row_tracker_cup_with_params() {
         let mut t = CursorTracker::new();
-        // \x1b[5;10H — cursor to row 5, col 10 (1-based → 4, 9 zero-based)
+        // \x1b[5;10H - cursor to row 5, col 10 (1-based → 4, 9 zero-based)
         t.feed(b"\x1b[5;10H");
         assert_eq!(t.row, 4);
         assert_eq!(t.col, 9);
@@ -3210,10 +3210,10 @@ mod tests {
         let mut t = CursorTracker::new();
         t.feed(b"\n\n\n\n\n"); // row = 5
         assert_eq!(t.row, 5);
-        // \x1b[2A — cursor up 2
+        // \x1b[2A - cursor up 2
         t.feed(b"\x1b[2A");
         assert_eq!(t.row, 3);
-        // \x1b[B — cursor down 1 (no param = 1)
+        // \x1b[B - cursor down 1 (no param = 1)
         t.feed(b"\x1b[B");
         assert_eq!(t.row, 4);
     }
@@ -3222,7 +3222,7 @@ mod tests {
     fn test_row_tracker_cursor_up_saturates() {
         let mut t = CursorTracker::new();
         t.feed(b"\n"); // row = 1
-        // Move up 10 — should saturate to 0
+        // Move up 10 - should saturate to 0
         t.feed(b"\x1b[10A");
         assert_eq!(t.row, 0);
     }
@@ -3275,7 +3275,7 @@ mod tests {
     fn test_dsr_non_csi_esc_aborts() {
         let mut d = DsrDetector::new();
         assert_eq!(d.feed(0x1b), Some(None)); // ESC consumed
-        assert_eq!(d.feed(b'O'), None);        // not '[', abort — replay
+        assert_eq!(d.feed(b'O'), None);        // not '[', abort - replay
         assert!(!d.buf.is_empty());
         let replay = d.take_buf();
         assert_eq!(replay, vec![0x1b, b'O']);
@@ -3284,11 +3284,11 @@ mod tests {
     #[test]
     fn test_dsr_non_r_final_aborts() {
         let mut d = DsrDetector::new();
-        // \x1b[2A — cursor up, not a DSR response
+        // \x1b[2A - cursor up, not a DSR response
         assert_eq!(d.feed(0x1b), Some(None));
         assert_eq!(d.feed(b'['), Some(None));
         assert_eq!(d.feed(b'2'), Some(None));
-        assert_eq!(d.feed(b'A'), None); // final byte but not 'R' — abort
+        assert_eq!(d.feed(b'A'), None); // final byte but not 'R' - abort
         let replay = d.take_buf();
         assert_eq!(replay, vec![0x1b, b'[', b'2', b'A']);
     }

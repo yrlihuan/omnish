@@ -1,5 +1,5 @@
 # config/daemon.toml
-# Daemon configuration — copy to ~/.omnish/daemon.toml
+# Daemon configuration - copy to ~/.omnish/daemon.toml
 
 # Listen address:
 #   Unix socket:  listen_addr = "~/.omnish/omnish.sock"   (default)

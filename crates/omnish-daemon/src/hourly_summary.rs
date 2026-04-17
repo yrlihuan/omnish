@@ -64,7 +64,7 @@ impl ScheduledTask for HourlySummaryTask {
 }
 
 /// Build the LLM context for hourly/periodic summaries.
-/// Returns `(context_for_llm, table_md)` — the table is reused when writing the output file.
+/// Returns `(context_for_llm, table_md)` - the table is reused when writing the output file.
 /// Used by both the scheduled job and `/context hourly-notes`.
 pub fn build_hourly_context(
     commands: &[(String, omnish_store::command::CommandRecord)],
@@ -137,10 +137,10 @@ fn main_title(date_str: &str, hour_str: &str, language: &str) -> String {
         "zh-tw" => format!("{} {}:00 時工作摘要", date_str, hour_str),
         "ja" => format!("{} {}:00 作業サマリー", date_str, hour_str),
         "ko" => format!("{} {}:00 작업 요약", date_str, hour_str),
-        "fr" => format!("Résumé horaire — {} {}:00", date_str, hour_str),
-        "es" => format!("Resumen por hora — {} {}:00", date_str, hour_str),
-        "ar" => format!("ملخص العمل — {} {}:00", date_str, hour_str),
-        _ => format!("Hourly Work Summary — {} {}:00", date_str, hour_str),
+        "fr" => format!("Résumé horaire - {} {}:00", date_str, hour_str),
+        "es" => format!("Resumen por hora - {} {}:00", date_str, hour_str),
+        "ar" => format!("ملخص العمل - {} {}:00", date_str, hour_str),
+        _ => format!("Hourly Work Summary - {} {}:00", date_str, hour_str),
     }
 }
 

@@ -206,7 +206,7 @@ impl LlmBackend for AnthropicBackend {
                     let backoff = DEFAULT_BACKOFF * 2u32.pow(attempt);
                     let backoff = backoff.min(MAX_BACKOFF);
                     tracing::warn!(
-                        "Anthropic API connection error (attempt {}/{}): {} — retrying in {:.1}s",
+                        "Anthropic API connection error (attempt {}/{}): {} - retrying in {:.1}s",
                         attempt + 1, MAX_RETRIES + 1, e, backoff.as_secs_f64()
                     );
                     last_error = Some(anyhow::anyhow!("Anthropic API connection error: {}", e));
@@ -233,7 +233,7 @@ impl LlmBackend for AnthropicBackend {
                     .as_str()
                     .unwrap_or("rate limited");
                 tracing::warn!(
-                    "Anthropic API {} (attempt {}/{}): {} — retrying in {:.1}s",
+                    "Anthropic API {} (attempt {}/{}): {} - retrying in {:.1}s",
                     status_code, attempt + 1, MAX_RETRIES + 1, error_msg, backoff.as_secs_f64()
                 );
                 last_error = Some(anyhow::anyhow!(
@@ -245,7 +245,7 @@ impl LlmBackend for AnthropicBackend {
                     tokio::time::sleep(backoff).await;
                     continue;
                 }
-                // Final attempt exhausted — fall through to return error
+                // Final attempt exhausted - fall through to return error
                 return Err(last_error.unwrap());
             }
 
@@ -258,7 +258,7 @@ impl LlmBackend for AnthropicBackend {
                         resp_text.clone()
                     };
                     anyhow::anyhow!(
-                        "Anthropic API response decode error ({}): {} — body: {}",
+                        "Anthropic API response decode error ({}): {} - body: {}",
                         status, e, preview
                     )
                 })?;
@@ -286,7 +286,7 @@ impl LlmBackend for AnthropicBackend {
                 _ => StopReason::EndTurn,
             };
 
-            // Extract content blocks — preserve original order (including thinking)
+            // Extract content blocks - preserve original order (including thinking)
             let mut content_blocks = Vec::new();
 
             for block in json["content"].as_array().unwrap_or(&vec![]) {

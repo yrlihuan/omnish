@@ -72,7 +72,7 @@ pub enum StopReason {
 #[derive(Debug, Clone)]
 pub struct LlmRequest {
     /// Single-turn context. Used only when `extra_messages` is empty;
-    /// otherwise ignored — multi-turn callers must fold context into
+    /// otherwise ignored - multi-turn callers must fold context into
     /// `system_prompt` (e.g., via system-reminder) or into `extra_messages`.
     pub context: String,
     /// Single-turn query. Used only when `extra_messages` is empty;

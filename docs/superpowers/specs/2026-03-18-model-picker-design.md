@@ -24,14 +24,14 @@ The daemon already supports multiple LLM backends (e.g., `claude`, `deepseek`, `
    ```
    - `selected` is determined by: `ThreadMeta.model` if thread exists and has one set, otherwise the default chat backend.
 4. Client renders picker using existing `widgets::picker::pick_one`, pre-selecting the flagged item.
-   - Display format: `claude (claude-sonnet-4-5)` — date suffix stripped for readability.
+   - Display format: `claude (claude-sonnet-4-5)` - date suffix stripped for readability.
 5. On selection:
    - **Existing thread**: Client sends a `ChatMessage` with `model=Some("backend_name")` and `query=""`. Daemon updates `ThreadMeta.model`, returns `Ack`. Client renders confirmation locally: "Switched to claude (claude-sonnet-4-5)".
    - **New thread (no thread_id yet)**: Client stores the selection. When the user sends the first message, it's attached as `model` on that `ChatMessage`. Thread creation and model setting happen together.
 
 ### Protocol Changes
 
-**ChatMessage** — add optional field:
+**ChatMessage** - add optional field:
 ```rust
 pub struct ChatMessage {
     pub request_id: String,
@@ -50,8 +50,8 @@ When `model` is present in a ChatMessage:
 
 1. Validate the backend name exists in config. If not, ignore (use default).
 2. Update `ThreadMeta.model` for this thread.
-3. If `query` is empty — return `Ack` (model-only update, no LLM call, nothing written to thread history).
-4. If `query` is non-empty — use the newly set backend to process the message normally.
+3. If `query` is empty - return `Ack` (model-only update, no LLM call, nothing written to thread history).
+4. If `query` is non-empty - use the newly set backend to process the message normally.
 
 When `model` is absent:
 
@@ -60,7 +60,7 @@ When `model` is absent:
 
 ### Thread Metadata
 
-**ThreadMeta** — add optional field:
+**ThreadMeta** - add optional field:
 ```rust
 pub struct ThreadMeta {
     pub host: Option<String>,

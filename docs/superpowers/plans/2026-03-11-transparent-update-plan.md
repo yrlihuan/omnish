@@ -1,4 +1,4 @@
-# `/update` Transparent Client Self-Restart — Implementation Plan
+# `/update` Transparent Client Self-Restart - Implementation Plan
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -176,7 +176,7 @@ Note: `osc133_hook_installed` is used later in the code. In resume mode it shoul
 let osc133_hook_installed = if resume_args.is_some() {
     true // Shell hooks persist across client re-exec
 } else {
-    // Already set during spawn above — but we moved the code into the else branch.
+    // Already set during spawn above - but we moved the code into the else branch.
     // We need to track this. See the full restructure below.
     ...
 };
@@ -274,7 +274,7 @@ fn exec_update(proxy: &PtyProxy, session_id: &str) {
         std::ffi::CString::new(format!("--session-id={}", session_id)).unwrap(),
     ];
 
-    // execvp replaces this process — only returns on error
+    // execvp replaces this process - only returns on error
     let _ = nix::unistd::execvp(&exe_cstr, &args);
     eprintln!("\x1b[31m[omnish]\x1b[0m exec failed: {}", std::io::Error::last_os_error());
 }
@@ -335,7 +335,7 @@ Launch omnish, type `/update`. Expected output:
 
 From inside omnish, note the master_fd and child_pid from `/debug client`, then in another terminal:
 ```
-# Just verify the args parse correctly — this is a smoke test
+# Just verify the args parse correctly - this is a smoke test
 target/debug/omnish-client --resume --fd=999 --pid=999 --session-id=test1234
 ```
 Expected: it should try to resume and fail gracefully (fd 999 is invalid).
@@ -347,7 +347,7 @@ Expected: it should try to resume and fail gracefully (fd 999 is invalid).
 3. Rebuild: `cargo build -p omnish-client`
 4. In the running omnish session, type `/update`
 5. Expected: prints "Updating: omnish 0.5.5 -> omnish 0.5.6", session continues, shell is uninterrupted
-6. Type `/debug client` — should show Version: omnish 0.5.6
+6. Type `/debug client` - should show Version: omnish 0.5.6
 
 - [ ] **Step 5: Push and close issue**
 

@@ -687,11 +687,11 @@ Config > LLM                          ← 面包屑（带层级指示）
 客户端 UI 翻译系统，编译期内嵌的语言包 JSON。
 
 **公共 API:**
-- `t(key)` — 查表翻译静态 key
-- `tf(key, args)` — 带位置参数的翻译（`{0}`/`{1}` 占位）
-- `translate_label(en_text)` — 英文回退式翻译：若当前语言有匹配条目则返回译文，否则返回原英文（用于 daemon 传来的英文 label 本地化）
-- `available_languages() -> Vec<(&str, &str)>` — 返回 `(code, display_name)` 列表，用于 `/config` 语言选择器
-- `set_language(code)` / `current_language()` — 运行时语言切换，配合 `ConfigClient` 推送与 `OMNISH_LANG` 环境变量
+- `t(key)` - 查表翻译静态 key
+- `tf(key, args)` - 带位置参数的翻译（`{0}`/`{1}` 占位）
+- `translate_label(en_text)` - 英文回退式翻译：若当前语言有匹配条目则返回译文，否则返回原英文（用于 daemon 传来的英文 label 本地化）
+- `available_languages() -> Vec<(&str, &str)>` - 返回 `(code, display_name)` 列表，用于 `/config` 语言选择器
+- `set_language(code)` / `current_language()` - 运行时语言切换，配合 `ConfigClient` 推送与 `OMNISH_LANG` 环境变量
 
 **语言包:**
 - 编译期嵌入 `i18n/*.json`（`en/zh/zh-tw/ja/ko/fr/es/ar`），通过 `include_str!` 打包
@@ -802,7 +802,7 @@ Config > LLM                          ← 面包屑（带层级指示）
 - 变更通过 `save_local_sandbox_config()` 持久化到 `client.toml`（使用 `.toml.lock` 文件锁防并发）
 
 **`/test lock on/off` 命令 (commit c73013e, #378):**
-- `/test lock on` — 使用沙箱重启 shell；`/test lock off` — 不使用沙箱重启 shell
+- `/test lock on` - 使用沙箱重启 shell；`/test lock off` - 不使用沙箱重启 shell
 - `handle_lock` 使用统一沙箱后端：Landlock 通过 `pre_exec` + `apply_in_process` 应用，bwrap/seatbelt 通过 `sandbox_command` 构建包装命令
 - 无可用后端时输出警告而非静默失败
 - `do_respawn` 辅助函数封装 shell 重启和锁定状态更新
@@ -846,7 +846,7 @@ Config > LLM                          ← 面包屑（带层级指示）
 - 光标位置和 last_thread_id 通过环境变量 `OMNISH_CURSOR_COL`、`OMNISH_CURSOR_ROW`、`OMNISH_LAST_THREAD_ID` 传递（commit 2e521d6）
 - 显示InlineNotice通知恢复成功
 
-### 自动更新 — mtime 检测 (`auto_update`)
+### 自动更新 - mtime 检测 (`auto_update`)
 - 每60秒检查磁盘二进制的修改时间
 - **mtime 重启** 仅在以下条件全部满足时触发：at_prompt、空闲超过60秒、不在聊天模式、不在全屏程序中
 - 检测到mtime变化后自动执行 `exec_update()`
@@ -859,7 +859,7 @@ Config > LLM                          ← 面包屑（带层级指示）
 **触发条件（commit c21174b, defdb57, e7cb176）:**
 - `UpdateCheck` 与 mtime 重启共享60秒间隔计时器，但 **不受** at_prompt、idle、alt_screen 条件限制
 - 仅要求：不在聊天模式 + 60秒间隔已到期（客户端侧 `auto_update` 配置项已移除，commit e7cb176, #433）
-- 设计原则：繁忙客户端（运行命令、在vim中）也必须能下载更新，否则形成"鸡生蛋"死锁——旧客户端拿不到新代码
+- 设计原则：繁忙客户端（运行命令、在vim中）也必须能下载更新，否则形成"鸡生蛋"死锁--旧客户端拿不到新代码
 
 **`update_needed` 标志:**
 - 初始为 false（UpdateCheck 不依赖 `update_needed`，仅需60秒间隔到期且不在聊天模式）
@@ -1110,21 +1110,21 @@ Config > LLM                          ← 面包屑（带层级指示）
 - `layout: &mut ChatLayout` - 布局管理器
 
 **退出方式:**
-- `ESC` — 返回None，退出聊天（快速检测，即时反馈，issue #222）
-- `Ctrl-D` — 仅在输入为空时返回None退出（issue #124）
-- `Backspace` — 仅在输入为空且 `allow_backspace_exit=true` 且无粘贴块时退出（issue #120, #127）
+- `ESC` - 返回None，退出聊天（快速检测，即时反馈，issue #222）
+- `Ctrl-D` - 仅在输入为空时返回None退出（issue #124）
+- `Backspace` - 仅在输入为空且 `allow_backspace_exit=true` 且无粘贴块时退出（issue #120, #127）
 
 **输入键位:**
-- 方向键左/右 — 光标移动
-- Alt+Left/Right — 按词移动
-- Home/End — 行首/行尾
-- Shift+Enter / Ctrl+J — 插入换行
-- Delete — 向前删除
-- Ctrl+U — 删除到行首
-- Tab — 接受幽灵文本补全
-- 方向键上/下 — 历史导航（连续导航支持）
-- Ctrl+O — 进入ScrollView浏览模式
-- Enter — 提交输入
+- 方向键左/右 - 光标移动
+- Alt+Left/Right - 按词移动
+- Home/End - 行首/行尾
+- Shift+Enter / Ctrl+J - 插入换行
+- Delete - 向前删除
+- Ctrl+U - 删除到行首
+- Tab - 接受幽灵文本补全
+- 方向键上/下 - 历史导航（连续导航支持）
+- Ctrl+O - 进入ScrollView浏览模式
+- Enter - 提交输入
 
 **粘贴处理:**
 - 括号粘贴模式启用/禁用
@@ -1135,19 +1135,19 @@ Config > LLM                          ← 面包屑（带层级指示）
 ### 聊天内命令
 
 **线程管理命令:**
-- `/resume [N]` — 恢复对话。无参数时使用picker选择器交互式选择（issue #157），显示所有会话的线程（issue #220）；带编号时使用 `cached_thread_ids` 缓存的索引（issue #133），自动获取并显示最后一轮对话（issue #137），使用ScrollView显示历史（issue #275）
-- `/thread list [N]` — 列出对话线程（原 `/conversations` 命令，commit b2f5a6f, 096b094），默认仅显示最近 20 条，截断时给出总数和提示；`N` 参数显式请求更多（commit 0d0c6be, #542）。同时缓存线程ID供 `/resume N` 使用，刷新缓存以保持索引稳定（issue #150）
-- `/thread stats` — 显示线程 token 使用统计（commit f043224, #442）。在聊天模式中有活跃线程时仅显示当前线程统计；否则显示所有线程。统计包括：当前模型、上次交互 token 数（context）、累计 token 数（total）、缓存命中率（cache hit rate）。转发到守护进程命令 `__cmd:conversations stats`
-- `/thread del [N]` 或 `/thread del 1,2-4,5` — 删除对话线程（原 `/conversations del`，commit 096b094）
+- `/resume [N]` - 恢复对话。无参数时使用picker选择器交互式选择（issue #157），显示所有会话的线程（issue #220）；带编号时使用 `cached_thread_ids` 缓存的索引（issue #133），自动获取并显示最后一轮对话（issue #137），使用ScrollView显示历史（issue #275）
+- `/thread list [N]` - 列出对话线程（原 `/conversations` 命令，commit b2f5a6f, 096b094），默认仅显示最近 20 条，截断时给出总数和提示；`N` 参数显式请求更多（commit 0d0c6be, #542）。同时缓存线程ID供 `/resume N` 使用，刷新缓存以保持索引稳定（issue #150）
+- `/thread stats` - 显示线程 token 使用统计（commit f043224, #442）。在聊天模式中有活跃线程时仅显示当前线程统计；否则显示所有线程。统计包括：当前模型、上次交互 token 数（context）、累计 token 数（total）、缓存命中率（cache hit rate）。转发到守护进程命令 `__cmd:conversations stats`
+- `/thread del [N]` 或 `/thread del 1,2-4,5` - 删除对话线程（原 `/conversations del`，commit 096b094）
   - 无参数时使用多选picker交互式选择要删除的线程（commit 3743aec）
   - 带单个编号时删除指定序号的线程（issue #142）
   - 支持多索引语法：逗号分隔和范围语法，如 `1,2-4,5` 删除序号1, 2, 3, 4, 5的线程（issue #156）
   - 索引按数值排序而非字典序（fix f7b4ebb）
-- `/thread sandbox [on|off]` — 线程级沙箱覆盖开关（commit eeba721, #535）。无参数查询当前状态；`on` 恢复沙箱执行，`off` 关闭 Landlock/bwrap 强制。状态写入 `ThreadMeta.sandbox_disabled` 并随 `ChatReady` 同步回客户端，resume 时以黄色警告提示。尚未建线程时指令缓冲在客户端，新建线程后随第一条 `ChatMessage` 前下发生效
-- `/thread help` — 显示线程相关命令清单（commit fc9ba99）
+- `/thread sandbox [on|off]` - 线程级沙箱覆盖开关（commit eeba721, #535）。无参数查询当前状态；`on` 恢复沙箱执行，`off` 关闭 Landlock/bwrap 强制。状态写入 `ThreadMeta.sandbox_disabled` 并随 `ChatReady` 同步回客户端，resume 时以黄色警告提示。尚未建线程时指令缓冲在客户端，新建线程后随第一条 `ChatMessage` 前下发生效
+- `/thread help` - 显示线程相关命令清单（commit fc9ba99）
 
 **模型选择命令:**
-- `/model` — 显示所有已配置LLM backend的picker选择器（commit 2a2e8d0），选中后切换当前线程使用的模型
+- `/model` - 显示所有已配置LLM backend的picker选择器（commit 2a2e8d0），选中后切换当前线程使用的模型
   - 已有线程：发送带空 `query` 的 `ChatMessage`（仅 `model` 字段）到守护进程，返回 `Ack` 表示成功
   - 新线程（未发过消息）：保存到 `pending_model`，下一条消息时随 `ChatMessage.model` 一并发出
   - 选择结果通过 `ThreadMeta` 持久化到守护进程
@@ -1155,25 +1155,25 @@ Config > LLM                          ← 面包屑（带层级指示）
   - 守护进程命令：`__cmd:models [thread_id]`，返回 `models` 数组（包含 `name`, `model`, `selected` 字段）
 
 **上下文命令:**
-- `/context` — 在聊天模式中显示当前线程的对话上下文（issue #136），支持 `| head/tail` 管道（issue #144）和重定向（issue #210）
+- `/context` - 在聊天模式中显示当前线程的对话上下文（issue #136），支持 `| head/tail` 管道（issue #144）和重定向（issue #210）
 
 **检查命令（自动退出）:**
 以下命令在聊天模式中作为首个动作执行后会自动退出聊天模式（issue #148）：
-- `/debug client` — 显示客户端调试状态
-- `/debug events` — 显示最近事件
-- `/debug session` — 显示会话调试信息
-- `/sessions` — 列出所有会话
-- `/context` — 显示LLM上下文（无参数或带模板名）
-- `/template` — 显示提示模板
+- `/debug client` - 显示客户端调试状态
+- `/debug events` - 显示最近事件
+- `/debug session` - 显示会话调试信息
+- `/sessions` - 列出所有会话
+- `/context` - 显示LLM上下文（无参数或带模板名）
+- `/template` - 显示提示模板
 
 **其他命令:**
 - 通过 `handle_slash_command()` 分发到 `command::dispatch()`，支持所有主循环中的 `/` 命令
-- `/help` — 显示所有可用命令
-- `/tasks` — 查看或管理定时任务
-- `/update` — 透明自重启到磁盘最新版本（issue #217）
-- `/config` — 通过Menu widget交互式编辑daemon配置（commit cc08b00），发送ConfigQuery/ConfigUpdate协议消息；使用即时逐项保存模式（`on_change` 回调每次变更立即发送 `ConfigUpdate` RPC），失败时自动回滚；Done/Cancelled 均直接退出（无需批量保存）；退出时显示配置变更 diff（变更前后值对比），页面布局重构为分节显示；打开时自动刷新陈旧的 backend use_proxy 值（commit 19ad611）；支持带点号的 backend 名称（如 gemini-3.1）
-- `/test picker [N]` — 隐藏测试命令（不在 `/help` 中显示），使用20个虚拟条目测试picker组件；`N` 为初始选中索引（commit 5df1e1b）
-- `/test menu` — 隐藏测试命令，使用虚拟多级菜单测试menu组件；包含 "Save failure test" 子菜单（Toggle/Select/TextInput 项始终保存失败，用于测试 on_change 回滚行为）；短 API key 显示 "****" 而非 "(set)"；输出消息使用 "No batch changes" / "Batch changes" 前缀
+- `/help` - 显示所有可用命令
+- `/tasks` - 查看或管理定时任务
+- `/update` - 透明自重启到磁盘最新版本（issue #217）
+- `/config` - 通过Menu widget交互式编辑daemon配置（commit cc08b00），发送ConfigQuery/ConfigUpdate协议消息；使用即时逐项保存模式（`on_change` 回调每次变更立即发送 `ConfigUpdate` RPC），失败时自动回滚；Done/Cancelled 均直接退出（无需批量保存）；退出时显示配置变更 diff（变更前后值对比），页面布局重构为分节显示；打开时自动刷新陈旧的 backend use_proxy 值（commit 19ad611）；支持带点号的 backend 名称（如 gemini-3.1）
+- `/test picker [N]` - 隐藏测试命令（不在 `/help` 中显示），使用20个虚拟条目测试picker组件；`N` 为初始选中索引（commit 5df1e1b）
+- `/test menu` - 隐藏测试命令，使用虚拟多级菜单测试menu组件；包含 "Save failure test" 子菜单（Toggle/Select/TextInput 项始终保存失败，用于测试 on_change 回滚行为）；短 API key 显示 "****" 而非 "(set)"；输出消息使用 "No batch changes" / "Batch changes" 前缀
 
 ### Ctrl-C 中断 (issue #123, #241)
 聊天等待LLM响应或工具执行时，用户可按Ctrl-C中断：
@@ -1626,9 +1626,9 @@ cargo build --release
    - 在聊天模式中，`/context` 显示当前线程的对话历史
    - 包含最近命令列表（用于Agent工具调用）
 5. **退出聊天模式**:
-   - `ESC` — 立即退出（快速检测）
-   - `Ctrl-D` — 输入为空时退出
-   - `Backspace` — 首次进入且未执行任何命令时，空输入退格退出（防止误触）
+   - `ESC` - 立即退出（快速检测）
+   - `Ctrl-D` - 输入为空时退出
+   - `Backspace` - 首次进入且未执行任何命令时，空输入退格退出（防止误触）
    - 检查命令自动退出（作为首个动作时）
 6. **Picker选择器交互**: 在使用 `/resume` 或 `/thread del` 无参数时
    - 使用方向键 ↑↓ 移动光标
@@ -1970,8 +1970,8 @@ daemon_addr = "~/.omnish/omnish.sock"
 - 默认仅空命令行触发聊天；`developer_mode = true` 允许有内容时也触发
 
 **`/debug commands` 和 `/debug command` 命令:**
-- `/debug commands [N]` — 显示最近 N 条 shell 命令历史（commit 27d19a2）
-- `/debug command <seq>` — 显示指定序号命令的完整详情和输出（commit 35542da）
+- `/debug commands [N]` - 显示最近 N 条 shell 命令历史（commit 27d19a2）
+- `/debug command <seq>` - 显示指定序号命令的完整详情和输出（commit 35542da）
 
 **线程恢复 UX 全面改进 (commit d497b68~82382eb, bebbcc3, 75f71bc, #372, #374):**
 - cwd/host 不匹配时弹出带快捷键的 picker 提示

@@ -201,7 +201,7 @@ mod tests {
         fs::create_dir_all(tmp.path().join("sub")).unwrap();
         fs::File::create(tmp.path().join("sub/a.txt")).unwrap();
         let tool = GlobTool::new();
-        // "path" is relative — should be resolved from cwd
+        // "path" is relative - should be resolved from cwd
         let result = tool.execute(&serde_json::json!({
             "pattern": "*.txt",
             "path": tmp.path().join("sub").to_str().unwrap()

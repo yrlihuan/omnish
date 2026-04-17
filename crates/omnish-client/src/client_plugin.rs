@@ -43,7 +43,7 @@ impl ClientPluginManager {
             .unwrap_or_else(|| std::path::PathBuf::from("omnish-plugin"));
 
         if !enabled {
-            // Sandbox explicitly disabled — report as disabled detection result.
+            // Sandbox explicitly disabled - report as disabled detection result.
             return Self {
                 plugin_bin,
                 sandbox_backend: None,
@@ -166,7 +166,7 @@ impl ClientPluginManager {
             let mut line = String::new();
             match reader.read_line(&mut line) {
                 Ok(0) => {
-                    // Plugin exited without writing to stdout — collect diagnostics.
+                    // Plugin exited without writing to stdout - collect diagnostics.
                     let status = child.wait().ok();
                     let mut stderr_text = String::new();
                     if let Some(mut se) = child.stderr.take() {

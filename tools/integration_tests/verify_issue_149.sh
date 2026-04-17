@@ -59,7 +59,7 @@ test_1() {
     send_keys "/sessions" 0.3
     send_enter 1
 
-    # Press up arrow — should show /sessions
+    # Press up arrow - should show /sessions
     send_up_arrow 0.5
     local input1=$(get_current_input)
     if ! echo "$input1" | grep -q "/sessions"; then
@@ -67,7 +67,7 @@ test_1() {
         return 1
     fi
 
-    # Second up — should show /debug events
+    # Second up - should show /debug events
     send_up_arrow 0.5
     local input2=$(get_current_input)
     if ! echo "$input2" | grep -q "/debug events"; then
@@ -75,7 +75,7 @@ test_1() {
         return 1
     fi
 
-    # Third up — should show /help
+    # Third up - should show /help
     send_up_arrow 0.5
     local input3=$(get_current_input)
     if ! echo "$input3" | grep -q "/help"; then
@@ -134,7 +134,7 @@ test_3() {
         return 1
     fi
 
-    # Down arrow — should go to /debug events
+    # Down arrow - should go to /debug events
     send_down_arrow 0.5
     local at_debug=$(get_current_input)
     if ! echo "$at_debug" | grep -q "/debug events"; then
@@ -142,7 +142,7 @@ test_3() {
         return 1
     fi
 
-    # Down arrow — should go to /sessions
+    # Down arrow - should go to /sessions
     send_down_arrow 0.5
     local at_sessions=$(get_current_input)
     if ! echo "$at_sessions" | grep -q "/sessions"; then
@@ -150,7 +150,7 @@ test_3() {
         return 1
     fi
 
-    # Down arrow past end — should show empty prompt
+    # Down arrow past end - should show empty prompt
     send_down_arrow 0.5
     local at_end=$(get_current_input)
     if echo "$at_end" | grep -qE '(> $|> \x1b)'; then

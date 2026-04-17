@@ -55,7 +55,7 @@ impl Osc133Detector {
                 self.buf.push(byte);
 
                 if byte == 0x07 {
-                    // End of OSC sequence — try to parse
+                    // End of OSC sequence - try to parse
                     let seq_start = i + 1 - (self.buf.len() - self.carried_len);
                     let seq_end = i + 1;
 
@@ -70,7 +70,7 @@ impl Osc133Detector {
                     self.carried_len = 0;
                     self.in_osc = false;
                 } else if byte == 0x1b {
-                    // New ESC inside an incomplete OSC — restart
+                    // New ESC inside an incomplete OSC - restart
                     // The previous partial sequence is discarded.
                     self.buf.clear();
                     self.buf.push(byte);
@@ -117,7 +117,7 @@ impl Osc133Detector {
             b"C" => Some(Osc133EventKind::OutputStart),
             b"NO_READLINE" => Some(Osc133EventKind::NoReadline),
             _ => {
-                // RL;... — readline line report
+                // RL;... - readline line report
                 if payload.len() >= 3 && payload[0] == b'R' && payload[1] == b'L' && payload[2] == b';' {
                     let rest = &payload[3..];
                     // Find the last semicolon to split content;point

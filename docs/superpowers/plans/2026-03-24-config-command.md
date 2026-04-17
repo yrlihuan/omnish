@@ -37,23 +37,23 @@
 
 Add `Serialize` to the derive list of these structs (line numbers for reference):
 
-- Line 238: `DaemonConfig` — `#[derive(Debug, Serialize, Deserialize, Clone)]`
-- Line 354: `LlmConfig` — same pattern
-- Line 407: `LlmBackendConfig` — same pattern
-- Line 390: `LangfuseConfig` — same pattern
-- Line 551: `ContextConfig` — `#[derive(Debug, Serialize, Deserialize, Clone, Default)]`
-- Line 425: `CompletionContextConfig` — `#[derive(Debug, Serialize, Deserialize, Clone)]`
-- Line 476: `HourlySummaryConfig` — same
-- Line 516: `DailySummaryConfig` — same
-- Line 188: `TasksConfig` — `#[derive(Debug, Serialize, Deserialize, Clone, Default)]`
-- Line 103: `EvictionConfig` — `#[derive(Debug, Serialize, Deserialize, Clone)]`
-- Line 122: `DiskCleanupConfig` — same
-- Line 136: `AutoUpdateConfig` — same
-- Line 74: `DailyNotesConfig` — same
-- Line 169: `PeriodicSummaryConfig` — same
-- Line 206: `PluginsConfig` — `#[derive(Debug, Serialize, Deserialize, Clone, Default)]`
-- Line 218: `SandboxConfig` — `#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]`
-- Line 226: `SandboxPluginConfig` — same
+- Line 238: `DaemonConfig` - `#[derive(Debug, Serialize, Deserialize, Clone)]`
+- Line 354: `LlmConfig` - same pattern
+- Line 407: `LlmBackendConfig` - same pattern
+- Line 390: `LangfuseConfig` - same pattern
+- Line 551: `ContextConfig` - `#[derive(Debug, Serialize, Deserialize, Clone, Default)]`
+- Line 425: `CompletionContextConfig` - `#[derive(Debug, Serialize, Deserialize, Clone)]`
+- Line 476: `HourlySummaryConfig` - same
+- Line 516: `DailySummaryConfig` - same
+- Line 188: `TasksConfig` - `#[derive(Debug, Serialize, Deserialize, Clone, Default)]`
+- Line 103: `EvictionConfig` - `#[derive(Debug, Serialize, Deserialize, Clone)]`
+- Line 122: `DiskCleanupConfig` - same
+- Line 136: `AutoUpdateConfig` - same
+- Line 74: `DailyNotesConfig` - same
+- Line 169: `PeriodicSummaryConfig` - same
+- Line 206: `PluginsConfig` - `#[derive(Debug, Serialize, Deserialize, Clone, Default)]`
+- Line 218: `SandboxConfig` - `#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]`
+- Line 226: `SandboxPluginConfig` - same
 
 Also add `use serde::Serialize;` if not already imported (check existing `use serde::Deserialize;` line).
 
@@ -269,7 +269,7 @@ pub struct ConfigChange {
     pub value: String,
 }
 
-/// Metadata about handler submenus — sent alongside items so the client
+/// Metadata about handler submenus - sent alongside items so the client
 /// knows which submenus trigger handler callbacks and what label to use.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigHandlerInfo {
@@ -338,16 +338,16 @@ Create `crates/omnish-daemon/src/config_schema.toml` with the contents from the 
 
 ```toml
 # Config schema: maps menu items to daemon.toml keys.
-# Embedded via include_str!() — changes require recompilation.
+# Embedded via include_str!() - changes require recompilation.
 #
 # Fields:
-#   path         — dot-separated menu hierarchy (e.g., "proxy.http_proxy")
-#   label        — display name in menu
-#   kind         — text | select | toggle | submenu
-#   toml_key     — actual daemon.toml key path (leaf items without handler)
-#   options_from — (select) TOML table whose keys become options at runtime
-#   options      — (select) static option list
-#   handler      — (submenu) Rust function name for grouped change handling
+#   path         - dot-separated menu hierarchy (e.g., "proxy.http_proxy")
+#   label        - display name in menu
+#   kind         - text | select | toggle | submenu
+#   toml_key     - actual daemon.toml key path (leaf items without handler)
+#   options_from - (select) TOML table whose keys become options at runtime
+#   options      - (select) static option list
+#   handler      - (submenu) Rust function name for grouped change handling
 
 # ── Proxy ──────────────────────────────────────────────
 [[items]]
@@ -429,7 +429,7 @@ git commit -m "feat(daemon): add config schema for /config menu"
 
 ---
 
-### Task 5: Implement config_schema.rs — schema parsing, build_config_items, apply_config_changes
+### Task 5: Implement config_schema.rs - schema parsing, build_config_items, apply_config_changes
 
 **Files:**
 - Create: `crates/omnish-daemon/src/config_schema.rs`
@@ -634,7 +634,7 @@ pub fn build_config_items(config: &DaemonConfig) -> (Vec<ConfigItem>, Vec<Config
     let mut items = Vec::new();
     for s in &schema {
         if s.kind == "submenu" {
-            // Submenu nodes are structural — client builds them from paths.
+            // Submenu nodes are structural - client builds them from paths.
             // Handler info is communicated via the handlers vec above.
             continue;
         }
@@ -965,18 +965,18 @@ pub enum MenuItem {
 
 There are 7 match sites in menu.rs. Sites using `..` need no change; construction sites need `handler: None`:
 
-**Line 56** — `MenuItem::label()`: uses `..`, no change needed.
+**Line 56** - `MenuItem::label()`: uses `..`, no change needed.
 
-**Line 93** — `render_menu_item`: uses `..`, no change needed.
+**Line 93** - `render_menu_item`: uses `..`, no change needed.
 
-**Line 387** — navigation in `run_menu`: uses `..`, no change needed.
+**Line 387** - navigation in `run_menu`: uses `..`, no change needed.
 
-**Line 497** — Enter key handler: add `..`:
+**Line 497** - Enter key handler: add `..`:
 ```rust
 MenuItem::Submenu { label, children, .. } => {
 ```
 
-**Line 672** — test `test_menu_item_label`: add `handler: None`:
+**Line 672** - test `test_menu_item_label`: add `handler: None`:
 ```rust
 let item = MenuItem::Submenu {
     label: "LLM".to_string(),
@@ -985,7 +985,7 @@ let item = MenuItem::Submenu {
 };
 ```
 
-**Line 681** — test `test_render_menu_item_submenu`: add `handler: None`:
+**Line 681** - test `test_render_menu_item_submenu`: add `handler: None`:
 ```rust
 let item = MenuItem::Submenu {
     label: "LLM".to_string(),
@@ -994,7 +994,7 @@ let item = MenuItem::Submenu {
 };
 ```
 
-**Line 780** — test `test_render_full_menu`: add `handler: None`:
+**Line 780** - test `test_render_full_menu`: add `handler: None`:
 ```rust
 MenuItem::Submenu {
     label: "LLM".to_string(),
@@ -1003,7 +1003,7 @@ MenuItem::Submenu {
 },
 ```
 
-**Line 799** — test `test_empty_menu_returns_done`: update for new signature:
+**Line 799** - test `test_empty_menu_returns_done`: update for new signature:
 ```rust
 let result = run_menu("Empty", &mut vec![], None);
 ```
@@ -1026,7 +1026,7 @@ Note: changed `&mut [MenuItem]` to `&mut Vec<MenuItem>` so the callback can repl
 
 - [ ] **Step 4: Refactor main loop to re-derive current_items each iteration**
 
-The handler callback needs to replace the entire `items` tree and reset navigation. This creates a mutable borrow conflict: `current_items` is a mutable sub-slice of `items`, but the callback needs `&mut items`. The fix is to **not hold `current_items` across iterations** — re-derive it at the top of each loop iteration.
+The handler callback needs to replace the entire `items` tree and reset navigation. This creates a mutable borrow conflict: `current_items` is a mutable sub-slice of `items`, but the callback needs `&mut items`. The fix is to **not hold `current_items` across iterations** - re-derive it at the top of each loop iteration.
 
 Replace the existing `current_items` initialization (around line 385) and the main loop:
 
@@ -1067,7 +1067,7 @@ loop {
     };
 
     // 3. Rest of loop body (input handling, rendering) uses current_items.
-    //    REMOVE any `current_items = ...` reassignment at nav push/pop sites —
+    //    REMOVE any `current_items = ...` reassignment at nav push/pop sites -
     //    just update nav_stack/cursor/scroll_offset/breadcrumb_parts and `continue`.
     //    current_items is re-derived automatically on next iteration.
 
@@ -1076,9 +1076,9 @@ loop {
 }
 ```
 
-The nav push code (Enter on Submenu, around line 497) currently sets `current_items = children.as_mut_slice()`. Remove that assignment — just push to `nav_stack` and `continue` to the next iteration where it will be re-derived.
+The nav push code (Enter on Submenu, around line 497) currently sets `current_items = children.as_mut_slice()`. Remove that assignment - just push to `nav_stack` and `continue` to the next iteration where it will be re-derived.
 
-The nav pop code (ESC, around line 466) currently sets `current_items` from the popped entry. Remove that assignment — just pop `nav_stack` and `continue`.
+The nav pop code (ESC, around line 466) currently sets `current_items` from the popped entry. Remove that assignment - just pop `nav_stack` and `continue`.
 
 - [ ] **Step 5: Add handler detection in ESC handling**
 
@@ -1216,7 +1216,7 @@ fn build_menu_tree(
         let mut current = &mut root;
         for (i, &seg) in segments.iter().enumerate() {
             if i == segments.len() - 1 {
-                // Leaf item — create Toggle/Select/TextInput
+                // Leaf item - create Toggle/Select/TextInput
                 let menu_item = match &item.kind {
                     ConfigItemKind::Toggle { value } => MenuItem::Toggle {
                         label: item.label.clone(),
@@ -1256,7 +1256,7 @@ fn build_menu_tree(
                 let display_key = display_parts.join(".");
                 path_map.insert(display_key, item.path.clone());
             } else {
-                // Intermediate segment — find or create submenu
+                // Intermediate segment - find or create submenu
                 // For __new__ segments, use the handler's label
                 let schema_path_so_far = segments[..=i].join(".");
                 let label = if seg == "__new__" {
@@ -1301,7 +1301,7 @@ fn build_menu_tree(
 In `chat_session.rs`, after the `/test` command block (around line 420), add:
 
 ```rust
-// /config — daemon configuration menu
+// /config - daemon configuration menu
 if trimmed == "/config" {
     self.handle_config(session_id, rpc).await;
     continue;
@@ -1485,7 +1485,7 @@ Manual test checklist:
 2. Start client, enter chat mode
 3. `/config` → verify Proxy and LLM submenus appear
 4. Edit HTTP proxy → ESC to top → ESC to exit → verify "Config saved" message
-5. Check `daemon.toml` — verify proxy value was written
+5. Check `daemon.toml` - verify proxy value was written
 6. Navigate to LLM > Backends → verify existing backends appear as submenus
 7. Navigate to LLM > Backends > Add Backend → fill in fields → ESC back
 8. Verify the new backend appears in LLM > Use Cases select options

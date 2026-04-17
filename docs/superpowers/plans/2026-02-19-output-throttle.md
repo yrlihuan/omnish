@@ -16,14 +16,14 @@ Reduce disk usage and network overhead by throttling IoData output messages on t
 ### OutputThrottle State Machine
 
 ```
-Normal    — command_bytes < THRESHOLD (2MB default)
+Normal    - command_bytes < THRESHOLD (2MB default)
             → send every IoData chunk at full speed
 
-Throttled — command_bytes >= THRESHOLD
+Throttled - command_bytes >= THRESHOLD
             → rate-limit sends to THROTTLE_RATE (10kB/s default)
             → chunks exceeding the rate budget are silently dropped
 
-Reset     — new command detected (CommandComplete fired)
+Reset     - new command detected (CommandComplete fired)
             → reset counters, return to Normal
 ```
 
@@ -32,17 +32,17 @@ Reset     — new command detected (CommandComplete fired)
 New file: `crates/omnish-client/src/throttle.rs`
 
 **Fields:**
-- `command_bytes: u64` — cumulative bytes sent for the current command
-- `last_send_time: Instant` — timestamp of last send (for token bucket refill)
-- `throttle_bucket: f64` — token bucket remaining allowance in bytes
-- `threshold_bytes: u64` — configurable threshold (default 2MB)
-- `throttle_rate: f64` — bytes/sec rate limit once throttled (default 10240.0)
+- `command_bytes: u64` - cumulative bytes sent for the current command
+- `last_send_time: Instant` - timestamp of last send (for token bucket refill)
+- `throttle_bucket: f64` - token bucket remaining allowance in bytes
+- `threshold_bytes: u64` - configurable threshold (default 2MB)
+- `throttle_rate: f64` - bytes/sec rate limit once throttled (default 10240.0)
 
 **Methods:**
 - `fn new(threshold_bytes: u64, throttle_rate: f64) -> Self`
-- `fn should_send(&mut self, chunk_len: usize) -> bool` — returns true if this chunk should be sent. In Normal phase, always true (and advances `command_bytes`). In Throttled phase, uses token bucket: refills at `throttle_rate` per elapsed second, deducts `chunk_len`. Returns true only if bucket has sufficient tokens.
-- `fn record_sent(&mut self, n: usize)` — called after successful send; updates `command_bytes` and drains the token bucket.
-- `fn reset(&mut self)` — resets `command_bytes`, `throttle_bucket`, and `last_send_time` for next command.
+- `fn should_send(&mut self, chunk_len: usize) -> bool` - returns true if this chunk should be sent. In Normal phase, always true (and advances `command_bytes`). In Throttled phase, uses token bucket: refills at `throttle_rate` per elapsed second, deducts `chunk_len`. Returns true only if bucket has sufficient tokens.
+- `fn record_sent(&mut self, n: usize)` - called after successful send; updates `command_bytes` and drains the token bucket.
+- `fn reset(&mut self)` - resets `command_bytes`, `throttle_bucket`, and `last_send_time` for next command.
 
 ### Token Bucket Algorithm (Throttled phase)
 
@@ -80,16 +80,16 @@ After `command_tracker.feed_output()` returns completed commands, call `throttle
 ### Scope of Changes
 
 **Changed:**
-- `crates/omnish-client/src/main.rs` — create `OutputThrottle`, integrate in output path, reset on command complete
+- `crates/omnish-client/src/main.rs` - create `OutputThrottle`, integrate in output path, reset on command complete
 
 **New:**
-- `crates/omnish-client/src/throttle.rs` — `OutputThrottle` struct and tests
+- `crates/omnish-client/src/throttle.rs` - `OutputThrottle` struct and tests
 
 **Unchanged:**
-- Input IoData — user input volume is negligible, no throttling
-- Daemon side — no changes; it stores whatever it receives
-- `stream.bin` format — unchanged
-- `CommandRecord` offset/length — daemon computes these from its own write position, unaffected
+- Input IoData - user input volume is negligible, no throttling
+- Daemon side - no changes; it stores whatever it receives
+- `stream.bin` format - unchanged
+- `CommandRecord` offset/length - daemon computes these from its own write position, unaffected
 
 ### Constants (hardcoded initially)
 
@@ -105,4 +105,4 @@ const THROTTLE_RATE_BYTES_PER_SEC: f64 = 10_240.0;       // 10kB/s
 - With throttle: ~2MB + ~36MB = ~38MB (2MB full speed + 10kB/s × 3600s)
 
 `ls` (normal short command):
-- No effect — output well under 2MB threshold
+- No effect - output well under 2MB threshold

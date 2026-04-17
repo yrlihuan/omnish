@@ -14,8 +14,8 @@
 
 ## File Structure
 
-- Modify: `install.sh` — add `setup_plugin`, `patch_toml_section`, `patch_plugins_enabled` functions, `--setup-plugin` flag, plugin setup loop
-- Create: `plugins/web_search/setup.json` — web_search plugin manifest
+- Modify: `install.sh` - add `setup_plugin`, `patch_toml_section`, `patch_plugins_enabled` functions, `--setup-plugin` flag, plugin setup loop
+- Create: `plugins/web_search/setup.json` - web_search plugin manifest
 
 ---
 
@@ -109,7 +109,7 @@ patch_plugins_enabled() {
     local plugin_name="$2"
 
     if ! grep -q '^\[plugins\]' "$toml_file"; then
-        # No [plugins] section — check for commented one
+        # No [plugins] section - check for commented one
         if grep -q '^# *\[plugins\]' "$toml_file"; then
             # Uncomment and set
             sed -i 's/^# *\[plugins\]/[plugins]/' "$toml_file"
@@ -119,7 +119,7 @@ patch_plugins_enabled() {
             printf '\n[plugins]\nenabled = ["%s"]\n' "$plugin_name" >> "$toml_file"
         fi
     else
-        # [plugins] section exists — grep for enabled= scoped to [plugins] section only
+        # [plugins] section exists - grep for enabled= scoped to [plugins] section only
         local current
         current=$(sed -n '/^\[plugins\]/,/^\[/{/^enabled/p}' "$toml_file" | head -1)
         if [[ -z "$current" ]]; then
@@ -172,7 +172,7 @@ patch_plugins_enabled /tmp/test_daemon.toml web_search
 cat /tmp/test_daemon.toml
 # Expected: [plugins] uncommented with enabled = ["web_search"]
 
-# Test idempotency — running again should not duplicate
+# Test idempotency - running again should not duplicate
 patch_plugins_enabled /tmp/test_daemon.toml web_search
 grep enabled /tmp/test_daemon.toml
 # Expected: still just enabled = ["web_search"], not duplicated

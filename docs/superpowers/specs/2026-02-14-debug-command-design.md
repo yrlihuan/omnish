@@ -37,8 +37,8 @@ fn handle_command(cmd: &str, ...) -> Option<String> {
 
 ## /debug Subcommands
 
-- `/debug context` — sends Request to daemon with `__debug:context` query prefix. Daemon returns `get_session_context()` result via existing Response message instead of calling LLM.
-- `/debug template` — pure client-side. Imports template function from `omnish-llm`, returns template with `{context}` and `{query}` placeholders.
+- `/debug context` - sends Request to daemon with `__debug:context` query prefix. Daemon returns `get_session_context()` result via existing Response message instead of calling LLM.
+- `/debug template` - pure client-side. Imports template function from `omnish-llm`, returns template with `{context}` and `{query}` placeholders.
 
 ## Daemon Handling
 

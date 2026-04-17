@@ -42,7 +42,7 @@ developer_mode = false
 
 Daemon server subscribes to `ConfigSection::Client`. On change, pushes `ConfigClient` to all connected clients.
 
-## Transport — Per-Connection Push
+## Transport - Per-Connection Push
 
 Current RPC layer is request-response only. Add push capability:
 
@@ -55,8 +55,8 @@ Client-side `RpcClient` read loop routes `request_id = 0` frames to a `push_rx: 
 
 ## Push Timing
 
-1. **Auth success** — daemon immediately pushes full `[client]` config.
-2. **Config change** — after ConfigWatcher detects `[client]` section change, pushes changed entries to all connected clients.
+1. **Auth success** - daemon immediately pushes full `[client]` config.
+2. **Config change** - after ConfigWatcher detects `[client]` section change, pushes changed entries to all connected clients.
 
 ## Client Hot-Reload
 

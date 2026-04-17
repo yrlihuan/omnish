@@ -165,7 +165,7 @@ pub enum InterceptAction {
     Backspace(Vec<u8>),
     /// User pressed ESC to cancel chat mode
     Cancel,
-    /// ESC sequence in progress — no UI update needed
+    /// ESC sequence in progress - no UI update needed
     Pending,
     /// Tab pressed while in chat mode. Contains current buffer.
     /// Caller should check GhostCompleter for completion to accept.
@@ -183,7 +183,7 @@ pub trait InterceptGuard: Send {
     fn update_min_gap(&mut self, _gap: std::time::Duration) {}
 }
 
-/// Always intercept — used in tests.
+/// Always intercept - used in tests.
 #[cfg(test)]
 pub struct AlwaysIntercept;
 
@@ -217,7 +217,7 @@ impl InterceptGuard for TimeGapGuard {
 
     fn should_intercept(&self) -> bool {
         match self.last_input {
-            None => true, // No prior input — likely at initial prompt
+            None => true, // No prior input - likely at initial prompt
             Some(t) => t.elapsed() >= self.min_gap,
         }
     }
@@ -246,18 +246,18 @@ fn has_incomplete_utf8_tail(buf: &[u8]) -> bool {
     for i in (0..buf.len()).rev() {
         let b = buf[i];
         if b < 0x80 {
-            // ASCII — complete
+            // ASCII - complete
             return false;
         }
         if b >= 0xC0 {
-            // Lead byte found — check if we have enough continuation bytes
+            // Lead byte found - check if we have enough continuation bytes
             let expected = utf8_char_len(b);
             let available = buf.len() - i;
             return available < expected;
         }
-        // continuation byte (0x80..0xBF) — keep scanning back
+        // continuation byte (0x80..0xBF) - keep scanning back
         if i == 0 {
-            // All continuation bytes with no lead — malformed, flush it
+            // All continuation bytes with no lead - malformed, flush it
             return false;
         }
     }
@@ -383,14 +383,14 @@ impl InputInterceptor {
             }
             EscSeqResult::Insert(data) => {
                 if self.in_chat || !self.buffer.is_empty() {
-                    // Bracketed paste content — append to buffer
+                    // Bracketed paste content - append to buffer
                     for &b in &data {
                         self.buffer.push_back(b);
                     }
                     let current_buf: Vec<u8> = self.buffer.iter().copied().collect();
                     InterceptAction::Buffering(current_buf)
                 } else {
-                    // Not in chat mode — forward paste with bracketed markers
+                    // Not in chat mode - forward paste with bracketed markers
                     let mut bytes = b"\x1b[200~".to_vec();
                     bytes.extend_from_slice(&data);
                     bytes.extend_from_slice(b"\x1b[201~");
@@ -420,7 +420,7 @@ impl InputInterceptor {
             }
         }
 
-        // Handle ESC — always start filter to buffer complete escape sequences.
+        // Handle ESC - always start filter to buffer complete escape sequences.
         // This ensures arrow keys etc. are forwarded as a single write to PTY,
         // preventing child processes from seeing fragmented escape sequences.
         // This must happen even when suppressed.
@@ -503,7 +503,7 @@ impl InputInterceptor {
 
                 // Still matching prefix
                 if self.buffer.len() == self.prefix.len() {
-                    // Complete prefix match — transition to chat buffering.
+                    // Complete prefix match - transition to chat buffering.
                     // Don't return Chat yet; wait for next byte to detect
                     // double-prefix (e.g. "::") for resume, or timeout for new chat.
                     self.in_chat = true;
@@ -709,7 +709,7 @@ mod tests {
         assert_eq!(interceptor.feed_byte(0x7f), InterceptAction::Forward(vec![0x7f]));
     }
 
-    // test_backspace_multibyte_chars: removed — chat input is now handled by read_chat_input
+    // test_backspace_multibyte_chars: removed - chat input is now handled by read_chat_input
 
     #[test]
     fn test_suppressed_forwards_everything() {
@@ -762,7 +762,7 @@ mod tests {
 
     // --- ESC / escape-sequence tests ---
 
-    // test_esc_cancels_chat_mode: removed — chat input is now handled by read_chat_input
+    // test_esc_cancels_chat_mode: removed - chat input is now handled by read_chat_input
 
     #[test]
     fn test_esc_cancels_prefix_buffering() {
@@ -780,7 +780,7 @@ mod tests {
     fn test_bare_esc_forwarded_when_not_buffering() {
         let mut interceptor = new_interceptor("::");
 
-        // ESC with empty buffer — enters filter, finish_batch forwards it
+        // ESC with empty buffer - enters filter, finish_batch forwards it
         assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
         assert_eq!(
             interceptor.finish_batch(),
@@ -792,7 +792,7 @@ mod tests {
     fn test_arrow_keys_forwarded_as_single_write() {
         let mut interceptor = new_interceptor("::");
 
-        // Down arrow: \x1b[B — all bytes buffered, then forwarded as one unit
+        // Down arrow: \x1b[B - all bytes buffered, then forwarded as one unit
         assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
         assert_eq!(interceptor.feed_byte(b'['), InterceptAction::Pending);
         assert_eq!(
@@ -801,12 +801,12 @@ mod tests {
         );
     }
 
-    // test_esc_then_non_bracket_cancels: removed — chat input is now handled by read_chat_input
+    // test_esc_then_non_bracket_cancels: removed - chat input is now handled by read_chat_input
 
-    // test_arrow_keys_ignored_in_chat: removed — chat input is now handled by read_chat_input
-    // test_delete_key_ignored_in_chat: removed — chat input is now handled by read_chat_input
-    // test_paste_in_chat_mode: removed — chat input is now handled by read_chat_input
-    // test_paste_with_newlines: removed — chat input is now handled by read_chat_input
+    // test_arrow_keys_ignored_in_chat: removed - chat input is now handled by read_chat_input
+    // test_delete_key_ignored_in_chat: removed - chat input is now handled by read_chat_input
+    // test_paste_in_chat_mode: removed - chat input is now handled by read_chat_input
+    // test_paste_with_newlines: removed - chat input is now handled by read_chat_input
 
     #[test]
     fn test_finish_batch_no_op_when_idle() {
@@ -1106,7 +1106,7 @@ mod tests {
         let mut interceptor = new_interceptor("::");
         interceptor.set_suppressed(true);
 
-        // Down arrow: \x1b[B — all bytes buffered, then forwarded as one unit
+        // Down arrow: \x1b[B - all bytes buffered, then forwarded as one unit
         assert_eq!(interceptor.feed_byte(0x1b), InterceptAction::Pending);
         assert_eq!(interceptor.feed_byte(b'['), InterceptAction::Pending);
         assert_eq!(
@@ -1174,11 +1174,11 @@ mod tests {
         // return Pending until the full character is received.
         let mut ic = new_interceptor("::");
 
-        // First byte of "一" — should be Pending (incomplete UTF-8)
+        // First byte of "一" - should be Pending (incomplete UTF-8)
         assert_eq!(ic.feed_byte(0xE4), InterceptAction::Pending);
-        // Second byte — still incomplete
+        // Second byte - still incomplete
         assert_eq!(ic.feed_byte(0xB8), InterceptAction::Pending);
-        // Third byte — now complete, should flush all 3 bytes
+        // Third byte - now complete, should flush all 3 bytes
         assert_eq!(
             ic.feed_byte(0x80),
             InterceptAction::Forward(vec![0xE4, 0xB8, 0x80])
@@ -1391,11 +1391,11 @@ mod tests {
     fn test_integration_two_char_prefix_timeout() {
         // Scenario: prefix is "::", user types "::" and waits → new chat
         let mut sim = MainLoopSim::new("::");
-        // First ":" — partial prefix match, no prompt yet
+        // First ":" - partial prefix match, no prompt yet
         let outcomes = sim.feed_batch(b":");
         assert_eq!(outcomes, vec![]); // Pending (partial prefix)
         assert!(!sim.timer_active);
-        // Second ":" — full prefix match → Prompt
+        // Second ":" - full prefix match → Prompt
         assert_eq!(sim.feed(b':'), LoopOutcome::Prompt);
         assert!(sim.timer_active);
         // Timeout → new chat
@@ -1410,12 +1410,12 @@ mod tests {
         // First ":" is Pending, second ":" is Prompt
         assert_eq!(outcomes, vec![LoopOutcome::Prompt]);
         assert!(sim.timer_active);
-        // Third ":" — Echo (additional content after prefix)
+        // Third ":" - Echo (additional content after prefix)
         // Actually with prefix "::", buffer becomes [:::]
         // which is > prefix.len() and starts_with prefix → Echo(":")
         assert_eq!(sim.feed(b':'), LoopOutcome::Echo(":".into()));
         assert!(!sim.timer_active); // timer cancelled by extra input
-        // Fourth ":" — double-prefix detected → ResumeChat
+        // Fourth ":" - double-prefix detected → ResumeChat
         assert_eq!(sim.feed(b':'), LoopOutcome::ResumeChat);
     }
 

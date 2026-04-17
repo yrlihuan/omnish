@@ -894,7 +894,7 @@ mod tests {
         c.on_response(&resp, "git");
         assert_eq!(c.ghost(), Some(" status"));
 
-        // User types more — "git " matches "git" + ghost " status"
+        // User types more - "git " matches "git" + ghost " status"
         c.on_input_changed("git ", 4);
         // Ghost should still be present (shortened conceptually)
         assert_eq!(c.ghost(), Some(" status"));
@@ -930,7 +930,7 @@ git commit -m "feat(client): add ShellCompleter with debounce and ghost text sta
 - Modify: `crates/omnish-client/src/main.rs`
 - Modify: `crates/omnish-client/src/display.rs` (add `render_shell_ghost` if needed)
 
-This is the integration task — wire ShellInputTracker + ShellCompleter into the main poll loop.
+This is the integration task - wire ShellInputTracker + ShellCompleter into the main poll loop.
 
 **Step 1: Add state variables in main()**
 
@@ -1106,13 +1106,13 @@ git commit -m "feat(client): integrate LLM shell completion into main loop"
 **Steps:**
 1. Start daemon: `cargo run -p omnish-daemon`
 2. Start client: `cargo run -p omnish-client`
-3. Type `git sta` and wait 500ms — should see ghost text suggestion appear
-4. Press Tab — suggestion should be accepted and sent to shell
-5. Type a short input (1 char) and wait — no ghost should appear
-6. Enter vim (`vi`) — ghost completion should be disabled
-7. Exit vim — ghost completion should re-enable
-8. Type `::why` — should enter chat mode, not trigger shell completion
-9. Test with daemon disconnected — should work normally without errors
+3. Type `git sta` and wait 500ms - should see ghost text suggestion appear
+4. Press Tab - suggestion should be accepted and sent to shell
+5. Type a short input (1 char) and wait - no ghost should appear
+6. Enter vim (`vi`) - ghost completion should be disabled
+7. Exit vim - ghost completion should re-enable
+8. Type `::why` - should enter chat mode, not trigger shell completion
+9. Test with daemon disconnected - should work normally without errors
 
 **Step 10: Final commit with any fixes**
 

@@ -216,7 +216,7 @@ Create `crates/omnish-client/src/command.rs`:
 pub enum ChatAction {
     /// A `/` command was recognized. Contains the result text and optional redirect path.
     Command { result: String, redirect: Option<String> },
-    /// Not a command — forward as normal LLM query.
+    /// Not a command - forward as normal LLM query.
     LlmQuery(String),
     /// A `/` command that needs daemon data. Contains the debug query to send and optional redirect.
     DaemonDebug { query: String, redirect: Option<String> },
@@ -475,7 +475,7 @@ Expected: all tests pass
 1. `cargo run -p omnish-daemon` in one terminal
 2. `cargo run -p omnish-client` in another
 3. Type some commands (`ls`, `echo hello`)
-4. Type `:/debug context` — should show ANSI-stripped session output
-5. Type `:/debug template` — should show template with `{context}` placeholder
-6. Type `:/debug context > /tmp/test_ctx.txt` — should write to file
+4. Type `:/debug context` - should show ANSI-stripped session output
+5. Type `:/debug template` - should show template with `{context}` placeholder
+6. Type `:/debug context > /tmp/test_ctx.txt` - should write to file
 7. Verify with `cat /tmp/test_ctx.txt`

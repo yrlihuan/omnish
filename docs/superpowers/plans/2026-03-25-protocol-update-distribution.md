@@ -16,7 +16,7 @@
 
 **Files:**
 - Modify: `crates/omnish-protocol/src/message.rs`
-- Modify: `crates/omnish-protocol/Cargo.toml` (if sha2 needed here — likely not, checksum is just a String)
+- Modify: `crates/omnish-protocol/Cargo.toml` (if sha2 needed here - likely not, checksum is just a String)
 
 - [ ] **Step 1: Add 4 new message variants to the `Message` enum (line 44)**
 
@@ -272,7 +272,7 @@ impl UpdateCache {
         // Then download the tar.gz for the target platform
         // Save to cache_dir/{os}-{arch}/omnish-{version}-{os}-{arch}.tar.gz
         //
-        // Placeholder — actual implementation depends on release infrastructure
+        // Placeholder - actual implementation depends on release infrastructure
         anyhow::bail!("cross-platform download not yet implemented")
     }
 
@@ -521,7 +521,7 @@ After line 64 (successful install), before deploy phase (line 72):
     // install.sh extracts to $TMPDIR, but also the --dir source has the tar.gz
     if let Some(ref url) = check_url {
         if !url.starts_with("http://") && !url.starts_with("https://") {
-            // Local directory — find the tar.gz
+            // Local directory - find the tar.gz
             let dir = std::path::Path::new(url);
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
@@ -693,7 +693,7 @@ async fn download_and_extract_update(
         }
     }
 
-    // Extract and replace binary (blocking file I/O — use spawn_blocking)
+    // Extract and replace binary (blocking file I/O - use spawn_blocking)
     let tmp_file_clone = tmp_file.clone();
     tokio::task::spawn_blocking(move || extract_and_install(&tmp_file_clone))
         .await

@@ -11,15 +11,15 @@ source "$SCRIPT_DIR/lib.sh"
 show_usage() {
     cat <<EOF
 Test cases:
-  1. cd to path then immediate chat — verify cwd in /context output
+  1. cd to path then immediate chat - verify cwd in /context output
 EOF
 }
 
 test_init "cwd-chat" "$@"
 
-# ── Test 1: cd then immediate chat — cwd should match ────────────────────
+# ── Test 1: cd then immediate chat - cwd should match ────────────────────
 test_1() {
-    echo -e "\n${YELLOW}=== Test 1: cd then immediate chat — cwd in context ===${NC}"
+    echo -e "\n${YELLOW}=== Test 1: cd then immediate chat - cwd in context ===${NC}"
 
     start_client
     wait_for_client
@@ -47,7 +47,7 @@ test_1() {
         sleep 0.1
         pw=$((pw + 1))
     done
-    # Enter chat mode — wait 1s for prompt to stabilize before sending ":"
+    # Enter chat mode - wait 1s for prompt to stabilize before sending ":"
     sleep 1
     send_keys ":" 1
 

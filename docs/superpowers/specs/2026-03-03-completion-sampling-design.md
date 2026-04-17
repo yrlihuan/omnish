@@ -22,7 +22,7 @@ Each sample record contains the full context needed to reproduce and evaluate a 
 Not every completion is sampled. A record is written when ALL of:
 
 1. The completion was **ignored** (not accepted via Tab)
-2. The next executed command has **edit distance similarity > 0.3** with the best suggestion (near miss — the LLM was close but not close enough)
+2. The next executed command has **edit distance similarity > 0.3** with the best suggestion (near miss - the LLM was close but not close enough)
 3. The **global rate limit** has not been exceeded (at most 1 sample per 5 minutes across all sessions)
 
 This captures the most valuable signal: cases where the LLM's suggestion was in the right direction but the user preferred to type manually.
@@ -80,7 +80,7 @@ Levenshtein edit distance ratio:
 similarity = 1.0 - (levenshtein(suggestion, command) / max(len(suggestion), len(command)))
 ```
 
-Implemented inline (no external crate) — the strings are short (shell commands).
+Implemented inline (no external crate) - the strings are short (shell commands).
 
 ## Files to Modify
 

@@ -47,7 +47,7 @@ test_1() {
     content=$(capture_pane -10)
     show_capture "After backspace merge" "$content" 8
 
-    # Count how many times "> hello" appears — should be exactly 1
+    # Count how many times "> hello" appears - should be exactly 1
     local count
     count=$(echo "$content" | grep -c '> hello' || true)
 
@@ -124,7 +124,7 @@ test_3() {
 
     # Simulate non-bracketed paste: send raw bytes via -l (literal mode),
     # which bypasses tmux's bracketed paste wrapping.
-    # Content: CR CR CR h e l l o — three newlines then "hello"
+    # Content: CR CR CR h e l l o - three newlines then "hello"
     echo -e "  Sending: ${YELLOW}(raw paste) \\r\\r\\rhello${NC}"
     _tmux send-keys -t "$PANE" -l $'\r\r\rhello'
     sleep 0.5
@@ -132,7 +132,7 @@ test_3() {
     local content=$(capture_pane -15)
     show_capture "After fast-paste with 3 leading CRs" "$content" 10
 
-    # Expected: 4 editor lines — 3 empty + "hello"
+    # Expected: 4 editor lines - 3 empty + "hello"
     # "> "        (line 1, empty)
     # "  "        (line 2, empty)
     # "  "        (line 3, empty)

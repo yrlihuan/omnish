@@ -1,6 +1,6 @@
 # Disk Cleanup for Expired Sessions Design
 
-**Issue:** #42 — 在eviction任务中，同时清理掉磁盘上过期的sessions信息
+**Issue:** #42 - 在eviction任务中，同时清理掉磁盘上过期的sessions信息
 
 ## Overview
 

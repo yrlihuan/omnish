@@ -55,7 +55,7 @@ enter_sandbox() {
 
 # Helper: navigate to Rules inside Sandbox submenu.
 # Sandbox items: Enabled, Backend, (availability labels), Rules
-# Rules is the last interactive item — keep pressing Down until hint says "open".
+# Rules is the last interactive item - keep pressing Down until hint says "open".
 enter_rules() {
     local found=false
     for _ in $(seq 1 8); do
@@ -185,7 +185,7 @@ test_3() {
     fi
 
     # "Add permit rule" should be the first interactive item in Rules.
-    # It's a submenu — press Enter to open it.
+    # It's a submenu - press Enter to open it.
     send_enter 0.5
     sleep 0.3
     local content
@@ -267,14 +267,14 @@ test_4() {
     # Cursor starts on Scope (Select, default "local"). Change to "global".
     send_enter 0.5          # open Scope picker
     pick_option "global" 0.5  # confirm → auto-advance to Plugin
-    # Plugin (Select) — pick "bash"
+    # Plugin (Select) - pick "bash"
     send_enter 0.5          # open Plugin picker
     pick_option "bash" 0.5  # confirm → prefill applied, cursor stays
     send_special Down 0.3   # advance to Param name
-    # Param name (Select) — pick "command"
+    # Param name (Select) - pick "command"
     send_enter 0.5          # open Param name picker
     pick_option "command" 0.5  # confirm → auto-advance to Operator
-    # Operator (Select) — pick "matches"
+    # Operator (Select) - pick "matches"
     send_enter 0.5          # open Operator picker
     pick_option "matches" 0.5  # confirm → auto-advance to Pattern (no auto-edit)
     send_enter 0.5          # open text edit for Pattern
@@ -334,7 +334,7 @@ test_4() {
 
     # Edit form: Scope(L) / Plugin(L) / Param name(T) / Operator(S) / Pattern(T) / Delete(B)
     # Cursor starts at Param name (first_interactive skips Labels).
-    # Edit forms don't auto-edit — navigate to Delete button directly.
+    # Edit forms don't auto-edit - navigate to Delete button directly.
     send_special Down 0.3   # Param name -> Operator
     send_special Down 0.3   # Operator -> Pattern
     send_special Down 0.3   # Pattern -> Delete button
@@ -375,16 +375,16 @@ test_5() {
     content=$(capture_pane -25)
     show_capture "Add form (initial)" "$content" 15
 
-    # Scope defaults to "local" — skip with Down → auto-advance to Plugin
+    # Scope defaults to "local" - skip with Down → auto-advance to Plugin
     send_special Down 0.3
-    # Plugin (Select) — pick "bash"
+    # Plugin (Select) - pick "bash"
     send_enter 0.5          # open Plugin picker
     pick_option "bash" 0.5  # confirm → prefill applied, cursor stays
     send_special Down 0.3   # advance to Param name
-    # Param name (Select) — pick "command"
+    # Param name (Select) - pick "command"
     send_enter 0.5          # open Param name picker
     pick_option "command" 0.5  # confirm → auto-advance to Operator
-    # Operator (Select) — pick "matches"
+    # Operator (Select) - pick "matches"
     send_enter 0.5          # open Operator picker
     pick_option "matches" 0.5  # confirm → auto-advance to Pattern (no auto-edit)
     send_enter 0.5          # open text edit for Pattern
@@ -440,7 +440,7 @@ test_5() {
     send_enter 0.8
 
     # Edit form: Scope(L) / Plugin(L) / Param name(T) / Operator(S) / Pattern(T) / Delete(B)
-    # Edit forms don't auto-edit — navigate to Delete button directly.
+    # Edit forms don't auto-edit - navigate to Delete button directly.
     send_special Down 0.3   # Param name -> Operator
     send_special Down 0.3   # Operator -> Pattern
     send_special Down 0.3   # Pattern -> Delete button
@@ -491,7 +491,7 @@ test_6() {
 
     # Check that the LLM actually made a bash tool call
     if ! echo "$stripped" | grep -qiE 'Bash\(|● .*bash'; then
-        echo -e "  ${YELLOW}LLM did not make a bash tool call — skipping test${NC}"
+        echo -e "  ${YELLOW}LLM did not make a bash tool call - skipping test${NC}"
         send_special Escape 0.5
         sleep 1.5
         assert_pass "Step 1: skipped (LLM did not run bash tool)"
@@ -501,7 +501,7 @@ test_6() {
     if echo "$stripped" | grep -qi "nosuid\|effective uid is not 0\|no new privileges"; then
         assert_pass "Step 1: sandbox blocked sudo (privilege error detected)"
     else
-        echo -e "  ${YELLOW}Warning: sandbox error not found — sandbox may be inactive${NC}"
+        echo -e "  ${YELLOW}Warning: sandbox error not found - sandbox may be inactive${NC}"
     fi
 
     # Exit chat → shell prompt
@@ -515,19 +515,19 @@ test_6() {
 
     send_enter 0.8  # open "Add permit rule" form
 
-    # Scope — pick "global"
+    # Scope - pick "global"
     send_enter 0.5          # open Scope picker
     pick_option "global" 0.5  # confirm → auto-advance to Plugin
-    # Plugin (Select) — pick "bash"
+    # Plugin (Select) - pick "bash"
     send_enter 0.5          # open Plugin picker
     pick_option "bash" 0.5  # confirm → prefill applied, cursor stays
     send_special Down 0.3   # advance to Param name
-    # Param name (Select) — pick "command"
+    # Param name (Select) - pick "command"
     send_enter 0.5          # open Param name picker
     pick_option "command" 0.5  # confirm → auto-advance to Operator
-    # Operator (Select) — keep starts_with (default), skip with Down
+    # Operator (Select) - keep starts_with (default), skip with Down
     send_special Down 0.3   # advance to Pattern (no auto-edit)
-    # Pattern — open text edit manually
+    # Pattern - open text edit manually
     send_enter 0.5          # open text edit
     send_keys "sudo -n" 0.3
     send_enter 0.5          # confirm → auto-advance to Done
@@ -582,7 +582,7 @@ test_6() {
     send_special Escape 0.5
     sleep 1.5
 
-    # ── Step 4: Clean up — delete the permit rule ──
+    # ── Step 4: Clean up - delete the permit rule ──
     echo -e "  ${YELLOW}--- Step 4: Delete permit rule ---${NC}"
     open_config
     navigate_to_rules
@@ -609,7 +609,7 @@ test_6() {
         sleep 1.5
     fi
 
-    # Verify cleanup — fall back to sed if menu delete didn't work
+    # Verify cleanup - fall back to sed if menu delete didn't work
     if ! grep -q 'command starts_with sudo -n' "$DAEMON_TOML"; then
         assert_pass "Step 4: permit rule removed from daemon.toml"
     else
@@ -659,7 +659,7 @@ test_7() {
 
     # Check that the LLM actually made a bash tool call
     if ! echo "$stripped" | grep -qiE 'Bash\(|● .*bash'; then
-        echo -e "  ${YELLOW}LLM did not make a bash tool call — skipping test${NC}"
+        echo -e "  ${YELLOW}LLM did not make a bash tool call - skipping test${NC}"
         send_special Escape 0.5
         sleep 1.5
         assert_pass "Step 1: skipped (LLM did not run bash tool)"
@@ -669,7 +669,7 @@ test_7() {
     if echo "$stripped" | grep -qi "nosuid\|effective uid is not 0\|no new privileges"; then
         assert_pass "Step 1: sandbox blocked sudo (privilege error detected)"
     else
-        echo -e "  ${YELLOW}Warning: sandbox error not found — sandbox may be inactive${NC}"
+        echo -e "  ${YELLOW}Warning: sandbox error not found - sandbox may be inactive${NC}"
     fi
 
     # Exit chat → shell prompt
@@ -683,18 +683,18 @@ test_7() {
 
     send_enter 0.8  # open "Add permit rule" form
 
-    # Scope defaults to "local" — skip with Down → auto-advance to Plugin
+    # Scope defaults to "local" - skip with Down → auto-advance to Plugin
     send_special Down 0.3
-    # Plugin (Select) — pick "bash"
+    # Plugin (Select) - pick "bash"
     send_enter 0.5          # open Plugin picker
     pick_option "bash" 0.5  # confirm → prefill applied, cursor stays
     send_special Down 0.3   # advance to Param name
-    # Param name (Select) — pick "command"
+    # Param name (Select) - pick "command"
     send_enter 0.5          # open Param name picker
     pick_option "command" 0.5  # confirm → auto-advance to Operator
-    # Operator (Select) — keep starts_with (default), skip with Down
+    # Operator (Select) - keep starts_with (default), skip with Down
     send_special Down 0.3   # advance to Pattern (no auto-edit)
-    # Pattern — open text edit manually
+    # Pattern - open text edit manually
     send_enter 0.5          # open text edit
     send_keys "sudo -n" 0.3
     send_enter 0.5          # confirm → auto-advance to Done
@@ -748,7 +748,7 @@ test_7() {
     send_special Escape 0.5
     sleep 1.5
 
-    # ── Step 4: Clean up — delete the local permit rule ──
+    # ── Step 4: Clean up - delete the local permit rule ──
     echo -e "  ${YELLOW}--- Step 4: Delete local permit rule ---${NC}"
     open_config
     navigate_to_rules
@@ -775,7 +775,7 @@ test_7() {
         sleep 1.5
     fi
 
-    # Verify cleanup — fall back to sed if menu delete didn't work
+    # Verify cleanup - fall back to sed if menu delete didn't work
     if ! grep -q 'command starts_with sudo -n' "$CLIENT_TOML"; then
         assert_pass "Step 4: local permit rule removed from client.toml"
     else

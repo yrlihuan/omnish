@@ -113,7 +113,7 @@ pub trait ToolFormatter: Send + Sync {
 }
 ```
 
-Note: `display_name` is in `FormatInput` only (passed through to `ChatToolStatus` by the caller). `FormatOutput` does not include it — the caller copies `display_name` from input to the message directly.
+Note: `display_name` is in `FormatInput` only (passed through to `ChatToolStatus` by the caller). `FormatOutput` does not include it - the caller copies `display_name` from input to the message directly.
 
 ### Built-in Implementations
 
@@ -199,7 +199,7 @@ When a second `ChatToolStatus` arrives (with `result_compact` as `Some(...)`), f
 
 ## Client Rendering
 
-Client becomes a pure renderer — no formatting logic.
+Client becomes a pure renderer - no formatting logic.
 
 ### On first ChatToolStatus (result_compact is None)
 
@@ -235,12 +235,12 @@ Iterate `Vec<ScrollEntry>`, render each entry with shared render functions:
 
 ### On ChatToolStatus (tool_name empty)
 
-Unchanged — render as plain text, push `ScrollEntry::LlmText(...)`.
+Unchanged - render as plain text, push `ScrollEntry::LlmText(...)`.
 
 ## Scope
 
 This design:
-- Replaces #291 (icon color change) — solved structurally via `StatusIcon` updates
+- Replaces #291 (icon color change) - solved structurally via `StatusIcon` updates
 - Replaces current hardcoded rendering in `chat_session.rs`
 - Does not add formatter plugin support (built-in only for now)
 - Future: formatter can be extracted to plugin interface when needed

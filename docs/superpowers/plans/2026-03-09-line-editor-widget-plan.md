@@ -232,7 +232,7 @@ fn test_move_up_down() {
 fn test_move_up_clamps_col() {
     let mut ed = LineEditor::new();
     ed.set_content("hi\nhello");
-    // cursor at (1, 5) — end of "hello"
+    // cursor at (1, 5) - end of "hello"
     ed.move_up();
     assert_eq!(ed.cursor(), (0, 2)); // "hi" only has 2 chars
 }

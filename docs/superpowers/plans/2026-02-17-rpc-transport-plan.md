@@ -59,7 +59,7 @@ mod tests {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-protocol`
-Expected: FAIL — `Frame` and `Message::Ack` don't exist yet.
+Expected: FAIL - `Frame` and `Message::Ack` don't exist yet.
 
 **Step 3: Write minimal implementation**
 
@@ -130,7 +130,7 @@ git commit -m "feat(protocol): add Frame wrapper and Message::Ack variant"
 **Files:**
 - Create: `crates/omnish-transport/src/rpc_client.rs`
 - Modify: `crates/omnish-transport/src/lib.rs` (add `pub mod rpc_client;`)
-- Modify: `crates/omnish-transport/Cargo.toml` (no new deps needed — tokio full is already in workspace)
+- Modify: `crates/omnish-transport/Cargo.toml` (no new deps needed - tokio full is already in workspace)
 - Test: `crates/omnish-transport/src/rpc_client.rs` (inline tests)
 
 **Step 1: Write the failing test**
@@ -263,7 +263,7 @@ mod tests {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-transport rpc_client`
-Expected: FAIL — module and `RpcClient` don't exist.
+Expected: FAIL - module and `RpcClient` don't exist.
 
 **Step 3: Write minimal implementation**
 
@@ -492,7 +492,7 @@ mod tests {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-transport rpc_server`
-Expected: FAIL — `RpcServer` doesn't exist.
+Expected: FAIL - `RpcServer` doesn't exist.
 
 **Step 3: Write minimal implementation**
 
@@ -596,7 +596,7 @@ git commit -m "feat(transport): add RpcServer with per-connection handler dispat
 **Step 1: Run existing tests to establish baseline**
 
 Run: `cargo test -p omnish-daemon`
-Expected: PASS (all existing tests still pass — they test SessionManager directly, not server)
+Expected: PASS (all existing tests still pass - they test SessionManager directly, not server)
 
 **Step 2: Rewrite `server.rs` to use RpcServer**
 
@@ -928,7 +928,7 @@ git commit -m "refactor(transport): remove old Connection/Transport/Listener tra
 
 ---
 
-### Task 7: Integration test — end-to-end RPC flow
+### Task 7: Integration test - end-to-end RPC flow
 
 **Files:**
 - Test: `crates/omnish-transport/src/rpc_server.rs` (add integration test)
@@ -991,7 +991,7 @@ async fn test_multiple_clients_concurrent() {
         })),
     );
 
-    // Each client gets its own response — no cross-talk
+    // Each client gets its own response - no cross-talk
     match resp_a.unwrap() {
         Message::Response(r) => assert_eq!(r.content, "echo: from A"),
         other => panic!("expected Response, got {:?}", other),

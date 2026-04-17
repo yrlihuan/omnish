@@ -32,7 +32,7 @@ test_1() {
     start_client
     wait_for_client
 
-    # Type ":" — prefix matches, 150ms timer starts
+    # Type ":" - prefix matches, 150ms timer starts
     send_keys ":" 0.5  # 500ms > 150ms timeout → should enter chat
 
     local content=$(capture_pane -10)
@@ -108,7 +108,7 @@ test_3() {
         sleep 1.5
         return 1
     else
-        # Neither shell nor chat prompt detected — might still be OK
+        # Neither shell nor chat prompt detected - might still be OK
         # if the shell prompt format doesn't match our regex
         assert_pass "Backspace dismissed prefix (no chat prompt shown)"
         sleep 1.5
@@ -152,7 +152,7 @@ test_4() {
     fi
     echo -e "  ${GREEN}Back at shell prompt${NC}"
 
-    # Now type "::" quickly — should resume the last chat
+    # Now type "::" quickly - should resume the last chat
     # tmux send-keys sends characters fast enough to beat the 150ms timeout
     send_keys "::" 0.5
 
@@ -165,7 +165,7 @@ test_4() {
         return 1
     fi
 
-    # Verify it's a resumed session — ask a follow-up referencing the earlier conversation
+    # Verify it's a resumed session - ask a follow-up referencing the earlier conversation
     send_keys "What number did I just ask you to remember? Reply with just the number." 0.3
     send_enter 0.3
     if ! wait_for_chat_response; then
@@ -178,7 +178,7 @@ test_4() {
     show_capture "Resume follow-up response" "$followup" 10
 
     if echo "$followup" | grep -q "42"; then
-        assert_pass "'::' resumed previous chat — follow-up correctly recalled '42'"
+        assert_pass "'::' resumed previous chat - follow-up correctly recalled '42'"
     else
         # The chat was resumed (prompt appeared), but the LLM might not recall exactly.
         # The key test is that "::" entered chat mode (which it did).

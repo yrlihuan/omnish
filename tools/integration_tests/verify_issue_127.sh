@@ -127,7 +127,7 @@ test_3() {
         assert_fail "Chat prompt disappeared (backspace caused exit)"
         return 1
     else
-        # Might show /resume output or error — as long as NOT a shell prompt
+        # Might show /resume output or error - as long as NOT a shell prompt
         if ! is_shell_prompt "$after"; then
             assert_pass "Still in chat mode after backspace"
             return 0

@@ -1,4 +1,4 @@
-# /config Command — Daemon Configuration via Menu Widget
+# /config Command - Daemon Configuration via Menu Widget
 
 Interactive `/config` command in chat mode that lets users view and modify daemon configuration through the multi-level menu widget. Changes are persisted to `daemon.toml` via protocol messages; a daemon restart is required for changes to take effect.
 
@@ -13,7 +13,7 @@ Other daemon config sections (tasks, context, plugins, sandbox) can be added lat
 
 ## Schema File
 
-**`crates/omnish-daemon/src/config_schema.toml`** — embedded via `include_str!()`.
+**`crates/omnish-daemon/src/config_schema.toml`** - embedded via `include_str!()`.
 
 Defines the mapping between menu items and daemon.toml keys:
 
@@ -90,13 +90,13 @@ kind = "text"
 ```
 
 **Fields:**
-- `path` — dot-separated identifier. Determines menu hierarchy: `proxy.http_proxy` renders as Submenu "Proxy" containing item "HTTP proxy". Also used as the key in `ConfigChange` to identify which item changed.
-- `label` — display name in the menu.
-- `kind` — `text` (TextInput), `select` (Select), `toggle` (Toggle), or `submenu` (explicit submenu node with handler).
-- `toml_key` — (leaf items without handler) the actual key path in `daemon.toml` for reading/writing. May differ from `path` (e.g., `proxy.http_proxy` maps to top-level key `proxy`). Not needed for items under a handler submenu.
-- `options_from` — (select only) references a TOML table in the serialized config. Resolved at runtime via generic path lookup: `llm.backends` extracts keys from the backends table as option values. If the table is empty, the select shows an empty option list.
-- `options` — (select only) static option list defined in the schema. Used when choices are fixed (e.g., backend_type).
-- `handler` — (submenu only) name of a Rust function that handles all changes from child items as a group. When present, child items do not need `toml_key` — the handler is fully responsible for reading initial values and writing changes.
+- `path` - dot-separated identifier. Determines menu hierarchy: `proxy.http_proxy` renders as Submenu "Proxy" containing item "HTTP proxy". Also used as the key in `ConfigChange` to identify which item changed.
+- `label` - display name in the menu.
+- `kind` - `text` (TextInput), `select` (Select), `toggle` (Toggle), or `submenu` (explicit submenu node with handler).
+- `toml_key` - (leaf items without handler) the actual key path in `daemon.toml` for reading/writing. May differ from `path` (e.g., `proxy.http_proxy` maps to top-level key `proxy`). Not needed for items under a handler submenu.
+- `options_from` - (select only) references a TOML table in the serialized config. Resolved at runtime via generic path lookup: `llm.backends` extracts keys from the backends table as option values. If the table is empty, the select shows an empty option list.
+- `options` - (select only) static option list defined in the schema. Used when choices are fixed (e.g., backend_type).
+- `handler` - (submenu only) name of a Rust function that handles all changes from child items as a group. When present, child items do not need `toml_key` - the handler is fully responsible for reading initial values and writing changes.
 
 **Handler vs generic behavior:**
 - Items **without** `handler`: generic TOML read (via `resolve_value` on serialized config) and write (via `set_toml_value_nested`). Adding new items only requires schema changes. Changes are collected in memory and written when the user exits the top-level menu.
@@ -148,7 +148,7 @@ pub struct ConfigChange {
 
 ## Daemon: config_schema.rs
 
-**`crates/omnish-daemon/src/config_schema.rs`** — new module.
+**`crates/omnish-daemon/src/config_schema.rs`** - new module.
 
 Parses the embedded schema and provides two functions:
 
@@ -158,7 +158,7 @@ Parses the embedded schema and provides two functions:
 pub fn build_config_items(config: &DaemonConfig) -> Vec<ConfigItem>
 ```
 
-**Value reading via Serialize:** DaemonConfig (and all sub-types) derive `Serialize`. At query time, serialize config to `toml::Value` in memory, then use generic dot-path lookup to extract current values. This avoids per-field match statements — adding a new schema item only requires specifying the correct `toml_key`, no Rust code changes.
+**Value reading via Serialize:** DaemonConfig (and all sub-types) derive `Serialize`. At query time, serialize config to `toml::Value` in memory, then use generic dot-path lookup to extract current values. This avoids per-field match statements - adding a new schema item only requires specifying the correct `toml_key`, no Rust code changes.
 
 ```rust
 let config_as_value = toml::Value::try_from(config).unwrap();
@@ -167,8 +167,8 @@ let options = resolve_options(&config_as_value, &schema_item.options_from);
 ```
 
 Generic helpers:
-- `resolve_value(doc, path)` — traverses dot-separated path, returns string representation.
-- `resolve_options(doc, path)` — traverses to a TOML table, returns its keys as `Vec<String>`.
+- `resolve_value(doc, path)` - traverses dot-separated path, returns string representation.
+- `resolve_options(doc, path)` - traverses to a TOML table, returns its keys as `Vec<String>`.
 
 For select items where the current value is not in the options list, it is appended to options and marked as selected.
 
@@ -329,8 +329,8 @@ Client                              Daemon
 
 | File | Action |
 |------|--------|
-| `crates/omnish-daemon/src/config_schema.toml` | Create — schema mapping |
-| `crates/omnish-daemon/src/config_schema.rs` | Create — parse schema, build items, apply changes |
+| `crates/omnish-daemon/src/config_schema.toml` | Create - schema mapping |
+| `crates/omnish-daemon/src/config_schema.rs` | Create - parse schema, build items, apply changes |
 | `crates/omnish-daemon/src/main.rs` | Add `mod config_schema;` + handle ConfigQuery/ConfigUpdate |
 | `crates/omnish-protocol/src/message.rs` | Add 4 message variants + ConfigItem/ConfigItemKind/ConfigChange types; bump PROTOCOL_VERSION to 9, EXPECTED_VARIANT_COUNT to 28 |
 | `crates/omnish-common/src/config.rs` | Add `Serialize` derive to DaemonConfig and all sub-types |

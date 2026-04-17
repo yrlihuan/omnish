@@ -4,7 +4,7 @@
 
 **Goal:** Build a terminal picker widget (single + multi select) that renders at the bottom of the terminal by pushing content up.
 
-**Architecture:** New `picker.rs` module in omnish-client with `pick_one()` and `pick_many()` public functions. Internally uses a shared `run_picker()` core that handles rendering, input, and cleanup. Rendering uses ANSI escape sequences written directly to stdout via `nix::unistd::write`, input via `nix::unistd::read` — consistent with existing `read_chat_input` pattern.
+**Architecture:** New `picker.rs` module in omnish-client with `pick_one()` and `pick_many()` public functions. Internally uses a shared `run_picker()` core that handles rendering, input, and cleanup. Rendering uses ANSI escape sequences written directly to stdout via `nix::unistd::write`, input via `nix::unistd::read` - consistent with existing `read_chat_input` pattern.
 
 **Tech Stack:** Rust, nix (read/write), libc (ioctl for terminal size, poll for ESC detection), vt100 (test-only)
 
@@ -18,8 +18,8 @@ A terminal selection widget for omnish that supports single-select and multi-sel
 
 ## Use Cases
 
-- `/threads del` — select conversation(s) to delete
-- `/resume` — select conversation to resume
+- `/threads del` - select conversation(s) to delete
+- `/resume` - select conversation to resume
 - Configuration selection (e.g., LLM backend)
 
 ## API
@@ -82,14 +82,14 @@ Title text
 | ↑/↓ | Move cursor | Move cursor |
 | Enter | Return `Some(index)` | Return `Some(checked_indices)` |
 | ESC | Return `None` | Return `None` |
-| Space | — | Toggle check on current item |
+| Space | - | Toggle check on current item |
 
 On ↑/↓: only redraw the two changed lines (old cursor, new cursor) for efficiency.
 
 ## Cleanup
 
 1. Move cursor to the first line of the widget (title line)
-2. `\x1b[J` — erase from cursor to end of screen
+2. `\x1b[J` - erase from cursor to end of screen
 3. Cursor is now back at the original position
 
 ## Implementation
@@ -455,7 +455,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool) -> Option<Vec<usize>> {
                             }
                         }
                     } else {
-                        // Bare ESC — cancel
+                        // Bare ESC - cancel
                         let cleanup = render_cleanup(items.len());
                         nix::unistd::write(std::io::stdout(), cleanup.as_bytes()).ok();
                         return None;
@@ -556,4 +556,4 @@ test(picker): manual verification of picker widget
 
 ### Task 4: Wire picker into existing commands (optional, separate issue)
 
-This task is out of scope for the picker widget itself. The picker module exposes `pick_one()` and `pick_many()` — callers like `/threads del`, `/resume` can be wired in separate issues. The picker module is self-contained and testable on its own.
+This task is out of scope for the picker widget itself. The picker module exposes `pick_one()` and `pick_many()` - callers like `/threads del`, `/resume` can be wired in separate issues. The picker module is self-contained and testable on its own.

@@ -371,7 +371,7 @@ server.serve(
     move |msg, tx| { ... },
     Some(auth_token),
     tls_acceptor,
-    None, // push_registry — wired in Task 6
+    None, // push_registry - wired in Task 6
 ).await
 ```
 
@@ -483,7 +483,7 @@ Ok(Self {
 })
 ```
 
-Update `connect_with_reconnect_full` (line 216) — on reconnect, create new push channel and swap:
+Update `connect_with_reconnect_full` (line 216) - on reconnect, create new push channel and swap:
 ```rust
 // In initial connection (line 237):
 let (push_tx, push_rx) = Self::make_push_channel();
@@ -748,7 +748,7 @@ git commit -m "feat(config-schema): update toml_keys from shell.* to client.* na
 
 ---
 
-### Task 8: Client-side hot-reload — setter methods on InputInterceptor and TimeGapGuard
+### Task 8: Client-side hot-reload - setter methods on InputInterceptor and TimeGapGuard
 
 **Files:**
 - Modify: `crates/omnish-client/src/interceptor.rs:197-222` (TimeGapGuard)
@@ -928,7 +928,7 @@ fn save_client_config_changes(changes: &[ConfigChange]) -> anyhow::Result<()> {
 
 - [ ] **Step 5: Adjust the sync main loop**
 
-The client uses synchronous `poll()` for I/O. `try_recv_push()` is async. Since the client already has a tokio runtime for daemon calls, use `block_on` or restructure. Check how existing daemon calls are made — likely via `tokio::runtime::Handle::current().block_on()` or similar.
+The client uses synchronous `poll()` for I/O. `try_recv_push()` is async. Since the client already has a tokio runtime for daemon calls, use `block_on` or restructure. Check how existing daemon calls are made - likely via `tokio::runtime::Handle::current().block_on()` or similar.
 
 If the client main loop is sync with `poll()`, add the push check as part of the existing poll cycle (similar to how completion responses are checked with `try_recv`).
 
@@ -941,7 +941,7 @@ Expected: compiles
 
 ```bash
 git add crates/omnish-client/src/main.rs
-git commit -m "feat(client): handle ConfigClient push — hot-reload settings and cache to client.toml"
+git commit -m "feat(client): handle ConfigClient push - hot-reload settings and cache to client.toml"
 ```
 
 ---
@@ -954,7 +954,7 @@ git commit -m "feat(client): handle ConfigClient push — hot-reload settings an
 
 - [ ] **Step 1: Keep manual config reload in ConfigUpdate handler**
 
-In `server.rs:876-892`, the ConfigUpdate handler reloads `opts.daemon_config` after writing. This must stay because `opts.daemon_config` is a separate `Arc<RwLock<DaemonConfig>>` used by ConfigQuery and other handlers. ConfigWatcher has its own copy. No change needed here — the existing flow is correct.
+In `server.rs:876-892`, the ConfigUpdate handler reloads `opts.daemon_config` after writing. This must stay because `opts.daemon_config` is a separate `Arc<RwLock<DaemonConfig>>` used by ConfigQuery and other handlers. ConfigWatcher has its own copy. No change needed here - the existing flow is correct.
 
 - [ ] **Step 2: Make prefix_bytes track interceptor updates**
 

@@ -28,7 +28,7 @@ pub enum ScrollEntry {
 
 /// Action requested by chat session upon exit.
 pub enum ChatExitAction {
-    /// Normal exit — no special action needed.
+    /// Normal exit - no special action needed.
     Normal,
     /// Request to toggle Landlock sandbox on the shell process.
     Lock(bool),
@@ -349,7 +349,7 @@ fn rule_form_fields(
             prefills: vec![],
         });
     } else if tool_names.is_empty() {
-        // No tool metadata available — fall back to TextInput
+        // No tool metadata available - fall back to TextInput
         items.push(ConfigItem {
             path: format!("{}.plugin", params.prefix),
             label: crate::i18n::t("config.plugin").to_string(),
@@ -448,7 +448,7 @@ fn sandbox_local_rule_items(
     let mut items = Vec::new();
     let mut seq = 0usize; // sequential numbering for flat paths
 
-    // "Add permit rule" form — single entry with scope selector
+    // "Add permit rule" form - single entry with scope selector
     let add_prefix = "sandbox.rules._add";
     extra_handlers.push(ConfigHandlerInfo {
         path: add_prefix.to_string(),
@@ -467,7 +467,7 @@ fn sandbox_local_rule_items(
     });
     items.extend(rule_form_fields(RuleFormParams { prefix: add_prefix, plugin: "", field: "", operator: "starts_with", value: "", with_delete: false, scope: None, }, tool_params));
 
-    // Global rules — editable forms (changes forwarded to daemon via RPC)
+    // Global rules - editable forms (changes forwarded to daemon via RPC)
     for entry in global_rules {
         for (idx, rule) in entry.rules.iter().enumerate() {
             let prefix = format!("sandbox.rules._r{}", seq);
@@ -483,7 +483,7 @@ fn sandbox_local_rule_items(
         }
     }
 
-    // Local rules — editable forms (handled client-side)
+    // Local rules - editable forms (handled client-side)
     let mut plugin_names: Vec<&String> = sandbox.plugins.keys().collect();
     plugin_names.sort();
     for plugin_name in plugin_names {
@@ -785,7 +785,7 @@ fn item_value(item: &ConfigItem) -> String {
 /// Compute diff between two config item snapshots by matching on `path`.
 /// Uses BTreeMap for deterministic traversal order and sorts output by label.
 fn compute_config_diff(old_items: &[ConfigItem], new_items: &[ConfigItem]) -> Vec<ConfigDiff> {
-    // Skip Label items — they're non-interactive and include client-side
+    // Skip Label items - they're non-interactive and include client-side
     // placeholders that differ between daemon response and expanded form.
     let old_map: std::collections::BTreeMap<&str, &ConfigItem> = old_items.iter()
         .filter(|i| !matches!(i.kind, ConfigItemKind::Label | ConfigItemKind::Data { .. }))
@@ -959,7 +959,7 @@ fn build_menu_tree(
                 let display_key = display_parts.join(".");
                 path_map.insert(display_key, item.path.clone());
             } else {
-                // Intermediate segment — find or create submenu
+                // Intermediate segment - find or create submenu
                 let schema_path_so_far = segments[..=i].join(".");
                 let label = submenu_lookup.get(schema_path_so_far.as_str())
                     .map(|(_, lbl)| crate::i18n::translate_label(lbl))
@@ -1300,7 +1300,7 @@ impl ChatSession {
                 timestamp_ms: crate::timestamp_ms(),
                 attrs,
             });
-            // Use call() (not send()) to wait for Ack — the daemon spawns each
+            // Use call() (not send()) to wait for Ack - the daemon spawns each
             // message as a separate tokio task, so fire-and-forget send() can race
             // with the subsequent ChatMessage.
             let _ = rpc.call(msg).await;
@@ -1394,10 +1394,10 @@ impl ChatSession {
                 continue;
             }
 
-            // /resume_tid <thread_id> (internal — used by :: resume shortcut)
+            // /resume_tid <thread_id> (internal - used by :: resume shortcut)
             if let Some(tid) = trimmed.strip_prefix("/resume_tid ") {
                 if !self.handle_resume_tid(tid.trim(), session_id, rpc).await && is_fast_resume {
-                    break; // cancelled or failed on auto-resume — exit chat mode
+                    break; // cancelled or failed on auto-resume - exit chat mode
                 }
                 continue;
             }
@@ -1405,7 +1405,7 @@ impl ChatSession {
             // /resume [N]
             if trimmed == "/resume" || trimmed.starts_with("/resume ") {
                 if !self.handle_resume(trimmed, session_id, rpc).await && is_fast_resume {
-                    break; // cancelled or failed on auto-resume — exit chat mode
+                    break; // cancelled or failed on auto-resume - exit chat mode
                 }
                 continue;
             }
@@ -1416,17 +1416,17 @@ impl ChatSession {
                 continue;
             }
 
-            // /test — hidden test commands
+            // /test - hidden test commands
             if trimmed == "/test" || trimmed.starts_with("/test ") {
                 let arg = trimmed.strip_prefix("/test").unwrap().trim();
                 match arg {
                     "" => {
                         write_stdout(&format!("{DIM}Available /test commands:{RESET}\r\n"));
-                        write_stdout(&format!("{DIM}  /test picker [N]          — flat picker (N = initial index){RESET}\r\n"));
-                        write_stdout(&format!("{DIM}  /test multi_level_picker  — cascading picker (3 levels){RESET}\r\n"));
-                        write_stdout(&format!("{DIM}  /test menu                — multi-level menu widget{RESET}\r\n"));
-                        write_stdout(&format!("{DIM}  /test lock on|off         — toggle Landlock sandbox for shell{RESET}\r\n"));
-                        write_stdout(&format!("{DIM}  /test disconnect N1 [N2]  — daemon disconnects after N1s, reconnect delay N2s{RESET}\r\n"));
+                        write_stdout(&format!("{DIM}  /test picker [N]          - flat picker (N = initial index){RESET}\r\n"));
+                        write_stdout(&format!("{DIM}  /test multi_level_picker  - cascading picker (3 levels){RESET}\r\n"));
+                        write_stdout(&format!("{DIM}  /test menu                - multi-level menu widget{RESET}\r\n"));
+                        write_stdout(&format!("{DIM}  /test lock on|off         - toggle Landlock sandbox for shell{RESET}\r\n"));
+                        write_stdout(&format!("{DIM}  /test disconnect N1 [N2]  - daemon disconnects after N1s, reconnect delay N2s{RESET}\r\n"));
                     }
                     "multi_level_picker" => self.handle_test_multi_level_picker(),
                     "menu" => self.handle_test_menu(),
@@ -1648,7 +1648,7 @@ impl ChatSession {
                                                     }
                                                     self.push_entry(ScrollEntry::LlmText(cts.status.clone()));
                                                 } else if cts.result_compact.is_none() {
-                                                    // First status — tool is running (before execution)
+                                                    // First status - tool is running (before execution)
                                                     if self.tool_section_start.is_none() {
                                                         self.tool_section_start = Some(self.lines_printed);
                                                         self.tool_section_hist_idx = Some(self.scroll_history.len());
@@ -1662,7 +1662,7 @@ impl ChatSession {
                                                     self.print_line(&header);
                                                     self.push_entry(ScrollEntry::ToolStatus(cts));
                                                 } else {
-                                                    // Second status — tool completed (after execution).
+                                                    // Second status - tool completed (after execution).
                                                     // The daemon sends this immediately after receiving the
                                                     // tool result, before the LLM's next response. We erased
                                                     // Thinking above so the cursor math in redraw_tool_section
@@ -1705,7 +1705,7 @@ impl ChatSession {
                                             }
                                             None => {
                                                 if tool_calls.is_empty() {
-                                                    // No tool calls pending — real disconnect
+                                                    // No tool calls pending - real disconnect
                                                     self.erase_thinking();
                                                     self.mark_running_tools_error();
                                                     self.tool_section_start = None;
@@ -1814,7 +1814,7 @@ impl ChatSession {
                                                     });
 
                                                 if completed < total {
-                                                    // Intermediate result — send and render status inline
+                                                    // Intermediate result - send and render status inline
                                                     match rpc.call(result_msg).await {
                                                         Ok(Message::ChatToolStatus(cts)) => {
                                                             // Update running header in-place: move cursor up to the tool's line
@@ -1840,7 +1840,7 @@ impl ChatSession {
                                                         _ => {} // Ack or other
                                                     }
                                                 } else {
-                                                    // Last result — switch to streaming for agent loop continuation
+                                                    // Last result - switch to streaming for agent loop continuation
                                                     match rpc.call_stream(result_msg).await {
                                                         Ok(new_rx) => {
                                                             rx = new_rx;
@@ -1883,7 +1883,7 @@ impl ChatSession {
                                 break 'stream;
                             }
 
-                            // Sync shell_cwd after tools execute — tools like glob/read may
+                            // Sync shell_cwd after tools execute - tools like glob/read may
                             // change cwd via picker interaction, and we need the updated cwd
                             // for the next round of tool calls.
                             if let Some(cwd) = super::get_shell_cwd(proxy.child_pid() as u32) {
@@ -1910,7 +1910,7 @@ impl ChatSession {
 
             if interrupted {
                 if !got_first_output {
-                    // No LLM output yet — treat as input cancellation:
+                    // No LLM output yet - treat as input cancellation:
                     // erase thinking indicator and user echo line, restore input for editing.
                     self.erase_thinking();
                     // Erase the user echo (may span multiple visual rows)
@@ -2257,7 +2257,7 @@ impl ChatSession {
                 }
             }
         } else {
-            // /resume without index — picker (with lock-aware disabled items)
+            // /resume without index - picker (with lock-aware disabled items)
             self.show_resume_picker(session_id, rpc).await
         };
 
@@ -2628,7 +2628,7 @@ impl ChatSession {
         let thread_host = ready.thread_host.as_deref().unwrap_or("");
         let thread_cwd = ready.thread_cwd.as_deref().unwrap_or("");
 
-        // No previous data — nothing to compare
+        // No previous data - nothing to compare
         if thread_host.is_empty() && thread_cwd.is_empty() {
             return None;
         }
@@ -2720,7 +2720,7 @@ impl ChatSession {
                 let display_name = &item_strings[idx];
 
                 if let Some(ref tid) = self.current_thread_id {
-                    // Existing thread — send model-only ChatMessage
+                    // Existing thread - send model-only ChatMessage
                     let rid = Uuid::new_v4().to_string()[..8].to_string();
                     let msg = Message::ChatMessage(omnish_protocol::message::ChatMessage {
                         request_id: rid.clone(),
@@ -2738,12 +2738,12 @@ impl ChatSession {
                         }
                     }
                 } else {
-                    // New thread — defer model selection to first message
+                    // New thread - defer model selection to first message
                     self.pending_model = Some(name);
                     write_stdout(&format!("{DIM}Switched to {}{RESET}\r\n", display_name));
                 }
             }
-            _ => {} // ESC or no selection — do nothing
+            _ => {} // ESC or no selection - do nothing
         }
     }
 
@@ -2892,7 +2892,7 @@ impl ChatSession {
 
         let mut items = vec![
             MenuItem::Label {
-                label: "Test menu — labels are non-interactive".to_string(),
+                label: "Test menu - labels are non-interactive".to_string(),
             },
             MenuItem::Submenu {
                 label: "LLM".to_string(),
@@ -3189,7 +3189,7 @@ impl ChatSession {
                     let ok = add_local_rule(&translated_changes, sandbox_state_ref);
                     if !ok { return None; }
                 } else if let Some(rest) = handler_name.strip_prefix("edit_global_rule:") {
-                    // rest = "plugin:idx" — convert to "plugin.idx" for daemon path
+                    // rest = "plugin:idx" - convert to "plugin.idx" for daemon path
                     let rest_dotted = rest.replace(':', ".");
                     let config_changes: Vec<ConfigChange> = translated_changes.iter()
                         .filter_map(|mc| {
@@ -3417,7 +3417,7 @@ impl ChatSession {
 
         let term_cursor_row = std::cell::Cell::new(0usize);
 
-        // Redraw closure — relative cursor movement, no layout dependency
+        // Redraw closure - relative cursor movement, no layout dependency
         let redraw = |editor: &LineEditor, ghost: &str, has_ghost: bool| {
             let blocks = paste_blocks.borrow();
             let line_count = editor.line_count();
@@ -3590,7 +3590,7 @@ impl ChatSession {
                 let timeout_ms = 30 * 60 * 1000; // 30 minutes
                 let ready = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
                 if ready == 0 {
-                    // Timeout — auto-exit chat mode
+                    // Timeout - auto-exit chat mode
                     write_stdout(&format!("\r\n{DIM}(chat closed due to inactivity){RESET}\r\n"));
                     // Disable bracketed paste before exiting
                     write_stdout("\x1b[?2004l");
@@ -3835,7 +3835,7 @@ impl ChatSession {
                             continue;
                         }
                         0x0f => {
-                            // Ctrl-O — browse history (alternate screen)
+                            // Ctrl-O - browse history (alternate screen)
                             self.browse_history();
                         }
                         0x01 => {
@@ -3872,7 +3872,7 @@ impl ChatSession {
                             redraw(&editor, "", false);
                         }
                         0x0d => {
-                            // Enter — submit
+                            // Enter - submit
                             if has_ghost {
                                 redraw(&editor, "", false);
                             }

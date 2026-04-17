@@ -483,7 +483,7 @@ pub fn compile_config(config: &SandboxConfig) -> HashMap<String, Vec<PermitRule>
                 Ok(rule) => rules.push(rule),
                 Err(e) => {
                     tracing::error!(
-                        "sandbox permit rule for '{}' is invalid: '{}' — {}",
+                        "sandbox permit rule for '{}' is invalid: '{}' - {}",
                         tool_name, rule_str, e
                     );
                 }
@@ -537,7 +537,7 @@ pub struct DaemonServer {
 
 - [ ] **Step 2: Update DaemonServer::new() to accept and wrap sandbox_rules**
 
-Add parameter to `new()` — accepts the raw HashMap, wraps in Arc:
+Add parameter to `new()` - accepts the raw HashMap, wraps in Arc:
 
 ```rust
 pub fn new(
@@ -572,7 +572,7 @@ Add a `sandbox_rules: &SandboxRules` parameter to each function in the call chai
 5. **`handle_message()` body**: pass `&sandbox_rules` to `handle_chat_message()` (line 702) and `handle_tool_result()` (line 706)
 6. **`handle_chat_message()`** signature (line 813): add `sandbox_rules: &SandboxRules`, pass to `run_agent_loop()` (line 894)
 7. **`handle_tool_result()`** signature (line 898): add `sandbox_rules: &SandboxRules`, pass to `run_agent_loop()` (line 1010)
-8. **`run_agent_loop()`** signature (line 1017): add `sandbox_rules: &SandboxRules` — this is where the decision point lives (line 1121)
+8. **`run_agent_loop()`** signature (line 1017): add `sandbox_rules: &SandboxRules` - this is where the decision point lives (line 1121)
 
 - [ ] **Step 4: Replace tool_sandboxed() call with check_bypass()**
 
@@ -617,7 +617,7 @@ In `crates/omnish-daemon/src/plugin.rs`, remove lines 342-347:
 
 ```rust
 // DELETE:
-/// Return whether the tool should be sandboxed. Always true — plugins cannot opt out.
+/// Return whether the tool should be sandboxed. Always true - plugins cannot opt out.
 pub fn tool_sandboxed(&self, tool_name: &str) -> Option<bool> {
     self.tool_index
         .get(tool_name)
@@ -687,9 +687,9 @@ Expected: all tests pass
 
 - [ ] **Step 3: Verify config deserialization**
 
-Ensure an empty `daemon.toml` (no `[sandbox]` section) still works — `SandboxConfig::default()` produces empty rules, all tools remain sandboxed. This is covered by existing daemon startup tests, but verify manually:
+Ensure an empty `daemon.toml` (no `[sandbox]` section) still works - `SandboxConfig::default()` produces empty rules, all tools remain sandboxed. This is covered by existing daemon startup tests, but verify manually:
 
-Run: `cargo test -p omnish-daemon` — should pass without any sandbox config.
+Run: `cargo test -p omnish-daemon` - should pass without any sandbox config.
 
 - [ ] **Step 4: Commit if any fixes were needed**
 

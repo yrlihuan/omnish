@@ -11,15 +11,15 @@ When the connection drops:
 - All subsequent `call()` return errors ("write task closed" / "read task closed")
 - Client silently ignores errors via `let _ = rpc.call(msg).await`
 - PTY continues working but daemon receives no data
-- No recovery — connection stays dead for the rest of the session
+- No recovery - connection stays dead for the rest of the session
 
 ## Design
 
 ### RpcClient Changes
 
 Add `connect_unix_with_reconnect` constructor that accepts:
-- `addr: &str` — socket path (stored for reconnection)
-- `on_reconnect` callback — called after connection is re-established (e.g. to re-send SessionStart)
+- `addr: &str` - socket path (stored for reconnection)
+- `on_reconnect` callback - called after connection is re-established (e.g. to re-send SessionStart)
 
 When the read or write task detects a connection break:
 1. Mark connection as unavailable
@@ -29,7 +29,7 @@ When the read or write task detects a connection break:
 5. If callback succeeds: replace internal read/write tasks, mark connection available
 6. If callback fails: continue retry loop
 
-**All `call()` invocations return an error immediately while connection is unavailable** — both in-flight calls at the moment of disconnect and new calls during reconnection are treated identically.
+**All `call()` invocations return an error immediately while connection is unavailable** - both in-flight calls at the moment of disconnect and new calls during reconnection are treated identically.
 
 ### API
 
@@ -58,7 +58,7 @@ Connection drops
       connect_unix(addr)
       → fail: sleep(backoff), backoff = min(backoff * 2, 30s), retry
       → success:
-          on_reconnect(client) — e.g. send SessionStart
+          on_reconnect(client) - e.g. send SessionStart
           → fail: sleep(backoff), retry
           → success: replace read/write tasks, resume normal operation
   → during reconnect: new call() returns error immediately
@@ -97,7 +97,7 @@ let rpc = RpcClient::connect_unix_with_reconnect(&socket_path, move |rpc| {
 }).await?;
 ```
 
-Main loop code stays unchanged — `let _ = rpc.call(msg).await` already handles errors gracefully.
+Main loop code stays unchanged - `let _ = rpc.call(msg).await` already handles errors gracefully.
 
 ### Not In Scope
 

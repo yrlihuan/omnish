@@ -58,6 +58,6 @@ else
   NEEDS_SUMMARIZATION=false
 fi
 
-# Output JSON response — read content from file via slurpfile to avoid ARG_MAX
+# Output JSON response - read content from file via slurpfile to avoid ARG_MAX
 jq -n --rawfile content "$TMPFILE" --argjson needs "$NEEDS_SUMMARIZATION" \
   '{"content": $content, "is_error": false, "needs_summarization": $needs}'

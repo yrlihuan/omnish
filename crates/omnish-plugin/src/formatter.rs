@@ -2,7 +2,7 @@
 //!
 //! Formatters transform raw tool output into compact and full display forms.
 //! They are decoupled from ToolRegistry metadata (display_name, status_template,
-//! status_icon, param_desc) — callers handle those concerns separately.
+//! status_icon, param_desc) - callers handle those concerns separately.
 
 /// Input to a formatter. The formatter is only called when output exists,
 /// so `output` is a plain `String` and `is_error` is a plain `bool`.
@@ -170,7 +170,7 @@ pub fn parse_replace_count(output: &str) -> Option<usize> {
 /// Format numbered diff from edit tool context snippet.
 /// Snippet lines: "lineno:-content" (removed), "lineno:+content" (added),
 /// "lineno:  content" (context).
-/// The snippet is self-contained — no need to inject old_string.
+/// The snippet is self-contained - no need to inject old_string.
 pub fn format_numbered_diff(output: &str) -> Vec<String> {
     let snippet = match output.split_once("\n---\n") {
         Some((_, ctx)) => ctx,

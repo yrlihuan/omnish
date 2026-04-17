@@ -85,12 +85,12 @@ feat(context): add omnish-context crate with ContextStrategy trait
 
 Tests use a mock `StreamReader` that returns pre-built entries. Cover:
 
-1. `test_empty_commands` — no commands → empty string
-2. `test_single_command` — one command with short output → `$ cmd\noutput`
-3. `test_truncates_long_output` — 30 lines → first 10 + `... (10 lines omitted) ...` + last 10
-4. `test_max_recent_commands` — 15 commands → only last 10 appear
-5. `test_filters_direction_1_only` — mixed direction entries → only output (direction=1) used
-6. `test_command_without_command_line` — `command_line: None` → uses `(unknown)` placeholder
+1. `test_empty_commands` - no commands → empty string
+2. `test_single_command` - one command with short output → `$ cmd\noutput`
+3. `test_truncates_long_output` - 30 lines → first 10 + `... (10 lines omitted) ...` + last 10
+4. `test_max_recent_commands` - 15 commands → only last 10 appear
+5. `test_filters_direction_1_only` - mixed direction entries → only output (direction=1) used
+6. `test_command_without_command_line` - `command_line: None` → uses `(unknown)` placeholder
 
 ```rust
 use anyhow::Result;
@@ -467,7 +467,7 @@ refactor(daemon): delegate context building to ContextStrategy
 
 ---
 
-### Task 4: Cleanup — remove unused ContextBuilder
+### Task 4: Cleanup - remove unused ContextBuilder
 
 After the migration, `omnish-llm::context::ContextBuilder` is no longer used by session_mgr. Check if it's used elsewhere; if not, remove it.
 

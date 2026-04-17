@@ -1,6 +1,6 @@
 # Plugin Setup Protocol Design
 
-Issue: #358 — Plugin installation configuration protocol
+Issue: #358 - Plugin installation configuration protocol
 
 ## Overview
 
@@ -113,7 +113,7 @@ setup_plugin() {
 
 ### TOML patching functions
 
-#### `patch_toml_section` — write `[tools.<name>]` section
+#### `patch_toml_section` - write `[tools.<name>]` section
 
 ```bash
 patch_toml_section() {
@@ -148,7 +148,7 @@ patch_toml_section() {
 }
 ```
 
-#### `patch_plugins_enabled` — add plugin to enabled array
+#### `patch_plugins_enabled` - add plugin to enabled array
 
 ```bash
 patch_plugins_enabled() {
@@ -156,7 +156,7 @@ patch_plugins_enabled() {
     local plugin_name="$2"
 
     if ! grep -q '^\[plugins\]' "$toml_file"; then
-        # No [plugins] section — check for commented one
+        # No [plugins] section - check for commented one
         if grep -q '^# *\[plugins\]' "$toml_file"; then
             # Uncomment and set
             sed -i 's/^# *\[plugins\]/[plugins]/' "$toml_file"
@@ -166,7 +166,7 @@ patch_plugins_enabled() {
             printf '\n[plugins]\nenabled = ["%s"]\n' "$plugin_name" >> "$toml_file"
         fi
     else
-        # [plugins] section exists — grep for enabled= scoped to [plugins] section only
+        # [plugins] section exists - grep for enabled= scoped to [plugins] section only
         local current
         current=$(sed -n '/^\[plugins\]/,/^\[/{/^enabled/p}' "$toml_file" | head -1)
         if [[ -z "$current" ]]; then

@@ -13,11 +13,11 @@ use crate::display::{BOLD, BOLD_REVERSE, RESET};
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisabledIcon {
-    /// 🔒 (U+1F512) — padlock emoji
+    /// 🔒 (U+1F512) - padlock emoji
     Lock,
-    /// ⚿ (U+26BF) — squared key
+    /// ⚿ (U+26BF) - squared key
     Key,
-    /// ⊘ (U+2298) — circled division slash
+    /// ⊘ (U+2298) - circled division slash
     Forbidden,
 }
 
@@ -211,7 +211,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
         };
         match byte[0] {
                 0x03 => {
-                    // Ctrl+C — cancel
+                    // Ctrl+C - cancel
                     let cleanup = render_cleanup(items.len());
                     common::write_stdout(cleanup.as_bytes());
                     common::write_stdout(b"\x1b[?25h");
@@ -234,7 +234,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
                                     cursor -= 1;
 
                                     if cursor < scroll_offset {
-                                        // Need to scroll up — full redraw
+                                        // Need to scroll up - full redraw
                                         scroll_offset = cursor;
                                         let full = render_full(title, items, cursor, &checked, &disabled, multi, cols, scroll_offset);
                                         // Move up to title line first
@@ -263,7 +263,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
                                     cursor += 1;
 
                                     if cursor >= scroll_offset + vis {
-                                        // Need to scroll down — full redraw
+                                        // Need to scroll down - full redraw
                                         scroll_offset = cursor - vis + 1;
                                         let full = render_full(title, items, cursor, &checked, &disabled, multi, cols, scroll_offset);
                                         let total_lines = 1 + 1 + vis + 1 + 1;
@@ -290,7 +290,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
                             }
                         }
                     } else {
-                        // Bare ESC — cancel
+                        // Bare ESC - cancel
                         let cleanup = render_cleanup(items.len());
                         common::write_stdout(cleanup.as_bytes());
                         common::write_stdout(b"\x1b[?25h");
@@ -326,7 +326,7 @@ fn run_picker(title: &str, items: &[&str], multi: bool, initial_cursor: usize, d
                     }
                 }
             key => {
-                // Check shortcut keys (e.g., 'y' for [Y]es) — skip disabled items
+                // Check shortcut keys (e.g., 'y' for [Y]es) - skip disabled items
                 if let Some(&idx) = shortcuts.get(&key.to_ascii_lowercase()) {
                     if disabled[idx].is_none() {
                         let cleanup = render_cleanup(items.len());

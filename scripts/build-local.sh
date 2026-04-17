@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Local build script — replicates CI packaging on a dev machine.
+# Local build script - replicates CI packaging on a dev machine.
 #
 # Usage:
 #   scripts/build-local.sh            # build for current platform
@@ -36,7 +36,7 @@ done
 
 GIT_DESC=$(git describe --tags --always 2>/dev/null || echo "")
 if [[ -z "$GIT_DESC" ]]; then
-    # No tags at all — use Cargo.toml version
+    # No tags at all - use Cargo.toml version
     VERSION=$(cargo metadata --no-deps --format-version 1 \
         | python3 -c "import sys,json; print(json.load(sys.stdin)['packages'][0]['version'])")
 elif [[ "$GIT_DESC" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then

@@ -1,6 +1,6 @@
 # Zsh Shell Hook Support
 
-**Issue:** #462 — 测试zsh支持
+**Issue:** #462 - 测试zsh支持
 **Date:** 2026-04-13
 
 ## Goal
@@ -30,8 +30,8 @@ A `ZSH_HOOK` constant in `shell_hook.rs`, emitting the same OSC 133 sequences as
 - Emits `133;RL;{buffer};{cursor}`
 
 **Guard variables** (same pattern as bash):
-- `__omnish_preexec_fired` — prevent double-fire
-- `__omnish_in_precmd` — guard preexec during precmd
+- `__omnish_preexec_fired` - prevent double-fire
+- `__omnish_in_precmd` - guard preexec during precmd
 
 **Option isolation:**
 - Hook functions wrapped with `emulate -L zsh` to isolate from user `setopt` settings
@@ -60,8 +60,8 @@ A `ZSH_HOOK` constant in `shell_hook.rs`, emitting the same OSC 133 sequences as
 - Helper `require_shell()` to skip test run if shell not installed
 
 **Test execution:**
-- `TEST_SHELL=bash bash test_basic.sh` — existing behavior
-- `TEST_SHELL=zsh bash test_basic.sh` — same tests under zsh
+- `TEST_SHELL=bash bash test_basic.sh` - existing behavior
+- `TEST_SHELL=zsh bash test_basic.sh` - same tests under zsh
 - Tests that are truly bash-only guarded with `[[ $TEST_SHELL == bash ]] || return 0`
 
 ### 4. CI Pipeline

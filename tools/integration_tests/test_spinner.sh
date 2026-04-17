@@ -87,7 +87,7 @@ test_1() {
     if [[ -n "$frame1" && -n "$frame2" && "$frame1" != "$frame2" ]]; then
         assert_pass "Spinner animated: '$frame1' → '$frame2'"
     elif [[ -n "$frame1" && -n "$frame2" ]]; then
-        # Same frame captured — try once more with longer wait
+        # Same frame captured - try once more with longer wait
         sleep 1.5
         local frame3
         frame3=$(capture_pane -20 | grep -E 'Bash' | grep -oE "[$SPINNER_CHARS]" | head -1)
@@ -121,7 +121,7 @@ test_1() {
         assert_pass "Tool completed with static ● icon"
     else
         show_capture "Final state" "$content" 20
-        # Not a hard failure — the tool section may have been cleared
+        # Not a hard failure - the tool section may have been cleared
         echo -e "  ${YELLOW}Note: Could not verify final static icon (section may be cleared)${NC}"
     fi
 
@@ -216,7 +216,7 @@ test_2() {
 # The earlier pipe-pane-based version only checked whether "Thinking…" was
 # ever written to the byte stream. That missed the real failure mode where
 # `show_thinking` writes the line but a subsequent handler erases it within
-# a few ms — the user never actually sees it.
+# a few ms - the user never actually sees it.
 #
 # This version polls the pane with `capture-pane` at 50ms intervals and
 # requires AT LEAST ONE snapshot taken AFTER the Bash tool header to still
@@ -248,7 +248,7 @@ test_3() {
     local poll_pid=$!
 
     # Prompt forces one Bash tool whose output is large enough that the
-    # LLM's first-token latency after the tool result is several seconds —
+    # LLM's first-token latency after the tool result is several seconds -
     # well over the 50ms capture interval.
     local prompt="请运行 bash 命令：cat /etc/services && seq 1 2000 。然后简短总结输出中出现的端口/数字规律，再运行 echo done。"
     send_keys "$prompt" 0.3

@@ -45,7 +45,7 @@ let msgs: Vec<serde_json::Value> = content
     .collect();
 ```
 
-No change needed — `serde_json::from_str::<serde_json::Value>` works on any valid JSON line.
+No change needed - `serde_json::from_str::<serde_json::Value>` works on any valid JSON line.
 
 **Step 3: Replace `append_exchange` with `append_messages`**
 
@@ -78,7 +78,7 @@ pub fn append_messages(&self, thread_id: &str, messages: &[serde_json::Value]) {
 **Step 4: Replace `load_messages` with `load_raw_messages`**
 
 ```rust
-/// Load all raw messages for API replay. No processing — returns as stored.
+/// Load all raw messages for API replay. No processing - returns as stored.
 pub fn load_raw_messages(&self, thread_id: &str) -> Vec<serde_json::Value> {
     let threads = self.threads.lock().unwrap();
     threads.get(thread_id).cloned().unwrap_or_default()
@@ -207,7 +207,7 @@ The interrupt resolution logic was built around the old (user, assistant) pair m
 ```json
 {"role":"assistant","content":"<event>user interrupted</event>"}
 ```
-This doesn't need special resolution — the LLM sees the interrupt marker in the conversation history and understands the context. Delete `resolve_interrupted`, `INTERRUPTED_MARKER`, and their usage.
+This doesn't need special resolution - the LLM sees the interrupt marker in the conversation history and understands the context. Delete `resolve_interrupted`, `INTERRUPTED_MARKER`, and their usage.
 
 **Step 9: Remove `ChatTurn` import**
 
@@ -287,13 +287,13 @@ async fn handle_chat_message(
     }));
 
     let mut llm_req = LlmRequest {
-        context: String::new(),         // Not used — everything in extra_messages
-        query: None,                     // Not used — user message in extra_messages
+        context: String::new(),         // Not used - everything in extra_messages
+        query: None,                     // Not used - user message in extra_messages
         trigger: TriggerType::Manual,
         session_ids: vec![cm.session_id.clone()],
         use_case,
         max_content_chars: max_context_chars,
-        conversation: vec![],            // Not used — everything in extra_messages
+        conversation: vec![],            // Not used - everything in extra_messages
         system_prompt: Some(omnish_llm::template::CHAT_SYSTEM_PROMPT.to_string()),
         enable_thinking: None,
         tools,
@@ -311,7 +311,7 @@ async fn handle_chat_message(
         match backend.complete(&llm_req).await {
             Ok(response) => {
                 if response.stop_reason == StopReason::ToolUse {
-                    // ... (tool execution loop — same as current, no changes needed)
+                    // ... (tool execution loop - same as current, no changes needed)
                     // The existing code that builds assistant_content and tool_results
                     // and pushes to llm_req.extra_messages stays identical.
                     let tool_calls = response.tool_calls();
@@ -393,7 +393,7 @@ async fn handle_chat_message(
                     continue;
                 }
 
-                // EndTurn or MaxTokens — build final assistant message and store
+                // EndTurn or MaxTokens - build final assistant message and store
                 let assistant_content: Vec<serde_json::Value> = response
                     .content
                     .iter()
@@ -445,7 +445,7 @@ async fn handle_chat_message(
         }
     }
 
-    // Exhausted iterations — store partial conversation
+    // Exhausted iterations - store partial conversation
     let new_messages = &llm_req.extra_messages[prior_len - 1..];
     conv_mgr.append_messages(&cm.thread_id, new_messages);
     let text = "(Agent reached maximum tool call limit)".to_string();
@@ -460,9 +460,9 @@ async fn handle_chat_message(
 
 Key changes:
 - `load_messages` → `load_raw_messages`, result goes into `extra_messages`
-- `context` field is empty — not used
-- `query` is None — user message already in extra_messages with `<system-reminder>` appended
-- `conversation` is empty — everything via extra_messages
+- `context` field is empty - not used
+- `query` is None - user message already in extra_messages with `<system-reminder>` appended
+- `conversation` is empty - everything via extra_messages
 - `append_exchange` → `append_messages` with the new messages slice
 - Final assistant response is also stored as raw JSON (not just text)
 
@@ -550,20 +550,20 @@ The user is in omnish's chat mode. In chat mode:\n\
 \n\
 ## Available Commands (for user reference)\n\
 \n\
-- /help — Show available commands\n\
-- /resume [N] — Resume a previous conversation (N = index from /thread list)\n\
-- /thread list — List all conversation threads\n\
-- /thread del [N] — Delete a conversation thread\n\
-- /context — Show the current LLM context\n\
-- /sessions — List active terminal sessions\n\
-- ESC or Ctrl-D (on empty input) — Exit chat mode\n\
+- /help - Show available commands\n\
+- /resume [N] - Resume a previous conversation (N = index from /thread list)\n\
+- /thread list - List all conversation threads\n\
+- /thread del [N] - Delete a conversation thread\n\
+- /context - Show the current LLM context\n\
+- /sessions - List active terminal sessions\n\
+- ESC or Ctrl-D (on empty input) - Exit chat mode\n\
 \n\
 ## Tools\n\
 \n\
 You have access to the command_query tool to inspect command output:\n\
 - Use get_output(seq) to retrieve the full output of a specific command\n\
 - The recent command list is provided at the end of the user's message in <system-reminder>\n\
-- You do NOT need to call list_history — the command list is already provided\n\
+- You do NOT need to call list_history - the command list is already provided\n\
 \n\
 ## Guidelines\n\
 \n\
@@ -787,7 +787,7 @@ mod tests {
 
 **Step 2: Make `is_user_input` accessible in tests**
 
-Change `fn is_user_input` from private to `pub(crate)` (or keep private if tests are in the same module — they are, so no change needed).
+Change `fn is_user_input` from private to `pub(crate)` (or keep private if tests are in the same module - they are, so no change needed).
 
 **Step 3: Run tests**
 
@@ -815,7 +815,7 @@ Run: `cargo build --workspace 2>&1 | grep -i "unused\|ChatTurn" | head -20`
 
 If `ChatTurn` and `LlmRequest.conversation` are still used by non-chat code paths (e.g., analysis mode), leave them. If only chat used them, remove them.
 
-Based on the anthropic.rs code, `conversation` is used in the multi-turn path — but with the redesign, chat no longer uses it (passes empty vec + everything in extra_messages). If no other code path uses `conversation`, we can remove it. Otherwise, leave it for now.
+Based on the anthropic.rs code, `conversation` is used in the multi-turn path - but with the redesign, chat no longer uses it (passes empty vec + everything in extra_messages). If no other code path uses `conversation`, we can remove it. Otherwise, leave it for now.
 
 **Step 2: Full workspace build**
 

@@ -24,9 +24,9 @@ A transparent shell wrapper that captures I/O from running programs, aggregates 
 └─────────────────────────────────────────────┘
 ```
 
-- **omnish (client)** — User's login shell or shell entry point. Uses `forkpty()` to spawn the real shell (bash/zsh etc), acting as a transparent PTY proxy. All I/O bytes are forwarded to the daemon asynchronously.
-- **omnishd (daemon)** — Long-running process that receives I/O streams from all terminals via Unix socket, handles storage, event detection, and LLM dispatch.
-- **Communication** — Client and daemon communicate via `$XDG_RUNTIME_DIR/omnish.sock` by default. The transport layer is abstracted to support future TCP/HTTP for cross-machine aggregation.
+- **omnish (client)** - User's login shell or shell entry point. Uses `forkpty()` to spawn the real shell (bash/zsh etc), acting as a transparent PTY proxy. All I/O bytes are forwarded to the daemon asynchronously.
+- **omnishd (daemon)** - Long-running process that receives I/O streams from all terminals via Unix socket, handles storage, event detection, and LLM dispatch.
+- **Communication** - Client and daemon communicate via `$XDG_RUNTIME_DIR/omnish.sock` by default. The transport layer is abstracted to support future TCP/HTTP for cross-machine aggregation.
 
 ## Client: PTY Proxy Layer
 
@@ -45,9 +45,9 @@ omnish client:
 
 ### Key Design Points
 
-- **Zero-interference principle** — PTY proxy is fully transparent. `cat`, `vim`, `htop`, `ssh`, and any program must behave identically. All daemon communication is async, never blocking the main I/O path.
-- **Special command prefix** — `::` as escape prefix (configurable). E.g. `::ask why did that fail`. Only intercepted at line start in shell prompt state, to avoid interfering with normal input.
-- **Graceful degradation** — When daemon is unreachable, omnish still works as a normal shell. Only analysis capabilities are lost.
+- **Zero-interference principle** - PTY proxy is fully transparent. `cat`, `vim`, `htop`, `ssh`, and any program must behave identically. All daemon communication is async, never blocking the main I/O path.
+- **Special command prefix** - `::` as escape prefix (configurable). E.g. `::ask why did that fail`. Only intercepted at line start in shell prompt state, to avoid interfering with normal input.
+- **Graceful degradation** - When daemon is unreachable, omnish still works as a normal shell. Only analysis capabilities are lost.
 
 ## Communication Layer Abstraction
 
@@ -80,21 +80,21 @@ Binary format, decoupled from transport:
 ```
 
 Core message types:
-- `SessionStart` — client registers new session (shell type, PID, tty info)
-- `IoData` — I/O byte stream report (direction in/out, timestamp, raw bytes)
-- `Event` — structured events (command completed, non-zero exit code, etc.)
-- `Request` — client requests to daemon (e.g. LLM query)
-- `Response` — daemon replies to client
+- `SessionStart` - client registers new session (shell type, PID, tty info)
+- `IoData` - I/O byte stream report (direction in/out, timestamp, raw bytes)
+- `Event` - structured events (command completed, non-zero exit code, etc.)
+- `Request` - client requests to daemon (e.g. LLM query)
+- `Response` - daemon replies to client
 
 ## Daemon: omnishd
 
 ```
 omnishd
-├── Session Manager    — manage lifecycle of all active sessions
-├── Stream Store       — persist raw I/O streams
-├── Event Detector     — detect trigger events from streams
-├── LLM Dispatcher     — dispatch LLM requests, manage backends
-└── Query Handler      — handle active query requests from clients
+├── Session Manager    - manage lifecycle of all active sessions
+├── Stream Store       - persist raw I/O streams
+├── Event Detector     - detect trigger events from streams
+├── LLM Dispatcher     - dispatch LLM requests, manage backends
+└── Query Handler      - handle active query requests from clients
 ```
 
 ### Session Manager
@@ -117,7 +117,7 @@ I/O streams written to filesystem:
 
 Lightweight parsing of I/O streams to identify:
 - Non-zero exit codes (detect `$?` in shell prompt)
-- stderr key patterns (`error`, `panic`, `traceback`, `fatal`, etc. — configurable)
+- stderr key patterns (`error`, `panic`, `traceback`, `fatal`, etc. - configurable)
 - Command boundaries (via prompt detection)
 - User-defined custom rules
 
@@ -147,8 +147,8 @@ struct LlmRequest {
 
 ### Backends
 
-- `AnthropicBackend` — Claude API
-- `OpenAiCompatBackend` — OpenAI-compatible API (covers OpenAI, DeepSeek, and other compatible services)
+- `AnthropicBackend` - Claude API
+- `OpenAiCompatBackend` - OpenAI-compatible API (covers OpenAI, DeepSeek, and other compatible services)
 
 ### Configuration
 
@@ -229,8 +229,8 @@ omnish/
 
 ### Key Dependencies
 
-- `nix` / `rustix` — PTY and signal handling
-- `tokio` — async runtime (daemon and client async I/O)
-- `serde` + `bincode` — protocol serialization
-- `reqwest` — HTTP LLM API calls
-- `toml` — config parsing
+- `nix` / `rustix` - PTY and signal handling
+- `tokio` - async runtime (daemon and client async I/O)
+- `serde` + `bincode` - protocol serialization
+- `reqwest` - HTTP LLM API calls
+- `toml` - config parsing

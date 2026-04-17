@@ -207,10 +207,10 @@ pub trait LlmBackend: Send + Sync {
 
 Note: `extra_messages` is a `Vec<serde_json::Value>` to carry the raw tool_use/tool_result message exchanges during the agent loop. This avoids encoding Anthropic-specific message formats into the trait.
 
-**Step 2: Verify build (will fail — callers need updating)**
+**Step 2: Verify build (will fail - callers need updating)**
 
 Run: `cargo build -p omnish-llm 2>&1 | head -30`
-Expected: compilation errors in `anthropic.rs` and `openai_compat.rs` — these will be fixed in the next tasks.
+Expected: compilation errors in `anthropic.rs` and `openai_compat.rs` - these will be fixed in the next tasks.
 
 ---
 
@@ -526,7 +526,7 @@ This doesn't change since `thinking` is still `Option<String>`.
 
 **Step 2: Update `crates/omnish-client/src/main.rs`**
 
-Search for any direct use of `LlmResponse` or `response.content`. The client doesn't use LlmResponse directly — it communicates via protocol messages. No changes expected here for this task.
+Search for any direct use of `LlmResponse` or `response.content`. The client doesn't use LlmResponse directly - it communicates via protocol messages. No changes expected here for this task.
 
 **Step 3: Verify full workspace build**
 
@@ -729,7 +729,7 @@ if let Some(tx) = map.get(&frame.request_id) {
 }
 ```
 
-The stream receiver is closed when the client drops the `mpsc::Receiver`. The server signals "end of stream" by sending the final `ChatResponse` — the client receives it and stops reading.
+The stream receiver is closed when the client drops the `mpsc::Receiver`. The server signals "end of stream" by sending the final `ChatResponse` - the client receives it and stops reading.
 
 **Step 3: Update `handle_message` in daemon to return `Vec<Message>`**
 
@@ -941,11 +941,11 @@ fn format_ago(now_ms: u64, started_at: u64) -> String {
 
 Note: this code uses `blocking_read()` on the `RwLock` because the `Tool::execute` trait method is synchronous. The commands lock is held briefly (just cloning/reading). If this becomes a bottleneck later, we can make `execute` async.
 
-The `strip_ansi_codes` function may need to be checked — it might be named differently in `omnish_context::format_utils`. Check with:
+The `strip_ansi_codes` function may need to be checked - it might be named differently in `omnish_context::format_utils`. Check with:
 
 Run: `grep -n 'pub fn strip_ansi\|pub fn strip' crates/omnish-context/src/format_utils.rs`
 
-Adjust the function name if different. Also check if `entry.direction == 1` matches the output direction — verify against `omnish_store::stream::StreamEntry`.
+Adjust the function name if different. Also check if `entry.direction == 1` matches the output direction - verify against `omnish_store::stream::StreamEntry`.
 
 **Step 3: Add `pub mod tools;` to `crates/omnish-daemon/src/lib.rs`**
 
@@ -1096,7 +1096,7 @@ Message::ChatMessage(cm) => {
                         continue;
                     }
 
-                    // EndTurn or MaxTokens — extract final text
+                    // EndTurn or MaxTokens - extract final text
                     let text = response.text();
                     tracing::info!(
                         "Chat LLM completed in {:?} ({} tool iterations, thread={})",

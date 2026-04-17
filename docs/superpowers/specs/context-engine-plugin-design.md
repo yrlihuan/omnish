@@ -84,13 +84,13 @@ type ContextEngineInfo = {
 // 注册
 registerContextEngine(id: string, factory: ContextEngineFactory): void
 
-// 解析 — 根据配置的 slot 值选取引擎
+// 解析 - 根据配置的 slot 值选取引擎
 resolveContextEngine(config?: OpenClawConfig): Promise<ContextEngine>
 ```
 
 **解析优先级：**
-1. `config.plugins.slots.contextEngine` — 用户显式指定
-2. `defaultSlotIdForKey("contextEngine")` — 回退默认值 `"legacy"`
+1. `config.plugins.slots.contextEngine` - 用户显式指定
+2. `defaultSlotIdForKey("contextEngine")` - 回退默认值 `"legacy"`
 
 ### 3. LegacyContextEngine (`src/context-engine/legacy.ts`)
 

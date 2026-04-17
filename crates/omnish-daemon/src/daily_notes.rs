@@ -166,7 +166,7 @@ async fn generate_daily_note(
         }
     };
 
-    // Write file — only the LLM summary, no raw commands/conversations
+    // Write file - only the LLM summary, no raw commands/conversations
     let md = format!("# {} {}\n\n{}\n", yesterday, daily_note_title(language), summary);
     std::fs::create_dir_all(notes_dir)?;
     let file_path = notes_dir.join(format!("{}.md", yesterday));

@@ -52,7 +52,7 @@ test_1() {
     if echo "$content" | grep -qE "ctrl\+o to (view|expand)"; then
         echo -e "  ${GREEN}ScrollView hint detected in initial response${NC}"
     else
-        echo -e "  ${YELLOW}Warning: ScrollView hint not found — response may be short enough to fit${NC}"
+        echo -e "  ${YELLOW}Warning: ScrollView hint not found - response may be short enough to fit${NC}"
     fi
 
     # Exit chat mode
@@ -103,7 +103,7 @@ test_2() {
     content=$(capture_pane -50)
     # Hint text may be "ctrl+o to view" or "ctrl+o to expand"
     if ! echo "$content" | grep -qE "ctrl\+o to (view|expand)"; then
-        echo -e "  ${YELLOW}ScrollView hint not found — skipping browse test${NC}"
+        echo -e "  ${YELLOW}ScrollView hint not found - skipping browse test${NC}"
         assert_pass "Skipped: content fits screen without ScrollView"
         return 0
     fi
@@ -118,7 +118,7 @@ test_2() {
     # or the full content displayed. The hint line should be gone.
     # Check for scrollbar track/thumb or expanded content
     if echo "$browse_content" | grep -qE '▐|│|User:'; then
-        echo -e "  ${GREEN}Browse mode entered — content/scrollbar visible${NC}"
+        echo -e "  ${GREEN}Browse mode entered - content/scrollbar visible${NC}"
     else
         echo -e "  ${YELLOW}Warning: Could not verify browse mode visually${NC}"
     fi
@@ -166,7 +166,7 @@ test_3() {
 
     # The response should contain "40" since we asked to print 1-40
     if echo "$response" | grep -q "40"; then
-        assert_pass "Chat works after browse — follow-up correctly references '40'"
+        assert_pass "Chat works after browse - follow-up correctly references '40'"
     else
         assert_pass "Chat input works after browse exit (response received)"
     fi

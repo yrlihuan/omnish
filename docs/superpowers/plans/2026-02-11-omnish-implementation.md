@@ -91,7 +91,7 @@ git commit -m "scaffold: initialize Cargo workspace with all crates"
 
 ---
 
-### Task 2: omnish-common — Config Types and Shared Utilities
+### Task 2: omnish-common - Config Types and Shared Utilities
 
 **Files:**
 - Create: `crates/omnish-common/src/config.rs`
@@ -158,7 +158,7 @@ api_key_cmd = "echo key"
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-common`
-Expected: FAIL — `config` module not found.
+Expected: FAIL - `config` module not found.
 
 **Step 3: Implement config types**
 
@@ -279,7 +279,7 @@ Expected: PASS
 
 ```toml
 # config/default.toml
-# Default omnish configuration — copy to ~/.config/omnish/config.toml
+# Default omnish configuration - copy to ~/.config/omnish/config.toml
 
 [shell]
 # command = "/bin/bash"    # defaults to $SHELL
@@ -317,7 +317,7 @@ git commit -m "feat(common): add config types and default configuration"
 
 ---
 
-### Task 3: omnish-protocol — Message Types and Serialization
+### Task 3: omnish-protocol - Message Types and Serialization
 
 **Files:**
 - Create: `crates/omnish-protocol/src/message.rs`
@@ -380,7 +380,7 @@ fn test_frame_magic_validation() {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-protocol`
-Expected: FAIL — module not found.
+Expected: FAIL - module not found.
 
 **Step 3: Implement message types**
 
@@ -523,7 +523,7 @@ git commit -m "feat(protocol): add message types and binary serialization"
 
 ---
 
-### Task 4: omnish-transport — Transport Trait and Unix Socket Implementation
+### Task 4: omnish-transport - Transport Trait and Unix Socket Implementation
 
 **Files:**
 - Create: `crates/omnish-transport/src/traits.rs`
@@ -579,7 +579,7 @@ async fn test_unix_send_recv() {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-transport`
-Expected: FAIL — module not found.
+Expected: FAIL - module not found.
 
 **Step 3: Implement transport trait and unix socket**
 
@@ -707,7 +707,7 @@ git commit -m "feat(transport): add Transport trait and Unix socket implementati
 
 ---
 
-### Task 5: omnish-pty — PTY Operations
+### Task 5: omnish-pty - PTY Operations
 
 **Files:**
 - Create: `crates/omnish-pty/src/proxy.rs`
@@ -746,7 +746,7 @@ fn test_pty_spawn_returns_child_pid() {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-pty`
-Expected: FAIL — module not found.
+Expected: FAIL - module not found.
 
 **Step 3: Implement PTY proxy**
 
@@ -915,7 +915,7 @@ git commit -m "feat(pty): add PTY proxy with forkpty, raw mode, and window resiz
 
 ---
 
-### Task 6: omnish-store — Session Stream Storage
+### Task 6: omnish-store - Session Stream Storage
 
 **Files:**
 - Create: `crates/omnish-store/src/session.rs`
@@ -972,7 +972,7 @@ fn test_stream_writer_and_reader() {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-store`
-Expected: FAIL — module not found.
+Expected: FAIL - module not found.
 
 **Step 3: Implement session metadata and stream storage**
 
@@ -1101,7 +1101,7 @@ git commit -m "feat(store): add session metadata and binary stream storage"
 
 ---
 
-### Task 7: omnish-llm — LLM Backend Trait and Remote Implementations
+### Task 7: omnish-llm - LLM Backend Trait and Remote Implementations
 
 **Files:**
 - Create: `crates/omnish-llm/src/backend.rs`
@@ -1402,7 +1402,7 @@ git commit -m "feat(llm): add LlmBackend trait with Anthropic and OpenAI-compat 
 
 ---
 
-### Task 8: omnish-daemon — Daemon Process
+### Task 8: omnish-daemon - Daemon Process
 
 **Files:**
 - Create: `crates/omnish-daemon/src/server.rs`
@@ -1738,7 +1738,7 @@ git commit -m "feat(daemon): add omnishd with session manager, event detector, a
 
 ---
 
-### Task 9: omnish-client — Client Binary with PTY Proxy and Daemon Connection
+### Task 9: omnish-client - Client Binary with PTY Proxy and Daemon Connection
 
 **Files:**
 - Create: `crates/omnish-client/src/commands.rs`
@@ -2071,7 +2071,7 @@ git commit -m "feat(client): add omnish client with PTY proxy loop and daemon co
 
 ---
 
-### Task 10: Integration — End-to-End Smoke Test
+### Task 10: Integration - End-to-End Smoke Test
 
 **Files:**
 - Create: `tests/integration_test.rs`

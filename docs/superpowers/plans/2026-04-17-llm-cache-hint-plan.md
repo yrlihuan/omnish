@@ -46,7 +46,7 @@ fn cache_hint_is_copy() {
 - [ ] **Step 2: Run test to verify it fails (compile error: type not found)**
 
 Run: `cargo test -p omnish-llm --test cache_hint_test`
-Expected: FAIL — `cannot find type 'CacheHint' in module 'omnish_llm::backend'`
+Expected: FAIL - `cannot find type 'CacheHint' in module 'omnish_llm::backend'`
 
 - [ ] **Step 3: Add CacheHint enum to backend.rs**
 
@@ -70,7 +70,7 @@ pub enum CacheHint {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p omnish-llm --test cache_hint_test`
-Expected: PASS — all three tests pass
+Expected: PASS - all three tests pass
 
 - [ ] **Step 5: Commit**
 
@@ -114,7 +114,7 @@ fn tagged_message_default_hint_is_none() {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-llm --test cache_hint_test`
-Expected: FAIL — `cannot find type 'CachedText'`, `cannot find type 'TaggedMessage'`
+Expected: FAIL - `cannot find type 'CachedText'`, `cannot find type 'TaggedMessage'`
 
 - [ ] **Step 3: Add wrapper structs to backend.rs**
 
@@ -140,7 +140,7 @@ pub struct TaggedMessage {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p omnish-llm --test cache_hint_test`
-Expected: PASS — five tests pass
+Expected: PASS - five tests pass
 
 - [ ] **Step 5: Commit**
 
@@ -197,7 +197,7 @@ fn tool_def_cache_serialized_roundtrip() {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-llm --test cache_hint_test`
-Expected: FAIL — `ToolDef` has no `cache` field; serde fails or struct construction errors.
+Expected: FAIL - `ToolDef` has no `cache` field; serde fails or struct construction errors.
 
 - [ ] **Step 3: Make `CacheHint` serializable & add field to `ToolDef`**
 
@@ -233,7 +233,7 @@ pub struct ToolDef {
 
 Sites to update (use grep `ToolDef\s*\{` if you need to verify):
 
-`crates/omnish-daemon/src/plugin.rs` — 3 sites (around lines 244, 339, 582). Each currently looks like:
+`crates/omnish-daemon/src/plugin.rs` - 3 sites (around lines 244, 339, 582). Each currently looks like:
 
 ```rust
 def: ToolDef {
@@ -254,14 +254,14 @@ def: ToolDef {
 },
 ```
 
-`crates/omnish-daemon/src/tools/command_query.rs` — 2 sites (around lines 285, 301). Add `cache: omnish_llm::backend::CacheHint::None,` to each.
+`crates/omnish-daemon/src/tools/command_query.rs` - 2 sites (around lines 285, 301). Add `cache: omnish_llm::backend::CacheHint::None,` to each.
 
-`crates/omnish-daemon/src/tool_registry.rs` — 3 sites in `#[cfg(test)]` block (around lines 334, 343, 369). Add `cache: omnish_llm::backend::CacheHint::None,` to each.
+`crates/omnish-daemon/src/tool_registry.rs` - 3 sites in `#[cfg(test)]` block (around lines 334, 343, 369). Add `cache: omnish_llm::backend::CacheHint::None,` to each.
 
 - [ ] **Step 5: Run tests to verify**
 
 Run: `cargo test -p omnish-llm --test cache_hint_test`
-Expected: PASS — both new tests pass.
+Expected: PASS - both new tests pass.
 
 Run: `cargo build --release -p omnish-daemon`
 Expected: builds clean (no field-missing errors).
@@ -331,11 +331,11 @@ Notes:
 - `extra_messages` type changes from `Vec<serde_json::Value>` to `Vec<TaggedMessage>`.
 - `system_prompt` type changes from `Option<String>` to `Option<CachedText>`.
 - Imports at top of file: `use crate::tool::{ToolCall, ToolDef};` is already present; no new imports needed (CachedText/TaggedMessage are defined in the same file).
-- The `use omnish_protocol::message::ChatTurn;` import (if any in this file) becomes unused — remove it.
+- The `use omnish_protocol::message::ChatTurn;` import (if any in this file) becomes unused - remove it.
 
 - [ ] **Step 2: Update `crates/omnish-llm/src/anthropic.rs` for the new types**
 
-Replace the message-building block (lines ~60–95) to drop the `conversation` branch and read from the new `TaggedMessage` shape. The hardcoded "second-to-last cache_control" stays for now — we replace it in Task 7.
+Replace the message-building block (lines ~60–95) to drop the `conversation` branch and read from the new `TaggedMessage` shape. The hardcoded "second-to-last cache_control" stays for now - we replace it in Task 7.
 
 Replace this block:
 
@@ -530,7 +530,7 @@ fn test_llm_request_build() {
 
 - [ ] **Step 5: Update non-chat call sites (5 files)**
 
-For each of the following sites, change `system_prompt` from `Some(String)` / `None` to `Some(CachedText { text: ..., cache: CacheHint::None })` / `None`, and change `extra_messages: vec![]` (already empty Vec) — type now infers as `Vec<TaggedMessage>`. Remove `conversation: vec![],`.
+For each of the following sites, change `system_prompt` from `Some(String)` / `None` to `Some(CachedText { text: ..., cache: CacheHint::None })` / `None`, and change `extra_messages: vec![]` (already empty Vec) - type now infers as `Vec<TaggedMessage>`. Remove `conversation: vec![],`.
 
 Add `use omnish_llm::backend::{CacheHint, CachedText, TaggedMessage};` at the top of each file if needed.
 
@@ -571,7 +571,7 @@ let req = omnish_llm::backend::LlmRequest {
 
 (Just removes the `conversation: vec![],` line. `vec![]` for `extra_messages` infers correctly to `Vec<TaggedMessage>`.)
 
-**`crates/omnish-daemon/src/hourly_summary.rs` line ~191:** Same treatment — drop `conversation: vec![],`. The `system_prompt: None` line stays as-is.
+**`crates/omnish-daemon/src/hourly_summary.rs` line ~191:** Same treatment - drop `conversation: vec![],`. The `system_prompt: None` line stays as-is.
 
 **`crates/omnish-daemon/src/daily_notes.rs` line ~137:** Same.
 
@@ -668,7 +668,7 @@ let llm_req = LlmRequest {
 
 (Note: cache hints stay `None` here. Task 7 will flip these to `Long`. The behavior preservation comes from anthropic.rs still injecting cache_control unconditionally for now.)
 
-At line ~2802 (the other chat code path — find by searching for `LlmRequest` near `enable_thinking: Some(true), // Enable thinking mode for chat` and `tools: vec![]`):
+At line ~2802 (the other chat code path - find by searching for `LlmRequest` near `enable_thinking: Some(true), // Enable thinking mode for chat` and `tools: vec![]`):
 
 ```rust
 let llm_req = LlmRequest {
@@ -794,7 +794,7 @@ Sites (use grep `state\.llm_req\.extra_messages\.push` to confirm):
 - Line ~1862 (more results)
 
 Also update read-side:
-- Line ~1440: `state.llm_req.extra_messages.last().is_some_and(|msg| { ... msg.get("role") ... })` — `msg` is now `&TaggedMessage`, so change to `msg.content.get("role")`. The closure body that iterates `blocks.iter().any(|b| b.get(...))` reads from `msg.get("content")` — change to `msg.content.get("content")`. (Note the `msg` here is the TaggedMessage; `.content` is the JSON field; the inner `content` field of the JSON object is a separate thing.)
+- Line ~1440: `state.llm_req.extra_messages.last().is_some_and(|msg| { ... msg.get("role") ... })` - `msg` is now `&TaggedMessage`, so change to `msg.content.get("role")`. The closure body that iterates `blocks.iter().any(|b| b.get(...))` reads from `msg.get("content")` - change to `msg.content.get("content")`. (Note the `msg` here is the TaggedMessage; `.content` is the JSON field; the inner `content` field of the JSON object is a separate thing.)
 
 Specifically replace:
 
@@ -1048,7 +1048,7 @@ fn anthropic_budget_keeps_last_n_message_marks() {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-llm --test cache_hint_test`
-Expected: FAIL — `build_request_body_for_test` not found in `omnish_llm::anthropic`.
+Expected: FAIL - `build_request_body_for_test` not found in `omnish_llm::anthropic`.
 
 - [ ] **Step 3: Refactor anthropic.rs to expose a pure body-builder + implement hint translation**
 
@@ -1231,10 +1231,10 @@ Keep the rest of `complete()` (the retry loop, response parsing) unchanged.
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p omnish-llm --test cache_hint_test`
-Expected: PASS — all translation tests pass.
+Expected: PASS - all translation tests pass.
 
 Run: `cargo test -p omnish-llm`
-Expected: PASS — full crate tests still green.
+Expected: PASS - full crate tests still green.
 
 - [ ] **Step 5: Build daemon to confirm no consumer broke**
 
@@ -1340,7 +1340,7 @@ Create `crates/omnish-daemon/tests/chat_cache_hints_test.rs`:
 ```rust
 //! Verifies the chat agent loop marks last-2 messages with Long.
 //!
-//! Mirrors the helper's logic — if you change `mark_chat_message_hints`,
+//! Mirrors the helper's logic - if you change `mark_chat_message_hints`,
 //! update this test (it's intentionally redundant for safety).
 
 use omnish_llm::backend::{CacheHint, TaggedMessage};
@@ -1400,7 +1400,7 @@ fn resets_old_marks_before_setting_new() {
 ```
 
 Run: `cargo test -p omnish-daemon --test chat_cache_hints_test`
-Expected: PASS — all 4 tests.
+Expected: PASS - all 4 tests.
 
 - [ ] **Step 6: Commit**
 
@@ -1504,14 +1504,14 @@ If `test_basic.sh` requires a running daemon, ask the user to run `omnish-daemon
 
 - [ ] **Step 4: Verify wire output by hand on a chat session**
 
-This is a manual smoke check (no auto-test) — set `RUST_LOG=omnish_llm::message_log=info` or similar to capture the request body, run a chat turn, and confirm the JSON shows:
+This is a manual smoke check (no auto-test) - set `RUST_LOG=omnish_llm::message_log=info` or similar to capture the request body, run a chat turn, and confirm the JSON shows:
 - `system[0].cache_control = {"type":"ephemeral","ttl":"1h"}`
 - last 2 messages have `cache_control` on their final block
 - No `cache_control` on any tool entry
 
 If verifying against the message_log JSONL files (`omnish_dir() / "logs"` per project docs), grep for `"cache_control"` in the latest file.
 
-- [ ] **Step 5: Optional — close issue with commit reference**
+- [ ] **Step 5: Optional - close issue with commit reference**
 
 Per CLAUDE.md: "when closing issue, push (to get correct commit id) and append commits info."
 

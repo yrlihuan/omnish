@@ -5,10 +5,10 @@ A terminal widget for navigating hierarchical option menus with mixed item types
 ## Interaction Model
 
 **Navigation:**
-- `↑↓` — move cursor
-- `Enter` — enter submenu / confirm selection / submit text edit / toggle bool
-- `ESC` — back to parent level (exit at top level)
-- `Ctrl-C` — quit entire widget immediately, discard changes
+- `↑↓` - move cursor
+- `Enter` - enter submenu / confirm selection / submit text edit / toggle bool
+- `ESC` - back to parent level (exit at top level)
+- `Ctrl-C` - quit entire widget immediately, discard changes
 
 **Hint line:** `↑↓ move  Enter select  ESC back  ^C quit`
 
@@ -66,7 +66,7 @@ Right-aligned `ON`/`OFF`. `ON` in green, `OFF` in dim.
 
 ### 4. TextInput
 
-Free-form string/number. Enter activates inline editing on the same line — current value becomes editable with a cursor. Enter confirms, ESC cancels edit (restores previous value).
+Free-form string/number. Enter activates inline editing on the same line - current value becomes editable with a cursor. Enter confirms, ESC cancels edit (restores previous value).
 
 ```
   Proxy URL         http://proxy:8080
@@ -121,7 +121,7 @@ pub struct MenuChange {
 }
 ```
 
-The caller builds the menu tree, passes it to the widget, and receives back a list of changes. The widget does not know about config files — it is a pure UI component.
+The caller builds the menu tree, passes it to the widget, and receives back a list of changes. The widget does not know about config files - it is a pure UI component.
 
 ## State Machine
 
@@ -161,12 +161,12 @@ pub fn run_menu(title: &str, items: &mut [MenuItem]) -> MenuResult
 ```
 
 **Internal structure:**
-- Navigation stack: `Vec<(usize, usize)>` — each entry is `(item_index_in_parent, cursor_position)` so returning to a parent restores cursor position
+- Navigation stack: `Vec<(usize, usize)>` - each entry is `(item_index_in_parent, cursor_position)` so returning to a parent restores cursor position
 - Rendering: reuse `render_separator()` and viewport scrolling logic from `picker.rs`
 - Text editing: minimal line editor (insert char, backspace, left/right arrows, home/end)
 - Changes tracking: `Vec<MenuChange>` accumulated during the session
 
-**Viewport scrolling:** same as picker — MAX_VISIBLE items, scroll offset adjusts when cursor moves beyond viewport bounds.
+**Viewport scrolling:** same as picker - MAX_VISIBLE items, scroll offset adjusts when cursor moves beyond viewport bounds.
 
 ## File Changes
 

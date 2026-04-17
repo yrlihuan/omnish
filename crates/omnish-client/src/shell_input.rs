@@ -30,7 +30,7 @@ pub struct ShellInputTracker {
     cursor_at_end: bool,
     /// Whether the user is in Ctrl+R isearch mode. Set on Ctrl+R detection,
     /// cleared on next prompt (on_prompt). Unlike pending_rl_report, this does
-    /// NOT auto-clear after timeout — isearch can last indefinitely.
+    /// NOT auto-clear after timeout - isearch can last indefinitely.
     in_isearch: bool,
 }
 
@@ -365,7 +365,7 @@ mod tests {
     #[test]
     fn test_esc_sequence_skipped() {
         let mut t = ShellInputTracker::new();
-        // Arrow up sends ESC [ A — should not appear in input
+        // Arrow up sends ESC [ A - should not appear in input
         t.feed_forwarded(b"\x1b[A");
         assert_eq!(t.input(), "", "ESC sequence should be skipped");
     }
@@ -484,7 +484,7 @@ mod tests {
     fn test_set_readline_ignored_when_not_at_prompt() {
         let mut t = ShellInputTracker::new();
         t.feed_forwarded(b"ls");
-        t.feed_forwarded(&[0x0d]); // Enter — not at prompt
+        t.feed_forwarded(&[0x0d]); // Enter - not at prompt
         assert!(!t.at_prompt());
         t.set_readline("should be ignored", None);
         assert_eq!(t.input(), "");

@@ -164,8 +164,8 @@ pub struct Frame {
 **用途:** 发送不需要响应的消息（如 CompletionSummary、SessionEnd 等），避免阻塞调用者的事件循环。与 `call()` 的区别在于不注册 reply 通道，消息发送后立即返回，不等待服务器响应。
 
 **使用场景：**
-- `SessionEnd` — 会话结束通知
-- `CompletionSummary` — 补全采样数据上报
+- `SessionEnd` - 会话结束通知
+- `CompletionSummary` - 补全采样数据上报
 - `send_or_buffer()` 中的非关键消息
 - 任何只需单向通知、不需要响应的消息
 
@@ -391,7 +391,7 @@ let addr4 = parse_addr("./local.sock");          // 相对路径Unix socket
 2. **任务生成**: 为每个连接生成独立的异步任务
 3. **消息处理**: 读取消息帧，创建内部 `mpsc` 通道，将 `tx` 传给处理器，处理器通过 `tx` 异步发送消息
 4. **并发支持**: 每个连接独立处理，互不干扰；每个请求另起独立任务运行处理器，网络写入循环与处理器并发执行
-5. **流式写入**: 服务器不等待处理器完成，而是边接收边写入——处理器通过 `tx` 发出的消息立即转发给客户端
+5. **流式写入**: 服务器不等待处理器完成，而是边接收边写入--处理器通过 `tx` 发出的消息立即转发给客户端
 6. **流结束标记**: 处理器完成后（`tx` drop），统计已发送消息数，若 `count > 1` 则追加 `Message::Ack` 作为流结束标记
 7. **EMFILE处理**: 当`accept()`返回EMFILE（errno 24）或ENFILE（errno 23）错误时，调用`dump_fd_stats()`输出fd诊断信息后返回错误，而非静默崩溃
 
@@ -506,7 +506,7 @@ omnish-transport在认证握手阶段进行协议版本兼容性检查，使用 
 8. 连接失败（daemon可能未运行）：重置永久失败计数器，继续重试
 
 **`PermanentFailure`错误类型:**
-`on_reconnect`回调可以返回`PermanentFailure`错误来表示不可恢复的失败（如认证被拒绝、协议版本不匹配）。这与普通错误（如网络超时、SessionStart失败）不同——普通错误会无限重试，而永久失败会累计计数。
+`on_reconnect`回调可以返回`PermanentFailure`错误来表示不可恢复的失败（如认证被拒绝、协议版本不匹配）。这与普通错误（如网络超时、SessionStart失败）不同--普通错误会无限重试，而永久失败会累计计数。
 
 **连接层面 vs 回调层面的区分:**
 - 连接失败（`connector()` 返回错误）表示daemon可能未运行，重置永久失败计数器

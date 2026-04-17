@@ -92,7 +92,7 @@ pub fn compile_config(config: &SandboxConfig) -> HashMap<String, Vec<PermitRule>
                 Ok(rule) => rules.push(rule),
                 Err(e) => {
                     tracing::error!(
-                        "sandbox permit rule for '{}' is invalid: '{}' — {}",
+                        "sandbox permit rule for '{}' is invalid: '{}' - {}",
                         tool_name, rule_str, e
                     );
                 }

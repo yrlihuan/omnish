@@ -23,7 +23,7 @@ impl ExternalFormatter {
         let (tx, mut rx) =
             mpsc::channel::<(serde_json::Value, oneshot::Sender<ExternalResponse>)>(32);
 
-        // Retry on ETXTBSY — transient race between file close and execve
+        // Retry on ETXTBSY - transient race between file close and execve
         // that can occur when the binary was just written (e.g. in tests).
         let mut child = {
             let mut attempts = 0;

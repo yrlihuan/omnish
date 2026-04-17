@@ -4,13 +4,13 @@
 #                 resume, thread deletion, and context inspection.
 #
 # Test cases:
-#   1. /debug client — verify client debug info is shown
-#   2. /debug session — verify session debug info is shown
-#   3. /context | tail -n 10 — verify context output with pipe
+#   1. /debug client - verify client debug info is shown
+#   2. /debug session - verify session debug info is shown
+#   3. /context | tail -n 10 - verify context output with pipe
 #   4. Two conversations with 2 Q&A each, /resume first, /thread del, /thread list verify
-#   5. Arrow Up/Down history navigation — echo 1, echo 2, Up recalls echo 2, Down clears
-#   6. Chat cursor position — cursor at column 2 after "> " when entering chat mode
-#   7. Typing in chat after output — no ghost lines from cursor mispositioning (#278)
+#   5. Arrow Up/Down history navigation - echo 1, echo 2, Up recalls echo 2, Down clears
+#   6. Chat cursor position - cursor at column 2 after "> " when entering chat mode
+#   7. Typing in chat after output - no ghost lines from cursor mispositioning (#278)
 #   8. Shell prompt preserved when entering chat mode (#279)
 #   9. ESC dismisses ghost completion (#259)
 #  10. Ghost text completion via omnish_debug (#328)
@@ -30,7 +30,7 @@ Test cases:
   4. Two conversations (2 Q&A each), resume first, delete second, verify /thread list
   5. Arrow Up/Down history navigation
   6. Chat cursor at column 2 after "> "
-  7. Typing in chat after output — no ghost lines (#278)
+  7. Typing in chat after output - no ghost lines (#278)
   8. Shell prompt preserved when entering chat (#279)
   9. ESC dismisses ghost completion (#259)
  10. Ghost text completion via omnish_debug (#328)
@@ -211,7 +211,7 @@ test_4() {
         return 1
     fi
 
-    # ── List threads — expect at least 2 ──
+    # ── List threads - expect at least 2 ──
     echo -e "  ${YELLOW}--- /thread list ---${NC}"
     send_keys "/thread list" 0.3
     send_enter 1
@@ -262,7 +262,7 @@ test_4() {
         echo -e "  ${YELLOW}Warning: no delete confirmation seen${NC}"
     fi
 
-    # ── /thread list again — verify count decreased ──
+    # ── /thread list again - verify count decreased ──
     echo -e "  ${YELLOW}--- /thread list (after delete) ---${NC}"
     send_keys "/thread list" 0.3
     send_enter 1
@@ -297,7 +297,7 @@ test_5() {
     send_keys "echo 2" 0.3
     send_enter 1
 
-    # Press Arrow Up — should recall "echo 2"
+    # Press Arrow Up - should recall "echo 2"
     send_special Up 0.5
 
     local content=$(capture_pane -10)
@@ -312,7 +312,7 @@ test_5() {
         return 1
     fi
 
-    # Press Arrow Down — should return to empty prompt
+    # Press Arrow Down - should return to empty prompt
     send_special Down 0.5
 
     content=$(capture_pane -10)
@@ -504,7 +504,7 @@ test_10() {
     restart_client
     wait_for_client
 
-    # Type "omnish_debug" — daemon returns canned suggestions
+    # Type "omnish_debug" - daemon returns canned suggestions
     send_keys "omnish_debug" 0.3
 
     # Poll for ghost text to appear (debounce ~500ms + round trip)
@@ -592,7 +592,7 @@ TOML
     _tmux new -d -s "$SESSION" -n test "OMNISH_CLIENT_CONFIG=$dev_config $CLIENT"
     wait_for_client
 
-    # Type "echo " then ":" — should NOT trigger chat mode
+    # Type "echo " then ":" - should NOT trigger chat mode
     send_keys "echo " 0.3
     send_keys ":" 0.5
 
@@ -620,7 +620,7 @@ TOML
         return 1
     fi
 
-    # Clear line and type ":" alone — SHOULD trigger chat mode
+    # Clear line and type ":" alone - SHOULD trigger chat mode
     send_special C-c 0.5
     enter_chat
 
@@ -655,7 +655,7 @@ test_12() {
     # Wait for completion request to be sent (debounce ~500ms)
     sleep 1
 
-    # Execute the command — it will fail (not a real command), but that's fine.
+    # Execute the command - it will fail (not a real command), but that's fine.
     # This sets at_prompt=false, then a new prompt appears.
     send_enter 0.5
 
@@ -679,7 +679,7 @@ test_12() {
 
     # The last line should be a clean shell prompt, NOT containing ghost text
     if echo "$stripped" | grep -q 'omnish_debug delay 3000 yes'; then
-        # Stale ghost text appeared — bug not fixed
+        # Stale ghost text appeared - bug not fixed
         assert_fail "Stale ghost text rendered on empty prompt after command execution"
         send_special C-c 0.5
         return 1
@@ -723,7 +723,7 @@ _test_arrow_clears_ghost() {
     local key="$1"
     local label="$2"
 
-    # Type "omnish_debug" — daemon returns canned ghost text " yes"
+    # Type "omnish_debug" - daemon returns canned ghost text " yes"
     send_keys "omnish_debug" 0.3
 
     # Poll for ghost text to appear (debounce ~500ms + round trip)
@@ -751,7 +751,7 @@ _test_arrow_clears_ghost() {
 
     show_capture "Ghost visible (${label})" "$content" 3
 
-    # Press the arrow key — should clear ghost text
+    # Press the arrow key - should clear ghost text
     send_special "$key" 0.5
     sleep 0.5
 
@@ -762,11 +762,11 @@ _test_arrow_clears_ghost() {
     last=$(last_nonempty_line "$content")
     stripped=$(echo "$last" | sed 's/\x1b\[[0-9;]*m//g')
 
-    # Ghost text " yes" should be gone — no "yes" remnant on the prompt line.
+    # Ghost text " yes" should be gone - no "yes" remnant on the prompt line.
     # The bug manifests as display corruption: e.g. "omnish_debu yess" instead
     # of clean "omnish_debug" with cursor moved left.
     if echo "$stripped" | grep -q 'yes'; then
-        assert_fail "Ghost text remnant visible after ${label} — display corruption (#518), got: $stripped"
+        assert_fail "Ghost text remnant visible after ${label} - display corruption (#518), got: $stripped"
         send_special C-c 0.5
         return 1
     fi

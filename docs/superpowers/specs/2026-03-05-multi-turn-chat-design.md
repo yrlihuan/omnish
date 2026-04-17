@@ -145,13 +145,13 @@ Special input in chat loop:
 
 **Goal:** Add persistent multi-turn chat mode with cross-session conversation threads.
 
-**Architecture:** Hybrid approach — client owns input loop and display, daemon owns thread storage and LLM calls. New `ConversationManager` in daemon handles thread CRUD. Four new protocol message types connect them.
+**Architecture:** Hybrid approach - client owns input loop and display, daemon owns thread storage and LLM calls. New `ConversationManager` in daemon handles thread CRUD. Four new protocol message types connect them.
 
 **Tech Stack:** Rust, serde/serde_json (JSONL storage), uuid (thread IDs), omnish-protocol (bincode framing)
 
 ---
 
-### Task 1: Protocol — Add ChatTurn and new message types
+### Task 1: Protocol - Add ChatTurn and new message types
 
 **Files:**
 - Modify: `crates/omnish-protocol/src/message.rs:8-24`
@@ -239,7 +239,7 @@ feat(protocol): add ChatStart/ChatReady/ChatMessage/ChatResponse message types (
 
 ---
 
-### Task 2: LLM — Add conversation field to LlmRequest
+### Task 2: LLM - Add conversation field to LlmRequest
 
 **Files:**
 - Modify: `crates/omnish-llm/src/backend.rs:22-32`
@@ -281,7 +281,7 @@ feat(llm): add conversation field to LlmRequest for multi-turn chat (issue #110)
 
 ---
 
-### Task 3: LLM backends — Build multi-turn message arrays
+### Task 3: LLM backends - Build multi-turn message arrays
 
 **Files:**
 - Modify: `crates/omnish-llm/src/anthropic.rs:18-33`
@@ -343,7 +343,7 @@ feat(llm): support multi-turn conversation in Anthropic and OpenAI backends (iss
 
 ---
 
-### Task 4: ConversationManager — Thread storage and retrieval
+### Task 4: ConversationManager - Thread storage and retrieval
 
 **Files:**
 - Create: `crates/omnish-daemon/src/conversation_mgr.rs`
@@ -492,7 +492,7 @@ pub mod conversation_mgr;
 
 **Step 3: Add uuid and chrono deps if not already present**
 
-Check `crates/omnish-daemon/Cargo.toml` — add `uuid = { version = "1", features = ["v4"] }` and `chrono = { version = "0.4", features = ["serde"] }` if missing.
+Check `crates/omnish-daemon/Cargo.toml` - add `uuid = { version = "1", features = ["v4"] }` and `chrono = { version = "0.4", features = ["serde"] }` if missing.
 
 **Step 4: Run tests**
 
@@ -507,7 +507,7 @@ feat(daemon): add ConversationManager for thread storage (issue #110)
 
 ---
 
-### Task 5: Daemon server — Handle ChatStart and ChatMessage
+### Task 5: Daemon server - Handle ChatStart and ChatMessage
 
 **Files:**
 - Modify: `crates/omnish-daemon/src/server.rs:11-24` (DaemonServer struct)
@@ -634,7 +634,7 @@ feat(daemon): handle ChatStart/ChatMessage with ConversationManager (issue #110)
 
 ---
 
-### Task 6: Client — Chat mode loop
+### Task 6: Client - Chat mode loop
 
 **Files:**
 - Modify: `crates/omnish-client/src/main.rs:455-491` (InterceptAction::Chat handler)
@@ -689,7 +689,7 @@ The input collection in the chat loop reads raw bytes from stdin fd (already in 
 
 **Step 3: Add /new to command dispatch**
 
-In `command.rs`, the `/new` command is handled inside the chat loop, not through `dispatch()`. No changes needed to command.rs — `/new` is checked directly in the chat loop before calling dispatch.
+In `command.rs`, the `/new` command is handled inside the chat loop, not through `dispatch()`. No changes needed to command.rs - `/new` is checked directly in the chat loop before calling dispatch.
 
 **Step 4: Build and manually test**
 
@@ -706,7 +706,7 @@ feat(client): implement multi-turn chat mode loop (issue #110)
 
 ---
 
-### Task 7: Integration — First user message includes terminal context
+### Task 7: Integration - First user message includes terminal context
 
 **Files:**
 - Modify: `crates/omnish-llm/src/anthropic.rs`

@@ -281,7 +281,7 @@ async fn test_multi_command_session_e2e() {
     assert_eq!(commands[1].command_line.as_deref(), Some("cargo build"));
     assert!(commands[1].output_summary.contains("Compiling"));
 
-    // End session — should persist
+    // End session - should persist
     mgr.end_session("e2e").await.unwrap();
 }
 

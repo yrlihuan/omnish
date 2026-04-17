@@ -9,7 +9,7 @@ snap-confine is packaged without necessary permissions and cannot continue
 required permitted capability cap_dac_override not found in current capabilities
 ```
 
-This is a kernel-level constraint — Landlock and setuid are fundamentally incompatible.
+This is a kernel-level constraint - Landlock and setuid are fundamentally incompatible.
 
 ## Solution
 
@@ -52,7 +52,7 @@ permit_rules = [
 
 ### Evaluation Rules
 
-- Multiple `permit_rules` use **OR** logic — any match → bypass sandbox
+- Multiple `permit_rules` use **OR** logic - any match → bypass sandbox
 - All matching is **case-sensitive**
 - If the referenced param field does not exist in the tool input, the rule evaluates to **false**
 - Regex patterns use the `regex` crate syntax (linear-time matching, no catastrophic backtracking)
@@ -200,8 +200,8 @@ Unit tests in `sandbox_rules.rs`:
 ## Security Notes
 
 - Default is sandboxed; bypass requires explicit daemon.toml config
-- LLM cannot modify daemon.toml — config is controlled by the system operator
-- `contains` rule like `command contains glab` would match `echo glab` — this is acceptable as the user explicitly configured the rule
+- LLM cannot modify daemon.toml - config is controlled by the system operator
+- `contains` rule like `command contains glab` would match `echo glab` - this is acceptable as the user explicitly configured the rule
 - The `regex` crate guarantees linear-time matching, preventing regex DoS
 
 ## Not In Scope

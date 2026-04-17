@@ -1,4 +1,4 @@
-# `/thread sandbox on|off` — Per-Thread Sandbox Toggle
+# `/thread sandbox on|off` - Per-Thread Sandbox Toggle
 
 - Issue: #535
 - Date: 2026-04-15
@@ -27,9 +27,9 @@ Non-goals:
 ## Command Surface
 
 ```
-/thread sandbox          — print current state for active thread
-/thread sandbox on       — enable sandbox (default; clears override)
-/thread sandbox off      — disable sandbox for the current thread
+/thread sandbox          - print current state for active thread
+/thread sandbox on       - enable sandbox (default; clears override)
+/thread sandbox off      - disable sandbox for the current thread
 ```
 
 - If no thread exists yet, `on`/`off` are buffered client-side and applied as
@@ -75,7 +75,7 @@ Bump `PROTOCOL_VERSION` from v17 to v18; `MIN_COMPATIBLE_VERSION` stays v14
 
 ## Daemon Wiring
 
-**Sandbox decision** — `server.rs` around line 1678, in the
+**Sandbox decision** - `server.rs` around line 1678, in the
 `ChatToolCall`-dispatch branch:
 
 ```rust
@@ -91,12 +91,12 @@ sandboxed: matched_rule.is_none() && !thread_sandbox_off,
 The meta lookup is hot-path; cache once per agent-loop iteration (alongside
 `state.cm` usage) rather than per tool call.
 
-**RPC dispatcher** — add three handlers alongside `__cmd:thread del` and
+**RPC dispatcher** - add three handlers alongside `__cmd:thread del` and
 `__cmd:thread stats`. `on`/`off` update `ThreadMeta` via
 `ConversationManager::update_meta`, persist to `<thread>.meta.json`, and return
 a confirmation string. Missing tid → `Response` with `error`.
 
-**`/thread stats`** — existing stats handler prints an extra line
+**`/thread stats`** - existing stats handler prints an extra line
 `sandbox: off` when `sandbox_disabled == Some(true)`.
 
 ## Client Wiring
@@ -123,7 +123,7 @@ Logic:
     "will apply when a thread is created".
   - `""` → print the pending state, or "no active thread".
 
-**Pending application** — in the path that handles `ChatReady` for a freshly
+**Pending application** - in the path that handles `ChatReady` for a freshly
 created thread (new_thread=true), immediately after recording `thread_id` and
 before sending the first `ChatMessage`:
 
@@ -138,7 +138,7 @@ if let Some(off) = self.pending_sandbox_off.take() {
 Holding the first `ChatMessage` until this RPC completes ensures no tool call
 escapes the override.
 
-**Resume warning** — in the resume path, after `ChatReady` arrives for an
+**Resume warning** - in the resume path, after `ChatReady` arrives for an
 existing thread, if `reply.sandbox_disabled == Some(true)` print a yellow
 warning line (reuse existing `YELLOW` style) before handing control to the
 chat loop.

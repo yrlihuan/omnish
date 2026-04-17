@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
-/// Protocol version — increment on any wire format change.
+/// Protocol version - increment on any wire format change.
 pub const PROTOCOL_VERSION: u32 = 18;
 
 /// Minimum protocol version this build can interoperate with.
@@ -33,7 +33,7 @@ pub enum ConfigItemKind {
     TextInput { value: String },
     /// Non-interactive label for displaying descriptions or section notes.
     Label,
-    /// Non-interactive data carrier — invisible in menus, used to pass
+    /// Non-interactive data carrier - invisible in menus, used to pass
     /// structured data (e.g. JSON) between daemon and client.
     Data { value: String },
 }
@@ -44,7 +44,7 @@ pub struct ConfigChange {
     pub value: String,
 }
 
-/// Metadata about handler submenus — sent alongside items so the client
+/// Metadata about handler submenus - sent alongside items so the client
 /// knows which submenus trigger handler callbacks and what label to use.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigHandlerInfo {
@@ -817,7 +817,7 @@ mod tests {
             Message::TestDisconnect { delay_secs: 5 },
         ];
 
-        // Exhaustive match — no wildcard. Compiler will error if a variant is missing.
+        // Exhaustive match - no wildcard. Compiler will error if a variant is missing.
         for v in &variants {
             match v {
                 Message::SessionStart(_)
@@ -865,7 +865,7 @@ mod tests {
     }
 
     /// Bincode serializes enums as a u32 variant index. New variants MUST be
-    /// appended at the end of the enum — inserting in the middle shifts indices
+    /// appended at the end of the enum - inserting in the middle shifts indices
     /// and breaks old clients that haven't upgraded yet.
     ///
     /// This test pins the variant indices of critical message types so that
@@ -877,17 +877,17 @@ mod tests {
             u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
         }
 
-        // Auth / AuthResult — must be stable for handshake to work across versions
+        // Auth / AuthResult - must be stable for handshake to work across versions
         assert_eq!(variant_index(&Message::Auth(Auth { token: String::new(), protocol_version: 0 })), 21, "Auth index shifted");
         assert_eq!(variant_index(&Message::AuthResult(AuthResult { ok: true, protocol_version: 0, daemon_version: String::new() })), 22, "AuthResult index shifted");
 
-        // Update messages — old clients rely on these indices for self-update
+        // Update messages - old clients rely on these indices for self-update
         assert_eq!(variant_index(&Message::UpdateCheck { os: String::new(), arch: String::new(), current_version: String::new(), hostname: String::new() }), 27, "UpdateCheck index shifted");
         assert_eq!(variant_index(&Message::UpdateInfo { latest_version: String::new(), checksum: String::new(), available: false }), 28, "UpdateInfo index shifted");
         assert_eq!(variant_index(&Message::UpdateRequest { os: String::new(), arch: String::new(), version: String::new(), hostname: String::new() }), 29, "UpdateRequest index shifted");
         assert_eq!(variant_index(&Message::UpdateChunk { seq: 0, total_size: 0, checksum: String::new(), data: vec![], done: false, error: None }), 30, "UpdateChunk index shifted");
 
-        // New variants must go at the end — ConfigClient was the first such addition
+        // New variants must go at the end - ConfigClient was the first such addition
         assert_eq!(variant_index(&Message::ConfigClient { changes: vec![] }), 31, "ConfigClient index shifted");
     }
 

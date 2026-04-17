@@ -107,7 +107,7 @@ Methods:
 - `tool_sandboxed(tool_name)`: return `sandboxed` flag
 
 No more `ExternalPlugin` struct. No more live process management.
-No `call_tool()` on PluginManager — all plugin tool execution goes through
+No `call_tool()` on PluginManager - all plugin tool execution goes through
 the client (client_tool) or short-lived process spawning at the call site.
 
 `command_query` remains a daemon-side per-request tool (needs live session data),
@@ -143,7 +143,7 @@ pub struct ChatToolCall {
 
 No more process caching (`HashMap<String, PluginProcess>`).
 
-CWD injection: same as current — if `cwd` is available from the shell,
+CWD injection: same as current - if `cwd` is available from the shell,
 inject it into the tool input before writing to stdin.
 
 ### omnish-plugin Binary

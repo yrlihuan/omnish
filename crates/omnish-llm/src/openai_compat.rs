@@ -222,7 +222,7 @@ impl LlmBackend for OpenAiCompatBackend {
                     let backoff = DEFAULT_BACKOFF * 2u32.pow(attempt);
                     let backoff = backoff.min(MAX_BACKOFF);
                     tracing::warn!(
-                        "OpenAI API connection error (attempt {}/{}): {} — retrying in {:.1}s",
+                        "OpenAI API connection error (attempt {}/{}): {} - retrying in {:.1}s",
                         attempt + 1, MAX_RETRIES + 1, e, backoff.as_secs_f64()
                     );
                     last_error = Some(anyhow::anyhow!("OpenAI API connection error: {}", e));
@@ -249,7 +249,7 @@ impl LlmBackend for OpenAiCompatBackend {
                     .as_str()
                     .unwrap_or("rate limited");
                 tracing::warn!(
-                    "OpenAI API 429 (attempt {}/{}): {} — retrying in {:.1}s",
+                    "OpenAI API 429 (attempt {}/{}): {} - retrying in {:.1}s",
                     attempt + 1, MAX_RETRIES + 1, error_msg, backoff.as_secs_f64()
                 );
                 last_error = Some(anyhow::anyhow!(
@@ -273,7 +273,7 @@ impl LlmBackend for OpenAiCompatBackend {
                         resp_text.clone()
                     };
                     anyhow::anyhow!(
-                        "OpenAI API response decode error ({}): {} — body: {}",
+                        "OpenAI API response decode error ({}): {} - body: {}",
                         status, e, preview
                     )
                 })?;

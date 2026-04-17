@@ -1,6 +1,6 @@
 # Daemon Scheduled Task Refactor Design
 
-**Issue:** #32 — Refactor daemon scheduled tasks, standardize task interface to support multiple task types
+**Issue:** #32 - Refactor daemon scheduled tasks, standardize task interface to support multiple task types
 
 ## Overview
 
@@ -10,8 +10,8 @@ Replace ad-hoc `tokio::spawn` patterns for periodic tasks with `tokio-cron-sched
 
 Two periodic tasks spawned ad-hoc in `main.rs`:
 
-1. **Session eviction** — inline `tokio::spawn` with `tokio::time::interval(1 hour)`, calls `mgr.evict_inactive()`
-2. **Daily notes** — `spawn_daily_notes_task()` with manual `duration_until_next()` + 24h sleep loop
+1. **Session eviction** - inline `tokio::spawn` with `tokio::time::interval(1 hour)`, calls `mgr.evict_inactive()`
+2. **Daily notes** - `spawn_daily_notes_task()` with manual `duration_until_next()` + 24h sleep loop
 
 No shared interface, no centralized registry, no runtime management.
 
@@ -69,28 +69,28 @@ struct TaskEntry {
 ```
 
 **Methods:**
-- `new()` — create scheduler
-- `register(name, job, cron)` — add job to scheduler, track metadata
-- `start()` — start scheduler
-- `list()` — return task names, schedules, enabled status
-- `disable(name)` — remove job from scheduler, mark disabled
-- `enable(name)` — re-create and add job, mark enabled
+- `new()` - create scheduler
+- `register(name, job, cron)` - add job to scheduler, track metadata
+- `start()` - start scheduler
+- `list()` - return task names, schedules, enabled status
+- `disable(name)` - remove job from scheduler, mark disabled
+- `enable(name)` - re-create and add job, mark enabled
 
 ### 4. Runtime Management
 
 Exposed via existing `__cmd:` request path in `server.rs`:
-- `__cmd:tasks` — list all registered tasks
-- `__cmd:tasks enable <name>` — re-enable a disabled task
-- `__cmd:tasks disable <name>` — disable a running task
+- `__cmd:tasks` - list all registered tasks
+- `__cmd:tasks enable <name>` - re-enable a disabled task
+- `__cmd:tasks disable <name>` - disable a running task
 
 ### 5. Module Changes
 
-- `daily_notes.rs` — replace `spawn_daily_notes_task()` with `create_daily_notes_job()`; remove `duration_until_next()` (cron handles scheduling); keep `generate_daily_note()` and helpers
-- New: `eviction.rs` — extract session eviction into `create_eviction_job()`
-- New: `task_mgr.rs` — `TaskManager` struct
-- `main.rs` — create `TaskManager`, register jobs, pass to `DaemonServer`
-- `server.rs` — add `__cmd:tasks` handler, store `TaskManager` reference
-- `lib.rs` — export new modules
+- `daily_notes.rs` - replace `spawn_daily_notes_task()` with `create_daily_notes_job()`; remove `duration_until_next()` (cron handles scheduling); keep `generate_daily_note()` and helpers
+- New: `eviction.rs` - extract session eviction into `create_eviction_job()`
+- New: `task_mgr.rs` - `TaskManager` struct
+- `main.rs` - create `TaskManager`, register jobs, pass to `DaemonServer`
+- `server.rs` - add `__cmd:tasks` handler, store `TaskManager` reference
+- `lib.rs` - export new modules
 
 ### 6. Dependencies
 

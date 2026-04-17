@@ -74,7 +74,7 @@ fn build_context_snippet(
         lines.push(format!("{}:-{}", line_idx + 1, old_edit[i]));
     }
 
-    // Changed new lines (added) — use new line numbers
+    // Changed new lines (added) - use new line numbers
     for i in common_prefix..new_changed_end {
         let line_idx = edit_start_line + i;
         lines.push(format!("{}:+{}", line_idx + 1, new_edit[i]));

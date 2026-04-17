@@ -192,7 +192,7 @@ impl MultiBackend {
             .cloned()
             .or_else(|| named_backends.values().next().cloned())
             .ok_or_else(|| {
-                anyhow!("no LLM backends could be initialized — check backend_type values in daemon.toml")
+                anyhow!("no LLM backends could be initialized - check backend_type values in daemon.toml")
             })?;
 
         let chat_backend_name = llm_config.use_cases

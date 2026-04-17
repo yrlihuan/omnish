@@ -46,7 +46,7 @@ Documentation in `crates/omnish-llm/src/template.rs:73` mentions `/new` command.
 
 The current code at lines 1540-1559:
 ```rust
-// /new — start new thread within chat
+// /new - start new thread within chat
 if trimmed == "/new" || trimmed == "/chat" || trimmed == "/ask" {
     let req_id = Uuid::new_v4().to_string()[..8].to_string();
     let new_msg = Message::ChatStart(ChatStart {
@@ -184,7 +184,7 @@ git commit -m "feat: remove daemon-side /new, /chat, /ask command handling"
 
 Current line 73 in `crates/omnish-llm/src/template.rs`:
 ```rust
-- /new — Start a new conversation thread
+- /new - Start a new conversation thread
 ```
 
 Update to remove `/new` reference:

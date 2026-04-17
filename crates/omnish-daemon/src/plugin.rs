@@ -93,7 +93,7 @@ struct ToolJsonEntry {
     input_schema: serde_json::Value,
     #[serde(default)]
     status_template: String,
-    /// Ignored — all tools are sandboxed. Kept for backwards compatibility with existing tool.json files.
+    /// Ignored - all tools are sandboxed. Kept for backwards compatibility with existing tool.json files.
     #[serde(default)]
     #[allow(dead_code)]
     sandboxed: bool,
@@ -274,7 +274,7 @@ impl PluginManager {
                 continue;
             }
             let dir_name = entry.file_name().to_string_lossy().to_string();
-            // Skip "builtin" — always loaded from embedded data above
+            // Skip "builtin" - always loaded from embedded data above
             if dir_name == "builtin" {
                 continue;
             }
@@ -800,7 +800,7 @@ mod tests {
     #[test]
     fn test_no_prompt_json_keeps_original() {
         let tmp = tempfile::tempdir().unwrap();
-        // No override file — embedded description is used
+        // No override file - embedded description is used
         let mgr = PluginManager::load(tmp.path(), &HashMap::new());
         let desc = get_description(&mgr, "bash");
         assert!(desc.contains("bash"));  // embedded description mentions bash
@@ -887,7 +887,7 @@ mod tests {
         // Custom plugin tool
         assert_eq!(reg.display_name("my_tool"), "MyTool");
         assert_eq!(reg.formatter_name("my_tool"), "default");
-        // Built-in tool (from embedded tool.json — "bash" has display_name "Bash")
+        // Built-in tool (from embedded tool.json - "bash" has display_name "Bash")
         assert_eq!(reg.display_name("bash"), "Bash");
         // Definitions should be registered
         let defs = reg.all_defs();

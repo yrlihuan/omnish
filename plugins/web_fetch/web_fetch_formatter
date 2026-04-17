@@ -57,7 +57,7 @@ while IFS= read -r line; do
         } | jq -R . | jq -sc .
     )
 
-    # Output JSON — use --argjson to pass pre-built arrays
+    # Output JSON - use --argjson to pass pre-built arrays
     jq -cn --argjson compact "$compact_json" --argjson full "$full_json" \
         '{"summary": null, "compact": $compact, "full": $full}'
 done

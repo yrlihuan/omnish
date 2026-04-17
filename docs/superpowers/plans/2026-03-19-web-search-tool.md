@@ -36,7 +36,7 @@ In `crates/omnish-common/src/config.rs`, add to the `DaemonConfig` struct after 
 pub tools: HashMap<String, HashMap<String, serde_json::Value>>,
 ```
 
-Add `use serde_json;` if not already imported (it's not — `serde_json` isn't currently used in config.rs).
+Add `use serde_json;` if not already imported (it's not - `serde_json` isn't currently used in config.rs).
 
 Update the `Default` impl to include `tools: HashMap::new()`.
 

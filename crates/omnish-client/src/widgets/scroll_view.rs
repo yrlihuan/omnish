@@ -7,7 +7,7 @@
 //!   page with Ctrl-F/Ctrl-B, and exit with q/Esc.
 //!
 //! Rendering uses ANSI cursor movement (same technique as Picker and LineStatus)
-//! — no alternate screen.
+//! - no alternate screen.
 
 /// Scrollbar block characters.
 const THUMB: &str = "\x1b[2;90m\u{2590}\x1b[0m"; // ▐ (dim)
@@ -131,7 +131,7 @@ impl ScrollView {
         use std::os::fd::AsRawFd;
         let stdin_fd = std::io::stdin().as_raw_fd();
 
-        // Enter alternate screen — main screen is preserved automatically
+        // Enter alternate screen - main screen is preserved automatically
         nix::unistd::write(std::io::stdout(), b"\x1b[?1049h\x1b[H").ok();
         let saved_rendered = self.rendered_lines;
         self.rendered_lines = 0;
@@ -163,7 +163,7 @@ impl ScrollView {
                         }
                     }
                 }
-                // Bare ESC — exit
+                // Bare ESC - exit
                 break;
             }
 
@@ -189,7 +189,7 @@ impl ScrollView {
             }
         }
 
-        // Leave alternate screen — main screen restored automatically
+        // Leave alternate screen - main screen restored automatically
         self.mode = ViewMode::Compact;
         self.rendered_lines = saved_rendered;
         nix::unistd::write(std::io::stdout(), b"\x1b[?1049l").ok();
@@ -227,7 +227,7 @@ impl ScrollView {
     }
 
     /// Render expanded mode: viewport filling `expanded_height` visual rows + hint.
-    /// Lines are NOT truncated — long lines wrap naturally, consuming multiple rows.
+    /// Lines are NOT truncated - long lines wrap naturally, consuming multiple rows.
     #[allow(clippy::needless_range_loop)]
     fn render_expanded(&mut self) -> String {
         let mut out = self.erase_seq();
@@ -295,10 +295,10 @@ impl ScrollView {
     }
 
     /// Compute scrollbar characters for each viewport row.
-    /// Returns a Vec of &str — either THUMB or TRACK for each row.
+    /// Returns a Vec of &str - either THUMB or TRACK for each row.
     fn compute_scrollbar(total: usize, viewport: usize, scroll_offset: usize) -> Vec<&'static str> {
         if total <= viewport || viewport == 0 {
-            // Everything fits — no scrollbar needed
+            // Everything fits - no scrollbar needed
             return vec![" "; viewport];
         }
 
@@ -440,7 +440,7 @@ mod tests {
         let seq = sv.exit_browse();
         assert_eq!(sv.mode(), ViewMode::Compact);
         let plain = strip_ansi(&seq);
-        // Back to compact — should show last 3 lines
+        // Back to compact - should show last 3 lines
         assert!(plain.contains("line 19"));
         assert!(plain.contains("line 18"));
         assert!(plain.contains("line 17"));
@@ -534,7 +534,7 @@ mod tests {
         sv.push_line("a");
         sv.push_line("b");
         let seq = sv.enter_browse();
-        // Only 2 lines, viewport is 10 — no scrollbar needed
+        // Only 2 lines, viewport is 10 - no scrollbar needed
         assert!(!seq.contains('\u{2591}'), "no track when content fits viewport");
     }
 

@@ -16,13 +16,13 @@
 
 ## File Map
 
-- Modify: `crates/omnish-protocol/src/message.rs` — bump PROTOCOL_VERSION, extend `ChatReady` with `sandbox_disabled`
-- Modify: `crates/omnish-daemon/src/conversation_mgr.rs` — add `sandbox_disabled` field to `ThreadMeta`, helper to set and persist
-- Modify: `crates/omnish-daemon/src/server.rs` — handle `__cmd:thread sandbox[ on|off]:<tid>`, include sandbox flag in `ChatReady`, force `sandboxed=false` in `ChatToolCall` dispatch, surface in `/thread stats`
-- Modify: `crates/omnish-client/src/chat_session.rs` — `/thread sandbox` dispatch, `pending_sandbox_off` buffer, apply after `ChatReady` for new thread, resume warning
-- Create: `tools/integration_tests/test_thread_sandbox.sh` — exercises command, buffered path, persistence, runtime bypass
-- Modify: `.gitlab-ci.yml` — add the new test to the integration-test and integration-test-zsh jobs
-- Modify: `CHANGELOG.md` — entry under the next unreleased version heading
+- Modify: `crates/omnish-protocol/src/message.rs` - bump PROTOCOL_VERSION, extend `ChatReady` with `sandbox_disabled`
+- Modify: `crates/omnish-daemon/src/conversation_mgr.rs` - add `sandbox_disabled` field to `ThreadMeta`, helper to set and persist
+- Modify: `crates/omnish-daemon/src/server.rs` - handle `__cmd:thread sandbox[ on|off]:<tid>`, include sandbox flag in `ChatReady`, force `sandboxed=false` in `ChatToolCall` dispatch, surface in `/thread stats`
+- Modify: `crates/omnish-client/src/chat_session.rs` - `/thread sandbox` dispatch, `pending_sandbox_off` buffer, apply after `ChatReady` for new thread, resume warning
+- Create: `tools/integration_tests/test_thread_sandbox.sh` - exercises command, buffered path, persistence, runtime bypass
+- Modify: `.gitlab-ci.yml` - add the new test to the integration-test and integration-test-zsh jobs
+- Modify: `CHANGELOG.md` - entry under the next unreleased version heading
 
 ---
 
@@ -47,7 +47,7 @@ Replace with:
 pub const PROTOCOL_VERSION: u32 = 18;
 ```
 
-`MIN_COMPATIBLE_VERSION` stays at 14 — this is an additive optional field.
+`MIN_COMPATIBLE_VERSION` stays at 14 - this is an additive optional field.
 
 - [ ] **Step 2: Extend ChatReady**
 
@@ -90,7 +90,7 @@ Message::ChatReady(ChatReady {
 - [ ] **Step 4: Build just the protocol crate**
 
 Run: `cargo build --release -p omnish-protocol`
-Expected: clean build. If any other site constructs `ChatReady` (e.g., `test_frame_with_chat_ready` referenced elsewhere), the compiler will flag it — fix inline.
+Expected: clean build. If any other site constructs `ChatReady` (e.g., `test_frame_with_chat_ready` referenced elsewhere), the compiler will flag it - fix inline.
 
 - [ ] **Step 5: Build the whole workspace**
 
@@ -203,7 +203,7 @@ fn test_set_sandbox_disabled_persists() {
 }
 ```
 
-If `tempfile` isn't already a dev-dependency of this crate, check the existing tests in the same file — the `test_delete_thread_removes_meta` test likely uses the same pattern. If it uses `std::env::temp_dir()` or similar, mirror that approach instead.
+If `tempfile` isn't already a dev-dependency of this crate, check the existing tests in the same file - the `test_delete_thread_removes_meta` test likely uses the same pattern. If it uses `std::env::temp_dir()` or similar, mirror that approach instead.
 
 - [ ] **Step 7: Run test, verify it passes**
 
@@ -224,14 +224,14 @@ git commit -m "daemon: add ThreadMeta.sandbox_disabled and setter (#535)"
 **Files:**
 - Modify: `crates/omnish-daemon/src/server.rs`
 
-Context: `handle_builtin_command` starts at line 2163. Existing `__cmd` handlers include `context chat:<tid>`, `conversations del <tid>`, `models [<tid>]` — pattern for tid-in-query is established.
+Context: `handle_builtin_command` starts at line 2163. Existing `__cmd` handlers include `context chat:<tid>`, `conversations del <tid>`, `models [<tid>]` - pattern for tid-in-query is established.
 
 - [ ] **Step 1: Add sandbox handlers**
 
 In `crates/omnish-daemon/src/server.rs`, inside `handle_builtin_command`, before the final `match sub { ... }` block (the one ending with `other => cmd_display(...)`), add:
 
 ```rust
-    // Handle /thread sandbox — query or set per-thread sandbox override.
+    // Handle /thread sandbox - query or set per-thread sandbox override.
     // Queries embed the thread_id as ":<tid>" suffix, matching /context chat.
     if let Some(rest) = sub.strip_prefix("thread sandbox") {
         let rest = rest.trim_start();
@@ -297,7 +297,7 @@ let thread_sandbox_off = conv_mgr
     .unwrap_or(false);
 ```
 
-If you cannot cheaply hoist it out of the per-tool-call scope (e.g., the enclosing scope is not obvious), inline it into the `sandboxed:` expression — meta reads are JSON file reads, not free, but are ~10µs and there are few tool calls per iteration. Hoisting is preferred but not required.
+If you cannot cheaply hoist it out of the per-tool-call scope (e.g., the enclosing scope is not obvious), inline it into the `sandboxed:` expression - meta reads are JSON file reads, not free, but are ~10µs and there are few tool calls per iteration. Hoisting is preferred but not required.
 
 - [ ] **Step 2: Update the sandboxed flag**
 
@@ -347,17 +347,17 @@ git commit -m "daemon: force sandboxed=false when thread has sandbox_disabled (#
 **Files:**
 - Modify: `crates/omnish-daemon/src/server.rs`
 
-Context: `ChatReady` is constructed in 6 places (lines 737, 753, 786, 804, 826, 858, 875 per earlier grep). Resume-existing-thread paths are at 786 and 858 — these need the real value. Error / not-found / new-thread paths should stay `None`.
+Context: `ChatReady` is constructed in 6 places (lines 737, 753, 786, 804, 826, 858, 875 per earlier grep). Resume-existing-thread paths are at 786 and 858 - these need the real value. Error / not-found / new-thread paths should stay `None`.
 
 - [ ] **Step 1: Update the two resume paths**
 
-In `crates/omnish-daemon/src/server.rs`, find the `ChatReady` constructor at line ~786 (resume specific thread — the one after `let old_meta = conv_mgr.load_meta(tid);`). After `error_display: None,`, add:
+In `crates/omnish-daemon/src/server.rs`, find the `ChatReady` constructor at line ~786 (resume specific thread - the one after `let old_meta = conv_mgr.load_meta(tid);`). After `error_display: None,`, add:
 
 ```rust
                         sandbox_disabled: old_meta.sandbox_disabled,
 ```
 
-Find the `ChatReady` constructor at line ~858 (resume latest thread — also after `let old_meta = conv_mgr.load_meta(&tid);`). Add the same line:
+Find the `ChatReady` constructor at line ~858 (resume latest thread - also after `let old_meta = conv_mgr.load_meta(&tid);`). Add the same line:
 
 ```rust
                             sandbox_disabled: old_meta.sandbox_disabled,
@@ -392,7 +392,7 @@ Context: `format_thread_stats` starts around line 2418 (per earlier grep `/// Re
 
 - [ ] **Step 1: Locate the per-thread header construction**
 
-Open `crates/omnish-daemon/src/server.rs` and read `format_thread_stats` (from line 2418). Find the spot where per-thread metadata is rendered into the output — typically after the thread header, alongside lines like `usage: ...` or `summary: ...`.
+Open `crates/omnish-daemon/src/server.rs` and read `format_thread_stats` (from line 2418). Find the spot where per-thread metadata is rendered into the output - typically after the thread header, alongside lines like `usage: ...` or `summary: ...`.
 
 - [ ] **Step 2: Emit sandbox line when disabled**
 
@@ -404,7 +404,7 @@ if meta.sandbox_disabled == Some(true) {
 }
 ```
 
-(Match the indentation style — two spaces before `sandbox:` — used by the surrounding lines for this thread. If the function uses a `writeln!` macro pattern instead of `push_str`, mirror that.)
+(Match the indentation style - two spaces before `sandbox:` - used by the surrounding lines for this thread. If the function uses a `writeln!` macro pattern instead of `push_str`, mirror that.)
 
 Only emit when off. Sandbox-on is the default; no noise.
 
@@ -578,7 +578,7 @@ Insert (after `self.current_thread_id = Some(ready.thread_id.clone());` or the e
                         }
 ```
 
-This is fire-and-await — we ignore the response intentionally; the preference has been persisted by the daemon before the `ChatMessage` is sent, which is the invariant we need.
+This is fire-and-await - we ignore the response intentionally; the preference has been persisted by the daemon before the `ChatMessage` is sent, which is the invariant we need.
 
 - [ ] **Step 3: Build**
 
@@ -603,9 +603,9 @@ Context: resume paths at lines 2309 and 2325 handle `ChatReady` for existing thr
 
 - [ ] **Step 1: Identify where resume transitions to the chat loop**
 
-Find the resume flow — the code block(s) that receive `ChatReady` with non-empty `ready.thread_id` and `ready.error.is_none()`, then hand control to the interactive loop. Lines ~2309 and ~2325 are both resume flows (one normal, one after a lock retry).
+Find the resume flow - the code block(s) that receive `ChatReady` with non-empty `ready.thread_id` and `ready.error.is_none()`, then hand control to the interactive loop. Lines ~2309 and ~2325 are both resume flows (one normal, one after a lock retry).
 
-Read around each site to find the common "we are now entering the loop with this thread" point — usually just before invoking the chat I/O loop or setting `self.current_thread_id`.
+Read around each site to find the common "we are now entering the loop with this thread" point - usually just before invoking the chat I/O loop or setting `self.current_thread_id`.
 
 - [ ] **Step 2: Print yellow warning when disabled**
 
@@ -614,12 +614,12 @@ At the common point (add it once in each resume arm if there's no shared functio
 ```rust
                 if ready.sandbox_disabled == Some(true) {
                     write_stdout(&format!(
-                        "{YELLOW}⚠ sandbox is OFF for this thread — tool calls bypass Landlock/bwrap{RESET}\r\n"
+                        "{YELLOW}⚠ sandbox is OFF for this thread - tool calls bypass Landlock/bwrap{RESET}\r\n"
                     ));
                 }
 ```
 
-If `YELLOW` and `RESET` are not already in scope at this site, either import them (they come from `display::` or are defined at module top — search for `YELLOW` elsewhere in the file) or use `display::render_warning(...)` if such a helper exists.
+If `YELLOW` and `RESET` are not already in scope at this site, either import them (they come from `display::` or are defined at module top - search for `YELLOW` elsewhere in the file) or use `display::render_warning(...)` if such a helper exists.
 
 - [ ] **Step 3: Build**
 
@@ -641,7 +641,7 @@ git commit -m "client: warn on resume when thread has sandbox disabled (#535)"
 - Create: `tools/integration_tests/test_thread_sandbox.sh`
 - Modify: `.gitlab-ci.yml`
 
-Context: `lib.sh` provides `test_init`, `enter_chat`, `send_keys`, `send_enter`, `send_special`, `capture_pane`, `restart_client`, `wait_for_client`. Look at `test_sandbox_rules.sh` tests 6-7 (lines ~200+) as the template for runtime bypass verification — they use `sudo ls` (blocked by Landlock) as the probe.
+Context: `lib.sh` provides `test_init`, `enter_chat`, `send_keys`, `send_enter`, `send_special`, `capture_pane`, `restart_client`, `wait_for_client`. Look at `test_sandbox_rules.sh` tests 6-7 (lines ~200+) as the template for runtime bypass verification - they use `sudo ls` (blocked by Landlock) as the probe.
 
 - [ ] **Step 1: Scaffold the script**
 
@@ -795,7 +795,7 @@ test_4() {
     send_enter 1
 
     # Exit chat, then resume via /resume
-    send_special Escape 0.5   # exit chat (if Escape is the exit — otherwise adjust per lib.sh)
+    send_special Escape 0.5   # exit chat (if Escape is the exit - otherwise adjust per lib.sh)
     sleep 0.5
     enter_chat
     send_keys "/resume" 0.3
@@ -821,7 +821,7 @@ Run: `chmod +x tools/integration_tests/test_thread_sandbox.sh`
 - [ ] **Step 3: Run the test locally**
 
 Run: `bash tools/integration_tests/test_thread_sandbox.sh`
-Expected: all 4 tests pass. If a helper like `fail` / `pass` / `run_selected_tests` / `test_summary` doesn't exist in `lib.sh`, look at the actual helpers used by `test_config_backend.sh` / `test_sandbox_rules.sh` and adapt. The exit sequence from chat (step "Escape" in test 4) may need adjustment — check how other tests exit chat mode.
+Expected: all 4 tests pass. If a helper like `fail` / `pass` / `run_selected_tests` / `test_summary` doesn't exist in `lib.sh`, look at the actual helpers used by `test_config_backend.sh` / `test_sandbox_rules.sh` and adapt. The exit sequence from chat (step "Escape" in test 4) may need adjustment - check how other tests exit chat mode.
 
 - [ ] **Step 4: Add to CI**
 
@@ -837,7 +837,7 @@ add:
     - bash tools/integration_tests/test_thread_sandbox.sh
 ```
 
-Do the same in the `integration-test-zsh` job (if it exists per the repo's current state — the session history noted it was added).
+Do the same in the `integration-test-zsh` job (if it exists per the repo's current state - the session history noted it was added).
 
 - [ ] **Step 5: Commit**
 
@@ -856,13 +856,13 @@ git commit -m "test: integration test for /thread sandbox on|off (#535)"
 
 - [ ] **Step 1: Add CHANGELOG entry**
 
-At the top of `CHANGELOG.md`, under the next unreleased version heading (create one if it doesn't exist — the current released version is v0.8.9 per `Cargo.toml`), add:
+At the top of `CHANGELOG.md`, under the next unreleased version heading (create one if it doesn't exist - the current released version is v0.8.9 per `Cargo.toml`), add:
 
 ```markdown
 ## v0.8.10 (UNRELEASED)
 
 ### Features
-- 添加 `/thread sandbox on|off` — per-thread sandbox override; daemon forces
+- 添加 `/thread sandbox on|off` - per-thread sandbox override; daemon forces
   `sandboxed=false` for all `ChatToolCall` when disabled; state persists in
   `ThreadMeta.sandbox_disabled`; resume shows warning when off (#535).
 
@@ -883,7 +883,7 @@ In `docs/implementation/index.md`, under the `ThreadMeta` bullet in the
   通过 `/thread sandbox on|off` 切换；在 `ChatReady` 中回传给客户端以便恢复时提示。
 ```
 
-If the structure doesn't cleanly accommodate this, skip — `CHANGELOG` is sufficient.
+If the structure doesn't cleanly accommodate this, skip - `CHANGELOG` is sufficient.
 
 - [ ] **Step 3: Commit**
 
@@ -910,7 +910,7 @@ Expected: all pass.
 
 - [ ] **Step 3: Run integration tests**
 
-Ask the user to run `bash tools/integration_tests/test_thread_sandbox.sh` themselves (the daemon must be running). Then: `bash tools/integration_tests/test_sandbox_rules.sh` — verify we haven't regressed existing sandbox behavior.
+Ask the user to run `bash tools/integration_tests/test_thread_sandbox.sh` themselves (the daemon must be running). Then: `bash tools/integration_tests/test_sandbox_rules.sh` - verify we haven't regressed existing sandbox behavior.
 
 - [ ] **Step 4: Manual verification**
 
@@ -937,5 +937,5 @@ glab issue close 535
 ## Self-Review
 
 - [x] **Spec coverage:** Every spec section mapped. Data model → Task 2. Protocol → Task 1. Daemon wiring: command handler → Task 3, sandbox enforcement → Task 4, `ChatReady` mirror → Task 5, `/thread stats` → Task 6. Client wiring: command → Task 7, pending apply → Task 8, resume warning → Task 9. Testing → Tasks 2 (unit), 10 (integration). Rollout → Tasks 11, 12.
-- [x] **Placeholder scan:** No "TBD"; each code block is complete enough to drop in. Task 6 has a soft reference ("find the per-thread rendering block") because `format_thread_stats` isn't quoted in full — engineer reads that function to locate the insertion point.
-- [x] **Type consistency:** `sandbox_disabled: Option<bool>` everywhere — in `ThreadMeta`, `ChatReady`, and the setter return (well, setter returns plain `bool` reflecting effective state, which is documented). `pending_sandbox_off: Option<bool>` on client. RPC query grammar is `__cmd:thread sandbox[ on|off]:<tid>` in both the client handler (Task 7) and daemon handler (Task 3).
+- [x] **Placeholder scan:** No "TBD"; each code block is complete enough to drop in. Task 6 has a soft reference ("find the per-thread rendering block") because `format_thread_stats` isn't quoted in full - engineer reads that function to locate the insertion point.
+- [x] **Type consistency:** `sandbox_disabled: Option<bool>` everywhere - in `ThreadMeta`, `ChatReady`, and the setter return (well, setter returns plain `bool` reflecting effective state, which is documented). `pending_sandbox_off: Option<bool>` on client. RPC query grammar is `__cmd:thread sandbox[ on|off]:<tid>` in both the client handler (Task 7) and daemon handler (Task 3).

@@ -108,7 +108,7 @@ pub struct CompletionFormatter {
   ```
 - Claude 模型针对 `<system-reminder>` 标签有特殊训练，能更好地理解和利用工作目录上下文
 
-**工作目录来源优先级:** 优先使用 `live_cwd`（daemon session probe 通过 `/proc/<pid>/cwd` 轮询获取的实时 shell 工作目录），回退到最后一条当前会话 CommandRecord 的 cwd。这解决了 OSC 133;B DEBUG trap 在命令执行前触发的问题——例如 `cd /tmp` 记录的是旧 cwd 而非新目录。
+**工作目录来源优先级:** 优先使用 `live_cwd`（daemon session probe 通过 `/proc/<pid>/cwd` 轮询获取的实时 shell 工作目录），回退到最后一条当前会话 CommandRecord 的 cwd。这解决了 OSC 133;B DEBUG trap 在命令执行前触发的问题--例如 `cd /tmp` 记录的是旧 cwd 而非新目录。
 
 ## 关键函数说明
 

@@ -136,7 +136,7 @@ fn test_hook_content_includes_cwd() {
 
 ```rust
 const BASH_HOOK: &str = r#"
-# omnish shell integration — OSC 133 semantic prompts
+# omnish shell integration - OSC 133 semantic prompts
 __omnish_preexec_fired=0
 __omnish_in_precmd=0
 

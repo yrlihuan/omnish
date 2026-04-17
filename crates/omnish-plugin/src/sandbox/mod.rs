@@ -84,7 +84,7 @@ pub fn bwrap_unavailable_reason() -> Option<BwrapUnavailableReason> {
 
 /// Detect the best available sandbox backend, starting from `preferred`.
 /// Returns a [`SandboxDetectResult`] describing what was found, without
-/// printing any messages — the caller decides how to present the outcome.
+/// printing any messages - the caller decides how to present the outcome.
 pub fn detect_backend_status(preferred: SandboxBackendType) -> SandboxDetectResult {
     if is_available(preferred) {
         return SandboxDetectResult::Preferred(preferred);

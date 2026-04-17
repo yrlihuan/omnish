@@ -8,32 +8,32 @@
 pub const RESET: &str = "\x1b[0m";
 /// Bold text.
 pub const BOLD: &str = "\x1b[1m";
-/// Dim gray text — combines SGR dim (2) and bright-black (90) so text
+/// Dim gray text - combines SGR dim (2) and bright-black (90) so text
 /// appears dimmed on terminals that support the dim attribute, and still
 /// renders as gray on terminals that ignore it.
 pub const DIM: &str = "\x1b[2;90m";
-/// Bold + reverse video — used for selected/highlighted items.
+/// Bold + reverse video - used for selected/highlighted items.
 pub const BOLD_REVERSE: &str = "\x1b[1;7m";
-/// Red — errors.
+/// Red - errors.
 pub const RED: &str = "\x1b[31m";
-/// Green — success, ON toggles.
+/// Green - success, ON toggles.
 pub const GREEN: &str = "\x1b[32m";
-/// Yellow — warnings, change arrows.
+/// Yellow - warnings, change arrows.
 pub const YELLOW: &str = "\x1b[33m";
-/// Cyan — prompts, user input prefix, links.
+/// Cyan - prompts, user input prefix, links.
 pub const CYAN: &str = "\x1b[36m";
-/// White — fallback text color.
+/// White - fallback text color.
 pub const WHITE: &str = "\x1b[37m";
-/// Background black — fallback for dark backgrounds.
+/// Background black - fallback for dark backgrounds.
 pub const BG_BLACK: &str = "\x1b[40m";
-/// Bright-black (gray) — secondary info, OFF toggles, values.
+/// Bright-black (gray) - secondary info, OFF toggles, values.
 pub const GRAY: &str = "\x1b[90m";
-/// Bright white — assistant bullets, spinner.
+/// Bright white - assistant bullets, spinner.
 pub const BRIGHT_WHITE: &str = "\x1b[97m";
 
 /// Character types that have extended Unicode variants.
 pub enum UiChar {
-    /// ⎿ (extended) / └ (fallback) — tool output prefix
+    /// ⎿ (extended) / └ (fallback) - tool output prefix
     ToolOutputCorner,
 }
 
@@ -56,7 +56,7 @@ pub fn truncate_cols(s: &str, max_cols: usize) -> String {
     if display_width(s) <= max_cols {
         return s.to_string();
     }
-    // Doesn't fit — truncate, reserving 1 column for "…"
+    // Doesn't fit - truncate, reserving 1 column for "…"
     let limit = max_cols.saturating_sub(1);
     let mut width = 0usize;
     let mut end = 0usize;
@@ -214,10 +214,10 @@ pub fn render_ghost_text(ghost: &str) -> String {
 /// a line boundary; when `false`, only `\x1b[K` is emitted.
 pub fn erase_ghost_text(wrapped: bool) -> &'static [u8] {
     if wrapped {
-        // \x1b[K   — erase from cursor to end of current line
-        // \x1b[1B  — move cursor down one line
-        // \r\x1b[K — move to column 0, erase that line
-        // \x1b[1A  — move cursor back up one line
+        // \x1b[K   - erase from cursor to end of current line
+        // \x1b[1B  - move cursor down one line
+        // \r\x1b[K - move to column 0, erase that line
+        // \x1b[1A  - move cursor back up one line
         b"\x1b[K\x1b[1B\r\x1b[K\x1b[1A"
     } else {
         b"\x1b[K"
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn truncate_cols_ansi_fits() {
-        // "\x1b[1mhello\x1b[0m world" — visible: "hello world" = 11 cols
+        // "\x1b[1mhello\x1b[0m world" - visible: "hello world" = 11 cols
         let s = "\x1b[1mhello\x1b[0m world";
         assert_eq!(truncate_cols(s, 11), s);
         assert_eq!(truncate_cols(s, 20), s);
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn truncate_cols_ansi_cjk() {
-        // ANSI + CJK: "\x1b[33m你好世界\x1b[0m" — visible: 8 cols
+        // ANSI + CJK: "\x1b[33m你好世界\x1b[0m" - visible: 8 cols
         let s = "\x1b[33m你好世界\x1b[0m";
         assert_eq!(truncate_cols(s, 8), s);
         assert_eq!(truncate_cols(s, 6), "\x1b[33m你好…");
@@ -549,7 +549,7 @@ mod tests {
         }
         output.push_str("$ "); // shell prompt on last row (row 4)
 
-        // render_prompt emits 2 \r\n sequences — both cause scrolling
+        // render_prompt emits 2 \r\n sequences - both cause scrolling
         output.push_str(&render_prompt(cols));
 
         // User types a query
@@ -648,7 +648,7 @@ mod tests {
         output.push_str(prompt);                       // row 0, cursor at (0, 13)
         output.push_str(&render_prompt(cols));          // separator + ❯
         output.push_str(&render_input_echo(b"hello"));  // user types
-        output.push_str(&render_dismiss());             // ESC — cursor at (0, 0)
+        output.push_str(&render_dismiss());             // ESC - cursor at (0, 0)
         // CHA to restore column (1-indexed)
         output.push_str(&format!("\x1b[{}G", saved_col + 1));
 
@@ -716,7 +716,7 @@ mod tests {
         let output = render_response("");
         let parser = parse_ansi(&output, 80, 24);
         let screen = parser.screen();
-        // The output is just color codes wrapping an empty string — no crash
+        // The output is just color codes wrapping an empty string - no crash
         let _ = get_row(screen, 0, 80);
     }
 
@@ -814,7 +814,7 @@ mod tests {
         // Ghost " run" rendered after cursor (save + dim + restore)
         output.push_str(&render_ghost_text(" run"));
 
-        // Step 2: user types divergent input — the fix sends \x1b[K to erase ghost
+        // Step 2: user types divergent input - the fix sends \x1b[K to erase ghost
         output.push_str("\x1b[K");
 
         // Step 3: shell echoes " test" at cursor position (col 5)

@@ -7,7 +7,7 @@ omnish aggregates terminal I/O from multiple sessions, but currently treats each
 ## Key Decisions
 
 - **Association unit is the command, not the session.** Instead of linking entire sessions, individual commands are the granular unit of relevance.
-- **Automatic inference of relevance** — no manual tagging or grouping required.
+- **Automatic inference of relevance** - no manual tagging or grouping required.
 - **Two-phase LLM flow:** send a lightweight catalog of command summaries, then LLM uses tool calls to fetch full output for commands it deems relevant.
 - **Relevance scoring via extensible Trait abstraction** (like the existing Probe trait), not hardcoded rules.
 - **Scope includes recently ended sessions** (not just active ones).
@@ -42,7 +42,7 @@ Each command record is ~100-200 tokens in the catalog, making it feasible to sen
 
 Full I/O data stays in `stream.bin` and is fetched on-demand via `stream_offset` + `stream_length`.
 
-### 3. Relevance Scoring — RelevanceSignal Trait
+### 3. Relevance Scoring - RelevanceSignal Trait
 
 ```rust
 /// A signal that contributes to relevance scoring between a query context
@@ -126,7 +126,7 @@ struct GetCommandsTool;
 // ]
 ```
 
-### 6. Session Scope — Including Recently Ended Sessions
+### 6. Session Scope - Including Recently Ended Sessions
 
 `SessionManager` changes:
 - Active sessions: currently tracked in `HashMap<String, ActiveSession>`

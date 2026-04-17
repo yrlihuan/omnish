@@ -63,7 +63,7 @@ Uses `(deny default)` with explicit allows for each operation class. This is una
   ```
   The `pre_exec` Landlock hook is skipped on macOS.
 
-- **Sandboxed command construction** (Linux): Unchanged — `Command::new(&executable)` with `pre_exec` calling `apply_sandbox()`.
+- **Sandboxed command construction** (Linux): Unchanged - `Command::new(&executable)` with `pre_exec` calling `apply_sandbox()`.
 
 - Platform separation via `#[cfg(target_os = "...")]` blocks within `execute_tool()`.
 
@@ -85,4 +85,4 @@ Uses `(deny default)` with explicit allows for each operation class. This is una
 
 `sandbox-exec` has been marked deprecated since macOS 10.15 but remains functional on current macOS versions (including macOS 15). Many widely-used tools (Homebrew, Nix, Bazel) continue to rely on it. The risk of removal is low in the near term, and there is no practical alternative for userspace process sandboxing on macOS without code signing entitlements.
 
-If Apple removes `sandbox-exec` in a future release, the fallback is the current no-op behavior — plugins run unsandboxed, same as today. This is graceful degradation, not a security regression.
+If Apple removes `sandbox-exec` in a future release, the fallback is the current no-op behavior - plugins run unsandboxed, same as today. This is graceful degradation, not a security regression.

@@ -81,7 +81,7 @@ fi
 
 send_special Escape 0.5
 
-# Clean exit (don't delete threads — that's the whole point)
+# Clean exit (don't delete threads - that's the whole point)
 trap - EXIT
 _tmux kill-session -t "$SESSION" 2>/dev/null || true
 rm -f "$TMUX_CONF"

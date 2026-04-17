@@ -14,20 +14,20 @@ impl InlineNotice {
     /// `max_cols` limits the visible message length to avoid wrapping.
     /// `at_bottom` selects the rendering strategy:
     ///
-    /// **Bottom mode** (`at_bottom = true`) — for cursor near screen bottom:
+    /// **Bottom mode** (`at_bottom = true`) - for cursor near screen bottom:
     /// 1. DECSC save cursor (R, C)
-    /// 2. Scroll Up (`\x1b[1S`) — content shifts up, row 0 enters scrollback
-    /// 3. Move up (`\x1b[1A`) — cursor at R-1
-    /// 4. Insert Line (`\x1b[1L`) — blank at R-1, prompt pushed back to R
+    /// 2. Scroll Up (`\x1b[1S`) - content shifts up, row 0 enters scrollback
+    /// 3. Move up (`\x1b[1A`) - cursor at R-1
+    /// 4. Insert Line (`\x1b[1L`) - blank at R-1, prompt pushed back to R
     /// 5. Write gray notice on the blank line
     /// 6. DECRC restore cursor to (R, C)
     ///
-    /// **Top mode** (`at_bottom = false`) — for cursor near screen top:
+    /// **Top mode** (`at_bottom = false`) - for cursor near screen top:
     /// 1. DECSC save cursor (R, C)
-    /// 2. Insert Line (`\x1b[1L`) — blank at R, content pushed to R+1
+    /// 2. Insert Line (`\x1b[1L`) - blank at R, content pushed to R+1
     /// 3. Write gray notice on the blank line
-    /// 4. DECRC restore cursor to (R, C) — now on the notice line
-    /// 5. Move down (`\x1b[1B`) — follow original content at R+1
+    /// 4. DECRC restore cursor to (R, C) - now on the notice line
+    /// 5. Move down (`\x1b[1B`) - follow original content at R+1
     #[cfg(test)]
     pub fn render(message: &str, max_cols: usize) -> String {
         Self::render_at(message, max_cols, true)

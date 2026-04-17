@@ -234,7 +234,7 @@ permit_rules = ["command starts_with glab"]
         // Mark current value as seen
         rx.borrow_and_update();
 
-        // Reload same empty config — no sandbox change
+        // Reload same empty config - no sandbox change
         cw.reload().unwrap();
 
         // Should NOT have changed

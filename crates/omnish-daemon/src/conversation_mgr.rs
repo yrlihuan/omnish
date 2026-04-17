@@ -123,7 +123,7 @@ pub fn sanitize_orphaned_tool_use(msgs: &mut Vec<serde_json::Value>) -> bool {
                     arr.push(serde_json::json!({
                         "type": "tool_result",
                         "tool_use_id": id,
-                        "content": "tool execution was interrupted — results unavailable",
+                        "content": "tool execution was interrupted - results unavailable",
                         "is_error": true,
                     }));
                 }
@@ -137,7 +137,7 @@ pub fn sanitize_orphaned_tool_use(msgs: &mut Vec<serde_json::Value>) -> bool {
                     serde_json::json!({
                         "type": "tool_result",
                         "tool_use_id": id,
-                        "content": "tool execution was interrupted — results unavailable",
+                        "content": "tool execution was interrupted - results unavailable",
                         "is_error": true,
                     })
                 })
@@ -616,7 +616,7 @@ mod tests {
         let mgr = ConversationManager::new(dir.path().to_path_buf());
         let id = mgr.create_thread(ThreadMeta::default());
 
-        // system-reminder is NOT stored — server strips it before persisting
+        // system-reminder is NOT stored - server strips it before persisting
         mgr.append_messages(&id, &[user_msg("what happened?"), assistant_msg("Everything is fine")]);
 
         let exchanges = mgr.get_all_exchanges(&id);
@@ -854,7 +854,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_persisted_on_load() {
-        // Write an orphaned tool_use to disk, then load — should be sanitized
+        // Write an orphaned tool_use to disk, then load - should be sanitized
         let dir = tempfile::tempdir().unwrap();
         let thread_id;
         {
@@ -866,7 +866,7 @@ mod tests {
                 assistant_with_tool_use(),
             ]);
         }
-        // Reload from disk — startup sanitization should fix it
+        // Reload from disk - startup sanitization should fix it
         let mgr2 = ConversationManager::new(dir.path().to_path_buf());
         let msgs = mgr2.load_raw_messages(&thread_id);
         assert_eq!(msgs.len(), 3);

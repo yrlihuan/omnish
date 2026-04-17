@@ -265,7 +265,7 @@ impl FileWatcher {
                             if let Some(name) = &event.name {
                                 changed_names.push(name.to_string_lossy().to_string());
                             } else {
-                                // Directory-level event (no name) — treat as changed
+                                // Directory-level event (no name) - treat as changed
                                 changed_names.push(String::new());
                             }
                         }
@@ -309,7 +309,7 @@ impl FileWatcher {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-            // Collect changes first, then apply — avoids borrow conflict
+            // Collect changes first, then apply - avoids borrow conflict
             let inner = self.inner.lock().unwrap();
             let mut updates: Vec<(PathBuf, Option<std::time::SystemTime>)> = Vec::new();
             let mut to_notify: Vec<usize> = Vec::new();
@@ -598,7 +598,7 @@ permit_rules = ["command starts_with glab"]
         // Mark current value as seen
         rx.borrow_and_update();
 
-        // Reload same empty config — no sandbox change
+        // Reload same empty config - no sandbox change
         cw.reload().unwrap();
 
         // Should NOT have changed

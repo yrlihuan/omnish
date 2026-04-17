@@ -278,7 +278,7 @@ pub fn strip_ansi(raw: &[u8]) -> String {
                     }
                 }
                 _ => {
-                    // Other ESC sequence — skip one char
+                    // Other ESC sequence - skip one char
                     chars.next();
                 }
             }

@@ -1,4 +1,4 @@
-# Client-Side Plugin Execution — Implementation Plan
+# Client-Side Plugin Execution - Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
@@ -338,7 +338,7 @@ Message::ChatToolCall(tc) => {
 }
 ```
 
-Note: after sending `ChatToolResult`, the daemon resumes the agent loop and sends a new stream of messages. The client needs to call `rpc.call_stream` again or the daemon sends continuation on the same stream. Design choice: daemon sends continuation as response to `ChatToolResult` (simplest — `ChatToolResult` is a new RPC call that returns the remaining stream).
+Note: after sending `ChatToolResult`, the daemon resumes the agent loop and sends a new stream of messages. The client needs to call `rpc.call_stream` again or the daemon sends continuation on the same stream. Design choice: daemon sends continuation as response to `ChatToolResult` (simplest - `ChatToolResult` is a new RPC call that returns the remaining stream).
 
 **Step 3: Build and test manually**
 
@@ -364,7 +364,7 @@ In `handle_tool_result`, before resuming, check elapsed time:
 
 ```rust
 if state.start.elapsed() > std::time::Duration::from_secs(60) {
-    // Timeout — inject error and return
+    // Timeout - inject error and return
     let error_result = ToolResult {
         tool_use_id: tr.tool_call_id,
         content: "Client-side tool execution timed out".to_string(),
@@ -398,7 +398,7 @@ feat(daemon): add timeout for pending client-side tool calls
 
 **Step 1: Keep BashTool registered in daemon (for tool definitions)**
 
-The daemon still needs `BashTool` registered so its `ToolDef` is included in LLM requests. No change needed — it stays registered. Its `call_tool` on daemon side will never be called because the agent loop checks `plugin_type()` and forwards to client instead.
+The daemon still needs `BashTool` registered so its `ToolDef` is included in LLM requests. No change needed - it stays registered. Its `call_tool` on daemon side will never be called because the agent loop checks `plugin_type()` and forwards to client instead.
 
 **Step 2: Verify end-to-end**
 

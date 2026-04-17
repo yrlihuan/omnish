@@ -1,6 +1,6 @@
 # Web Search Tool Design
 
-Issue: #351 — Create web search tool using Brave Search API
+Issue: #351 - Create web search tool using Brave Search API
 
 ## Overview
 
@@ -16,7 +16,7 @@ The daemon merges extra parameters into tool call inputs from two sources, with 
 2. `tool.override.json` `params` field (plugin-level defaults)
 3. `daemon.toml` `[tools.<name>]` section (deployment-level overrides)
 
-Injected params are invisible to the LLM — they do not appear in tool definitions sent to the model, only in the execution input passed to the plugin subprocess.
+Injected params are invisible to the LLM - they do not appear in tool definitions sent to the model, only in the execution input passed to the plugin subprocess.
 
 #### daemon.toml
 
@@ -56,7 +56,7 @@ merge_json(&mut merged_input, override_params);     // tool.override.json params
 merge_json(&mut merged_input, daemon_toml_params);  // daemon.toml [tools.X]
 ```
 
-`merge_json` does a shallow merge: for each key in the source, set it on the target (overwriting if exists). This is intentionally shallow — no deep merge of nested objects.
+`merge_json` does a shallow merge: for each key in the source, set it on the target (overwriting if exists). This is intentionally shallow - no deep merge of nested objects.
 
 ### 2. Daemon-Side External Plugin Execution
 
@@ -89,7 +89,7 @@ The daemon resolves the executable path from the plugin directory: `~/.omnish/pl
 
 Same sandbox rules apply. On Linux, Landlock. On macOS, sandbox-exec. The daemon applies sandboxing when spawning the subprocess, using the same `apply_sandbox` / `sandbox_profile` functions from `omnish-plugin`.
 
-Note: the daemon currently links `omnish-plugin` for built-in tool definitions only. Sandbox functions are in `omnish-plugin::lib`. The daemon may need to call these, or the sandbox logic can be extracted. For simplicity, since the web_search plugin only needs network access (no filesystem writes), sandboxing can be deferred — the shell script runs with the daemon's permissions, which is acceptable for a user-installed plugin.
+Note: the daemon currently links `omnish-plugin` for built-in tool definitions only. Sandbox functions are in `omnish-plugin::lib`. The daemon may need to call these, or the sandbox logic can be extracted. For simplicity, since the web_search plugin only needs network access (no filesystem writes), sandboxing can be deferred - the shell script runs with the daemon's permissions, which is acceptable for a user-installed plugin.
 
 ### 3. Web Search Plugin
 
@@ -100,8 +100,8 @@ Source: `plugins/web_search/` in the project root.
 Installed to: `~/.omnish/plugins/web_search/`
 
 Contents:
-- `web_search` — executable shell script
-- `tool.json` — tool definition
+- `web_search` - executable shell script
+- `tool.json` - tool definition
 
 #### tool.json
 
@@ -151,7 +151,7 @@ Contents:
 }
 ```
 
-Note: `api_key` and `base_url` are NOT in `input_schema` — they are injected by the daemon from config.
+Note: `api_key` and `base_url` are NOT in `input_schema` - they are injected by the daemon from config.
 
 #### Shell Script (`web_search`)
 

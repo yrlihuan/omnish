@@ -101,8 +101,8 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 **主要特点:**
 - **tool.json 驱动**：每个插件子目录必须包含 `tool.json`，定义 `plugin_type`（`"client_tool"` 或 `"daemon_tool"`）和工具列表
 - **插件类型分类**（`PluginType` 枚举）：
-  - `DaemonTool` — 工具在守护进程内执行（如 `omnish_list_history`、`omnish_get_output`）
-  - `ClientTool` — 工具转发到客户端执行（如 `bash`、`read`、`edit`、`write`、`glob`、`grep` 等），客户端启动 `omnish-plugin` 子进程执行
+  - `DaemonTool` - 工具在守护进程内执行（如 `omnish_list_history`、`omnish_get_output`）
+  - `ClientTool` - 工具转发到客户端执行（如 `bash`、`read`、`edit`、`write`、`glob`、`grep` 等），客户端启动 `omnish-plugin` 子进程执行
 - **工具定义聚合**：通过 `all_tools()` 收集所有插件的工具定义，应用 `tool.override.json` 覆盖后返回
 - **状态模板插值**：每个工具可定义 `status_template`（如 `"执行: {command}"`），`tool_status_text()` 将 `{field}` 替换为实际输入参数
 - **沙箱标记**：所有工具强制启用沙箱（`sandboxed` 字段已不再允许 opt-out），Landlock 沙箱对所有工具均有效
@@ -145,15 +145,15 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - `override_params`: `RwLock<HashMap<String, HashMap<String, Value>>>` - 运行时参数覆盖
 
 **主要方法：**
-- `register(meta)` / `register_def(def)` — 启动时注册工具元数据和定义
-- `unregister_by_plugin(plugin_name)` — 移除指定插件的所有工具和定义（热重载禁用插件时使用）
-- `display_name(tool_name)` — 返回工具显示名，未注册时回退到工具名
-- `formatter_name(tool_name)` — 返回格式化器名称，未注册时回退 `"default"`
-- `status_text(tool_name, input)` — 若设置了 `custom_status` 则调用之，否则使用 `status_template` 插值
-- `plugin_type(tool_name)` / `plugin_name(tool_name)` — 查询插件类型和插件目录名
-- `all_defs()` — 返回所有工具定义（应用运行时描述覆盖后）
-- `update_overrides(descriptions, override_params)` — 热重载时原子更新运行时覆盖
-- `summarization_prompt(tool_name)` — 返回工具的 LLM 摘要化提示词模板
+- `register(meta)` / `register_def(def)` - 启动时注册工具元数据和定义
+- `unregister_by_plugin(plugin_name)` - 移除指定插件的所有工具和定义（热重载禁用插件时使用）
+- `display_name(tool_name)` - 返回工具显示名，未注册时回退到工具名
+- `formatter_name(tool_name)` - 返回格式化器名称，未注册时回退 `"default"`
+- `status_text(tool_name, input)` - 若设置了 `custom_status` 则调用之，否则使用 `status_template` 插值
+- `plugin_type(tool_name)` / `plugin_name(tool_name)` - 查询插件类型和插件目录名
+- `all_defs()` - 返回所有工具定义（应用运行时描述覆盖后）
+- `update_overrides(descriptions, override_params)` - 热重载时原子更新运行时覆盖
+- `summarization_prompt(tool_name)` - 返回工具的 LLM 摘要化提示词模板
 
 **ToolMeta 结构：**
 - `name`: `String` - 工具名
@@ -282,17 +282,17 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - `startup_time`: `Instant` - 缓存创建时间（守护进程启动时间）
 
 **主要方法：**
-- `new(omnish_dir)` — 初始化缓存，立即执行一次 `scan_updates()`。启动时将本机 hostname 写入 `transfer_locks`，使本地客户端在冷却期内不会触发下载
-- `past_startup_grace()` — 判断启动宽限期（60 秒）是否已过。宽限期内对 `UpdateCheck` 请求返回"无更新"，给守护进程自身更新周期留出时间
-- `check_update(os, arch, current_version)` — 使用缓存的扫描结果检查是否有更新版本
-- `check_update_with_checksum(os, arch, current_version)` — 检查更新并返回 `(version, checksum)`。优先匹配守护进程自身版本的包，回退到最高版本
-- `cached_package(os, arch)` — 查找某平台的缓存包，多版本时返回最高 semver 版本
-- `register_platform(os, arch)` — 记录客户端平台（供自动更新任务下载时使用）
-- `scan_updates()` — 扫描 `updates/` 目录刷新每平台最新版本。守护进程启动后每 60 秒定期执行
-- `cache_package(os, arch, version, source)` — 将包文件复制到缓存目录，保留最近 N 个版本
-- `download_from_local_dir(source_dir, os, arch)` — 从本地目录扫描最高版本包并复制到缓存（原子写入：先写 `.tmp-` 再 rename）
-- `download_from_github(api_url, platforms, client)` — 从 GitHub Releases API 下载多平台包到缓存。解析 `tag_name` 提取版本号，匹配 `omnish-{version}-{os}-{arch}.tar.gz` 格式的 asset
-- `try_acquire_transfer(hostname)` — 尝试获取主机传输锁（5 分钟冷却期），返回是否可以继续
+- `new(omnish_dir)` - 初始化缓存，立即执行一次 `scan_updates()`。启动时将本机 hostname 写入 `transfer_locks`，使本地客户端在冷却期内不会触发下载
+- `past_startup_grace()` - 判断启动宽限期（60 秒）是否已过。宽限期内对 `UpdateCheck` 请求返回"无更新"，给守护进程自身更新周期留出时间
+- `check_update(os, arch, current_version)` - 使用缓存的扫描结果检查是否有更新版本
+- `check_update_with_checksum(os, arch, current_version)` - 检查更新并返回 `(version, checksum)`。优先匹配守护进程自身版本的包，回退到最高版本
+- `cached_package(os, arch)` - 查找某平台的缓存包，多版本时返回最高 semver 版本
+- `register_platform(os, arch)` - 记录客户端平台（供自动更新任务下载时使用）
+- `scan_updates()` - 扫描 `updates/` 目录刷新每平台最新版本。守护进程启动后每 60 秒定期执行
+- `cache_package(os, arch, version, source)` - 将包文件复制到缓存目录，保留最近 N 个版本
+- `download_from_local_dir(source_dir, os, arch)` - 从本地目录扫描最高版本包并复制到缓存（原子写入：先写 `.tmp-` 再 rename）
+- `download_from_github(api_url, platforms, client)` - 从 GitHub Releases API 下载多平台包到缓存。解析 `tag_name` 提取版本号，匹配 `omnish-{version}-{os}-{arch}.tar.gz` 格式的 asset
+- `try_acquire_transfer(hostname)` - 尝试获取主机传输锁（5 分钟冷却期），返回是否可以继续
 
 **版本比较：**
 - 使用 `omnish_common::update::compare_versions()` 进行 semver 比较，支持 `git describe` 格式（如 `0.8.4-71-gdf067f6`）
@@ -304,10 +304,10 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 **规则格式：**`<param_field> <operator> <value>`
 
 **支持的操作符：**
-- `starts_with` — 字段值以 value 开头
-- `contains` — 字段值包含 value
-- `equals` — 字段值等于 value
-- `matches` — 字段值匹配正则表达式 value
+- `starts_with` - 字段值以 value 开头
+- `contains` - 字段值包含 value
+- `equals` - 字段值等于 value
+- `matches` - 字段值匹配正则表达式 value
 
 **示例配置（`daemon.toml`）：**
 ```toml
@@ -472,7 +472,7 @@ pub trait ToolFormatter: Send + Sync {
 }
 ```
 
-**`FormatterManager`** — 格式化器注册表：
+**`FormatterManager`** - 格式化器注册表：
 - `builtins`: `HashMap<String, Box<dyn ToolFormatter>>` - 内置格式化器（`"default"`、`"read"`、`"edit"`/`"write"`）
 - `externals`: `HashMap<String, ExternalFormatter>` - 外部格式化器（每个为一个长驻子进程）
 
@@ -516,8 +516,8 @@ pub trait ToolFormatter: Send + Sync {
 #### 格式化器选择顺序
 
 `FormatterManager::format(formatter_name, input)` 的查找顺序：
-1. `externals` 中查找 `formatter_name` — 优先使用外部格式化器
-2. `builtins` 中查找 `formatter_name` — 匹配内置格式化器
+1. `externals` 中查找 `formatter_name` - 优先使用外部格式化器
+2. `builtins` 中查找 `formatter_name` - 匹配内置格式化器
 3. 回退到 `"default"` 内置格式化器
 
 格式化器名称来自 `ToolRegistry::formatter_name(tool_name)`，由各插件的 `tool.json` 中 `formatter` 字段指定（默认 `"default"`）。
@@ -544,8 +544,8 @@ pub trait ToolFormatter: Send + Sync {
 - 不匹配的片段追加到末尾
 
 **内嵌资源：**
-- `CHAT_PROMPT_JSON` — 编译期内嵌的聊天提示词 JSON
-- `CHAT_OVERRIDE_EXAMPLE` — 覆盖文件的示例模板
+- `CHAT_PROMPT_JSON` - 编译期内嵌的聊天提示词 JSON
+- `CHAT_OVERRIDE_EXAMPLE` - 覆盖文件的示例模板
 
 **启动时行为：**
 - `chat.json` 每次启动覆盖写入 `~/.omnish/prompts/`
@@ -582,7 +582,7 @@ Today's date: 2026-03-15
 - 工作目录（优先使用会话探测的实时 `shell_cwd`，回退到最后命令记录的 cwd）
 - Git 仓库检测
 - 平台和操作系统版本（**来自客户端会话属性** `platform`/`os_version`，而非守护进程自身环境；客户端通过 `SessionUpdate` 上报探测结果）
-- 最近命令列表（可通过 `include_commands` 参数控制；聊天模式下不包含最近命令——仅在补全上下文中包含）
+- 最近命令列表（可通过 `include_commands` 参数控制；聊天模式下不包含最近命令--仅在补全上下文中包含）
 
 ## 工具使用与智能体循环
 
@@ -692,19 +692,19 @@ Assistant: {{final response}}
 - 支持增量持久化：通过 `persist_unsaved()` 在循环中间点保存进度
 
 **ChatToolCall 消息结构：**
-- `request_id` / `thread_id` — 关联到智能体循环
-- `tool_name` — 工具名
-- `tool_call_id` — LLM 分配的工具调用 ID
-- `input` — 工具输入参数（JSON 字符串，bincode 兼容）
-- `plugin_name` — 插件目录名（如 `"builtin"`）
-- `sandboxed` — 是否应用 Landlock 沙箱
+- `request_id` / `thread_id` - 关联到智能体循环
+- `tool_name` - 工具名
+- `tool_call_id` - LLM 分配的工具调用 ID
+- `input` - 工具输入参数（JSON 字符串，bincode 兼容）
+- `plugin_name` - 插件目录名（如 `"builtin"`）
+- `sandboxed` - 是否应用 Landlock 沙箱
 
 **ChatToolResult 消息结构：**
-- `request_id` / `thread_id` — 关联到智能体循环
-- `tool_call_id` — 对应的工具调用 ID
-- `content` — 工具执行结果文本
-- `is_error` — 是否为错误结果
-- `needs_summarization` — 是否需要 LLM 摘要化（由插件在响应中设置）
+- `request_id` / `thread_id` - 关联到智能体循环
+- `tool_call_id` - 对应的工具调用 ID
+- `content` - 工具执行结果文本
+- `is_error` - 是否为错误结果
+- `needs_summarization` - 是否需要 LLM 摘要化（由插件在响应中设置）
 
 ### LLM 工具结果摘要化
 
@@ -814,7 +814,7 @@ Assistant: {{final response}}
 **参数:**
 - `thread_id`: `&str` - 线程 ID
 
-**返回:** `Vec<(String, String)>` — 每对为 `(user_text, assistant_text)`
+**返回:** `Vec<(String, String)>` - 每对为 `(user_text, assistant_text)`
 
 **特性:**
 - 自动区分用户输入消息和工具结果消息（content 为字符串 vs 数组）
@@ -872,14 +872,14 @@ Assistant: {{final response}}
 
 **模式定义（`config_schema.toml`）：**
 编译期通过 `include_str!()` 内嵌，每个条目包含：
-- `path` — 点分隔的菜单层级路径（如 `"proxy.http_proxy"`、`"llm.use_cases.chat"`）
-- `label` — 菜单显示名称
-- `kind` — 配置项类型：`text`（文本输入）、`select`（下拉选择）、`toggle`（布尔开关）、`submenu`（子菜单）、`dynamic`（运行时动态展开占位符）
-- `toml_key` — 实际 `daemon.toml` 中的键路径（叶子项）
-- `options_from` — （select 类型）运行时从 TOML 表的键名动态生成选项（如 `"llm.backends"` 自动列出已配置的后端名）
-- `options` — （select 类型）静态选项列表
-- `handler` — （submenu 类型）Rust 处理函数名，用于分组变更的批量处理（如 `"add_backend"`）
-- `source` — （dynamic 类型）标识在此位置展开哪类动态内容，已知值：`"plugins"`
+- `path` - 点分隔的菜单层级路径（如 `"proxy.http_proxy"`、`"llm.use_cases.chat"`）
+- `label` - 菜单显示名称
+- `kind` - 配置项类型：`text`（文本输入）、`select`（下拉选择）、`toggle`（布尔开关）、`submenu`（子菜单）、`dynamic`（运行时动态展开占位符）
+- `toml_key` - 实际 `daemon.toml` 中的键路径（叶子项）
+- `options_from` - （select 类型）运行时从 TOML 表的键名动态生成选项（如 `"llm.backends"` 自动列出已配置的后端名）
+- `options` - （select 类型）静态选项列表
+- `handler` - （submenu 类型）Rust 处理函数名，用于分组变更的批量处理（如 `"add_backend"`）
+- `source` - （dynamic 类型）标识在此位置展开哪类动态内容，已知值：`"plugins"`
 
 **当前模式覆盖的配置项：**
 - 代理设置：`proxy`（HTTP 代理）、`no_proxy`
@@ -888,17 +888,17 @@ Assistant: {{final response}}
 - 动态项：已存在的后端自动生成编辑条目（`llm.backends.<name>.backend_type/model/api_key_cmd/base_url/use_proxy/context_window`）和 Delete 按钮（`llm.backends.<name>._delete`），后端按名称排序以确保 UI 顺序一致。每个后端注册为 `edit_backend` handler 子菜单
 - 每个后端新增 `use_proxy`（Toggle 类型）和 `context_window`（TextInput 类型）配置项
 - **插件配置项**（`build_plugin_items()` 函数，由 `dynamic` kind + `source = "plugins"` 触发）：遍历 `PluginManager::config_meta()` 为每个非 builtin 插件生成：
-  - `plugins.<name>.enabled`（Toggle）— 插件启用/禁用开关
-  - `plugins.<name>.<param>`（TextInput）— 插件声明的 `config_params` 参数（如 `api_key`）
+  - `plugins.<name>.enabled`（Toggle）- 插件启用/禁用开关
+  - `plugins.<name>.<param>`（TextInput）- 插件声明的 `config_params` 参数（如 `api_key`）
 - **沙箱配置**（`config_schema.toml` 中 `sandbox` submenu）：
-  - `sandbox._config` — 客户端侧占位符（`_client:sandbox_config`），展开为 enabled/backend 配置项，变更写入 `client.toml`
-  - `sandbox._availability` — 客户端侧占位符（`_client:sandbox_availability`），展开为彩色可用性状态行
-  - `sandbox._rules` — 客户端侧占位符（`_client:sandbox_rules`），展开为全局+本地合并的规则列表和 "Add permit rule" 表单；守护进程在此之前注入 `sandbox.__rules_json` Data 项（`build_rules_json()` 序列化当前全局规则）
-  - `build_tool_params_item()` — 注入 `sandbox.__tool_params_json` Data 项，包含所有客户端工具的 input_schema 参数名，供规则表单的 Param name Select picker 使用
+  - `sandbox._config` - 客户端侧占位符（`_client:sandbox_config`），展开为 enabled/backend 配置项，变更写入 `client.toml`
+  - `sandbox._availability` - 客户端侧占位符（`_client:sandbox_availability`），展开为彩色可用性状态行
+  - `sandbox._rules` - 客户端侧占位符（`_client:sandbox_rules`），展开为全局+本地合并的规则列表和 "Add permit rule" 表单；守护进程在此之前注入 `sandbox.__rules_json` Data 项（`build_rules_json()` 序列化当前全局规则）
+  - `build_tool_params_item()` - 注入 `sandbox.__tool_params_json` Data 项，包含所有客户端工具的 input_schema 参数名，供规则表单的 Param name Select picker 使用
 
 **核心函数：**
 
-**`build_config_items(config)`** — 从活跃配置构建配置项列表
+**`build_config_items(config)`** - 从活跃配置构建配置项列表
 - 解析模式定义，将 `DaemonConfig` 序列化为 `toml::Value` 树
 - 遍历模式条目，通过 `resolve_value()` 沿点分隔路径提取当前值
 - select 类型通过 `resolve_options()` 动态获取 TOML 表键名作为选项
@@ -906,42 +906,42 @@ Assistant: {{final response}}
 - Provider 预设选择器（`llm.backends.__new__.provider`）特殊处理：从 `omnish_llm::presets` 构建选项和 prefills 数据
 - 返回 `(Vec<ConfigItem>, Vec<ConfigHandlerInfo>)`
 
-**`apply_config_changes(config_path, changes)`** — 将配置变更写入 `daemon.toml`
+**`apply_config_changes(config_path, changes)`** - 将配置变更写入 `daemon.toml`
 - 将变更按是否属于某个 handler 分组（schema 中的 handler + `resolve_dynamic_handler()` 动态解析）
 - 普通变更：根据 kind 调用 `set_toml_value_nested()` 或 `set_toml_value_nested_bool()` 直接写入；路径以 `.use_proxy` 结尾或 `plugins.<name>.enabled` 格式时自动推断为 "toggle" 类型
 - handler 变更：分组后调用对应处理函数：
-  - `handle_add_backend` — 将新后端的各字段写入 `llm.backends.<name>.*`，纯 `api_key` 自动转换为 `api_key_cmd = "echo {key}"`
-  - `handle_edit_backend` — 修改已有后端字段；检测 `._delete` 按钮变更时调用 `remove_toml_table()` 删除整个后端表
-  - `handle_add_global_rule` — 从表单字段（plugin/field/operator/value）组装规则字符串，追加到 `sandbox.plugins.<plugin>.permit_rules` 数组
-  - `handle_edit_global_rule` — 按 plugin 和 index 修改或删除（`._delete`）已有全局规则
+  - `handle_add_backend` - 将新后端的各字段写入 `llm.backends.<name>.*`，纯 `api_key` 自动转换为 `api_key_cmd = "echo {key}"`
+  - `handle_edit_backend` - 修改已有后端字段；检测 `._delete` 按钮变更时调用 `remove_toml_table()` 删除整个后端表
+  - `handle_add_global_rule` - 从表单字段（plugin/field/operator/value）组装规则字符串，追加到 `sandbox.plugins.<plugin>.permit_rules` 数组
+  - `handle_edit_global_rule` - 按 plugin 和 index 修改或删除（`._delete`）已有全局规则
 
-**`resolve_dynamic_handler(path)`** — 为动态生成的配置项路径解析 handler 名称
+**`resolve_dynamic_handler(path)`** - 为动态生成的配置项路径解析 handler 名称
 - `llm.backends.<name>.<field>`（非 `__new__`）→ `"edit_backend"`
 - `sandbox.rules.__add__.<field>` → `"add_global_rule"`
 - `sandbox.rules.__edit__.<plugin>.<idx>.<field>` → `"edit_global_rule:<plugin>:<idx>"`
 
 ### ConfigQuery/ConfigUpdate 消息处理
 
-**`ConfigQuery`** — 客户端请求配置菜单数据
+**`ConfigQuery`** - 客户端请求配置菜单数据
 - 从 `ServerOpts.daemon_config` 读取当前配置
 - 调用 `build_config_items()` 生成配置项列表和 handler 信息
 - 注入 `build_tool_params_item()` 到 items 末尾（工具参数元数据，供客户端沙箱规则表单使用）
 - 返回 `ConfigResponse { items, handlers }`
 
-**`ConfigUpdate { changes }`** — 客户端提交配置变更
+**`ConfigUpdate { changes }`** - 客户端提交配置变更
 - 调用 `apply_config_changes()` 写入 `daemon.toml`
 - 成功后重新加载配置到 `ServerOpts.daemon_config`
 - 返回 `ConfigUpdateResult { ok, error }`
 
 ### 客户端更新检查与包分发
 
-**`UpdateCheck { os, arch, current_version, hostname }`** — 客户端检查更新
+**`UpdateCheck { os, arch, current_version, hostname }`** - 客户端检查更新
 - 将客户端平台注册到 `UpdateCache.known_platforms`（供自动更新任务下载对应平台包）
 - 启动宽限期（60 秒）内返回"无更新"，给守护进程自身更新周期留出时间
 - 宽限期后调用 `check_update_with_checksum()` 检查是否有更新，优先匹配守护进程版本的包
 - 返回 `UpdateInfo { latest_version, checksum, available }`
 
-**`UpdateRequest { os, arch, version, hostname }`** — 客户端请求下载更新包
+**`UpdateRequest { os, arch, version, hostname }`** - 客户端请求下载更新包
 - 通过 `try_acquire_transfer()` 获取主机传输锁（5 分钟冷却期）
 - 从缓存中查找匹配版本的包文件
 - 以 64KB 分块流式传输 `UpdateChunk` 消息（含序号、总大小、SHA-256 校验和）
@@ -980,10 +980,10 @@ Assistant: {{final response}}
 
 **ScheduledTask trait:**
 统一的定时任务接口，所有 6 个内置任务均实现此 trait：
-- `name() -> &'static str` — 人类可读的任务名称（作为 TaskManager 的 key）
-- `schedule() -> &str` — cron 表达式
-- `enabled() -> bool` — 是否启用（从 ConfigMap 读取，硬编码默认值）
-- `create_job(&TaskContext) -> Result<Job>` — 使用共享上下文构建 tokio-cron-scheduler Job
+- `name() -> &'static str` - 人类可读的任务名称（作为 TaskManager 的 key）
+- `schedule() -> &str` - cron 表达式
+- `enabled() -> bool` - 是否启用（从 ConfigMap 读取，硬编码默认值）
+- `create_job(&TaskContext) -> Result<Job>` - 使用共享上下文构建 tokio-cron-scheduler Job
 
 **TaskContext 共享上下文：**
 - `session_mgr`: `Arc<SessionManager>` - 会话管理器
@@ -1569,9 +1569,9 @@ max_line_width = 128
 ### Thinking 标签处理（#527, #516）
 
 三个函数处理 LLM 响应中 `<thinking>`/`<think>` 标签（仅匹配文本起始位置，避免误匹配）：
-- `strip_thinking_block(text)` — 移除 thinking 块，仅保留 closing tag 之后的文本。用于 hourly_summary、daily_notes、thread_summary 等摘要任务
-- `unwrap_thinking_tags(text)` — 剥离标签但保留 thinking 内容。用于智能体循环中间的 ChatToolStatus 文本转发
-- `thinking_to_markdown(text)` — 将 thinking 块转换为 `# Thinking` / `# Response` markdown 区段。用于最终 ChatResponse
+- `strip_thinking_block(text)` - 移除 thinking 块，仅保留 closing tag 之后的文本。用于 hourly_summary、daily_notes、thread_summary 等摘要任务
+- `unwrap_thinking_tags(text)` - 剥离标签但保留 thinking 内容。用于智能体循环中间的 ChatToolStatus 文本转发
+- `thinking_to_markdown(text)` - 将 thinking 块转换为 `# Thinking` / `# Response` markdown 区段。用于最终 ChatResponse
 
 ### `build_chat_setup()`
 构建聊天所需的共享状态（工具列表和系统提示词），被 `handle_chat_message()` 和 `/template chat` 共同使用。
@@ -1864,7 +1864,7 @@ async fn main() -> anyhow::Result<()> {
 - `sandbox_rules: Arc<RwLock<HashMap<String, Vec<PermitRule>>>>` - 沙箱许可规则，热重载时原子替换
 
 ### 锁争用修复
-- `evict_inactive()`: 两阶段操作 — 先在读锁下扫描候选者，再切换为写锁移除，避免长时间持有写锁
+- `evict_inactive()`: 两阶段操作 - 先在读锁下扫描候选者，再切换为写锁移除，避免长时间持有写锁
 - `cleanup_expired_dirs()`: 先在短暂读锁下快照已加载的会话ID，释放后再进行磁盘I/O，避免读锁持有期间执行文件系统操作导致其他客户端阻塞
 - `load_existing()`: 加载完成后显式 `drop(sessions)` 释放写锁，再调用 `cleanup_expired_dirs()`，避免死锁
 
@@ -1893,26 +1893,26 @@ async fn main() -> anyhow::Result<()> {
 
 守护进程支持`__cmd:`前缀的内部命令请求，所有命令响应以 JSON 格式返回（包含 `"display"` 字段用于终端展示，部分命令附加结构化数据字段）：
 
-- `__cmd:context [template]` — 获取LLM上下文（支持`completion`、`chat`、`daily-notes`、`hourly-notes`等模板名）
-- `__cmd:context chat` — 显示当前的 system-reminder（时间/cwd/命令等环境信息）
-- `__cmd:context chat:<thread_id>` — 获取指定聊天线程的对话上下文 + system-reminder
-- `__cmd:template [name]` — 查看实际的 LLM 提示词模板（通过 `build_chat_setup()` 构建，显示实际的工具定义和插件工具）
+- `__cmd:context [template]` - 获取LLM上下文（支持`completion`、`chat`、`daily-notes`、`hourly-notes`等模板名）
+- `__cmd:context chat` - 显示当前的 system-reminder（时间/cwd/命令等环境信息）
+- `__cmd:context chat:<thread_id>` - 获取指定聊天线程的对话上下文 + system-reminder
+- `__cmd:template [name]` - 查看实际的 LLM 提示词模板（通过 `build_chat_setup()` 构建，显示实际的工具定义和插件工具）
   - 支持参数：`chat`、`auto-complete`、`daily-notes`、`hourly-notes`
   - 聊天模板包含实际注册的工具定义（来自 `PluginManager`）
-- `__cmd:sessions` — 列出所有活跃会话
-- `__cmd:session` — 显示当前会话调试信息
-- `__cmd:daemon` — 显示守护进程版本号及当前定时任务列表（等同于 `/debug daemon`）
-- `__cmd:conversations` / `__cmd:conversations N` — 列出聊天对话，默认仅返回 20 条最近线程并在截断时给出总数提示，支持 `__cmd:conversations N` 显式请求更多；含 `thread_ids` 数组，按修改时间降序排列，显示相对时间（如 "12s ago"、"1h ago"）、交换次数、最后问题
-- `__cmd:resume` — 恢复最近的对话（等同于 `__cmd:resume 1`），返回结构化历史（`history` 数组含 `user_input`、`llm_text`、`tool_status`、`response`、`separator` 类型条目）及 `thread_id`
-- `__cmd:resume N` — 按索引恢复指定对话（1-based），返回结构化历史及 `thread_id`
-- `__cmd:resume_tid <thread_id>` — 按线程 ID 恢复对话（跨删除操作稳定），返回结构化历史
-- `__cmd:conversations stats` — 显示线程 token 用量统计（`/thread stats`）：当前活跃线程仅显示自身，无活跃线程时显示全部。每个线程显示模型名、context tokens（最近一次调用）、total tokens（累计）、cache 命中率、`sandbox: off`（若该线程已通过 `/thread sandbox off` 关闭沙箱）
-- `__cmd:thread sandbox[ on|off]:<thread_id>` — 切换线程级沙箱覆盖，无参数返回当前状态；写入 `ThreadMeta.sandbox_disabled` 并持久化
-- `__cmd:conversations del <thread_id>` — 按线程 ID 删除对话，返回 `deleted_thread_id`
-- `__cmd:models [thread_id]` — 列出所有可用后端（含 `name`、`model`、`selected` 字段），可选传入线程 ID 以显示该线程的当前模型选择
-- `__cmd:tasks [disable <name>]` — 查看或管理定时任务
-- `__cmd:debug commands [N]` — 显示最近 N 条（默认 30）shell 命令历史（完整格式，含参数）
-- `__cmd:debug command <seq>` — 显示指定序号命令的完整详情和输出（通过 `CommandQueryTool::get_command_detail(seq)` 获取）
+- `__cmd:sessions` - 列出所有活跃会话
+- `__cmd:session` - 显示当前会话调试信息
+- `__cmd:daemon` - 显示守护进程版本号及当前定时任务列表（等同于 `/debug daemon`）
+- `__cmd:conversations` / `__cmd:conversations N` - 列出聊天对话，默认仅返回 20 条最近线程并在截断时给出总数提示，支持 `__cmd:conversations N` 显式请求更多；含 `thread_ids` 数组，按修改时间降序排列，显示相对时间（如 "12s ago"、"1h ago"）、交换次数、最后问题
+- `__cmd:resume` - 恢复最近的对话（等同于 `__cmd:resume 1`），返回结构化历史（`history` 数组含 `user_input`、`llm_text`、`tool_status`、`response`、`separator` 类型条目）及 `thread_id`
+- `__cmd:resume N` - 按索引恢复指定对话（1-based），返回结构化历史及 `thread_id`
+- `__cmd:resume_tid <thread_id>` - 按线程 ID 恢复对话（跨删除操作稳定），返回结构化历史
+- `__cmd:conversations stats` - 显示线程 token 用量统计（`/thread stats`）：当前活跃线程仅显示自身，无活跃线程时显示全部。每个线程显示模型名、context tokens（最近一次调用）、total tokens（累计）、cache 命中率、`sandbox: off`（若该线程已通过 `/thread sandbox off` 关闭沙箱）
+- `__cmd:thread sandbox[ on|off]:<thread_id>` - 切换线程级沙箱覆盖，无参数返回当前状态；写入 `ThreadMeta.sandbox_disabled` 并持久化
+- `__cmd:conversations del <thread_id>` - 按线程 ID 删除对话，返回 `deleted_thread_id`
+- `__cmd:models [thread_id]` - 列出所有可用后端（含 `name`、`model`、`selected` 字段），可选传入线程 ID 以显示该线程的当前模型选择
+- `__cmd:tasks [disable <name>]` - 查看或管理定时任务
+- `__cmd:debug commands [N]` - 显示最近 N 条（默认 30）shell 命令历史（完整格式，含参数）
+- `__cmd:debug command <seq>` - 显示指定序号命令的完整详情和输出（通过 `CommandQueryTool::get_command_detail(seq)` 获取）
 
 这些命令由客户端的`/`命令转发，通过`handle_builtin_command()`函数处理。
 

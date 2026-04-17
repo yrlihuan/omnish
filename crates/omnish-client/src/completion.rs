@@ -115,11 +115,11 @@ impl ShellCompleter {
     /// Check if debounce timer has expired and we should send a request.
     ///
     /// Logic:
-    /// 1. Concurrent limit — don't exceed MAX_CONCURRENT_REQUESTS.
-    /// 2. Debounce — wait DEBOUNCE_MS after last input change.
-    /// 3. Dedup — if an active request already has the same input, only retry
+    /// 1. Concurrent limit - don't exceed MAX_CONCURRENT_REQUESTS.
+    /// 2. Debounce - wait DEBOUNCE_MS after last input change.
+    /// 3. Dedup - if an active request already has the same input, only retry
     ///    after timeout (2× for empty input to reduce spam).
-    /// 4. Require new input — sequence_id must have advanced since last send.
+    /// 4. Require new input - sequence_id must have advanced since last send.
     pub fn should_request(&self, current_sequence_id: u64, current_input: &str) -> bool {
         // Don't re-request for explicitly dismissed input
         if self.dismissed_input.as_deref() == Some(current_input) {
@@ -280,7 +280,7 @@ impl ShellCompleter {
                     best.text.clone()
                 } else if request_input.starts_with(&best.text) {
                     // LLM returned a prefix/subset of the input (e.g. input="rm 1.txt "
-                    // and LLM returned "rm 1.txt") — nothing to add, discard.
+                    // and LLM returned "rm 1.txt") - nothing to add, discard.
                     self.current_ghost = None;
                     crate::event_log::push(format!("on_response seq={}: rejected (input is prefix of suggestion)", response.sequence_id));
                     return None;
@@ -296,7 +296,7 @@ impl ShellCompleter {
                     let common = request_input.chars().zip(best.text.chars())
                         .take_while(|(a, b)| a == b).count();
                     if common > request_input.len() / 2 {
-                        // Likely a variant/correction — can't show as ghost
+                        // Likely a variant/correction - can't show as ghost
                         self.current_ghost = None;
                         crate::event_log::push(format!("on_response seq={}: rejected (correction, common={}/{})", response.sequence_id, common, request_input.len()));
                         return None;
@@ -664,11 +664,11 @@ mod tests {
         c.on_response(&resp, "git");
         assert_eq!(c.ghost(), Some(" status"));
 
-        // User types "git " — ghost trimmed to "status" (consumed " ")
+        // User types "git " - ghost trimmed to "status" (consumed " ")
         assert!(!c.on_input_changed("git ", 4));
         assert_eq!(c.ghost(), Some("status"));
 
-        // User types "git s" — ghost trimmed to "tatus"
+        // User types "git s" - ghost trimmed to "tatus"
         assert!(!c.on_input_changed("git s", 5));
         assert_eq!(c.ghost(), Some("tatus"));
     }
@@ -697,12 +697,12 @@ mod tests {
     #[test]
     fn test_on_input_changed_returns_false_when_no_ghost() {
         let mut c = ShellCompleter::new();
-        // No ghost set — clearing nothing should return false
+        // No ghost set - clearing nothing should return false
         assert!(!c.on_input_changed("ls", 1));
     }
 
     /// Regression: LLM returns full command "cargo run" but user already typed
-    /// "cargo" — ghost should be " run", not "cargo run".
+    /// "cargo" - ghost should be " run", not "cargo run".
     #[test]
     fn test_response_strips_input_prefix() {
         let mut c = ShellCompleter::new();
@@ -757,7 +757,7 @@ mod tests {
         c.on_response(&resp, "");
         assert_eq!(c.ghost(), Some("cargo run"));
 
-        // User types "cargo" — ghost trimmed to " run"
+        // User types "cargo" - ghost trimmed to " run"
         for (i, _ch) in "cargo".char_indices() {
             let typed: String = "cargo"[..=i].to_string();
             assert!(!c.on_input_changed(&typed, 2 + i as u64));
@@ -819,11 +819,11 @@ mod tests {
         c.on_response(&resp, "cargo");
         assert_eq!(c.ghost(), Some(" run"));
 
-        // User types "cargo " — matches ghost[0..1] = " ", trimmed to "run"
+        // User types "cargo " - matches ghost[0..1] = " ", trimmed to "run"
         assert!(!c.on_input_changed("cargo ", 2));
         assert_eq!(c.ghost(), Some("run"));
 
-        // User types "cargo t" — "t" != ghost[0..1] = "r", must clear
+        // User types "cargo t" - "t" != ghost[0..1] = "r", must clear
         assert!(c.on_input_changed("cargo t", 3));
         assert!(c.ghost().is_none());
     }
@@ -1154,7 +1154,7 @@ mod tests {
 
     /// Regression: input="rm 1.txt " (trailing space), LLM returns "rm 1.txt"
     /// (without space). The completion is a prefix of the input, meaning the LLM
-    /// has nothing to add — ghost should be None, not a duplicate of the input.
+    /// has nothing to add - ghost should be None, not a duplicate of the input.
     #[test]
     fn test_completion_subset_of_input_discarded() {
         let mut c = ShellCompleter::new();
@@ -1283,7 +1283,7 @@ mod tests {
         c.on_response(&resp, "git sta");
         c.dismiss();
 
-        // Input changes — dismissed state should be cleared, requests allowed
+        // Input changes - dismissed state should be cleared, requests allowed
         c.on_input_changed("git status ", 6);
         c.last_change = Some(Instant::now() - std::time::Duration::from_secs(1));
         assert!(c.should_request(6, "git status "));

@@ -100,7 +100,7 @@ Message::ChatToolStatus(ChatToolStatus {
 
 - [ ] **Step 5: Fix all compilation errors**
 
-Search for all places that construct `ChatToolStatus` and add the new fields with default values. Use `tool_call_id: None`, `status_icon: None`, `display_name: None`, `param_desc: None`, `result_compact: None`, `result_full: None` as defaults for now — they'll be populated in later tasks.
+Search for all places that construct `ChatToolStatus` and add the new fields with default values. Use `tool_call_id: None`, `status_icon: None`, `display_name: None`, `param_desc: None`, `result_compact: None`, `result_full: None` as defaults for now - they'll be populated in later tasks.
 
 Key locations:
 - `crates/omnish-daemon/src/server.rs:578` (LLM text)
@@ -371,7 +371,7 @@ mod tests {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p omnish-daemon -- formatter 2>&1`
-Expected: FAIL — `DefaultFormatter`, `ReadFormatter`, `EditFormatter` not defined
+Expected: FAIL - `DefaultFormatter`, `ReadFormatter`, `EditFormatter` not defined
 
 - [ ] **Step 3: Implement DefaultFormatter**
 
@@ -567,7 +567,7 @@ messages.push(Message::ChatToolStatus(ChatToolStatus {
 
 - [ ] **Step 3: Keep LLM text ChatToolStatus unchanged**
 
-The LLM text path (around line 574-586) should remain unchanged — it creates `ChatToolStatus` with empty `tool_name` and all new fields as `None`.
+The LLM text path (around line 574-586) should remain unchanged - it creates `ChatToolStatus` with empty `tool_name` and all new fields as `None`.
 
 - [ ] **Step 4: Verify compilation**
 
@@ -759,7 +759,7 @@ pub fn render_tool_output(lines: &[String]) -> Vec<String> {
 - [ ] **Step 3: Verify compilation**
 
 Run: `cargo check -p omnish-client 2>&1`
-Expected: many errors due to `scroll_history` type change — that's expected, will be fixed in next task.
+Expected: many errors due to `scroll_history` type change - that's expected, will be fixed in next task.
 
 - [ ] **Step 4: Commit display.rs changes only**
 
@@ -779,7 +779,7 @@ git commit -m "feat(client): add render_tool_header and render_tool_output displ
 
 - [ ] **Step 1: Update print_line to accept ScrollEntry**
 
-Replace `print_line` (lines 65-69) — it currently pushes a String. Split into two methods:
+Replace `print_line` (lines 65-69) - it currently pushes a String. Split into two methods:
 
 ```rust
 fn print_line(&mut self, line: &str) {
@@ -806,7 +806,7 @@ Some(Message::ChatToolStatus(cts)) => {
         self.print_line(&cts.status);
         self.push_entry(ScrollEntry::LlmText(cts.status.clone()));
     } else if cts.result_compact.is_none() {
-        // First status — tool is running
+        // First status - tool is running
         let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
         let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
         let param_desc = cts.param_desc.as_deref().unwrap_or("");
@@ -815,7 +815,7 @@ Some(Message::ChatToolStatus(cts)) => {
         self.print_line(&header);
         self.push_entry(ScrollEntry::ToolStatus(cts));
     } else {
-        // Second status — tool completed, update existing entry
+        // Second status - tool completed, update existing entry
         let tool_call_id = cts.tool_call_id.as_deref();
         // Find and update the matching ToolStatus entry
         if let Some(entry) = self.scroll_history.iter_mut().rev().find(|e| {
@@ -875,7 +875,7 @@ Search for remaining `self.scroll_history.push(...)` calls and convert them:
 - [ ] **Step 5: Verify compilation**
 
 Run: `cargo check -p omnish-client 2>&1`
-Expected: errors from browse_history — fixed in next task
+Expected: errors from browse_history - fixed in next task
 
 - [ ] **Step 6: Commit**
 

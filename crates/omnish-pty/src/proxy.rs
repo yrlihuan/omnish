@@ -133,7 +133,7 @@ impl PtyProxy {
     ) -> Result<RawFd> {
         // Kill old child
         nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGKILL).ok();
-        // Reap zombie (non-blocking — child might already be gone)
+        // Reap zombie (non-blocking - child might already be gone)
         waitpid(self.child_pid, Some(nix::sys::wait::WaitPidFlag::WNOHANG)).ok();
 
         // Create new PTY pair

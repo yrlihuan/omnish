@@ -74,7 +74,7 @@ fn test_command_record_load_empty() {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-store test_command_record`
-Expected: FAIL — module `command` not found
+Expected: FAIL - module `command` not found
 
 **Step 3: Write minimal implementation**
 
@@ -173,7 +173,7 @@ fn test_stream_writer_position_tracking() {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-store test_stream_writer_position`
-Expected: FAIL — no method `position` found
+Expected: FAIL - no method `position` found
 
 **Step 3: Write minimal implementation**
 
@@ -230,7 +230,7 @@ git commit -m "feat(store): add byte-position tracking to StreamWriter"
 
 ### Task 3: PromptDetector state machine
 
-Detects shell prompt patterns in the Output stream to identify command boundaries. Pure state machine with no I/O — operates on byte chunks.
+Detects shell prompt patterns in the Output stream to identify command boundaries. Pure state machine with no I/O - operates on byte chunks.
 
 **Files:**
 - Create: `crates/omnish-daemon/src/prompt_detector.rs`
@@ -319,7 +319,7 @@ mod tests {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-daemon prompt_detector`
-Expected: FAIL — module not found
+Expected: FAIL - module not found
 
 **Step 3: Write minimal implementation**
 
@@ -379,7 +379,7 @@ impl PromptDetector {
             self.line_buf.push(byte);
 
             if byte == b'\n' {
-                // Complete line — check for prompt, then clear buffer
+                // Complete line - check for prompt, then clear buffer
                 // (Prompts rarely end with \n, but clear the buffer regardless)
                 self.line_buf.clear();
                 offset = i + 1;
@@ -459,7 +459,7 @@ git commit -m "feat(daemon): add PromptDetector state machine for command segmen
 
 ---
 
-### Task 4: CommandTracker — builds CommandRecords from I/O stream
+### Task 4: CommandTracker - builds CommandRecords from I/O stream
 
 Sits between `SessionManager.write_io()` and `StreamWriter`. Uses `PromptDetector` to know when commands start/end, accumulates metadata, produces `CommandRecord` entries.
 
@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn test_first_prompt_starts_tracking() {
         let mut tracker = make_tracker();
-        // Initial prompt — no command yet, just starts tracking
+        // Initial prompt - no command yet, just starts tracking
         let cmds = tracker.feed_output(b"user@host:~$ ", 1000, 0);
         assert!(cmds.is_empty(), "first prompt should not produce a command");
         assert!(tracker.tracking(), "should be tracking after first prompt");
@@ -578,7 +578,7 @@ mod tests {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-daemon command_tracker`
-Expected: FAIL — module not found
+Expected: FAIL - module not found
 
 **Step 3: Write minimal implementation**
 
@@ -663,7 +663,7 @@ impl CommandTracker {
 
         for _event in events {
             if !self.seen_first_prompt {
-                // First prompt — start tracking, no command to finalize
+                // First prompt - start tracking, no command to finalize
                 self.seen_first_prompt = true;
                 self.pending = Some(PendingCommand {
                     seq: self.next_seq,
@@ -829,7 +829,7 @@ async fn test_commands_persisted_on_session_end() {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-daemon test_command_recording test_commands_persisted`
-Expected: FAIL — no method `get_commands` on `SessionManager`
+Expected: FAIL - no method `get_commands` on `SessionManager`
 
 **Step 3: Write implementation**
 
@@ -875,7 +875,7 @@ pub async fn write_io(
         session.stream_writer.write_entry(timestamp_ms, direction, data)?;
 
         if direction == 1 {
-            // Output from shell — feed to command tracker
+            // Output from shell - feed to command tracker
             let completed = session.command_tracker.feed_output(data, timestamp_ms, pos_before);
             if !completed.is_empty() {
                 session.commands.extend(completed);
@@ -971,7 +971,7 @@ fn test_read_range_from_stream() {
 **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-store test_read_range`
-Expected: FAIL — `read_range` not found
+Expected: FAIL - `read_range` not found
 
 **Step 3: Write minimal implementation**
 
@@ -1021,7 +1021,7 @@ git commit -m "feat(store): add read_range for offset-based stream access"
 
 ---
 
-### Task 7: Full integration test — end-to-end command recording
+### Task 7: Full integration test - end-to-end command recording
 
 A comprehensive test simulating a realistic multi-command session.
 
@@ -1050,7 +1050,7 @@ async fn test_multi_command_session_e2e() {
     mgr.write_io("e2e", 1003, 0, b"cargo build\r\n").await.unwrap();
     mgr.write_io("e2e", 1004, 1, b"   Compiling omnish v0.1.0\r\n    Finished dev\r\nuser@host:~/project$ ").await.unwrap();
 
-    // Command 3: cargo test (still running — no closing prompt)
+    // Command 3: cargo test (still running - no closing prompt)
     mgr.write_io("e2e", 1005, 0, b"cargo test\r\n").await.unwrap();
     mgr.write_io("e2e", 1006, 1, b"running 5 tests\r\n").await.unwrap();
 
@@ -1066,7 +1066,7 @@ async fn test_multi_command_session_e2e() {
     assert_eq!(commands[1].command_line.as_deref(), Some("cargo build"));
     assert!(commands[1].output_summary.contains("Compiling"));
 
-    // End session — should persist including any pending
+    // End session - should persist including any pending
     mgr.end_session("e2e").await.unwrap();
 }
 ```

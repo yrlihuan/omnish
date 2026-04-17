@@ -1,5 +1,5 @@
 # config/client.toml
-# Client configuration — copy to ~/.omnish/client.toml
+# Client configuration - copy to ~/.omnish/client.toml
 
 # Address of the daemon:
 #   Unix socket:  daemon_addr = "~/.omnish/omnish.sock"   (default)

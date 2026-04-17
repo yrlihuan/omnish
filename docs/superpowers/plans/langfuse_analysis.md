@@ -8,7 +8,7 @@
 
 ## 脚本职责
 
-### 1. `langfuse_utils.py` — 公共工具库
+### 1. `langfuse_utils.py` - 公共工具库
 
 所有 hook 脚本的共享基础模块，提供：
 
@@ -21,13 +21,13 @@
 - **文件 I/O**：原子写入 JSON、trace 状态文件的读写
 - **Trace manifest**：在仓库的 `.langfuse/traces/` 下写入 trace 元数据清单
 
-### 2. `langfuse_session_init_hook.py` — PreToolUse hook（会话初始化）
+### 2. `langfuse_session_init_hook.py` - PreToolUse hook（会话初始化）
 
 - **触发时机**：每次工具调用前（PreToolUse）
 - **功能**：在会话的首次工具调用时，生成确定性的 `trace_id`（基于 `session_id` 通过 Langfuse SDK 或 SHA-256 派生），写入 `~/.claude/state/langfuse_last_trace.json`。后续同一 session 的调用检测到已有记录后直接跳过
 - **目的**：让 `prepare-commit-msg` hook 能立即引用到 trace ID，而不必等到 Stop hook 运行之后
 
-### 3. `langfuse_hook.py` — Stop hook（核心追踪引擎）
+### 3. `langfuse_hook.py` - Stop hook（核心追踪引擎）
 
 - **触发时机**：Claude Code 会话结束时（Stop hook）
 - **功能**：
@@ -39,7 +39,7 @@
   6. 使用文件锁（`fcntl`）防止并发写入冲突
   7. 持久化处理进度到 `~/.claude/state/langfuse_state.json`
 
-### 4. `langfuse_git_commit_hook.py` — PostToolUse hook（Git 提交检测）
+### 4. `langfuse_git_commit_hook.py` - PostToolUse hook（Git 提交检测）
 
 - **触发时机**：每次 Bash 工具调用后（PostToolUse）
 - **功能**：
@@ -49,7 +49,7 @@
   4. 生成 Agent Trace Record（记录被修改文件、关联的 trace URL），写入 `.langfuse/traces/agent-trace-{sha}.json`
 - **目的**：将 git commit 与 Langfuse trace 关联，实现"哪个 AI 会话产生了哪个 commit"的溯源
 
-### 5. `langfuse_prepare_commit_msg.py` — Git prepare-commit-msg hook
+### 5. `langfuse_prepare_commit_msg.py` - Git prepare-commit-msg hook
 
 - **触发时机**：`git commit` 时，Git 自动调用
 - **功能**：自动在 commit message 末尾追加 `Langfuse-Session: <url>` trailer，链接到对应的 Langfuse session 页面。只在 trace 文件存在且不超过 4 小时时生效，跳过 merge/squash commit
@@ -79,8 +79,8 @@ JSONL（每行一个 JSON 对象），路径通过 hook payload 的 `transcriptP
 
 | 字段 | 来源代码 | 说明 |
 |------|----------|------|
-| `type` | `msg.get("type")` — 值为 `"user"` 或 `"assistant"` | 消息类型/角色 |
-| `timestamp` | `parse_timestamp()` — ISO 格式字符串 | 消息时间戳 |
+| `type` | `msg.get("type")` - 值为 `"user"` 或 `"assistant"` | 消息类型/角色 |
+| `timestamp` | `parse_timestamp()` - ISO 格式字符串 | 消息时间戳 |
 | `version` | `get_version()` | Claude Code 版本号 |
 | `message` | 嵌套对象，包含实际消息内容 | 消息体 |
 
@@ -108,7 +108,7 @@ JSONL（每行一个 JSON 对象），路径通过 hook payload 的 `transcriptP
 { "type": "text", "text": "这是 Claude 的回复文本..." }
 ```
 
-#### 工具调用块（Tool Use）— 仅 assistant 消息
+#### 工具调用块（Tool Use）- 仅 assistant 消息
 
 ```jsonc
 {
@@ -121,7 +121,7 @@ JSONL（每行一个 JSON 对象），路径通过 hook payload 的 `transcriptP
 }
 ```
 
-#### 工具结果块（Tool Result）— 仅 user 消息
+#### 工具结果块（Tool Result）- 仅 user 消息
 
 ```jsonc
 {
@@ -181,10 +181,10 @@ Transcript **不是** Claude API 原始请求/响应流的直接记录，而是 
 
 1. **有额外包装层**：外层有 `type`、`timestamp`、`version` 等 Claude Code 添加的字段，API 消息体嵌套在 `message` 字段内
 2. **缺失 API 级别信息**：
-   - `usage`（input_tokens / output_tokens）— 无 token 用量
-   - `stop_reason`（end_turn / tool_use / max_tokens）— 无停止原因
-   - system prompt — 无系统提示词
-   - `temperature`、`max_tokens` 等请求参数 — 无采样配置
+   - `usage`（input_tokens / output_tokens）- 无 token 用量
+   - `stop_reason`（end_turn / tool_use / max_tokens）- 无停止原因
+   - system prompt - 无系统提示词
+   - `temperature`、`max_tokens` 等请求参数 - 无采样配置
 3. **工具结果是本地记录**：时间戳反映本地执行完成时间，而非 API 调用时间
 4. **流式更新导致重复**：同一 `message.id` 可能出现多次（流式响应的多次快照）
 

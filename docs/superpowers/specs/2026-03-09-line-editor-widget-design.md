@@ -24,7 +24,7 @@ pub struct LineEditor {
 }
 ```
 
-Pure state management — no I/O. Caller handles terminal rendering and key parsing.
+Pure state management - no I/O. Caller handles terminal rendering and key parsing.
 
 ### Operations
 
@@ -43,8 +43,8 @@ Pure state management — no I/O. Caller handles terminal rendering and key pars
 | Delete | `delete_forward()` | Delete char after cursor; merge next line at line end |
 | Ctrl-U | `kill_to_start()` | Delete from cursor to line start |
 | Alt+Enter | `newline()` | Insert new line at cursor |
-| Enter | — | Handled by caller (submit) |
-| ESC | — | Handled by caller (cancel) |
+| Enter | - | Handled by caller (submit) |
+| ESC | - | Handled by caller (cancel) |
 
 ### Public API
 

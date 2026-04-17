@@ -1,6 +1,6 @@
 # Shell Info Periodic Polling Design
 
-**Issue:** #14 — Let client periodically read shell info (shell name, PID, CWD, child process name/PID)
+**Issue:** #14 - Let client periodically read shell info (shell name, PID, CWD, child process name/PID)
 
 ## Overview
 
@@ -10,8 +10,8 @@ Extend the existing Probe system to support periodic re-collection of dynamic sh
 
 ### 1. New Probes
 
-- **`ShellCwdProbe(pid: u32)`** — reads `/proc/{pid}/cwd` symlink to get the shell's actual working directory. Separate from the existing `CwdProbe` (which reads the client process's own CWD via `std::env::current_dir()`).
-- **`ChildProcessProbe(pid: u32)`** — uses the `procfs` crate to find direct children of the shell PID via `/proc/{pid}/task/{pid}/children`, then reads `/proc/{child_pid}/comm` for the process name. Returns a serialized string like `"vim:12345"` or empty string if no child foreground process.
+- **`ShellCwdProbe(pid: u32)`** - reads `/proc/{pid}/cwd` symlink to get the shell's actual working directory. Separate from the existing `CwdProbe` (which reads the client process's own CWD via `std::env::current_dir()`).
+- **`ChildProcessProbe(pid: u32)`** - uses the `procfs` crate to find direct children of the shell PID via `/proc/{pid}/task/{pid}/children`, then reads `/proc/{child_pid}/comm` for the process name. Returns a serialized string like `"vim:12345"` or empty string if no child foreground process.
 
 Existing probes (`ShellProbe`, `PidProbe`, `TtyProbe`, `CwdProbe`, `HostnameProbe`) remain unchanged.
 

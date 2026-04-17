@@ -6,9 +6,9 @@ Redesign omnish-transport to provide RPC-style request/response multiplexing ove
 
 ## Current Problems
 
-1. Single `Mutex<UnixStream>` — send and recv are mutually exclusive, blocking concurrent operations
-2. No request/response correlation — if two tasks send requests concurrently, recv can return the wrong response
-3. No separation of read/write paths — a slow recv blocks all sends
+1. Single `Mutex<UnixStream>` - send and recv are mutually exclusive, blocking concurrent operations
+2. No request/response correlation - if two tasks send requests concurrently, recv can return the wrong response
+3. No separation of read/write paths - a slow recv blocks all sends
 4. fire-and-forget sends silently discard errors with `let _ =`
 
 ## Design
@@ -125,4 +125,4 @@ Client                              Daemon
 
 - Reconnection (separate follow-up)
 - TCP transport (separate follow-up, but RpcClient/RpcServer work with any AsyncRead+AsyncWrite)
-- Streaming responses (LLM streaming — future consideration)
+- Streaming responses (LLM streaming - future consideration)

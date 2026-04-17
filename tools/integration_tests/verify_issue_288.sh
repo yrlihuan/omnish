@@ -8,11 +8,11 @@
 #
 # On the normal terminal display, long bash(...) headers are truncated
 # to terminal width with "…". In browse mode (Ctrl-O), the full header
-# should be rendered without our "…" truncation — the terminal clips
+# should be rendered without our "…" truncation - the terminal clips
 # at the right edge instead.
 #
 # Test cases:
-#   1. Long echo command — normal display truncated, browse mode not truncated
+#   1. Long echo command - normal display truncated, browse mode not truncated
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -27,7 +27,7 @@ EOF
 test_init "issue288" "$@"
 
 test_1() {
-    echo -e "\n${YELLOW}=== Test 1: Long echo — browse mode shows un-truncated header ===${NC}"
+    echo -e "\n${YELLOW}=== Test 1: Long echo - browse mode shows un-truncated header ===${NC}"
 
     restart_client
     wait_for_client
@@ -51,7 +51,7 @@ test_1() {
         return 1
     fi
 
-    # Check the normal screen — header should be truncated with …
+    # Check the normal screen - header should be truncated with …
     local content
     content=$(capture_pane -200)
 
@@ -109,5 +109,5 @@ test_1() {
     fi
 }
 
-echo -e "${YELLOW}Issue #288: bash tool display — full command in browse mode${NC}"
+echo -e "${YELLOW}Issue #288: bash tool display - full command in browse mode${NC}"
 run_tests 1

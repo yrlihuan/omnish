@@ -47,7 +47,7 @@ contexts.push(CommandContext {
 
 Every `CommandContext` literal in tests needs `session_id: "sess".into()` added. This will be done in Task 2 together with the formatter rewrite.
 
-Do NOT commit yet — code won't compile until Task 2 updates the tests.
+Do NOT commit yet - code won't compile until Task 2 updates the tests.
 
 ---
 
@@ -739,7 +739,7 @@ pub async fn get_session_context(&self, session_id: &str) -> Result<String> {
 
 **Step 3: Update get_all_sessions_context**
 
-This method no longer needs manual session headers — the formatter handles them. It needs to collect commands from ALL sessions into one list, pass a current_session_id (use the first one or a designated one). Since `get_all_sessions_context` is called without a "current" session context, pick the first session as current:
+This method no longer needs manual session headers - the formatter handles them. It needs to collect commands from ALL sessions into one list, pass a current_session_id (use the first one or a designated one). Since `get_all_sessions_context` is called without a "current" session context, pick the first session as current:
 
 ```rust
 pub async fn get_all_sessions_context(&self) -> Result<String> {
@@ -779,15 +779,15 @@ pub async fn get_all_sessions_context(&self) -> Result<String> {
 }
 ```
 
-Wait — the `StreamReader` doesn't know which session a read belongs to. The `build_context` orchestrator calls `reader.read_command_output(offset, length)` per command, but different commands may reference different stream.bin files.
+Wait - the `StreamReader` doesn't know which session a read belongs to. The `build_context` orchestrator calls `reader.read_command_output(offset, length)` per command, but different commands may reference different stream.bin files.
 
-**Solution:** Add a `MultiSessionReader` that maps `(offset, length)` back to the correct stream.bin by looking at which command is being read. A simpler approach: since `build_context` calls the reader for each command in order, and we know commands are from different sessions, we can make the reader accept `session_id` — but that would change the trait.
+**Solution:** Add a `MultiSessionReader` that maps `(offset, length)` back to the correct stream.bin by looking at which command is being read. A simpler approach: since `build_context` calls the reader for each command in order, and we know commands are from different sessions, we can make the reader accept `session_id` - but that would change the trait.
 
 **Better approach:** Keep `get_all_sessions_context` building per-session contexts and joining them. The GroupedFormatter already handles session labeling within a single call, but for multi-session we need all commands in one call. So let's add a `CompositeStreamReader` that wraps multiple `FileStreamReader`s keyed by stream offset ranges. Actually, the simplest approach: since each `CommandRecord` has unique `(stream_offset, stream_length)` pairs per session, and different sessions have different stream.bin files, we need the reader to know which file to read from.
 
 **Simplest fix:** Change the `StreamReader` trait to accept a session_id parameter, or build a reader that maps command offsets to files. Since changing the trait is cleaner:
 
-Actually, let's not change the trait. Instead, make `get_all_sessions_context` pass a current_session_id parameter and use a different approach — build context per-session then let the formatter handle multi-session display. But GroupedFormatter is designed to handle multiple sessions in one call.
+Actually, let's not change the trait. Instead, make `get_all_sessions_context` pass a current_session_id parameter and use a different approach - build context per-session then let the formatter handle multi-session display. But GroupedFormatter is designed to handle multiple sessions in one call.
 
 **Final approach for Task 4:** Add a `session_id` parameter to `get_all_sessions_context`. Modify the `StreamReader` trait signature is too disruptive. Instead, create a `MultiSessionReader` that maps `(stream_offset, stream_length)` to the right file by pre-computing which commands belong to which session:
 

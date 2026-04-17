@@ -6,12 +6,12 @@ Add a tool plugin system to omnish, allowing official and user plugins to extend
 
 ## Architecture Decisions
 
-1. **Protocol-first** — JSON-RPC 2.0 over stdin/stdout (JSONL). The protocol is the core contract; official plugins are "inlined protocol" implementations.
-2. **Long-running process** — Daemon spawns plugin at startup, keeps it running until daemon exit.
-3. **Unified interface** — `Plugin` trait abstracts both official (inline Rust) and external (JSON-RPC subprocess) plugins.
-4. **Pure function** — Plugins don't access daemon resources. They only process the `input` JSON from the LLM's tool call.
-5. **Convention-based discovery** — `~/.omnish/plugins/{name}/{name}` executable.
-6. **Config-driven enablement** — `daemon.toml` declares which plugins to load.
+1. **Protocol-first** - JSON-RPC 2.0 over stdin/stdout (JSONL). The protocol is the core contract; official plugins are "inlined protocol" implementations.
+2. **Long-running process** - Daemon spawns plugin at startup, keeps it running until daemon exit.
+3. **Unified interface** - `Plugin` trait abstracts both official (inline Rust) and external (JSON-RPC subprocess) plugins.
+4. **Pure function** - Plugins don't access daemon resources. They only process the `input` JSON from the LLM's tool call.
+5. **Convention-based discovery** - `~/.omnish/plugins/{name}/{name}` executable.
+6. **Config-driven enablement** - `daemon.toml` declares which plugins to load.
 
 ## JSON-RPC Protocol
 
@@ -144,8 +144,8 @@ impl PluginManager {
 }
 ```
 
-- `all_tools()` — collects tool definitions from all plugins (for LLM request)
-- `execute()` — finds plugin by tool name, delegates execution
+- `all_tools()` - collects tool definitions from all plugins (for LLM request)
+- `execute()` - finds plugin by tool name, delegates execution
 
 ### Startup flow
 

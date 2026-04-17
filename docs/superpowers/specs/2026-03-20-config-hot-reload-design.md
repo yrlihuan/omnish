@@ -6,7 +6,7 @@
 
 ## Problem
 
-When `daemon.toml` is modified, the daemon must be restarted for changes to take effect. This is inconvenient — users expect config changes (like sandbox permit rules) to apply without restart.
+When `daemon.toml` is modified, the daemon must be restarted for changes to take effect. This is inconvenient - users expect config changes (like sandbox permit rules) to apply without restart.
 
 Additionally, the existing file watcher in `plugin.rs` (for `tool.override.json`) is self-contained and not reusable. A shared mechanism would serve both use cases.
 
@@ -45,7 +45,7 @@ impl FileWatcher {
     /// after run() has started. Returns a Receiver that fires on change.
     pub fn watch(&self, path: PathBuf) -> watch::Receiver<()>;
 
-    /// Start the event loop. Takes &self — the watcher remains usable
+    /// Start the event loop. Takes &self - the watcher remains usable
     /// for dynamic watch registration by other components.
     pub async fn run(&self);
 }
@@ -59,8 +59,8 @@ impl FileWatcher {
 - Single event loop serves all watched paths (one inotify fd, one poll loop).
 - Each watched path gets its own `watch::Sender<()>` / `Receiver<()>` pair.
 - For directory watches, any file change within the directory fires the notification.
-- `watch` channel coalesces rapid changes naturally — multiple `send()` calls before `changed().await` returns result in a single notification. This is intentional debouncing (e.g. vim's write-temp-then-rename pattern).
-- `watch()` can be called at any time — before or after `run()`. Internal `Mutex` protects the watch list. Each module registers its own watches via `Arc<FileWatcher>` dependency injection.
+- `watch` channel coalesces rapid changes naturally - multiple `send()` calls before `changed().await` returns result in a single notification. This is intentional debouncing (e.g. vim's write-temp-then-rename pattern).
+- `watch()` can be called at any time - before or after `run()`. Internal `Mutex` protects the watch list. Each module registers its own watches via `Arc<FileWatcher>` dependency injection.
 
 ### Module 2: ConfigWatcher (`config_watcher.rs`)
 
@@ -101,7 +101,7 @@ impl ConfigWatcher {
 ```
 
 **`reload()` implementation order:**
-1. Read file and parse TOML (no lock held — this is blocking I/O but infrequent).
+1. Read file and parse TOML (no lock held - this is blocking I/O but infrequent).
 2. Acquire write lock on `current`.
 3. Diff each section via `PartialEq`, notify changed sections.
 4. Swap in new config, release lock.
@@ -122,7 +122,7 @@ impl ConfigWatcher {
 
 **Note:** `ConfigSection::Tools` and other future sections are defined in the enum but have no subscribers in this iteration. Only `Sandbox` is wired up.
 
-### Module 3: Subscriber — Sandbox Rules
+### Module 3: Subscriber - Sandbox Rules
 
 The only subscriber wired up in this iteration.
 

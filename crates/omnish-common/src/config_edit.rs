@@ -391,7 +391,7 @@ mod tests {
         let path = dir.path().join("test.toml");
         fs::write(&path, "").unwrap();
 
-        // Backend name "gemini-3.1" contains a dot — must be quoted in the key path
+        // Backend name "gemini-3.1" contains a dot - must be quoted in the key path
         set_toml_value_nested(&path, "llm.backends.\"gemini-3.1\".model", "gemini-3.1-pro").unwrap();
         set_toml_value_nested(&path, "llm.backends.\"gemini-3.1\".backend_type", "openai-compat").unwrap();
 

@@ -60,7 +60,7 @@ test_1() {
     echo -e "  Tool header count: $header_count"
 
     if [[ $header_count -eq 0 ]]; then
-        assert_fail "No tool headers found — LLM may not have used parallel tools"
+        assert_fail "No tool headers found - LLM may not have used parallel tools"
         return 1
     fi
 

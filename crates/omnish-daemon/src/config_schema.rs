@@ -86,7 +86,7 @@ pub fn build_config_items(
         })
         .collect();
 
-    // Only submenus with an actual handler — label-only submenus don't form
+    // Only submenus with an actual handler - label-only submenus don't form
     // a handler subtree, so their children are treated as independent items.
     let handler_paths: Vec<&str> = schema.iter()
         .filter(|s| s.handler.is_some())
@@ -543,7 +543,7 @@ fn handle_edit_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow:
     let backend_path = changes.iter()
         .find_map(|c| {
             let rest = c.path.strip_prefix("llm.backends.")?;
-            // rest = "<name>.<field>" — find the name (may be quoted)
+            // rest = "<name>.<field>" - find the name (may be quoted)
             let segments = omnish_common::config_edit::split_key_path(rest);
             if segments.len() >= 2 {
                 let name = &segments[0];
@@ -853,7 +853,7 @@ mod tests {
                 }
             }
             // Items with no ConfigSection mapping (e.g. listen_addr) are
-            // intentionally excluded — they require a daemon restart.
+            // intentionally excluded - they require a daemon restart.
         }
 
         // Deduplicate by section for a cleaner error message

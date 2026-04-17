@@ -667,7 +667,7 @@ mod tests {
         let pos_history = result.find("--- History ---").unwrap();
         let pos_detailed = result.find("--- term A [current] ---").unwrap();
         assert!(pos_history < pos_detailed);
-        // History section should not contain timestamps — extract just the history block
+        // History section should not contain timestamps - extract just the history block
         let history_block = &result[..result.find("--- term A").unwrap()];
         assert!(!history_block.contains("ago]"));
     }

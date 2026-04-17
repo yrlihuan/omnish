@@ -1,6 +1,6 @@
 //! Verifies the chat agent loop marks last-2 messages with Long.
 //!
-//! Mirrors the helper's logic — if you change `mark_chat_message_hints`,
+//! Mirrors the helper's logic - if you change `mark_chat_message_hints`,
 //! update this test (it's intentionally redundant for safety).
 
 use omnish_llm::backend::{CacheHint, TaggedMessage};

@@ -1,16 +1,16 @@
 # Config schema: maps menu items to daemon.toml keys.
-# Embedded via include_str!() — changes require recompilation.
+# Embedded via include_str!() - changes require recompilation.
 #
 # Fields:
-#   path         — dot-separated menu hierarchy (e.g., "proxy.http_proxy")
-#   label        — display name in menu
-#   kind         — text | select | toggle | submenu | dynamic
-#   toml_key     — actual daemon.toml key path (leaf items without handler)
-#   options_from — (select) TOML table whose keys become options at runtime
-#   options      — (select) static option list
-#   handler      — (submenu) Rust function name for grouped change handling
-#   default      — fallback value when toml_key is absent from config
-#   source       — (dynamic) marker identifying which dynamic items to expand
+#   path         - dot-separated menu hierarchy (e.g., "proxy.http_proxy")
+#   label        - display name in menu
+#   kind         - text | select | toggle | submenu | dynamic
+#   toml_key     - actual daemon.toml key path (leaf items without handler)
+#   options_from - (select) TOML table whose keys become options at runtime
+#   options      - (select) static option list
+#   handler      - (submenu) Rust function name for grouped change handling
+#   default      - fallback value when toml_key is absent from config
+#   source       - (dynamic) marker identifying which dynamic items to expand
 #                  at this position. Known sources: "plugins"
 
 # ── General > Hotkeys ─────────────────────────────────

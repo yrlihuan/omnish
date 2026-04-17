@@ -45,7 +45,7 @@ Expected: no errors (the function is `fn`, not `pub fn`, so no unused warning on
 
 Note: On Linux where we're building, clippy may warn about unused function since `sandbox_profile` doesn't exist on Linux. To fix this, add `#[cfg(any(target_os = "linux", target_os = "macos"))]` instead of removing the gate entirely. However, since we always build on Linux, and the function is used by `apply_sandbox()` on Linux, no warning will appear. If cross-compiling for other targets (e.g., Windows), the warning would appear but we don't support Windows.
 
-Actually, the simplest approach: keep the function ungated. On Linux it's used by `apply_sandbox()`. On macOS it will be used by `sandbox_profile()`. On other platforms it's unused but that's fine — we only target Linux and macOS.
+Actually, the simplest approach: keep the function ungated. On Linux it's used by `apply_sandbox()`. On macOS it will be used by `sandbox_profile()`. On other platforms it's unused but that's fine - we only target Linux and macOS.
 
 - [ ] **Step 3: Commit**
 
@@ -188,7 +188,7 @@ mod tests {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p omnish-plugin -- tests`
-Expected: FAIL — `escape_sb_path` and `build_sandbox_profile` don't exist yet
+Expected: FAIL - `escape_sb_path` and `build_sandbox_profile` don't exist yet
 
 - [ ] **Step 3: Add `escape_sb_path()` and `build_sandbox_profile()` implementations**
 

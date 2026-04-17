@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: Update DaemonConfig — merge `tools` into `plugins`
+### Task 1: Update DaemonConfig - merge `tools` into `plugins`
 
 **Files:**
 - Modify: `crates/omnish-common/src/config.rs`
@@ -34,12 +34,12 @@ Remove the `PluginsConfig` struct and change the `plugins` and `tools` fields in
     pub plugins: HashMap<String, HashMap<String, serde_json::Value>>,
 ```
 
-Also remove `#[serde(skip_serializing)]` — the new `plugins` field should serialize normally.
+Also remove `#[serde(skip_serializing)]` - the new `plugins` field should serialize normally.
 
 - [ ] **Step 2: Verify it compiles**
 
 Run: `cargo check -p omnish-common --release 2>&1 | head -20`
-Expected: Success (omnish-common itself should compile; downstream crates will fail — that's Task 2-3).
+Expected: Success (omnish-common itself should compile; downstream crates will fail - that's Task 2-3).
 
 - [ ] **Step 3: Commit**
 
@@ -50,14 +50,14 @@ git commit -m "refactor: merge tools into plugins in DaemonConfig (#484)"
 
 ---
 
-### Task 2: Update plugin.rs — fix auto_install, change load() signature, add config_params
+### Task 2: Update plugin.rs - fix auto_install, change load() signature, add config_params
 
 **Files:**
 - Modify: `crates/omnish-daemon/src/plugin.rs`
 
 - [ ] **Step 1: Update auto_install_bundled_plugins**
 
-Change `tools_config` references to `plugins_config` — the parameter name and lookup key change from `"web_search"` tool to `"web_search"` plugin (same key, different semantic):
+Change `tools_config` references to `plugins_config` - the parameter name and lookup key change from `"web_search"` tool to `"web_search"` plugin (same key, different semantic):
 
 ```rust
 pub fn auto_install_bundled_plugins(
@@ -162,7 +162,7 @@ In the directory scan loop, after parsing `ToolJsonFile`, add enabled check:
     }
 ```
 
-The rest of the load logic (tool registration, tool_index building) stays the same — disabled plugins have empty `tools` vec so they contribute nothing to the index.
+The rest of the load logic (tool registration, tool_index building) stays the same - disabled plugins have empty `tools` vec so they contribute nothing to the index.
 
 - [ ] **Step 6: Add config_meta() method**
 
@@ -183,7 +183,7 @@ pub fn config_meta(&self) -> Vec<PluginConfigMeta> {
 - [ ] **Step 7: Verify it compiles**
 
 Run: `cargo check -p omnish-daemon --release 2>&1 | head -30`
-Expected: Compilation errors in main.rs and server.rs (callsite mismatches) — fixed in Task 3.
+Expected: Compilation errors in main.rs and server.rs (callsite mismatches) - fixed in Task 3.
 
 - [ ] **Step 8: Commit**
 
@@ -194,7 +194,7 @@ git commit -m "feat: add config_params support and enabled flag to PluginManager
 
 ---
 
-### Task 3: Fix callsites — main.rs and server.rs
+### Task 3: Fix callsites - main.rs and server.rs
 
 **Files:**
 - Modify: `crates/omnish-daemon/src/main.rs`
@@ -214,7 +214,7 @@ Change `PluginManager::load` call (around line 276):
 let plugin_mgr = Arc::new(omnish_daemon::plugin::PluginManager::load(&plugins_dir, &config.plugins));
 ```
 
-Change `DaemonServer::new` call (around line 392) — replace `config.tools` with `config.plugins`:
+Change `DaemonServer::new` call (around line 392) - replace `config.tools` with `config.plugins`:
 
 ```rust
 let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr, tool_registry, config.plugins, server_opts, formatter_mgr, Arc::clone(&update_cache));
@@ -326,7 +326,7 @@ In `apply_config_changes`, update the kind inference for generic changes. Change
 - [ ] **Step 4: Verify it compiles**
 
 Run: `cargo check -p omnish-daemon --release 2>&1 | head -20`
-Expected: Compilation errors in server.rs where `build_config_items` is called without the new parameter — fixed in Task 5.
+Expected: Compilation errors in server.rs where `build_config_items` is called without the new parameter - fixed in Task 5.
 
 - [ ] **Step 5: Commit**
 

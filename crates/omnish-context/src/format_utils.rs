@@ -89,7 +89,7 @@ pub fn assign_term_labels(
 }
 
 /// Assign session labels by chronological order of first appearance.
-/// Unlike `assign_term_labels`, this does NOT prioritize the current session —
+/// Unlike `assign_term_labels`, this does NOT prioritize the current session -
 /// labels are stable across requests regardless of which terminal is "current".
 /// Format: "hostname (term A)", or "term A" if no hostname available.
 pub fn assign_stable_term_labels(

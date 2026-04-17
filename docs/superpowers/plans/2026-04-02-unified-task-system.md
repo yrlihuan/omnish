@@ -135,7 +135,7 @@ It is no longer referenced. Search and delete if present.
 - [ ] **Step 3: Build to verify**
 
 Run: `cargo build --release 2>&1 | tail -5`
-Expected: compile errors in main.rs (references to old config fields) — that's OK, we fix those in later tasks.
+Expected: compile errors in main.rs (references to old config fields) - that's OK, we fix those in later tasks.
 
 - [ ] **Step 4: Commit**
 
@@ -195,7 +195,7 @@ drop(dc);
 execute_daemon_plugin(&exe, &tc.name, &merged_input, proxy.as_deref(), no_proxy.as_deref()).await
 ```
 
-(There are two call sites — search for `opts.proxy` and update both.)
+(There are two call sites - search for `opts.proxy` and update both.)
 
 - [ ] **Step 3: Update ServerOpts construction in main.rs**
 
@@ -387,7 +387,7 @@ impl TaskManager {
 - [ ] **Step 2: Build to verify**
 
 Run: `cargo build --release -p omnish-daemon 2>&1 | tail -10`
-Expected: may have errors from server.rs import (ServerOpts is used in task_mgr.rs now). Fix circular import if needed — ServerOpts is defined in server.rs which is in the binary crate, not the library crate. If so, move ServerOpts definition or use a forward reference. See Task 3 Step 3.
+Expected: may have errors from server.rs import (ServerOpts is used in task_mgr.rs now). Fix circular import if needed - ServerOpts is defined in server.rs which is in the binary crate, not the library crate. If so, move ServerOpts definition or use a forward reference. See Task 3 Step 3.
 
 - [ ] **Step 3: Handle module visibility**
 
@@ -731,7 +731,7 @@ Replace lines 144-251 (from `let evict_hours` through `task_mgr.start()`) with:
     });
 ```
 
-(The ServerOpts and TaskContext are created after config_watcher is set up — see Step 2.)
+(The ServerOpts and TaskContext are created after config_watcher is set up - see Step 2.)
 
 - [ ] **Step 2: Create TaskContext and register tasks after ServerOpts is built**
 
@@ -934,7 +934,7 @@ Expected: all tests pass. Fix any test failures from the refactoring.
 
 - [ ] **Step 3: Verify existing daemon.toml compatibility**
 
-Ensure that a daemon.toml with the old `[tasks.disk_cleanup] schedule = "..."` still deserializes without error (the `schedule` field is just ignored since `DiskCleanupConfig` no longer has it — serde's default behavior with `#[serde(default)]` on the struct will skip unknown fields). If serde strict mode is on, add `#[serde(deny_unknown_fields)]` is NOT used, so unknown fields are silently ignored. Verify this.
+Ensure that a daemon.toml with the old `[tasks.disk_cleanup] schedule = "..."` still deserializes without error (the `schedule` field is just ignored since `DiskCleanupConfig` no longer has it - serde's default behavior with `#[serde(default)]` on the struct will skip unknown fields). If serde strict mode is on, add `#[serde(deny_unknown_fields)]` is NOT used, so unknown fields are silently ignored. Verify this.
 
 - [ ] **Step 4: Final commit if any fixups needed**
 

@@ -74,7 +74,7 @@ mod tests {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p omnish-client chat_layout -- --nocapture`
-Expected: FAIL — `ChatLayout` not found
+Expected: FAIL - `ChatLayout` not found
 
 - [ ] **Step 3: Implement ChatLayout struct + redraw_all**
 
@@ -213,7 +213,7 @@ fn test_update_same_height() {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p omnish-client chat_layout -- --nocapture`
-Expected: FAIL — `region_offset` and `update` not found
+Expected: FAIL - `region_offset` and `update` not found
 
 - [ ] **Step 3: Implement region_offset and update**
 
@@ -411,7 +411,7 @@ fn test_cursor_to() {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p omnish-client chat_layout -- --nocapture`
-Expected: FAIL — `hide` and `cursor_to` not found
+Expected: FAIL - `hide` and `cursor_to` not found
 
 - [ ] **Step 3: Implement hide and cursor_to**
 
@@ -616,7 +616,7 @@ mod tests {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-client text_view -- --nocapture`
-Expected: FAIL — `TextView` not found
+Expected: FAIL - `TextView` not found
 
 - [ ] **Step 3: Implement TextView**
 
@@ -699,7 +699,7 @@ fn test_compact_lines_fewer_than_height() {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-client scroll_view::tests::test_compact_lines -- --nocapture`
-Expected: FAIL — `compact_lines` not found
+Expected: FAIL - `compact_lines` not found
 
 - [ ] **Step 3: Implement compact_lines**
 
@@ -799,7 +799,7 @@ fn test_render_multiline() {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-client line_editor::tests::test_render -- --nocapture`
-Expected: FAIL — `render` not found
+Expected: FAIL - `render` not found
 
 - [ ] **Step 3: Implement render**
 
@@ -911,7 +911,7 @@ fn test_lines_accessor() {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p omnish-client line_status::tests::test_lines_accessor -- --nocapture`
-Expected: FAIL — `lines_content` not found
+Expected: FAIL - `lines_content` not found
 
 - [ ] **Step 3: Implement lines_content**
 
@@ -946,7 +946,7 @@ git commit -m "feat: add LineStatus.lines_content() accessor"
 
 ## Chunk 3: main.rs Integration
 
-### Task 9: Wire ChatLayout into run_chat_loop — status + scroll_view
+### Task 9: Wire ChatLayout into run_chat_loop - status + scroll_view
 
 Replace direct stdout writes for LineStatus and ScrollView rendering with ChatLayout.
 
@@ -980,7 +980,7 @@ let (rows, cols) = get_terminal_size().unwrap_or((24, 80));
 let lines: Vec<&str> = rendered.split("\r\n").collect();
 let compact_h = (rows as usize / 3).max(3);
 if lines.len() <= rows as usize - 2 {
-    // Fits on screen — use as-is
+    // Fits on screen - use as-is
     let content_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     let seq = layout.update("scroll_view", content_lines);
     nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
@@ -989,7 +989,7 @@ if lines.len() <= rows as usize - 2 {
     let expanded_h = (rows as usize).saturating_sub(3);
     let mut sv = ScrollView::new(compact_h, expanded_h, cols as usize);
     for line in &lines {
-        sv.push_line(line); // ignore return value — layout handles rendering
+        sv.push_line(line); // ignore return value - layout handles rendering
     }
     let sv_lines = sv.compact_lines();
     let seq = layout.update("scroll_view", sv_lines);
@@ -1116,7 +1116,7 @@ Note: The exact cursor column calculation may need adjustment for multi-line edi
 - [ ] **Step 4: Update Ctrl+O handler to use layout**
 
 ```rust
-0x0f => { // Ctrl-O — browse scroll view
+0x0f => { // Ctrl-O - browse scroll view
     if let Some(ref mut sv) = scroll_view {
         // Erase layout area
         let total = layout.total_height();
@@ -1136,7 +1136,7 @@ Note: The exact cursor column calculation may need adjustment for multi-line edi
 }
 ```
 
-This uses `set_content()` (defined in Task 1) which updates region content without producing ANSI — suitable for use before `redraw_all()`.
+This uses `set_content()` (defined in Task 1) which updates region content without producing ANSI - suitable for use before `redraw_all()`.
 
 - [ ] **Step 5: Build and verify**
 
@@ -1148,7 +1148,7 @@ Expected: compiles without errors
 Run: `cargo test -p omnish-client`
 Expected: all tests pass
 
-- [ ] **Step 7: Manual test — run omnish and verify chat mode works**
+- [ ] **Step 7: Manual test - run omnish and verify chat mode works**
 
 Test scenarios:
 1. Enter chat with `:`, type a message, verify response renders correctly
@@ -1170,7 +1170,7 @@ git commit -m "refactor: wire ChatLayout into read_chat_input with editor region
 
 ---
 
-### Task 11: Cleanup — remove render_with_scroll_view and dead code
+### Task 11: Cleanup - remove render_with_scroll_view and dead code
 
 **Files:**
 - Modify: `crates/omnish-client/src/main.rs`
@@ -1178,7 +1178,7 @@ git commit -m "refactor: wire ChatLayout into read_chat_input with editor region
 
 - [ ] **Step 1: Remove render_with_scroll_view function**
 
-Delete the `render_with_scroll_view()` function (lines ~2742-2763) — it's fully replaced by layout.update + ScrollView.compact_lines.
+Delete the `render_with_scroll_view()` function (lines ~2742-2763) - it's fully replaced by layout.update + ScrollView.compact_lines.
 
 - [ ] **Step 2: Remove render_chat_prompt if unused**
 

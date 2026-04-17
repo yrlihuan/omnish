@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn test_long_line_truncation_multibyte() {
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        // 2001 CJK characters (3 bytes each) — must not panic
+        // 2001 CJK characters (3 bytes each) - must not panic
         let long_line = "操".repeat(2001);
         write!(tmp, "{}", long_line).unwrap();
         let tool = ReadTool::new();

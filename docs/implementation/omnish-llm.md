@@ -120,7 +120,7 @@ LLM停止生成的原因：
 - `add(name, content)`: 添加具名片段，按插入顺序排列
 - `build()`: 将所有片段用 `\n\n` 连接，生成最终系统提示词
 - `from_json(json)`: 从JSON数组加载片段（`[{name, content}]`，content支持字符串或字符串数组）
-- `merge(overrides)`: 合并覆盖片段——同名片段替换，新片段追加
+- `merge(overrides)`: 合并覆盖片段--同名片段替换，新片段追加
 - `default_chat()`: 从编译内嵌的`chat.json`创建默认chat提示词管理器
 
 **提示词片段格式：**
@@ -258,8 +258,8 @@ LLM后端配置结构体（来自omnish-common）：
 - `model`: 模型名称
 - `api_key_cmd`: 获取API密钥的命令
 - `base_url`: API基础URL（anthropic支持自定义，openai-compat必需）
-- `use_proxy`: 是否使用全局代理（布尔值，默认false）——仅当此字段为true时，该后端才会应用全局proxy配置
-- `context_window`: 上下文窗口大小（token数，可选）——当`max_content_chars`未设置时，默认使用`context_window * 1.5`
+- `use_proxy`: 是否使用全局代理（布尔值，默认false）--仅当此字段为true时，该后端才会应用全局proxy配置
+- `context_window`: 上下文窗口大小（token数，可选）--当`max_content_chars`未设置时，默认使用`context_window * 1.5`
 - `max_content_chars`: 该模型的上下文最大字符数（可选，高级覆盖，优先级高于`context_window`推算值）
 
 #### `LangfuseConfig`（omnish-common）
@@ -361,12 +361,12 @@ Langfuse可观测性配置结构体：
 
 ### 常量
 
-- `DAILY_NOTES_PROMPT` — 每日工作总结的LLM提示（英文基底），以项目/目标为主线汇总各时段 `<hourly_summaries>`，通过 `append_language_instruction()` 注入目标语言
-- `HOURLY_NOTES_PROMPT` — 定期总结的LLM提示模板（英文基底），聚焦当前项目与目标进展，用"N小时"占位（实际间隔由配置决定），使用XML标签 `<commands>`、`<conversations>` 包裹上下文（issue #96），通过 `append_language_instruction()` 注入目标语言
-- `THREAD_SUMMARY_PROMPT` — 线程标题生成提示（英文基底），输出 ≤20 字标题；由 `append_language_instruction()` 决定输出语言
-- `CHAT_PROMPT_JSON` — 编译内嵌的chat提示词JSON（来自`assets/chat.json`），通过`include_str!`编译到二进制
-- `CHAT_OVERRIDE_EXAMPLE` — `chat.override.json`示例文件内容（来自`assets/chat.override.json.example`）
-- `TEMPLATE_NAMES` — 已知模板名列表：`["chat", "chat-system", "auto-complete", "daily-notes", "hourly-notes"]`
+- `DAILY_NOTES_PROMPT` - 每日工作总结的LLM提示（英文基底），以项目/目标为主线汇总各时段 `<hourly_summaries>`，通过 `append_language_instruction()` 注入目标语言
+- `HOURLY_NOTES_PROMPT` - 定期总结的LLM提示模板（英文基底），聚焦当前项目与目标进展，用"N小时"占位（实际间隔由配置决定），使用XML标签 `<commands>`、`<conversations>` 包裹上下文（issue #96），通过 `append_language_instruction()` 注入目标语言
+- `THREAD_SUMMARY_PROMPT` - 线程标题生成提示（英文基底），输出 ≤20 字标题；由 `append_language_instruction()` 决定输出语言
+- `CHAT_PROMPT_JSON` - 编译内嵌的chat提示词JSON（来自`assets/chat.json`），通过`include_str!`编译到二进制
+- `CHAT_OVERRIDE_EXAMPLE` - `chat.override.json`示例文件内容（来自`assets/chat.override.json.example`）
+- `TEMPLATE_NAMES` - 已知模板名列表：`["chat", "chat-system", "auto-complete", "daily-notes", "hourly-notes"]`
 
 ### `append_language_instruction(prompt, language)`
 在提示词末尾追加语言指令。支持 `en`/`zh`/`zh-tw`/`ja`/`ko`/`fr`/`es`/`ar`，无匹配时回退英文。统一用于 daemon 端定时任务（daily/hourly/thread summary），保证 prompt 主体为英文基底、输出语言由 `daemon_config.client.language` 决定。
@@ -733,7 +733,7 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
 2. **`LlmBackend` trait 精简**:
    - 移除方法：`max_content_chars_for_use_case()`、`list_backends()`、`chat_default_name()`、`get_backend_by_name()`
    - 新增必须实现的方法：`model_name() -> &str`
-   - 新增 `UnavailableBackend` 结构体——未配置LLM时的回退后端，`complete()` 返回错误
+   - 新增 `UnavailableBackend` 结构体--未配置LLM时的回退后端，`complete()` 返回错误
 
 3. **`MultiBackend` 变更**:
    - 新增类型别名 `SharedLlmBackend = Arc<RwLock<Arc<MultiBackend>>>`，用于热重载

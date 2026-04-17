@@ -286,7 +286,7 @@ fn render_cleanup(total_items: usize) -> String {
 /// Keeps the same layout as the menu item: `  {label} {value}` with value highlighted.
 ///
 /// Uses display width (not byte length) so CJK / fullwidth labels and values
-/// are measured in terminal columns — required for correct truncation when
+/// are measured in terminal columns - required for correct truncation when
 /// the line would overflow `cols`.
 fn render_edit_line(label: &str, text: &str, cols: u16) -> String {
     use crate::display::display_width;
@@ -404,7 +404,7 @@ fn run_text_edit(
         common::write_stdout(format!("\r\x1b[{}C", col).as_bytes());
     };
 
-    // Helper: exit edit — move back to hint line, hide cursor
+    // Helper: exit edit - move back to hint line, hide cursor
     let exit_edit = |rfb: usize| {
         if rfb > 0 {
             common::write_stdout(format!("\x1b[{}B", rfb).as_bytes());
@@ -544,7 +544,7 @@ fn dispatch_change(
 }
 
 /// Handle TextInput edit: enters inline editor, applies result.
-/// Returns (confirmed, change) — confirmed is true if user pressed Enter.
+/// Returns (confirmed, change) - confirmed is true if user pressed Enter.
 fn handle_text_edit(
     item: &mut MenuItem,
     breadcrumb_parts: &[String],
@@ -610,7 +610,7 @@ pub fn run_menu(
     let mut nav_stack: Vec<NavEntry> = Vec::new();
     let mut breadcrumb_parts: Vec<String> = vec![title.to_string()];
 
-    // Current level state — skip leading Label items
+    // Current level state - skip leading Label items
     let mut cursor: usize = first_interactive(items);
     let mut scroll_offset: usize = 0;
 
@@ -872,7 +872,7 @@ pub fn run_menu(
                         let label_clone = label.clone();
                         let entering_form = *form_mode;
                         let snapshot = if entering_form { snapshot_fields(children) } else { vec![] };
-                        // Edit forms have pre-populated TextInputs — don't auto-edit.
+                        // Edit forms have pre-populated TextInputs - don't auto-edit.
                         let has_prefilled = children.iter().any(|c| matches!(c, MenuItem::TextInput { value, .. } if !value.is_empty()));
 
                         let cleanup = render_cleanup(last_item_count);
@@ -923,7 +923,7 @@ pub fn run_menu(
                             let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
                             common::write_stdout(full.as_bytes());
                         } else if !accepted && on_change.is_some() {
-                            // Callback rejected and may have printed output — full redraw
+                            // Callback rejected and may have printed output - full redraw
                             needs_redraw = true;
                         } else {
                             // Normal mode: redraw just the current item
@@ -1043,7 +1043,7 @@ pub fn run_menu(
                         common::write_stdout(full.as_bytes());
                     }
                     MenuItem::Label { .. } => {
-                        // Non-interactive — do nothing
+                        // Non-interactive - do nothing
                     }
                     MenuItem::Button { label: btn_label } => {
                         let btn_label = btn_label.clone();
@@ -1399,7 +1399,7 @@ mod tests {
 
     #[test]
     fn test_edit_cursor_col() {
-        // layout: "  Proxy hello" — indent(2) + label(5) + space(1) + text
+        // layout: "  Proxy hello" - indent(2) + label(5) + space(1) + text
         // cursor at end of "hello" (pos 5)
         let col = edit_cursor_col("Proxy", "hello", 5, 40);
         // 2 + 5 + 1 + 5 = 13

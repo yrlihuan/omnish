@@ -21,7 +21,7 @@ omnish-plugin bash     →  serves BashTool via JSON-RPC
 omnish-plugin <name>   →  serves named built-in plugin
 ```
 
-The daemon spawns `omnish-plugin <name>` the same way it spawns third-party plugins — all go through `ExternalPlugin`, all get Landlock sandbox.
+The daemon spawns `omnish-plugin <name>` the same way it spawns third-party plugins - all go through `ExternalPlugin`, all get Landlock sandbox.
 
 ## JSON-RPC Server Loop
 

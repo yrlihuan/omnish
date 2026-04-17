@@ -126,11 +126,11 @@ impl TaskManager {
 
             match self.tasks.get(name) {
                 Some(entry) if entry.enabled == want_enabled && entry.cron == want_schedule => {
-                    // Unchanged — keep existing job
+                    // Unchanged - keep existing job
                     continue;
                 }
                 Some(_) => {
-                    // Config changed — remove old job, will re-register below
+                    // Config changed - remove old job, will re-register below
                     if let Some(entry) = self.tasks.remove(name) {
                         if entry.enabled {
                             if let Err(e) = self.scheduler.remove(&entry.uuid).await {

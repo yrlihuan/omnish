@@ -170,12 +170,12 @@ impl Plugin for CommandQueryTool {
 }
 ```
 
-Wait — the `Plugin` trait's `execute` method conflicts with `Tool::execute` since they have the same name. Two solutions:
+Wait - the `Plugin` trait's `execute` method conflicts with `Tool::execute` since they have the same name. Two solutions:
 
 **Option A**: Rename `Plugin::execute` to something else (e.g., `call_tool`).
 **Option B**: Remove `Tool` trait impl from `CommandQueryTool` (it's only used via `Plugin` now).
 
-Go with **Option A** — rename to `call_tool` in the `Plugin` trait to avoid name collision:
+Go with **Option A** - rename to `call_tool` in the `Plugin` trait to avoid name collision:
 
 ```rust
 pub trait Plugin: Send + Sync {
@@ -537,10 +537,10 @@ Update `handle_chat_message` signature to take `plugin_mgr: &Arc<PluginManager>`
 
 **Important consideration:** `CommandQueryTool` is constructed with per-request data (`commands`, `stream_reader`). With PluginManager, we need to reconstruct it each time. Two options:
 
-a) Register a fresh `CommandQueryTool` each request — not ideal since PluginManager is shared
+a) Register a fresh `CommandQueryTool` each request - not ideal since PluginManager is shared
 b) Keep `CommandQueryTool` construction in `handle_chat_message` but merge its tools with plugin_mgr tools
 
-Go with **b)** — `handle_chat_message` builds `CommandQueryTool` per-request, gets its definition, and combines with `plugin_mgr.all_tools()`:
+Go with **b)** - `handle_chat_message` builds `CommandQueryTool` per-request, gets its definition, and combines with `plugin_mgr.all_tools()`:
 
 ```rust
 async fn handle_chat_message(
@@ -777,4 +777,4 @@ Add to daemon.toml:
 enabled = ["echo"]
 ```
 
-Restart daemon, enter chat, ask "echo hello world" — LLM should call the echo tool.
+Restart daemon, enter chat, ask "echo hello world" - LLM should call the echo tool.

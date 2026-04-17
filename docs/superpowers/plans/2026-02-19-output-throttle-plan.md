@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Throttle per-command output IoData on the client side — full speed under 2MB, then 10kB/s — to reduce disk and network overhead for long-running commands.
+**Goal:** Throttle per-command output IoData on the client side - full speed under 2MB, then 10kB/s - to reduce disk and network overhead for long-running commands.
 
 **Architecture:** A new `OutputThrottle` struct in `omnish-client` implements a token-bucket rate limiter that activates after a per-command byte threshold. It integrates into the existing PTY output path in `main.rs` with a single `should_send()` guard. The throttle resets on each command boundary.
 
@@ -118,7 +118,7 @@ mod tests {
         assert!(t.should_send(under));
         t.record_sent(under);
 
-        // This chunk crosses the threshold — should_send transitions to throttled.
+        // This chunk crosses the threshold - should_send transitions to throttled.
         // With no elapsed time, bucket is 0, so a large chunk is rejected.
         assert!(!t.should_send(4096));
     }

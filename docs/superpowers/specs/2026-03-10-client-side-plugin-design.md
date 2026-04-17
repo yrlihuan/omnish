@@ -2,7 +2,7 @@
 
 ## Problem
 
-The bash tool currently runs on the daemon, but it should run on the client — the daemon may be on a different machine. Plugins need a classification to distinguish daemon-side vs client-side execution.
+The bash tool currently runs on the daemon, but it should run on the client - the daemon may be on a different machine. Plugins need a classification to distinguish daemon-side vs client-side execution.
 
 ## Plugin Classification
 
@@ -10,7 +10,7 @@ The bash tool currently runs on the daemon, but it should run on the client — 
 - `Plugin` trait gains `fn plugin_type(&self) -> PluginType` (default `DaemonTool`)
 - Built-in plugins declare in code: `BashTool` → `ClientTool`, `CommandQueryTool` → `DaemonTool`
 - External plugins declare in `initialize` response: `"plugin_type": "client_tool"`
-- `PluginType` is internal only — not serialized into any wire protocol or LLM tool schema
+- `PluginType` is internal only - not serialized into any wire protocol or LLM tool schema
 
 ## Protocol Messages
 

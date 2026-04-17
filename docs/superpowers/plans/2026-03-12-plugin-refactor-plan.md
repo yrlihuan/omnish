@@ -83,7 +83,7 @@ Create `crates/omnish-plugin/plugins/builtin/tool.json`:
     },
     {
       "name": "edit",
-      "description": "Perform exact string replacements in files. The old_string must match exactly. If old_string appears more than once and replace_all is false, the edit will fail — provide more surrounding context to make it unique, or set replace_all to true.\n\nGuidelines:\n- When editing text from Read tool output, preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix (\"line number→\"). Never include any part of the line number prefix in old_string or new_string.\n- ALWAYS prefer editing existing files. NEVER write new files unless explicitly required.",
+      "description": "Perform exact string replacements in files. The old_string must match exactly. If old_string appears more than once and replace_all is false, the edit will fail - provide more surrounding context to make it unique, or set replace_all to true.\n\nGuidelines:\n- When editing text from Read tool output, preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix (\"line number→\"). Never include any part of the line number prefix in old_string or new_string.\n- ALWAYS prefer editing existing files. NEVER write new files unless explicitly required.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -152,7 +152,7 @@ git commit -m "feat: add builtin tool.json with all 4 tool definitions"
 **Files:**
 - Rewrite: `crates/omnish-daemon/src/plugin.rs` (lines 1-385)
 
-Replace the entire file. The old code has `ExternalPlugin`, `load_custom_prompts`, `MockPlugin` tests — all removed. New code is metadata-only, loads from JSON files.
+Replace the entire file. The old code has `ExternalPlugin`, `load_custom_prompts`, `MockPlugin` tests - all removed. New code is metadata-only, loads from JSON files.
 
 - [ ] **Step 1: Write tests for new PluginManager**
 
@@ -310,7 +310,7 @@ mod tests {
         }"#);
         let mgr = PluginManager::load(tmp.path());
         let input = serde_json::json!({"timeout": 30});
-        // Missing {command} key — placeholder stays literal
+        // Missing {command} key - placeholder stays literal
         assert_eq!(mgr.tool_status_text("bash", &input), "执行: {command}");
     }
 
@@ -556,7 +556,7 @@ git commit -m "refactor: rewrite PluginManager to load from tool.json files"
 
 ## Chunk 2: Protocol + Daemon wiring (single atomic commit)
 
-Note: Tasks 3 and 4 must be applied together — the daemon binary won't
+Note: Tasks 3 and 4 must be applied together - the daemon binary won't
 compile between them. They form one commit.
 
 ### Task 3: Protocol changes + Daemon wiring
@@ -787,7 +787,7 @@ git commit -m "refactor: simplify omnish-plugin binary to single-shot execution"
 For each built-in tool file:
 - Remove `impl Tool for XxxTool` block (contains `definition()` with description strings)
 - Remove `impl Plugin for XxxTool` block
-- Keep `execute()` method — move it to `impl XxxTool` (inherent impl)
+- Keep `execute()` method - move it to `impl XxxTool` (inherent impl)
 
 - [ ] **Step 1: Simplify bash.rs**
 
@@ -813,7 +813,7 @@ Same pattern for WriteTool.
 
 In `crates/omnish-plugin/src/lib.rs`:
 - Remove `Plugin` trait (lines 32-47)
-- Remove `PluginType` enum (lines 26-29) — daemon has its own now
+- Remove `PluginType` enum (lines 26-29) - daemon has its own now
 - Remove `JsonRpcRequest`, `JsonRpcResponse`, `ExecuteResult` structs (lines 50-75)
 - Remove `PluginProcess` struct and its impl (lines 113-270)
 - Keep `apply_sandbox()` function (lines 82-108)
@@ -836,14 +836,14 @@ In `crates/omnish-daemon/src/tools/command_query.rs`:
 - Remove `impl Plugin for CommandQueryTool` block (lines 147-170)
 - Convert `definition()` to an inherent method on `CommandQueryTool`
   (move from `impl Tool` to `impl CommandQueryTool`). Keep the method body
-  unchanged — it's called by `server.rs` at `build_chat_setup()`.
+  unchanged - it's called by `server.rs` at `build_chat_setup()`.
 - Keep `status_text()` as an inherent method (move from `Plugin` impl to
   `impl CommandQueryTool`). Called by server.rs at ~line 564.
 
 - [ ] **Step 8: Update omnish-plugin main.rs**
 
 Remove the `use omnish_llm::tool::Tool;` import from
-`crates/omnish-plugin/src/main.rs` (now dead — `execute()` is an inherent
+`crates/omnish-plugin/src/main.rs` (now dead - `execute()` is an inherent
 method, not a trait method).
 
 - [ ] **Step 9: Build workspace**
@@ -854,7 +854,7 @@ Expected: compiles. Fix any remaining references to removed items.
 - [ ] **Step 10: Run all tests**
 
 Run: `cargo test --workspace 2>&1 | tail -20`
-Expected: all tests pass. Tool tests call `.execute()` directly — since it's
+Expected: all tests pass. Tool tests call `.execute()` directly - since it's
 now an inherent method, the calls still resolve. Remove any dead `use` imports
 for `Tool` trait in test modules.
 
