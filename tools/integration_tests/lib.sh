@@ -132,6 +132,12 @@ _show_help() {
 
 # ── Client lifecycle ─────────────────────────────────────────────────────
 
+# Default language for tests. Forces English so assertions don't depend on
+# the daemon's system locale (daemon pushes client.language by default).
+# Override by exporting OMNISH_LANG before running the test, or by redefining
+# start_client in the test script (see test_i18n_config.sh).
+OMNISH_LANG_DEFAULT="${OMNISH_LANG:-en}"
+
 # Start a fresh omnish-client in the tmux session.
 # Kills any existing session first.
 # If -w already started the client, skip the first call.
@@ -141,7 +147,7 @@ start_client() {
         return
     fi
     _tmux kill-session -t "$SESSION" 2>/dev/null || true
-    _tmux new -d -s "$SESSION" -n test "$CLIENT"
+    _tmux new -d -s "$SESSION" -n test "OMNISH_LANG=$OMNISH_LANG_DEFAULT $CLIENT"
 }
 
 # Alias: kill + start (useful between test cases).
@@ -465,7 +471,7 @@ _CLEANUP_PANE=""  # set by _start_cleanup_client
 # _start_cleanup_client
 #   Create a new tmux window in the test session running omnish-client.
 _start_cleanup_client() {
-    _tmux new-window -t "$SESSION" -n cleanup "$CLIENT" 2>/dev/null
+    _tmux new-window -t "$SESSION" -n cleanup "OMNISH_LANG=$OMNISH_LANG_DEFAULT $CLIENT" 2>/dev/null
     _CLEANUP_PANE="$SESSION:cleanup.0"
     sleep 1.5  # wait for client to connect
 }
