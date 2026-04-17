@@ -9,6 +9,8 @@
 //! Rendering uses ANSI cursor movement (same technique as Picker and LineStatus)
 //! - no alternate screen.
 
+use crate::display::NEWLINE;
+
 /// Scrollbar block characters.
 const THUMB: &str = "\x1b[2;90m\u{2590}\x1b[0m"; // ▐ (dim)
 const TRACK: &str = "\x1b[2;90m\u{2502}\x1b[0m"; // │ (dim)
@@ -20,7 +22,7 @@ pub enum ViewMode {
 }
 
 pub struct ScrollView {
-    /// All content lines (already rendered with ANSI styles, using \r\n).
+    /// All content lines (already rendered with ANSI styles, using {NEWLINE}).
     lines: Vec<String>,
     /// Number of visible lines in compact mode.
     compact_height: usize,
@@ -219,7 +221,7 @@ impl ScrollView {
 
         for i in start..total {
             let line = Self::truncate_line(&self.lines[i], self.max_cols);
-            out.push_str(&format!("\r\n\x1b[K{}{}{}", crate::display::DIM, line, crate::display::RESET));
+            out.push_str(&format!("{NEWLINE}\x1b[K{}{}{}", crate::display::DIM, line, crate::display::RESET));
         }
 
         self.rendered_lines = visible;
@@ -267,8 +269,8 @@ impl ScrollView {
         for i in start..end {
             let vr = visual_rows[i];
             // Write the line (let terminal wrap naturally)
-            out.push_str(&format!("\r\n\x1b[K{}{}", self.lines[i], crate::display::RESET));
-            // If line wraps, it already consumed vr rows from the first \r\n.
+            out.push_str(&format!("{NEWLINE}\x1b[K{}{}", self.lines[i], crate::display::RESET));
+            // If line wraps, it already consumed vr rows from the first {NEWLINE}.
             // For extra wrapped rows, we just let the terminal handle it.
             // Place scrollbar on the last visual row of this line
             let bar_row_end = visual_row + vr - 1;
@@ -288,7 +290,7 @@ impl ScrollView {
             let w = crate::display::display_width(hint);
             if w == 0 || cols == 0 { 1 } else { w.div_ceil(cols) }
         };
-        out.push_str(&format!("\r\n\x1b[K{}{}{}", crate::display::DIM, hint, crate::display::RESET));
+        out.push_str(&format!("{NEWLINE}\x1b[K{}{}{}", crate::display::DIM, hint, crate::display::RESET));
 
         self.rendered_lines = used_rows + hint_visual_rows;
         out

@@ -1,3 +1,5 @@
+use crate::display::NEWLINE;
+
 #[allow(dead_code)]
 pub struct Region {
     pub(crate) id: &'static str,
@@ -61,7 +63,7 @@ impl ChatLayout {
                     out.push_str(&format!("\r\x1b[K{}", line));
                     first = false;
                 } else {
-                    out.push_str(&format!("\r\n\x1b[K{}", line));
+                    out.push_str(&format!("{NEWLINE}\x1b[K{}", line));
                 }
             }
         }
@@ -105,7 +107,7 @@ impl ChatLayout {
         if old_height == new_height {
             // Same height: overwrite region lines, move back to bottom
             for line in &self.regions[idx].content {
-                out.push_str(&format!("\x1b[K{}\r\n", line));
+                out.push_str(&format!("\x1b[K{}{NEWLINE}", line));
             }
             let below: usize = self.regions[idx + 1..].iter().map(|r| r.height).sum();
             if below > 0 {
@@ -115,13 +117,13 @@ impl ChatLayout {
             // Height changed: redraw this region + all below, clear leftover
             for i in idx..self.regions.len() {
                 for line in &self.regions[i].content {
-                    out.push_str(&format!("\x1b[K{}\r\n", line));
+                    out.push_str(&format!("\x1b[K{}{NEWLINE}", line));
                 }
             }
             let new_total = self.total_height();
             if old_total > new_total {
                 for _ in 0..(old_total - new_total) {
-                    out.push_str("\x1b[K\r\n");
+                    out.push_str(&format!("\x1b[K{NEWLINE}"));
                 }
                 // Move back up to new bottom
                 let extra = old_total - new_total;

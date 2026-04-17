@@ -1,13 +1,13 @@
 // crates/omnish-client/src/picker.rs
 //
 // Pure rendering functions for the picker widget (single-select and multi-select).
-// All functions return a String suitable for writing to a raw-mode terminal (using \r\n).
+// All functions return a String suitable for writing to a raw-mode terminal (using {NEWLINE}).
 // Supports scrolling viewport when items exceed MAX_VISIBLE.
 
 use std::os::unix::io::AsRawFd;
 
 use super::common::{self, MAX_VISIBLE};
-use crate::display::{BOLD, BOLD_REVERSE, RESET};
+use crate::display::{BOLD, BOLD_REVERSE, NEWLINE, RESET};
 
 /// Icon style for disabled items in the picker.
 #[allow(dead_code)]
@@ -94,7 +94,7 @@ fn render_full(
 
     // Push screen content up by printing N blank lines
     for _ in 0..total_lines {
-        out.push_str("\r\n");
+        out.push_str(NEWLINE);
     }
     // Move cursor back up
     out.push_str(&format!("\x1b[{}A", total_lines));
@@ -108,26 +108,26 @@ fn render_full(
     } else {
         out.push_str(&format!("\r{BOLD}{}{RESET}\x1b[K", title));
     }
-    out.push_str("\r\n");
+    out.push_str(NEWLINE);
 
     // Top separator
     out.push_str(&render_separator(cols));
-    out.push_str("\r\n");
+    out.push_str(NEWLINE);
 
     // Visible items
     let end = (scroll_offset + vis).min(items.len());
     for i in scroll_offset..end {
         out.push_str(&render_item(items[i], i == cursor, checked[i], multi, disabled[i]));
         if i < end - 1 {
-            out.push_str("\r\n");
+            out.push_str(NEWLINE);
         }
     }
-    out.push_str("\r\n");
+    out.push_str(NEWLINE);
 
     // Bottom separator (always full-width)
     let remaining_below = items.len().saturating_sub(end);
     out.push_str(&render_separator(cols));
-    out.push_str("\r\n");
+    out.push_str(NEWLINE);
 
     // Hint (with scroll-down indicator if applicable)
     out.push_str(&render_hint(multi, remaining_below));

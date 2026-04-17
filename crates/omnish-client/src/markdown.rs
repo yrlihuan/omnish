@@ -1,9 +1,11 @@
 // crates/omnish-client/src/markdown.rs
 //
 // Render markdown text to ANSI-escaped terminal output.
-// Uses pulldown-cmark for parsing, produces raw-mode compatible output (\r\n).
+// Uses pulldown-cmark for parsing, produces raw-mode compatible output ({NEWLINE}).
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+
+use crate::display::NEWLINE;
 
 // ANSI style codes - shared constants from display, plus markdown-only styles
 const RESET: &str = crate::display::RESET;
@@ -18,7 +20,7 @@ const CODE_BG: &str = "\x1b[40m"; // black background (avoid 256-color gray that
 const HEADING_COLOR: &str = "\x1b[1;36m"; // bold cyan
 
 /// Render markdown content to ANSI terminal output.
-/// Output uses \r\n line endings for raw-mode terminals.
+/// Output uses {NEWLINE} line endings for raw-mode terminals.
 pub fn render(content: &str) -> String {
     let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
     let parser = Parser::new_ext(content, options);
@@ -34,8 +36,8 @@ pub fn render(content: &str) -> String {
                     out.push_str(HEADING_COLOR);
                 }
                 Tag::Paragraph if !out.is_empty() && list_depth == 0
-                    && !out.ends_with("\r\n") => {
-                    out.push_str("\r\n");
+                    && !out.ends_with(NEWLINE) => {
+                    out.push_str(NEWLINE);
                 }
                 Tag::Paragraph => {}
                 Tag::BlockQuote(_) => {
@@ -44,7 +46,7 @@ pub fn render(content: &str) -> String {
                 }
                 Tag::CodeBlock(_) => {
                     in_code_block = true;
-                    out.push_str("\r\n");
+                    out.push_str(NEWLINE);
                     out.push_str(CODE_BG);
                     out.push_str(YELLOW);
                 }
@@ -96,10 +98,10 @@ pub fn render(content: &str) -> String {
             Event::End(tag_end) => match tag_end {
                 TagEnd::Heading(_) => {
                     out.push_str(RESET);
-                    out.push_str("\r\n");
+                    out.push_str(NEWLINE);
                 }
                 TagEnd::Paragraph => {
-                    out.push_str("\r\n");
+                    out.push_str(NEWLINE);
                 }
                 TagEnd::BlockQuote(_) => {
                     out.push_str(RESET);
@@ -107,14 +109,14 @@ pub fn render(content: &str) -> String {
                 TagEnd::CodeBlock => {
                     in_code_block = false;
                     out.push_str(RESET);
-                    out.push_str("\r\n");
+                    out.push_str(NEWLINE);
                 }
                 TagEnd::List(_) => {
                     list_depth = list_depth.saturating_sub(1);
                     ordered_index.pop();
                 }
                 TagEnd::Item => {
-                    out.push_str("\r\n");
+                    out.push_str(NEWLINE);
                 }
                 TagEnd::Emphasis => {
                     out.push_str(RESET);
@@ -129,10 +131,12 @@ pub fn render(content: &str) -> String {
                     out.push_str(RESET);
                 }
                 TagEnd::TableHead => {
-                    out.push_str("|\r\n");
+                    out.push('|');
+                    out.push_str(NEWLINE);
                 }
                 TagEnd::TableRow => {
-                    out.push_str("|\r\n");
+                    out.push('|');
+                    out.push_str(NEWLINE);
                 }
                 TagEnd::TableCell => {
                     out.push(' ');
@@ -141,14 +145,14 @@ pub fn render(content: &str) -> String {
             },
             Event::Text(text) => {
                 if in_code_block {
-                    // Preserve code block formatting, convert \n to \r\n
+                    // Preserve code block formatting, convert \n to {NEWLINE}
                     for line in text.split('\n') {
                         out.push_str(line);
-                        out.push_str("\r\n");
+                        out.push_str(NEWLINE);
                     }
-                    // Remove trailing \r\n added by the loop
-                    if out.ends_with("\r\n") {
-                        out.truncate(out.len() - 2);
+                    // Remove trailing NEWLINE added by the loop
+                    if out.ends_with(NEWLINE) {
+                        out.truncate(out.len() - NEWLINE.len());
                     }
                 } else {
                     out.push_str(&text);
@@ -164,21 +168,22 @@ pub fn render(content: &str) -> String {
                 out.push_str(RESET);
             }
             Event::SoftBreak => {
-                out.push_str("\r\n");
+                out.push_str(NEWLINE);
             }
             Event::HardBreak => {
-                out.push_str("\r\n");
+                out.push_str(NEWLINE);
             }
             Event::Rule => {
-                out.push_str(&format!("{}───────────{}\r\n", DIM, RESET));
+                out.push_str(&format!("{}───────────{}{NEWLINE}", DIM, RESET));
             }
             _ => {}
         }
     }
 
-    // Trim trailing empty lines
-    while out.ends_with("\r\n\r\n") {
-        out.truncate(out.len() - 2);
+    // Trim trailing empty lines (repeated NEWLINE at end means blank lines)
+    let double = format!("{NEWLINE}{NEWLINE}");
+    while out.ends_with(&double) {
+        out.truncate(out.len() - NEWLINE.len());
     }
 
     out
@@ -204,9 +209,9 @@ mod tests {
     #[test]
     fn test_crlf_line_endings() {
         let result = render("line one\nline two");
-        // Should contain \r\n, not bare \n
-        assert!(result.contains("\r\n"));
-        let without_cr = result.replace("\r\n", "");
+        // Should contain {NEWLINE}, not bare \n
+        assert!(result.contains(NEWLINE));
+        let without_cr = result.replace(NEWLINE, "");
         assert!(!without_cr.contains('\n'), "no bare \\n should remain");
     }
 
@@ -248,8 +253,8 @@ mod tests {
         let result = render("```\nfn main() {}\n```");
         assert!(result.contains(CODE_BG));
         assert!(result.contains("fn main() {}"));
-        // Code block content should use \r\n
-        assert!(!result.replace("\r\n", "").contains('\n'));
+        // Code block content should use {NEWLINE}
+        assert!(!result.replace(NEWLINE, "").contains('\n'));
     }
 
     #[test]

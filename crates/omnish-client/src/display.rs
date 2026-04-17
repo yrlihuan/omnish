@@ -1,9 +1,16 @@
 // crates/omnish-client/src/display.rs
 //
 // Pure functions that produce ANSI terminal output strings for the :: interactive mode.
-// All functions return a String suitable for writing to a raw-mode terminal (using \r\n).
+// All functions return a String suitable for writing to a raw-mode terminal (using NEWLINE).
 
 // ── ANSI style constants ─────────────────────────────────────────────
+/// Line separator for raw-mode terminal output.
+/// LF moves the cursor down; CHA (CSI G) explicitly repositions to column 1.
+/// Use this instead of a bare CR+LF sequence: some terminal stacks (observed
+/// in ConEmu + tmux) occasionally drop the CR byte, leaving the next write
+/// aligned to the previous cursor column. CHA is a well-defined CSI and is
+/// not subject to that bug.
+pub const NEWLINE: &str = "\n\x1b[G";
 /// Reset all text attributes.
 pub const RESET: &str = "\x1b[0m";
 /// Bold text.
@@ -108,9 +115,9 @@ pub fn display_width(s: &str) -> usize {
 /// position upward, then moves the cursor one more row up so it returns to
 /// the position it occupied before those rows were rendered.
 ///
-/// Rendering convention: content is printed below the cursor with `\r\n`
+/// Rendering convention: content is printed below the cursor with `{NEWLINE}`
 /// prefixes, so N rows of output occupy rows R+1 … R+N (where R is the
-/// cursor row before the first `\r\n`).  After rendering, the cursor sits
+/// cursor row before the first `{NEWLINE}`).  After rendering, the cursor sits
 /// at row R+N.  This function clears each row from bottom to top, then
 /// moves up one more to return to row R.
 ///
@@ -160,7 +167,7 @@ pub fn render_separator(cols: u16) -> String {
 #[cfg(test)]
 pub fn render_prompt(cols: u16) -> String {
     let separator = render_separator(cols);
-    format!("\r\n{}\r\n{CYAN}❯{RESET} ", separator)
+    format!("{NEWLINE}{}{NEWLINE}{CYAN}❯{RESET} ", separator)
 }
 
 /// Dismiss the omnish UI by clearing only the separator and ❯ lines below
@@ -181,15 +188,15 @@ pub fn render_input_echo(user_input: &[u8]) -> String {
 }
 
 /// Format an LLM response for raw-mode display.
-/// Renders markdown to ANSI-styled terminal output with \r\n line endings.
+/// Renders markdown to ANSI-styled terminal output with {NEWLINE} line endings.
 pub fn render_response(content: &str) -> String {
     let rendered = super::markdown::render(content);
-    format!("\r\n{}\r\n", rendered)
+    format!("{NEWLINE}{}{NEWLINE}", rendered)
 }
 
 /// Format an error message in red.
 pub fn render_error(msg: &str) -> String {
-    format!("\r\n{RED}[omnish] {}{RESET}\r\n", msg)
+    format!("{NEWLINE}{RED}[omnish] {}{RESET}{NEWLINE}", msg)
 }
 
 /// Render ghost text (completion suggestion) in dim gray after the cursor.
@@ -416,7 +423,7 @@ mod tests {
         let screen = parser.screen();
 
         // The separator line should span the full width with ─ characters
-        // Row 1 (0-indexed) should contain the separator (row 0 is blank from \r\n)
+        // Row 1 (0-indexed) should contain the separator (row 0 is blank from {NEWLINE})
         let sep_row = get_row(screen, 1, cols);
         assert_eq!(sep_row.trim_end().chars().count(), cols as usize, "separator should span full width");
         assert!(sep_row.contains('─'), "separator should contain ─ characters");
@@ -464,10 +471,10 @@ mod tests {
         let content = "line one\nline two\nline three  ";
         let output = render_response(content);
 
-        // Verify raw string contains \r\n (raw mode requirement)
-        assert!(output.contains("\r\n"), "response must use \\r\\n for raw mode");
+        // Verify raw string contains {NEWLINE} (raw mode requirement)
+        assert!(output.contains(NEWLINE), "response must use \\r\\n for raw mode");
         // Should not contain bare \n (without preceding \r)
-        let without_cr = output.replace("\r\n", "");
+        let without_cr = output.replace(NEWLINE, "");
         assert!(!without_cr.contains('\n'), "no bare \\n should remain");
 
         // Check trailing whitespace is trimmed
@@ -502,7 +509,7 @@ mod tests {
         let parser = parse_ansi(&output, 80, 24);
         let screen = parser.screen();
 
-        // Error should appear on row 1 (row 0 is blank from leading \r\n)
+        // Error should appear on row 1 (row 0 is blank from leading {NEWLINE})
         let row = get_row(screen, 1, 80);
         assert!(row.contains("[omnish]"), "should contain [omnish] prefix");
         assert!(row.contains("Daemon not connected"), "should contain error message");
@@ -532,7 +539,7 @@ mod tests {
         assert!(!row2.contains('❯'), "prompt should be cleared after dismiss");
     }
 
-    /// When the cursor is near the bottom of the terminal, render_prompt's \r\n
+    /// When the cursor is near the bottom of the terminal, render_prompt's {NEWLINE}
     /// causes scrolling. After scrolling, DECSC/DECRC (\x1b7/\x1b8) restores to
     /// the wrong row because the absolute row number no longer points to the
     /// original content. This test verifies dismiss clears all omnish UI even
@@ -545,11 +552,11 @@ mod tests {
 
         // Move cursor to the last row by outputting newlines
         for _ in 0..rows - 1 {
-            output.push_str("\r\n");
+            output.push_str(NEWLINE);
         }
         output.push_str("$ "); // shell prompt on last row (row 4)
 
-        // render_prompt emits 2 \r\n sequences - both cause scrolling
+        // render_prompt emits 2 {NEWLINE} sequences - both cause scrolling
         output.push_str(&render_prompt(cols));
 
         // User types a query
@@ -570,7 +577,7 @@ mod tests {
     /// Dismiss must NOT clear the original shell prompt line. It should only
     /// clear the separator and ❯ lines below it. This allows the caller to
     /// use SIGWINCH to redraw the prompt in place instead of sending `\r` to
-    /// PTY (which would echo `\r\n` and add a blank line).
+    /// PTY (which would echo `{NEWLINE}` and add a blank line).
     #[test]
     fn test_dismiss_preserves_prompt_line() {
         let cols: u16 = 40;
@@ -607,8 +614,8 @@ mod tests {
         let prompt = "$ ";
 
         let mut output = String::new();
-        output.push_str("previous command output\r\n");
-        output.push_str("more output here\r\n");
+        output.push_str(&format!("previous command output{NEWLINE}"));
+        output.push_str(&format!("more output here{NEWLINE}"));
         output.push_str(prompt); // shell prompt on row 2
 
         for _ in 0..5 {

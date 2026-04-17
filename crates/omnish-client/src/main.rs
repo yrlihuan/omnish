@@ -6,6 +6,7 @@ mod completion;
 pub mod event_log;
 mod ghost_complete;
 mod display;
+use display::NEWLINE;
 mod i18n;
 mod interceptor;
 mod markdown;
@@ -1904,7 +1905,7 @@ fn handle_lock(
 ) {
     if lock == *locked {
         let status = if lock { "already locked" } else { "already unlocked" };
-        let msg = format!("\r\n{}{}{}\r\n", display::YELLOW, status, display::RESET);
+        let msg = format!("{NEWLINE}{}{}{}{NEWLINE}", display::YELLOW, status, display::RESET);
         nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
         return;
     }
@@ -1950,14 +1951,14 @@ fn handle_lock(
                         do_respawn(proxy, master_fd, locked, &program, &args_refs, env, cwd.as_deref(), None, true);
                     }
                     Err(e) => {
-                        let msg = format!("\r\n{}Sandbox setup failed: {}{}\r\n", display::RED, e, display::RESET);
+                        let msg = format!("{NEWLINE}{}Sandbox setup failed: {}{}{NEWLINE}", display::RED, e, display::RESET);
                         nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
                     }
                 }
             }
             None => {
                 let msg = format!(
-                    "\r\n{}No sandbox backend available, cannot lock shell{}\r\n",
+                    "{NEWLINE}{}No sandbox backend available, cannot lock shell{}{NEWLINE}",
                     display::YELLOW, display::RESET
                 );
                 nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
@@ -1992,11 +1993,11 @@ fn do_respawn(
             }
             let status = if lock { "locked" } else { "unlocked" };
             event_log::push(format!("lock: shell respawned ({})", status));
-            let msg = format!("\r\n{}Shell {}{}\r\n", display::GREEN, status, display::RESET);
+            let msg = format!("{NEWLINE}{}Shell {}{}{NEWLINE}", display::GREEN, status, display::RESET);
             nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
         }
         Err(e) => {
-            let msg = format!("\r\n{}Failed to respawn shell: {}{}\r\n", display::RED, e, display::RESET);
+            let msg = format!("{NEWLINE}{}Failed to respawn shell: {}{}{NEWLINE}", display::RED, e, display::RESET);
             nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
         }
     }
@@ -2326,20 +2327,20 @@ fn sandbox_notice(status: omnish_plugin::SandboxDetectResult) -> Option<String> 
         SandboxDetectResult::Fallback { preferred, actual } => {
             let hint = bwrap_hint(preferred);
             Some(format!(
-                "\r\n{}[omnish] sandbox: {:?} not available, falling back to {:?}.{}{}\r\n",
+                "{NEWLINE}{}[omnish] sandbox: {:?} not available, falling back to {:?}.{}{}{NEWLINE}",
                 display::DIM, preferred, actual, hint, display::RESET,
             ))
         }
         SandboxDetectResult::Unavailable { preferred } => {
             let hint = bwrap_hint(preferred);
             Some(format!(
-                "\r\n{}[omnish] sandbox: no backend available, tool execution is not sandboxed.{}{}\r\n",
+                "{NEWLINE}{}[omnish] sandbox: no backend available, tool execution is not sandboxed.{}{}{NEWLINE}",
                 display::DIM, hint, display::RESET,
             ))
         }
         SandboxDetectResult::Disabled => {
             Some(format!(
-                "\r\n{}[omnish] sandbox: disabled by client config, tool execution is not sandboxed.{}\r\n",
+                "{NEWLINE}{}[omnish] sandbox: disabled by client config, tool execution is not sandboxed.{}{NEWLINE}",
                 display::DIM, display::RESET,
             ))
         }
@@ -2807,7 +2808,7 @@ async fn send_daemon_query(
             if show_thinking {
                 let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
                 let separator = display::render_separator(cols);
-                let sep_line = format!("{}\r\n", separator);
+                let sep_line = format!("{}{NEWLINE}", separator);
                 nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
             }
         }
@@ -2847,8 +2848,8 @@ pub(crate) async fn handle_slash_command(
                 // Command output is plain text - skip markdown rendering
                 // Single-line output: no leading blank line; multi-line: add one for readability
                 let is_multiline = display_result.contains('\n');
-                let prefix = if is_multiline { "\r\n" } else { "" };
-                let output = format!("{}{}\r\n", prefix, display_result.replace('\n', "\r\n"));
+                let prefix = if is_multiline { NEWLINE } else { "" };
+                let output = format!("{}{}{NEWLINE}", prefix, display_result.replace('\n', NEWLINE));
                 nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
             }
             true
@@ -2866,7 +2867,7 @@ pub(crate) async fn handle_slash_command(
                     handle_command_result(&display_result, Some(path), cwd);
                 } else {
                     // Plain text output - skip markdown rendering to preserve blank lines
-                    let output = format!("\r\n{}\r\n", display_result.replace('\n', "\r\n"));
+                    let output = format!("{NEWLINE}{}{NEWLINE}", display_result.replace('\n', NEWLINE));
                     nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
                 }
                 return true;
@@ -2898,7 +2899,7 @@ pub(crate) async fn handle_slash_command(
                             display
                         };
                         // Command output is plain text - skip markdown rendering
-                        let output = format!("\r\n{}\r\n", display.replace('\n', "\r\n"));
+                        let output = format!("{NEWLINE}{}{NEWLINE}", display.replace('\n', NEWLINE));
                         nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
                     }
                     _ => {

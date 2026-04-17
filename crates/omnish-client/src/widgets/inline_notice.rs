@@ -53,6 +53,7 @@ impl InlineNotice {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::display::NEWLINE;
     use crate::display::truncate_cols as truncate;
 
     #[test]
@@ -145,7 +146,7 @@ mod tests {
 
         let mut setup = String::new();
         for i in 0..rows - 1 {
-            setup.push_str(&format!("line {}\r\n", i));
+            setup.push_str(&format!("line {}{NEWLINE}", i));
         }
         setup.push_str("user@host:~ $ cd foo");
         parser.process(setup.as_bytes());
@@ -185,7 +186,7 @@ mod tests {
 
         let mut setup = String::new();
         for i in 0..rows - 1 {
-            setup.push_str(&format!("line {}\r\n", i));
+            setup.push_str(&format!("line {}{NEWLINE}", i));
         }
         setup.push_str("$ ");
         parser.process(setup.as_bytes());

@@ -13,7 +13,7 @@ use omnish_pty::proxy::PtyProxy;
 use omnish_transport::rpc_client::RpcClient;
 
 use crate::{client_plugin, command, display, ghost_complete, markdown, widgets};
-use crate::display::{BOLD, BRIGHT_WHITE, CYAN, DIM, GRAY, GREEN, RED, RESET, YELLOW};
+use crate::display::{BOLD, BRIGHT_WHITE, CYAN, DIM, GRAY, GREEN, NEWLINE, RED, RESET, YELLOW};
 use widgets::scroll_view::ScrollView;
 
 #[derive(Debug, Clone)]
@@ -524,14 +524,14 @@ fn save_local_sandbox_config(
         match value.parse::<bool>() {
             Ok(b) => Change::Enabled(b),
             Err(_) => {
-                write_stdout(&format!("{RED}Invalid boolean: {}{RESET}\r\n", value));
+                write_stdout(&format!("{RED}Invalid boolean: {}{RESET}{NEWLINE}", value));
                 return false;
             }
         }
     } else if schema_path.ends_with(".__backend") {
         Change::Backend(value.to_string())
     } else {
-        write_stdout(&format!("{RED}Unknown local config path: {}{RESET}\r\n", schema_path));
+        write_stdout(&format!("{RED}Unknown local config path: {}{RESET}{NEWLINE}", schema_path));
         return false;
     };
 
@@ -575,7 +575,7 @@ fn save_local_sandbox_config(
             true
         }
         Err(e) => {
-            write_stdout(&format!("{RED}Failed to save sandbox config: {}{RESET}\r\n", e));
+            write_stdout(&format!("{RED}Failed to save sandbox config: {}{RESET}{NEWLINE}", e));
             false
         }
     }
@@ -591,15 +591,15 @@ fn add_local_rule(
     let operator = find_change_value(changes, ".operator").trim().to_string();
     let value   = find_change_value(changes, ".value").trim().to_string();
 
-    if plugin.is_empty() { write_stdout(&format!("{RED}Plugin is required{RESET}\r\n")); return false; }
-    if field.is_empty()  { write_stdout(&format!("{RED}Param name is required{RESET}\r\n")); return false; }
-    if value.is_empty()  { write_stdout(&format!("{RED}Pattern is required{RESET}\r\n")); return false; }
+    if plugin.is_empty() { write_stdout(&format!("{RED}Plugin is required{RESET}{NEWLINE}")); return false; }
+    if field.is_empty()  { write_stdout(&format!("{RED}Param name is required{RESET}{NEWLINE}")); return false; }
+    if value.is_empty()  { write_stdout(&format!("{RED}Pattern is required{RESET}{NEWLINE}")); return false; }
 
     let rule = format!("{} {} {}", field, operator.as_str().if_empty("starts_with"), value);
     let config_path = client_config_path();
     let array_key = format!("sandbox.plugins.{}.permit_rules", plugin);
     if let Err(e) = omnish_common::config_edit::append_to_toml_array(&config_path, &array_key, &rule) {
-        write_stdout(&format!("{RED}Failed to save rule: {}{RESET}\r\n", e));
+        write_stdout(&format!("{RED}Failed to save rule: {}{RESET}{NEWLINE}", e));
         return false;
     }
     sandbox_state.write().unwrap()
@@ -621,7 +621,7 @@ fn edit_local_rule(
 
     if delete {
         if let Err(e) = omnish_common::config_edit::remove_from_toml_array(&config_path, &array_key, idx) {
-            write_stdout(&format!("{RED}Failed to delete rule: {}{RESET}\r\n", e));
+            write_stdout(&format!("{RED}Failed to delete rule: {}{RESET}{NEWLINE}", e));
             return false;
         }
         let mut guard = sandbox_state.write().unwrap();
@@ -634,12 +634,12 @@ fn edit_local_rule(
     let field    = find_change_value(changes, ".field").trim().to_string();
     let operator = find_change_value(changes, ".operator").trim().to_string();
     let value    = find_change_value(changes, ".value").trim().to_string();
-    if field.is_empty() { write_stdout(&format!("{RED}Param name is required{RESET}\r\n")); return false; }
-    if value.is_empty() { write_stdout(&format!("{RED}Pattern is required{RESET}\r\n")); return false; }
+    if field.is_empty() { write_stdout(&format!("{RED}Param name is required{RESET}{NEWLINE}")); return false; }
+    if value.is_empty() { write_stdout(&format!("{RED}Pattern is required{RESET}{NEWLINE}")); return false; }
 
     let rule = format!("{} {} {}", field, operator.as_str().if_empty("starts_with"), value);
     if let Err(e) = omnish_common::config_edit::replace_in_toml_array(&config_path, &array_key, idx, &rule) {
-        write_stdout(&format!("{RED}Failed to update rule: {}{RESET}\r\n", e));
+        write_stdout(&format!("{RED}Failed to update rule: {}{RESET}{NEWLINE}", e));
         return false;
     }
     let mut guard = sandbox_state.write().unwrap();
@@ -872,14 +872,14 @@ fn display_config_diff(diffs: &[ConfigDiff]) {
     let max_label_chars = diffs.iter().map(|d| d.label.chars().count()).max().unwrap_or(0);
     let col2_start = (max_label_chars + 2).clamp(22, 60);
 
-    write_stdout(&format!("\r\n{BOLD}Config changes:{RESET}\r\n"));
+    write_stdout(&format!("{NEWLINE}{BOLD}Config changes:{RESET}{NEWLINE}"));
 
     for d in diffs {
         let label = char_truncate(&d.label, col2_start);
         let label_padding = col2_start.saturating_sub(label.chars().count()) + 2;
 
         write_stdout(&format!(
-            "  {}{:<pad$}{GRAY}{}{RESET} {YELLOW}→{RESET} {GREEN}{}{RESET}\r\n",
+            "  {}{:<pad$}{GRAY}{}{RESET} {YELLOW}→{RESET} {GREEN}{}{RESET}{NEWLINE}",
             label,
             "",
             char_truncate(&d.old_value, val_width),
@@ -887,7 +887,7 @@ fn display_config_diff(diffs: &[ConfigDiff]) {
             pad = label_padding,
         ));
     }
-    write_stdout("\r\n");
+    write_stdout(NEWLINE);
 }
 
 /// Build MenuItem tree from flat ConfigItems and handler info.
@@ -1071,13 +1071,13 @@ impl ChatSession {
     }
 
     fn show_thinking(&mut self) {
-        write_stdout(&format!("{}\r\n", self.thinking_line()));
+        write_stdout(&format!("{}{NEWLINE}", self.thinking_line()));
         self.thinking_visible = true;
     }
 
     fn redraw_thinking(&mut self) {
         if self.thinking_visible {
-            write_stdout(&format!("\x1b[1A\r\x1b[K{}\r\n", self.thinking_line()));
+            write_stdout(&format!("\x1b[1A\r\x1b[K{}{NEWLINE}", self.thinking_line()));
         }
     }
 
@@ -1090,7 +1090,7 @@ impl ChatSession {
 
     fn print_line(&mut self, line: &str) {
         write_stdout(line);
-        write_stdout("\r\n");
+        write_stdout(NEWLINE);
         let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
         self.lines_printed += Self::visual_rows(line, cols as usize);
     }
@@ -1139,13 +1139,13 @@ impl ChatSession {
                     if *icon == StatusIcon::Running { seen_running = true; }
                     let header = display::render_tool_header_with_spinner(icon, display_name, param_desc, cols, sf);
                     write_stdout(&header);
-                    write_stdout("\r\n");
+                    write_stdout(NEWLINE);
                     count += Self::visual_rows(&header, cols);
                     if let Some(ref lines) = cts.result_compact {
                         let rendered = display::render_tool_output_with_cols(lines, cols, self.extended_unicode);
                         for line in &rendered {
                             write_stdout(line);
-                            write_stdout("\r\n");
+                            write_stdout(NEWLINE);
                             count += Self::visual_rows(line, cols);
                         }
                     }
@@ -1155,7 +1155,7 @@ impl ChatSession {
                     }
                 }
                 ScrollEntry::LlmText(text) => {
-                    write_stdout("\r\n");
+                    write_stdout(NEWLINE);
                     count += 1;
                     for (i, line) in text.split('\n').enumerate() {
                         let formatted = if i == 0 {
@@ -1164,7 +1164,7 @@ impl ChatSession {
                             format!("  {}", line)
                         };
                         write_stdout(&formatted);
-                        write_stdout("\r\n");
+                        write_stdout(NEWLINE);
                         count += Self::visual_rows(&formatted, cols);
                     }
                     if !seen_running {
@@ -1246,7 +1246,7 @@ impl ChatSession {
                 ScrollEntry::Response(content) => {
                     let rendered = super::markdown::render(content);
                     let mut out = vec![String::new()]; // empty line before response
-                    for (i, line) in rendered.split("\r\n").enumerate() {
+                    for (i, line) in rendered.split(NEWLINE).enumerate() {
                         if i == 0 {
                             out.push(format!("{BRIGHT_WHITE}●{RESET} {}", line));
                         } else {
@@ -1313,7 +1313,7 @@ impl ChatSession {
         self.pending_input = initial_msg;
 
         // Move past shell prompt to a new line
-        write_stdout("\r\n");
+        write_stdout(NEWLINE);
 
         let mut exit_action = ChatExitAction::Normal;
         loop {
@@ -1341,7 +1341,7 @@ impl ChatSession {
                 crate::event_log::push(format!("chat_loop: read_input_with returned {}", if result.is_some() { "Some" } else { "None" }));
                 match result {
                     Some(line) => {
-                        write_stdout("\r\n");
+                        write_stdout(NEWLINE);
                         (line, false)
                     }
                     None => break,
@@ -1421,12 +1421,12 @@ impl ChatSession {
                 let arg = trimmed.strip_prefix("/test").unwrap().trim();
                 match arg {
                     "" => {
-                        write_stdout(&format!("{DIM}Available /test commands:{RESET}\r\n"));
-                        write_stdout(&format!("{DIM}  /test picker [N]          - flat picker (N = initial index){RESET}\r\n"));
-                        write_stdout(&format!("{DIM}  /test multi_level_picker  - cascading picker (3 levels){RESET}\r\n"));
-                        write_stdout(&format!("{DIM}  /test menu                - multi-level menu widget{RESET}\r\n"));
-                        write_stdout(&format!("{DIM}  /test lock on|off         - toggle Landlock sandbox for shell{RESET}\r\n"));
-                        write_stdout(&format!("{DIM}  /test disconnect N1 [N2]  - daemon disconnects after N1s, reconnect delay N2s{RESET}\r\n"));
+                        write_stdout(&format!("{DIM}Available /test commands:{RESET}{NEWLINE}"));
+                        write_stdout(&format!("{DIM}  /test picker [N]          - flat picker (N = initial index){RESET}{NEWLINE}"));
+                        write_stdout(&format!("{DIM}  /test multi_level_picker  - cascading picker (3 levels){RESET}{NEWLINE}"));
+                        write_stdout(&format!("{DIM}  /test menu                - multi-level menu widget{RESET}{NEWLINE}"));
+                        write_stdout(&format!("{DIM}  /test lock on|off         - toggle Landlock sandbox for shell{RESET}{NEWLINE}"));
+                        write_stdout(&format!("{DIM}  /test disconnect N1 [N2]  - daemon disconnects after N1s, reconnect delay N2s{RESET}{NEWLINE}"));
                     }
                     "multi_level_picker" => self.handle_test_multi_level_picker(),
                     "menu" => self.handle_test_menu(),
@@ -1439,7 +1439,7 @@ impl ChatSession {
                             self.handle_test_disconnect(other, rpc).await;
                         } else {
                             write_stdout(&format!(
-                                "{DIM}Unknown test: {}. Run /test for a list.{RESET}\r\n",
+                                "{DIM}Unknown test: {}. Run /test for a list.{RESET}{NEWLINE}",
                                 other
                             ));
                         }
@@ -1689,7 +1689,7 @@ impl ChatSession {
                                                 self.tool_section_hist_idx = None;
                                                 self.print_line("");
                                                 let rendered = markdown::render(&resp.content);
-                                                for (i, line) in rendered.split("\r\n").enumerate() {
+                                                for (i, line) in rendered.split(NEWLINE).enumerate() {
                                                     if i == 0 {
                                                         self.print_line(&format!("{BRIGHT_WHITE}●{RESET} {}", line));
                                                     } else {
@@ -2475,7 +2475,7 @@ impl ChatSession {
                     ScrollEntry::Response(content) => {
                         self.print_line("");
                         let rendered = markdown::render(content);
-                        for (i, line) in rendered.split("\r\n").enumerate() {
+                        for (i, line) in rendered.split(NEWLINE).enumerate() {
                             if i == 0 {
                                 self.print_line(&format!("{BRIGHT_WHITE}●{RESET} {}", line));
                             } else {
@@ -2492,7 +2492,7 @@ impl ChatSession {
                 }
             }
         } else {
-            write_stdout(&format!("{DIM}(resumed conversation){RESET}\r\n"));
+            write_stdout(&format!("{DIM}(resumed conversation){RESET}{NEWLINE}"));
             self.push_entry(ScrollEntry::SystemMessage("(resumed conversation)".to_string()));
         }
 
@@ -2504,7 +2504,7 @@ impl ChatSession {
         // Warn if sandbox is disabled for this thread
         if ready.sandbox_disabled == Some(true) {
             write_stdout(&format!(
-                "{DIM}sandbox: disabled for this thread, tool execution is not sandboxed.{RESET}\r\n"
+                "{DIM}sandbox: disabled for this thread, tool execution is not sandboxed.{RESET}{NEWLINE}"
             ));
         }
     }
@@ -2565,7 +2565,7 @@ impl ChatSession {
                         match action {
                             ResumeMismatchAction::Cancel => {
                                 crate::event_log::push("resume_tid: user cancelled due to cwd/host mismatch");
-                                write_stdout(&format!("{DIM}(User canceled){RESET}\r\n"));
+                                write_stdout(&format!("{DIM}(User canceled){RESET}{NEWLINE}"));
                                 // Release the thread claim
                                 let end_msg = Message::ChatEnd(ChatEnd {
                                     session_id: session_id.to_string(),
@@ -2586,7 +2586,7 @@ impl ChatSession {
                                 });
                                 let _ = rpc.send(msg).await;
                                 self.pending_cd = Some(old_cwd.clone());
-                                write_stdout(&format!("{DIM}cwd changed: {}{RESET}\r\n", old_cwd));
+                                write_stdout(&format!("{DIM}cwd changed: {}{RESET}{NEWLINE}", old_cwd));
                             }
                             ResumeMismatchAction::StayHere(_old_cwd) => {}
                             ResumeMismatchAction::ContinueDifferentHost => {}
@@ -2731,7 +2731,7 @@ impl ChatSession {
                     });
                     match rpc.call(msg).await {
                         Ok(Message::Ack) => {
-                            write_stdout(&format!("{DIM}Switched to {}{RESET}\r\n", display_name));
+                            write_stdout(&format!("{DIM}Switched to {}{RESET}{NEWLINE}", display_name));
                         }
                         _ => {
                             write_stdout(&display::render_error(crate::i18n::t("error.failed_switch_model")));
@@ -2740,7 +2740,7 @@ impl ChatSession {
                 } else {
                     // New thread - defer model selection to first message
                     self.pending_model = Some(name);
-                    write_stdout(&format!("{DIM}Switched to {}{RESET}\r\n", display_name));
+                    write_stdout(&format!("{DIM}Switched to {}{RESET}{NEWLINE}", display_name));
                 }
             }
             _ => {} // ESC or no selection - do nothing
@@ -2760,7 +2760,7 @@ impl ChatSession {
             Some(idx) => crate::i18n::tf("chat.selected", &[("item", &items[idx])]),
             None => crate::i18n::t("chat.cancelled").to_string(),
         };
-        write_stdout(&format!("{DIM}{}{RESET}\r\n", msg));
+        write_stdout(&format!("{DIM}{}{RESET}{NEWLINE}", msg));
     }
 
     async fn handle_test_disconnect(&self, arg: &str, rpc: &RpcClient) {
@@ -2773,12 +2773,12 @@ impl ChatSession {
         match rpc.call(msg).await {
             Ok(Message::Ack) => {
                 write_stdout(&format!(
-                    "{DIM}Daemon will disconnect in {}s{RESET}\r\n",
+                    "{DIM}Daemon will disconnect in {}s{RESET}{NEWLINE}",
                     delay_secs
                 ));
                 if let Some(n2) = reconnect_delay {
                     write_stdout(&format!(
-                        "{DIM}Client will delay reconnect by {}s{RESET}\r\n",
+                        "{DIM}Client will delay reconnect by {}s{RESET}{NEWLINE}",
                         n2
                     ));
                     // Schedule reconnect suppression
@@ -2787,11 +2787,11 @@ impl ChatSession {
                 }
             }
             Ok(_) => {
-                write_stdout(&format!("{DIM}Unexpected response from daemon{RESET}\r\n"));
+                write_stdout(&format!("{DIM}Unexpected response from daemon{RESET}{NEWLINE}"));
             }
             Err(e) => {
                 write_stdout(&format!(
-                    "{DIM}Failed to send disconnect request: {}{RESET}\r\n", e
+                    "{DIM}Failed to send disconnect request: {}{RESET}{NEWLINE}", e
                 ));
             }
         }
@@ -3066,7 +3066,7 @@ impl ChatSession {
         let mut change_callback = |change: &MenuChange| -> bool {
             if change.path.starts_with("Save failure test.") {
                 write_stdout(&format!(
-                    "{RED}Simulated save failure: {} = {}{RESET}\r\n",
+                    "{RED}Simulated save failure: {} = {}{RESET}{NEWLINE}",
                     change.path, change.value
                 ));
                 false
@@ -3080,22 +3080,22 @@ impl ChatSession {
             MenuResult::Done(changes) => {
                 // With on_change, only form-mode (handler submenu) changes remain here
                 if changes.is_empty() {
-                    write_stdout(&format!("{DIM}No batch changes.{RESET}\r\n"));
+                    write_stdout(&format!("{DIM}No batch changes.{RESET}{NEWLINE}"));
                 } else {
                     write_stdout(&format!(
-                        "{DIM}Batch changes ({}):{RESET}\r\n",
+                        "{DIM}Batch changes ({}):{RESET}{NEWLINE}",
                         changes.len()
                     ));
                     for c in &changes {
                         write_stdout(&format!(
-                            "{DIM}  {} = {}{RESET}\r\n",
+                            "{DIM}  {} = {}{RESET}{NEWLINE}",
                             c.path, c.value
                         ));
                     }
                 }
             }
             MenuResult::Cancelled => {
-                write_stdout(&format!("{DIM}Cancelled.{RESET}\r\n"));
+                write_stdout(&format!("{DIM}Cancelled.{RESET}{NEWLINE}"));
             }
         }
     }
@@ -3104,11 +3104,11 @@ impl ChatSession {
         let (items, handlers) = match rpc.call(Message::ConfigQuery).await {
             Ok(Message::ConfigResponse { items, handlers }) => (items, handlers),
             Ok(_) => {
-                write_stdout(&format!("{RED}Unexpected response from daemon{RESET}\r\n"));
+                write_stdout(&format!("{RED}Unexpected response from daemon{RESET}{NEWLINE}"));
                 return;
             }
             Err(e) => {
-                write_stdout(&format!("{RED}Failed to query config: {}{RESET}\r\n", e));
+                write_stdout(&format!("{RED}Failed to query config: {}{RESET}{NEWLINE}", e));
                 return;
             }
         };
@@ -3125,7 +3125,7 @@ impl ChatSession {
         all_handlers.extend(extra_handlers);
 
         if items.is_empty() {
-            write_stdout(&format!("{DIM}No configurable items.{RESET}\r\n"));
+            write_stdout(&format!("{DIM}No configurable items.{RESET}{NEWLINE}"));
             return;
         }
 
@@ -3176,7 +3176,7 @@ impl ChatSession {
                             })
                             .collect();
                         if let Err(msg) = send_config_update(&rt, rpc_ref, config_changes) {
-                            write_stdout(&format!("{RED}{}{RESET}\r\n", msg));
+                            write_stdout(&format!("{RED}{}{RESET}{NEWLINE}", msg));
                             return None;
                         }
                     } else {
@@ -3202,7 +3202,7 @@ impl ChatSession {
                         })
                         .collect();
                     if let Err(msg) = send_config_update(&rt, rpc_ref, config_changes) {
-                        write_stdout(&format!("{RED}{}{RESET}\r\n", msg));
+                        write_stdout(&format!("{RED}{}{RESET}{NEWLINE}", msg));
                         return None;
                     }
                 } else if let Some(rest) = handler_name.strip_prefix("edit_local_rule:") {
@@ -3217,7 +3217,7 @@ impl ChatSession {
                             }
                         }
                         None => {
-                            write_stdout(&format!("{RED}Invalid handler: {}{RESET}\r\n", handler_name));
+                            write_stdout(&format!("{RED}Invalid handler: {}{RESET}{NEWLINE}", handler_name));
                             return None;
                         }
                     }
@@ -3242,12 +3242,12 @@ impl ChatSession {
                     });
                     match update_result {
                         Ok(Message::ConfigUpdateResult { ok: false, error }) => {
-                            write_stdout(&format!("{RED}Handler error: {}{RESET}\r\n",
+                            write_stdout(&format!("{RED}Handler error: {}{RESET}{NEWLINE}",
                                 error.unwrap_or_default()));
                             return None;
                         }
                         Err(e) => {
-                            write_stdout(&format!("{RED}RPC error: {}{RESET}\r\n", e));
+                            write_stdout(&format!("{RED}RPC error: {}{RESET}{NEWLINE}", e));
                             return None;
                         }
                         _ => {}
@@ -3299,12 +3299,12 @@ impl ChatSession {
                 });
                 match update_result {
                     Ok(Message::ConfigUpdateResult { ok: false, error }) => {
-                        write_stdout(&format!("{RED}Failed to save: {}{RESET}\r\n",
+                        write_stdout(&format!("{RED}Failed to save: {}{RESET}{NEWLINE}",
                             error.unwrap_or_default()));
                         false
                     }
                     Err(e) => {
-                        write_stdout(&format!("{RED}RPC error: {}{RESET}\r\n", e));
+                        write_stdout(&format!("{RED}RPC error: {}{RESET}{NEWLINE}", e));
                         false
                     }
                     _ => true,
@@ -3338,12 +3338,12 @@ impl ChatSession {
         let cat_idx = match widgets::picker::pick_one("Select category:", categories) {
             Some(idx) => idx,
             None => {
-                write_stdout(&format!("{DIM}Cancelled at level 1{RESET}\r\n"));
+                write_stdout(&format!("{DIM}Cancelled at level 1{RESET}{NEWLINE}"));
                 return;
             }
         };
         write_stdout(&format!(
-            "{DIM}Category: {}{RESET}\r\n",
+            "{DIM}Category: {}{RESET}{NEWLINE}",
             categories[cat_idx]
         ));
 
@@ -3357,13 +3357,13 @@ impl ChatSession {
         let item_idx = match widgets::picker::pick_one(&title, items[cat_idx]) {
             Some(idx) => idx,
             None => {
-                write_stdout(&format!("{DIM}Cancelled at level 2{RESET}\r\n"));
+                write_stdout(&format!("{DIM}Cancelled at level 2{RESET}{NEWLINE}"));
                 return;
             }
         };
         let selected = items[cat_idx][item_idx];
         write_stdout(&format!(
-            "{DIM}Item: {}{RESET}\r\n",
+            "{DIM}Item: {}{RESET}{NEWLINE}",
             selected
         ));
 
@@ -3372,7 +3372,7 @@ impl ChatSession {
         let action_idx = match widgets::picker::pick_one("Action:", actions) {
             Some(idx) => idx,
             None => {
-                write_stdout(&format!("{DIM}Cancelled at level 3{RESET}\r\n"));
+                write_stdout(&format!("{DIM}Cancelled at level 3{RESET}{NEWLINE}"));
                 return;
             }
         };
@@ -3381,7 +3381,7 @@ impl ChatSession {
             "Result: {} > {} > {}",
             categories[cat_idx], selected, actions[action_idx]
         );
-        write_stdout(&format!("{DIM}{}{RESET}\r\n", result));
+        write_stdout(&format!("{DIM}{}{RESET}{NEWLINE}", result));
     }
 
     // ── Input handling ───────────────────────────────────────────────────
@@ -3481,7 +3481,7 @@ impl ChatSession {
                     out.push_str("\x1b[J");
                 } else {
                     out.push_str(&s);
-                    out.push_str("\x1b[K\r\n");
+                    out.push_str(&format!("\x1b[K{NEWLINE}"));
                 }
                 display_widths.push(dw);
             }
@@ -3591,7 +3591,7 @@ impl ChatSession {
                 let ready = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
                 if ready == 0 {
                     // Timeout - auto-exit chat mode
-                    write_stdout(&format!("\r\n{DIM}(chat closed due to inactivity){RESET}\r\n"));
+                    write_stdout(&format!("{NEWLINE}{DIM}(chat closed due to inactivity){RESET}{NEWLINE}"));
                     // Disable bracketed paste before exiting
                     write_stdout("\x1b[?2004l");
                     return None;

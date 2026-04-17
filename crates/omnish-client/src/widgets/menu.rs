@@ -7,7 +7,7 @@
 use std::os::unix::io::AsRawFd;
 
 use super::common::{self, MAX_VISIBLE};
-use crate::display::{BOLD, BOLD_REVERSE, DIM, GRAY, GREEN, RED, RESET};
+use crate::display::{BOLD, BOLD_REVERSE, DIM, GRAY, GREEN, NEWLINE, RED, RESET};
 
 // ── Layout constants ────────────────────────────────────────────────────
 
@@ -234,7 +234,7 @@ fn render_full(
 
     // Push screen content up
     for _ in 0..tl {
-        out.push_str("\r\n");
+        out.push_str(NEWLINE);
     }
     out.push_str(&format!("\x1b[{}A", tl));
 
@@ -247,26 +247,26 @@ fn render_full(
     } else {
         out.push_str(&format!("\r{BOLD}{}{RESET}\x1b[K", breadcrumb));
     }
-    out.push_str("\r\n");
+    out.push_str(NEWLINE);
 
     // Top separator
     out.push_str(&common::render_separator(cols));
-    out.push_str("\r\n");
+    out.push_str(NEWLINE);
 
     // Visible items
     let end = (scroll_offset + vis).min(items.len());
     for (i, item) in items.iter().enumerate().take(end).skip(scroll_offset) {
         out.push_str(&render_menu_item(item, i == cursor));
         if i < end - 1 {
-            out.push_str("\r\n");
+            out.push_str(NEWLINE);
         }
     }
-    out.push_str("\r\n");
+    out.push_str(NEWLINE);
 
     // Bottom separator
     let remaining_below = items.len().saturating_sub(end);
     out.push_str(&common::render_separator(cols));
-    out.push_str("\r\n");
+    out.push_str(NEWLINE);
 
     // Hint
     out.push_str(&render_hint(remaining_below, Some(&items[cursor])));

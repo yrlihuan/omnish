@@ -1,3 +1,5 @@
+use crate::display::NEWLINE;
+
 /// A temporary multi-line status display.
 ///
 /// Renders status messages below the current cursor position.
@@ -136,7 +138,7 @@ impl LineStatus {
         let mut out = String::new();
         for line in lines {
             let display = Self::truncate_line(line, max_cols);
-            out.push_str(&format!("\r\n\x1b[K{}{}{}", crate::display::DIM, display, crate::display::RESET));
+            out.push_str(&format!("{NEWLINE}\x1b[K{}{}{}", crate::display::DIM, display, crate::display::RESET));
         }
         out
     }
@@ -386,7 +388,7 @@ mod tests {
         let mut s = LineStatus::new(cols as usize, 5);
         out.push_str(&s.show("(thinking...)"));
         out.push_str(&s.clear());
-        out.push_str("\r\n\x1b[37mOK\x1b[0m\r\n");
+        out.push_str(&format!("{NEWLINE}\x1b[37mOK\x1b[0m{NEWLINE}"));
 
         let parser = parse_ansi(&out, cols, 10);
         let all = parser.screen().contents();
