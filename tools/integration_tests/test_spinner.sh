@@ -213,12 +213,17 @@ test_2() {
 }
 
 # ── Test 3: Thinking between tool completion and response (#551) ────────
-# The post-tool Thinking window is typically <1s (Claude's first-token
-# latency after a tool result). Periodic capture-pane snapshots can miss
-# it, so we use `tmux pipe-pane` to log the raw byte stream — capturing
-# every character ever written to the pane including transient text that
-# gets overwritten. We then scan the log for animated spinner frames next
-# to "Thinking…" occurring AFTER the Bash tool header.
+# The earlier pipe-pane-based version only checked whether "Thinking…" was
+# ever written to the byte stream. That missed the real failure mode where
+# `show_thinking` writes the line but a subsequent handler erases it within
+# a few ms — the user never actually sees it.
+#
+# This version polls the pane with `capture-pane` at 50ms intervals and
+# requires AT LEAST ONE snapshot taken AFTER the Bash tool header to still
+# contain an active "Thinking…" line. The prompt forces a tool with a
+# large output (`cat /etc/services && seq 1 2000`) so the post-tool
+# first-token latency is several seconds, giving capture-pane many chances
+# to observe the Thinking line if it is truly visible.
 test_3() {
     echo -e "\n${YELLOW}=== Test 3: Thinking after tool-use, before response (#551) ===${NC}"
 
@@ -227,81 +232,88 @@ test_3() {
 
     enter_chat
 
-    # Start capturing raw pane output to a log file.
-    local pipe_log
-    pipe_log=$(mktemp /tmp/omnish-test-pipe.XXXXXX.log)
-    _tmux pipe-pane -t "$PANE" -o "cat >> $pipe_log"
+    local snaps_dir
+    snaps_dir=$(mktemp -d /tmp/omnish-test-thinking-snaps.XXXXXX)
 
-    # Simple prompt that forces exactly one tool call.
-    send_keys "运行 echo hello" 0.3
+    # Background high-frequency capture-pane poller, one file per snapshot.
+    (
+        local i=0
+        while :; do
+            _tmux capture-pane -p -J -t "$PANE" -S -30 \
+                > "$snaps_dir/$(printf '%05d' "$i").txt" 2>/dev/null || true
+            i=$((i+1))
+            sleep 0.05
+        done
+    ) &
+    local poll_pid=$!
+
+    # Prompt forces one Bash tool whose output is large enough that the
+    # LLM's first-token latency after the tool result is several seconds —
+    # well over the 50ms capture interval.
+    local prompt="请运行 bash 命令：cat /etc/services && seq 1 2000 。然后简短总结输出中出现的端口/数字规律，再运行 echo done。"
+    send_keys "$prompt" 0.3
     send_enter 0.1
 
-    # Wait for the final chat prompt to return (response complete).
-    # Use 120s to tolerate one 429 backoff retry (60s) + response.
-    if ! wait_for_chat_response 120; then
-        _tmux pipe-pane -t "$PANE"
+    # Use 300s: big tool output + long LLM processing + possible 429 retry.
+    if ! wait_for_chat_response 300; then
+        kill $poll_pid 2>/dev/null || true
+        wait $poll_pid 2>/dev/null || true
         show_capture "No chat response" "$(capture_pane -40)" 30
         assert_fail "No chat response received after tool-use"
-        rm -f "$pipe_log"
+        rm -rf "$snaps_dir"
         return 1
     fi
+    kill $poll_pid 2>/dev/null || true
+    wait $poll_pid 2>/dev/null || true
 
-    # Stop capturing.
-    _tmux pipe-pane -t "$PANE"
+    # Walk snapshots in order. Anchor "post-tool" as the range AFTER the
+    # first snapshot that contains a Bash tool header. Count how many of
+    # those still contain a "<spinner> Thinking" line, and how many
+    # distinct spinner codepoints show up there (animation evidence).
+    local first_bash=-1
+    local pre_tool_thinking=0
+    local post_tool_thinking=0
+    local distinct_frames=""
+    local idx=0
+    for f in "$snaps_dir"/*.txt; do
+        local stripped
+        stripped=$(sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$f")
+        if [[ $first_bash -eq -1 ]] && echo "$stripped" | grep -qE 'Bash\('; then
+            first_bash=$idx
+        fi
+        if echo "$stripped" | grep -qE "[$SPINNER_CHARS] Thinking"; then
+            if [[ $first_bash -eq -1 ]]; then
+                pre_tool_thinking=$((pre_tool_thinking + 1))
+            else
+                post_tool_thinking=$((post_tool_thinking + 1))
+                local ch
+                ch=$(echo "$stripped" | grep -oE "[$SPINNER_CHARS] Thinking" \
+                    | grep -oE "[$SPINNER_CHARS]" | head -1)
+                if [[ -n "$ch" && "$distinct_frames" != *"$ch"* ]]; then
+                    distinct_frames+="$ch"
+                fi
+            fi
+        fi
+        idx=$((idx + 1))
+    done
 
-    # Strip ANSI escapes to simplify pattern matching, but keep line
-    # structure so we can reason about order.
-    local stripped_log
-    stripped_log=$(mktemp /tmp/omnish-test-stripped.XXXXXX.log)
-    sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$pipe_log" > "$stripped_log"
+    echo -e "  Total snapshots:          $idx"
+    echo -e "  First Bash-header snap:   $first_bash"
+    echo -e "  Pre-tool  Thinking snaps: $pre_tool_thinking"
+    echo -e "  Post-tool Thinking snaps: $post_tool_thinking"
+    echo -e "  Distinct post-tool spinner codepoints: ${#distinct_frames} ('$distinct_frames')"
 
-    # Count occurrences of "⣿ Thinking…" patterns (any of the 10 braille
-    # spinner frames + " Thinking"). Each redraw_thinking() prints a new
-    # frame, so we expect multiple distinct frames across the session.
-    local thinking_hits
-    thinking_hits=$(grep -oE "[$SPINNER_CHARS] Thinking" "$stripped_log" | wc -l)
-    echo -e "  Thinking spinner writes captured: $thinking_hits"
+    local failed=0
 
-    # Count distinct spinner frames next to Thinking (animation evidence).
-    local distinct_frames
-    distinct_frames=$(grep -oE "[$SPINNER_CHARS] Thinking" "$stripped_log" \
-        | grep -oE "[$SPINNER_CHARS]" | sort -u | wc -l)
-    echo -e "  Distinct spinner frames: $distinct_frames"
-
-    # Check that at least one "Thinking" write occurs AFTER a Bash tool
-    # header in the log — this is the post-tool window.
-    local post_tool_thinking=false
-    if awk -v chars="$SPINNER_CHARS" '
-        BEGIN { saw_bash = 0; found = 0 }
-        /Bash\(/ { saw_bash = 1 }
-        saw_bash {
-            # match any char from SPINNER_CHARS followed by " Thinking"
-            for (i = 1; i <= length(chars); i++) {
-                c = substr(chars, i, 1)
-                if (index($0, c " Thinking") > 0) { found = 1; exit }
-            }
-        }
-        END { exit !found }
-    ' "$stripped_log"; then
-        post_tool_thinking=true
+    if [[ $first_bash -lt 0 ]]; then
+        assert_fail "No Bash tool header ever appeared"
+        failed=1
+    elif [[ $post_tool_thinking -lt 1 ]]; then
+        assert_fail "No post-tool capture-pane snapshot contained Thinking (indicator not visible to the user between tool completion and LLM response)"
+        failed=1
+    else
+        assert_pass "Thinking visible after Bash tool header in $post_tool_thinking snapshot(s)"
     fi
-
-    rm -f "$pipe_log" "$stripped_log"
-
-    if [[ $thinking_hits -lt 2 ]]; then
-        assert_fail "Expected ≥2 Thinking spinner writes (initial + post-tool), got $thinking_hits"
-        return 1
-    fi
-    if [[ $distinct_frames -lt 2 ]]; then
-        assert_fail "Spinner did not animate: only $distinct_frames distinct frame(s)"
-        return 1
-    fi
-    if [[ "$post_tool_thinking" != "true" ]]; then
-        assert_fail "No Thinking spinner observed after Bash tool header"
-        return 1
-    fi
-
-    assert_pass "Thinking spinner animates after tool-use (hits=$thinking_hits, frames=$distinct_frames)"
 
     # Final pane must not still show a Thinking line.
     local final
@@ -309,11 +321,18 @@ test_3() {
     if echo "$final" | grep -q 'Thinking'; then
         show_capture "Thinking still visible" "$final" 30
         assert_fail "Thinking label not erased after final response"
-        return 1
+        failed=1
+    else
+        assert_pass "Thinking erased after tool-use response"
     fi
-    assert_pass "Thinking erased after tool-use response"
 
-    return 0
+    if [[ $failed -eq 0 ]]; then
+        rm -rf "$snaps_dir"
+    else
+        echo -e "  ${YELLOW}Snapshot dir preserved for debugging: $snaps_dir${NC}"
+    fi
+
+    return $failed
 }
 
 echo -e "${YELLOW}Spinner animation integration tests (#478, #551)${NC}"

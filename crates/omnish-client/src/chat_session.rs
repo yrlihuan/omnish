@@ -1662,8 +1662,12 @@ impl ChatSession {
                                                     self.print_line(&header);
                                                     self.push_entry(ScrollEntry::ToolStatus(cts));
                                                 } else {
-                                                    // Second status — tool completed (after execution)
-                                                    // Update matching ToolStatus entry in scroll_history
+                                                    // Second status — tool completed (after execution).
+                                                    // The daemon sends this immediately after receiving the
+                                                    // tool result, before the LLM's next response. We erased
+                                                    // Thinking above so the cursor math in redraw_tool_section
+                                                    // works; re-show it so the user keeps seeing the
+                                                    // indicator while waiting for the LLM.
                                                     let tool_call_id = cts.tool_call_id.clone();
                                                     if let Some(entry) = self.scroll_history.iter_mut().rev().find(|e| {
                                                         matches!(e, ScrollEntry::ToolStatus(prev)
@@ -1671,8 +1675,8 @@ impl ChatSession {
                                                     }) {
                                                         *entry = ScrollEntry::ToolStatus(cts.clone());
                                                     }
-                                                    // Re-render entire tool section with updated statuses
                                                     self.redraw_tool_section();
+                                                    self.show_thinking();
                                                 }
                                             }
                                             Some(Message::ChatToolCall(tc)) => {
