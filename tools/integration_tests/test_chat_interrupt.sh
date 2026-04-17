@@ -107,13 +107,6 @@ test_2() {
     local stripped
     stripped=$(echo "$content" | sed 's/\x1b\[[0-9;]*m//g')
 
-    # If LLM responded before Ctrl-C arrived, this is a timing issue, not a bug.
-    if echo "$stripped" | grep -q "User interrupted"; then
-        echo -e "  ${YELLOW}LLM responded before Ctrl-C arrived (timing), skipping${NC}"
-        assert_pass "Early interrupt test skipped (LLM too fast)"
-        return 0
-    fi
-
     # The last non-empty line should show "> " with the original input restored
     local last_line
     last_line=$(last_nonempty_line "$stripped")

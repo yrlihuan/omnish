@@ -42,10 +42,10 @@ test_1() {
     local msg="${marker}${padding}"
 
     send_keys "$msg" 0.3
-    send_enter 0.3
+    send_enter 0.1
 
     # Cancel early — before the LLM has a chance to respond.
-    sleep 1
+    sleep 0.1
     echo -e "  Sending Ctrl-C to cancel early..."
     send_special C-c 1
 
@@ -101,13 +101,6 @@ test_2() {
     stripped=$(echo "$content" | sed 's/\x1b\[[0-9;]*m//g')
 
     show_capture "After early cancel (short)" "$content" 5
-
-    # If LLM responded before Ctrl-C arrived, this is a timing issue, not a bug.
-    if echo "$stripped" | grep -q "User interrupted"; then
-        echo -e "  ${YELLOW}LLM responded before Ctrl-C arrived (timing), skipping${NC}"
-        assert_pass "Short input early-cancel test skipped (LLM too fast)"
-        return 0
-    fi
 
     # The restored editor should show the input once.
     local marker_lines
