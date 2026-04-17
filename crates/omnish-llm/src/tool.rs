@@ -6,6 +6,10 @@ pub struct ToolDef {
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
+    /// Cache hint applied to this tool's wire entry. Defaults to `None`
+    /// so callers (and JSON-deserialized plugin defs) need not specify it.
+    #[serde(default)]
+    pub cache: crate::backend::CacheHint,
 }
 
 /// A tool call requested by the LLM.

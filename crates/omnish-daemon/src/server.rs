@@ -381,7 +381,6 @@ async fn summarize_tool_result(
         session_ids: vec![],
         use_case: omnish_llm::backend::UseCase::Summarize,
         max_content_chars: None,
-        conversation: vec![],
         system_prompt: None,
         enable_thinking: Some(false),
         tools: vec![],
@@ -1263,6 +1262,15 @@ async fn handle_chat_message(
     // ChatEnd can race with the agent loop).
     conv_mgr.append_messages(&cm.thread_id, &[user_msg]);
 
+    // Wrap raw JSON messages in TaggedMessage carriers (cache hints set in Task 6).
+    let extra_messages: Vec<omnish_llm::backend::TaggedMessage> = extra_messages
+        .into_iter()
+        .map(|content| omnish_llm::backend::TaggedMessage {
+            content,
+            cache: omnish_llm::backend::CacheHint::None,
+        })
+        .collect();
+
     let llm_req = LlmRequest {
         context: String::new(),
         query: None,
@@ -1270,8 +1278,10 @@ async fn handle_chat_message(
         session_ids: vec![cm.session_id.clone()],
         use_case,
         max_content_chars: max_context_chars,
-        conversation: vec![],
-        system_prompt: Some(full_system_prompt),
+        system_prompt: Some(omnish_llm::backend::CachedText {
+            text: full_system_prompt,
+            cache: omnish_llm::backend::CacheHint::Long,
+        }),
         enable_thinking: Some(true), // Enable thinking mode for chat
         tools,
         extra_messages,
@@ -1400,10 +1410,13 @@ async fn handle_tool_result(
             })
         })
         .collect();
-    state.llm_req.extra_messages.push(serde_json::json!({
-        "role": "user",
-        "content": result_content,
-    }));
+    state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
+        content: serde_json::json!({
+            "role": "user",
+            "content": result_content,
+        }),
+        cache: omnish_llm::backend::CacheHint::None,
+    });
 
     // Clear pending state for next iteration
     state.pending_tool_calls.clear();
@@ -1438,8 +1451,8 @@ fn persist_unsaved_sanitized(
     // Check whether the tail of extra_messages ends with an assistant message
     // containing tool_use blocks (i.e. no tool_result follows).
     let last_is_tool_use = state.llm_req.extra_messages.last().is_some_and(|msg| {
-        msg.get("role").and_then(|r| r.as_str()) == Some("assistant")
-            && msg.get("content").and_then(|c| c.as_array()).is_some_and(|blocks| {
+        msg.content.get("role").and_then(|r| r.as_str()) == Some("assistant")
+            && msg.content.get("content").and_then(|c| c.as_array()).is_some_and(|blocks| {
                 blocks.iter().any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
             })
     });
@@ -1447,6 +1460,7 @@ fn persist_unsaved_sanitized(
     if last_is_tool_use {
         // Extract tool_use ids from the assistant message
         let tool_ids: Vec<String> = state.llm_req.extra_messages.last().unwrap()
+            .content
             .get("content").unwrap().as_array().unwrap()
             .iter()
             .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
@@ -1462,10 +1476,13 @@ fn persist_unsaved_sanitized(
             })
         }).collect();
 
-        state.llm_req.extra_messages.push(serde_json::json!({
-            "role": "user",
-            "content": result_content,
-        }));
+        state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
+            content: serde_json::json!({
+                "role": "user",
+                "content": result_content,
+            }),
+            cache: omnish_llm::backend::CacheHint::None,
+        });
     }
 
     persist_unsaved(state, conv_mgr, &[
@@ -1482,7 +1499,10 @@ fn persist_unsaved(
     conv_mgr: &omnish_daemon::conversation_mgr::ConversationManager,
     suffix: &[serde_json::Value],
 ) {
-    let mut to_store = state.llm_req.extra_messages[state.saved_up_to..].to_vec();
+    let mut to_store: Vec<serde_json::Value> = state.llm_req.extra_messages[state.saved_up_to..]
+        .iter()
+        .map(|m| m.content.clone())
+        .collect();
     to_store.extend_from_slice(suffix);
     if !to_store.is_empty() {
         conv_mgr.append_messages(&state.cm.thread_id, &to_store);
@@ -1540,6 +1560,20 @@ fn update_thread_usage(
     conv_mgr.save_meta(thread_id, &meta);
 }
 
+/// Apply cache hints for the chat agent loop's message tail.
+/// Resets all hints to None, then marks the last 2 messages as Long.
+/// Called before each LLM call so newly-appended messages get fresh marks
+/// (without accumulating beyond the budget).
+fn mark_chat_message_hints(messages: &mut [omnish_llm::backend::TaggedMessage]) {
+    for m in messages.iter_mut() {
+        m.cache = omnish_llm::backend::CacheHint::None;
+    }
+    let len = messages.len();
+    for i in 0..2.min(len) {
+        messages[len - 1 - i].cache = omnish_llm::backend::CacheHint::Long;
+    }
+}
+
 /// Core agent loop: calls LLM, executes tools, pauses on client-side tools.
 /// Used by both `handle_chat_message` (initial) and `handle_tool_result` (resumption).
 /// Messages are sent incrementally through `tx` as they're produced (streaming).
@@ -1566,6 +1600,10 @@ async fn run_agent_loop(
             persist_unsaved_sanitized(&mut state, conv_mgr);
             return;
         }
+
+        // Apply cache hints fresh each iteration: agent loop appends new messages,
+        // and last-N markers must roll forward without accumulating beyond budget.
+        mark_chat_message_hints(&mut state.llm_req.extra_messages);
 
         match backend.complete(&state.llm_req).await {
             Ok(response) => {
@@ -1598,10 +1636,13 @@ async fn run_agent_loop(
                         .iter()
                         .map(content_block_to_json)
                         .collect();
-                    state.llm_req.extra_messages.push(serde_json::json!({
-                        "role": "assistant",
-                        "content": assistant_content,
-                    }));
+                    state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
+                        content: serde_json::json!({
+                            "role": "assistant",
+                            "content": assistant_content,
+                        }),
+                        cache: omnish_llm::backend::CacheHint::None,
+                    });
 
                     // Send LLM's text blocks to client immediately
                     for block in &response.content {
@@ -1822,10 +1863,13 @@ async fn run_agent_loop(
                                 }));
                             }
                         }
-                        state.llm_req.extra_messages.push(serde_json::json!({
-                            "role": "user",
-                            "content": result_content,
-                        }));
+                        state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
+                            content: serde_json::json!({
+                                "role": "user",
+                                "content": result_content,
+                            }),
+                            cache: omnish_llm::backend::CacheHint::None,
+                        });
                         persist_unsaved(&mut state, conv_mgr, &[
                             serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
                         ]);
@@ -1859,10 +1903,13 @@ async fn run_agent_loop(
                             })
                         })
                         .collect();
-                    state.llm_req.extra_messages.push(serde_json::json!({
-                        "role": "user",
-                        "content": result_content,
-                    }));
+                    state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
+                        content: serde_json::json!({
+                            "role": "user",
+                            "content": result_content,
+                        }),
+                        cache: omnish_llm::backend::CacheHint::None,
+                    });
 
                     continue;
                 }
@@ -1885,7 +1932,10 @@ async fn run_agent_loop(
                 } else {
                     serde_json::json!({ "role": "assistant", "content": text })
                 };
-                state.llm_req.extra_messages.push(assistant_msg);
+                state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
+                    content: assistant_msg,
+                    cache: omnish_llm::backend::CacheHint::None,
+                });
                 // Store new messages without system-reminder in user message
                 persist_unsaved(&mut state, conv_mgr, &[]);
                 update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
@@ -1932,10 +1982,13 @@ async fn run_agent_loop(
 
                 // Persist a short event marker (like the cancel paths) so the
                 // LLM knows the exchange was interrupted without bloating context.
-                state.llm_req.extra_messages.push(serde_json::json!({
-                    "role": "assistant",
-                    "content": "<event>api error</event>",
-                }));
+                state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
+                    content: serde_json::json!({
+                        "role": "assistant",
+                        "content": "<event>api error</event>",
+                    }),
+                    cache: omnish_llm::backend::CacheHint::None,
+                });
                 persist_unsaved(&mut state, conv_mgr, &[]);
                 update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
 
@@ -1956,10 +2009,13 @@ async fn run_agent_loop(
         state.cm.thread_id
     );
     let text = "(Agent reached maximum tool call limit)".to_string();
-    state.llm_req.extra_messages.push(serde_json::json!({
-        "role": "assistant",
-        "content": text,
-    }));
+    state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
+        content: serde_json::json!({
+            "role": "assistant",
+            "content": text,
+        }),
+        cache: omnish_llm::backend::CacheHint::None,
+    });
     persist_unsaved(&mut state, conv_mgr, &[]);
     update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
     let _ = tx.send(Message::ChatResponse(ChatResponse {
@@ -1996,8 +2052,10 @@ async fn try_warmup_kv_cache(
         session_ids: vec![session_id.to_string()],
         use_case: UseCase::Completion,
         max_content_chars: max_chars,
-        conversation: vec![],
-        system_prompt: Some(system_prompt),
+        system_prompt: Some(omnish_llm::backend::CachedText {
+            text: system_prompt,
+            cache: omnish_llm::backend::CacheHint::Long,
+        }),
         enable_thinking: Some(false), // Disable thinking for completion
         tools: vec![],
         extra_messages: vec![],
@@ -2807,7 +2865,6 @@ async fn handle_llm_request(
         session_ids: vec![req.session_id.clone()],
         use_case,
         max_content_chars: max_context_chars,
-        conversation: vec![],
         system_prompt: None,
         enable_thinking: Some(true), // Enable thinking mode for chat
         tools: vec![],
@@ -2893,8 +2950,10 @@ async fn handle_completion_request(
         session_ids: vec![req.session_id.clone()],
         use_case,
         max_content_chars: max_context_chars,
-        conversation: vec![],
-        system_prompt: Some(system_prompt),
+        system_prompt: Some(omnish_llm::backend::CachedText {
+            text: system_prompt,
+            cache: omnish_llm::backend::CacheHint::Long,
+        }),
         enable_thinking: Some(false), // Disable thinking for completion requests
         tools: vec![],
         extra_messages: vec![],

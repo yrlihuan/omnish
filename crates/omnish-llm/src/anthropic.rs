@@ -1,7 +1,8 @@
-use crate::backend::{ContentBlock, LlmBackend, LlmRequest, LlmResponse, StopReason, Usage};
+use crate::backend::{CacheHint, ContentBlock, LlmBackend, LlmRequest, LlmResponse, StopReason, Usage};
 use crate::tool::ToolCall;
 use anyhow::Result;
 use async_trait::async_trait;
+use std::collections::HashSet;
 use std::time::Duration;
 
 /// Maximum number of retries for rate-limit (429) and overloaded (529) errors.
@@ -10,6 +11,9 @@ const MAX_RETRIES: u32 = 3;
 const DEFAULT_BACKOFF: Duration = Duration::from_secs(5);
 /// Maximum backoff duration to cap retry-after values.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
+
+/// Maximum cache_control breakpoints in a single Anthropic request.
+const MAX_CACHE_BREAKPOINTS: usize = 4;
 
 pub struct AnthropicBackend {
     pub config_name: String,
@@ -25,24 +29,149 @@ fn strip_thinking(content: &str) -> String {
     content.replace("\n<think>", "").replace("</think>", "")
 }
 
-/// Add `cache_control: {"type": "ephemeral"}` to a message's last content block.
-/// Handles both string content (converted to array format) and array content.
-fn inject_cache_control(msg: &mut serde_json::Value) {
+/// Render a `CacheHint` into Anthropic's `cache_control` JSON object.
+/// Returns `None` for `CacheHint::None` (no field should be emitted).
+fn cache_control_value(hint: CacheHint) -> Option<serde_json::Value> {
+    match hint {
+        CacheHint::None => None,
+        CacheHint::Short => Some(serde_json::json!({"type": "ephemeral"})),
+        CacheHint::Long => Some(serde_json::json!({"type": "ephemeral", "ttl": "1h"})),
+    }
+}
+
+/// Apply a cache hint to the last content block of a message JSON value.
+/// Handles both string content (converted to array form) and array content.
+/// No-op if hint is `None` or content shape is empty.
+fn apply_cache_hint_to_message(msg: &mut serde_json::Value, hint: CacheHint) {
+    let Some(cc) = cache_control_value(hint) else { return };
     match msg.get("content").cloned() {
         Some(serde_json::Value::String(s)) => {
             msg["content"] = serde_json::json!([
-                {"type": "text", "text": s, "cache_control": {"type": "ephemeral"}}
+                {"type": "text", "text": s, "cache_control": cc}
             ]);
         }
         Some(serde_json::Value::Array(arr)) if !arr.is_empty() => {
             let mut new_arr = arr;
             if let Some(last_block) = new_arr.last_mut() {
-                last_block["cache_control"] = serde_json::json!({"type": "ephemeral"});
+                last_block["cache_control"] = cc;
             }
             msg["content"] = serde_json::Value::Array(new_arr);
         }
         _ => {}
     }
+}
+
+/// Compute effective per-message cache hints after applying the breakpoint budget.
+/// Anthropic supports up to 4 cache_control breakpoints per request.
+/// Strategy: count static breakpoints (system + tools), give the remainder to
+/// messages, retain only the last N marked messages, downgrade the rest to None.
+fn enforce_breakpoint_budget(req: &LlmRequest) -> Vec<CacheHint> {
+    let used_static = req.tools.iter().filter(|t| t.cache != CacheHint::None).count()
+        + req.system_prompt.as_ref().map_or(0, |s| (s.cache != CacheHint::None) as usize);
+    let remaining = MAX_CACHE_BREAKPOINTS.saturating_sub(used_static);
+
+    let marked: Vec<usize> = req
+        .extra_messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.cache != CacheHint::None)
+        .map(|(i, _)| i)
+        .collect();
+
+    if marked.len() > remaining {
+        tracing::warn!(
+            "cache breakpoint budget exceeded: {} static + {} message hints, \
+             dropping {} earliest message hints (max breakpoints = {})",
+            used_static,
+            marked.len(),
+            marked.len() - remaining,
+            MAX_CACHE_BREAKPOINTS
+        );
+    }
+
+    let kept: HashSet<usize> = marked.iter().rev().take(remaining).copied().collect();
+
+    req.extra_messages
+        .iter()
+        .enumerate()
+        .map(|(i, m)| if kept.contains(&i) { m.cache } else { CacheHint::None })
+        .collect()
+}
+
+fn build_request_body(req: &LlmRequest, model: &str) -> serde_json::Value {
+    // Build messages array from extra_messages (or single-turn fallback).
+    let mut messages: Vec<serde_json::Value> = if req.extra_messages.is_empty() {
+        if !req.context.is_empty() && req.query.is_some() {
+            // Completion-style single-turn: context + query as separate content blocks.
+            // cache_control on the context block keeps the stable prefix cached
+            // across requests with varying query input.
+            let query = req.query.as_deref().unwrap();
+            vec![serde_json::json!({"role": "user", "content": [
+                {"type": "text", "text": req.context, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": query},
+            ]})]
+        } else {
+            let user_content =
+                crate::template::build_user_content(&req.context, req.query.as_deref());
+            vec![serde_json::json!({"role": "user", "content": user_content})]
+        }
+    } else {
+        req.extra_messages.iter().map(|m| m.content.clone()).collect()
+    };
+
+    // Apply per-message cache hints (after budget enforcement).
+    if !req.extra_messages.is_empty() {
+        let effective_hints = enforce_breakpoint_budget(req);
+        for (msg, hint) in messages.iter_mut().zip(effective_hints.iter().copied()) {
+            apply_cache_hint_to_message(msg, hint);
+        }
+    }
+
+    let mut body_map = serde_json::Map::new();
+    body_map.insert("model".to_string(), serde_json::Value::String(model.to_string()));
+    body_map.insert("max_tokens".to_string(), serde_json::Value::Number(8192.into()));
+    body_map.insert("messages".to_string(), serde_json::Value::Array(messages));
+
+    // System prompt: optional cache_control based on hint.
+    if let Some(ref system) = req.system_prompt {
+        let mut block = serde_json::json!({"type": "text", "text": system.text});
+        if let Some(cc) = cache_control_value(system.cache) {
+            block["cache_control"] = cc;
+        }
+        body_map.insert("system".to_string(), serde_json::Value::Array(vec![block]));
+    }
+
+    // Tools: per-tool cache_control based on each tool's hint.
+    if !req.tools.is_empty() {
+        let tools_json: Vec<serde_json::Value> = req
+            .tools
+            .iter()
+            .map(|t| {
+                let mut entry = serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.input_schema,
+                });
+                if let Some(cc) = cache_control_value(t.cache) {
+                    entry["cache_control"] = cc;
+                }
+                entry
+            })
+            .collect();
+        body_map.insert("tools".to_string(), serde_json::Value::Array(tools_json));
+    }
+
+    // Add thinking parameter only when explicitly enabled.
+    // None or Some(false) means no thinking parameter sent (disabled by default).
+    if req.enable_thinking == Some(true) {
+        let mut thinking_map = serde_json::Map::new();
+        thinking_map.insert("type".to_string(), serde_json::Value::String("enabled".to_string()));
+        // Default budget_tokens: 4096 (can be made configurable in the future)
+        thinking_map.insert("budget_tokens".to_string(), serde_json::Value::Number(4096.into()));
+        body_map.insert("thinking".to_string(), serde_json::Value::Object(thinking_map));
+    }
+
+    serde_json::Value::Object(body_map)
 }
 
 /// Parse `retry-after` header value (seconds) from response headers.
@@ -57,100 +186,7 @@ impl LlmBackend for AnthropicBackend {
     async fn complete(&self, req: &LlmRequest) -> Result<LlmResponse> {
         let client = &self.client;
 
-        let messages: Vec<serde_json::Value> = if req.conversation.is_empty() && req.extra_messages.is_empty() {
-            // Single-turn: build user message with content blocks for cache_control
-            if !req.context.is_empty() && req.query.is_some() {
-                // Context + query as separate content blocks; cache_control on
-                // the context block so it survives across requests with varying input.
-                let query = req.query.as_deref().unwrap();
-                vec![serde_json::json!({"role": "user", "content": [
-                    {"type": "text", "text": req.context, "cache_control": {"type": "ephemeral"}},
-                    {"type": "text", "text": query},
-                ]})]
-            } else {
-                let user_content = crate::template::build_user_content(
-                    &req.context,
-                    req.query.as_deref(),
-                );
-                vec![serde_json::json!({"role": "user", "content": user_content})]
-            }
-        } else {
-            // Multi-turn: conversation history + current query + extra (tool) messages
-            let mut msgs = Vec::new();
-            for (i, turn) in req.conversation.iter().enumerate() {
-                let content = if i == 0 && !req.context.is_empty() {
-                    // Prepend terminal context to first user message
-                    format!("Terminal context:\n{}\n\n{}", req.context, turn.content)
-                } else {
-                    turn.content.clone()
-                };
-                msgs.push(serde_json::json!({"role": &turn.role, "content": content}));
-            }
-            // Append current query as user message (before extra messages on first call)
-            if req.extra_messages.is_empty() {
-                if let Some(ref q) = req.query {
-                    msgs.push(serde_json::json!({"role": "user", "content": q}));
-                }
-            }
-            // Append extra messages (tool_use assistant + tool_result user exchanges)
-            msgs.extend(req.extra_messages.clone());
-            // Mark the second-to-last message with cache_control so the stable
-            // prefix is cached.  The last message contains a system-reminder that
-            // changes between requests, so it must NOT be the cache boundary.
-            let len = msgs.len();
-            if len >= 2 {
-                inject_cache_control(&mut msgs[len - 2]);
-            }
-            msgs
-        };
-
-        // Build request body
-        let mut body_map = serde_json::Map::new();
-        body_map.insert("model".to_string(), serde_json::Value::String(self.model.clone()));
-        body_map.insert("max_tokens".to_string(), serde_json::Value::Number(8192.into()));
-        body_map.insert("messages".to_string(), serde_json::Value::Array(messages));
-
-        // Add system prompt if provided (array format with cache_control for prompt caching).
-        // Completion instructions are a compile-time constant — use 1h TTL.
-        // Chat/analysis system prompts may change per request — use default 5m TTL.
-        if let Some(ref system) = req.system_prompt {
-            let cache_control = if req.use_case == crate::backend::UseCase::Completion {
-                serde_json::json!({"type": "ephemeral", "ttl": "1h"})
-            } else {
-                serde_json::json!({"type": "ephemeral"})
-            };
-            body_map.insert("system".to_string(), serde_json::json!([
-                {"type": "text", "text": system, "cache_control": cache_control}
-            ]));
-        }
-
-        // Add tools if provided (cache_control on last tool — tools are stable across calls)
-        if !req.tools.is_empty() {
-            let mut tools_json: Vec<serde_json::Value> = req.tools
-                .iter()
-                .map(|t| serde_json::json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "input_schema": t.input_schema,
-                }))
-                .collect();
-            if let Some(last_tool) = tools_json.last_mut() {
-                last_tool["cache_control"] = serde_json::json!({"type": "ephemeral"});
-            }
-            body_map.insert("tools".to_string(), serde_json::Value::Array(tools_json));
-        }
-
-        // Add thinking parameter only when explicitly enabled.
-        // None or Some(false) means no thinking parameter sent (disabled by default).
-        if req.enable_thinking == Some(true) {
-            let mut thinking_map = serde_json::Map::new();
-            thinking_map.insert("type".to_string(), serde_json::Value::String("enabled".to_string()));
-            // Default budget_tokens: 4096 (can be made configurable in the future)
-            thinking_map.insert("budget_tokens".to_string(), serde_json::Value::Number(4096.into()));
-            body_map.insert("thinking".to_string(), serde_json::Value::Object(thinking_map));
-        }
-
-        let body = serde_json::Value::Object(body_map);
+        let body = build_request_body(req, &self.model);
         crate::message_log::log_request(&body, req.use_case);
 
         // Retry loop for connection errors, 429 (rate limit) and 529 (overloaded)
@@ -318,5 +354,161 @@ impl LlmBackend for AnthropicBackend {
 
     fn max_content_chars(&self) -> Option<usize> {
         self.max_content_chars
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_request_body;
+    use crate::backend::{CacheHint, CachedText, LlmRequest, TaggedMessage, TriggerType, UseCase};
+    use crate::tool::ToolDef;
+
+    fn empty_req() -> LlmRequest {
+        LlmRequest {
+            context: String::new(),
+            query: None,
+            trigger: TriggerType::Manual,
+            session_ids: vec![],
+            use_case: UseCase::Chat,
+            max_content_chars: None,
+            system_prompt: None,
+            enable_thinking: None,
+            tools: vec![],
+            extra_messages: vec![],
+        }
+    }
+
+    #[test]
+    fn anthropic_system_long_emits_1h_ttl() {
+        let mut req = empty_req();
+        req.system_prompt = Some(CachedText {
+            text: "you are helpful".into(),
+            cache: CacheHint::Long,
+        });
+        req.extra_messages = vec![TaggedMessage {
+            content: serde_json::json!({"role":"user","content":"hi"}),
+            cache: CacheHint::None,
+        }];
+        let body = build_request_body(&req, "test-model");
+        let sys_block = &body["system"][0];
+        assert_eq!(sys_block["text"], "you are helpful");
+        assert_eq!(sys_block["cache_control"]["type"], "ephemeral");
+        assert_eq!(sys_block["cache_control"]["ttl"], "1h");
+    }
+
+    #[test]
+    fn anthropic_system_short_omits_ttl() {
+        let mut req = empty_req();
+        req.system_prompt = Some(CachedText {
+            text: "sys".into(),
+            cache: CacheHint::Short,
+        });
+        req.extra_messages = vec![TaggedMessage {
+            content: serde_json::json!({"role":"user","content":"hi"}),
+            cache: CacheHint::None,
+        }];
+        let body = build_request_body(&req, "test-model");
+        let cc = &body["system"][0]["cache_control"];
+        assert_eq!(cc["type"], "ephemeral");
+        assert!(cc.get("ttl").is_none(), "Short hint must not emit ttl field, got {:?}", cc);
+    }
+
+    #[test]
+    fn anthropic_system_none_emits_no_cache_control() {
+        let mut req = empty_req();
+        req.system_prompt = Some(CachedText {
+            text: "sys".into(),
+            cache: CacheHint::None,
+        });
+        req.extra_messages = vec![TaggedMessage {
+            content: serde_json::json!({"role":"user","content":"hi"}),
+            cache: CacheHint::None,
+        }];
+        let body = build_request_body(&req, "test-model");
+        assert!(body["system"][0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn anthropic_message_cache_marks_last_block() {
+        let mut req = empty_req();
+        req.extra_messages = vec![
+            TaggedMessage {
+                content: serde_json::json!({"role":"user","content":"a"}),
+                cache: CacheHint::None,
+            },
+            TaggedMessage {
+                content: serde_json::json!({"role":"user","content":"b"}),
+                cache: CacheHint::Long,
+            },
+        ];
+        let body = build_request_body(&req, "test-model");
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        // first message: no cache_control anywhere
+        assert!(messages[0]["content"].as_array().is_none() || messages[0]["content"][0].get("cache_control").is_none());
+        // second message: content was a string, becomes array with cache_control on the (single) block
+        let last_block = &messages[1]["content"][0];
+        assert_eq!(last_block["cache_control"]["type"], "ephemeral");
+        assert_eq!(last_block["cache_control"]["ttl"], "1h");
+    }
+
+    #[test]
+    fn anthropic_tool_cache_marks_that_tool() {
+        let mut req = empty_req();
+        req.tools = vec![
+            ToolDef {
+                name: "a".into(), description: "ad".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                cache: CacheHint::None,
+            },
+            ToolDef {
+                name: "b".into(), description: "bd".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                cache: CacheHint::Long,
+            },
+        ];
+        req.extra_messages = vec![TaggedMessage {
+            content: serde_json::json!({"role":"user","content":"x"}),
+            cache: CacheHint::None,
+        }];
+        let body = build_request_body(&req, "test-model");
+        let tools = body["tools"].as_array().unwrap();
+        assert!(tools[0].get("cache_control").is_none());
+        assert_eq!(tools[1]["cache_control"]["type"], "ephemeral");
+        assert_eq!(tools[1]["cache_control"]["ttl"], "1h");
+    }
+
+    #[test]
+    fn anthropic_budget_keeps_last_n_message_marks() {
+        let mut req = empty_req();
+        req.system_prompt = Some(CachedText {
+            text: "s".into(), cache: CacheHint::Long,
+        });
+        req.tools = vec![ToolDef {
+            name: "t".into(), description: "d".into(),
+            input_schema: serde_json::json!({"type":"object"}),
+            cache: CacheHint::Long,
+        }];
+        // 5 marked messages, budget = 4 - 2 = 2 remaining → keep last 2 (indices 3,4)
+        req.extra_messages = (0..5).map(|i| TaggedMessage {
+            content: serde_json::json!({"role":"user","content": format!("m{}", i)}),
+            cache: CacheHint::Long,
+        }).collect();
+
+        let body = build_request_body(&req, "test-model");
+        let messages = body["messages"].as_array().unwrap();
+        let has_cache = |idx: usize| -> bool {
+            let c = &messages[idx]["content"];
+            if let Some(arr) = c.as_array() {
+                arr.iter().any(|b: &serde_json::Value| b.get("cache_control").is_some())
+            } else {
+                false
+            }
+        };
+        assert!(!has_cache(0), "msg 0 should be dropped");
+        assert!(!has_cache(1), "msg 1 should be dropped");
+        assert!(!has_cache(2), "msg 2 should be dropped");
+        assert!(has_cache(3), "msg 3 should be kept");
+        assert!(has_cache(4), "msg 4 should be kept");
     }
 }

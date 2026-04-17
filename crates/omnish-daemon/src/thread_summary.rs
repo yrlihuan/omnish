@@ -115,7 +115,6 @@ async fn generate_thread_summaries(
             session_ids: vec![],
             use_case,
             max_content_chars,
-            conversation: vec![],
             system_prompt: None,
             enable_thinking: None,
             tools: vec![],

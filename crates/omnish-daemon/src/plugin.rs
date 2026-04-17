@@ -1,3 +1,4 @@
+use omnish_llm::backend::CacheHint;
 use omnish_llm::tool::ToolDef;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -245,6 +246,7 @@ impl PluginManager {
                             name: te.name,
                             description: te.description.into_string(),
                             input_schema: te.input_schema,
+                            cache: CacheHint::None,
                         },
                         status_template: te.status_template,
                         display_name,
@@ -340,6 +342,7 @@ impl PluginManager {
                         name: te.name,
                         description: te.description.into_string(),
                         input_schema: te.input_schema,
+                        cache: CacheHint::None,
                     },
                     status_template: te.status_template,
                     display_name,
@@ -583,6 +586,7 @@ impl PluginManager {
                         name: te.name,
                         description: te.description.into_string(),
                         input_schema: te.input_schema,
+                        cache: CacheHint::None,
                     };
                     registry.register_def(def.clone());
                     tools.push(ToolEntry {

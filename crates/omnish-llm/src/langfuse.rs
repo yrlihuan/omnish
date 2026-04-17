@@ -221,14 +221,7 @@ fn build_langfuse_input(req: &LlmRequest) -> serde_json::Value {
     let mut input = serde_json::Map::new();
 
     if let Some(ref sp) = req.system_prompt {
-        input.insert("system".into(), json!(truncate(sp, 2000)));
-    }
-
-    if !req.conversation.is_empty() {
-        let turns: Vec<serde_json::Value> = req.conversation.iter().map(|t| {
-            json!({"role": &t.role, "content": truncate(&t.content, 2000)})
-        }).collect();
-        input.insert("messages".into(), json!(turns));
+        input.insert("system".into(), json!(truncate(&sp.text, 2000)));
     }
 
     if !req.context.is_empty() {

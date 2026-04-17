@@ -11,6 +11,34 @@ pub struct BackendInfo {
     pub model: String,
 }
 
+/// Backend-agnostic cache lifetime hint.
+/// Anthropic backend translates this into `cache_control` TTL.
+/// OpenAI-compat backend ignores this entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum CacheHint {
+    #[default]
+    None,
+    /// Anthropic: ephemeral with default 5min TTL.
+    Short,
+    /// Anthropic: ephemeral with `ttl: "1h"`.
+    Long,
+}
+
+/// A cacheable text payload (used for `LlmRequest.system_prompt`).
+#[derive(Debug, Clone)]
+pub struct CachedText {
+    pub text: String,
+    pub cache: CacheHint,
+}
+
+/// A message wrapped with a cache hint (used for `LlmRequest.extra_messages`).
+/// `content` is raw Anthropic-format JSON (canonical internal format).
+#[derive(Debug, Clone)]
+pub struct TaggedMessage {
+    pub content: serde_json::Value,
+    pub cache: CacheHint,
+}
+
 /// Use case for LLM requests - determines which model to use
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum UseCase {
@@ -51,17 +79,16 @@ pub struct LlmRequest {
     pub use_case: UseCase,
     /// Maximum content characters for context (model-specific limit)
     pub max_content_chars: Option<usize>,
-    pub conversation: Vec<omnish_protocol::message::ChatTurn>,
     /// Optional system prompt (e.g., chat mode system prompt).
-    pub system_prompt: Option<String>,
+    pub system_prompt: Option<CachedText>,
     /// Whether to enable extended thinking mode (e.g., Claude extended thinking, DeepSeek R1).
     /// None means use backend default. Set to false to disable, true to enable.
     pub enable_thinking: Option<bool>,
     /// Tool definitions to provide to the LLM. Empty means no tools.
     pub tools: Vec<ToolDef>,
-    /// Extra messages for agent loop (tool_use + tool_result exchanges).
-    /// These are raw serde_json::Value objects appended after conversation + query.
-    pub extra_messages: Vec<serde_json::Value>,
+    /// Messages for multi-turn / agent loop. Each carries an optional cache hint.
+    /// Content is raw Anthropic-format JSON (canonical internal format).
+    pub extra_messages: Vec<TaggedMessage>,
 }
 
 #[derive(Debug, Clone)]

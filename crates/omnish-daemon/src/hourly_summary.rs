@@ -195,7 +195,6 @@ async fn generate_hourly_summary(
             session_ids: vec![],
             use_case,
             max_content_chars,
-            conversation: vec![],
             system_prompt: None,
             enable_thinking: Some(true),
             tools: vec![],

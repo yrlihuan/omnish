@@ -9,7 +9,6 @@ fn test_llm_request_build() {
         session_ids: vec!["abc".to_string()],
         use_case: UseCase::Analysis,
         max_content_chars: None,
-        conversation: vec![],
         system_prompt: None,
         enable_thinking: None,
         tools: vec![],

@@ -147,39 +147,25 @@ impl LlmBackend for OpenAiCompatBackend {
     async fn complete(&self, req: &LlmRequest) -> Result<LlmResponse> {
         let client = &self.client;
 
-        let mut messages: Vec<serde_json::Value> = if req.conversation.is_empty() && req.extra_messages.is_empty() {
-            // Existing single-turn behavior
+        let mut messages: Vec<serde_json::Value> = if req.extra_messages.is_empty() {
+            // Single-turn fallback.
             let user_content = crate::template::build_user_content(
                 &req.context,
                 req.query.as_deref(),
             );
             vec![serde_json::json!({"role": "user", "content": user_content})]
         } else {
-            // Multi-turn: conversation history + current query + extra (tool) messages
-            let mut msgs = Vec::new();
-            for (i, turn) in req.conversation.iter().enumerate() {
-                let content = if i == 0 && !req.context.is_empty() {
-                    // Prepend terminal context to first user message
-                    format!("Terminal context:\n{}\n\n{}", req.context, turn.content)
-                } else {
-                    turn.content.clone()
-                };
-                msgs.push(serde_json::json!({"role": &turn.role, "content": content}));
-            }
-            // Append current query as user message (before extra messages on first call)
-            if req.extra_messages.is_empty() {
-                if let Some(ref q) = req.query {
-                    msgs.push(serde_json::json!({"role": "user", "content": q}));
-                }
-            }
-            // Convert and append extra messages (tool_use/tool_result exchanges)
-            msgs.extend(convert_extra_messages(&req.extra_messages));
-            msgs
+            // Multi-turn / agent loop: extract content, then convert Anthropic→OpenAI format.
+            let raw: Vec<serde_json::Value> = req.extra_messages
+                .iter()
+                .map(|m| m.content.clone())
+                .collect();
+            convert_extra_messages(&raw)
         };
 
         // Prepend system message if provided
         if let Some(ref system) = req.system_prompt {
-            messages.insert(0, serde_json::json!({"role": "system", "content": system}));
+            messages.insert(0, serde_json::json!({"role": "system", "content": system.text}));
         }
 
         // Build request body

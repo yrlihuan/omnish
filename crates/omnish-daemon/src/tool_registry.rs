@@ -335,6 +335,7 @@ mod tests {
             name: "tool_a".to_string(),
             description: "Tool A".to_string(),
             input_schema: serde_json::json!({"type": "object"}),
+            cache: omnish_llm::backend::CacheHint::None,
         });
 
         let mut meta2 = make_meta("tool_b");
@@ -344,6 +345,7 @@ mod tests {
             name: "tool_b".to_string(),
             description: "Tool B".to_string(),
             input_schema: serde_json::json!({"type": "object"}),
+            cache: omnish_llm::backend::CacheHint::None,
         });
 
         let mut meta3 = make_meta("other_tool");
@@ -370,6 +372,7 @@ mod tests {
             name: "bash".to_string(),
             description: "Original description".to_string(),
             input_schema: serde_json::json!({"type": "object"}),
+            cache: omnish_llm::backend::CacheHint::None,
         });
 
         // Before overrides

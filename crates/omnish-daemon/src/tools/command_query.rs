@@ -296,6 +296,7 @@ impl CommandQueryTool {
                     }
                 }
             }),
+            cache: omnish_llm::backend::CacheHint::None,
         });
 
         registry.register_def(omnish_llm::tool::ToolDef {
@@ -316,6 +317,7 @@ impl CommandQueryTool {
                 },
                 "required": ["seq", "command"]
             }),
+            cache: omnish_llm::backend::CacheHint::None,
         });
     }
 
