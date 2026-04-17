@@ -1016,7 +1016,8 @@ Config > LLM                          ← 面包屑（带层级指示）
 - `history_index: Option<usize>` - 历史导航索引
 - `completer: GhostCompleter` - 命令补全器（用于 `/` 前缀的ghost text自动完成）
 - `scroll_history: Vec<ScrollEntry>` - 可浏览的完整会话历史（Ctrl+O browse mode）
-- `thinking_visible: bool` - 是否显示 "(thinking...)" 指示器
+- `thinking_visible: bool` - 是否显示 "⠋ Thinking…" 动画指示器（#551）
+- `spinner_frame: usize` - 共享的 Braille 动画帧计数，每 200ms tick 自增一次；Thinking 指示器与工具区段进行中指示共用
 - `has_activity: bool` - 是否执行过命令（控制backspace退出和自动退出行为，issue #148, #151）
 - `pending_input: Option<String>` - 进入聊天时携带的初始消息
 - `client_plugins: Arc<ClientPluginManager>` - 客户端插件管理器
@@ -2115,3 +2116,21 @@ daemon_addr = "~/.omnish/omnish.sock"
 
 **补全修复 (commit 1b3b09f, 644a7f9):**
 - 被拒绝后又恢复为空输入的补全请求不再重复发送
+
+### 2026-04-17 - Thinking 动画指示器（#551）
+
+**主要变更:**
+
+1. **Thinking spinner 动画** (commit f4adac3):
+   - 新增 `ChatSession::thinking_line()`：拼装 "⠋ Thinking…" 字符串（明亮 spinner 字符 + 暗淡 Thinking 标签）
+   - 新增 `ChatSession::show_thinking()` / `redraw_thinking()` / `erase_thinking()`：首次写入 / 原地刷新（`\x1b[1A\r\x1b[K` + 重写 + 换行）/ 擦除
+   - 聊天 `run` 循环内新增 200ms `tokio::time::interval`（`MissedTickBehavior::Skip`，消费首个立即 tick），与 RPC 响应、Ctrl-C 一起进入 `tokio::select!`
+   - 条件分支 `_ = spinner_interval.tick(), if self.thinking_visible => { spinner_frame += 1; redraw_thinking(); }`：只有 Thinking 处于可见状态才推进帧，避免后台空转重绘
+   - 初始 RPC 等待、工具调用进行中、工具完成等待下一轮 LLM 响应三种场景各有独立 select，确保 Thinking 在每段 LLM 等待期都动画
+   - 与工具区段的进行中 spinner 共享 `spinner_frame`，动画同步
+
+2. **Thinking 在工具完成后丢失的修复** (commit bc05371):
+   - `ChatToolStatus` handler 顶层统一调用 `erase_thinking()`，但"工具完成"子分支（`result_compact=Some`）只调用 `redraw_tool_section()` 更新工具区段，未重新显示 Thinking
+   - 守护进程收到 `ChatToolResult` 后立即推送第二个 `ChatToolStatus`（3ms 内），远早于下一轮 LLM 响应，导致用户在几秒等待期内看不到任何活动指示
+   - 修复：在"工具完成"分支 `redraw_tool_section()` 之后追加 `self.show_thinking()` 重新渲染 Thinking 行；顶层 `erase_thinking()` 保留，因 `redraw_tool_section` 的游标数学假设 Thinking 不在工具区段下方
+   - 集成测试 `test_spinner.sh` test 3 从 pipe-pane 原始字节流断言改为 50ms `capture-pane` 抽样断言：要求 Bash 工具头之后至少有一帧快照仍包含 Thinking；提示词使用 `cat /etc/services && seq 1 2000` 制造多秒 post-tool LLM 延迟窗口

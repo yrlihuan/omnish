@@ -53,19 +53,27 @@ LLM后端接口，定义所有LLM后端必须实现的方法：
 - `complete()` 始终返回错误 `"LLM backend not configured"`
 - `name()` 和 `model_name()` 均返回 `"unavailable"`
 
+#### `CacheHint` / `CachedText` / `TaggedMessage`
+后端无关的缓存生命周期提示（v0.8.12+）。Anthropic 后端会将提示翻译为 `cache_control` 字段，OpenAI 兼容后端忽略：
+- `CacheHint::None`：不缓存
+- `CacheHint::Short`：`ephemeral`（默认 5 分钟 TTL）
+- `CacheHint::Long`：`ephemeral` 且 `ttl: "1h"`
+- `CachedText { text, cache }`：可缓存文本，用于 `LlmRequest.system_prompt`
+- `TaggedMessage { content, cache }`：带缓存提示的消息，`content` 为 Anthropic 格式 JSON（内部规范），用于 `LlmRequest.extra_messages`
+
 #### `LlmRequest`
 LLM请求结构体，包含发送给LLM的完整请求信息：
-- `context`: 终端会话上下文
-- `query`: 用户查询（可选）
+- `context`: 终端会话上下文（单轮 fallback 使用）
+- `query`: 用户查询（可选，单轮 fallback 使用）
 - `trigger`: 触发类型（手动、自动错误检测、自动模式检测）
 - `session_ids`: 相关会话ID列表
 - `use_case`: 请求用途（用于选择合适的模型）
 - `max_content_chars`: 模型上下文最大字符数限制（可选，用于限制上下文大小）
-- `conversation`: 多轮对话历史（`Vec<ChatTurn>`，用于chat模式）
-- `system_prompt`: 系统提示词（可选，chat模式使用`PromptManager`构建）
+- `system_prompt`: 可选的 `CachedText`（chat模式由`PromptManager`构建，带缓存提示）
 - `enable_thinking`: 思考模式开关（可选，`Some(true)`启用思考模式，`Some(false)`禁用，`None`使用后端默认）
-- `tools`: 工具定义列表（`Vec<ToolDef>`），提供给LLM的可用工具
-- `extra_messages`: 额外消息（`Vec<serde_json::Value>`），用于agent循环中的tool_use和tool_result交换
+- `tools`: 工具定义列表（`Vec<ToolDef>`，每个 `ToolDef` 带 `cache: CacheHint` 字段）
+- `extra_messages`: 多轮/agent 循环消息（`Vec<TaggedMessage>`，每条携带独立缓存提示）
+- v0.8.12 移除已废弃的 `conversation: Vec<ChatTurn>` 字段
 
 #### `LlmResponse`
 LLM响应结构体，包含LLM返回的结果：
@@ -391,7 +399,7 @@ use omnish_common::config::LlmConfig;
 // 从配置创建默认后端
 let backend = create_default_backend(&llm_config).await?;
 
-// 构建LLM请求
+// 构建LLM请求（单轮：extra_messages 为空时，使用 context + query）
 let request = LlmRequest {
     context: "终端会话上下文...".to_string(),
     query: Some("用户查询".to_string()),
@@ -399,11 +407,10 @@ let request = LlmRequest {
     session_ids: vec![],
     use_case: UseCase::Chat,
     max_content_chars: None,
-    conversation: vec![],     // 多轮对话历史
-    system_prompt: None,      // 系统提示词
+    system_prompt: None,      // Option<CachedText>，可选
     enable_thinking: None,    // 思考模式
-    tools: vec![],            // 工具定义
-    extra_messages: vec![],   // agent循环消息
+    tools: vec![],            // 工具定义（每个 ToolDef 带 cache 字段）
+    extra_messages: vec![],   // Vec<TaggedMessage>，agent 循环消息
 };
 
 // 发送请求并获取响应
@@ -432,6 +439,7 @@ let tool_def = ToolDef {
         },
         "required": ["param"]
     }),
+    cache: CacheHint::None, // 工具定义可单独打缓存提示（通常最后一个工具设为 Long）
 };
 
 // 2. 构建带工具的LLM请求
@@ -442,11 +450,10 @@ let request = LlmRequest {
     session_ids: vec![],
     use_case: UseCase::Chat,
     max_content_chars: None,
-    conversation: vec![],
     system_prompt: None,
     enable_thinking: None,
     tools: vec![tool_def],  // 提供工具定义
-    extra_messages: vec![],
+    extra_messages: vec![], // Vec<TaggedMessage>
 };
 
 // 3. 发送请求并处理响应
@@ -530,7 +537,6 @@ let completion_content = template::build_simple_completion_content(
 
 ## 依赖关系
 - `omnish-common`: 配置类型定义（含`LangfuseConfig`）
-- `omnish-protocol`: ChatTurn类型（用于多轮对话）
 - `reqwest`: HTTP客户端，用于API调用
 - `serde`/`serde_json`: JSON序列化和反序列化
 - `anyhow`: 错误处理
@@ -550,7 +556,7 @@ let completion_content = template::build_simple_completion_content(
 - `openai_compat.rs`: OpenAI兼容API后端实现（含连接错误重试、429重试）
 - `factory.rs`: 后端工厂函数（create_backend、create_default_backend、MultiBackend、SharedLlmBackend、effective_max_content_chars、Langfuse包装逻辑）
 - `presets.rs`: 模型预设模块（ProviderPreset、从嵌入式JSON加载提供商元数据）
-- `template.rs`: 提示模板（build_simple_completion_content、DAILY/HOURLY_NOTES_PROMPT等）
+- `template.rs`: 提示模板（`build_user_content`、`build_completion_parts` 三层切分、`COMPLETION_INSTRUCTIONS` 静态指令、DAILY/HOURLY_NOTES_PROMPT 等）
 - `prompt.rs`: PromptManager（可组合系统提示词片段管理）和内嵌chat提示词常量
 - `langfuse.rs`: Langfuse可观测性集成（LangfuseBackend包装器）
 - `message_log.rs`: LLM请求payload本地日志记录
@@ -781,3 +787,47 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
    - `base_url` 初始化时自动剥离尾部斜杠，防止拼接路径产生双斜杠导致 404 错误
    - 错误诊断增强：非 OpenAI 标准格式的错误响应和 JSON 解码失败时，错误信息包含完整响应体
    - `convert_extra_messages()` 转换时保留 `ToolCall.extra` 中的供应商特定扩展字段
+
+### 2026-04-16 - 补全提示词三层切分（#550）
+
+**主要变更:**
+
+1. **补全提示词切分为独立可缓存的三层** (commit 72caf67):
+   - `COMPLETION_INSTRUCTIONS` 常量：静态指令文本（永不变化，作为 system prompt 发送，带 1h TTL 缓存）
+   - 上下文块（命令历史，变化较慢，通过 `LlmRequest.context` 承载，带 ephemeral 缓存）
+   - 用户输入块（当前光标处输入，每次击键变化，不缓存）
+   - 新函数 `build_completion_parts(input, cursor_pos) -> (system, user)` 替代原 `build_simple_completion_content`
+   - 优化目标：Anthropic prompt caching 跨相邻补全请求复用稳定前缀
+
+2. **Anthropic cache_control TTL 使用字符串格式** (commit a618c5f):
+   - 长 TTL 改为 `{"type": "ephemeral", "ttl": "1h"}`（字符串），此前误用数字秒导致 API 拒绝
+
+### 2026-04-17 - 缓存提示后端无关化重构（#550 续）
+
+**主要变更:**
+
+1. **`CacheHint` 枚举与载体类型** (commit 5600f17):
+   - 新增 `CacheHint { None, Short, Long }` 后端无关枚举
+   - 新增 `CachedText { text, cache }`，作为 `LlmRequest.system_prompt` 类型（由 `Option<String>` 变更为 `Option<CachedText>`）
+   - 新增 `TaggedMessage { content, cache }`，作为 `LlmRequest.extra_messages` 元素类型（由 `Vec<serde_json::Value>` 变更为 `Vec<TaggedMessage>`）
+   - `ToolDef` 新增 `cache: CacheHint` 字段
+
+2. **AnthropicBackend 翻译缓存提示** (commit 5600f17):
+   - 新增 `cache_control_value(hint)` 将 `CacheHint` 转为 wire-level `cache_control` JSON
+   - 新增 `apply_cache_hint_to_message(msg, hint)` 向消息最后一个 content block 注入 `cache_control`
+   - 新增 `enforce_breakpoint_budget(req)` 强制执行 Anthropic 的 4 断点上限：统计静态断点（tools + system_prompt）占用，将剩余预算分配给 extra_messages 并只保留最后 N 个标记消息，其余降级为 None，超额时记录 warning
+   - 重构为 `build_request_body(req, model)` 统一构建请求体：系统提示、工具、消息各自按 hint 打 `cache_control`
+   - OpenAI 兼容后端直接忽略所有缓存提示
+
+3. **移除已废弃字段**:
+   - 删除 `LlmRequest.conversation: Vec<ChatTurn>`（曾用于早期多轮对话，现全部走 `extra_messages`）
+   - 依赖项随之移除对 `omnish-protocol` 的引用
+
+4. **单轮 vs 多轮契约文档化** (commit 52507c6):
+   - `backend.rs` 明确注释：`context` 与 `query` 仅在 `extra_messages` 为空时生效；`extra_messages` 非空时，调用方需自行将额外上下文折入 `system_prompt` 或 `extra_messages`
+
+5. **守护进程侧缓存策略**（daemon 侧对应变更）:
+   - Chat agent 循环：`mark_chat_message_hints()` 每轮 LLM 调用前将所有 `extra_messages` hint 重置为 None，并将最后 2 条标为 Long；system_prompt 整体标为 Long
+   - 完成补全：`system_prompt` 标为 Long，上下文通过 Anthropic user message content block 上的 `cache_control: ephemeral` 缓存（`build_request_body` 在单轮 completion 分支内构造）
+
+**相关 issue:** #550

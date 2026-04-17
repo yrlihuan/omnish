@@ -2060,3 +2060,24 @@ async fn main() -> anyhow::Result<()> {
 
 **Dead code 清理：**
 - 移除 ~300 行未使用的 SessionManager 方法（`get_hourly_summary_config()`、`build_hourly_summary_context()`、`get_daily_summary_config()`、`build_daily_summary_context()`）
+
+### 2026-04-16 至 04-17 - 缓存提示后端无关化与补全提示词三层切分（#550）
+
+**主要变更:**
+
+1. **补全路径改用三层可缓存结构** (commit 72caf67, 5600f17):
+   - `try_warmup_kv_cache()` 与 `handle_completion_request()` 改用 `build_completion_parts(input, cursor_pos)` 获取 `(system_prompt, user_input)` 两段
+   - `LlmRequest.system_prompt` 传 `CachedText { text: system_prompt, cache: CacheHint::Long }`（1h TTL，供相邻补全复用静态指令）
+   - `LlmRequest.context` 承载命令历史，Anthropic 后端在单轮 completion 分支内将其作为带 `cache_control: ephemeral` 的 user content block 发送
+   - `LlmRequest.query` 承载变化的当前输入，不打缓存标记
+
+2. **Chat agent 循环缓存策略** (commit 5600f17):
+   - 新增守护进程内辅助函数 `mark_chat_message_hints(messages)`：每轮 LLM 调用前先将 `extra_messages` 所有 hint 重置为 None，再将末尾两条标记为 `CacheHint::Long`
+   - 每轮 agent 循环迭代前调用一次，使新追加的 tool_use/tool_result 消息自动滚动进入缓存窗口，同时避免累积超过 Anthropic 的 4 断点预算
+   - `full_system_prompt` 以 `CachedText { text, cache: CacheHint::Long }` 装入 `system_prompt`
+   - `extra_messages` 全面改用 `Vec<TaggedMessage>`，所有 push 点（初始用户消息、assistant 响应、tool_result、恢复线程消息等）统一封装为 `TaggedMessage { content, cache: CacheHint::None }`，仅靠 `mark_chat_message_hints` 集中打标
+   - 线程持久化时用 `msg.content.clone()` 还原原始 JSON，不泄露 hint 到磁盘
+   - 移除调用方对已废弃 `LlmRequest.conversation` 字段的引用（daily_notes、hourly_summary、thread_summary、plugin、tool_registry、command_query 等）
+
+3. **新增 chat cache hints 测试** (commit 5600f17):
+   - `omnish-daemon/tests/chat_cache_hints_test.rs`：验证 `mark_chat_message_hints` 在 agent 循环中保持"系统提示 + 最后 2 条"的 Long 标记
