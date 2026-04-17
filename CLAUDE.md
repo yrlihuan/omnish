@@ -3,6 +3,7 @@ DO NOT run omnish-daemon via bash tool, ask me to do it.
 Integration tests are under tools/integration_tests. To understand how integration test works, read lib.sh and test_basic.sh.
 Write commit messages in english.
 ALWAYS do release build.
+NEVER use em-dash (`—`, U+2014) anywhere - not in code, comments, strings, prompts, or docs. Use ASCII hyphen `-` instead. Em-dash renders unreliably across terminals (e.g. ConEmu) and has no functional benefit.
 
 ## Useful glab comments:
 
