@@ -55,7 +55,7 @@ test_1() {
         return 1
     fi
 
-    if ! wait_for_chat_response 60; then
+    if ! wait_for_chat_response 120; then
         show_capture "After disconnect" "$(capture_pane -30)" 30
         assert_fail "Chat prompt did not return after disconnect"
         return 1
@@ -98,7 +98,7 @@ test_2() {
     send_keys "说hello" 0.3
     send_enter 0.3
 
-    if ! wait_for_chat_response 30; then
+    if ! wait_for_chat_response 120; then
         show_capture "After reconnect query" "$(capture_pane -30)" 30
         assert_fail "No response after reconnect"
         return 1
@@ -159,7 +159,7 @@ test_3() {
     fi
 
     # Wait for error + prompt recovery
-    if ! wait_for_chat_response 60; then
+    if ! wait_for_chat_response 120; then
         show_capture "After disconnect" "$(capture_pane -30)" 30
         assert_fail "Chat prompt did not return after tool disconnect"
         return 1
@@ -183,7 +183,7 @@ test_3() {
     send_keys "说OK" 0.3
     send_enter 0.3
 
-    if ! wait_for_chat_response 30; then
+    if ! wait_for_chat_response 120; then
         show_capture "After recovery query" "$(capture_pane -30)" 30
         assert_fail "No response after recovery"
         return 1

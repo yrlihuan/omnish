@@ -103,8 +103,9 @@ test_1() {
         return 1
     fi
 
-    # Wait for sleep to finish and LLM to respond
-    if ! wait_for_chat_response 30; then
+    # Wait for sleep to finish and LLM to respond.
+    # Use 120s to tolerate one 429 backoff retry (60s) + response.
+    if ! wait_for_chat_response 120; then
         show_capture "After sleep" "$(capture_pane -20)" 20
         assert_fail "No chat response after sleep 10"
         return 1
@@ -192,7 +193,8 @@ test_2() {
     fi
 
     # Wait for response to complete; Thinking must be erased afterwards.
-    if ! wait_for_chat_response 60; then
+    # Use 120s to tolerate one 429 backoff retry (60s) + response.
+    if ! wait_for_chat_response 120; then
         show_capture "No chat response" "$(capture_pane -20)" 20
         assert_fail "No chat response received"
         return 1
@@ -235,7 +237,8 @@ test_3() {
     send_enter 0.1
 
     # Wait for the final chat prompt to return (response complete).
-    if ! wait_for_chat_response 60; then
+    # Use 120s to tolerate one 429 backoff retry (60s) + response.
+    if ! wait_for_chat_response 120; then
         _tmux pipe-pane -t "$PANE"
         show_capture "No chat response" "$(capture_pane -40)" 30
         assert_fail "No chat response received after tool-use"

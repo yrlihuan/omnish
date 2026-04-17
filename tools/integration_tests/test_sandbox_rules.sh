@@ -476,7 +476,7 @@ test_6() {
     send_keys "Run this exact command with the bash tool: sudo -n id" 0.3
     send_enter 0.3
 
-    if ! wait_for_chat_response 60; then
+    if ! wait_for_chat_response 120; then
         show_capture "After blocked attempt" "$(capture_pane -50)" 25
         assert_fail "Step 1: no LLM response (timeout)"
         return 1
@@ -555,7 +555,7 @@ test_6() {
     send_enter 0.3
 
     local step3_ok=true
-    if ! wait_for_chat_response 60; then
+    if ! wait_for_chat_response 120; then
         show_capture "After bypass attempt" "$(capture_pane -30)" 25
         assert_fail "Step 3: no LLM response (timeout)"
         step3_ok=false
@@ -644,7 +644,7 @@ test_7() {
     send_keys "Run this exact command with the bash tool: sudo -n id" 0.3
     send_enter 0.3
 
-    if ! wait_for_chat_response 60; then
+    if ! wait_for_chat_response 120; then
         show_capture "After blocked attempt" "$(capture_pane -50)" 25
         assert_fail "Step 1: no LLM response (timeout)"
         return 1
@@ -722,7 +722,7 @@ test_7() {
     send_enter 0.3
 
     local step3_ok=true
-    if ! wait_for_chat_response 60; then
+    if ! wait_for_chat_response 120; then
         show_capture "After bypass attempt" "$(capture_pane -30)" 25
         assert_fail "Step 3: no LLM response (timeout)"
         step3_ok=false
