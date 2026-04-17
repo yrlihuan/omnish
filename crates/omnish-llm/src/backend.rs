@@ -71,7 +71,12 @@ pub enum StopReason {
 
 #[derive(Debug, Clone)]
 pub struct LlmRequest {
+    /// Single-turn context. Used only when `extra_messages` is empty;
+    /// otherwise ignored — multi-turn callers must fold context into
+    /// `system_prompt` (e.g., via system-reminder) or into `extra_messages`.
     pub context: String,
+    /// Single-turn query. Used only when `extra_messages` is empty;
+    /// otherwise ignored.
     pub query: Option<String>,
     pub trigger: TriggerType,
     pub session_ids: Vec<String>,
@@ -88,6 +93,7 @@ pub struct LlmRequest {
     pub tools: Vec<ToolDef>,
     /// Messages for multi-turn / agent loop. Each carries an optional cache hint.
     /// Content is raw Anthropic-format JSON (canonical internal format).
+    /// When non-empty, `context` and `query` are ignored.
     pub extra_messages: Vec<TaggedMessage>,
 }
 
