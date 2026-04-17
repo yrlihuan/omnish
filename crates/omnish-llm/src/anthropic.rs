@@ -115,7 +115,7 @@ impl LlmBackend for AnthropicBackend {
         // Chat/analysis system prompts may change per request — use default 5m TTL.
         if let Some(ref system) = req.system_prompt {
             let cache_control = if req.use_case == crate::backend::UseCase::Completion {
-                serde_json::json!({"type": "ephemeral", "ttl": 3600})
+                serde_json::json!({"type": "ephemeral", "ttl": "1h"})
             } else {
                 serde_json::json!({"type": "ephemeral"})
             };
