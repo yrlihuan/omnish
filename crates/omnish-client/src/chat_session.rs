@@ -1058,9 +1058,27 @@ impl ChatSession {
         self.pending_cd.as_deref()
     }
 
+    fn thinking_line(&self) -> String {
+        let ch = crate::display::spinner_char(self.spinner_frame);
+        format!(
+            "{}{}{} {}Thinking…{}",
+            crate::display::BRIGHT_WHITE,
+            ch,
+            crate::display::RESET,
+            crate::display::DIM,
+            crate::display::RESET,
+        )
+    }
+
     fn show_thinking(&mut self) {
-        write_stdout(&format!("{}(thinking...){}\r\n", crate::display::DIM, crate::display::RESET));
+        write_stdout(&format!("{}\r\n", self.thinking_line()));
         self.thinking_visible = true;
+    }
+
+    fn redraw_thinking(&mut self) {
+        if self.thinking_visible {
+            write_stdout(&format!("\x1b[1A\r\x1b[K{}\r\n", self.thinking_line()));
+        }
     }
 
     fn erase_thinking(&mut self) {
@@ -1572,15 +1590,31 @@ impl ChatSession {
                 }
             }
 
-            // Race initial RPC call against Ctrl-C
+            let mut spinner_interval = tokio::time::interval(std::time::Duration::from_millis(200));
+            spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Consume the first immediate tick
+            spinner_interval.tick().await;
+
+            // Race initial RPC call against Ctrl-C, animating the thinking spinner.
             let stream_result;
             {
                 let mut crx = cancel_rx.clone();
-                tokio::select! {
-                    result = rpc_result => { stream_result = Some(result); }
-                    _ = wait_cancel(&mut crx) => {
-                        interrupted = true;
-                        stream_result = None;
+                tokio::pin!(rpc_result);
+                loop {
+                    tokio::select! {
+                        result = &mut rpc_result => {
+                            stream_result = Some(result);
+                            break;
+                        }
+                        _ = wait_cancel(&mut crx) => {
+                            interrupted = true;
+                            stream_result = None;
+                            break;
+                        }
+                        _ = spinner_interval.tick(), if self.thinking_visible => {
+                            self.spinner_frame = self.spinner_frame.wrapping_add(1);
+                            self.redraw_thinking();
+                        }
                     }
                 }
             }
@@ -1588,10 +1622,6 @@ impl ChatSession {
             if let Some(result) = stream_result {
                 match result {
                     Ok(mut rx) => {
-                        let mut spinner_interval = tokio::time::interval(std::time::Duration::from_millis(200));
-                        spinner_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                        // Consume the first immediate tick
-                        spinner_interval.tick().await;
 
                         'stream: loop {
                             // Phase 1: Collect messages
@@ -1687,9 +1717,10 @@ impl ChatSession {
                                             _ => { got_response = true; break; }
                                         }
                                     }
-                                    _ = spinner_interval.tick(), if self.tool_section_start.is_some() => {
+                                    _ = spinner_interval.tick(), if self.tool_section_start.is_some() || self.thinking_visible => {
                                         self.spinner_frame = self.spinner_frame.wrapping_add(1);
                                         self.redraw_tool_section();
+                                        self.redraw_thinking();
                                     }
                                     _ = wait_cancel(&mut crx) => {
                                         interrupted = true;
@@ -1809,6 +1840,7 @@ impl ChatSession {
                                                     match rpc.call_stream(result_msg).await {
                                                         Ok(new_rx) => {
                                                             rx = new_rx;
+                                                            self.show_thinking();
                                                             continue 'stream;
                                                         }
                                                         Err(_) => {
@@ -1826,9 +1858,10 @@ impl ChatSession {
                                             None => break, // All tasks done
                                         }
                                     }
-                                    _ = spinner_interval.tick(), if self.tool_section_start.is_some() => {
+                                    _ = spinner_interval.tick(), if self.tool_section_start.is_some() || self.thinking_visible => {
                                         self.spinner_frame = self.spinner_frame.wrapping_add(1);
                                         self.redraw_tool_section();
+                                        self.redraw_thinking();
                                     }
                                     _ = wait_cancel(&mut crx2) => {
                                         interrupted = true;
