@@ -166,7 +166,7 @@ test_3() {
     send_keys ":" 0.5
     wait_for_prompt
 
-    local cmd="Run: echo hello"
+    local cmd="Use the Bash tool to run: echo hello"
 
     for round in 1 2 3; do
         echo -e "  ${YELLOW}--- Round $round ---${NC}"
