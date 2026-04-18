@@ -1,4 +1,24 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Atomic write: tmp file in same directory + rename. Avoids the truncate
+/// window in std::fs::write where a concurrent reader can observe an empty
+/// or partially written file.
+fn write_atomic(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "no parent dir")
+    })?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = parent.join(format!(".{}.tmp.{}.{}", name, std::process::id(), nanos));
+    std::fs::write(&tmp, content)?;
+    std::fs::rename(&tmp, path)
+}
 
 const BASH_HOOK: &str = r#"
 # omnish shell integration - OSC 133 semantic prompts
@@ -119,7 +139,7 @@ pub fn install_bash_hook(shell: &str) -> Option<PathBuf> {
         Err(_) => false, // other error (e.g., permission) - skip writing
     };
     if should_write {
-        std::fs::write(&hook_path, BASH_HOOK).ok()?;
+        write_atomic(&hook_path, BASH_HOOK.as_bytes()).ok()?;
     }
 
     // Write an rcfile that sources the user's bashrc first, then the hook
@@ -144,7 +164,7 @@ pub fn install_bash_hook(shell: &str) -> Option<PathBuf> {
         Err(_) => false, // other error - skip writing
     };
     if should_write_rc {
-        std::fs::write(&rcfile_path, &content).ok()?;
+        write_atomic(&rcfile_path, content.as_bytes()).ok()?;
     }
 
     Some(rcfile_path)
@@ -169,7 +189,7 @@ pub fn install_zsh_hook(shell: &str) -> Option<PathBuf> {
         Err(_) => false,
     };
     if should_write {
-        std::fs::write(&hook_path, ZSH_HOOK).ok()?;
+        write_atomic(&hook_path, ZSH_HOOK.as_bytes()).ok()?;
     }
 
     // Create a ZDOTDIR with a .zshrc that sources user config then our hook.
@@ -197,7 +217,7 @@ pub fn install_zsh_hook(shell: &str) -> Option<PathBuf> {
         Err(_) => false,
     };
     if should_write_rc {
-        std::fs::write(&zshrc_path, &content).ok()?;
+        write_atomic(&zshrc_path, content.as_bytes()).ok()?;
     }
 
     Some(zdotdir)
