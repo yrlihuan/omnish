@@ -1453,7 +1453,19 @@ impl SessionManager {
         ).with_live_cwd(live_cwd);
 
         let total = selected_commands.len();
-        let warmup_cutoff = *self.recent_frozen_until.read().await;
+        // Lazy-initialize recent_frozen_until to the latest command's timestamp.
+        // Without this, the first build sees `None` and places every command in
+        // stable_prefix; the next build (after a new command arrives) would
+        // sweep that new command into stable_prefix too, breaking byte-stability
+        // and triggering an Anthropic cache miss. Freezing on first use pins
+        // stable_prefix so subsequent new commands land in remainder.
+        let warmup_cutoff = {
+            let mut frozen = self.recent_frozen_until.write().await;
+            if frozen.is_none() {
+                *frozen = selected_commands.iter().map(|c| c.started_at).max();
+            }
+            *frozen
+        };
 
         // Render sections for the current (history, detailed) counts. When a
         // character limit is set, reduce detailed first, then history, until
