@@ -145,12 +145,21 @@ fn integrate_command(args: &str) -> String {
             }
         }
         "ssh" => {
+            // Show ~/.omnish... rather than the local user's expanded HOME,
+            // since the snippet runs on the remote host where ~ resolves
+            // to a different user's home.
+            let home = std::env::var("HOME").unwrap_or_default();
+            let display_bin = if !home.is_empty() && omnish_bin.starts_with(&format!("{}/", home)) {
+                format!("~{}", &omnish_bin[home.len()..])
+            } else {
+                omnish_bin.clone()
+            };
             format!(
                 "Add to ~/.ssh/config for hosts with omnish installed:\n\n\
                  Host <hostname>\n    \
                  RequestTTY yes\n    \
                  RemoteCommand {}\n",
-                omnish_bin
+                display_bin
             )
         }
         other => format!("Unknown target: {}. Use tmux, screen, or ssh.", other),
