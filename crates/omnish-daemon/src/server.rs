@@ -2089,10 +2089,13 @@ fn build_completion_extra_messages(
     query: &str,
 ) -> Vec<omnish_llm::backend::TaggedMessage> {
     let mut blocks: Vec<serde_json::Value> = Vec::new();
-    blocks.push(serde_json::json!({
-        "type": "text",
-        "text": sections.stable_prefix,
-    }));
+    let has_stable = !sections.stable_prefix.is_empty();
+    if has_stable {
+        blocks.push(serde_json::json!({
+            "type": "text",
+            "text": sections.stable_prefix,
+        }));
+    }
     if !sections.remainder.is_empty() {
         blocks.push(serde_json::json!({
             "type": "text",
@@ -2110,7 +2113,7 @@ fn build_completion_extra_messages(
     vec![omnish_llm::backend::TaggedMessage {
         content,
         cache: omnish_llm::backend::CacheHint::Long,
-        cache_pos: Some(0),
+        cache_pos: has_stable.then_some(0),
     }]
 }
 

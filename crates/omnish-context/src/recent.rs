@@ -340,18 +340,20 @@ impl ContextFormatter for InterleavedFormatter {
 
 /// Split completion context into a cacheable prefix and a non-cacheable remainder.
 ///
-/// Layout when rendered: `{stable_prefix}{remainder}{query_block}`. The stable
-/// prefix ends mid-<recent> (no closing tag); the remainder starts with the
-/// tail commands (if any) followed by the closing `</recent>` and the trailer.
-/// This lets Anthropic's `cache_control` marker sit at the end of the prefix
-/// block while new commands append only to the remainder.
+/// Each block is self-contained well-formed XML: stable_prefix closes its own
+/// `<recent>` tag (if any warmup commands), and remainder opens/closes a
+/// separate `<recent>` for tail commands (if any). When rendered back-to-back
+/// (`stable_prefix + remainder + query`), the output may contain up to two
+/// `<recent>` blocks - "older recent" (cached) and "newer recent" (not cached).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CompletionSections {
-    /// Cacheable prefix: `<history>...</history>\n\n<recent>\n{warmup_cmds}\n`.
+    /// Cacheable prefix: `<history>...</history>\n\n<recent>\n{warmup_cmds}</recent>`.
     /// Byte-stable between warmups, so the KV cache for tokens ending here is reusable.
     pub stable_prefix: String,
-    /// Remainder: `{tail_cmds}\n</recent>\n\n<system-reminder>...</system-reminder>`.
+    /// Remainder: `\n\n<recent>\n{tail_cmds}</recent>\n\n<system-reminder>...</system-reminder>`.
     /// Differs per request (new commands, cwd changes). Not cached.
+    /// Leads with `\n\n` when `stable_prefix` is non-empty so downstream concat
+    /// preserves visual separation between blocks.
     pub remainder: String,
 }
 
@@ -416,10 +418,13 @@ impl CompletionFormatter {
     /// - `None`: treat all detailed commands as warmup (tail is empty).
     /// - `Some(ts)`: commands with `started_at <= ts` go into warmup; `> ts` into tail.
     ///
-    /// The split point sits between the last warmup command and the first tail
-    /// command, so `stable_prefix` ends with the newline after the last warmup
-    /// line (no closing `</recent>` tag) and `remainder` starts with either the
-    /// tail commands or the closing tag.
+    /// Each block is self-contained well-formed XML:
+    /// - `stable_prefix` contains `<history>...</history>` (if any) and a
+    ///   complete `<recent>\n{warmup}</recent>` (if any warmup commands).
+    /// - `remainder` contains a separate `<recent>\n{tail}</recent>` (if any
+    ///   tail commands), followed by the `<system-reminder>` trailer (if cwd
+    ///   is known). When `stable_prefix` is non-empty, `remainder` starts
+    ///   with `\n\n` to preserve visual separation during concat.
     pub fn format_sections(
         &self,
         history: &[CommandContext],
@@ -469,39 +474,43 @@ impl CompletionFormatter {
             format!("<system-reminder>\n# workingDirectory\n{}\n</system-reminder>", current_path)
         };
 
-        // Build stable_prefix: history + opening <recent> + warmup commands.
-        // Ends with trailing newline after last warmup line so block 0 is byte-stable
-        // regardless of whether tail is empty or not.
+        // Helper: render a list of commands into "<recent>\n{cmds}</recent>".
+        let render_recent_block = |cmds: &[&CommandContext]| -> String {
+            let mut out = String::from("<recent>\n");
+            for cmd in cmds {
+                out.push_str(&self.render_detailed(cmd));
+                out.push('\n');
+            }
+            out.push_str("</recent>");
+            out
+        };
+
+        // Build stable_prefix: history + self-contained <recent>{warmup}</recent>.
+        // Ends cleanly (no trailing separator) so byte-stability doesn't depend
+        // on whether remainder is present.
         let mut stable = String::new();
         if !history_block.is_empty() {
             stable.push_str(&history_block);
         }
-        if !detailed.is_empty() {
+        if !warmup.is_empty() {
             if !stable.is_empty() {
                 stable.push_str("\n\n");
             }
-            stable.push_str("<recent>\n");
-            for cmd in warmup {
-                stable.push_str(&self.render_detailed(cmd));
-                stable.push('\n');
-            }
+            stable.push_str(&render_recent_block(warmup));
         }
 
-        // Build remainder: tail commands + closing </recent> + trailer.
+        // Build remainder: self-contained <recent>{tail}</recent> + trailer.
+        // Leads with "\n\n" separator when stable is non-empty so the concat
+        // boundary stays visually clean.
         let mut remainder = String::new();
-        if !detailed.is_empty() {
-            for cmd in tail {
-                remainder.push_str(&self.render_detailed(cmd));
-                remainder.push('\n');
+        if !tail.is_empty() {
+            if !stable.is_empty() {
+                remainder.push_str("\n\n");
             }
-            remainder.push_str("</recent>");
+            remainder.push_str(&render_recent_block(tail));
         }
         if !trailer.is_empty() {
-            if !remainder.is_empty() {
-                remainder.push_str("\n\n");
-            } else if !stable.is_empty() {
-                // No <recent> block at all but we still need a separator
-                // between history and trailer to match the legacy layout.
+            if !remainder.is_empty() || !stable.is_empty() {
                 remainder.push_str("\n\n");
             }
             remainder.push_str(&trailer);
@@ -514,13 +523,7 @@ impl CompletionFormatter {
 impl ContextFormatter for CompletionFormatter {
     fn format(&self, history: &[CommandContext], detailed: &[CommandContext]) -> String {
         let s = self.format_sections(history, detailed, None);
-        // When tail is empty, stable_prefix ends with "\n" after the last warmup line,
-        // and remainder starts with "</recent>..." - concat yields the legacy layout.
-        if s.stable_prefix.is_empty() && s.remainder.is_empty() {
-            String::new()
-        } else {
-            format!("{}{}", s.stable_prefix, s.remainder)
-        }
+        format!("{}{}", s.stable_prefix, s.remainder)
     }
 }
 
@@ -1271,8 +1274,9 @@ mod tests {
 
     #[test]
     fn test_format_sections_cutoff_none_all_in_stable_prefix() {
-        // When warmup_cutoff_ts is None, all detailed go into stable_prefix and
-        // remainder only contains the closing tag + trailer.
+        // When warmup_cutoff_ts is None, all detailed go into stable_prefix (as
+        // a self-contained <recent>...</recent> block) and remainder is empty
+        // (no trailer either when current cwd is inside the warmup set).
         let detailed = vec![
             make_ctx("sess-a", "a", 1000, "oa"),
             make_ctx("sess-a", "b", 2000, "ob"),
@@ -1281,9 +1285,10 @@ mod tests {
         let s = formatter.format_sections(&[], &detailed, None);
         assert!(s.stable_prefix.contains("$ a"), "stable_prefix should contain 'a'");
         assert!(s.stable_prefix.contains("$ b"), "stable_prefix should contain 'b'");
+        assert!(s.stable_prefix.contains("<recent>"), "stable_prefix self-contained: {:?}", s.stable_prefix);
+        assert!(s.stable_prefix.contains("</recent>"), "stable_prefix self-contained: {:?}", s.stable_prefix);
         assert!(!s.remainder.contains("$ a"), "remainder must not duplicate 'a'");
         assert!(!s.remainder.contains("$ b"), "remainder must not duplicate 'b'");
-        assert!(s.remainder.starts_with("</recent>"), "remainder starts with closing tag: {:?}", s.remainder);
     }
 
     #[test]
