@@ -1313,9 +1313,10 @@ impl SessionManager {
         }
     }
 
-    /// Build completion context split into a cacheable `stable_prefix` (history
-    /// + warmup-portion of recent) and a `remainder` (tail commands + closing
-    /// `</recent>` + system-reminder trailer).
+    /// Build completion context split into a cacheable `stable_prefix` and a
+    /// non-cacheable `remainder`. The prefix contains history plus the warmup
+    /// portion of recent commands; the remainder contains tail commands, the
+    /// closing `</recent>`, and the system-reminder trailer.
     ///
     /// The `recent_frozen_until` timestamp controls the split: commands with
     /// `started_at <= recent_frozen_until` go into stable_prefix; newer ones
