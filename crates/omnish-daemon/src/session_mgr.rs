@@ -2039,6 +2039,92 @@ mod tests {
         );
     }
 
+    /// Regression test for the KV cache miss triggered by a newly completed
+    /// command: when `recent_frozen_until` starts as `None`, the first build
+    /// must freeze the cutoff so the next new command lands in `remainder`
+    /// instead of sweeping into `stable_prefix` and invalidating the Anthropic
+    /// prompt cache.
+    #[tokio::test]
+    async fn test_stable_prefix_byte_stable_after_new_command() {
+        use omnish_common::config::{CompletionContextConfig, ContextConfig};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cc = ContextConfig {
+            completion: CompletionContextConfig {
+                detailed_commands: 30,
+                history_commands: 100,
+                head_lines: 20,
+                tail_lines: 20,
+                max_line_width: 512,
+                min_current_session_commands: 5,
+                max_context_chars: None,
+                detailed_min: 20,
+                detailed_max: 30,
+            },
+        };
+        let mgr = SessionManager::new(dir.path().to_path_buf(), cc);
+        mgr.register("sess1", None, Default::default())
+            .await
+            .unwrap();
+
+        for i in 0..5 {
+            mgr.receive_command(
+                "sess1",
+                CommandRecord {
+                    command_id: format!("cmd{}", i),
+                    session_id: "sess1".into(),
+                    command_line: Some(format!("command{}", i)),
+                    cwd: Some("/tmp".into()),
+                    started_at: 1000 + i as u64,
+                    ended_at: Some(2000 + i as u64),
+                    output_summary: format!("output{}", i),
+                    stream_offset: 0,
+                    stream_length: 0,
+                    exit_code: Some(0),
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let before = mgr.build_completion_sections("sess1", None).await.unwrap();
+        assert!(!before.stable_prefix.is_empty(), "stable_prefix should not be empty");
+
+        mgr.receive_command(
+            "sess1",
+            CommandRecord {
+                command_id: "cmd_new".into(),
+                session_id: "sess1".into(),
+                command_line: Some("new_command".into()),
+                cwd: Some("/tmp".into()),
+                started_at: 9999,
+                ended_at: Some(10000),
+                output_summary: "new_output".into(),
+                stream_offset: 0,
+                stream_length: 0,
+                exit_code: Some(0),
+            },
+        )
+        .await
+        .unwrap();
+
+        let after = mgr.build_completion_sections("sess1", None).await.unwrap();
+
+        assert_eq!(
+            before.stable_prefix, after.stable_prefix,
+            "stable_prefix must be byte-identical after a new command (Anthropic cache key)"
+        );
+        assert!(
+            after.remainder.contains("new_command"),
+            "new command should land in remainder, not stable_prefix, got remainder: {:?}",
+            after.remainder
+        );
+        assert!(
+            !after.stable_prefix.contains("new_command"),
+            "new command must not leak into stable_prefix"
+        );
+    }
+
     #[tokio::test]
     async fn test_cleanup_expired_dirs() {
         use std::time::{Duration, SystemTime, UNIX_EPOCH};
