@@ -59,6 +59,15 @@ test_1() {
     send_keys "/sessions" 0.3
     send_enter 1
 
+    # A /command can occasionally fall through to the LLM path (e.g. if
+    # ghost-text completion interferes with input), leaving the Thinking
+    # spinner on screen. If we press Up while it is still animating,
+    # get_current_input captures "Thinking..." instead of the recalled line.
+    if ! wait_for_thinking_cleared 30; then
+        assert_fail "Thinking spinner did not clear within 30s; a /command unexpectedly reached the LLM"
+        return 1
+    fi
+
     # Press up arrow - should show /sessions
     send_up_arrow 0.5
     local input1=$(get_current_input)
@@ -99,6 +108,12 @@ test_2() {
     # Re-enter chat mode
     send_keys ":" 0.5
     wait_for_prompt
+
+    # Guard against a lingering Thinking spinner from test_1's LLM call.
+    if ! wait_for_thinking_cleared 30; then
+        assert_fail "Thinking spinner did not clear within 30s after re-entry"
+        return 1
+    fi
 
     # Up arrow should still show /sessions (from previous chat session)
     send_up_arrow 0.5

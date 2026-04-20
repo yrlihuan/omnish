@@ -392,6 +392,24 @@ wait_for_chat_response() {
     return 1
 }
 
+# wait_for_thinking_cleared [timeout=60]
+#   Poll until no "Thinking" line remains in the pane. Use before history
+#   navigation (up/down arrows) when a prior command may still have a chat
+#   LLM call in flight; pressing arrows while the spinner is visible causes
+#   the capture to see "Thinking..." instead of the recalled line.
+#   Returns 0 when cleared, 1 on timeout.
+wait_for_thinking_cleared() {
+    local timeout="${1:-60}"
+    local deadline=$(($(date +%s) + timeout))
+    while (( $(date +%s) < deadline )); do
+        if ! capture_pane -10 | grep -q 'Thinking'; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
 # ── Assertions ───────────────────────────────────────────────────────────
 
 # assert_pass <message>
