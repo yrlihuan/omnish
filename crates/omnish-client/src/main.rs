@@ -1520,14 +1520,24 @@ async fn main() -> Result<()> {
         // Check for pushed config changes from daemon (non-blocking)
         if let Some(ref rpc) = daemon_conn {
             while let Some(msg) = rpc.try_recv_push().await {
-                if let Message::ConfigClient { changes } = msg {
-                    apply_client_config_changes(
-                        &changes,
-                        &mut interceptor,
-                        &mut completion_enabled,
-                        &mut ghost_timeout_ms,
-                        &mut prefix_bytes,
-                    );
+                match msg {
+                    Message::ConfigClient { changes } => {
+                        apply_client_config_changes(
+                            &changes,
+                            &mut interceptor,
+                            &mut completion_enabled,
+                            &mut ghost_timeout_ms,
+                            &mut prefix_bytes,
+                        );
+                    }
+                    Message::NoticePush { level, text } => {
+                        let prefix = match level {
+                            omnish_protocol::message::NoticeLevel::Info => "[omnish]",
+                            omnish_protocol::message::NoticeLevel::Error => "[omnish error]",
+                        };
+                        notice(&format!("{} {}", prefix, text));
+                    }
+                    _ => {}
                 }
             }
         }

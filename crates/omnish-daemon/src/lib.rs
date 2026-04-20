@@ -18,6 +18,7 @@ pub mod update_cache;
 pub mod cleanup;
 pub mod conversation_mgr;
 pub mod daily_notes;
+pub mod deploy;
 pub mod eviction;
 pub mod formatter_mgr;
 pub mod hourly_summary;

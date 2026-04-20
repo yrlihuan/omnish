@@ -66,19 +66,28 @@ fn resolve_options(doc: &toml::Value, table_path: &str) -> Vec<String> {
     }
 }
 
+/// True when `listen_addr` is a TCP address (contains ':' and not a path).
+/// We treat any non-empty value containing ':' as TCP - matches install.sh logic.
+fn is_tcp_listen(addr: &str) -> bool {
+    addr.contains(':') && !addr.starts_with('/') && !addr.starts_with('.')
+}
+
 /// Build ConfigItem list + handler info from live config using the embedded schema.
 pub fn build_config_items(
     config: &DaemonConfig,
     plugin_metas: &[omnish_daemon::plugin::PluginConfigMeta],
+    client_hostnames: &[(String, bool)],
 ) -> (Vec<ConfigItem>, Vec<ConfigHandlerInfo>) {
     let schema = parse_schema();
     let config_value = toml::Value::try_from(config)
         .expect("DaemonConfig must be Serializable");
+    let tcp_mode = is_tcp_listen(&config.listen_addr);
 
     // Submenus and dynamic placeholders both contribute a labeled parent entry
     // to the handlers list so the client can resolve their display labels.
     let mut handlers: Vec<ConfigHandlerInfo> = schema.iter()
         .filter(|s| s.kind == "submenu" || s.kind == "dynamic")
+        .filter(|s| tcp_mode || !s.path.starts_with("general.clients"))
         .map(|s| ConfigHandlerInfo {
             path: s.path.clone(),
             label: s.label.clone(),
@@ -96,6 +105,11 @@ pub fn build_config_items(
     let mut items = Vec::new();
     for s in &schema {
         if s.kind == "submenu" {
+            continue;
+        }
+
+        // Hide all clients items when daemon is on a Unix socket.
+        if !tcp_mode && s.path.starts_with("general.clients") {
             continue;
         }
 
@@ -304,6 +318,37 @@ pub fn build_config_items(
     // _client:sandbox_rules placeholder (merged with local rules).
     // The daemon still handles edit_global_rule/add_global_rule RPCs.
 
+    // Dynamic items: deploy targets per discovered hostname (TCP mode only).
+    if tcp_mode {
+        let default_user = std::env::var("USER").unwrap_or_default();
+        for (host, active) in client_hostnames {
+            // Quote hostname when it contains '.' so config_edit treats it as
+            // a single key segment (matches backend-name handling above).
+            let quoted = if host.contains('.') { format!("\"{}\"", host) } else { host.clone() };
+            let prefix = format!("general.clients.{}", quoted);
+            let label = if *active { format!("{} [active]", host) } else { host.clone() };
+
+            items.push(ConfigItem {
+                path: format!("{}.ssh_user", prefix),
+                label: "SSH user".to_string(),
+                kind: ConfigItemKind::TextInput { value: default_user.clone() },
+                prefills: vec![],
+            });
+            items.push(ConfigItem {
+                path: format!("{}.deploy", prefix),
+                label: "Deploy".to_string(),
+                kind: ConfigItemKind::Toggle { value: false },
+                prefills: vec![],
+            });
+
+            handlers.push(ConfigHandlerInfo {
+                path: prefix,
+                label,
+                handler: "deploy_client".to_string(),
+            });
+        }
+    }
+
     (items, handlers)
 }
 
@@ -405,6 +450,14 @@ fn resolve_dynamic_handler(path: &str) -> Option<String> {
         }
     }
 
+    // Per-host deploy: general.clients.<host>.<field> (not __add__).
+    if let Some(rest) = path.strip_prefix("general.clients.") {
+        let segments = omnish_common::config_edit::split_key_path(rest);
+        if segments.len() >= 2 && segments[0] != "__add__" {
+            return Some("deploy_client".to_string());
+        }
+    }
+
     if !path.starts_with("sandbox.rules.") {
         return None;
     }
@@ -425,8 +478,10 @@ fn resolve_dynamic_handler(path: &str) -> Option<String> {
     None
 }
 
-/// Apply config changes to daemon.toml.
-pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> anyhow::Result<()> {
+/// Apply config changes to daemon.toml. Returns deploy targets (`user@host`)
+/// that the caller should spawn deploys for - these come from `add_client` and
+/// `deploy_client` handlers which intentionally do not touch the TOML file.
+pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> anyhow::Result<Vec<String>> {
     let schema = parse_schema();
 
     let mut generic: Vec<&ConfigChange> = Vec::new();
@@ -464,6 +519,8 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
         }
     }
 
+    let mut deploy_targets: Vec<String> = Vec::new();
+
     for (handler, changes) in &handler_groups {
         if handler == "edit_backend" {
             handle_edit_backend(config_path, changes)?;
@@ -471,6 +528,14 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
             handle_add_backend(config_path, changes)?;
         } else if handler == "add_global_rule" {
             handle_add_global_rule(config_path, changes)?;
+        } else if handler == "add_client" {
+            if let Some(target) = handle_add_client(changes)? {
+                deploy_targets.push(target);
+            }
+        } else if handler == "deploy_client" {
+            if let Some(target) = handle_deploy_client(changes)? {
+                deploy_targets.push(target);
+            }
         } else if let Some(rest) = handler.strip_prefix("edit_global_rule:") {
             // handler format: "edit_global_rule:<plugin>:<index>"
             let colon = rest.rfind(':').ok_or_else(|| anyhow::anyhow!("malformed handler: {}", handler))?;
@@ -483,7 +548,62 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
         }
     }
 
-    Ok(())
+    Ok(deploy_targets)
+}
+
+/// Manual `Add client` form. Spawns a deploy when the toggle is set; otherwise
+/// silently drops the change so editing the target without deploying is a no-op.
+fn handle_add_client(changes: &[&ConfigChange]) -> anyhow::Result<Option<String>> {
+    let deploy = changes.iter().find(|c| c.path.ends_with(".deploy"))
+        .map(|c| c.value == "true").unwrap_or(false);
+    if !deploy {
+        return Ok(None);
+    }
+    let target = changes.iter().find(|c| c.path.ends_with(".target"))
+        .map(|c| c.value.trim().to_string()).unwrap_or_default();
+    if target.is_empty() {
+        anyhow::bail!("Add client: target is required");
+    }
+    if omnish_daemon::deploy::parse_target(&target).is_none() {
+        anyhow::bail!("Add client: invalid target (expected user@host)");
+    }
+    Ok(Some(target))
+}
+
+/// Per-host `Deploy` toggle. Derives hostname from the change path, pairs it
+/// with the `ssh_user` field, and emits `<user>@<hostname>` when toggle is set.
+fn handle_deploy_client(changes: &[&ConfigChange]) -> anyhow::Result<Option<String>> {
+    let deploy = changes.iter().find(|c| c.path.ends_with(".deploy"))
+        .map(|c| c.value == "true").unwrap_or(false);
+    if !deploy {
+        return Ok(None);
+    }
+    // Extract hostname from any change path: general.clients.<host>.<field>
+    let hostname = changes.iter().find_map(|c| {
+        let rest = c.path.strip_prefix("general.clients.")?;
+        let segments = omnish_common::config_edit::split_key_path(rest);
+        if segments.len() >= 2 && segments[0] != "__add__" {
+            Some(segments[0].clone())
+        } else {
+            None
+        }
+    }).ok_or_else(|| anyhow::anyhow!("deploy_client: cannot determine hostname"))?;
+
+    let ssh_user = changes.iter().find(|c| c.path.ends_with(".ssh_user"))
+        .map(|c| c.value.trim().to_string()).unwrap_or_default();
+    let ssh_user = if ssh_user.is_empty() {
+        std::env::var("USER").unwrap_or_default()
+    } else {
+        ssh_user
+    };
+    if ssh_user.is_empty() {
+        anyhow::bail!("deploy_client: SSH user is required");
+    }
+    let target = format!("{}@{}", ssh_user, hostname);
+    if omnish_daemon::deploy::parse_target(&target).is_none() {
+        anyhow::bail!("deploy_client: invalid SSH user or hostname");
+    }
+    Ok(Some(target))
 }
 
 fn handle_add_global_rule(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::Result<()> {
@@ -709,7 +829,7 @@ mod tests {
     #[test]
     fn test_build_config_items_includes_leaf_items() {
         let config = DaemonConfig::default();
-        let (items, _handlers) = build_config_items(&config, &[]);
+        let (items, _handlers) = build_config_items(&config, &[], &[]);
         assert!(items.iter().any(|i| i.path == "general.proxy.http_proxy"));
         assert!(items.iter().any(|i| i.path == "general.hotkeys.command_prefix"));
         assert!(items.iter().any(|i| i.path == "llm.use_cases.completion"));
@@ -721,7 +841,7 @@ mod tests {
     #[test]
     fn test_build_config_items_returns_handlers() {
         let config = DaemonConfig::default();
-        let (_items, handlers) = build_config_items(&config, &[]);
+        let (_items, handlers) = build_config_items(&config, &[], &[]);
         // Label-only submenus (llm, shell_completion, sandbox) + dynamic placeholder (plugins)
         // + handler submenu (add_backend)
         // Note: add_global_rule is now generated client-side
@@ -746,7 +866,7 @@ mod tests {
             context_window: None,
             max_content_chars: None,
         });
-        let (items, handlers) = build_config_items(&config, &[]);
+        let (items, handlers) = build_config_items(&config, &[], &[]);
         assert!(items.iter().any(|i| i.path == "llm.backends.claude.backend_type"));
         assert!(items.iter().any(|i| i.path == "llm.backends.claude.model"));
         assert!(items.iter().any(|i| i.path == "llm.backends.claude.api_key_cmd"));
@@ -771,7 +891,7 @@ mod tests {
                 kind: "text".to_string(),
             }],
         }];
-        let (items, _handlers) = build_config_items(&config, &metas);
+        let (items, _handlers) = build_config_items(&config, &metas, &[]);
 
         // Enabled toggle
         let toggle = items.iter().find(|i| i.path == "plugins.web_search.enabled").unwrap();
@@ -805,7 +925,7 @@ mod tests {
                 kind: "text".to_string(),
             }],
         }];
-        let (items, _handlers) = build_config_items(&config, &metas);
+        let (items, _handlers) = build_config_items(&config, &metas, &[]);
 
         let toggle = items.iter().find(|i| i.path == "plugins.web_search.enabled").unwrap();
         match &toggle.kind {

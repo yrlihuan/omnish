@@ -500,6 +500,7 @@ impl DaemonServer {
 
         let io_requests_handler = io_requests.clone();
         let io_bytes_handler = io_bytes.clone();
+        let push_registry_handler = self.push_registry.clone();
         let daemon_config_for_push = self.opts.daemon_config.clone();
         let on_push_connect: Option<OnPushConnect> = Some(Arc::new(move |push_tx: mpsc::Sender<Message>| {
             let config = daemon_config_for_push.clone();
@@ -528,7 +529,8 @@ impl DaemonServer {
                     let update_cache = update_cache.clone();
                     let io_requests = io_requests_handler.clone();
                     let io_bytes = io_bytes_handler.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &tool_registry, &formatter_mgr, &pending_loops, &cancel_flags, &active_threads, &opts, &update_cache, &io_requests, &io_bytes, tx).await })
+                    let push_registry = push_registry_handler.clone();
+                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &tool_registry, &formatter_mgr, &pending_loops, &cancel_flags, &active_threads, &opts, &update_cache, &io_requests, &io_bytes, &push_registry, tx).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -556,6 +558,7 @@ async fn handle_message(
     update_cache: &Arc<omnish_daemon::update_cache::UpdateCache>,
     io_requests: &Arc<AtomicU64>,
     io_bytes: &Arc<AtomicU64>,
+    push_registry: &PushRegistry,
     tx: mpsc::Sender<Message>,
 ) {
     // Derive chat model name dynamically from current backend (follows hot-reload)
@@ -991,7 +994,8 @@ async fn handle_message(
         Message::ConfigQuery => {
             let config = opts.daemon_config.read().unwrap().clone();
             let plugin_metas = plugin_mgr.config_meta();
-            let (mut items, handlers) = crate::config_schema::build_config_items(&config, &plugin_metas);
+            let hostnames = mgr.list_hostnames().await;
+            let (mut items, handlers) = crate::config_schema::build_config_items(&config, &plugin_metas, &hostnames);
             // Inject tool param metadata so the client can offer Select pickers
             // for Plugin / Param name in sandbox rule forms.
             items.push(crate::config_schema::build_tool_params_item(tool_registry));
@@ -1000,11 +1004,18 @@ async fn handle_message(
         Message::ConfigUpdate { changes } => {
             let result = crate::config_schema::apply_config_changes(&opts.config_path, &changes);
             match result {
-                Ok(()) => {
+                Ok(deploy_targets) => {
                     // Reload config after successful write
                     if let Ok(mut new_config) = omnish_common::config::load_daemon_config() {
                         omnish_daemon::task_mgr::inject_task_defaults(&mut new_config.tasks);
                         *opts.daemon_config.write().unwrap() = new_config;
+                    }
+                    // Spawn background deploy tasks; results are pushed back as NoticePush.
+                    if !deploy_targets.is_empty() {
+                        let omnish_dir = omnish_common::config::omnish_dir();
+                        for target in deploy_targets {
+                            omnish_daemon::deploy::spawn_deploy(omnish_dir.clone(), target, push_registry.clone());
+                        }
                     }
                     let _ = tx.send(Message::ConfigUpdateResult { ok: true, error: None }).await;
                 }

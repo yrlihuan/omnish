@@ -5,7 +5,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version - increment on any wire format change.
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// Minimum protocol version this build can interoperate with.
 ///
@@ -119,6 +119,14 @@ pub enum Message {
     ConfigClient { changes: Vec<ConfigChange> },
     /// Test helper: daemon closes this connection after `delay_secs` seconds.
     TestDisconnect { delay_secs: u64 },
+    /// Daemon -> client push: a transient notice to render in the client UI.
+    NoticePush { level: NoticeLevel, text: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum NoticeLevel {
+    Info,
+    Error,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -645,7 +653,7 @@ mod tests {
     /// reminding you to bump PROTOCOL_VERSION if the wire format changed.
     #[test]
     fn message_variant_guard() {
-        const EXPECTED_VARIANT_COUNT: usize = 33;
+        const EXPECTED_VARIANT_COUNT: usize = 34;
 
         let variants: Vec<Message> = vec![
             Message::SessionStart(SessionStart {
@@ -815,6 +823,7 @@ mod tests {
             Message::UpdateChunk { seq: 0, total_size: 1024, checksum: "abc".into(), data: vec![1,2,3], done: false, error: None },
             Message::ConfigClient { changes: vec![] },
             Message::TestDisconnect { delay_secs: 5 },
+            Message::NoticePush { level: NoticeLevel::Info, text: String::new() },
         ];
 
         // Exhaustive match - no wildcard. Compiler will error if a variant is missing.
@@ -852,7 +861,8 @@ mod tests {
                 | Message::UpdateInfo { .. }
                 | Message::UpdateRequest { .. }
                 | Message::UpdateChunk { .. }
-                | Message::TestDisconnect { .. } => {}
+                | Message::TestDisconnect { .. }
+                | Message::NoticePush { .. } => {}
             }
         }
 

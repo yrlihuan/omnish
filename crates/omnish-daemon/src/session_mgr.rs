@@ -598,6 +598,33 @@ impl SessionManager {
         result
     }
 
+    /// Returns (hostname, is_active) pairs for unique hostnames seen in
+    /// in-memory sessions. `is_active` is true when at least one session for
+    /// that hostname has not ended (i.e., a live client connection).
+    /// Hostnames are sorted alphabetically for stable menu order.
+    pub async fn list_hostnames(&self) -> Vec<(String, bool)> {
+        let session_arcs: Vec<_> = {
+            let sessions = self.sessions.read().await;
+            sessions.values().cloned().collect()
+        };
+        let mut by_host: HashMap<String, bool> = HashMap::new();
+        for session in &session_arcs {
+            let meta = session.meta.read().await;
+            let host = match meta.attrs.get("hostname") {
+                Some(h) if !h.is_empty() => h.clone(),
+                _ => continue,
+            };
+            let active = meta.ended_at.is_none();
+            let entry = by_host.entry(host).or_insert(false);
+            if active {
+                *entry = true;
+            }
+        }
+        let mut result: Vec<(String, bool)> = by_host.into_iter().collect();
+        result.sort_by(|a, b| a.0.cmp(&b.0));
+        result
+    }
+
     /// Format a human-readable list of active in-memory sessions.
     ///
     /// Only shows active sessions (ended=false). Output is grouped by host,

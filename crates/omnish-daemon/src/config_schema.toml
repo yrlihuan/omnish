@@ -71,6 +71,30 @@ label = "Schedule"
 kind = "text"
 toml_key = "tasks.auto_update.schedule"
 
+# ── General > Clients (deploy via SSH) ───────────────
+# Visible only when daemon listen_addr is TCP.
+# Per-host items are emitted dynamically in config_schema.rs.
+[[items]]
+path = "general.clients"
+label = "Clients"
+kind = "submenu"
+
+[[items]]
+path = "general.clients.__add__"
+label = "Add client"
+kind = "submenu"
+handler = "add_client"
+
+[[items]]
+path = "general.clients.__add__.target"
+label = "Target (user@host)"
+kind = "text"
+
+[[items]]
+path = "general.clients.__add__.deploy"
+label = "Deploy"
+kind = "toggle"
+
 # ── General > Proxy ──────────────────────────────────
 [[items]]
 path = "general.proxy.http_proxy"
