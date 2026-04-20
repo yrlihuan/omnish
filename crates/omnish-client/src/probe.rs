@@ -207,6 +207,11 @@ pub fn default_session_probes(child_pid: u32) -> ProbeSet {
     set.add(Box::new(HostnameProbe));
     set.add(Box::new(PlatformProbe));
     set.add(Box::new(OsVersionProbe));
+    // Include shell_cwd in SessionStart attrs so the daemon always has a valid cwd
+    // even before the first polling tick, and after a client reconnect (register()
+    // replaces attrs wholesale, and polling only re-sends diffs against local
+    // last_attrs, so a daemon-side wipe would otherwise never be repopulated).
+    set.add(Box::new(ShellCwdProbe(child_pid)));
     set
 }
 

@@ -50,15 +50,22 @@ impl CommandQueryTool {
     /// Session attrs (from client probes) provide live_cwd, platform, and os_version.
     /// When `include_commands` is false, the recent commands section is omitted (used in chat mode
     /// where the agent can query commands via tools).
-    pub fn build_system_reminder(&self, count: usize, session_attrs: &std::collections::HashMap<String, String>, include_commands: bool) -> String {
+    ///
+    /// `session_id` is used to scope the cwd fallback to the current session's commands;
+    /// `self.commands` may aggregate commands across all sessions (all hosts), so using
+    /// `commands.last()` unconditionally can leak another host's cwd into this reminder.
+    pub fn build_system_reminder(&self, session_id: &str, count: usize, session_attrs: &std::collections::HashMap<String, String>, include_commands: bool) -> String {
         let commands = &self.commands;
 
         let now = chrono::Local::now();
         let today = now.format("%Y-%m-%d").to_string();
 
-        // Current directory: prefer live cwd from client probe, fall back to last command's cwd
+        // Current directory: prefer live cwd from client probe, fall back to the most recent
+        // command from THIS session (never cross-session, since commands may span all hosts).
         let cwd = session_attrs.get("shell_cwd").map(|s| s.as_str())
-            .or_else(|| commands.last().and_then(|c| c.cwd.as_deref()))
+            .or_else(|| commands.iter().rev()
+                .find(|c| c.session_id == session_id)
+                .and_then(|c| c.cwd.as_deref()))
             .unwrap_or("(unknown)");
 
         // Check if cwd is a git repo
@@ -344,9 +351,13 @@ mod tests {
     }
 
     fn make_cmd(cmd_line: &str, cwd: Option<&str>, exit_code: Option<i32>) -> CommandRecord {
+        make_cmd_for_session("s1", cmd_line, cwd, exit_code)
+    }
+
+    fn make_cmd_for_session(session_id: &str, cmd_line: &str, cwd: Option<&str>, exit_code: Option<i32>) -> CommandRecord {
         CommandRecord {
             command_id: String::new(),
-            session_id: String::new(),
+            session_id: session_id.to_string(),
             command_line: Some(cmd_line.to_string()),
             cwd: cwd.map(|s| s.to_string()),
             started_at: 0,
@@ -375,7 +386,7 @@ mod tests {
         let tool = make_tool(vec![
             make_cmd("ls", Some("/home/user/old"), Some(0)),
         ]);
-        let reminder = tool.build_system_reminder(5, &make_attrs(Some("/home/user/live")), true);
+        let reminder = tool.build_system_reminder("s1", 5, &make_attrs(Some("/home/user/live")), true);
         assert!(reminder.contains("WORKING DIR: /home/user/live"));
         assert!(!reminder.contains("/home/user/old"));
     }
@@ -386,8 +397,34 @@ mod tests {
             make_cmd("cd /tmp", Some("/tmp"), Some(0)),
             make_cmd("ls", Some("/home/user/proj"), Some(0)),
         ]);
-        let reminder = tool.build_system_reminder(5, &make_attrs(None), true);
+        let reminder = tool.build_system_reminder("s1", 5, &make_attrs(None), true);
         assert!(reminder.contains("WORKING DIR: /home/user/proj"));
+    }
+
+    #[test]
+    fn test_cwd_fallback_ignores_other_sessions() {
+        // Commands aggregated from multiple sessions: the last one globally belongs
+        // to another session (could be another host). The fallback must not leak it
+        // into the current session's system-reminder.
+        let tool = make_tool(vec![
+            make_cmd_for_session("s1", "ls", Some("/home/user/proj"), Some(0)),
+            make_cmd_for_session("s2", "ls", Some("/other/host/path"), Some(0)),
+        ]);
+        let reminder = tool.build_system_reminder("s1", 5, &make_attrs(None), true);
+        assert!(reminder.contains("WORKING DIR: /home/user/proj"));
+        assert!(!reminder.contains("/other/host/path"));
+    }
+
+    #[test]
+    fn test_cwd_unknown_when_only_other_session_commands() {
+        // Current session has no commands yet; only another session has recorded any.
+        // Fallback must return (unknown), never the other session's cwd.
+        let tool = make_tool(vec![
+            make_cmd_for_session("other", "ls", Some("/other/host/path"), Some(0)),
+        ]);
+        let reminder = tool.build_system_reminder("s1", 5, &make_attrs(None), true);
+        assert!(reminder.contains("WORKING DIR: (unknown)"));
+        assert!(!reminder.contains("/other/host/path"));
     }
 
     #[test]
@@ -395,14 +432,14 @@ mod tests {
         let tool = make_tool(vec![
             make_cmd("ls", None, Some(0)),
         ]);
-        let reminder = tool.build_system_reminder(5, &make_attrs(None), true);
+        let reminder = tool.build_system_reminder("s1", 5, &make_attrs(None), true);
         assert!(reminder.contains("WORKING DIR: (unknown)"));
     }
 
     #[test]
     fn test_cwd_unknown_when_no_commands_and_no_live() {
         let tool = make_tool(vec![]);
-        let reminder = tool.build_system_reminder(5, &make_attrs(None), true);
+        let reminder = tool.build_system_reminder("s1", 5, &make_attrs(None), true);
         assert!(reminder.contains("WORKING DIR: (unknown)"));
     }
 
@@ -412,7 +449,7 @@ mod tests {
             make_cmd("cargo build", None, Some(0)),
             make_cmd("cargo test", None, Some(1)),
         ]);
-        let reminder = tool.build_system_reminder(5, &make_attrs(None), true);
+        let reminder = tool.build_system_reminder("s1", 5, &make_attrs(None), true);
         assert!(reminder.contains("[seq=1] cargo build\n"));
         assert!(reminder.contains("[seq=2] cargo test [FAILED]"));
     }
@@ -423,7 +460,7 @@ mod tests {
             .map(|i| make_cmd(&format!("cmd{}", i), None, Some(0)))
             .collect();
         let tool = make_tool(commands);
-        let reminder = tool.build_system_reminder(3, &make_attrs(None), true);
+        let reminder = tool.build_system_reminder("s1", 3, &make_attrs(None), true);
         assert!(!reminder.contains("cmd7"));
         assert!(reminder.contains("[seq=8] cmd8"));
         assert!(reminder.contains("[seq=9] cmd9"));
@@ -433,7 +470,7 @@ mod tests {
     #[test]
     fn test_reminder_contains_time_and_structure() {
         let tool = make_tool(vec![make_cmd("ls", Some("/tmp"), Some(0))]);
-        let reminder = tool.build_system_reminder(5, &make_attrs(None), true);
+        let reminder = tool.build_system_reminder("s1", 5, &make_attrs(None), true);
         assert!(reminder.starts_with("<system-reminder>"));
         assert!(reminder.ends_with("</system-reminder>"));
         assert!(reminder.contains("WORKING DIR: /tmp"));
@@ -446,7 +483,7 @@ mod tests {
         let mut attrs = std::collections::HashMap::new();
         attrs.insert("platform".to_string(), "macos".to_string());
         attrs.insert("os_version".to_string(), "23.1.0".to_string());
-        let reminder = tool.build_system_reminder(5, &attrs, true);
+        let reminder = tool.build_system_reminder("s1", 5, &attrs, true);
         assert!(reminder.contains("Platform: macos"), "reminder: {}", reminder);
         assert!(reminder.contains("OS Version: 23.1.0"), "reminder: {}", reminder);
     }
@@ -457,7 +494,7 @@ mod tests {
             make_cmd("cargo build", None, Some(0)),
             make_cmd("cargo test", None, Some(1)),
         ]);
-        let reminder = tool.build_system_reminder(5, &make_attrs(None), false);
+        let reminder = tool.build_system_reminder("s1", 5, &make_attrs(None), false);
         assert!(reminder.starts_with("<system-reminder>"));
         assert!(reminder.ends_with("</system-reminder>"));
         assert!(!reminder.contains("LAST"));
