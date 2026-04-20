@@ -85,6 +85,11 @@
   "config.rules": "规则",
   "config.add_permit_rule": "添加豁免规则",
   "config.done": "完成",
+  "config.clients": "客户端",
+  "config.add_client": "添加客户端",
+  "config.target_userhost": "目标 (user@host)",
+  "config.ssh_user": "SSH 用户",
+  "config.deploy": "部署",
 
   "sandbox.scope_label": "作用域: {scope}",
   "sandbox.available": "可用",

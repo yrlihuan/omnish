@@ -85,6 +85,11 @@
   "config.rules": "Règles",
   "config.add_permit_rule": "Ajouter une règle d'autorisation",
   "config.done": "Terminé",
+  "config.clients": "Clients",
+  "config.add_client": "Ajouter un client",
+  "config.target_userhost": "Cible (user@host)",
+  "config.ssh_user": "Utilisateur SSH",
+  "config.deploy": "Déployer",
 
   "sandbox.scope_label": "Portée : {scope}",
   "sandbox.available": "Disponible",

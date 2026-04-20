@@ -43,6 +43,9 @@ pub enum MenuItem {
         handler: Option<String>,
         /// When true, TextInput items auto-enter edit on focus and Enter advances to next item.
         form_mode: bool,
+        /// Custom label for the auto-appended submit button in form_mode.
+        /// None falls back to `config.done`.
+        submit_label: Option<String>,
     },
     /// Choose from a fixed set of options.
     Select {
@@ -858,13 +861,15 @@ pub fn run_menu(
                 let row_from_bottom = lines_below_cursor(vis, cursor_vis_pos);
 
                 match &mut current_items[cursor] {
-                    MenuItem::Submenu { label, children, form_mode, .. } => {
+                    MenuItem::Submenu { label, children, form_mode, submit_label, .. } => {
                         if children.is_empty() {
                             continue;
                         }
-                        // Auto-append Done button for form_mode submenus
+                        // Auto-append submit button for form_mode submenus.
+                        // Use custom submit_label if provided, else default to config.done.
                         if *form_mode {
-                            let done_label = crate::i18n::t("config.done").to_string();
+                            let done_label = submit_label.clone()
+                                .unwrap_or_else(|| crate::i18n::t("config.done").to_string());
                             if !children.iter().any(|c| matches!(c, MenuItem::Button { label } if *label == done_label)) {
                                 children.push(MenuItem::Button { label: done_label });
                             }
@@ -1223,6 +1228,7 @@ mod tests {
             children: vec![],
             handler: None,
             form_mode: false,
+            submit_label: None,
         };
         assert_eq!(item.label(), "LLM");
     }
@@ -1234,6 +1240,7 @@ mod tests {
             children: vec![],
             handler: None,
             form_mode: false,
+            submit_label: None,
         };
         let line = render_menu_item(&item, false);
         let text = common::strip_ansi(&line);
@@ -1315,7 +1322,7 @@ mod tests {
     #[test]
     fn test_render_hint_submenu() {
         crate::i18n::init("en");
-        let item = MenuItem::Submenu { label: "X".to_string(), children: vec![], handler: None, form_mode: false };
+        let item = MenuItem::Submenu { label: "X".to_string(), children: vec![], handler: None, form_mode: false, submit_label: None };
         let hint = render_hint(0, Some(&item));
         assert!(hint.contains("open"));
     }
@@ -1365,6 +1372,7 @@ mod tests {
                 children: vec![],
                 handler: None,
                 form_mode: false,
+                submit_label: None,
             },
         ];
         let output = render_full("Config", &items, 0, 60, 0);

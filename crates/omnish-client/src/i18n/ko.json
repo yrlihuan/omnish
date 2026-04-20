@@ -85,6 +85,11 @@
   "config.rules": "규칙",
   "config.add_permit_rule": "허용 규칙 추가",
   "config.done": "완료",
+  "config.clients": "클라이언트",
+  "config.add_client": "클라이언트 추가",
+  "config.target_userhost": "대상 (user@host)",
+  "config.ssh_user": "SSH 사용자",
+  "config.deploy": "배포",
 
   "sandbox.scope_label": "범위: {scope}",
   "sandbox.available": "사용 가능",

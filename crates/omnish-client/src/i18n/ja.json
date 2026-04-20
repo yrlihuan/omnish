@@ -85,6 +85,11 @@
   "config.rules": "ルール",
   "config.add_permit_rule": "許可ルールを追加",
   "config.done": "完了",
+  "config.clients": "クライアント",
+  "config.add_client": "クライアントを追加",
+  "config.target_userhost": "ターゲット (user@host)",
+  "config.ssh_user": "SSH ユーザー",
+  "config.deploy": "デプロイ",
 
   "sandbox.scope_label": "スコープ: {scope}",
   "sandbox.available": "利用可能",

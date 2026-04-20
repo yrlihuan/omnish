@@ -91,7 +91,7 @@ label = "Target (user@host)"
 kind = "text"
 
 [[items]]
-path = "general.clients.__add__.deploy"
+path = "general.clients.__add__._submit"
 label = "Deploy"
 kind = "toggle"
 

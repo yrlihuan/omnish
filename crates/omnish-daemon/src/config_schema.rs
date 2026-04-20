@@ -335,7 +335,7 @@ pub fn build_config_items(
                 prefills: vec![],
             });
             items.push(ConfigItem {
-                path: format!("{}.deploy", prefix),
+                path: format!("{}._submit", prefix),
                 label: "Deploy".to_string(),
                 kind: ConfigItemKind::Toggle { value: false },
                 prefills: vec![],
@@ -551,12 +551,12 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
     Ok(deploy_targets)
 }
 
-/// Manual `Add client` form. Spawns a deploy when the toggle is set; otherwise
-/// silently drops the change so editing the target without deploying is a no-op.
+/// Manual `Add client` form. The submit (Deploy) button triggers the deploy;
+/// exiting the form with ESC (no `._submit` press) is a no-op.
 fn handle_add_client(changes: &[&ConfigChange]) -> anyhow::Result<Option<String>> {
-    let deploy = changes.iter().find(|c| c.path.ends_with(".deploy"))
+    let submit = changes.iter().find(|c| c.path.ends_with("._submit"))
         .map(|c| c.value == "true").unwrap_or(false);
-    if !deploy {
+    if !submit {
         return Ok(None);
     }
     let target = changes.iter().find(|c| c.path.ends_with(".target"))
@@ -570,12 +570,13 @@ fn handle_add_client(changes: &[&ConfigChange]) -> anyhow::Result<Option<String>
     Ok(Some(target))
 }
 
-/// Per-host `Deploy` toggle. Derives hostname from the change path, pairs it
-/// with the `ssh_user` field, and emits `<user>@<hostname>` when toggle is set.
+/// Per-host `Deploy` submit button. Derives hostname from the change path, pairs
+/// it with the `ssh_user` field, and emits `<user>@<hostname>` when the submit
+/// button is pressed.
 fn handle_deploy_client(changes: &[&ConfigChange]) -> anyhow::Result<Option<String>> {
-    let deploy = changes.iter().find(|c| c.path.ends_with(".deploy"))
+    let submit = changes.iter().find(|c| c.path.ends_with("._submit"))
         .map(|c| c.value == "true").unwrap_or(false);
-    if !deploy {
+    if !submit {
         return Ok(None);
     }
     // Extract hostname from any change path: general.clients.<host>.<field>

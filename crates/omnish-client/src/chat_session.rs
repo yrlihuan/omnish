@@ -903,7 +903,38 @@ fn build_menu_tree(
         .map(|h| (h.path.as_str(), (h.handler.as_str(), h.label.as_str())))
         .collect();
 
+    // Pre-pass: collect custom submit button labels for form submenus.
+    // An item whose path ends with `._submit` provides the submit (done) button
+    // label for its parent submenu. The item itself is not emitted in the tree.
+    let submit_labels: HashMap<String, String> = items.iter()
+        .filter_map(|item| {
+            let suffix = "._submit";
+            if !item.path.ends_with(suffix) { return None; }
+            let parent_path = &item.path[..item.path.len() - suffix.len()];
+            Some((parent_path.to_string(), crate::i18n::translate_label(&item.label)))
+        })
+        .collect();
+
     for item in items {
+        // Register the submit button in path_map so a press of the auto-appended
+        // button translates to the schema `._submit` path (used by daemon handlers).
+        if item.path.ends_with("._submit") {
+            let segments = omnish_common::config_edit::split_key_path(&item.path);
+            let mut display_parts: Vec<String> = Vec::new();
+            let mut schema_prefix = String::new();
+            for (j, s) in segments[..segments.len().saturating_sub(1)].iter().enumerate() {
+                if j > 0 { schema_prefix.push('.'); }
+                schema_prefix.push_str(s);
+                let label = submenu_lookup.get(schema_prefix.as_str())
+                    .map(|(_, lbl)| crate::i18n::translate_label(lbl))
+                    .unwrap_or_else(|| crate::i18n::translate_label(&segment_to_label(s)));
+                display_parts.push(label);
+            }
+            display_parts.push(crate::i18n::translate_label(&item.label));
+            path_map.insert(display_parts.join("."), item.path.clone());
+            continue;
+        }
+
         let segments = omnish_common::config_edit::split_key_path(&item.path);
         let mut current = &mut root;
         for (i, seg) in segments.iter().enumerate() {
@@ -976,11 +1007,13 @@ fn build_menu_tree(
                         // Submenus with a handler are forms: fields filled by the user
                         // are collected and dispatched to the handler on Done/ESC.
                         let form_mode = handler.is_some();
+                        let submit_label = submit_labels.get(&schema_path_so_far).cloned();
                         current.push(MenuItem::Submenu {
                             label: label.clone(),
                             children: Vec::new(),
                             handler,
                             form_mode,
+                            submit_label,
                         });
                         current.len() - 1
                     }
@@ -2888,6 +2921,7 @@ impl ChatSession {
             ],
             handler: Some("add_backend".to_string()),
             form_mode: true,
+            submit_label: None,
         }};
 
         let mut items = vec![
@@ -2925,6 +2959,7 @@ impl ChatSession {
                 ],
                 handler: None,
                 form_mode: false,
+                submit_label: None,
             },
             MenuItem::Submenu {
                 label: "Shell".to_string(),
@@ -2950,6 +2985,7 @@ impl ChatSession {
                 ],
                 handler: None,
                 form_mode: false,
+                submit_label: None,
             },
             MenuItem::Toggle {
                 label: "Telemetry".to_string(),
@@ -2986,6 +3022,7 @@ impl ChatSession {
                 ],
                 handler: None,
                 form_mode: false,
+                submit_label: None,
             },
         ];
 
@@ -3043,6 +3080,7 @@ impl ChatSession {
                 ],
                 handler: None,
                 form_mode: false,
+                submit_label: None,
             };
 
             let mut current = items_shadow.borrow().clone();

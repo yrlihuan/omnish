@@ -85,6 +85,11 @@
   "config.rules": "القواعد",
   "config.add_permit_rule": "إضافة قاعدة إذن",
   "config.done": "تم",
+  "config.clients": "العملاء",
+  "config.add_client": "إضافة عميل",
+  "config.target_userhost": "الهدف (user@host)",
+  "config.ssh_user": "مستخدم SSH",
+  "config.deploy": "نشر",
 
   "sandbox.scope_label": "النطاق: {scope}",
   "sandbox.available": "متاح",
