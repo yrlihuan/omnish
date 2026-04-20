@@ -2451,12 +2451,12 @@ async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &
             }
         }
         "sessions" => cmd_display(mgr.format_sessions_list(&req.session_id).await),
+        "conversations stats" => format_thread_stats(conv_mgr, active_threads, &req.session_id).await,
         s if s == "conversations" || s.starts_with("conversations ") => {
             let limit = s.strip_prefix("conversations ")
                 .and_then(|n| n.trim().parse::<usize>().ok());
             format_conversations_json(conv_mgr, active_threads, limit).await
         }
-        "conversations stats" => format_thread_stats(conv_mgr, active_threads, &req.session_id).await,
         "session" => match get_session_debug_info(&req.session_id, mgr).await {
             Ok(info) => cmd_display(info),
             Err(e) => cmd_display(format!("Error: {}", e)),
