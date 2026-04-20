@@ -320,18 +320,16 @@ pub fn build_config_items(
 
     // Dynamic items: deploy targets per discovered hostname (TCP mode only).
     if tcp_mode {
-        let default_user = std::env::var("USER").unwrap_or_default();
-        for (host, active) in client_hostnames {
+        for (host, _active) in client_hostnames {
             // Quote hostname when it contains '.' so config_edit treats it as
             // a single key segment (matches backend-name handling above).
             let quoted = if host.contains('.') { format!("\"{}\"", host) } else { host.clone() };
             let prefix = format!("general.clients.{}", quoted);
-            let label = if *active { format!("{} [active]", host) } else { host.clone() };
 
             items.push(ConfigItem {
-                path: format!("{}.ssh_user", prefix),
-                label: "SSH user".to_string(),
-                kind: ConfigItemKind::TextInput { value: default_user.clone() },
+                path: format!("{}._target", prefix),
+                label: format!("client {}", host),
+                kind: ConfigItemKind::Label,
                 prefills: vec![],
             });
             items.push(ConfigItem {
@@ -343,7 +341,7 @@ pub fn build_config_items(
 
             handlers.push(ConfigHandlerInfo {
                 path: prefix,
-                label,
+                label: host.clone(),
                 handler: "deploy_client".to_string(),
             });
         }
@@ -552,7 +550,9 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
 }
 
 /// Manual `Add client` form. The submit (Deploy) button triggers the deploy;
-/// exiting the form with ESC (no `._submit` press) is a no-op.
+/// exiting the form with ESC (no `._submit` press) is a no-op. Accepts either
+/// `host` or `user@host`; when user is omitted ssh falls back to its own
+/// defaults (ssh_config / $USER).
 fn handle_add_client(changes: &[&ConfigChange]) -> anyhow::Result<Option<String>> {
     let submit = changes.iter().find(|c| c.path.ends_with("._submit"))
         .map(|c| c.value == "true").unwrap_or(false);
@@ -564,22 +564,21 @@ fn handle_add_client(changes: &[&ConfigChange]) -> anyhow::Result<Option<String>
     if target.is_empty() {
         anyhow::bail!("Add client: target is required");
     }
-    if omnish_daemon::deploy::parse_target(&target).is_none() {
-        anyhow::bail!("Add client: invalid target (expected user@host)");
+    match omnish_daemon::deploy::parse_target(&target) {
+        Some(t) => Ok(Some(t)),
+        None => anyhow::bail!("Add client: invalid target (expected host or user@host)"),
     }
-    Ok(Some(target))
 }
 
-/// Per-host `Deploy` submit button. Derives hostname from the change path, pairs
-/// it with the `ssh_user` field, and emits `<user>@<hostname>` when the submit
-/// button is pressed.
+/// Per-host `Deploy` submit button. Derives hostname from the change path and
+/// deploys directly to `<hostname>`; ssh resolves the user via ssh_config /
+/// $USER on the daemon machine.
 fn handle_deploy_client(changes: &[&ConfigChange]) -> anyhow::Result<Option<String>> {
     let submit = changes.iter().find(|c| c.path.ends_with("._submit"))
         .map(|c| c.value == "true").unwrap_or(false);
     if !submit {
         return Ok(None);
     }
-    // Extract hostname from any change path: general.clients.<host>.<field>
     let hostname = changes.iter().find_map(|c| {
         let rest = c.path.strip_prefix("general.clients.")?;
         let segments = omnish_common::config_edit::split_key_path(rest);
@@ -590,21 +589,10 @@ fn handle_deploy_client(changes: &[&ConfigChange]) -> anyhow::Result<Option<Stri
         }
     }).ok_or_else(|| anyhow::anyhow!("deploy_client: cannot determine hostname"))?;
 
-    let ssh_user = changes.iter().find(|c| c.path.ends_with(".ssh_user"))
-        .map(|c| c.value.trim().to_string()).unwrap_or_default();
-    let ssh_user = if ssh_user.is_empty() {
-        std::env::var("USER").unwrap_or_default()
-    } else {
-        ssh_user
-    };
-    if ssh_user.is_empty() {
-        anyhow::bail!("deploy_client: SSH user is required");
+    match omnish_daemon::deploy::parse_target(&hostname) {
+        Some(t) => Ok(Some(t)),
+        None => anyhow::bail!("deploy_client: invalid hostname"),
     }
-    let target = format!("{}@{}", ssh_user, hostname);
-    if omnish_daemon::deploy::parse_target(&target).is_none() {
-        anyhow::bail!("deploy_client: invalid SSH user or hostname");
-    }
-    Ok(Some(target))
 }
 
 fn handle_add_global_rule(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::Result<()> {

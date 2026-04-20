@@ -87,8 +87,7 @@
   "config.done": "完了",
   "config.clients": "クライアント",
   "config.add_client": "クライアントを追加",
-  "config.target_userhost": "ターゲット (user@host)",
-  "config.ssh_user": "SSH ユーザー",
+  "config.target_host_or_userhost": "ターゲット (host または user@host)",
   "config.deploy": "デプロイ",
 
   "sandbox.scope_label": "スコープ: {scope}",

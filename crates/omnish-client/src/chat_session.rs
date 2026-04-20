@@ -3196,6 +3196,35 @@ impl ChatSession {
                         .collect()
                 };
 
+                // Client-side validation for add_client: when Deploy is pressed
+                // with an empty/malformed target, show the reason locally instead
+                // of round-tripping through the daemon. Accepts `host` or
+                // `user@host`; ssh handles the user default when omitted.
+                if handler_name == "add_client"
+                    && find_change_value(&translated_changes, "._submit") == "true"
+                {
+                    let target = find_change_value(&translated_changes, ".target").trim();
+                    if target.is_empty() {
+                        write_stdout(&format!(
+                            "{RED}Deploy: target is required (host or user@host){RESET}{NEWLINE}"
+                        ));
+                        return None;
+                    }
+                    let has_bad_char = target.chars().any(|c| c.is_whitespace()
+                        || matches!(c, '\'' | '"' | '`' | '$' | '\\' | ';' | '|' | '&' | '<' | '>' | '(' | ')'));
+                    let parts_ok = match target.split_once('@') {
+                        Some((u, h)) => !u.is_empty() && !h.is_empty(),
+                        None => true,
+                    };
+                    if has_bad_char || !parts_ok {
+                        write_stdout(&format!(
+                            "{RED}Deploy: invalid target '{}' (expected host or user@host){RESET}{NEWLINE}",
+                            target
+                        ));
+                        return None;
+                    }
+                }
+
                 // Local rule operations: handle client-side, then rebuild menu
                 if handler_name == "add_rule" {
                     // Unified add: dispatch based on scope selector

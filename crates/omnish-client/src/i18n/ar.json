@@ -87,8 +87,7 @@
   "config.done": "تم",
   "config.clients": "العملاء",
   "config.add_client": "إضافة عميل",
-  "config.target_userhost": "الهدف (user@host)",
-  "config.ssh_user": "مستخدم SSH",
+  "config.target_host_or_userhost": "الهدف (host أو user@host)",
   "config.deploy": "نشر",
 
   "sandbox.scope_label": "النطاق: {scope}",

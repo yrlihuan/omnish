@@ -87,8 +87,7 @@
   "config.done": "完成",
   "config.clients": "客户端",
   "config.add_client": "添加客户端",
-  "config.target_userhost": "目标 (user@host)",
-  "config.ssh_user": "SSH 用户",
+  "config.target_host_or_userhost": "目标 (host 或 user@host)",
   "config.deploy": "部署",
 
   "sandbox.scope_label": "作用域: {scope}",

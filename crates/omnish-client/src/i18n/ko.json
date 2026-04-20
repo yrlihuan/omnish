@@ -87,8 +87,7 @@
   "config.done": "완료",
   "config.clients": "클라이언트",
   "config.add_client": "클라이언트 추가",
-  "config.target_userhost": "대상 (user@host)",
-  "config.ssh_user": "SSH 사용자",
+  "config.target_host_or_userhost": "대상 (host 또는 user@host)",
   "config.deploy": "배포",
 
   "sandbox.scope_label": "범위: {scope}",

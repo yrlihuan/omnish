@@ -18,21 +18,27 @@ const DEPLOY_TIMEOUT: Duration = Duration::from_secs(120);
 /// Max stderr lines to surface in the failure notice.
 const STDERR_LINE_LIMIT: usize = 5;
 
-/// Validate that `target` is roughly `user@host` (non-empty user, non-empty host,
-/// no embedded whitespace or shell metacharacters).
-pub fn parse_target(target: &str) -> Option<(String, String)> {
+/// Validate an ssh target. Accepts either `host` (user defaults come from the
+/// caller's ssh config / $USER) or `user@host`. Rejects empty segments and
+/// shell metacharacters so the string is safe to pass as a single argv word.
+pub fn parse_target(target: &str) -> Option<String> {
     let target = target.trim();
-    let (user, host) = target.split_once('@')?;
-    if user.is_empty() || host.is_empty() {
+    if target.is_empty() {
         return None;
     }
     let bad = |s: &str| s.chars().any(|c| {
         c.is_whitespace() || matches!(c, '\'' | '"' | '`' | '$' | '\\' | ';' | '|' | '&' | '<' | '>' | '(' | ')')
     });
-    if bad(user) || bad(host) {
-        return None;
+    match target.split_once('@') {
+        Some((user, host)) => {
+            if user.is_empty() || host.is_empty() { return None; }
+            if bad(user) || bad(host) { return None; }
+        }
+        None => {
+            if bad(target) { return None; }
+        }
     }
-    Some((user.to_string(), host.to_string()))
+    Some(target.to_string())
 }
 
 /// Spawn `deploy.sh` for the given target. Returns immediately; the result is
@@ -122,20 +128,24 @@ mod tests {
 
     #[test]
     fn parse_target_valid() {
-        assert_eq!(parse_target("alice@host1"), Some(("alice".into(), "host1".into())));
-        assert_eq!(parse_target("  bob@server.local  "), Some(("bob".into(), "server.local".into())));
-        assert_eq!(parse_target("u@1.2.3.4"), Some(("u".into(), "1.2.3.4".into())));
+        assert_eq!(parse_target("alice@host1"), Some("alice@host1".into()));
+        assert_eq!(parse_target("  bob@server.local  "), Some("bob@server.local".into()));
+        assert_eq!(parse_target("u@1.2.3.4"), Some("u@1.2.3.4".into()));
+        // Host-only: ssh defaults user from config / $USER.
+        assert_eq!(parse_target("host1"), Some("host1".into()));
+        assert_eq!(parse_target("  server.local  "), Some("server.local".into()));
     }
 
     #[test]
     fn parse_target_invalid() {
         assert_eq!(parse_target(""), None);
-        assert_eq!(parse_target("nohost"), None);
         assert_eq!(parse_target("@host"), None);
         assert_eq!(parse_target("user@"), None);
         assert_eq!(parse_target("user@host;rm -rf /"), None);
         assert_eq!(parse_target("u s@host"), None);
         assert_eq!(parse_target("user@ho st"), None);
         assert_eq!(parse_target("user@$(evil)"), None);
+        assert_eq!(parse_target("host;rm"), None);
+        assert_eq!(parse_target("ho st"), None);
     }
 }

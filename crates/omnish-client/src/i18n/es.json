@@ -87,8 +87,7 @@
   "config.done": "Listo",
   "config.clients": "Clientes",
   "config.add_client": "Agregar cliente",
-  "config.target_userhost": "Destino (user@host)",
-  "config.ssh_user": "Usuario SSH",
+  "config.target_host_or_userhost": "Destino (host o user@host)",
   "config.deploy": "Desplegar",
 
   "sandbox.scope_label": "Ámbito: {scope}",

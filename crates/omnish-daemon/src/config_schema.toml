@@ -87,7 +87,7 @@ handler = "add_client"
 
 [[items]]
 path = "general.clients.__add__.target"
-label = "Target (user@host)"
+label = "Target (host or user@host)"
 kind = "text"
 
 [[items]]

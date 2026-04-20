@@ -87,8 +87,7 @@
   "config.done": "Terminé",
   "config.clients": "Clients",
   "config.add_client": "Ajouter un client",
-  "config.target_userhost": "Cible (user@host)",
-  "config.ssh_user": "Utilisateur SSH",
+  "config.target_host_or_userhost": "Cible (host ou user@host)",
   "config.deploy": "Déployer",
 
   "sandbox.scope_label": "Portée : {scope}",
