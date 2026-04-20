@@ -39,10 +39,12 @@ fn cache_control_value(hint: CacheHint) -> Option<serde_json::Value> {
     }
 }
 
-/// Apply a cache hint to the last content block of a message JSON value.
+/// Apply a cache hint to a specific content block of a message JSON value.
+/// `pos` selects the block index (`None` = last block). Out-of-range `pos`
+/// falls back to the last block with a warning.
 /// Handles both string content (converted to array form) and array content.
 /// No-op if hint is `None` or content shape is empty.
-fn apply_cache_hint_to_message(msg: &mut serde_json::Value, hint: CacheHint) {
+fn apply_cache_hint_to_message(msg: &mut serde_json::Value, hint: CacheHint, pos: Option<usize>) {
     let Some(cc) = cache_control_value(hint) else { return };
     match msg.get("content").cloned() {
         Some(serde_json::Value::String(s)) => {
@@ -52,9 +54,19 @@ fn apply_cache_hint_to_message(msg: &mut serde_json::Value, hint: CacheHint) {
         }
         Some(serde_json::Value::Array(arr)) if !arr.is_empty() => {
             let mut new_arr = arr;
-            if let Some(last_block) = new_arr.last_mut() {
-                last_block["cache_control"] = cc;
-            }
+            let last = new_arr.len() - 1;
+            let idx = match pos {
+                None => last,
+                Some(p) if p <= last => p,
+                Some(p) => {
+                    tracing::warn!(
+                        "cache_pos {} out of range (content has {} blocks), falling back to last",
+                        p, new_arr.len()
+                    );
+                    last
+                }
+            };
+            new_arr[idx]["cache_control"] = cc;
             msg["content"] = serde_json::Value::Array(new_arr);
         }
         _ => {}
@@ -122,8 +134,12 @@ fn build_request_body(req: &LlmRequest, model: &str) -> serde_json::Value {
     // Apply per-message cache hints (after budget enforcement).
     if !req.extra_messages.is_empty() {
         let effective_hints = enforce_breakpoint_budget(req);
-        for (msg, hint) in messages.iter_mut().zip(effective_hints.iter().copied()) {
-            apply_cache_hint_to_message(msg, hint);
+        for ((msg, hint), tagged) in messages
+            .iter_mut()
+            .zip(effective_hints.iter().copied())
+            .zip(req.extra_messages.iter())
+        {
+            apply_cache_hint_to_message(msg, hint, tagged.cache_pos);
         }
     }
 
@@ -388,6 +404,7 @@ mod tests {
         req.extra_messages = vec![TaggedMessage {
             content: serde_json::json!({"role":"user","content":"hi"}),
             cache: CacheHint::None,
+            cache_pos: None,
         }];
         let body = build_request_body(&req, "test-model");
         let sys_block = &body["system"][0];
@@ -406,6 +423,7 @@ mod tests {
         req.extra_messages = vec![TaggedMessage {
             content: serde_json::json!({"role":"user","content":"hi"}),
             cache: CacheHint::None,
+            cache_pos: None,
         }];
         let body = build_request_body(&req, "test-model");
         let cc = &body["system"][0]["cache_control"];
@@ -423,6 +441,7 @@ mod tests {
         req.extra_messages = vec![TaggedMessage {
             content: serde_json::json!({"role":"user","content":"hi"}),
             cache: CacheHint::None,
+            cache_pos: None,
         }];
         let body = build_request_body(&req, "test-model");
         assert!(body["system"][0].get("cache_control").is_none());
@@ -435,10 +454,12 @@ mod tests {
             TaggedMessage {
                 content: serde_json::json!({"role":"user","content":"a"}),
                 cache: CacheHint::None,
+                cache_pos: None,
             },
             TaggedMessage {
                 content: serde_json::json!({"role":"user","content":"b"}),
                 cache: CacheHint::Long,
+                cache_pos: None,
             },
         ];
         let body = build_request_body(&req, "test-model");
@@ -470,6 +491,7 @@ mod tests {
         req.extra_messages = vec![TaggedMessage {
             content: serde_json::json!({"role":"user","content":"x"}),
             cache: CacheHint::None,
+            cache_pos: None,
         }];
         let body = build_request_body(&req, "test-model");
         let tools = body["tools"].as_array().unwrap();
@@ -493,6 +515,7 @@ mod tests {
         req.extra_messages = (0..5).map(|i| TaggedMessage {
             content: serde_json::json!({"role":"user","content": format!("m{}", i)}),
             cache: CacheHint::Long,
+            cache_pos: None,
         }).collect();
 
         let body = build_request_body(&req, "test-model");

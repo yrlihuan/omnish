@@ -117,6 +117,30 @@ pub async fn build_context_with_session(
     current_session_id: Option<&str>,
     min_current_session_detailed: usize,
 ) -> Result<String> {
+    let (history, detailed) = build_command_contexts_with_session(
+        strategy, commands, reader, session_hostnames,
+        detailed_count, max_line_width, current_session_id, min_current_session_detailed,
+    ).await?;
+    Ok(formatter.format(&history, &detailed))
+}
+
+/// Select and materialize `(history, detailed)` `CommandContext` lists.
+///
+/// Shared helper used by both `build_context_with_session` (which formats into a
+/// single string via `ContextFormatter::format`) and the completion sections
+/// path (which needs the raw context lists so it can split detailed commands
+/// by `warmup_cutoff_ts` before formatting).
+#[allow(clippy::too_many_arguments)]
+pub async fn build_command_contexts_with_session(
+    strategy: &dyn ContextStrategy,
+    commands: &[CommandRecord],
+    reader: &dyn StreamReader,
+    session_hostnames: &HashMap<String, String>,
+    detailed_count: usize,
+    max_line_width: usize,
+    current_session_id: Option<&str>,
+    min_current_session_detailed: usize,
+) -> Result<(Vec<CommandContext>, Vec<CommandContext>)> {
     let (history_cmds, detailed_cmds) = select_and_split(
         strategy, commands, detailed_count, current_session_id, min_current_session_detailed,
     ).await;
@@ -173,7 +197,7 @@ pub async fn build_context_with_session(
         });
     }
 
-    Ok(formatter.format(&history, &detailed))
+    Ok((history, detailed))
 }
 
 /// Given selected commands and an initial split point, adjust the split so that

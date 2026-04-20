@@ -32,8 +32,10 @@ fn tagged_message_default_hint_is_none() {
     let m = TaggedMessage {
         content: serde_json::json!({"role":"user","content":"hi"}),
         cache: CacheHint::default(),
+        cache_pos: None,
     };
     assert_eq!(m.cache, CacheHint::None);
+    assert_eq!(m.cache_pos, None);
 }
 
 #[test]

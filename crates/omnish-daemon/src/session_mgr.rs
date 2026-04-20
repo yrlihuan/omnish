@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use omnish_common::config::ContextConfig;
-use omnish_context::recent::{CompletionFormatter, GroupedFormatter, RecentCommands};
+use omnish_context::recent::{CompletionFormatter, CompletionSections, GroupedFormatter, RecentCommands};
 use omnish_context::StreamReader;
 use omnish_store::command::CommandRecord;
 use omnish_store::completion::CompletionRecord;
@@ -77,6 +77,13 @@ pub struct SessionManager {
     /// Between elastic resets this value is stable, so the History prefix never changes.
     /// `None` means the cutoff has not been established yet (first call).
     history_frozen_until: RwLock<Option<u64>>,
+    /// Frozen warmup cutoff within the `<recent>` block: commands with
+    /// `started_at <= this` are in the cacheable stable_prefix, while newer
+    /// commands go into the remainder. Advanced only at warmup time, so the
+    /// stable_prefix stays byte-identical between warmups, maximizing KV cache
+    /// hits across consecutive completion requests.
+    /// `None` means no warmup has occurred yet (first call).
+    recent_frozen_until: RwLock<Option<u64>>,
     /// Cached completion context from last build, used to detect prefix changes
     /// for KV cache warmup.
     last_completion_context: RwLock<String>,
@@ -168,6 +175,7 @@ impl SessionManager {
             completion_writer,
             session_writer,
             history_frozen_until: RwLock::new(None),
+            recent_frozen_until: RwLock::new(None),
             last_completion_context: RwLock::new(String::new()),
             sample_writer,
             last_sample_time: Mutex::new(None),
@@ -1295,6 +1303,30 @@ impl SessionManager {
         current_session_id: &str,
         max_context_chars: Option<usize>,
     ) -> Result<String> {
+        let sections = self
+            .build_completion_sections(current_session_id, max_context_chars)
+            .await?;
+        if sections.stable_prefix.is_empty() && sections.remainder.is_empty() {
+            Ok(String::new())
+        } else {
+            Ok(format!("{}{}", sections.stable_prefix, sections.remainder))
+        }
+    }
+
+    /// Build completion context split into a cacheable `stable_prefix` (history
+    /// + warmup-portion of recent) and a `remainder` (tail commands + closing
+    /// `</recent>` + system-reminder trailer).
+    ///
+    /// The `recent_frozen_until` timestamp controls the split: commands with
+    /// `started_at <= recent_frozen_until` go into stable_prefix; newer ones
+    /// into remainder. This value is advanced only at warmup time, so
+    /// stable_prefix stays byte-identical between warmups -> Anthropic's KV
+    /// cache hits across consecutive completion requests.
+    pub async fn build_completion_sections(
+        &self,
+        current_session_id: &str,
+        max_context_chars: Option<usize>,
+    ) -> Result<CompletionSections> {
         let cc = &self.context_config.completion;
 
         // Snapshot session Arcs under brief read lock
@@ -1329,7 +1361,7 @@ impl SessionManager {
         all_commands.sort_by_key(|c| c.started_at);
 
         if all_commands.is_empty() {
-            return Ok(String::new());
+            return Ok(CompletionSections::default());
         }
 
         // Filter meaningful (non-empty command_line) and sort by started_at
@@ -1339,12 +1371,12 @@ impl SessionManager {
             .collect();
 
         if meaningful.is_empty() {
-            return Ok(String::new());
+            return Ok(CompletionSections::default());
         }
 
         // --- Frozen history split ---
         // Between resets, history_frozen_until is stable, so the History section
-        // is byte-identical across consecutive requests → KV cache prefix reuse.
+        // is byte-identical across consecutive requests -> KV cache prefix reuse.
         let (selected_commands, detailed_count) = {
             let mut frozen = self.history_frozen_until.write().await;
 
@@ -1421,39 +1453,24 @@ impl SessionManager {
         ).with_live_cwd(live_cwd);
 
         let total = selected_commands.len();
-        let strategy = RecentCommands::new(total);
+        let warmup_cutoff = *self.recent_frozen_until.read().await;
 
-        // No character limit - build directly
-        if max_context_chars.is_none() {
-            return omnish_context::build_context_with_session(
-                &strategy,
-                &formatter,
-                &selected_commands,
-                &reader,
-                &hostnames,
-                detailed_count,
-                cc.max_line_width,
-                Some(current_session_id),
-                0,
-            )
-            .await;
-        }
-
-        // With character limit - reduce detailed first, then history
-        let max_chars = max_context_chars.unwrap();
+        // Render sections for the current (history, detailed) counts. When a
+        // character limit is set, reduce detailed first, then history, until
+        // it fits.
+        let max_chars = max_context_chars;
         let mut current_detailed = detailed_count;
         let mut current_history = total.saturating_sub(detailed_count);
 
         loop {
             let current_total = current_detailed + current_history;
             if current_total == 0 {
-                break;
+                return Ok(CompletionSections::default());
             }
 
             let strategy = RecentCommands::new(current_total);
-            let context = omnish_context::build_context_with_session(
+            let (hist_ctx, det_ctx) = omnish_context::build_command_contexts_with_session(
                 &strategy,
-                &formatter,
                 &selected_commands,
                 &reader,
                 &hostnames,
@@ -1463,9 +1480,18 @@ impl SessionManager {
                 0,
             )
             .await?;
+            let sections = formatter.format_sections(&hist_ctx, &det_ctx, warmup_cutoff);
 
-            if context.chars().count() <= max_chars {
-                return Ok(context);
+            let fits = match max_chars {
+                None => true,
+                Some(limit) => {
+                    let total_len = sections.stable_prefix.chars().count()
+                        + sections.remainder.chars().count();
+                    total_len <= limit
+                }
+            };
+            if fits {
+                return Ok(sections);
             }
 
             // Reduce detailed first to preserve history prefix stability
@@ -1476,26 +1502,53 @@ impl SessionManager {
                 let reduction = (current_history / 4).max(1);
                 current_history = current_history.saturating_sub(reduction);
             } else {
-                return Ok(context);
+                return Ok(sections);
             }
         }
-
-        Ok(String::new())
     }
 
     /// Build completion context and compare with cached version.
     /// Returns `Some(new_context)` if the prefix changed enough to warrant a KV cache warmup
-    /// (shared prefix ratio < 0.95), `None` otherwise.
+    /// (shared prefix ratio < 0.66), `None` otherwise.
     /// Always updates the cached context.
     pub async fn check_and_warmup_context(
         &self,
         session_id: &str,
         max_context_chars: Option<usize>,
     ) -> Result<Option<String>> {
-        let new_context = self.build_completion_context(session_id, max_context_chars).await?;
+        self.check_and_warmup_sections(session_id, max_context_chars)
+            .await
+            .map(|opt| opt.map(|s| format!("{}{}", s.stable_prefix, s.remainder)))
+    }
+
+    /// Sections-aware variant of `check_and_warmup_context`.
+    ///
+    /// Returns `Some(sections)` when the completion prefix has drifted enough
+    /// to warrant a warmup request. Before returning, advances
+    /// `recent_frozen_until` to the timestamp of the most recent command and
+    /// rebuilds the sections so the returned `stable_prefix` sweeps in all
+    /// current recent commands. Subsequent completion requests that reuse the
+    /// same `recent_frozen_until` then see a byte-identical `stable_prefix`,
+    /// so Anthropic's KV cache hits on the cached breakpoint.
+    pub async fn check_and_warmup_sections(
+        &self,
+        session_id: &str,
+        max_context_chars: Option<usize>,
+    ) -> Result<Option<CompletionSections>> {
+        let new_sections = self
+            .build_completion_sections(session_id, max_context_chars)
+            .await?;
+        let new_context = if new_sections.stable_prefix.is_empty()
+            && new_sections.remainder.is_empty()
+        {
+            String::new()
+        } else {
+            format!("{}{}", new_sections.stable_prefix, new_sections.remainder)
+        };
 
         let mut cached = self.last_completion_context.write().await;
         let old_context = std::mem::replace(&mut *cached, new_context.clone());
+        drop(cached);
 
         if old_context.is_empty() {
             // First build - no previous context to compare against
@@ -1509,17 +1562,66 @@ impl SessionManager {
             .count();
         let ratio = common_prefix_len as f64 / old_context.len() as f64;
 
-        if ratio < 0.66 {
-            tracing::debug!(
-                "KV cache warmup needed: prefix ratio={:.3} (common={}/old={})",
-                ratio,
-                common_prefix_len,
-                old_context.len()
-            );
-            Ok(Some(new_context))
-        } else {
-            Ok(None)
+        if ratio >= 0.66 {
+            return Ok(None);
         }
+
+        tracing::debug!(
+            "KV cache warmup needed: prefix ratio={:.3} (common={}/old={})",
+            ratio,
+            common_prefix_len,
+            old_context.len()
+        );
+
+        // Advance recent_frozen_until to the latest command's started_at so the
+        // warmup's stable_prefix sweeps in all current recent commands. After
+        // this, consecutive completion requests reuse the same cutoff and see
+        // a byte-identical stable_prefix.
+        let latest_ts = self.latest_command_started_at().await;
+        if let Some(ts) = latest_ts {
+            let mut frozen = self.recent_frozen_until.write().await;
+            *frozen = Some(ts);
+        }
+
+        // Rebuild sections with the advanced cutoff so the returned payload
+        // matches what subsequent requests will send.
+        let rebuilt = self
+            .build_completion_sections(session_id, max_context_chars)
+            .await?;
+
+        // Keep last_completion_context in sync with the rebuilt form so the
+        // next ratio comparison starts from the new baseline.
+        {
+            let mut cached = self.last_completion_context.write().await;
+            *cached = if rebuilt.stable_prefix.is_empty() && rebuilt.remainder.is_empty() {
+                String::new()
+            } else {
+                format!("{}{}", rebuilt.stable_prefix, rebuilt.remainder)
+            };
+        }
+
+        Ok(Some(rebuilt))
+    }
+
+    /// Return the maximum `started_at` across all registered sessions, or
+    /// `None` if no commands exist.
+    async fn latest_command_started_at(&self) -> Option<u64> {
+        let session_entries: Vec<_> = {
+            let sessions = self.sessions.read().await;
+            sessions.values().cloned().collect()
+        };
+        let mut latest: Option<u64> = None;
+        for session in &session_entries {
+            let commands = session.commands.read().await;
+            if let Some(last) = commands.last() {
+                let ts = last.started_at;
+                latest = Some(match latest {
+                    Some(prev) => prev.max(ts),
+                    None => ts,
+                });
+            }
+        }
+        latest
     }
 
     /// Get the last completion context (read-only) for logging/analytics purposes.

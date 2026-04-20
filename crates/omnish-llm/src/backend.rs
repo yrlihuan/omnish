@@ -33,10 +33,24 @@ pub struct CachedText {
 
 /// A message wrapped with a cache hint (used for `LlmRequest.extra_messages`).
 /// `content` is raw Anthropic-format JSON (canonical internal format).
-#[derive(Debug, Clone)]
+///
+/// `cache_pos` selects which content block inside the message receives the
+/// `cache_control` marker:
+/// - `None` (default): last block, preserves legacy behavior
+/// - `Some(n)`: the n-th block (0-indexed); out-of-range falls back to last with a warning
+#[derive(Debug, Clone, Default)]
 pub struct TaggedMessage {
     pub content: serde_json::Value,
     pub cache: CacheHint,
+    pub cache_pos: Option<usize>,
+}
+
+impl TaggedMessage {
+    /// Convenience constructor matching the pre-`cache_pos` two-field shape.
+    /// Leaves `cache_pos` as `None` (marks the last block).
+    pub fn new(content: serde_json::Value, cache: CacheHint) -> Self {
+        Self { content, cache, cache_pos: None }
+    }
 }
 
 /// Use case for LLM requests - determines which model to use

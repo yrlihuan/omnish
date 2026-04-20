@@ -19,6 +19,7 @@ fn msg(text: &str) -> TaggedMessage {
     TaggedMessage {
         content: serde_json::json!({"role":"user","content":text}),
         cache: CacheHint::Long, // Pre-set to verify reset
+        cache_pos: None,
     }
 }
 

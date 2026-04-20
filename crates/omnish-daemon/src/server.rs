@@ -1276,10 +1276,10 @@ async fn handle_chat_message(
     // Wrap raw JSON messages in TaggedMessage carriers (cache hints set in Task 6).
     let extra_messages: Vec<omnish_llm::backend::TaggedMessage> = extra_messages
         .into_iter()
-        .map(|content| omnish_llm::backend::TaggedMessage {
+        .map(|content| omnish_llm::backend::TaggedMessage::new(
             content,
-            cache: omnish_llm::backend::CacheHint::None,
-        })
+            omnish_llm::backend::CacheHint::None,
+        ))
         .collect();
 
     let llm_req = LlmRequest {
@@ -1421,13 +1421,13 @@ async fn handle_tool_result(
             })
         })
         .collect();
-    state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
-        content: serde_json::json!({
+    state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage::new(
+        serde_json::json!({
             "role": "user",
             "content": result_content,
         }),
-        cache: omnish_llm::backend::CacheHint::None,
-    });
+        omnish_llm::backend::CacheHint::None,
+    ));
 
     // Clear pending state for next iteration
     state.pending_tool_calls.clear();
@@ -1487,13 +1487,13 @@ fn persist_unsaved_sanitized(
             })
         }).collect();
 
-        state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
-            content: serde_json::json!({
+        state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage::new(
+            serde_json::json!({
                 "role": "user",
                 "content": result_content,
             }),
-            cache: omnish_llm::backend::CacheHint::None,
-        });
+            omnish_llm::backend::CacheHint::None,
+        ));
     }
 
     persist_unsaved(state, conv_mgr, &[
@@ -1647,13 +1647,13 @@ async fn run_agent_loop(
                         .iter()
                         .map(content_block_to_json)
                         .collect();
-                    state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
-                        content: serde_json::json!({
+                    state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage::new(
+                        serde_json::json!({
                             "role": "assistant",
                             "content": assistant_content,
                         }),
-                        cache: omnish_llm::backend::CacheHint::None,
-                    });
+                        omnish_llm::backend::CacheHint::None,
+                    ));
 
                     // Send LLM's text blocks to client immediately
                     for block in &response.content {
@@ -1874,13 +1874,13 @@ async fn run_agent_loop(
                                 }));
                             }
                         }
-                        state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
-                            content: serde_json::json!({
+                        state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage::new(
+                            serde_json::json!({
                                 "role": "user",
                                 "content": result_content,
                             }),
-                            cache: omnish_llm::backend::CacheHint::None,
-                        });
+                            omnish_llm::backend::CacheHint::None,
+                        ));
                         persist_unsaved(&mut state, conv_mgr, &[
                             serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
                         ]);
@@ -1914,13 +1914,13 @@ async fn run_agent_loop(
                             })
                         })
                         .collect();
-                    state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
-                        content: serde_json::json!({
+                    state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage::new(
+                        serde_json::json!({
                             "role": "user",
                             "content": result_content,
                         }),
-                        cache: omnish_llm::backend::CacheHint::None,
-                    });
+                        omnish_llm::backend::CacheHint::None,
+                    ));
 
                     continue;
                 }
@@ -1943,10 +1943,10 @@ async fn run_agent_loop(
                 } else {
                     serde_json::json!({ "role": "assistant", "content": text })
                 };
-                state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
-                    content: assistant_msg,
-                    cache: omnish_llm::backend::CacheHint::None,
-                });
+                state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage::new(
+                    assistant_msg,
+                    omnish_llm::backend::CacheHint::None,
+                ));
                 // Store new messages without system-reminder in user message
                 persist_unsaved(&mut state, conv_mgr, &[]);
                 update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
@@ -1993,13 +1993,13 @@ async fn run_agent_loop(
 
                 // Persist a short event marker (like the cancel paths) so the
                 // LLM knows the exchange was interrupted without bloating context.
-                state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
-                    content: serde_json::json!({
+                state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage::new(
+                    serde_json::json!({
                         "role": "assistant",
                         "content": "<event>api error</event>",
                     }),
-                    cache: omnish_llm::backend::CacheHint::None,
-                });
+                    omnish_llm::backend::CacheHint::None,
+                ));
                 persist_unsaved(&mut state, conv_mgr, &[]);
                 update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
 
@@ -2020,13 +2020,13 @@ async fn run_agent_loop(
         state.cm.thread_id
     );
     let text = "(Agent reached maximum tool call limit)".to_string();
-    state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage {
-        content: serde_json::json!({
+    state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage::new(
+        serde_json::json!({
             "role": "assistant",
             "content": text,
         }),
-        cache: omnish_llm::backend::CacheHint::None,
-    });
+        omnish_llm::backend::CacheHint::None,
+    ));
     persist_unsaved(&mut state, conv_mgr, &[]);
     update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
     let _ = tx.send(Message::ChatResponse(ChatResponse {
@@ -2045,8 +2045,8 @@ async fn try_warmup_kv_cache(
 
     let max_chars = backend.get_max_content_chars(UseCase::Completion);
 
-    let new_context = match mgr.check_and_warmup_context(session_id, max_chars).await {
-        Ok(Some(ctx)) => ctx,
+    let sections = match mgr.check_and_warmup_sections(session_id, max_chars).await {
+        Ok(Some(s)) => s,
         Ok(None) => return, // prefix stable, no warmup needed
         Err(e) => {
             tracing::debug!("KV cache warmup context check failed: {}", e);
@@ -2056,9 +2056,10 @@ async fn try_warmup_kv_cache(
 
     let (system_prompt, user_input) =
         omnish_llm::template::build_completion_parts("", 0);
+    let extra_messages = build_completion_extra_messages(&sections, &user_input);
     let req = LlmRequest {
-        context: new_context,
-        query: Some(user_input),
+        context: String::new(),
+        query: None,
         trigger: TriggerType::Manual,
         session_ids: vec![session_id.to_string()],
         use_case: UseCase::Completion,
@@ -2069,13 +2070,48 @@ async fn try_warmup_kv_cache(
         }),
         enable_thinking: Some(false), // Disable thinking for completion
         tools: vec![],
-        extra_messages: vec![],
+        extra_messages,
     };
 
     match backend.complete(&req).await {
         Ok(_) => tracing::debug!("KV cache warmup completed for session {}", session_id),
         Err(e) => tracing::debug!("KV cache warmup failed for session {}: {}", session_id, e),
     }
+}
+
+/// Build the user message's content blocks for a completion-style request.
+///
+/// Layout: `[stable_prefix, remainder, query]` with `cache_control` on the
+/// stable_prefix block (cache_pos=0). Between warmups, Block 0 is byte-stable
+/// so Anthropic's KV cache hits on the cached breakpoint.
+fn build_completion_extra_messages(
+    sections: &omnish_context::recent::CompletionSections,
+    query: &str,
+) -> Vec<omnish_llm::backend::TaggedMessage> {
+    let mut blocks: Vec<serde_json::Value> = Vec::new();
+    blocks.push(serde_json::json!({
+        "type": "text",
+        "text": sections.stable_prefix,
+    }));
+    if !sections.remainder.is_empty() {
+        blocks.push(serde_json::json!({
+            "type": "text",
+            "text": sections.remainder,
+        }));
+    }
+    blocks.push(serde_json::json!({
+        "type": "text",
+        "text": query,
+    }));
+    let content = serde_json::json!({
+        "role": "user",
+        "content": blocks,
+    });
+    vec![omnish_llm::backend::TaggedMessage {
+        content,
+        cache: omnish_llm::backend::CacheHint::Long,
+        cache_pos: Some(0),
+    }]
 }
 
 /// Resolve context for chat requests (without history, only recent commands with output).
@@ -2925,7 +2961,14 @@ async fn handle_completion_request(
     // Get previous context for prefix match ratio calculation
     let last_context = mgr.get_last_completion_context().await;
 
-    let context = mgr.build_completion_context(&req.session_id, max_context_chars).await?;
+    let sections = mgr
+        .build_completion_sections(&req.session_id, max_context_chars)
+        .await?;
+    let context = if sections.stable_prefix.is_empty() && sections.remainder.is_empty() {
+        String::new()
+    } else {
+        format!("{}{}", sections.stable_prefix, sections.remainder)
+    };
 
     // Log prefix match ratio with previous completion request
     if !last_context.is_empty() {
@@ -2948,15 +2991,16 @@ async fn handle_completion_request(
     let (system_prompt, user_input) =
         omnish_llm::template::build_completion_parts(&req.input, req.cursor_pos);
     let context_for_sample = context.clone();
-    let prompt_for_sample = format!("{}\n\n{}\n\n{}", system_prompt, context_for_sample, user_input);
+    let prompt_for_sample = format!("{}\n\n{}\n\n{}", system_prompt, context, user_input);
 
     let prompt_words = system_prompt.split_whitespace().count()
         + context.split_whitespace().count()
         + user_input.split_whitespace().count();
 
+    let extra_messages = build_completion_extra_messages(&sections, &user_input);
     let llm_req = LlmRequest {
-        context,
-        query: Some(user_input),
+        context: String::new(),
+        query: None,
         trigger: TriggerType::Manual,
         session_ids: vec![req.session_id.clone()],
         use_case,
@@ -2967,7 +3011,7 @@ async fn handle_completion_request(
         }),
         enable_thinking: Some(false), // Disable thinking for completion requests
         tools: vec![],
-        extra_messages: vec![],
+        extra_messages,
     };
     tracing::info!(
         "Completion LLM request started (session={}, sequence_id={}, input_len={}, prompt_words={})",

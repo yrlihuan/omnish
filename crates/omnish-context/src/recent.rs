@@ -338,6 +338,23 @@ impl ContextFormatter for InterleavedFormatter {
     }
 }
 
+/// Split completion context into a cacheable prefix and a non-cacheable remainder.
+///
+/// Layout when rendered: `{stable_prefix}{remainder}{query_block}`. The stable
+/// prefix ends mid-<recent> (no closing tag); the remainder starts with the
+/// tail commands (if any) followed by the closing `</recent>` and the trailer.
+/// This lets Anthropic's `cache_control` marker sit at the end of the prefix
+/// block while new commands append only to the remainder.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CompletionSections {
+    /// Cacheable prefix: `<history>...</history>\n\n<recent>\n{warmup_cmds}\n`.
+    /// Byte-stable between warmups, so the KV cache for tokens ending here is reusable.
+    pub stable_prefix: String,
+    /// Remainder: `{tail_cmds}\n</recent>\n\n<system-reminder>...</system-reminder>`.
+    /// Differs per request (new commands, cwd changes). Not cached.
+    pub remainder: String,
+}
+
 /// Formats commands for completion context, optimized for KV cache hit rate.
 /// All detailed commands are interleaved by `started_at` with uniform labels
 /// (no current-session marker), so new commands always append at the end and
@@ -348,7 +365,7 @@ pub struct CompletionFormatter {
     tail_lines: usize,
     /// Maximum characters per command output. If exceeded, output is truncated.
     max_command_output_chars: usize,
-    /// Live shell cwd from session probe (overrides command record cwd for current_path).
+    /// Live shell cwd from session probe (overrides current_path derived from commands).
     live_cwd: Option<String>,
 }
 
@@ -372,74 +389,138 @@ impl CompletionFormatter {
         self.live_cwd = cwd;
         self
     }
-}
 
-impl ContextFormatter for CompletionFormatter {
-    fn format(&self, history: &[CommandContext], detailed: &[CommandContext]) -> String {
+    /// Render a single detailed command into a line (plus output + separator).
+    fn render_detailed(&self, cmd: &CommandContext) -> String {
+        let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
+        let max_lines = self.head_lines + self.tail_lines;
+        let output = truncate_lines(
+            &cmd.output, max_lines, self.head_lines, self.tail_lines,
+            Some(self.max_command_output_chars),
+        );
+        let failed_tag = match cmd.exit_code {
+            Some(code) if code != 0 => format!("  [FAILED: {}]", code),
+            _ => String::new(),
+        };
+        let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
+        let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
+        if output.is_empty() {
+            format!("{}$ {}{}\n--------------------", prefix_display, cmd_line, failed_tag)
+        } else {
+            format!("{}$ {}{}\n{}\n--------------------", prefix_display, cmd_line, failed_tag, output)
+        }
+    }
+
+    /// Like `format` but splits the output into a cacheable prefix and a remainder.
+    /// `warmup_cutoff_ts`:
+    /// - `None`: treat all detailed commands as warmup (tail is empty).
+    /// - `Some(ts)`: commands with `started_at <= ts` go into warmup; `> ts` into tail.
+    ///
+    /// The split point sits between the last warmup command and the first tail
+    /// command, so `stable_prefix` ends with the newline after the last warmup
+    /// line (no closing `</recent>` tag) and `remainder` starts with either the
+    /// tail commands or the closing tag.
+    pub fn format_sections(
+        &self,
+        history: &[CommandContext],
+        detailed: &[CommandContext],
+        warmup_cutoff_ts: Option<u64>,
+    ) -> CompletionSections {
         if history.is_empty() && detailed.is_empty() {
-            return String::new();
+            return CompletionSections::default();
         }
 
-        let mut sections = Vec::new();
+        // Sort detailed by started_at (format() does the same).
+        let mut sorted: Vec<&CommandContext> = detailed.iter().collect();
+        sorted.sort_by_key(|c| c.started_at);
 
-        // History section: command-line only
-        if !history.is_empty() {
-            let mut history_lines = vec!["<history>".to_string()];
+        // Split into warmup vs tail by cutoff.
+        let split_at = match warmup_cutoff_ts {
+            Some(ts) => sorted.iter().take_while(|c| c.started_at <= ts).count(),
+            None => sorted.len(),
+        };
+        let (warmup, tail) = sorted.split_at(split_at);
+
+        // History block (command-line only).
+        let history_block = if history.is_empty() {
+            String::new()
+        } else {
+            let mut lines = vec!["<history>".to_string()];
             for cmd in history {
                 let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
                 let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
                 let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
-                history_lines.push(format!("{}$ {}", prefix_display, cmd_line));
+                lines.push(format!("{}$ {}", prefix_display, cmd_line));
             }
-            history_lines.push("</history>".to_string());
-            sections.push(history_lines.join("\n"));
+            lines.push("</history>".to_string());
+            lines.join("\n")
+        };
+
+        // Current path: live cwd has priority, otherwise the last current-session command's cwd.
+        let current_path = self.live_cwd.as_deref().unwrap_or_else(|| {
+            detailed.iter().rev()
+                .find(|c| c.session_id == self.current_session_id)
+                .and_then(|c| c.cwd.as_deref())
+                .unwrap_or("")
+        });
+        let trailer = if current_path.is_empty() {
+            String::new()
+        } else {
+            format!("<system-reminder>\n# workingDirectory\n{}\n</system-reminder>", current_path)
+        };
+
+        // Build stable_prefix: history + opening <recent> + warmup commands.
+        // Ends with trailing newline after last warmup line so block 0 is byte-stable
+        // regardless of whether tail is empty or not.
+        let mut stable = String::new();
+        if !history_block.is_empty() {
+            stable.push_str(&history_block);
         }
-
-        // Get current path: prefer live cwd from session probe, fall back to last command's cwd
-        let current_path = self.live_cwd.as_deref()
-            .unwrap_or_else(|| {
-                detailed.iter()
-                    .rev()
-                    .find(|c| c.session_id == self.current_session_id)
-                    .and_then(|c| c.cwd.as_deref())
-                    .unwrap_or("")
-            });
-
-        // Recent section: all detailed commands interleaved by time
         if !detailed.is_empty() {
-            let mut sorted: Vec<&CommandContext> = detailed.iter().collect();
-            sorted.sort_by_key(|c| c.started_at);
-
-            let mut recent_lines = vec!["<recent>".to_string()];
-            for cmd in &sorted {
-                let cmd_line = cmd.command_line.as_deref().unwrap_or("(unknown)");
-                let max_lines = self.head_lines + self.tail_lines;
-                let output = truncate_lines(&cmd.output, max_lines, self.head_lines, self.tail_lines, Some(self.max_command_output_chars));
-
-                let failed_tag = match cmd.exit_code {
-                    Some(code) if code != 0 => format!("  [FAILED: {}]", code),
-                    _ => String::new(),
-                };
-                let prefix = format_command_prefix(&cmd.hostname, &cmd.cwd);
-                let prefix_display = if prefix.is_empty() { String::new() } else { format!("{} ", prefix) };
-
-                if output.is_empty() {
-                    recent_lines.push(format!("{}$ {}{}\n--------------------", prefix_display, cmd_line, failed_tag));
-                } else {
-                    recent_lines.push(format!("{}$ {}{}\n{}\n--------------------", prefix_display, cmd_line, failed_tag, output));
-                }
+            if !stable.is_empty() {
+                stable.push_str("\n\n");
             }
-
-            recent_lines.push("</recent>".to_string());
-            sections.push(recent_lines.join("\n"));
+            stable.push_str("<recent>\n");
+            for cmd in warmup {
+                stable.push_str(&self.render_detailed(cmd));
+                stable.push('\n');
+            }
         }
 
-        // Current path in system-reminder (models trained on this convention respond better)
-        if !current_path.is_empty() {
-            sections.push(format!("<system-reminder>\n# workingDirectory\n{}\n</system-reminder>", current_path));
+        // Build remainder: tail commands + closing </recent> + trailer.
+        let mut remainder = String::new();
+        if !detailed.is_empty() {
+            for cmd in tail {
+                remainder.push_str(&self.render_detailed(cmd));
+                remainder.push('\n');
+            }
+            remainder.push_str("</recent>");
+        }
+        if !trailer.is_empty() {
+            if !remainder.is_empty() {
+                remainder.push_str("\n\n");
+            } else if !stable.is_empty() {
+                // No <recent> block at all but we still need a separator
+                // between history and trailer to match the legacy layout.
+                remainder.push_str("\n\n");
+            }
+            remainder.push_str(&trailer);
         }
 
-        sections.join("\n\n")
+        CompletionSections { stable_prefix: stable, remainder }
+    }
+}
+
+impl ContextFormatter for CompletionFormatter {
+    fn format(&self, history: &[CommandContext], detailed: &[CommandContext]) -> String {
+        let s = self.format_sections(history, detailed, None);
+        // When tail is empty, stable_prefix ends with "\n" after the last warmup line,
+        // and remainder starts with "</recent>..." - concat yields the legacy layout.
+        if s.stable_prefix.is_empty() && s.remainder.is_empty() {
+            String::new()
+        } else {
+            format!("{}{}", s.stable_prefix, s.remainder)
+        }
     }
 }
 
@@ -1184,5 +1265,85 @@ mod tests {
         let result = formatter.format(&[], &detailed);
         // Output should be truncated to 100 chars
         assert!(result.len() < 200, "Output should be truncated to 100 chars");
+    }
+
+    // --- format_sections tests ---
+
+    #[test]
+    fn test_format_sections_cutoff_none_all_in_stable_prefix() {
+        // When warmup_cutoff_ts is None, all detailed go into stable_prefix and
+        // remainder only contains the closing tag + trailer.
+        let detailed = vec![
+            make_ctx("sess-a", "a", 1000, "oa"),
+            make_ctx("sess-a", "b", 2000, "ob"),
+        ];
+        let formatter = CompletionFormatter::new("sess-a", 10, 10);
+        let s = formatter.format_sections(&[], &detailed, None);
+        assert!(s.stable_prefix.contains("$ a"), "stable_prefix should contain 'a'");
+        assert!(s.stable_prefix.contains("$ b"), "stable_prefix should contain 'b'");
+        assert!(!s.remainder.contains("$ a"), "remainder must not duplicate 'a'");
+        assert!(!s.remainder.contains("$ b"), "remainder must not duplicate 'b'");
+        assert!(s.remainder.starts_with("</recent>"), "remainder starts with closing tag: {:?}", s.remainder);
+    }
+
+    #[test]
+    fn test_format_sections_split_by_cutoff() {
+        // Commands <= cutoff go into stable_prefix, > cutoff into remainder.
+        let detailed = vec![
+            make_ctx("sess-a", "a", 1000, "oa"),
+            make_ctx("sess-a", "b", 2000, "ob"),
+            make_ctx("sess-a", "c", 3000, "oc"),
+        ];
+        let formatter = CompletionFormatter::new("sess-a", 10, 10);
+        let s = formatter.format_sections(&[], &detailed, Some(2000));
+        assert!(s.stable_prefix.contains("$ a"));
+        assert!(s.stable_prefix.contains("$ b"));
+        assert!(!s.stable_prefix.contains("$ c"), "'c' should not be in stable_prefix");
+        assert!(s.remainder.contains("$ c"));
+        assert!(s.remainder.contains("</recent>"));
+    }
+
+    #[test]
+    fn test_format_sections_stable_prefix_byte_stable_across_new_commands() {
+        // Core invariant: adding commands with started_at > cutoff must not
+        // change stable_prefix - they only appear in remainder.
+        let detailed_a = vec![
+            make_ctx("sess-a", "a", 1000, "oa"),
+            make_ctx("sess-a", "b", 2000, "ob"),
+        ];
+        let detailed_b = vec![
+            make_ctx("sess-a", "a", 1000, "oa"),
+            make_ctx("sess-a", "b", 2000, "ob"),
+            make_ctx("sess-a", "c", 3000, "oc"),
+        ];
+
+        let formatter = CompletionFormatter::new("sess-a", 10, 10);
+        let s_a = formatter.format_sections(&[], &detailed_a, Some(2000));
+        let s_b = formatter.format_sections(&[], &detailed_b, Some(2000));
+        assert_eq!(s_a.stable_prefix, s_b.stable_prefix,
+            "stable_prefix must be byte-identical between requests");
+        assert!(s_b.remainder.contains("$ c"), "new command appears in remainder");
+    }
+
+    #[test]
+    fn test_format_sections_concat_equals_format() {
+        // format() must equal stable_prefix + remainder so legacy callers are unaffected.
+        let history = vec![make_ctx("sess-a", "cd /tmp", 500, "")];
+        let detailed = vec![
+            make_ctx("sess-a", "ls", 1000, "file.txt"),
+            make_ctx("sess-a", "pwd", 2000, "/tmp"),
+        ];
+        let formatter = CompletionFormatter::new("sess-a", 10, 10);
+        let legacy = formatter.format(&history, &detailed);
+        let s = formatter.format_sections(&history, &detailed, None);
+        assert_eq!(legacy, format!("{}{}", s.stable_prefix, s.remainder));
+    }
+
+    #[test]
+    fn test_format_sections_empty_history_and_detailed() {
+        let formatter = CompletionFormatter::new("sess-a", 10, 10);
+        let s = formatter.format_sections(&[], &[], None);
+        assert!(s.stable_prefix.is_empty());
+        assert!(s.remainder.is_empty());
     }
 }
