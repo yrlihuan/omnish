@@ -880,6 +880,12 @@ async fn main() -> Result<()> {
                             &osc133_detector, &last_readline_content, &col_tracker,
                             &onboarded, locked, &config, Arc::clone(&sandbox_state),
                         ).await;
+                        // Drain stale completion responses accumulated during chat
+                        shell_completer.clear();
+                        pending_completion_responses.clear();
+                        readline_triggered_for_completions = false;
+                        readline_trigger_time = None;
+                        while completion_rx.try_recv().is_ok() {}
                         if let chat_session::ChatExitAction::Lock(lock) = exit_action {
                             handle_lock(&mut proxy, &mut master_fd, &mut locked, lock, &shell, &shell_args_ref, &session_id);
                         }
@@ -1079,6 +1085,12 @@ async fn main() -> Result<()> {
                             &osc133_detector, &last_readline_content, &col_tracker,
                             &onboarded, locked, &config, Arc::clone(&sandbox_state),
                         ).await;
+                        // Drain stale completion responses accumulated during chat
+                        shell_completer.clear();
+                        pending_completion_responses.clear();
+                        readline_triggered_for_completions = false;
+                        readline_trigger_time = None;
+                        while completion_rx.try_recv().is_ok() {}
                         if let chat_session::ChatExitAction::Lock(lock) = exit_action {
                             handle_lock(&mut proxy, &mut master_fd, &mut locked, lock, &shell, &shell_args_ref, &session_id);
                         }
@@ -1098,6 +1110,12 @@ async fn main() -> Result<()> {
                             &osc133_detector, &last_readline_content, &col_tracker,
                             &onboarded, locked, &config, Arc::clone(&sandbox_state),
                         ).await;
+                        // Drain stale completion responses accumulated during chat
+                        shell_completer.clear();
+                        pending_completion_responses.clear();
+                        readline_triggered_for_completions = false;
+                        readline_trigger_time = None;
+                        while completion_rx.try_recv().is_ok() {}
                         if let chat_session::ChatExitAction::Lock(lock) = exit_action {
                             handle_lock(&mut proxy, &mut master_fd, &mut locked, lock, &shell, &shell_args_ref, &session_id);
                         }
