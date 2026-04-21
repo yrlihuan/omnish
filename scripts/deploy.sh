@@ -38,9 +38,11 @@ CANDIDATES=()
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
-warn()  { printf '\033[1;33mWARN:\033[0m %s\n' "$*"; }
+warn()  { printf '\033[1;33mWARN:\033[0m %s\n' "$*" >&2; }
 error() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 status_marker() { printf 'OMNISH_DEPLOY_STATUS: %s\n' "$*" >&2; }
+
+FAILED_COUNT=0
 
 parse_daemon_addr() {
     [[ -z "$DAEMON_ADDR_RAW" ]] && return 0
@@ -181,9 +183,13 @@ for client in "${CLIENTS[@]}"; do
     REMOTE_HOME="~/.omnish"
 
     # Ensure remote directories exist and remove old binaries (running binaries can't be overwritten)
-    ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$client" \
-        "mkdir -p ${REMOTE_HOME}/bin ${REMOTE_HOME}/tls && rm -f ${REMOTE_HOME}/bin/omnish ${REMOTE_HOME}/bin/omnish-plugin" 2>/dev/null \
-        || { warn "Cannot connect to ${client}, skipping"; continue; }
+    if ! ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$client" \
+            "mkdir -p ${REMOTE_HOME}/bin ${REMOTE_HOME}/tls && rm -f ${REMOTE_HOME}/bin/omnish ${REMOTE_HOME}/bin/omnish-plugin" 2>/dev/null; then
+        warn "Cannot connect to ${client}, skipping"
+        status_marker "connect_failed ${client}"
+        FAILED_COUNT=$((FAILED_COUNT + 1))
+        continue
+    fi
 
     if scp -q -o BatchMode=yes "${BIN_DIR}/omnish" "${BIN_DIR}/omnish-plugin" "${client}:${REMOTE_HOME}/bin/" 2>/dev/null; then
         scp -q -o BatchMode=yes "${OMNISH_DIR}/tls/cert.pem" "${client}:${REMOTE_HOME}/tls/" 2>/dev/null || true
@@ -192,7 +198,13 @@ for client in "${CLIENTS[@]}"; do
         info "Deployed to ${client}"
     else
         warn "Failed to deploy to ${client}"
+        status_marker "scp_failed ${client}"
+        FAILED_COUNT=$((FAILED_COUNT + 1))
     fi
 done
 
+if (( FAILED_COUNT > 0 )); then
+    info "Deploy finished with ${FAILED_COUNT} failure(s)"
+    exit 1
+fi
 info "Deploy complete"

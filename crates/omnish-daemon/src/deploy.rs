@@ -169,11 +169,13 @@ async fn run_deploy(omnish_dir: &Path, target: &str, listen_addr: &str) -> Deplo
     let (stderr_msg, status_kind) = stderr_task.await.unwrap_or_default();
 
     if !status.success() {
-        return if !stderr_msg.is_empty() {
-            DeployOutcome::Failed(stderr_msg)
-        } else {
-            DeployOutcome::Failed(format!("exit status {}", status))
+        let msg = match status_kind.as_deref() {
+            Some("connect_failed") => "could not connect".to_string(),
+            Some("scp_failed") => "scp failed".to_string(),
+            _ if !stderr_msg.is_empty() => stderr_msg,
+            _ => format!("exit status {}", status),
         };
+        return DeployOutcome::Failed(msg);
     }
     match status_kind.as_deref() {
         Some("probe_failed") => DeployOutcome::ProbeFailed,
