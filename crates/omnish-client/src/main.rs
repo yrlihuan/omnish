@@ -540,7 +540,8 @@ async fn main() -> Result<()> {
     // Connect to daemon (graceful degradation)
     let pending_buffer: MessageBuffer = Arc::new(Mutex::new(VecDeque::new()));
     let update_needed = Arc::new(AtomicBool::new(false));
-    let daemon_conn = connect_daemon(&daemon_addr, &session_id, parent_session_id, proxy.child_pid() as u32, pending_buffer.clone(), update_needed.clone()).await;
+    let client_addr_opt = config.client_addr.clone();
+    let daemon_conn = connect_daemon(&daemon_addr, &session_id, parent_session_id, proxy.child_pid() as u32, client_addr_opt.clone(), pending_buffer.clone(), update_needed.clone()).await;
 
     // Spawn shell info polling task (progressive interval: 1/2/4/8/15/30s, then 60s)
     // Reset to 1s on each command start
@@ -551,9 +552,10 @@ async fn main() -> Result<()> {
         let sid_poll = session_id.clone();
         let child_pid_poll = proxy.child_pid() as u32;
         let poll_buffer = pending_buffer.clone();
+        let client_addr_poll = client_addr_opt.clone();
         tokio::spawn(async move {
-            // Polling probes include: hostname, shell_cwd, child_process
-            let polling_probes = probe::default_polling_probes(child_pid_poll);
+            // Polling probes include: hostname, client_addr, shell_cwd, child_process
+            let polling_probes = probe::default_polling_probes(child_pid_poll, client_addr_poll);
 
             let mut last_attrs: HashMap<String, String> = HashMap::new();
 
@@ -1764,12 +1766,14 @@ async fn connect_daemon(
     session_id: &str,
     parent_session_id: Option<String>,
     child_pid: u32,
+    client_addr: Option<String>,
     buffer: MessageBuffer,
     update_needed: Arc<AtomicBool>,
 ) -> Option<RpcClient> {
     let socket_path = daemon_addr.to_string();
     let sid = session_id.to_string();
     let psid = parent_session_id.clone();
+    let caddr = client_addr;
 
     // Load auth token
     let token_path = omnish_common::auth::default_token_path();
@@ -1804,6 +1808,7 @@ async fn connect_daemon(
         move |rpc| {
             let sid = sid.clone();
             let psid = psid.clone();
+            let caddr = caddr.clone();
             let rpc = rpc.clone();
             let buffer = buffer.clone();
             let token = auth_token.clone();
@@ -1865,7 +1870,7 @@ async fn connect_daemon(
                 }
 
                 // Then register session (only if auth succeeded)
-                let attrs = probe::default_session_probes(child_pid).collect_all();
+                let attrs = probe::default_session_probes(child_pid, caddr).collect_all();
                 event_log::push("reconnect_cb: sending SessionStart");
                 rpc.call(Message::SessionStart(SessionStart {
                     session_id: sid,

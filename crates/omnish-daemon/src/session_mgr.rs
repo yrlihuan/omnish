@@ -606,30 +606,43 @@ impl SessionManager {
         result
     }
 
-    /// Returns (hostname, is_active) pairs for unique hostnames seen in
-    /// in-memory sessions. `is_active` is true when at least one session for
-    /// that hostname has not ended (i.e., a live client connection).
-    /// Hostnames are sorted alphabetically for stable menu order.
-    pub async fn list_hostnames(&self) -> Vec<(String, bool)> {
+    /// Returns `(deploy_addr, hostname, is_active)` triples for unique clients
+    /// seen in in-memory sessions. `deploy_addr` is `attrs["client_addr"]` if
+    /// present (the ssh target last used to deploy this host, e.g.
+    /// `alice@box1`); otherwise it falls back to `hostname` so legacy clients
+    /// without the new probe still show up.
+    ///
+    /// Entries are keyed by `(deploy_addr, hostname)` so the same host
+    /// reached via two different users (e.g. `alice@box1` vs `bob@box1`)
+    /// appears as two separate menu items. `is_active` is true when at
+    /// least one session for that pair has not ended. Sorted by
+    /// `deploy_addr` then `hostname` for stable menu order.
+    pub async fn list_clients(&self) -> Vec<(String, String, bool)> {
         let session_arcs: Vec<_> = {
             let sessions = self.sessions.read().await;
             sessions.values().cloned().collect()
         };
-        let mut by_host: HashMap<String, bool> = HashMap::new();
+        let mut by_client: HashMap<(String, String), bool> = HashMap::new();
         for session in &session_arcs {
             let meta = session.meta.read().await;
-            let host = match meta.attrs.get("hostname") {
+            let hostname = match meta.attrs.get("hostname") {
                 Some(h) if !h.is_empty() => h.clone(),
                 _ => continue,
             };
+            let deploy_addr = meta.attrs.get("client_addr")
+                .filter(|s| !s.is_empty())
+                .cloned()
+                .unwrap_or_else(|| hostname.clone());
             let active = meta.ended_at.is_none();
-            let entry = by_host.entry(host).or_insert(false);
+            let entry = by_client.entry((deploy_addr, hostname)).or_insert(false);
             if active {
                 *entry = true;
             }
         }
-        let mut result: Vec<(String, bool)> = by_host.into_iter().collect();
-        result.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut result: Vec<(String, String, bool)> = by_client.into_iter()
+            .map(|((addr, host), active)| (addr, host, active))
+            .collect();
+        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
         result
     }
 
@@ -2379,5 +2392,36 @@ mod tests {
         assert_eq!(count, 1); // Only fresh session loaded
         assert!(!expired_dir.exists());
         assert!(fresh_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn test_list_clients_dedupes_by_deploy_addr_and_hostname() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+
+        let mut a = HashMap::new();
+        a.insert("hostname".to_string(), "box1".to_string());
+        a.insert("client_addr".to_string(), "alice@box1".to_string());
+        mgr.register("s1", None, a).await.unwrap();
+
+        // Same host reached by a different user - should appear as a
+        // separate menu entry because deploy target differs.
+        let mut b = HashMap::new();
+        b.insert("hostname".to_string(), "box1".to_string());
+        b.insert("client_addr".to_string(), "bob@box1".to_string());
+        mgr.register("s2", None, b).await.unwrap();
+
+        // Legacy client with no client_addr - falls back to hostname,
+        // should collapse with any other client that reports hostname
+        // as its deploy target.
+        let mut c = HashMap::new();
+        c.insert("hostname".to_string(), "box2".to_string());
+        mgr.register("s3", None, c).await.unwrap();
+
+        let clients = mgr.list_clients().await;
+        assert_eq!(clients.len(), 3);
+        assert_eq!(clients[0], ("alice@box1".to_string(), "box1".to_string(), true));
+        assert_eq!(clients[1], ("bob@box1".to_string(), "box1".to_string(), true));
+        assert_eq!(clients[2], ("box2".to_string(), "box2".to_string(), true));
     }
 }

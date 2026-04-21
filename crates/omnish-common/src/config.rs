@@ -144,6 +144,12 @@ pub struct ClientConfig {
     pub shell: ShellConfig,
     #[serde(default = "default_socket_path")]
     pub daemon_addr: String,
+    /// How the daemon reached this host during the last deploy (ssh target
+    /// like `user@host`). Written by deploy.sh on first deploy; reported
+    /// back to the daemon so re-deploys use the original working target
+    /// instead of whatever `gethostname()` returns locally.
+    #[serde(default)]
+    pub client_addr: Option<String>,
     #[serde(default)]
     pub onboarded: bool,
     #[serde(default)]
@@ -194,6 +200,7 @@ impl Default for ClientConfig {
         Self {
             shell: ShellConfig::default(),
             daemon_addr: default_socket_path(),
+            client_addr: None,
             onboarded: false,
             sandbox: ClientSandboxConfig::default(),
         }

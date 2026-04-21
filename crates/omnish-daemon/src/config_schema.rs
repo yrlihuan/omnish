@@ -76,7 +76,7 @@ fn is_tcp_listen(addr: &str) -> bool {
 pub fn build_config_items(
     config: &DaemonConfig,
     plugin_metas: &[omnish_daemon::plugin::PluginConfigMeta],
-    client_hostnames: &[(String, bool)],
+    clients: &[(String, String, bool)],
 ) -> (Vec<ConfigItem>, Vec<ConfigHandlerInfo>) {
     let schema = parse_schema();
     let config_value = toml::Value::try_from(config)
@@ -318,17 +318,37 @@ pub fn build_config_items(
     // _client:sandbox_rules placeholder (merged with local rules).
     // The daemon still handles edit_global_rule/add_global_rule RPCs.
 
-    // Dynamic items: deploy targets per discovered hostname (TCP mode only).
+    // Dynamic items: deploy targets per discovered client (TCP mode only).
+    // The menu key is the deploy addr (e.g. `alice@box1`) so the same host
+    // reached via different users renders as separate entries. The label
+    // appends `[hostname]` when it differs from the deploy addr, giving
+    // users a hint about which physical host is behind a given target.
     if tcp_mode {
-        for (host, _active) in client_hostnames {
-            // Quote hostname when it contains '.' so config_edit treats it as
-            // a single key segment (matches backend-name handling above).
-            let quoted = if host.contains('.') { format!("\"{}\"", host) } else { host.clone() };
+        for (deploy_addr, hostname, _active) in clients {
+            // Quote the segment when it contains '.' so config_edit treats
+            // it as a single key segment (matches backend-name handling
+            // above). '@' is safe as a bare segment character.
+            let quoted = if deploy_addr.contains('.') {
+                format!("\"{}\"", deploy_addr)
+            } else {
+                deploy_addr.clone()
+            };
             let prefix = format!("general.clients.{}", quoted);
+
+            let label_suffix = if hostname == deploy_addr {
+                format!("[{}]", hostname)
+            } else {
+                format!("{} [{}]", deploy_addr, hostname)
+            };
+            let target_label = if hostname == deploy_addr {
+                format!("client {}", hostname)
+            } else {
+                format!("client {} [{}]", deploy_addr, hostname)
+            };
 
             items.push(ConfigItem {
                 path: format!("{}._target", prefix),
-                label: format!("client {}", host),
+                label: target_label,
                 kind: ConfigItemKind::Label,
                 prefills: vec![],
             });
@@ -341,7 +361,7 @@ pub fn build_config_items(
 
             handlers.push(ConfigHandlerInfo {
                 path: prefix,
-                label: host.clone(),
+                label: label_suffix,
                 handler: "deploy_client".to_string(),
             });
         }
@@ -570,16 +590,18 @@ fn handle_add_client(changes: &[&ConfigChange]) -> anyhow::Result<Option<String>
     }
 }
 
-/// Per-host `Deploy` submit button. Derives hostname from the change path and
-/// deploys directly to `<hostname>`; ssh resolves the user via ssh_config /
-/// $USER on the daemon machine.
+/// Per-client `Deploy` submit button. Derives the deploy address from the
+/// change path (see `build_config_items` for how it's encoded) and passes
+/// it to ssh. The segment is the original ssh target the client reported
+/// under `attrs["client_addr"]`, falling back to hostname for legacy
+/// clients that don't yet ship the `ClientAddrProbe`.
 fn handle_deploy_client(changes: &[&ConfigChange]) -> anyhow::Result<Option<String>> {
     let submit = changes.iter().find(|c| c.path.ends_with("._submit"))
         .map(|c| c.value == "true").unwrap_or(false);
     if !submit {
         return Ok(None);
     }
-    let hostname = changes.iter().find_map(|c| {
+    let deploy_addr = changes.iter().find_map(|c| {
         let rest = c.path.strip_prefix("general.clients.")?;
         let segments = omnish_common::config_edit::split_key_path(rest);
         if segments.len() >= 2 && segments[0] != "__add__" {
@@ -587,11 +609,11 @@ fn handle_deploy_client(changes: &[&ConfigChange]) -> anyhow::Result<Option<Stri
         } else {
             None
         }
-    }).ok_or_else(|| anyhow::anyhow!("deploy_client: cannot determine hostname"))?;
+    }).ok_or_else(|| anyhow::anyhow!("deploy_client: cannot determine target"))?;
 
-    match omnish_daemon::deploy::parse_target(&hostname) {
+    match omnish_daemon::deploy::parse_target(&deploy_addr) {
         Some(t) => Ok(Some(t)),
-        None => anyhow::bail!("deploy_client: invalid hostname"),
+        None => anyhow::bail!("deploy_client: invalid target"),
     }
 }
 

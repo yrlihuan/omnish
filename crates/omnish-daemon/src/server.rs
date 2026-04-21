@@ -994,8 +994,8 @@ async fn handle_message(
         Message::ConfigQuery => {
             let config = opts.daemon_config.read().unwrap().clone();
             let plugin_metas = plugin_mgr.config_meta();
-            let hostnames = mgr.list_hostnames().await;
-            let (mut items, handlers) = crate::config_schema::build_config_items(&config, &plugin_metas, &hostnames);
+            let clients = mgr.list_clients().await;
+            let (mut items, handlers) = crate::config_schema::build_config_items(&config, &plugin_metas, &clients);
             // Inject tool param metadata so the client can offer Select pickers
             // for Plugin / Param name in sandbox rule forms.
             items.push(crate::config_schema::build_tool_params_item(tool_registry));

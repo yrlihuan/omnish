@@ -74,6 +74,21 @@ impl Probe for HostnameProbe {
     }
 }
 
+/// Echoes back the ssh target the daemon used when deploying this client,
+/// as recorded in `client.toml` under `client_addr`. Lets the daemon's
+/// "Clients" menu reuse a known-working target for re-deploys instead of
+/// guessing from gethostname.
+pub struct ClientAddrProbe(pub Option<String>);
+impl Probe for ClientAddrProbe {
+    fn key(&self) -> &str { "client_addr" }
+    fn collect(&self) -> Option<String> {
+        self.0.as_ref().and_then(|s| {
+            let t = s.trim();
+            if t.is_empty() { None } else { Some(t.to_string()) }
+        })
+    }
+}
+
 pub struct ShellCwdProbe(pub u32);
 impl Probe for ShellCwdProbe {
     fn key(&self) -> &str { "shell_cwd" }
@@ -198,13 +213,14 @@ impl Probe for OsVersionProbe {
     }
 }
 
-pub fn default_session_probes(child_pid: u32) -> ProbeSet {
+pub fn default_session_probes(child_pid: u32, client_addr: Option<String>) -> ProbeSet {
     let mut set = ProbeSet::new();
     set.add(Box::new(ShellProbe));
     set.add(Box::new(PidProbe(child_pid)));
     set.add(Box::new(TtyProbe));
     set.add(Box::new(CwdProbe));
     set.add(Box::new(HostnameProbe));
+    set.add(Box::new(ClientAddrProbe(client_addr)));
     set.add(Box::new(PlatformProbe));
     set.add(Box::new(OsVersionProbe));
     // Include shell_cwd in SessionStart attrs so the daemon always has a valid cwd
@@ -215,9 +231,10 @@ pub fn default_session_probes(child_pid: u32) -> ProbeSet {
     set
 }
 
-pub fn default_polling_probes(child_pid: u32) -> ProbeSet {
+pub fn default_polling_probes(child_pid: u32, client_addr: Option<String>) -> ProbeSet {
     let mut set = ProbeSet::new();
     set.add(Box::new(HostnameProbe));
+    set.add(Box::new(ClientAddrProbe(client_addr)));
     set.add(Box::new(ShellCwdProbe(child_pid)));
     set.add(Box::new(ChildProcessProbe(child_pid)));
     set
@@ -263,6 +280,17 @@ mod tests {
         assert_eq!(probe.key(), "cwd");
         // cwd should always succeed in test env
         assert!(probe.collect().is_some());
+    }
+
+    #[test]
+    fn test_client_addr_probe() {
+        assert_eq!(ClientAddrProbe(None).collect(), None);
+        assert_eq!(ClientAddrProbe(Some(String::new())).collect(), None);
+        assert_eq!(ClientAddrProbe(Some("   ".into())).collect(), None);
+        assert_eq!(
+            ClientAddrProbe(Some(" alice@box1 ".into())).collect(),
+            Some("alice@box1".into()),
+        );
     }
 
     #[test]
