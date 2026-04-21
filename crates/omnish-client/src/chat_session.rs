@@ -1524,7 +1524,11 @@ impl ChatSession {
                         if let Some(path) = redirect {
                             super::handle_command_result(&display_text, Some(path), self.shell_cwd.as_deref());
                         } else {
-                            let output = display::render_response(&display_text);
+                            // Command output is plain text; skip markdown rendering so that
+                            // structured lines like `WORKING DIR: ...` inside the
+                            // <system-reminder> block are not absorbed by pulldown-cmark's
+                            // type-7 HTML block rule.
+                            let output = format!("{NEWLINE}{}{NEWLINE}", display_text.replace('\n', NEWLINE));
                             write_stdout(&output);
                         }
                     }
