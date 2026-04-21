@@ -99,5 +99,28 @@
 
   "command.usage_debug": "Usage: /debug <{subs}> [> file.txt]",
   "command.usage_thread": "Usage: /thread <subcommand>\n\nSubcommands:\n",
-  "command.usage_integrate": "Usage: /integrate <tmux|screen|ssh>"
+  "command.usage_integrate": "Usage: /integrate <tmux|screen|ssh>",
+
+  "command.help_header": "Available commands:",
+  "command.help.context": "Show LLM context or template",
+  "command.help.template": "Show prompt template",
+  "command.help.config": "Open settings menu (in chat mode)",
+  "command.help.help": "Show available commands",
+  "command.help.debug": "Show debug subcommands",
+  "command.help.debug_events": "Show recent client events",
+  "command.help.debug_client": "Show client debug state",
+  "command.help.debug_session": "Show current session debug information",
+  "command.help.debug_daemon": "Show daemon version, tasks, and auto-update status",
+  "command.help.debug_commands": "Show recent shell commands (default 30)",
+  "command.help.debug_command": "Show full details of a command by seq number",
+  "command.help.sessions": "List sessions",
+  "command.help.thread": "Manage conversation threads",
+  "command.help.thread_list": "List recent threads (default 20, /thread list N for more)",
+  "command.help.thread_stats": "Show token usage statistics for all threads",
+  "command.help.thread_del": "Delete a conversation thread",
+  "command.help.tasks": "List or manage scheduled tasks",
+  "command.help.integrate": "Integrate omnish with tmux, screen, or ssh",
+  "command.help.thread_sandbox": "Toggle sandbox enforcement for current thread (chat mode)",
+  "command.help.resume": "Resume a previous conversation thread",
+  "command.help.model": "Switch LLM model"
 }

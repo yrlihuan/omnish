@@ -99,5 +99,28 @@
 
   "command.usage_debug": "Utilisation : /debug <{subs}> [> file.txt]",
   "command.usage_thread": "Utilisation : /thread <sous-commande>\n\nSous-commandes :\n",
-  "command.usage_integrate": "Utilisation : /integrate <tmux|screen|ssh>"
+  "command.usage_integrate": "Utilisation : /integrate <tmux|screen|ssh>",
+
+  "command.help_header": "Commandes disponibles :",
+  "command.help.context": "Afficher le contexte LLM ou le modèle",
+  "command.help.template": "Afficher le modèle de prompt",
+  "command.help.config": "Ouvrir le menu des paramètres (en mode chat)",
+  "command.help.help": "Afficher les commandes disponibles",
+  "command.help.debug": "Afficher les sous-commandes de debug",
+  "command.help.debug_events": "Afficher les événements récents du client",
+  "command.help.debug_client": "Afficher l'état de debug du client",
+  "command.help.debug_session": "Afficher les informations de debug de la session courante",
+  "command.help.debug_daemon": "Afficher la version du daemon, les tâches et l'état de la mise à jour auto",
+  "command.help.debug_commands": "Afficher les commandes shell récentes (30 par défaut)",
+  "command.help.debug_command": "Afficher les détails complets d'une commande par numéro seq",
+  "command.help.sessions": "Lister les sessions",
+  "command.help.thread": "Gérer les fils de conversation",
+  "command.help.thread_list": "Lister les fils récents (20 par défaut, /thread list N pour plus)",
+  "command.help.thread_stats": "Afficher les statistiques d'utilisation des tokens pour tous les fils",
+  "command.help.thread_del": "Supprimer un fil de conversation",
+  "command.help.tasks": "Lister ou gérer les tâches planifiées",
+  "command.help.integrate": "Intégrer omnish avec tmux, screen ou ssh",
+  "command.help.thread_sandbox": "Activer/désactiver la sandbox pour le fil courant (mode chat)",
+  "command.help.resume": "Reprendre un fil de conversation précédent",
+  "command.help.model": "Changer de modèle LLM"
 }

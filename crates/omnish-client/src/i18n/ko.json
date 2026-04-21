@@ -99,5 +99,28 @@
 
   "command.usage_debug": "사용법: /debug <{subs}> [> file.txt]",
   "command.usage_thread": "사용법: /thread <하위 명령>\n\n하위 명령:\n",
-  "command.usage_integrate": "사용법: /integrate <tmux|screen|ssh>"
+  "command.usage_integrate": "사용법: /integrate <tmux|screen|ssh>",
+
+  "command.help_header": "사용 가능한 명령:",
+  "command.help.context": "LLM 컨텍스트 또는 템플릿 표시",
+  "command.help.template": "프롬프트 템플릿 표시",
+  "command.help.config": "설정 메뉴 열기 (채팅 모드)",
+  "command.help.help": "사용 가능한 명령 표시",
+  "command.help.debug": "debug 하위 명령 표시",
+  "command.help.debug_events": "최근 클라이언트 이벤트 표시",
+  "command.help.debug_client": "클라이언트 디버그 상태 표시",
+  "command.help.debug_session": "현재 세션 디버그 정보 표시",
+  "command.help.debug_daemon": "데몬 버전, 작업, 자동 업데이트 상태 표시",
+  "command.help.debug_commands": "최근 쉘 명령 표시 (기본 30개)",
+  "command.help.debug_command": "seq 번호로 명령의 전체 정보 표시",
+  "command.help.sessions": "세션 나열",
+  "command.help.thread": "대화 스레드 관리",
+  "command.help.thread_list": "최근 스레드 나열 (기본 20, /thread list N 으로 더 보기)",
+  "command.help.thread_stats": "모든 스레드의 토큰 사용량 통계 표시",
+  "command.help.thread_del": "대화 스레드 삭제",
+  "command.help.tasks": "예약된 작업 나열 또는 관리",
+  "command.help.integrate": "omnish 를 tmux, screen 또는 ssh 와 통합",
+  "command.help.thread_sandbox": "현재 스레드의 샌드박스 적용 전환 (채팅 모드)",
+  "command.help.resume": "이전 대화 스레드 재개",
+  "command.help.model": "LLM 모델 전환"
 }

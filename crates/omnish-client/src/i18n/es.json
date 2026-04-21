@@ -99,5 +99,28 @@
 
   "command.usage_debug": "Uso: /debug <{subs}> [> file.txt]",
   "command.usage_thread": "Uso: /thread <subcomando>\n\nSubcomandos:\n",
-  "command.usage_integrate": "Uso: /integrate <tmux|screen|ssh>"
+  "command.usage_integrate": "Uso: /integrate <tmux|screen|ssh>",
+
+  "command.help_header": "Comandos disponibles:",
+  "command.help.context": "Mostrar contexto o plantilla del LLM",
+  "command.help.template": "Mostrar plantilla de prompt",
+  "command.help.config": "Abrir menú de configuración (en modo chat)",
+  "command.help.help": "Mostrar comandos disponibles",
+  "command.help.debug": "Mostrar subcomandos de debug",
+  "command.help.debug_events": "Mostrar eventos recientes del cliente",
+  "command.help.debug_client": "Mostrar estado de debug del cliente",
+  "command.help.debug_session": "Mostrar información de debug de la sesión actual",
+  "command.help.debug_daemon": "Mostrar versión del daemon, tareas y estado de auto-actualización",
+  "command.help.debug_commands": "Mostrar comandos shell recientes (30 por defecto)",
+  "command.help.debug_command": "Mostrar detalles completos de un comando por número seq",
+  "command.help.sessions": "Listar sesiones",
+  "command.help.thread": "Gestionar hilos de conversación",
+  "command.help.thread_list": "Listar hilos recientes (20 por defecto, /thread list N para más)",
+  "command.help.thread_stats": "Mostrar estadísticas de uso de tokens de todos los hilos",
+  "command.help.thread_del": "Eliminar un hilo de conversación",
+  "command.help.tasks": "Listar o gestionar tareas programadas",
+  "command.help.integrate": "Integrar omnish con tmux, screen o ssh",
+  "command.help.thread_sandbox": "Alternar aplicación de sandbox para el hilo actual (modo chat)",
+  "command.help.resume": "Reanudar un hilo de conversación anterior",
+  "command.help.model": "Cambiar de modelo LLM"
 }

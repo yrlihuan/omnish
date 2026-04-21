@@ -67,11 +67,29 @@ fn thread_usage(_args: &str) -> String {
     for entry in COMMANDS {
         if entry.path.starts_with("/thread ") && !entry.help.is_empty() {
             let sub = &entry.path["/thread ".len()..];
-            output.push_str(&format!("  {} - {}\n", sub, entry.help));
+            output.push_str(&format!("  {} - {}\n", sub, help_for(entry)));
         }
     }
-    output.push_str("  sandbox [on|off] - Toggle sandbox enforcement for current thread (chat mode)\n");
+    output.push_str(&format!(
+        "  sandbox [on|off] - {}\n",
+        crate::i18n::t("command.help.thread_sandbox")
+    ));
     output
+}
+
+// Resolve a CommandEntry's help text via i18n. Key derives from the path:
+// "/debug events" -> "command.help.debug_events". Falls back to the English
+// `help` field when no translation is registered (e.g. during tests or for
+// locales that haven't been fully populated).
+fn help_for(entry: &CommandEntry) -> String {
+    let slug = entry.path.trim_start_matches('/').replace(' ', "_");
+    let key = format!("command.help.{}", slug);
+    let translated = crate::i18n::t(&key);
+    if translated == key {
+        entry.help.to_string()
+    } else {
+        translated.to_string()
+    }
 }
 
 fn integrate_command(args: &str) -> String {
@@ -167,7 +185,7 @@ fn integrate_command(args: &str) -> String {
 }
 
 fn help_command(_args: &str) -> String {
-    let mut output = String::from("Available commands:\n");
+    let mut output = format!("{}\n", crate::i18n::t("command.help_header"));
     for entry in COMMANDS {
         if entry.help.is_empty() {
             continue;
@@ -176,20 +194,23 @@ fn help_command(_args: &str) -> String {
         if entry.path.starts_with("/debug ") {
             continue;
         }
-        output.push_str(&format!("  {} - {}\n", entry.path, entry.help));
+        output.push_str(&format!("  {} - {}\n", entry.path, help_for(entry)));
         // Show /thread subcommands inline under /thread.
         if entry.path == "/thread" {
             for sub in COMMANDS {
                 if sub.path.starts_with("/thread ") && !sub.help.is_empty() {
-                    output.push_str(&format!("    {} - {}\n", sub.path, sub.help));
+                    output.push_str(&format!("    {} - {}\n", sub.path, help_for(sub)));
                 }
             }
-            output.push_str("    /thread sandbox [on|off] - Toggle sandbox enforcement for current thread (chat mode)\n");
+            output.push_str(&format!(
+                "    /thread sandbox [on|off] - {}\n",
+                crate::i18n::t("command.help.thread_sandbox")
+            ));
         }
     }
     // Chat-mode-only commands not in the registry.
-    output.push_str("  /resume - Resume a previous conversation thread\n");
-    output.push_str("  /model - Switch LLM model\n");
+    output.push_str(&format!("  /resume - {}\n", crate::i18n::t("command.help.resume")));
+    output.push_str(&format!("  /model - {}\n", crate::i18n::t("command.help.model")));
     output
 }
 

@@ -99,5 +99,28 @@
 
   "command.usage_debug": "الاستخدام: /debug <{subs}> [> file.txt]",
   "command.usage_thread": "الاستخدام: /thread <أمر فرعي>\n\nالأوامر الفرعية:\n",
-  "command.usage_integrate": "الاستخدام: /integrate <tmux|screen|ssh>"
+  "command.usage_integrate": "الاستخدام: /integrate <tmux|screen|ssh>",
+
+  "command.help_header": "الأوامر المتاحة:",
+  "command.help.context": "عرض سياق LLM أو القالب",
+  "command.help.template": "عرض قالب الـ prompt",
+  "command.help.config": "فتح قائمة الإعدادات (في وضع الدردشة)",
+  "command.help.help": "عرض الأوامر المتاحة",
+  "command.help.debug": "عرض الأوامر الفرعية للـ debug",
+  "command.help.debug_events": "عرض أحداث العميل الأخيرة",
+  "command.help.debug_client": "عرض حالة debug العميل",
+  "command.help.debug_session": "عرض معلومات debug الجلسة الحالية",
+  "command.help.debug_daemon": "عرض إصدار الـ daemon والمهام وحالة التحديث التلقائي",
+  "command.help.debug_commands": "عرض أوامر shell الأخيرة (الافتراضي 30)",
+  "command.help.debug_command": "عرض التفاصيل الكاملة لأمر برقم seq",
+  "command.help.sessions": "عرض الجلسات",
+  "command.help.thread": "إدارة خيوط المحادثة",
+  "command.help.thread_list": "عرض الخيوط الأخيرة (الافتراضي 20، /thread list N لعرض المزيد)",
+  "command.help.thread_stats": "عرض إحصائيات استخدام الرموز لجميع الخيوط",
+  "command.help.thread_del": "حذف خيط محادثة",
+  "command.help.tasks": "عرض أو إدارة المهام المجدولة",
+  "command.help.integrate": "دمج omnish مع tmux أو screen أو ssh",
+  "command.help.thread_sandbox": "تبديل تطبيق sandbox للخيط الحالي (وضع الدردشة)",
+  "command.help.resume": "استئناف خيط محادثة سابق",
+  "command.help.model": "تبديل نموذج LLM"
 }

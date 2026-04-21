@@ -99,5 +99,28 @@
 
   "command.usage_debug": "使用法: /debug <{subs}> [> file.txt]",
   "command.usage_thread": "使用法: /thread <サブコマンド>\n\nサブコマンド:\n",
-  "command.usage_integrate": "使用法: /integrate <tmux|screen|ssh>"
+  "command.usage_integrate": "使用法: /integrate <tmux|screen|ssh>",
+
+  "command.help_header": "利用可能なコマンド:",
+  "command.help.context": "LLM コンテキストまたはテンプレートを表示",
+  "command.help.template": "プロンプトテンプレートを表示",
+  "command.help.config": "設定メニューを開く（チャットモード）",
+  "command.help.help": "利用可能なコマンドを表示",
+  "command.help.debug": "debug サブコマンドを表示",
+  "command.help.debug_events": "最近のクライアントイベントを表示",
+  "command.help.debug_client": "クライアントのデバッグ状態を表示",
+  "command.help.debug_session": "現在のセッションのデバッグ情報を表示",
+  "command.help.debug_daemon": "デーモンのバージョン、タスク、自動更新ステータスを表示",
+  "command.help.debug_commands": "最近のシェルコマンドを表示（デフォルト 30 件）",
+  "command.help.debug_command": "seq 番号でコマンドの詳細を表示",
+  "command.help.sessions": "セッション一覧",
+  "command.help.thread": "会話スレッドを管理",
+  "command.help.thread_list": "最近のスレッドを一覧表示（デフォルト 20、/thread list N でさらに表示）",
+  "command.help.thread_stats": "全スレッドのトークン使用状況を表示",
+  "command.help.thread_del": "会話スレッドを削除",
+  "command.help.tasks": "スケジュールされたタスクを一覧表示または管理",
+  "command.help.integrate": "omnish を tmux、screen、または ssh と統合",
+  "command.help.thread_sandbox": "現在のスレッドのサンドボックス適用を切替（チャットモード）",
+  "command.help.resume": "以前の会話スレッドを再開",
+  "command.help.model": "LLM モデルを切替"
 }

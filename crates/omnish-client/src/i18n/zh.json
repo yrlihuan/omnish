@@ -99,5 +99,28 @@
 
   "command.usage_debug": "用法: /debug <{subs}> [> file.txt]",
   "command.usage_thread": "用法: /thread <子命令>\n\n子命令:\n",
-  "command.usage_integrate": "用法: /integrate <tmux|screen|ssh>"
+  "command.usage_integrate": "用法: /integrate <tmux|screen|ssh>",
+
+  "command.help_header": "可用命令:",
+  "command.help.context": "显示 LLM 上下文或模板",
+  "command.help.template": "显示提示模板",
+  "command.help.config": "打开设置菜单（聊天模式中）",
+  "command.help.help": "显示可用命令",
+  "command.help.debug": "显示 debug 子命令",
+  "command.help.debug_events": "显示最近的客户端事件",
+  "command.help.debug_client": "显示客户端调试状态",
+  "command.help.debug_session": "显示当前会话的调试信息",
+  "command.help.debug_daemon": "显示守护进程版本、任务和自动更新状态",
+  "command.help.debug_commands": "显示最近的 shell 命令（默认 30 条）",
+  "command.help.debug_command": "通过 seq 号显示命令的完整详情",
+  "command.help.sessions": "列出会话",
+  "command.help.thread": "管理对话线程",
+  "command.help.thread_list": "列出最近的线程（默认 20，使用 /thread list N 显示更多）",
+  "command.help.thread_stats": "显示所有线程的 token 使用统计",
+  "command.help.thread_del": "删除对话线程",
+  "command.help.tasks": "列出或管理定时任务",
+  "command.help.integrate": "集成 omnish 到 tmux、screen 或 ssh",
+  "command.help.thread_sandbox": "切换当前线程的沙箱强制（聊天模式）",
+  "command.help.resume": "恢复之前的对话线程",
+  "command.help.model": "切换 LLM 模型"
 }
