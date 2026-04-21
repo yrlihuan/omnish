@@ -3116,48 +3116,89 @@ async fn handle_completion_request(
     Ok(suggestions)
 }
 
+// Extract the first balanced `[...]` from the content. Tracks JSON string
+// context so that `]` or `[` inside quoted strings (including escaped quotes)
+// do not terminate the span. Returns None when no balanced pair exists.
+fn extract_first_json_array(s: &str) -> Option<&str> {
+    let bytes = s.as_bytes();
+    let start = bytes.iter().position(|&b| b == b'[')?;
+
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for (i, &b) in bytes[start..].iter().enumerate() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if in_string {
+            match b {
+                b'\\' => escape = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[start..start + i + 1]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn parse_completion_suggestions(
     content: &str,
 ) -> Result<Vec<omnish_protocol::message::CompletionSuggestion>> {
     let trimmed = content.trim();
 
-    // Extract JSON array from response (may have surrounding text)
-    let start = trimmed.find('[').unwrap_or(0);
-    let end = trimmed.rfind(']').map(|i| i + 1).unwrap_or(trimmed.len());
-    let json_str = &trimmed[start..end];
+    if let Some(json_str) = extract_first_json_array(trimmed) {
+        // Try string array format: ["suggestion1", "suggestion2"]
+        if let Ok(strings) = serde_json::from_str::<Vec<String>>(json_str) {
+            let suggestions: Vec<_> = strings
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .enumerate()
+                .map(|(i, text)| omnish_protocol::message::CompletionSuggestion {
+                    text,
+                    confidence: if i == 0 { 1.0 } else { 0.8 },
+                })
+                .collect();
+            return Ok(suggestions);
+        }
 
-    // Try string array format: ["suggestion1", "suggestion2"]
-    if let Ok(strings) = serde_json::from_str::<Vec<String>>(json_str) {
-        let suggestions: Vec<_> = strings
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .enumerate()
-            .map(|(i, text)| omnish_protocol::message::CompletionSuggestion {
-                text,
-                confidence: if i == 0 { 1.0 } else { 0.8 },
-            })
-            .collect();
-        return Ok(suggestions);
+        // Try object array format: [{"text": "...", "confidence": 0.9}]
+        #[derive(serde::Deserialize)]
+        struct RawSuggestion {
+            text: String,
+            confidence: f32,
+        }
+
+        if let Ok(raw) = serde_json::from_str::<Vec<RawSuggestion>>(json_str) {
+            return Ok(raw
+                .into_iter()
+                .map(|r| omnish_protocol::message::CompletionSuggestion {
+                    text: r.text,
+                    confidence: r.confidence.clamp(0.0, 1.0),
+                })
+                .collect());
+        }
     }
 
-    // Try object array format: [{"text": "...", "confidence": 0.9}]
-    #[derive(serde::Deserialize)]
-    struct RawSuggestion {
-        text: String,
-        confidence: f32,
+    // Plaintext fallback: only accept single-line content. Multi-line output
+    // almost always indicates the model returned prose around the suggestions,
+    // in which case adopting any of it as a completion is unsafe.
+    if trimmed.contains('\n') {
+        return Ok(Vec::new());
     }
-
-    if let Ok(raw) = serde_json::from_str::<Vec<RawSuggestion>>(json_str) {
-        return Ok(raw
-            .into_iter()
-            .map(|r| omnish_protocol::message::CompletionSuggestion {
-                text: r.text,
-                confidence: r.confidence.clamp(0.0, 1.0),
-            })
-            .collect());
-    }
-
-    // Fallback: treat as plain text
     let text = trimmed.trim_matches(|c: char| c == '"' || c == '\'' || c.is_whitespace());
     if text.is_empty() {
         Ok(Vec::new())
@@ -3296,6 +3337,37 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].text, "cd workspace/");
         assert_eq!(result[1].text, "cd workspace/omnish");
+    }
+
+    #[test]
+    fn test_parse_completion_suggestions_multiple_arrays_with_prose() {
+        // Issue #571: the model emits a valid first array, then prose, then a
+        // second array. The old find('[') + rfind(']') spanned both arrays,
+        // producing invalid JSON and dumping the entire blob into the fallback
+        // as a single suggestion. We should take only the first array.
+        let input = "[\"git push\", \"git status\"]\n\nBased on the pattern of `git commit`, the next step is to push.\n\n[\"git push\"]";
+        let result = parse_completion_suggestions(input).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].text, "git push");
+        assert_eq!(result[1].text, "git status");
+    }
+
+    #[test]
+    fn test_parse_completion_suggestions_bracket_inside_string() {
+        // A `]` inside a JSON string must not be treated as the array terminator.
+        let input = r#"["git commit -m \"do something with ]\"", "git status"]"#;
+        let result = parse_completion_suggestions(input).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].text, "git commit -m \"do something with ]\"");
+        assert_eq!(result[1].text, "git status");
+    }
+
+    #[test]
+    fn test_parse_completion_suggestions_multiline_prose_rejected() {
+        // Prose without any JSON array must not become a suggestion.
+        let input = "I cannot suggest a completion here.\nPlease try again.";
+        let result = parse_completion_suggestions(input).unwrap();
+        assert!(result.is_empty());
     }
 
     #[tokio::test]
