@@ -141,7 +141,7 @@ async fn run_deploy(omnish_dir: &Path, target: &str, listen_addr: &str) -> Deplo
             if trimmed.is_empty() { continue; }
             if let Some(rest) = trimmed.strip_prefix(STATUS_MARKER) {
                 // First token after the marker is the status kind.
-                let kind = rest.trim().split_whitespace().next().unwrap_or("").to_string();
+                let kind = rest.split_whitespace().next().unwrap_or("").to_string();
                 if !kind.is_empty() && status_kind.is_none() {
                     status_kind = Some(kind);
                 }
