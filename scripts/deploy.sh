@@ -44,21 +44,30 @@ status_marker() { printf 'OMNISH_DEPLOY_STATUS: %s\n' "$*" >&2; }
 
 parse_daemon_addr() {
     [[ -z "$DAEMON_ADDR_RAW" ]] && return 0
-    if [[ "$DAEMON_ADDR_RAW" == tcp://* ]]; then
-        local hostport="${DAEMON_ADDR_RAW#tcp://}"
-        hostport="${hostport%%/*}"
-        if [[ "$hostport" == \[*\]:* ]]; then
-            DAEMON_HOST="${hostport#[}"
-            DAEMON_HOST="${DAEMON_HOST%%]*}"
-            DAEMON_PORT="${hostport##*:}"
-        else
-            DAEMON_HOST="${hostport%:*}"
-            DAEMON_PORT="${hostport##*:}"
-        fi
-        DAEMON_KIND="tcp"
-    else
-        DAEMON_KIND="unix"
+    # Mirror transport::parse_addr / config_schema::is_tcp_listen semantics:
+    # TCP if the value either has an explicit tcp:// scheme, or has no scheme,
+    # does not start with '/' or '.', and contains a ':'. Everything else is
+    # treated as a Unix socket path.
+    local value="$DAEMON_ADDR_RAW"
+    local had_scheme=0
+    if [[ "$value" == tcp://* ]]; then
+        value="${value#tcp://}"
+        had_scheme=1
     fi
+    if [[ $had_scheme -eq 0 ]] && [[ "$value" == /* || "$value" == .* || "$value" != *:* ]]; then
+        DAEMON_KIND="unix"
+        return 0
+    fi
+    local hostport="${value%%/*}"
+    if [[ "$hostport" == \[*\]:* ]]; then
+        DAEMON_HOST="${hostport#[}"
+        DAEMON_HOST="${DAEMON_HOST%%]*}"
+        DAEMON_PORT="${hostport##*:}"
+    else
+        DAEMON_HOST="${hostport%:*}"
+        DAEMON_PORT="${hostport##*:}"
+    fi
+    DAEMON_KIND="tcp"
 }
 
 # Populate CANDIDATES with addresses the remote might use to reach this host.
