@@ -1013,8 +1013,14 @@ async fn handle_message(
                     // Spawn background deploy tasks; results are pushed back as NoticePush.
                     if !deploy_targets.is_empty() {
                         let omnish_dir = omnish_common::config::omnish_dir();
+                        let listen_addr = opts.daemon_config.read().unwrap().listen_addr.clone();
                         for target in deploy_targets {
-                            omnish_daemon::deploy::spawn_deploy(omnish_dir.clone(), target, push_registry.clone());
+                            omnish_daemon::deploy::spawn_deploy(
+                                omnish_dir.clone(),
+                                target,
+                                listen_addr.clone(),
+                                push_registry.clone(),
+                            );
                         }
                     }
                     let _ = tx.send(Message::ConfigUpdateResult { ok: true, error: None }).await;

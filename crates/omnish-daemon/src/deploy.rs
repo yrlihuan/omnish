@@ -18,6 +18,25 @@ const DEPLOY_TIMEOUT: Duration = Duration::from_secs(120);
 /// Max stderr lines to surface in the failure notice.
 const STDERR_LINE_LIMIT: usize = 5;
 
+/// Marker line deploy.sh emits on stderr to signal a partial-success condition.
+/// Format: `OMNISH_DEPLOY_STATUS: <kind> <target>`.
+const STATUS_MARKER: &str = "OMNISH_DEPLOY_STATUS:";
+
+/// Outcome of a single `deploy.sh` run.
+enum DeployOutcome {
+    /// Binaries copied and client.toml written (or already present, or no addr
+    /// configured). Nothing for the user to do.
+    Ok,
+    /// Binaries copied but the remote could not reach any daemon candidate, so
+    /// no client.toml was written.
+    ProbeFailed,
+    /// Binaries copied but daemon uses a Unix socket; a remote client cannot
+    /// use it, so no client.toml was written.
+    UnixSocket,
+    /// Deploy itself failed (scp error, missing script, ssh failure, etc.).
+    Failed(String),
+}
+
 /// Validate an ssh target. Accepts either `host` (user defaults come from the
 /// caller's ssh config / $USER) or `user@host`. Rejects empty segments and
 /// shell metacharacters so the string is safe to pass as a single argv word.
@@ -44,51 +63,95 @@ pub fn parse_target(target: &str) -> Option<String> {
 /// Spawn `deploy.sh` for the given target. Returns immediately; the result is
 /// delivered as a NoticePush broadcast through `push_registry` when the
 /// script exits.
-pub fn spawn_deploy(omnish_dir: PathBuf, target: String, push_registry: PushRegistry) {
+///
+/// `listen_addr` is the daemon's configured listen address (forwarded to
+/// deploy.sh as `OMNISH_DAEMON_ADDR`). The script uses it to generate a
+/// minimal `client.toml` on first deploy when the remote has none.
+pub fn spawn_deploy(
+    omnish_dir: PathBuf,
+    target: String,
+    listen_addr: String,
+    push_registry: PushRegistry,
+) {
     tokio::spawn(async move {
-        let result = match tokio::time::timeout(DEPLOY_TIMEOUT, run_deploy(&omnish_dir, &target)).await {
+        let outcome = match tokio::time::timeout(
+            DEPLOY_TIMEOUT,
+            run_deploy(&omnish_dir, &target, &listen_addr),
+        ).await {
             Ok(inner) => inner,
-            Err(_) => Err(format!("timed out after {}s", DEPLOY_TIMEOUT.as_secs())),
+            Err(_) => DeployOutcome::Failed(format!("timed out after {}s", DEPLOY_TIMEOUT.as_secs())),
         };
-        let (level, text) = match result {
-            Ok(()) => (NoticeLevel::Info, format!("Deployed to {}", target)),
-            Err(err) => (NoticeLevel::Error, format!("Deploy to {} failed: {}", target, err)),
+        let (level, text) = match outcome {
+            DeployOutcome::Ok => (NoticeLevel::Info, format!("Deployed to {}", target)),
+            DeployOutcome::ProbeFailed => (
+                NoticeLevel::Info,
+                format!(
+                    "Deployed to {}, but could not reach daemon from remote. \
+                     Edit ~/.omnish/client.toml on {} and set daemon_addr manually",
+                    target, target,
+                ),
+            ),
+            DeployOutcome::UnixSocket => (
+                NoticeLevel::Info,
+                format!(
+                    "Deployed to {}, but daemon uses a Unix socket. \
+                     Configure daemon_addr manually",
+                    target,
+                ),
+            ),
+            DeployOutcome::Failed(err) => (
+                NoticeLevel::Error,
+                format!("Deploy to {} failed: {}", target, err),
+            ),
         };
         broadcast_notice(&push_registry, level, text).await;
     });
 }
 
-async fn run_deploy(omnish_dir: &Path, target: &str) -> Result<(), String> {
+async fn run_deploy(omnish_dir: &Path, target: &str, listen_addr: &str) -> DeployOutcome {
     let script = omnish_dir.join("deploy.sh");
     if !script.exists() {
-        return Err(format!("{} not found", script.display()));
+        return DeployOutcome::Failed(format!("{} not found", script.display()));
     }
 
     // kill_on_drop ensures the child is terminated if the outer future is
     // cancelled (e.g. by the deploy timeout).
-    let mut child = Command::new("bash")
+    let mut child = match Command::new("bash")
         .arg(&script)
         .arg(target)
         .env("OMNISH_HOME", omnish_dir)
+        .env("OMNISH_DAEMON_ADDR", listen_addr)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| format!("spawn bash: {}", e))?;
+    {
+        Ok(c) => c,
+        Err(e) => return DeployOutcome::Failed(format!("spawn bash: {}", e)),
+    };
 
     let stderr = child.stderr.take().expect("piped stderr");
     let stderr_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
         let mut lines: Vec<String> = Vec::new();
+        let mut status_kind: Option<String> = None;
         while let Ok(Some(line)) = reader.next_line().await {
             let trimmed = line.trim();
             if trimmed.is_empty() { continue; }
+            if let Some(rest) = trimmed.strip_prefix(STATUS_MARKER) {
+                // First token after the marker is the status kind.
+                let kind = rest.trim().split_whitespace().next().unwrap_or("").to_string();
+                if !kind.is_empty() && status_kind.is_none() {
+                    status_kind = Some(kind);
+                }
+                continue;
+            }
             if lines.len() < STDERR_LINE_LIMIT {
                 lines.push(trimmed.to_string());
             }
         }
-        lines.join(" | ")
+        (lines.join(" | "), status_kind)
     });
 
     // Drain stdout so the pipe doesn't block the script.
@@ -99,15 +162,23 @@ async fn run_deploy(omnish_dir: &Path, target: &str) -> Result<(), String> {
         });
     }
 
-    let status = child.wait().await.map_err(|e| format!("wait: {}", e))?;
-    let stderr_msg = stderr_task.await.unwrap_or_default();
+    let status = match child.wait().await {
+        Ok(s) => s,
+        Err(e) => return DeployOutcome::Failed(format!("wait: {}", e)),
+    };
+    let (stderr_msg, status_kind) = stderr_task.await.unwrap_or_default();
 
-    if status.success() {
-        Ok(())
-    } else if !stderr_msg.is_empty() {
-        Err(stderr_msg)
-    } else {
-        Err(format!("exit status {}", status))
+    if !status.success() {
+        return if !stderr_msg.is_empty() {
+            DeployOutcome::Failed(stderr_msg)
+        } else {
+            DeployOutcome::Failed(format!("exit status {}", status))
+        };
+    }
+    match status_kind.as_deref() {
+        Some("probe_failed") => DeployOutcome::ProbeFailed,
+        Some("unix_socket") => DeployOutcome::UnixSocket,
+        _ => DeployOutcome::Ok,
     }
 }
 
