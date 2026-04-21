@@ -119,15 +119,37 @@ fn convert_extra_messages(extra: &[serde_json::Value]) -> Vec<serde_json::Value>
             }
             "user" => {
                 if let Some(content_arr) = msg["content"].as_array() {
-                    // Convert tool_result blocks to separate "tool" role messages
+                    // Tool results become separate "tool" role messages (must
+                    // precede any subsequent user text in OpenAI's ordering).
+                    // Text blocks are joined into a single "user" message so
+                    // OpenAI-compatible servers that don't accept a content
+                    // array still see the content (and those that do aren't
+                    // harmed by the single string).
+                    let mut text_parts: Vec<String> = Vec::new();
                     for block in content_arr {
-                        if block["type"].as_str() == Some("tool_result") {
-                            out.push(serde_json::json!({
-                                "role": "tool",
-                                "tool_call_id": block["tool_use_id"],
-                                "content": block["content"].as_str().unwrap_or(""),
-                            }));
+                        match block["type"].as_str() {
+                            Some("tool_result") => {
+                                out.push(serde_json::json!({
+                                    "role": "tool",
+                                    "tool_call_id": block["tool_use_id"],
+                                    "content": block["content"].as_str().unwrap_or(""),
+                                }));
+                            }
+                            Some("text") => {
+                                if let Some(t) = block["text"].as_str() {
+                                    if !t.is_empty() {
+                                        text_parts.push(t.to_string());
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
+                    }
+                    if !text_parts.is_empty() {
+                        out.push(serde_json::json!({
+                            "role": "user",
+                            "content": text_parts.join("\n\n"),
+                        }));
                     }
                 } else {
                     // Plain text user message
@@ -549,5 +571,47 @@ mod tests {
         // content should be null when no text
         assert!(converted[0]["content"].is_null());
         assert_eq!(converted[0]["tool_calls"][0]["id"], "call_2");
+    }
+
+    #[test]
+    fn test_convert_extra_messages_user_text_blocks_joined() {
+        // Completion requests pack context sections into a single user
+        // message with multiple {type:"text"} blocks. The OpenAI converter
+        // must flatten them into one user string, otherwise the body is
+        // sent with zero user messages (-> empty "[]" replies or 400).
+        let extra = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "<stable prefix>"},
+                {"type": "text", "text": "<remainder>"},
+                {"type": "text", "text": "Current input: `git`"},
+            ]
+        })];
+        let converted = convert_extra_messages(&extra);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "user");
+        let content = converted[0]["content"].as_str().expect("content should be a string");
+        assert!(content.contains("<stable prefix>"));
+        assert!(content.contains("<remainder>"));
+        assert!(content.contains("Current input: `git`"));
+    }
+
+    #[test]
+    fn test_convert_extra_messages_user_mixed_tool_result_and_text() {
+        // A user turn with both a tool_result and follow-up text should
+        // emit the tool message first, then a separate user text message.
+        let extra = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "call_1", "content": "ok"},
+                {"type": "text", "text": "thanks, now summarize"}
+            ]
+        })];
+        let converted = convert_extra_messages(&extra);
+        assert_eq!(converted.len(), 2);
+        assert_eq!(converted[0]["role"], "tool");
+        assert_eq!(converted[0]["tool_call_id"], "call_1");
+        assert_eq!(converted[1]["role"], "user");
+        assert_eq!(converted[1]["content"], "thanks, now summarize");
     }
 }
