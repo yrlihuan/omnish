@@ -261,7 +261,7 @@ pub fn render_tool_header_with_spinner(icon: &omnish_protocol::message::StatusIc
     let name_cols = display_name.len() + 2;
     let available = max_cols.saturating_sub(4 + name_cols);
     let truncated = truncate_cols(&oneline, available);
-    format!("{} {BOLD}{}{RESET}{DIM}({}){RESET}", icon_str, display_name, truncated)
+    format!("{} {BOLD}{}{RESET}{GRAY}({}){RESET}", icon_str, display_name, truncated)
 }
 
 pub fn render_tool_header_full(icon: &omnish_protocol::message::StatusIcon, display_name: &str, param_desc: &str) -> String {
@@ -271,7 +271,7 @@ pub fn render_tool_header_full(icon: &omnish_protocol::message::StatusIcon, disp
 pub fn render_tool_header_full_with_spinner(icon: &omnish_protocol::message::StatusIcon, display_name: &str, param_desc: &str, spinner_frame: Option<usize>) -> String {
     let icon_str = status_icon_str(icon, spinner_frame);
     let oneline = collapse_newlines(param_desc);
-    format!("{} {BOLD}{}{RESET}{DIM}({}){RESET}", icon_str, display_name, oneline)
+    format!("{} {BOLD}{}{RESET}{GRAY}({}){RESET}", icon_str, display_name, oneline)
 }
 
 /// Collapse newlines (and surrounding whitespace) into a single space.
