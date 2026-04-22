@@ -246,8 +246,8 @@ fn status_icon_str(icon: &omnish_protocol::message::StatusIcon, spinner_frame: O
             let ch = spinner_char(spinner_frame.unwrap_or(0));
             format!("{BRIGHT_WHITE}{}{RESET}", ch)
         }
-        StatusIcon::Success => format!("{}\x1b[38;5;114m●\x1b[0m", GREEN),
-        StatusIcon::Error => format!("{}\x1b[38;5;211m●\x1b[0m", RED),
+        StatusIcon::Success => format!("{GREEN}●{RESET}"),
+        StatusIcon::Error => format!("{RED}●{RESET}"),
     }
 }
 
