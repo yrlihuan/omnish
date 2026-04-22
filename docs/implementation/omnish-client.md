@@ -1265,6 +1265,7 @@ Probe 集合容器，管理多个 Probe 实例。
 - `HostnameProbe` - 主机名（通过 `gethostname()` 系统调用获取）
 - `PlatformProbe` - 客户端平台（commit d83b63b）
 - `OsVersionProbe` - 客户端操作系统版本（commit d83b63b）
+- `ClientAddrProbe` - 透传 `ClientConfig.client_addr`（首次 deploy 时由守护进程写入的 ssh 目标），用于 Clients 菜单按 `(client_addr, hostname)` 去重；无值时 probe 缺席
 
 **注意 (commit d83b63b, #402):** `system-reminder` 中的平台/OS 信息现在来自客户端 Probe 上报的 `session_attrs`，而非守护进程自身运行环境，确保远程连接等场景下信息准确。
 
@@ -1272,6 +1273,7 @@ Probe 集合容器，管理多个 Probe 实例。
 - `HostnameProbe` - 主机名（定期轮询以检测集群环境中的变化）
 - `ShellCwdProbe` - 当前 shell 进程工作目录
 - `ChildProcessProbe` - 当前子进程信息（进程名:PID 格式）
+- `ClientAddrProbe` - 随 polling 一起上报（值恒定来自 `ClientConfig.client_addr`）
 
 ## 关键函数说明
 
@@ -1781,6 +1783,7 @@ daemon_addr = "~/.omnish/omnish.sock"
 1. **命令开始时**: 当检测到 OSC 133 CommandStart 事件时，将窗口标题设置为正在执行的命令名（提取命令的第一个单词）
 2. **命令结束时**: 当检测到 OSC 133 PromptStart 或 CommandEnd 事件时，窗口标题恢复为 "omnish"
 3. **子进程变化时**: 通过 polling 机制检测到子进程变化时，更新窗口标题为新的子进程名
+4. **聊天模式**: 进入/恢复聊天线程时，将标题设为 `> <word>`，其中 `<word>` 来自 `ChatReady.thread_title_word`（守护进程将 summary 压缩为单个小写英文单词）；退出聊天后标题恢复
 
 **实现原理:**
 - 检测环境变量 `TMUX` 判断是否在 tmux 环境中运行

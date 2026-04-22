@@ -47,6 +47,8 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - 重建失败时保留当前后端并记录 warning 日志
 - `handle_message` 在每次请求时通过 `llm_holder.read().unwrap().clone()` 读取当前后端
 
+**`HandlerCtx` 捆绑（#566）：** `handle_message` 把每个 RPC 请求上下文（session 管理器、LLM 后端、tool registry、peer push 通道等共享状态）封装为 `HandlerCtx` 结构体，替代原先一长串独立参数；冗长的 match 分支也抽成独立的 `handle_*` 函数，保留主分发函数的可读性。
+
 **聊天模型名动态获取：**
 - 原有的静态 `chat_model_name` 字段已移除
 - 现在在 `handle_message` 开头动态计算：`llm.model_name_for_use_case(UseCase::Chat)`
@@ -187,6 +189,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
   - `cwd`: 会话工作目录
   - `summary`: LLM 生成的线程摘要（由 `thread_summary` 任务生成）；`/resume` 时在对话选择界面中显示摘要
   - `summary_rounds`: 生成摘要时的对话轮次数
+  - `title_word`: `Option<String>` - 由 `summary` 二次 LLM 调用（`TITLE_WORD_PROMPT`）压缩得到的单个小写英文单词，通过 `ChatReady.thread_title_word` 推送给客户端用作聊天模式 tmux 窗口标签。`summary` 变化时该字段被失效并在下次 `thread_summary` tick 重新生成
   - `model`: 线程级别的模型覆盖（per-thread model override）
   - `system_reminder`: `Option<String>` - 当前 system-reminder 内容（用于变更检测，判断是否需要更新系统提示词）
   - `usage_last`: `Option<ThreadUsage>` - 最近一次 LLM API 调用的 token 用量（用于 `/thread stats` 的 context 列）
@@ -895,6 +898,12 @@ Assistant: {{final response}}
   - `sandbox._availability` - 客户端侧占位符（`_client:sandbox_availability`），展开为彩色可用性状态行
   - `sandbox._rules` - 客户端侧占位符（`_client:sandbox_rules`），展开为全局+本地合并的规则列表和 "Add permit rule" 表单；守护进程在此之前注入 `sandbox.__rules_json` Data 项（`build_rules_json()` 序列化当前全局规则）
   - `build_tool_params_item()` - 注入 `sandbox.__tool_params_json` Data 项，包含所有客户端工具的 input_schema 参数名，供规则表单的 Param name Select picker 使用
+- **Clients 子菜单**（`General > Clients`，仅 TCP-listen 模式下启用）：
+  - 列出守护进程已知的客户端（由 `list_clients()` 从 SessionManager 查询，返回 `(deploy_addr, hostname, active)` 三元组；按 `(client_addr, hostname)` 去重）
+  - 每个客户端以 `<deploy_addr> [<hostname>]` 作为菜单项标签，进入后是 `client <host>` Label + Deploy 提交按钮
+  - `Add client` 表单接受 `host` 或 `user@host`（由 `parse_target()` 解析），缺省用户由 ssh_config 或 `$USER` 解析
+  - schema 条目以 `._submit` 结尾标记为表单提交按钮，`MenuItem::Submenu.submit_label` 把 Done 改名为 Deploy；handler 分发时将 `._submit` 后缀映射回 schema path
+  - 结果通过 `NoticePush` 消息推送到客户端 UI（Info/Error 级别）
 
 **核心函数：**
 
@@ -946,6 +955,16 @@ Assistant: {{final response}}
 - 从缓存中查找匹配版本的包文件
 - 以 64KB 分块流式传输 `UpdateChunk` 消息（含序号、总大小、SHA-256 校验和）
 - 版本不匹配或包不存在时返回错误
+
+### Deploy 子系统（`deploy.rs` + `deploy.sh`）
+
+`General > Clients` 菜单触发的 one-shot SSH 部署：
+- 守护进程 spawn `~/.omnish/deploy.sh`，目标以 `host` 或 `user@host` 形式传入，并将 `OMNISH_DAEMON_ADDR` 设为监听地址转发给客户端
+- **Arch-aware 分发**：先用 `uname` 在远端探测 `<os>-<arch>`，从 `~/.omnish/updates/` 选出匹配的最新 tarball，scp 后运行 `install.sh --client-only --upgrade`；未缓存对应平台时脚本打印 `no_package` 状态，守护进程映射为错误 `NoticePush`，提示用户等待 auto_update
+- **原子替换**：`atomic_install` 辅助函数通过 `cp -p` 到 sibling tmp + `mv -f` 替换正在运行的 `omnish`/`omnish-plugin`，避免直接覆盖触发 ETXTBSY
+- **首次部署生成 client.toml**：仅在远端没有 `~/.omnish/client.toml` 时，由远端侧枚举候选地址（`hostname -I` 或 `ip addr` 回退；带 FQDN）写入，并将守护进程使用的 ssh target 作为 `client_addr`
+- **失败传播**：`warn()` 写 stderr 以被守护进程捕获；任一目标 ssh-mkdir 或 scp 失败时脚本以 exit 1 结束，守护进程据此推送 Error 级别 `NoticePush`
+- **结果反馈**：成功/失败/`no_package` 状态映射为 `DeployOutcome`，统一通过 `NoticePush` 消息推送到触发菜单的客户端
 
 ## 补全采样
 
@@ -1083,10 +1102,11 @@ schedule = "0 0 */6 * * *"  # Cron 表达式，默认每6小时
 
 #### 5. `thread_summary` - 对话摘要任务
 **执行周期:** 每10分钟 (`0 */10 * * * *`)
-**功能:** 扫描所有对话线程，为有新对话轮次的线程生成或更新摘要，存储到线程的 `.meta.json` sidecar 文件中（`ThreadMeta.summary` 字段）
+**功能:** 扫描所有对话线程，为有新对话轮次的线程生成或更新摘要以及 `title_word`，存储到线程的 `.meta.json` sidecar 文件中（`ThreadMeta.summary` / `ThreadMeta.title_word` 字段）
 **特点:**
 - 只对有内容（`rounds > 0`）且摘要已过期（新增轮次超过阈值）的线程生成摘要
 - 调用 LLM 后端生成简短摘要文本，使用 `SharedLlmBackend` 和 `max_content_chars()`；LLM 响应经 `strip_thinking_block()` 去除 `<thinking>` 标签（#527）
+- `summary` 变化时用第二次 LLM 调用（`TITLE_WORD_PROMPT`）推导出单个小写英文单词 `title_word`，用作聊天模式的 tmux 窗口标签（通过 `ChatReady.thread_title_word` 推送给客户端）。既有线程无需重跑 summary，本任务下次 tick 会补全 `title_word`
 - 无 LLM 后端时自动跳过
 **实现:** 通过 `ThreadSummaryTask` 实现 `ScheduledTask` trait
 
@@ -1426,6 +1446,8 @@ max_line_width = 128
 **返回:** `Result<String>`
 
 **用途:** 使用弹性窗口和 `CompletionFormatter` 构建前缀稳定的补全上下文。使用会话属性中的 `shell_cwd`（实时工作目录）作为 `<current_path>` 标签值，而非上一条命令记录的 cwd
+
+**KV cache 分块：** 配合 `CompletionFormatter::format_sections(warmup_cutoff_ts)`，守护进程追踪 `recent_frozen_until`（惰性初始化，避免新命令到达时扫入 `stable_prefix` 而导致缓存失效），仅在 warmup 阶段通过 `check_and_warmup_sections()` 推进截止时间戳。返回的 `stable_prefix` / `remainder` 送入 `TaggedMessage.cache_pos`，将 Anthropic 的 `cache_control` 断点钉在 `stable_prefix`。
 
 ### `SessionManager::store_pending_sample()`
 存储一个 pending 补全采样。

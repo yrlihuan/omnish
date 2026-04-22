@@ -59,7 +59,7 @@ LLM后端接口，定义所有LLM后端必须实现的方法：
 - `CacheHint::Short`：`ephemeral`（默认 5 分钟 TTL）
 - `CacheHint::Long`：`ephemeral` 且 `ttl: "1h"`
 - `CachedText { text, cache }`：可缓存文本，用于 `LlmRequest.system_prompt`
-- `TaggedMessage { content, cache }`：带缓存提示的消息，`content` 为 Anthropic 格式 JSON（内部规范），用于 `LlmRequest.extra_messages`
+- `TaggedMessage { content, cache, cache_pos }`：带缓存提示的消息，`content` 为 Anthropic 格式 JSON（内部规范），用于 `LlmRequest.extra_messages`。`cache_pos: Option<usize>` 指定该消息中哪一个 content block 接收 `cache_control` 断点（`None` 表示最后一个），用于补全请求在多段 content block（`stable_prefix` / `remainder` / `query`）上把断点固定在 `stable_prefix`
 
 #### `LlmRequest`
 LLM请求结构体，包含发送给LLM的完整请求信息：
@@ -553,10 +553,10 @@ let completion_content = template::build_simple_completion_content(
 - `backend.rs`: LlmBackend trait、UnavailableBackend、LlmRequest/LlmResponse、Usage、UseCase/TriggerType等核心类型
 - `tool.rs`: 工具相关类型（ToolDef、ToolCall、ToolResult）
 - `anthropic.rs`: Anthropic API后端实现（含连接错误重试、429/529重试）
-- `openai_compat.rs`: OpenAI兼容API后端实现（含连接错误重试、429重试）
+- `openai_compat.rs`: OpenAI兼容API后端实现（含连接错误重试、429重试）；`convert_extra_messages` 会把 user 消息中的多段 `text` content blocks 合并为单个 user 字符串（tool_result blocks 仍单独输出为 tool 消息），避免补全请求三段 content 被丢弃导致 user query 为空
 - `factory.rs`: 后端工厂函数（create_backend、create_default_backend、MultiBackend、SharedLlmBackend、effective_max_content_chars、Langfuse包装逻辑）
 - `presets.rs`: 模型预设模块（ProviderPreset、从嵌入式JSON加载提供商元数据）
-- `template.rs`: 提示模板（`build_user_content`、`build_completion_parts` 三层切分、`COMPLETION_INSTRUCTIONS` 静态指令、DAILY/HOURLY_NOTES_PROMPT 等）
+- `template.rs`: 提示模板（`build_user_content`、`build_completion_parts` 三层切分、`COMPLETION_INSTRUCTIONS` 静态指令、DAILY/HOURLY_NOTES_PROMPT、`TITLE_WORD_PROMPT`（将线程 summary 压缩为单个小写英文单词，用于 tmux 窗口标签）等）
 - `prompt.rs`: PromptManager（可组合系统提示词片段管理）和内嵌chat提示词常量
 - `langfuse.rs`: Langfuse可观测性集成（LangfuseBackend包装器）
 - `message_log.rs`: LLM请求payload本地日志记录

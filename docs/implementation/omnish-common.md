@@ -13,6 +13,7 @@ omnish-common 包含客户端和守护进程共享的配置结构和工具函数
 - `shell`: Shell配置（`ShellConfig`类型）
 - `daemon_addr`: 守护进程地址（默认：`~/.omnish/omnish.sock`）
 - `onboarded`: 用户是否已完成新手引导（默认：`false`）；首次进入聊天后自动写入 `true`
+- `client_addr`: 首次 deploy 时由守护进程写入的 ssh 目标（`Option<String>`），客户端通过 `ClientAddrProbe` 回报以便守护进程 Clients 菜单按 `(client_addr, hostname)` 去重并作为再次 deploy 的目标
 - `sandbox`: 客户端本地沙箱配置（`ClientSandboxConfig`类型）
 
 注意：`auto_update` 字段已从 `ClientConfig` 中移除，自动更新功能统一由守护进程端的 `TasksConfig.auto_update` 管理。
