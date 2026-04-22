@@ -180,6 +180,36 @@ pub struct ServerOpts {
     pub daemon_config: std::sync::Arc<std::sync::RwLock<omnish_common::config::DaemonConfig>>,
 }
 
+/// Shared state threaded through every message handler.
+///
+/// Built once per serve loop and shared across all connections.  Holds every
+/// manager, registry, and runtime counter so individual handlers can be
+/// refactored without growing a new parameter per subsystem.
+struct HandlerCtx {
+    session_mgr: Arc<SessionManager>,
+    llm_holder: SharedLlmBackend,
+    task_mgr: Arc<Mutex<TaskManager>>,
+    conv_mgr: Arc<ConversationManager>,
+    plugin_mgr: Arc<PluginManager>,
+    tool_registry: Arc<omnish_daemon::tool_registry::ToolRegistry>,
+    formatter_mgr: Arc<omnish_daemon::formatter_mgr::FormatterManager>,
+    pending_loops: Arc<Mutex<HashMap<String, AgentLoopState>>>,
+    cancel_flags: CancelFlags,
+    active_threads: ActiveThreads,
+    opts: Arc<ServerOpts>,
+    update_cache: Arc<omnish_daemon::update_cache::UpdateCache>,
+    io_requests: Arc<AtomicU64>,
+    io_bytes: Arc<AtomicU64>,
+    push_registry: PushRegistry,
+}
+
+impl HandlerCtx {
+    /// Snapshot the current LLM backend (follows hot-reload across calls).
+    fn llm(&self) -> Arc<MultiBackend> {
+        self.llm_holder.read().unwrap().clone()
+    }
+}
+
 pub struct DaemonServer {
     session_mgr: Arc<SessionManager>,
     llm_backend: SharedLlmBackend,
@@ -439,19 +469,6 @@ impl DaemonServer {
         let mut server = RpcServer::bind(addr).await?;
         tracing::info!("omnishd listening on {}", addr);
 
-        let mgr = self.session_mgr.clone();
-        let llm_holder = self.llm_backend.clone();
-        let task_mgr = self.task_mgr.clone();
-        let conv_mgr = self.conv_mgr.clone();
-        let plugin_mgr = self.plugin_mgr.clone();
-        let tool_registry = self.tool_registry.clone();
-        let formatter_mgr = self.formatter_mgr.clone();
-        let pending_loops = self.pending_agent_loops.clone();
-        let cancel_flags = self.cancel_flags.clone();
-        let active_threads = self.active_threads.clone();
-        let opts = self.opts.clone();
-        let update_cache = self.update_cache.clone();
-
         // Periodically sweep stale pending agent loop entries
         let pending_cleanup = self.pending_agent_loops.clone();
         tokio::spawn(async move {
@@ -498,9 +515,6 @@ impl DaemonServer {
             }
         });
 
-        let io_requests_handler = io_requests.clone();
-        let io_bytes_handler = io_bytes.clone();
-        let push_registry_handler = self.push_registry.clone();
         let daemon_config_for_push = self.opts.daemon_config.clone();
         let on_push_connect: Option<OnPushConnect> = Some(Arc::new(move |push_tx: mpsc::Sender<Message>| {
             let config = daemon_config_for_push.clone();
@@ -512,25 +526,30 @@ impl DaemonServer {
                 let _ = push_tx.send(Message::ConfigClient { changes }).await;
             })
         }));
+
+        let ctx = Arc::new(HandlerCtx {
+            session_mgr: self.session_mgr.clone(),
+            llm_holder: self.llm_backend.clone(),
+            task_mgr: self.task_mgr.clone(),
+            conv_mgr: self.conv_mgr.clone(),
+            plugin_mgr: self.plugin_mgr.clone(),
+            tool_registry: self.tool_registry.clone(),
+            formatter_mgr: self.formatter_mgr.clone(),
+            pending_loops: self.pending_agent_loops.clone(),
+            cancel_flags: self.cancel_flags.clone(),
+            active_threads: self.active_threads.clone(),
+            opts: self.opts.clone(),
+            update_cache: self.update_cache.clone(),
+            io_requests,
+            io_bytes,
+            push_registry: self.push_registry.clone(),
+        });
+
         server
             .serve(
                 move |msg, tx| {
-                    let mgr = mgr.clone();
-                    let llm = llm_holder.read().unwrap().clone();
-                    let task_mgr = task_mgr.clone();
-                    let conv_mgr = conv_mgr.clone();
-                    let plugin_mgr = plugin_mgr.clone();
-                    let tool_registry = tool_registry.clone();
-                    let formatter_mgr = formatter_mgr.clone();
-                    let pending_loops = pending_loops.clone();
-                    let cancel_flags = cancel_flags.clone();
-                    let active_threads = active_threads.clone();
-                    let opts = opts.clone();
-                    let update_cache = update_cache.clone();
-                    let io_requests = io_requests_handler.clone();
-                    let io_bytes = io_bytes_handler.clone();
-                    let push_registry = push_registry_handler.clone();
-                    Box::pin(async move { handle_message(msg, mgr, &llm, &task_mgr, &conv_mgr, &plugin_mgr, &tool_registry, &formatter_mgr, &pending_loops, &cancel_flags, &active_threads, &opts, &update_cache, &io_requests, &io_bytes, &push_registry, tx).await })
+                    let ctx = ctx.clone();
+                    Box::pin(async move { handle_message(msg, &ctx, tx).await })
                 },
                 Some(auth_token),
                 tls_acceptor,
@@ -541,35 +560,19 @@ impl DaemonServer {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_message(
     msg: Message,
-    mgr: Arc<SessionManager>,
-    llm: &Arc<MultiBackend>,
-    task_mgr: &Arc<Mutex<TaskManager>>,
-    conv_mgr: &Arc<ConversationManager>,
-    plugin_mgr: &Arc<PluginManager>,
-    tool_registry: &Arc<omnish_daemon::tool_registry::ToolRegistry>,
-    formatter_mgr: &Arc<omnish_daemon::formatter_mgr::FormatterManager>,
-    pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
-    cancel_flags: &CancelFlags,
-    active_threads: &ActiveThreads,
-    opts: &Arc<ServerOpts>,
-    update_cache: &Arc<omnish_daemon::update_cache::UpdateCache>,
-    io_requests: &Arc<AtomicU64>,
-    io_bytes: &Arc<AtomicU64>,
-    push_registry: &PushRegistry,
+    ctx: &HandlerCtx,
     tx: mpsc::Sender<Message>,
 ) {
+    let llm = ctx.llm();
     // Derive chat model name dynamically from current backend (follows hot-reload)
     let chat_model_name = {
         let name = llm.model_name_for_use_case(UseCase::Chat);
         if name == "unavailable" { None } else { Some(name) }
     };
 
-    // Shadow with reference for existing code; use mgr_arc for spawned tasks
-    let mgr_arc = mgr;
-    let mgr = &*mgr_arc;
+    let mgr = &*ctx.session_mgr;
     match msg {
         Message::SessionStart(s) => {
             if let Err(e) = mgr
@@ -585,7 +588,7 @@ async fn handle_message(
                 tracing::error!("end_session error: {}", e);
             }
             // Release any threads held by this session
-            active_threads.lock().await.retain(|_, c| c.session_id != s.session_id);
+            ctx.active_threads.lock().await.retain(|_, c| c.session_id != s.session_id);
             let _ = tx.send(Message::Ack).await;
         }
         Message::SessionUpdate(su) => {
@@ -595,8 +598,8 @@ async fn handle_message(
             let _ = tx.send(Message::Ack).await;
         }
         Message::IoData(io) => {
-            io_requests.fetch_add(1, Ordering::Relaxed);
-            io_bytes.fetch_add(io.data.len() as u64, Ordering::Relaxed);
+            ctx.io_requests.fetch_add(1, Ordering::Relaxed);
+            ctx.io_bytes.fetch_add(io.data.len() as u64, Ordering::Relaxed);
             let dir = match io.direction {
                 IoDirection::Input => 0,
                 IoDirection::Output => 1,
@@ -615,7 +618,7 @@ async fn handle_message(
             }
             // Proactively warm the LLM KV cache if the context prefix changed
             {
-                let mgr = mgr_arc.clone();
+                let mgr = ctx.session_mgr.clone();
                 let llm = llm.clone();
                 let sid = cc.session_id.clone();
                 tokio::spawn(async move {
@@ -626,7 +629,7 @@ async fn handle_message(
         }
         Message::Request(req) => {
             if req.query.starts_with("__cmd:") {
-                let result = handle_builtin_command(&req, mgr, task_mgr, llm, conv_mgr, tool_registry, formatter_mgr, active_threads).await;
+                let result = handle_builtin_command(&req, ctx, &llm).await;
                 let content = serde_json::to_string(&result).unwrap_or_else(|_| {
                     r#"{"display":"(serialization error)"}"#.to_string()
                 });
@@ -639,7 +642,7 @@ async fn handle_message(
                 return;
             }
 
-            let content = match handle_llm_request(&req, mgr, llm).await {
+            let content = match handle_llm_request(&req, mgr, &llm).await {
                 Ok(response) => response.text(),
                 Err(e) => {
                     tracing::error!("LLM request failed: {}", e);
@@ -688,7 +691,7 @@ async fn handle_message(
                 })).await;
                 return;
             }
-            let reply = match handle_completion_request(&req, mgr, llm).await {
+            let reply = match handle_completion_request(&req, mgr, &llm).await {
                 Ok(suggestions) => {
                     Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
                         sequence_id: req.sequence_id,
@@ -723,190 +726,12 @@ async fn handle_message(
             let _ = tx.send(Message::Ack).await;
         }
         Message::ChatStart(cs) => {
-            let meta = {
-                let host = mgr.get_session_attr(&cs.session_id, "hostname").await;
-                let cwd = mgr.get_session_attr(&cs.session_id, "shell_cwd").await;
-                ThreadMeta { host, cwd, ..Default::default() }
-            };
-
-            // Determine thread_id based on the request:
-            //  1. thread_id provided → resume that specific thread
-            //  2. new_thread = true   → create a new thread
-            //  3. otherwise           → resume latest thread
-            let ready = if let Some(ref tid) = cs.thread_id {
-                // Resume specific thread
-                tracing::debug!("[ChatStart] resuming thread={}", tid);
-                let raw_msgs = conv_mgr.load_raw_messages(tid);
-                tracing::debug!("[ChatStart] loaded {} raw messages for thread={}", raw_msgs.len(), tid);
-                if raw_msgs.is_empty() {
-                    tracing::debug!("[ChatStart] thread not found, returning error");
-                    Message::ChatReady(ChatReady {
-                        request_id: cs.request_id,
-                        thread_id: String::new(),
-                        last_exchange: None,
-                        earlier_count: 0,
-                        model_name: chat_model_name.clone(),
-                        history: None,
-                        thread_host: None,
-                        thread_cwd: None,
-                        thread_summary: None,
-                        error: Some("not_found".to_string()),
-                        error_display: Some("Conversation not found".to_string()),
-                        sandbox_disabled: None,
-                    })
-                } else if let Err(owner) = try_claim_thread(active_threads, tid, &cs.session_id).await {
-                    tracing::debug!("[ChatStart] thread locked by session={}", owner);
-                    let err = thread_locked_error(mgr, &owner).await;
-                    Message::ChatReady(ChatReady {
-                        request_id: cs.request_id,
-                        thread_id: String::new(),
-                        last_exchange: None,
-                        earlier_count: 0,
-                        model_name: chat_model_name.clone(),
-                        history: None,
-                        thread_host: None,
-                        thread_cwd: None,
-                        thread_summary: None,
-                        error: Some("thread_locked".to_string()),
-                        error_display: err.get("display").and_then(|d| d.as_str()).map(String::from),
-                        sandbox_disabled: None,
-                    })
-                } else {
-                    tracing::debug!("[ChatStart] claimed thread={}, reconstructing history", tid);
-                    let old_meta = conv_mgr.load_meta(tid);
-                    let merged_meta = ThreadMeta {
-                        host: meta.host.clone(),
-                        cwd: meta.cwd.clone(),
-                        ..old_meta.clone()
-                    };
-                    if let Some(claim) = active_threads.lock().await.get_mut(tid) {
-                        claim.pending_meta = Some(merged_meta);
-                    }
-                    let history_vals = reconstruct_history(&raw_msgs, tool_registry, formatter_mgr).await;
-                    tracing::debug!("[ChatStart] history reconstructed: {} entries", history_vals.len());
-                    let history: Vec<String> = history_vals.iter()
-                        .map(|v| serde_json::to_string(v).unwrap_or_default())
-                        .collect();
-                    let thread_model = old_meta.model.and_then(|model_name| {
-                        let is_default = llm.chat_default_name() == model_name;
-                        if is_default { None } else { Some(model_name) }
-                    });
-                    Message::ChatReady(ChatReady {
-                        request_id: cs.request_id,
-                        thread_id: tid.clone(),
-                        last_exchange: None,
-                        earlier_count: 0,
-                        model_name: thread_model.or_else(|| chat_model_name.clone()),
-                        history: Some(history),
-                        thread_host: old_meta.host,
-                        thread_cwd: old_meta.cwd,
-                        thread_summary: old_meta.summary,
-                        error: None,
-                        error_display: None,
-                        sandbox_disabled: old_meta.sandbox_disabled,
-                    })
-                }
-            } else if cs.new_thread {
-                let tid = conv_mgr.create_thread(meta);
-                tracing::debug!("[ChatStart] created new thread={}", tid);
-                try_claim_thread(active_threads, &tid, &cs.session_id).await.ok();
-                Message::ChatReady(ChatReady {
-                    request_id: cs.request_id,
-                    thread_id: tid,
-                    last_exchange: None,
-                    earlier_count: 0,
-                    model_name: chat_model_name.clone(),
-                    history: None,
-                    thread_host: None,
-                    thread_cwd: None,
-                    thread_summary: None,
-                    error: None,
-                    error_display: None,
-                    sandbox_disabled: None,
-                })
-            } else {
-                // Resume latest thread
-                tracing::debug!("[ChatStart] resuming latest thread");
-                match conv_mgr.get_latest_thread() {
-                    Some(tid) => {
-                        tracing::debug!("[ChatStart] latest thread={}", tid);
-                        if let Err(owner) = try_claim_thread(active_threads, &tid, &cs.session_id).await {
-                            tracing::debug!("[ChatStart] latest thread locked by session={}", owner);
-                            let err = thread_locked_error(mgr, &owner).await;
-                            Message::ChatReady(ChatReady {
-                                request_id: cs.request_id,
-                                thread_id: String::new(),
-                                last_exchange: None,
-                                earlier_count: 0,
-                                model_name: chat_model_name.clone(),
-                                history: None,
-                                thread_host: None,
-                                thread_cwd: None,
-                                thread_summary: None,
-                                error: Some("thread_locked".to_string()),
-                                error_display: err.get("display").and_then(|d| d.as_str()).map(String::from),
-                                sandbox_disabled: None,
-                            })
-                        } else {
-                            let old_meta = conv_mgr.load_meta(&tid);
-                            let merged_meta = ThreadMeta {
-                                host: meta.host.clone(),
-                                cwd: meta.cwd.clone(),
-                                ..old_meta.clone()
-                            };
-                            if let Some(claim) = active_threads.lock().await.get_mut(tid.as_str()) {
-                                claim.pending_meta = Some(merged_meta);
-                            }
-                            let raw_msgs = conv_mgr.load_raw_messages(&tid);
-                            let history_vals = reconstruct_history(&raw_msgs, tool_registry, formatter_mgr).await;
-                            let history: Vec<String> = history_vals.iter()
-                                .map(|v| serde_json::to_string(v).unwrap_or_default())
-                                .collect();
-                            let thread_model = old_meta.model.and_then(|model_name| {
-                                let is_default = llm.chat_default_name() == model_name;
-                                if is_default { None } else { Some(model_name) }
-                            });
-                            Message::ChatReady(ChatReady {
-                                request_id: cs.request_id,
-                                thread_id: tid,
-                                last_exchange: None,
-                                earlier_count: 0,
-                                model_name: thread_model.or_else(|| chat_model_name.clone()),
-                                history: Some(history),
-                                thread_host: old_meta.host,
-                                thread_cwd: old_meta.cwd,
-                                thread_summary: old_meta.summary,
-                                error: None,
-                                error_display: None,
-                                sandbox_disabled: old_meta.sandbox_disabled,
-                            })
-                        }
-                    }
-                    None => {
-                        tracing::debug!("[ChatStart] no threads found");
-                        Message::ChatReady(ChatReady {
-                            request_id: cs.request_id,
-                            thread_id: String::new(),
-                            last_exchange: None,
-                            earlier_count: 0,
-                            model_name: chat_model_name.clone(),
-                            history: None,
-                            thread_host: None,
-                            thread_cwd: None,
-                            thread_summary: None,
-                            error: None,
-                            error_display: None,
-                            sandbox_disabled: None,
-                        })
-                    }
-                }
-            };
-            let _ = tx.send(ready).await;
+            handle_chat_start(cs, ctx, &llm, chat_model_name.clone(), tx).await;
         }
         Message::ChatEnd(ce) => {
             tracing::debug!("[ChatEnd] session={} thread={}", ce.session_id, ce.thread_id);
             // Release thread binding
-            let mut threads = active_threads.lock().await;
+            let mut threads = ctx.active_threads.lock().await;
             if let Some(claim) = threads.get(&ce.thread_id) {
                 if claim.session_id == ce.session_id {
                     threads.remove(&ce.thread_id);
@@ -921,128 +746,43 @@ async fn handle_message(
             let _ = tx.send(Message::Ack).await;
         }
         Message::ChatMessage(cm) => {
-            touch_thread(active_threads, &cm.thread_id, conv_mgr).await;
+            touch_thread(&ctx.active_threads, &cm.thread_id, &ctx.conv_mgr).await;
             let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let req_id = cm.request_id.clone();
-            cancel_flags.lock().await.insert(req_id.clone(), flag.clone());
-            handle_chat_message(cm, mgr, llm, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, opts, tx, &flag).await;
-            cancel_flags.lock().await.remove(&req_id);
+            ctx.cancel_flags.lock().await.insert(req_id.clone(), flag.clone());
+            handle_chat_message(cm, ctx, &llm, tx, &flag).await;
+            ctx.cancel_flags.lock().await.remove(&req_id);
         }
         Message::ChatToolResult(tr) => {
-            touch_thread(active_threads, &tr.thread_id, conv_mgr).await;
-            handle_tool_result(tr, mgr, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, cancel_flags, opts, tx).await;
+            touch_thread(&ctx.active_threads, &tr.thread_id, &ctx.conv_mgr).await;
+            handle_tool_result(tr, ctx, tx).await;
         }
         Message::ChatInterrupt(ci) => {
-            // Clean up pending agent loop and store partial results
-            let state = if !ci.request_id.is_empty() {
-                pending_loops.lock().await.remove(&ci.request_id)
-            } else {
-                None
-            };
-
-            if let Some(mut state) = state {
-                // Build tool_result content: completed results + "user interrupted" for the rest
-                let completed_ids: std::collections::HashSet<String> = state
-                    .completed_results
-                    .iter()
-                    .map(|r| r.tool_use_id.clone())
-                    .collect();
-
-                let mut result_content: Vec<serde_json::Value> = state
-                    .completed_results
-                    .iter()
-                    .map(|r| serde_json::json!({
-                        "type": "tool_result",
-                        "tool_use_id": r.tool_use_id,
-                        "content": r.content,
-                        "is_error": r.is_error,
-                    }))
-                    .collect();
-
-                // Fill in "user interrupted" for tools not yet completed
-                for tc in &state.pending_tool_calls {
-                    if !completed_ids.contains(&tc.id) {
-                        result_content.push(serde_json::json!({
-                            "type": "tool_result",
-                            "tool_use_id": tc.id,
-                            "content": "user interrupted",
-                            "is_error": true,
-                        }));
-                    }
-                }
-
-                persist_unsaved(&mut state, conv_mgr, &[
-                    serde_json::json!({"role": "user", "content": result_content}),
-                    serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
-                ]);
-                update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
-            } else if let Some(flag) = cancel_flags.lock().await.get(&ci.request_id) {
-                // Agent loop is running daemon-side tools - signal it to stop.
-                // The loop will store partial state to conversation when it detects the flag.
-                flag.store(true, std::sync::atomic::Ordering::Relaxed);
-            } else {
-                // Loop already finished - just record the interrupt
-                conv_mgr.append_messages(&ci.thread_id, &[
-                    serde_json::json!({"role": "user", "content": ci.query}),
-                    serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
-                ]);
-            }
-
-            tracing::info!("Chat interrupted by user (thread={}, request={})", ci.thread_id, ci.request_id);
-            let _ = tx.send(Message::Ack).await;
+            handle_chat_interrupt(ci, ctx, tx).await;
         }
         Message::ConfigQuery => {
-            let config = opts.daemon_config.read().unwrap().clone();
-            let plugin_metas = plugin_mgr.config_meta();
+            let config = ctx.opts.daemon_config.read().unwrap().clone();
+            let plugin_metas = ctx.plugin_mgr.config_meta();
             let clients = mgr.list_clients().await;
             let (mut items, handlers) = crate::config_schema::build_config_items(&config, &plugin_metas, &clients);
             // Inject tool param metadata so the client can offer Select pickers
             // for Plugin / Param name in sandbox rule forms.
-            items.push(crate::config_schema::build_tool_params_item(tool_registry));
+            items.push(crate::config_schema::build_tool_params_item(&ctx.tool_registry));
             let _ = tx.send(Message::ConfigResponse { items, handlers }).await;
         }
         Message::ConfigUpdate { changes } => {
-            let result = crate::config_schema::apply_config_changes(&opts.config_path, &changes);
-            match result {
-                Ok(deploy_targets) => {
-                    // Reload config after successful write
-                    if let Ok(mut new_config) = omnish_common::config::load_daemon_config() {
-                        omnish_daemon::task_mgr::inject_task_defaults(&mut new_config.tasks);
-                        *opts.daemon_config.write().unwrap() = new_config;
-                    }
-                    // Spawn background deploy tasks; results are pushed back as NoticePush.
-                    if !deploy_targets.is_empty() {
-                        let omnish_dir = omnish_common::config::omnish_dir();
-                        let listen_addr = opts.daemon_config.read().unwrap().listen_addr.clone();
-                        for target in deploy_targets {
-                            omnish_daemon::deploy::spawn_deploy(
-                                omnish_dir.clone(),
-                                target,
-                                listen_addr.clone(),
-                                push_registry.clone(),
-                            );
-                        }
-                    }
-                    let _ = tx.send(Message::ConfigUpdateResult { ok: true, error: None }).await;
-                }
-                Err(e) => {
-                    let _ = tx.send(Message::ConfigUpdateResult {
-                        ok: false,
-                        error: Some(e.to_string()),
-                    }).await;
-                }
-            }
+            handle_config_update(changes, ctx, tx).await;
         }
         Message::ConfigResponse { .. } | Message::ConfigUpdateResult { .. } | Message::ConfigClient { .. } | Message::TestDisconnect { .. } => {
             // These are daemon→client or transport-layer messages, ignore if received at app layer
             let _ = tx.send(Message::Ack).await;
         }
         Message::UpdateCheck { os, arch, current_version, .. } => {
-            update_cache.register_platform(&os, &arch);
-            let reply = if !update_cache.past_startup_grace() {
+            ctx.update_cache.register_platform(&os, &arch);
+            let reply = if !ctx.update_cache.past_startup_grace() {
                 Message::UpdateInfo { latest_version: String::new(), checksum: String::new(), available: false }
             } else {
-                match update_cache.check_update_with_checksum(&os, &arch, &current_version) {
+                match ctx.update_cache.check_update_with_checksum(&os, &arch, &current_version) {
                     Some((version, checksum)) => {
                         Message::UpdateInfo { latest_version: version, checksum, available: true }
                     }
@@ -1054,87 +794,342 @@ async fn handle_message(
             let _ = tx.send(reply).await;
         }
         Message::UpdateRequest { os, arch, version, hostname } => {
-            // Helper: send error + done (2 messages) so call_stream Ack sentinel is sent
-            macro_rules! send_update_error {
-                ($tx:expr, $seq:expr, $msg:expr) => {{
-                    let _ = $tx.send(Message::UpdateChunk {
-                        seq: $seq, total_size: 0, checksum: String::new(),
-                        data: vec![], done: false,
-                        error: Some($msg),
-                    }).await;
-                    let _ = $tx.send(Message::UpdateChunk {
-                        seq: $seq + 1, total_size: 0, checksum: String::new(),
-                        data: vec![], done: true, error: None,
-                    }).await;
-                }};
-            }
+            handle_update_request(os, arch, version, hostname, ctx, tx).await;
+        }
+        _ => {
+            let _ = tx.send(Message::Ack).await;
+        }
+    }
+}
 
-            if !update_cache.try_acquire_transfer(&hostname) {
-                send_update_error!(tx, 0, "transfer already in progress for this platform, retry later".into());
-                return;
-            }
+/// Build an empty ChatReady (no history, blank thread_id).  Used for error
+/// responses (not_found / thread_locked) and the "no threads yet" case.
+fn empty_chat_ready(
+    request_id: String,
+    chat_model_name: Option<String>,
+    error: Option<&str>,
+    error_display: Option<String>,
+) -> Message {
+    Message::ChatReady(ChatReady {
+        request_id,
+        thread_id: String::new(),
+        last_exchange: None,
+        earlier_count: 0,
+        model_name: chat_model_name,
+        history: None,
+        thread_host: None,
+        thread_cwd: None,
+        thread_summary: None,
+        error: error.map(String::from),
+        error_display,
+        sandbox_disabled: None,
+    })
+}
 
-            let cached = update_cache.cached_package(&os, &arch);
-            match cached {
-                Some((cached_ver, path)) if cached_ver == version => {
-                    tracing::info!("streaming update package {}-{} v{} to {}", os, arch, version, hostname);
-                    match tokio::fs::File::open(&path).await {
-                        Ok(mut file) => {
-                            use tokio::io::AsyncReadExt;
-                            let total_size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
-                            let path_for_checksum = path.clone();
-                            let checksum = match tokio::task::spawn_blocking(move || {
-                                omnish_common::update::checksum(&path_for_checksum)
-                            }).await {
-                                Ok(Ok(c)) => c,
-                                Ok(Err(e)) => { send_update_error!(tx, 0, format!("checksum error: {}", e)); return; }
-                                Err(e) => { send_update_error!(tx, 0, format!("join error: {}", e)); return; }
-                            };
-                            let mut seq = 0u32;
-                            let mut buf = vec![0u8; 65536];
-                            let mut send_failed = false;
-                            loop {
-                                let n = match file.read(&mut buf).await {
-                                    Ok(n) => n,
-                                    Err(e) => {
-                                        send_update_error!(tx, seq, format!("read error: {}", e));
-                                        return;
-                                    }
-                                };
-                                let done = n == 0;
-                                let chunk = Message::UpdateChunk {
-                                    seq,
-                                    total_size: if seq == 0 { total_size } else { 0 },
-                                    checksum: if seq == 0 { checksum.clone() } else { String::new() },
-                                    data: if done { vec![] } else { buf[..n].to_vec() },
-                                    done,
-                                    error: None,
-                                };
-                                if tx.send(chunk).await.is_err() {
-                                    send_failed = true;
-                                    break;
-                                }
-                                if done { break; }
-                                seq += 1;
+/// Build a successful ChatReady for a resumed thread.  Caller must have
+/// already claimed the thread and loaded its raw messages.  Persists the
+/// session's current host/cwd as pending_meta on the claim.
+async fn build_resumed_chat_ready(
+    tid: &str,
+    request_id: String,
+    session_meta: &ThreadMeta,
+    raw_msgs: &[serde_json::Value],
+    chat_model_name: &Option<String>,
+    ctx: &HandlerCtx,
+    llm: &Arc<MultiBackend>,
+) -> Message {
+    let old_meta = ctx.conv_mgr.load_meta(tid);
+    let merged_meta = ThreadMeta {
+        host: session_meta.host.clone(),
+        cwd: session_meta.cwd.clone(),
+        ..old_meta.clone()
+    };
+    if let Some(claim) = ctx.active_threads.lock().await.get_mut(tid) {
+        claim.pending_meta = Some(merged_meta);
+    }
+    let history_vals = reconstruct_history(raw_msgs, &ctx.tool_registry, &ctx.formatter_mgr).await;
+    let history: Vec<String> = history_vals.iter()
+        .map(|v| serde_json::to_string(v).unwrap_or_default())
+        .collect();
+    let thread_model = old_meta.model.and_then(|model_name| {
+        let is_default = llm.chat_default_name() == model_name;
+        if is_default { None } else { Some(model_name) }
+    });
+    Message::ChatReady(ChatReady {
+        request_id,
+        thread_id: tid.to_string(),
+        last_exchange: None,
+        earlier_count: 0,
+        model_name: thread_model.or_else(|| chat_model_name.clone()),
+        history: Some(history),
+        thread_host: old_meta.host,
+        thread_cwd: old_meta.cwd,
+        thread_summary: old_meta.summary,
+        error: None,
+        error_display: None,
+        sandbox_disabled: old_meta.sandbox_disabled,
+    })
+}
+
+async fn handle_chat_start(
+    cs: ChatStart,
+    ctx: &HandlerCtx,
+    llm: &Arc<MultiBackend>,
+    chat_model_name: Option<String>,
+    tx: mpsc::Sender<Message>,
+) {
+    let mgr = &*ctx.session_mgr;
+    let conv_mgr = &ctx.conv_mgr;
+    let active_threads = &ctx.active_threads;
+
+    let meta = {
+        let host = mgr.get_session_attr(&cs.session_id, "hostname").await;
+        let cwd = mgr.get_session_attr(&cs.session_id, "shell_cwd").await;
+        ThreadMeta { host, cwd, ..Default::default() }
+    };
+
+    // Determine thread_id based on the request:
+    //  1. thread_id provided → resume that specific thread
+    //  2. new_thread = true   → create a new thread
+    //  3. otherwise           → resume latest thread
+    let ready = if let Some(ref tid) = cs.thread_id {
+        tracing::debug!("[ChatStart] resuming thread={}", tid);
+        let raw_msgs = conv_mgr.load_raw_messages(tid);
+        tracing::debug!("[ChatStart] loaded {} raw messages for thread={}", raw_msgs.len(), tid);
+        if raw_msgs.is_empty() {
+            tracing::debug!("[ChatStart] thread not found, returning error");
+            empty_chat_ready(cs.request_id, chat_model_name.clone(), Some("not_found"), Some("Conversation not found".to_string()))
+        } else if let Err(owner) = try_claim_thread(active_threads, tid, &cs.session_id).await {
+            tracing::debug!("[ChatStart] thread locked by session={}", owner);
+            let err = thread_locked_error(mgr, &owner).await;
+            empty_chat_ready(cs.request_id, chat_model_name.clone(), Some("thread_locked"), err.get("display").and_then(|d| d.as_str()).map(String::from))
+        } else {
+            tracing::debug!("[ChatStart] claimed thread={}, reconstructing history", tid);
+            build_resumed_chat_ready(tid, cs.request_id, &meta, &raw_msgs, &chat_model_name, ctx, llm).await
+        }
+    } else if cs.new_thread {
+        let tid = conv_mgr.create_thread(meta);
+        tracing::debug!("[ChatStart] created new thread={}", tid);
+        try_claim_thread(active_threads, &tid, &cs.session_id).await.ok();
+        Message::ChatReady(ChatReady {
+            request_id: cs.request_id,
+            thread_id: tid,
+            last_exchange: None,
+            earlier_count: 0,
+            model_name: chat_model_name.clone(),
+            history: None,
+            thread_host: None,
+            thread_cwd: None,
+            thread_summary: None,
+            error: None,
+            error_display: None,
+            sandbox_disabled: None,
+        })
+    } else {
+        tracing::debug!("[ChatStart] resuming latest thread");
+        match conv_mgr.get_latest_thread() {
+            Some(tid) => {
+                tracing::debug!("[ChatStart] latest thread={}", tid);
+                if let Err(owner) = try_claim_thread(active_threads, &tid, &cs.session_id).await {
+                    tracing::debug!("[ChatStart] latest thread locked by session={}", owner);
+                    let err = thread_locked_error(mgr, &owner).await;
+                    empty_chat_ready(cs.request_id, chat_model_name.clone(), Some("thread_locked"), err.get("display").and_then(|d| d.as_str()).map(String::from))
+                } else {
+                    let raw_msgs = conv_mgr.load_raw_messages(&tid);
+                    build_resumed_chat_ready(&tid, cs.request_id, &meta, &raw_msgs, &chat_model_name, ctx, llm).await
+                }
+            }
+            None => {
+                tracing::debug!("[ChatStart] no threads found");
+                empty_chat_ready(cs.request_id, chat_model_name.clone(), None, None)
+            }
+        }
+    };
+    let _ = tx.send(ready).await;
+}
+
+async fn handle_chat_interrupt(ci: ChatInterrupt, ctx: &HandlerCtx, tx: mpsc::Sender<Message>) {
+    // Clean up pending agent loop and store partial results
+    let state = if !ci.request_id.is_empty() {
+        ctx.pending_loops.lock().await.remove(&ci.request_id)
+    } else {
+        None
+    };
+
+    if let Some(mut state) = state {
+        // Build tool_result content: completed results + "user interrupted" for the rest
+        let completed_ids: std::collections::HashSet<String> = state
+            .completed_results
+            .iter()
+            .map(|r| r.tool_use_id.clone())
+            .collect();
+
+        let mut result_content: Vec<serde_json::Value> = state
+            .completed_results
+            .iter()
+            .map(|r| serde_json::json!({
+                "type": "tool_result",
+                "tool_use_id": r.tool_use_id,
+                "content": r.content,
+                "is_error": r.is_error,
+            }))
+            .collect();
+
+        // Fill in "user interrupted" for tools not yet completed
+        for tc in &state.pending_tool_calls {
+            if !completed_ids.contains(&tc.id) {
+                result_content.push(serde_json::json!({
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": "user interrupted",
+                    "is_error": true,
+                }));
+            }
+        }
+
+        persist_unsaved(&mut state, &ctx.conv_mgr, &[
+            serde_json::json!({"role": "user", "content": result_content}),
+            serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
+        ]);
+        update_thread_usage(&ctx.conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
+    } else if let Some(flag) = ctx.cancel_flags.lock().await.get(&ci.request_id) {
+        // Agent loop is running daemon-side tools - signal it to stop.
+        // The loop will store partial state to conversation when it detects the flag.
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    } else {
+        // Loop already finished - just record the interrupt
+        ctx.conv_mgr.append_messages(&ci.thread_id, &[
+            serde_json::json!({"role": "user", "content": ci.query}),
+            serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
+        ]);
+    }
+
+    tracing::info!("Chat interrupted by user (thread={}, request={})", ci.thread_id, ci.request_id);
+    let _ = tx.send(Message::Ack).await;
+}
+
+async fn handle_config_update(
+    changes: Vec<ConfigChange>,
+    ctx: &HandlerCtx,
+    tx: mpsc::Sender<Message>,
+) {
+    let result = crate::config_schema::apply_config_changes(&ctx.opts.config_path, &changes);
+    match result {
+        Ok(deploy_targets) => {
+            // Reload config after successful write
+            if let Ok(mut new_config) = omnish_common::config::load_daemon_config() {
+                omnish_daemon::task_mgr::inject_task_defaults(&mut new_config.tasks);
+                *ctx.opts.daemon_config.write().unwrap() = new_config;
+            }
+            // Spawn background deploy tasks; results are pushed back as NoticePush.
+            if !deploy_targets.is_empty() {
+                let omnish_dir = omnish_common::config::omnish_dir();
+                let listen_addr = ctx.opts.daemon_config.read().unwrap().listen_addr.clone();
+                for target in deploy_targets {
+                    omnish_daemon::deploy::spawn_deploy(
+                        omnish_dir.clone(),
+                        target,
+                        listen_addr.clone(),
+                        ctx.push_registry.clone(),
+                    );
+                }
+            }
+            let _ = tx.send(Message::ConfigUpdateResult { ok: true, error: None }).await;
+        }
+        Err(e) => {
+            let _ = tx.send(Message::ConfigUpdateResult {
+                ok: false,
+                error: Some(e.to_string()),
+            }).await;
+        }
+    }
+}
+
+async fn handle_update_request(
+    os: String,
+    arch: String,
+    version: String,
+    hostname: String,
+    ctx: &HandlerCtx,
+    tx: mpsc::Sender<Message>,
+) {
+    // Helper: send error + done (2 messages) so call_stream Ack sentinel is sent
+    macro_rules! send_update_error {
+        ($tx:expr, $seq:expr, $msg:expr) => {{
+            let _ = $tx.send(Message::UpdateChunk {
+                seq: $seq, total_size: 0, checksum: String::new(),
+                data: vec![], done: false,
+                error: Some($msg),
+            }).await;
+            let _ = $tx.send(Message::UpdateChunk {
+                seq: $seq + 1, total_size: 0, checksum: String::new(),
+                data: vec![], done: true, error: None,
+            }).await;
+        }};
+    }
+
+    let update_cache = &ctx.update_cache;
+    if !update_cache.try_acquire_transfer(&hostname) {
+        send_update_error!(tx, 0, "transfer already in progress for this platform, retry later".into());
+        return;
+    }
+
+    let cached = update_cache.cached_package(&os, &arch);
+    match cached {
+        Some((cached_ver, path)) if cached_ver == version => {
+            tracing::info!("streaming update package {}-{} v{} to {}", os, arch, version, hostname);
+            match tokio::fs::File::open(&path).await {
+                Ok(mut file) => {
+                    use tokio::io::AsyncReadExt;
+                    let total_size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+                    let path_for_checksum = path.clone();
+                    let checksum = match tokio::task::spawn_blocking(move || {
+                        omnish_common::update::checksum(&path_for_checksum)
+                    }).await {
+                        Ok(Ok(c)) => c,
+                        Ok(Err(e)) => { send_update_error!(tx, 0, format!("checksum error: {}", e)); return; }
+                        Err(e) => { send_update_error!(tx, 0, format!("join error: {}", e)); return; }
+                    };
+                    let mut seq = 0u32;
+                    let mut buf = vec![0u8; 65536];
+                    let mut send_failed = false;
+                    loop {
+                        let n = match file.read(&mut buf).await {
+                            Ok(n) => n,
+                            Err(e) => {
+                                send_update_error!(tx, seq, format!("read error: {}", e));
+                                return;
                             }
-                            if send_failed {
-                                tracing::warn!("streaming {}-{} v{} to {} aborted (client disconnected at chunk {})", os, arch, version, hostname, seq);
-                            } else {
-                                tracing::info!("streaming {}-{} v{} to {} complete ({} chunks)", os, arch, version, hostname, seq + 1);
-                            }
+                        };
+                        let done = n == 0;
+                        let chunk = Message::UpdateChunk {
+                            seq,
+                            total_size: if seq == 0 { total_size } else { 0 },
+                            checksum: if seq == 0 { checksum.clone() } else { String::new() },
+                            data: if done { vec![] } else { buf[..n].to_vec() },
+                            done,
+                            error: None,
+                        };
+                        if tx.send(chunk).await.is_err() {
+                            send_failed = true;
+                            break;
                         }
-                        Err(e) => {
-                            send_update_error!(tx, 0, format!("open error: {}", e));
-                        }
+                        if done { break; }
+                        seq += 1;
+                    }
+                    if send_failed {
+                        tracing::warn!("streaming {}-{} v{} to {} aborted (client disconnected at chunk {})", os, arch, version, hostname, seq);
+                    } else {
+                        tracing::info!("streaming {}-{} v{} to {} complete ({} chunks)", os, arch, version, hostname, seq + 1);
                     }
                 }
-                _ => {
-                    send_update_error!(tx, 0, "not available or version mismatch".into());
+                Err(e) => {
+                    send_update_error!(tx, 0, format!("open error: {}", e));
                 }
             }
         }
         _ => {
-            let _ = tx.send(Message::Ack).await;
+            send_update_error!(tx, 0, "not available or version mismatch".into());
         }
     }
 }
@@ -1191,21 +1186,16 @@ async fn build_chat_setup(mgr: &SessionManager, tool_registry: &omnish_daemon::t
     ChatSetup { command_query_tool, tools, system_prompt }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_chat_message(
     cm: ChatMessage,
-    mgr: &SessionManager,
+    ctx: &HandlerCtx,
     llm: &Arc<MultiBackend>,
-    conv_mgr: &Arc<ConversationManager>,
-    plugin_mgr: &Arc<PluginManager>,
-    tool_registry: &Arc<omnish_daemon::tool_registry::ToolRegistry>,
-    formatter_mgr: &Arc<omnish_daemon::formatter_mgr::FormatterManager>,
-    pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
-    opts: &Arc<ServerOpts>,
     tx: mpsc::Sender<Message>,
     cancel_flag: &Arc<std::sync::atomic::AtomicBool>,
 ) {
-    let backend = llm;
+    let mgr = &*ctx.session_mgr;
+    let conv_mgr = &ctx.conv_mgr;
+    let tool_registry = &ctx.tool_registry;
 
     // Handle model override
     if let Some(ref model_name) = cm.model {
@@ -1224,8 +1214,8 @@ async fn handle_chat_message(
     let meta = conv_mgr.load_meta(&cm.thread_id);
     let use_case = UseCase::Chat;
     let effective_backend: Arc<dyn LlmBackend> = meta.model.as_ref()
-        .and_then(|name| backend.get_backend_by_name(name))
-        .unwrap_or_else(|| backend.get_backend(use_case));
+        .and_then(|name| llm.get_backend_by_name(name))
+        .unwrap_or_else(|| llm.get_backend(use_case));
 
     let max_context_chars = effective_backend.max_content_chars();
 
@@ -1320,23 +1310,19 @@ async fn handle_chat_message(
         last_model: String::new(),
     };
 
-    run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, opts, tx, cancel_flag).await;
+    run_agent_loop(state, ctx, tx, cancel_flag).await;
 }
 
 /// Handle a ChatToolResult from the client - accumulate results, resume when all are received.
-#[allow(clippy::too_many_arguments)]
 async fn handle_tool_result(
     tr: ChatToolResult,
-    _mgr: &SessionManager,
-    conv_mgr: &Arc<ConversationManager>,
-    plugin_mgr: &Arc<PluginManager>,
-    tool_registry: &Arc<omnish_daemon::tool_registry::ToolRegistry>,
-    formatter_mgr: &Arc<omnish_daemon::formatter_mgr::FormatterManager>,
-    pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
-    cancel_flags: &CancelFlags,
-    opts: &Arc<ServerOpts>,
+    ctx: &HandlerCtx,
     tx: mpsc::Sender<Message>,
 ) {
+    let tool_registry = &ctx.tool_registry;
+    let formatter_mgr = &ctx.formatter_mgr;
+    let pending_loops = &ctx.pending_loops;
+    let cancel_flags = &ctx.cancel_flags;
     let mut map = pending_loops.lock().await;
     let state = match map.get_mut(&tr.request_id) {
         Some(s) => s,
@@ -1444,7 +1430,7 @@ async fn handle_tool_result(
     let req_id = state.cm.request_id.clone();
     let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     cancel_flags.lock().await.insert(req_id.clone(), flag.clone());
-    run_agent_loop(state, conv_mgr, plugin_mgr, tool_registry, formatter_mgr, pending_loops, opts, tx, &flag).await;
+    run_agent_loop(state, ctx, tx, &flag).await;
     cancel_flags.lock().await.remove(&req_id);
 }
 
@@ -1594,18 +1580,18 @@ fn mark_chat_message_hints(messages: &mut [omnish_llm::backend::TaggedMessage]) 
 /// Core agent loop: calls LLM, executes tools, pauses on client-side tools.
 /// Used by both `handle_chat_message` (initial) and `handle_tool_result` (resumption).
 /// Messages are sent incrementally through `tx` as they're produced (streaming).
-#[allow(clippy::too_many_arguments)]
 async fn run_agent_loop(
     mut state: AgentLoopState,
-    conv_mgr: &Arc<ConversationManager>,
-    plugin_mgr: &Arc<PluginManager>,
-    tool_registry: &Arc<omnish_daemon::tool_registry::ToolRegistry>,
-    formatter_mgr: &Arc<omnish_daemon::formatter_mgr::FormatterManager>,
-    pending_loops: &Arc<Mutex<HashMap<String, AgentLoopState>>>,
-    opts: &Arc<ServerOpts>,
+    ctx: &HandlerCtx,
     tx: mpsc::Sender<Message>,
     cancel_flag: &Arc<std::sync::atomic::AtomicBool>,
 ) {
+    let conv_mgr = &ctx.conv_mgr;
+    let plugin_mgr = &ctx.plugin_mgr;
+    let tool_registry = &ctx.tool_registry;
+    let formatter_mgr = &ctx.formatter_mgr;
+    let pending_loops = &ctx.pending_loops;
+    let opts = &ctx.opts;
     let backend = &state.effective_backend;
 
     let max_iterations = 100;
@@ -2304,8 +2290,13 @@ async fn build_resume_response(
     json
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn handle_builtin_command(req: &Request, mgr: &SessionManager, task_mgr: &Mutex<TaskManager>, llm_backend: &Arc<MultiBackend>, conv_mgr: &Arc<ConversationManager>, tool_registry: &omnish_daemon::tool_registry::ToolRegistry, formatter_mgr: &omnish_daemon::formatter_mgr::FormatterManager, active_threads: &ActiveThreads) -> serde_json::Value {
+async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &Arc<MultiBackend>) -> serde_json::Value {
+    let mgr = &*ctx.session_mgr;
+    let task_mgr = &*ctx.task_mgr;
+    let conv_mgr = &ctx.conv_mgr;
+    let tool_registry = &*ctx.tool_registry;
+    let formatter_mgr = &*ctx.formatter_mgr;
+    let active_threads = &ctx.active_threads;
     let sub = req.query.strip_prefix("__cmd:").unwrap_or("");
 
     // Build system-reminder for context display
