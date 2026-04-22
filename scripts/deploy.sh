@@ -177,7 +177,9 @@ configure_remote() {
 # ── Validate ─────────────────────────────────────────────────────────────────
 
 [[ ${#CLIENTS[@]} -gt 0 ]] || { info "No clients specified, nothing to deploy."; exit 0; }
-[[ -x "$BIN_DIR/omnish" ]] || error "omnish client binary not found at $BIN_DIR/omnish"
+
+UPDATES_DIR="${OMNISH_DIR}/updates"
+[[ -d "$UPDATES_DIR" ]] || error "updates directory not found at $UPDATES_DIR"
 
 parse_daemon_addr
 collect_candidates
@@ -188,6 +190,40 @@ if [[ "$DAEMON_KIND" == "none" ]]; then
     warn "  (e.g. export OMNISH_DAEMON_ADDR=tcp://your-host:9500) and re-run."
 fi
 
+# ── Deploy helpers ───────────────────────────────────────────────────────────
+
+# Detect remote platform via ssh. Echoes "<os>-<arch>" (e.g. "linux-x86_64",
+# "macos-aarch64") on success, empty string on failure. Normalizes the raw
+# `uname` output into the same tag the daemon uses for update packages.
+detect_remote_platform() {
+    local target="$1"
+    local raw
+    raw="$(ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$target" 'uname -s; uname -m' 2>/dev/null)" || return 1
+    local os="$(echo "$raw" | sed -n '1p')"
+    local arch="$(echo "$raw" | sed -n '2p')"
+    case "$os" in
+        Linux)  os="linux" ;;
+        Darwin) os="macos" ;;
+        *)      return 1 ;;
+    esac
+    case "$arch" in
+        x86_64|amd64)   arch="x86_64" ;;
+        aarch64|arm64)  arch="aarch64" ;;
+        *) return 1 ;;
+    esac
+    echo "${os}-${arch}"
+}
+
+# Pick the newest package in $UPDATES_DIR/<platform>/ matching
+# omnish-*-<platform>.tar.gz. Echoes the absolute path, empty if none.
+latest_package() {
+    local platform="$1" dir="$UPDATES_DIR/$platform"
+    [[ -d "$dir" ]] || return 0
+    ls -1 "$dir"/omnish-*-"${platform}".tar.gz 2>/dev/null \
+        | sort -V \
+        | tail -n 1
+}
+
 # ── Deploy to clients ────────────────────────────────────────────────────────
 
 for client in "${CLIENTS[@]}"; do
@@ -196,25 +232,87 @@ for client in "${CLIENTS[@]}"; do
     info "Deploying to: ${client}..."
     REMOTE_HOME="~/.omnish"
 
-    # Ensure remote directories exist and remove old binaries (running binaries can't be overwritten)
+    platform="$(detect_remote_platform "$client")" || platform=""
+    if [[ -z "$platform" ]]; then
+        warn "Cannot detect platform for ${client} (ssh failed or unsupported uname)"
+        status_marker "connect_failed ${client}"
+        FAILED_COUNT=$((FAILED_COUNT + 1))
+        continue
+    fi
+
+    pkg="$(latest_package "$platform")"
+    if [[ -z "$pkg" ]]; then
+        warn "No update package for ${platform} under ${UPDATES_DIR}/${platform}/"
+        status_marker "no_package ${client}"
+        FAILED_COUNT=$((FAILED_COUNT + 1))
+        continue
+    fi
+    info "  platform=${platform} pkg=$(basename "$pkg")"
+
+    # Ensure remote layout exists. Do NOT remove the old binaries - install.sh
+    # replaces them atomically via rename(2), so nothing overwrites a running
+    # process and there is no window with a missing file.
     if ! ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$client" \
-            "mkdir -p ${REMOTE_HOME}/bin ${REMOTE_HOME}/tls && rm -f ${REMOTE_HOME}/bin/omnish ${REMOTE_HOME}/bin/omnish-plugin" 2>/dev/null; then
+            "mkdir -p ${REMOTE_HOME}/bin ${REMOTE_HOME}/tls" 2>/dev/null; then
         warn "Cannot connect to ${client}, skipping"
         status_marker "connect_failed ${client}"
         FAILED_COUNT=$((FAILED_COUNT + 1))
         continue
     fi
 
-    if scp -q -o BatchMode=yes "${BIN_DIR}/omnish" "${BIN_DIR}/omnish-plugin" "${client}:${REMOTE_HOME}/bin/" 2>/dev/null; then
-        scp -q -o BatchMode=yes "${OMNISH_DIR}/tls/cert.pem" "${client}:${REMOTE_HOME}/tls/" 2>/dev/null || true
-        scp -q -o BatchMode=yes "${OMNISH_DIR}/auth_token" "${client}:${REMOTE_HOME}/" 2>/dev/null || true
-        configure_remote "$client"
-        info "Deployed to ${client}"
-    else
-        warn "Failed to deploy to ${client}"
+    # Use a per-deploy tmp path on the remote so parallel deploys can't clash.
+    # Stage locally to ~/.omnish/updates/ so we never leave junk in /tmp if the
+    # final ssh step fails before cleanup.
+    remote_stage="${REMOTE_HOME}/updates/.deploy-$$-$RANDOM"
+    pkg_name="$(basename "$pkg")"
+
+    if ! ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$client" \
+            "mkdir -p ${remote_stage}" 2>/dev/null; then
+        warn "Failed to create staging dir on ${client}"
         status_marker "scp_failed ${client}"
         FAILED_COUNT=$((FAILED_COUNT + 1))
+        continue
     fi
+
+    if ! scp -q -o BatchMode=yes "$pkg" "${client}:${remote_stage}/${pkg_name}" 2>/dev/null; then
+        warn "Failed to scp package to ${client}"
+        ssh -n -o BatchMode=yes "$client" "rm -rf ${remote_stage}" 2>/dev/null || true
+        status_marker "scp_failed ${client}"
+        FAILED_COUNT=$((FAILED_COUNT + 1))
+        continue
+    fi
+
+    # Extract + invoke install.sh --client-only --upgrade on the remote.
+    # install.sh exits 0 on success, exit 2 when already up-to-date (both OK);
+    # any other non-zero is a real failure. Let stderr flow back so the
+    # failure notice can surface the actual error. Cleanup the staging dir
+    # regardless of outcome.
+    install_rc=0
+    ssh -n -o BatchMode=yes "$client" "
+        set -e
+        cd ${remote_stage}
+        tar xzf ${pkg_name}
+        extracted=\"\$(find . -maxdepth 1 -type d -name 'omnish-*' | head -n 1)\"
+        [ -d \"\$extracted\" ] || { echo 'extracted dir missing' >&2; exit 10; }
+        bash \"\$extracted/install.sh\" --client-only --upgrade
+    " || install_rc=$?
+    ssh -n -o BatchMode=yes "$client" "rm -rf ${remote_stage}" 2>/dev/null || true
+
+    # exit 2 from install.sh = already up-to-date; treat as success.
+    if (( install_rc != 0 && install_rc != 2 )); then
+        warn "install.sh failed on ${client} (rc=${install_rc})"
+        status_marker "install_failed ${client}"
+        FAILED_COUNT=$((FAILED_COUNT + 1))
+        continue
+    fi
+
+    # TLS cert and auth token live outside the release package (they are
+    # per-daemon credentials), so scp them separately. configure_remote then
+    # writes client.toml if the remote doesn't have one.
+    scp -q -o BatchMode=yes "${OMNISH_DIR}/tls/cert.pem" "${client}:${REMOTE_HOME}/tls/" 2>/dev/null || true
+    scp -q -o BatchMode=yes "${OMNISH_DIR}/auth_token" "${client}:${REMOTE_HOME}/" 2>/dev/null || true
+    configure_remote "$client"
+    info "Deployed to ${client}"
 done
 
 if (( FAILED_COUNT > 0 )); then

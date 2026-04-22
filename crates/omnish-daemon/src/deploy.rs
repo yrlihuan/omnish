@@ -33,6 +33,10 @@ enum DeployOutcome {
     /// Binaries copied but daemon uses a Unix socket; a remote client cannot
     /// use it, so no client.toml was written.
     UnixSocket,
+    /// No update package matching the remote's <os>-<arch> was found under
+    /// ~/.omnish/updates/. User must wait for the auto_update task to cache
+    /// one, or trigger a download manually.
+    NoPackage,
     /// Deploy itself failed (scp error, missing script, ssh failure, etc.).
     Failed(String),
 }
@@ -96,6 +100,14 @@ pub fn spawn_deploy(
                 format!(
                     "Deployed to {}, but daemon uses a Unix socket. \
                      Configure daemon_addr manually",
+                    target,
+                ),
+            ),
+            DeployOutcome::NoPackage => (
+                NoticeLevel::Error,
+                format!(
+                    "Deploy to {} failed: no update package cached for that platform. \
+                     Let auto_update run or fetch the package manually.",
                     target,
                 ),
             ),
@@ -169,9 +181,13 @@ async fn run_deploy(omnish_dir: &Path, target: &str, listen_addr: &str) -> Deplo
     let (stderr_msg, status_kind) = stderr_task.await.unwrap_or_default();
 
     if !status.success() {
+        if status_kind.as_deref() == Some("no_package") {
+            return DeployOutcome::NoPackage;
+        }
         let msg = match status_kind.as_deref() {
             Some("connect_failed") => "could not connect".to_string(),
             Some("scp_failed") => "scp failed".to_string(),
+            Some("install_failed") => "remote install.sh failed".to_string(),
             _ if !stderr_msg.is_empty() => stderr_msg,
             _ => format!("exit status {}", status),
         };

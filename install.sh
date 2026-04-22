@@ -47,6 +47,18 @@ warn()  { printf '\033[1;33mWARN:\033[0m %s\n' "$*"; }
 error() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 ask()   { printf '\033[1;32m?\033[0m %s ' "$1" >&2; read -r REPLY </dev/tty; }
 
+# Atomically install a file into place. Writes to a sibling tmp file then
+# rename(2)s over the destination - avoids both the window where no binary
+# exists and the ETXTBSY that plagues in-place cp of a running binary.
+# `cp -p` preserves the source mode so executable bits carry through for
+# plugin helper binaries (e.g. <plugin>_formatter) without a separate chmod.
+atomic_install() {
+    local src="$1" dst="$2"
+    local tmp="$(dirname "$dst")/.$(basename "$dst").new.$$"
+    cp -p "$src" "$tmp"
+    mv -f "$tmp" "$dst"
+}
+
 # Write or replace a [plugins.<name>] section in a TOML file
 patch_toml_section() {
     local toml_file="$1"
@@ -374,24 +386,25 @@ if [[ "$DRY_RUN" != true ]]; then
 
     mkdir -p "$BIN_DIR" "$OMNISH_DIR/plugins"
 
-    # Remove old binaries first (running binaries can't be overwritten: "Text file busy")
+    # Install binaries atomically (rename(2) over the destination - survives
+    # ETXTBSY on running binaries and never leaves a window with no file).
     if [[ "$CLIENT_ONLY" == true ]]; then
         # Client-only mode: skip daemon binary
         for f in "$EXTRACTED/bin/"*; do
             fname=$(basename "$f")
             [[ "$fname" == "omnish-daemon" ]] && continue
-            rm -f "$BIN_DIR/$fname"
-            cp "$f" "$BIN_DIR/"
-            chmod 755 "$BIN_DIR/$fname"
+            atomic_install "$f" "$BIN_DIR/$fname"
         done
     else
-        rm -f "$BIN_DIR"/omnish "$BIN_DIR"/omnish-daemon "$BIN_DIR"/omnish-plugin
-        cp "$EXTRACTED/bin/"* "$BIN_DIR/"
-        chmod 755 "$BIN_DIR"/*
+        for f in "$EXTRACTED/bin/"*; do
+            fname=$(basename "$f")
+            atomic_install "$f" "$BIN_DIR/$fname"
+        done
     fi
 
-    # Install assets (plugin configs, prompts, scripts)
-    if [[ -d "$EXTRACTED/assets" ]]; then
+    # Daemon-only assets: tool.json, prompts, deploy.sh. Client-only deploys
+    # skip these entirely - they are only read on the daemon host.
+    if [[ "$CLIENT_ONLY" != true ]] && [[ -d "$EXTRACTED/assets" ]]; then
         # Plugin tool definitions (always overwrite, with warning header)
         mkdir -p "$OMNISH_DIR/plugins/builtin"
         { echo "// This file is for demonstration only. Use tool.override.json to customize."; cat "$EXTRACTED/assets/plugins/builtin/tool.json"; } > "$OMNISH_DIR/plugins/builtin/tool.json"
@@ -411,18 +424,21 @@ if [[ "$DRY_RUN" != true ]]; then
         fi
 
         # Scripts (always overwrite)
-        cp "$EXTRACTED/assets/deploy.sh" "$OMNISH_DIR/"
-        chmod 755 "$OMNISH_DIR/deploy.sh"
+        atomic_install "$EXTRACTED/assets/deploy.sh" "$OMNISH_DIR/deploy.sh"
     fi
 
-    # Install plugins (preserve existing, add new)
+    # Install plugins. Client hosts need plugin binaries (e.g. omnish-plugin
+    # subprocesses for client-side tool execution).
     if [[ -d "$EXTRACTED/plugins" ]]; then
         for plugin_dir in "$EXTRACTED/plugins"/*/; do
             [[ -d "$plugin_dir" ]] || continue
             plugin_name=$(basename "$plugin_dir")
             mkdir -p "$OMNISH_DIR/plugins/$plugin_name"
-            cp -f "$plugin_dir"* "$OMNISH_DIR/plugins/$plugin_name/"
-            chmod +x "$OMNISH_DIR/plugins/$plugin_name/$plugin_name" 2>/dev/null || true
+            for f in "$plugin_dir"*; do
+                [[ -f "$f" ]] || continue
+                fname=$(basename "$f")
+                atomic_install "$f" "$OMNISH_DIR/plugins/$plugin_name/$fname"
+            done
         done
     fi
 
