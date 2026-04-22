@@ -15,10 +15,10 @@ pub const NEWLINE: &str = "\n\x1b[G";
 pub const RESET: &str = "\x1b[0m";
 /// Bold text.
 pub const BOLD: &str = "\x1b[1m";
-/// Dim gray text - combines SGR dim (2) and bright-black (90) so text
-/// appears dimmed on terminals that support the dim attribute, and still
-/// renders as gray on terminals that ignore it.
-pub const DIM: &str = "\x1b[2;90m";
+/// Dim gray text - bright-black (90). Previously combined with SGR 2 (faint),
+/// but terminal support for SGR 2 is inconsistent, causing the same output to
+/// render differently across terminals.
+pub const DIM: &str = "\x1b[90m";
 /// Bold + reverse video - used for selected/highlighted items.
 pub const BOLD_REVERSE: &str = "\x1b[1;7m";
 /// Red - errors.
