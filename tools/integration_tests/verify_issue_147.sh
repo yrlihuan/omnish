@@ -76,13 +76,19 @@ test_2() {
     local content=$(capture_pane -50)
     show_capture "After /context chat" "$content" 20
 
+    # Stash the captured content for Test 3's post-mortem.
+    CONTEXT_CONTENT="$content"
+
     # Check for current directory indicators (commands should show /tmp from cd)
     if echo "$content" | grep -qE "(WORKING DIR:|/tmp|LAST 5 COMMANDS)"; then
         # Extract cwd from command history or WORKING DIR
         CONTEXT_CWD=$(echo "$content" | grep -oE '/tmp[^[:space:]]*' | head -1)
+        CONTEXT_CWD_SOURCE="fallback_regex"
         if [[ -z "$CONTEXT_CWD" ]]; then
             CONTEXT_CWD=$(echo "$content" | grep "WORKING DIR:" | sed 's/.*WORKING DIR: *//' | tr -d '[:space:]' | head -1)
+            CONTEXT_CWD_SOURCE="WORKING_DIR_line"
         fi
+        echo -e "  Extracted CONTEXT_CWD='${CONTEXT_CWD}' (source: ${CONTEXT_CWD_SOURCE})"
 
         if echo "$CONTEXT_CWD" | grep -q 'tmp'; then
             assert_pass "/context shows directory info containing /tmp (got: $CONTEXT_CWD)"
@@ -110,6 +116,31 @@ test_3() {
         return 0
     else
         assert_fail "Cwds differ: debug='$norm_debug' vs context='$norm_context'"
+
+        # ── Debug dump ───────────────────────────────────────────────────
+        # Pane scraping is lossy under rendering; when the extracted cwd
+        # looks garbled, surface byte-level state so a remote CI run is
+        # diagnosable without local repro.
+        echo -e "  ${YELLOW}--- Test 3 debug ---${NC}"
+        echo -e "  CONTEXT_CWD extraction source: ${CONTEXT_CWD_SOURCE:-unknown}"
+
+        echo -e "  CONTEXT_CWD bytes (od -c):"
+        printf '%s' "$CONTEXT_CWD" | od -c | sed 's/^/    /'
+
+        echo -e "  DEBUG_CWD bytes (od -c):"
+        printf '%s' "$DEBUG_CWD" | od -c | sed 's/^/    /'
+
+        if [[ -n "$CONTEXT_CONTENT" ]]; then
+            echo -e "  /context pane lines containing /tmp (cat -A):"
+            echo "$CONTEXT_CONTENT" | grep -nE '/tmp' | cat -A | sed 's/^/    /'
+
+            echo -e "  /context pane WORKING DIR line (cat -A):"
+            echo "$CONTEXT_CONTENT" | grep -n 'WORKING DIR' | cat -A | sed 's/^/    /' \
+                || echo "    (no WORKING DIR: line in capture)"
+        fi
+
+        echo -e "  Fresh pane at Test 3 time:"
+        show_capture "fresh capture" "$(capture_pane -80)" 40
         return 1
     fi
 }
