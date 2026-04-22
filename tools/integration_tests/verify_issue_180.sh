@@ -7,6 +7,7 @@
 #   2. Home/End (Ctrl-A/Ctrl-E) + Ctrl-U kill to start
 #   3. Multi-line editing with Ctrl-J
 #   4. Backspace merges lines
+#   5. Shift+Enter inserts newline (issue #579)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -18,6 +19,7 @@ Test cases:
   2. Ctrl-A (home) + Ctrl-U (kill): type "hello world", Ctrl-A to home, Ctrl-E to end, Ctrl-U to kill
   3. Multi-line: type "line1", Ctrl-J, "line2", submit → content has both lines
   4. Backspace merges lines: type "ab", Ctrl-J, "cd", Backspace×2 at start → merged
+  5. Shift+Enter inserts newline (issue #579): type "line1", S-Enter, "line2" → two lines, no submit
 EOF
 }
 
@@ -200,5 +202,48 @@ test_4() {
     fi
 }
 
+# ── Test 5: Shift+Enter inserts newline (issue #579) ─────────────────────
+# On Windows (and other terminals that don't opt into CSI u by default),
+# Shift+Enter used to arrive as `\r` and submit the message. Chat mode now
+# writes `\x1b[>4;2m` on entry to enable modifyOtherKeys, so tmux forwards
+# S-Enter as `\x1b[13;2u` (requires `set -g extended-keys on`, set in lib.sh).
+test_5() {
+    echo -e "\n${YELLOW}=== Test 5: Shift+Enter should insert newline (issue #579) ===${NC}"
+
+    # Enter chat mode
+    send_keys ":" 0.5
+    wait_for_prompt
+
+    # Type "line1", Shift+Enter, "line2"
+    send_keys "line1" 0.3
+    send_special S-Enter 0.3
+    send_keys "line2" 0.3
+
+    local content=$(capture_pane -10)
+    show_capture "After line1 <S-Enter> line2" "$content" 5
+
+    # If S-Enter was treated as submit, "line2" would appear on a fresh
+    # prompt, not as a continuation line ("  line2").
+    local has_line1=false has_line2=false
+    if echo "$content" | grep -q '> line1'; then
+        has_line1=true
+    fi
+    if echo "$content" | grep -q '  line2'; then
+        has_line2=true
+    fi
+
+    if [[ "$has_line1" == "true" && "$has_line2" == "true" ]]; then
+        assert_pass "Shift+Enter: two lines visible, no submission"
+        send_special Escape 0.5
+        sleep 1.5
+        return 0
+    else
+        assert_fail "Expected '> line1' and '  line2' (line1=$has_line1, line2=$has_line2)"
+        send_special Escape 0.5
+        sleep 1.5
+        return 1
+    fi
+}
+
 echo -e "${YELLOW}Issue #180: Line editor integration test${NC}"
-run_tests 4
+run_tests 5

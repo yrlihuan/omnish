@@ -3484,8 +3484,11 @@ impl ChatSession {
         let mut paste_buffering = false;
         let mut paste_last_cr = false;
 
-        // Enable bracketed paste
-        write_stdout("\x1b[?2004h");
+        // RAII guard: enables bracketed paste + modifyOtherKeys (CSI u) on
+        // enter, resets both on drop. Covers every return from this loop --
+        // normal submit, Esc, Ctrl-D, idle timeout, panic unwind -- without
+        // relying on a cleanup call at every exit site.
+        let _kbd_mode = KeyboardModeGuard::enter();
 
         let term_cursor_row = std::cell::Cell::new(0usize);
 
@@ -3612,10 +3615,6 @@ impl ChatSession {
             write_stdout(&out);
         };
 
-        let disable_paste = || {
-            write_stdout("\x1b[?2004l");
-        };
-
         // If initial content was provided, render it immediately.
         if initial.is_some() {
             redraw(&editor, "", false);
@@ -3662,10 +3661,9 @@ impl ChatSession {
                 let timeout_ms = 30 * 60 * 1000; // 30 minutes
                 let ready = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
                 if ready == 0 {
-                    // Timeout - auto-exit chat mode
+                    // Timeout - auto-exit chat mode. KeyboardModeGuard resets
+                    // bracketed paste + modifyOtherKeys on drop.
                     write_stdout(&format!("{NEWLINE}{DIM}(chat closed due to inactivity){RESET}{NEWLINE}"));
-                    // Disable bracketed paste before exiting
-                    write_stdout("\x1b[?2004l");
                     return None;
                 }
             }
@@ -3718,7 +3716,6 @@ impl ChatSession {
                     match byte[0] {
                         0x1b => match parse_key_after_esc(stdin_fd) {
                             Some(KeyEvent::Esc) => {
-                                disable_paste();
                                 return None;
                             }
                             Some(KeyEvent::PasteStart) => {
@@ -3933,7 +3930,6 @@ impl ChatSession {
                             }
                         }
                         0x04 if editor.is_empty() && paste_blocks.borrow().is_empty() => {
-                            disable_paste();
                             return None;
                         }
                         0x0a => {
@@ -3984,7 +3980,6 @@ impl ChatSession {
                             drop(blocks);
                             write_stdout(&format!("\r\x1b[{}C", end_col));
                             self.completer.clear();
-                            disable_paste();
                             // Assemble full content
                             let blocks = paste_blocks.borrow();
                             if blocks.is_empty() {
@@ -4058,7 +4053,6 @@ impl ChatSession {
                             }
                             if editor.is_empty() && paste_blocks.borrow().is_empty() {
                                 if allow_backspace_exit {
-                                    disable_paste();
                                     return None;
                                 }
                                 continue;
@@ -4112,7 +4106,6 @@ impl ChatSession {
                     }
                 }
                 _ => {
-                    disable_paste();
                     return None;
                 }
             }
@@ -4121,6 +4114,30 @@ impl ChatSession {
 }
 
 // ── Standalone helpers ───────────────────────────────────────────────────
+
+/// Owns the terminal's input-mode toggles for the chat input loop. On
+/// `enter`, enables bracketed paste (DECSET 2004) and modifyOtherKeys
+/// level 2 (`CSI > 4 ; 2 m`) so Shift+Enter arrives as `\x1b[13;2u`
+/// instead of colliding with plain Enter (needed on Windows Terminal and
+/// any terminal that doesn't opt into CSI u by default).
+///
+/// Drop resets both modes, so every exit path from the input loop --
+/// submit, Esc, Ctrl-D, idle timeout, panic unwind -- restores terminal
+/// state without a manual cleanup call.
+struct KeyboardModeGuard;
+
+impl KeyboardModeGuard {
+    fn enter() -> Self {
+        write_stdout("\x1b[?2004h\x1b[>4;2m");
+        KeyboardModeGuard
+    }
+}
+
+impl Drop for KeyboardModeGuard {
+    fn drop(&mut self) {
+        write_stdout("\x1b[>4;0m\x1b[?2004l");
+    }
+}
 
 #[derive(Debug, PartialEq)]
 enum KeyEvent {

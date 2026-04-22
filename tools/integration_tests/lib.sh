@@ -46,7 +46,14 @@ if [[ ! -x "$TEST_SHELL_PATH" ]]; then
     echo -e "${YELLOW}SKIP: $TEST_SHELL_PATH not found${NC}"
     exit 0
 fi
-echo "set -g default-shell $TEST_SHELL_PATH" > "$TMUX_CONF"
+{
+    echo "set -g default-shell $TEST_SHELL_PATH"
+    # Let tmux forward modifier+key combinations (e.g. Shift+Enter as
+    # `\x1b[13;2u`) when the inner program has requested modifyOtherKeys
+    # via `CSI > 4 ; 2 m`. Required for verify_issue_579.sh; benign for
+    # tests that only use plain keys.
+    echo "set -g extended-keys on"
+} > "$TMUX_CONF"
 
 # Shorthand: all tmux calls go through this to ensure correct config + socket.
 _tmux() {
