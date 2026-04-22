@@ -29,6 +29,8 @@
   "error.resume_timed_out": "Reanudación expirada \u2014 el demonio puede estar ocupado",
   "error.no_llm_backends": "No hay backends LLM disponibles",
   "error.usage_thread_sandbox": "Uso: /thread sandbox [on|off]",
+  "error.no_active_thread": "Sin hilo activo",
+  "error.failed_rename_thread": "Error al renombrar el hilo",
   "error.failed_receive_response_main": "Error al recibir la respuesta",
   "error.daemon_not_connected": "Demonio no conectado",
 
@@ -121,6 +123,7 @@
   "command.help.tasks": "Listar o gestionar tareas programadas",
   "command.help.integrate": "Integrar omnish con tmux, screen o ssh",
   "command.help.thread_sandbox": "Alternar aplicación de sandbox para el hilo actual (modo chat)",
+  "command.help.thread_rename": "Renombrar hilo actual (vacío para limpiar)",
   "command.help.resume": "Reanudar un hilo de conversación anterior",
   "command.help.model": "Cambiar de modelo LLM"
 }

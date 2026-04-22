@@ -29,6 +29,8 @@
   "error.resume_timed_out": "انتهت مهلة الاستئناف \u2014 قد يكون الخادم مشغولاً",
   "error.no_llm_backends": "لا توجد واجهات LLM متاحة",
   "error.usage_thread_sandbox": "الاستخدام: /thread sandbox [on|off]",
+  "error.no_active_thread": "لا يوجد خيط نشط",
+  "error.failed_rename_thread": "فشل في إعادة تسمية الخيط",
   "error.failed_receive_response_main": "فشل في استقبال الاستجابة",
   "error.daemon_not_connected": "الخادم غير متصل",
 
@@ -121,6 +123,7 @@
   "command.help.tasks": "عرض أو إدارة المهام المجدولة",
   "command.help.integrate": "دمج omnish مع tmux أو screen أو ssh",
   "command.help.thread_sandbox": "تبديل تطبيق sandbox للخيط الحالي (وضع الدردشة)",
+  "command.help.thread_rename": "إعادة تسمية الخيط الحالي (فارغ للمسح)",
   "command.help.resume": "استئناف خيط محادثة سابق",
   "command.help.model": "تبديل نموذج LLM"
 }

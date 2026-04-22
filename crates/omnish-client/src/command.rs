@@ -74,6 +74,10 @@ fn thread_usage(_args: &str) -> String {
         "  sandbox [on|off] - {}\n",
         crate::i18n::t("command.help.thread_sandbox")
     ));
+    output.push_str(&format!(
+        "  rename [<name>] - {}\n",
+        crate::i18n::t("command.help.thread_rename")
+    ));
     output
 }
 
@@ -206,6 +210,10 @@ fn help_command(_args: &str) -> String {
                 "    /thread sandbox [on|off] - {}\n",
                 crate::i18n::t("command.help.thread_sandbox")
             ));
+            output.push_str(&format!(
+                "    /thread rename [<name>] - {}\n",
+                crate::i18n::t("command.help.thread_rename")
+            ));
         }
     }
     // Chat-mode-only commands not in the registry.
@@ -336,6 +344,7 @@ pub const CHAT_ONLY_COMMANDS: &[&str] = &[
     "/thread sandbox",
     "/thread sandbox on",
     "/thread sandbox off",
+    "/thread rename",
     "/test lock",
     "/test disconnect",
 ];
@@ -838,6 +847,7 @@ mod tests {
                 assert!(result.contains("/thread stats"));
                 assert!(result.contains("/thread del"));
                 assert!(result.contains("/thread sandbox"));
+                assert!(result.contains("/thread rename"));
             }
             _ => panic!("expected Command"),
         }

@@ -29,6 +29,8 @@
   "error.resume_timed_out": "Resume timed out \u2014 daemon may be busy",
   "error.no_llm_backends": "No LLM backends available",
   "error.usage_thread_sandbox": "Usage: /thread sandbox [on|off]",
+  "error.no_active_thread": "No active thread",
+  "error.failed_rename_thread": "Failed to rename thread",
   "error.failed_receive_response_main": "Failed to receive response",
   "error.daemon_not_connected": "Daemon not connected",
 
@@ -121,6 +123,7 @@
   "command.help.tasks": "List or manage scheduled tasks",
   "command.help.integrate": "Integrate omnish with tmux, screen, or ssh",
   "command.help.thread_sandbox": "Toggle sandbox enforcement for current thread (chat mode)",
+  "command.help.thread_rename": "Rename current thread (empty to clear override)",
   "command.help.resume": "Resume a previous conversation thread",
   "command.help.model": "Switch LLM model"
 }

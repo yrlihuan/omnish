@@ -29,6 +29,8 @@
   "error.resume_timed_out": "恢復逾時 \u2014 守護程序可能忙碌",
   "error.no_llm_backends": "沒有可用的 LLM 後端",
   "error.usage_thread_sandbox": "用法: /thread sandbox [on|off]",
+  "error.no_active_thread": "沒有作用中的執行緒",
+  "error.failed_rename_thread": "重新命名執行緒失敗",
   "error.failed_receive_response_main": "接收回應失敗",
   "error.daemon_not_connected": "守護程序未連線",
 
@@ -121,6 +123,7 @@
   "command.help.tasks": "列出或管理定時任務",
   "command.help.integrate": "整合 omnish 到 tmux、screen 或 ssh",
   "command.help.thread_sandbox": "切換目前執行緒的沙箱強制（聊天模式）",
+  "command.help.thread_rename": "重新命名目前執行緒（參數為空時清除）",
   "command.help.resume": "恢復之前的對話執行緒",
   "command.help.model": "切換 LLM 模型"
 }

@@ -29,6 +29,8 @@
   "error.resume_timed_out": "Reprise expirée \u2014 le démon est peut-être occupé",
   "error.no_llm_backends": "Aucun backend LLM disponible",
   "error.usage_thread_sandbox": "Utilisation : /thread sandbox [on|off]",
+  "error.no_active_thread": "Aucun fil actif",
+  "error.failed_rename_thread": "Échec du renommage du fil",
   "error.failed_receive_response_main": "Échec de réception de la réponse",
   "error.daemon_not_connected": "Démon non connecté",
 
@@ -121,6 +123,7 @@
   "command.help.tasks": "Lister ou gérer les tâches planifiées",
   "command.help.integrate": "Intégrer omnish avec tmux, screen ou ssh",
   "command.help.thread_sandbox": "Activer/désactiver la sandbox pour le fil courant (mode chat)",
+  "command.help.thread_rename": "Renommer le fil courant (vide pour effacer)",
   "command.help.resume": "Reprendre un fil de conversation précédent",
   "command.help.model": "Changer de modèle LLM"
 }

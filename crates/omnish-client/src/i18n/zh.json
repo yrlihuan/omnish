@@ -29,6 +29,8 @@
   "error.resume_timed_out": "恢复超时 \u2014 守护进程可能忙碌",
   "error.no_llm_backends": "没有可用的 LLM 后端",
   "error.usage_thread_sandbox": "用法: /thread sandbox [on|off]",
+  "error.no_active_thread": "没有活动线程",
+  "error.failed_rename_thread": "重命名线程失败",
   "error.failed_receive_response_main": "接收响应失败",
   "error.daemon_not_connected": "守护进程未连接",
 
@@ -121,6 +123,7 @@
   "command.help.tasks": "列出或管理定时任务",
   "command.help.integrate": "集成 omnish 到 tmux、screen 或 ssh",
   "command.help.thread_sandbox": "切换当前线程的沙箱强制（聊天模式）",
+  "command.help.thread_rename": "重命名当前线程（参数为空时清除）",
   "command.help.resume": "恢复之前的对话线程",
   "command.help.model": "切换 LLM 模型"
 }

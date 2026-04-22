@@ -25,6 +25,11 @@ pub struct ThreadMeta {
     /// label when resuming the thread. Regenerated when `summary` changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_word: Option<String>,
+    /// User-specified thread name, takes precedence over `title_word` for
+    /// tmux labelling. Never touched by the summary loop; only cleared
+    /// explicitly via `/thread rename` with no argument.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_override: Option<String>,
     /// Backend name for per-thread model override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -44,6 +49,14 @@ pub struct ThreadMeta {
     /// ChatToolCall.sandboxed=false for this thread, bypassing permit_rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_disabled: Option<bool>,
+}
+
+impl ThreadMeta {
+    /// Effective tmux label: user override takes precedence over auto-generated
+    /// title_word. Returns `None` when neither is set.
+    pub fn effective_title_label(&self) -> Option<String> {
+        self.title_override.clone().or_else(|| self.title_word.clone())
+    }
 }
 
 pub struct ConversationManager {
@@ -222,6 +235,14 @@ impl ConversationManager {
     pub fn set_sandbox_disabled(&self, thread_id: &str, disabled: bool) {
         let mut meta = self.load_meta(thread_id);
         meta.sandbox_disabled = if disabled { Some(true) } else { None };
+        self.save_meta(thread_id, &meta);
+    }
+
+    /// Set or clear the user-specified thread title override and persist.
+    /// Pass `None` to clear, which lets auto-generated `title_word` take over.
+    pub fn set_title_override(&self, thread_id: &str, value: Option<String>) {
+        let mut meta = self.load_meta(thread_id);
+        meta.title_override = value;
         self.save_meta(thread_id, &meta);
     }
 
@@ -854,6 +875,39 @@ mod tests {
         let legacy = "{}";
         let parsed: ThreadMeta = serde_json::from_str(legacy).unwrap();
         assert_eq!(parsed.sandbox_disabled, None);
+    }
+
+    #[test]
+    fn test_title_override_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta {
+            title_word: Some("deploy".to_string()),
+            ..Default::default()
+        });
+
+        // No override: effective label == title_word
+        let meta = mgr.load_meta(&id);
+        assert_eq!(meta.effective_title_label().as_deref(), Some("deploy"));
+
+        // Set override: precedence over title_word
+        mgr.set_title_override(&id, Some("release pipeline".to_string()));
+        let meta = mgr.load_meta(&id);
+        assert_eq!(meta.title_override.as_deref(), Some("release pipeline"));
+        assert_eq!(meta.title_word.as_deref(), Some("deploy"));
+        assert_eq!(meta.effective_title_label().as_deref(), Some("release pipeline"));
+
+        // Clear override: title_word takes over again
+        mgr.set_title_override(&id, None);
+        let meta = mgr.load_meta(&id);
+        assert!(meta.title_override.is_none());
+        assert_eq!(meta.effective_title_label().as_deref(), Some("deploy"));
+    }
+
+    #[test]
+    fn test_effective_title_label_when_both_unset() {
+        let meta = ThreadMeta::default();
+        assert!(meta.effective_title_label().is_none());
     }
 
     #[test]

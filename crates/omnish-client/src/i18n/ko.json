@@ -29,6 +29,8 @@
   "error.resume_timed_out": "재개 시간 초과 \u2014 데몬이 바쁠 수 있습니다",
   "error.no_llm_backends": "사용 가능한 LLM 백엔드가 없습니다",
   "error.usage_thread_sandbox": "사용법: /thread sandbox [on|off]",
+  "error.no_active_thread": "활성 스레드가 없습니다",
+  "error.failed_rename_thread": "스레드 이름 변경 실패",
   "error.failed_receive_response_main": "응답 수신 실패",
   "error.daemon_not_connected": "데몬 미연결",
 
@@ -121,6 +123,7 @@
   "command.help.tasks": "예약된 작업 나열 또는 관리",
   "command.help.integrate": "omnish 를 tmux, screen 또는 ssh 와 통합",
   "command.help.thread_sandbox": "현재 스레드의 샌드박스 적용 전환 (채팅 모드)",
+  "command.help.thread_rename": "현재 스레드 이름 변경 (비우면 해제)",
   "command.help.resume": "이전 대화 스레드 재개",
   "command.help.model": "LLM 모델 전환"
 }

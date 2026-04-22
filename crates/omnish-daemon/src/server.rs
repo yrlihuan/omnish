@@ -852,10 +852,11 @@ async fn build_resumed_chat_ready(
     let history: Vec<String> = history_vals.iter()
         .map(|v| serde_json::to_string(v).unwrap_or_default())
         .collect();
-    let thread_model = old_meta.model.and_then(|model_name| {
+    let thread_model = old_meta.model.clone().and_then(|model_name| {
         let is_default = llm.chat_default_name() == model_name;
         if is_default { None } else { Some(model_name) }
     });
+    let effective_title = old_meta.effective_title_label();
     Message::ChatReady(ChatReady {
         request_id,
         thread_id: tid.to_string(),
@@ -869,7 +870,7 @@ async fn build_resumed_chat_ready(
         error: None,
         error_display: None,
         sandbox_disabled: old_meta.sandbox_disabled,
-        thread_title_word: old_meta.title_word,
+        thread_title_word: effective_title,
     })
 }
 
@@ -2406,6 +2407,48 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
             "Usage: /template <{}> [> file.txt]",
             omnish_llm::template::TEMPLATE_NAMES.join("|")
         ));
+    }
+    // Handle /thread rename - set or clear a sticky user title override.
+    // Payload form: `thread rename <name>:<tid>` to set, `thread rename:<tid>` to clear.
+    if let Some(rest) = sub.strip_prefix("thread rename") {
+        let (value, tid) = match rest.strip_prefix(':') {
+            Some(tid) => (None, tid),
+            None => match rest.strip_prefix(' ') {
+                Some(after_space) => match after_space.rfind(':') {
+                    Some(idx) => {
+                        let name = after_space[..idx].to_string();
+                        let tid = &after_space[idx + 1..];
+                        (Some(name), tid)
+                    }
+                    None => {
+                        return cmd_display("Usage: __cmd:thread rename[ <name>]:<tid>");
+                    }
+                },
+                None => {
+                    return cmd_display("Usage: __cmd:thread rename[ <name>]:<tid>");
+                }
+            },
+        };
+        if tid.is_empty() {
+            return cmd_display("Error: missing thread_id");
+        }
+        if !conv_mgr.thread_exists(tid) {
+            return cmd_display("Error: thread not found");
+        }
+        conv_mgr.set_title_override(tid, value.clone());
+        let meta = conv_mgr.load_meta(tid);
+        let effective = meta.effective_title_label().unwrap_or_default();
+        let display = match value {
+            Some(name) => format!("thread renamed: {}", name),
+            None => match meta.title_word {
+                Some(ref w) => format!("override cleared (title: {})", w),
+                None => "override cleared".to_string(),
+            },
+        };
+        return serde_json::json!({
+            "display": display,
+            "title_label": effective,
+        });
     }
     // Handle /thread sandbox - query or set per-thread sandbox override.
     // Queries embed the thread_id as ":<tid>" suffix, matching /context chat.

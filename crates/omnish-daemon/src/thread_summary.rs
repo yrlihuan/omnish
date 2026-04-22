@@ -304,6 +304,22 @@ mod tests {
         // Even though rounds (6) > 5, summary_rounds is already 5 so no re-gen
     }
 
+    #[tokio::test]
+    async fn test_title_override_not_touched_by_summary_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let conv_mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = conv_mgr.create_thread(ThreadMeta {
+            title_override: Some("sticky name".to_string()),
+            ..Default::default()
+        });
+        conv_mgr.append_messages(&id, &[user_msg("q"), assistant_msg("a")]);
+
+        // Running with no LLM should still leave title_override intact.
+        generate_thread_summaries(&conv_mgr, None, "en").await.unwrap();
+        let meta = conv_mgr.load_meta(&id);
+        assert_eq!(meta.title_override.as_deref(), Some("sticky name"));
+    }
+
     #[test]
     fn test_normalize_title_word() {
         assert_eq!(normalize_title_word("deploy"), "deploy");

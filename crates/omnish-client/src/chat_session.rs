@@ -83,6 +83,22 @@ fn write_stdout(s: &str) {
     nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
 }
 
+/// Normalize a user-provided thread name for `/thread rename`.
+///
+/// Rules: trim whitespace, strip ASCII control chars (including DEL and the
+/// C1 range `\u{80}..=\u{9F}`), then truncate to 32 Unicode scalars.
+fn normalize_thread_name(raw: &str) -> String {
+    let cleaned: String = raw
+        .trim()
+        .chars()
+        .filter(|c| {
+            let code = *c as u32;
+            !(code < 0x20 || code == 0x7F || (0x80..=0x9F).contains(&code))
+        })
+        .collect();
+    cleaned.chars().take(32).collect()
+}
+
 /// Strip `-YYYYMMDD` date suffix from model name for display.
 /// e.g. "claude-sonnet-4-5-20250929" → "claude-sonnet-4-5"
 fn strip_date_suffix(model: &str) -> &str {
@@ -1427,6 +1443,12 @@ impl ChatSession {
                 continue;
             }
 
+            // /thread rename [<name>]
+            if trimmed == "/thread rename" || trimmed.starts_with("/thread rename ") {
+                self.handle_thread_rename(trimmed, session_id, rpc).await;
+                continue;
+            }
+
             // /resume_tid <thread_id> (internal - used by :: resume shortcut)
             if let Some(tid) = trimmed.strip_prefix("/resume_tid ") {
                 if !self.handle_resume_tid(tid.trim(), session_id, rpc).await && is_fast_resume {
@@ -2254,6 +2276,60 @@ impl ChatSession {
             }
             _ => {
                 write_stdout(&display::render_error(crate::i18n::t("error.failed_update_sandbox")));
+            }
+        }
+    }
+
+    async fn handle_thread_rename(&mut self, trimmed: &str, session_id: &str, rpc: &RpcClient) {
+        let raw = trimmed
+            .strip_prefix("/thread rename")
+            .map(|s| s.trim())
+            .unwrap_or("");
+
+        let normalized = normalize_thread_name(raw);
+        let value: Option<String> = if normalized.is_empty() { None } else { Some(normalized) };
+
+        let tid = match self.current_thread_id.as_deref() {
+            Some(t) if !t.is_empty() => t.to_string(),
+            _ => {
+                write_stdout(&display::render_error(
+                    crate::i18n::t("error.no_active_thread"),
+                ));
+                return;
+            }
+        };
+
+        let query = match &value {
+            Some(name) => format!("__cmd:thread rename {}:{}", name, tid),
+            None => format!("__cmd:thread rename:{}", tid),
+        };
+
+        let rid = Uuid::new_v4().to_string()[..8].to_string();
+        let request = Message::Request(Request {
+            request_id: rid.clone(),
+            session_id: session_id.to_string(),
+            query,
+            scope: RequestScope::AllSessions,
+        });
+        match rpc.call(request).await {
+            Ok(Message::Response(resp)) if resp.request_id == rid => {
+                if let Some(json) = super::parse_cmd_response(&resp.content) {
+                    let display_text = super::cmd_display_str(&json);
+                    write_stdout(&display::render_response(&display_text));
+                    let label = json
+                        .get("title_label")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let label_opt = if label.is_empty() { None } else { Some(label) };
+                    super::set_chat_tmux_title(label_opt);
+                } else {
+                    write_stdout(&display::render_response(&resp.content));
+                }
+            }
+            _ => {
+                write_stdout(&display::render_error(
+                    crate::i18n::t("error.failed_rename_thread"),
+                ));
             }
         }
     }
@@ -4257,4 +4333,47 @@ fn save_to_history(history: &mut VecDeque<String>, command: &str, capacity: usiz
         history.pop_front();
     }
     history.push_back(command.to_string());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_thread_name_basic() {
+        assert_eq!(normalize_thread_name("deploy"), "deploy");
+        assert_eq!(normalize_thread_name("  deploy  "), "deploy");
+        assert_eq!(normalize_thread_name(""), "");
+        assert_eq!(normalize_thread_name("   "), "");
+    }
+
+    #[test]
+    fn test_normalize_thread_name_preserves_spaces_and_cjk() {
+        assert_eq!(normalize_thread_name("deploy pipeline"), "deploy pipeline");
+        assert_eq!(normalize_thread_name("部署流程"), "部署流程");
+        assert_eq!(normalize_thread_name("release-v2.1"), "release-v2.1");
+    }
+
+    #[test]
+    fn test_normalize_thread_name_strips_control_chars() {
+        assert_eq!(normalize_thread_name("hello\x1bworld"), "helloworld");
+        assert_eq!(normalize_thread_name("a\tb\nc"), "abc");
+        assert_eq!(normalize_thread_name("x\x7fy"), "xy");
+        assert_eq!(normalize_thread_name("foo\x00bar"), "foobar");
+    }
+
+    #[test]
+    fn test_normalize_thread_name_caps_length() {
+        // 32 ASCII chars pass through
+        let thirty_two = "a".repeat(32);
+        assert_eq!(normalize_thread_name(&thirty_two).chars().count(), 32);
+
+        // 40 ASCII chars get truncated to 32
+        let forty = "a".repeat(40);
+        assert_eq!(normalize_thread_name(&forty).chars().count(), 32);
+
+        // 40 CJK chars also truncated to 32 scalars, not bytes
+        let cjk = "中".repeat(40);
+        assert_eq!(normalize_thread_name(&cjk).chars().count(), 32);
+    }
 }
