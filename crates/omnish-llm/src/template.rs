@@ -74,6 +74,15 @@ pub const THREAD_SUMMARY_PROMPT: &str =
      Generate a short title (no more than 10 words) that summarizes the topic of this conversation. \
      Output only the title itself, without quotes or prefixes.";
 
+/// The thread-title-word LLM prompt - derives a single short English word from
+/// an existing thread summary. Used as the tmux window label during chat mode.
+/// Output MUST be English; the caller does not append a language instruction.
+pub const THREAD_TITLE_WORD_PROMPT: &str =
+    "Below is a short <summary> of a conversation topic. \
+     Output exactly one short English word (lowercase ASCII letters only) that best labels this topic. \
+     The word MUST be English, even if the summary uses another language. \
+     No quotes, no punctuation, no explanation - just the single word.";
+
 /// Append a language instruction to a prompt.
 pub fn append_language_instruction(prompt: &str, language: &str) -> String {
     let instruction = match language {

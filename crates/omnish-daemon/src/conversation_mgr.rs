@@ -21,6 +21,10 @@ pub struct ThreadMeta {
     /// Number of conversation rounds when summary was last generated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_rounds: Option<u32>,
+    /// Single English word derived from `summary`, used as the tmux window
+    /// label when resuming the thread. Regenerated when `summary` changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_word: Option<String>,
     /// Backend name for per-thread model override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,

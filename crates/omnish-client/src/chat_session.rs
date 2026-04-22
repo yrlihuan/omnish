@@ -2401,6 +2401,7 @@ impl ChatSession {
         }
 
         self.current_thread_id = Some(ready.thread_id);
+        super::set_chat_tmux_title(ready.thread_title_word.as_deref());
 
         if let Some(history) = ready.history {
             // Parse structured history entries (each is a JSON-encoded string)

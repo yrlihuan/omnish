@@ -823,6 +823,7 @@ fn empty_chat_ready(
         error: error.map(String::from),
         error_display,
         sandbox_disabled: None,
+        thread_title_word: None,
     })
 }
 
@@ -868,6 +869,7 @@ async fn build_resumed_chat_ready(
         error: None,
         error_display: None,
         sandbox_disabled: old_meta.sandbox_disabled,
+        thread_title_word: old_meta.title_word,
     })
 }
 
@@ -924,6 +926,7 @@ async fn handle_chat_start(
             error: None,
             error_display: None,
             sandbox_disabled: None,
+            thread_title_word: None,
         })
     } else {
         tracing::debug!("[ChatStart] resuming latest thread");

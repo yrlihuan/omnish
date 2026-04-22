@@ -56,6 +56,20 @@ impl ScheduledTask for ThreadSummaryTask {
     }
 }
 
+/// Normalize a raw LLM response to a single lowercase English word.
+/// Returns the normalized word, or an empty string when no ASCII letters remain.
+fn normalize_title_word(raw: &str) -> String {
+    raw.split_whitespace()
+        .next()
+        .map(|tok| {
+            tok.chars()
+                .filter(|c| c.is_ascii_alphabetic())
+                .collect::<String>()
+                .to_lowercase()
+        })
+        .unwrap_or_default()
+}
+
 /// Scan all threads and generate summaries for those that need them.
 async fn generate_thread_summaries(
     conv_mgr: &ConversationManager,
@@ -89,60 +103,117 @@ async fn generate_thread_summaries(
             _ => false,
         };
 
-        if !needs_summary {
-            continue;
-        }
+        let mut updated_meta = meta.clone();
+        let mut meta_dirty = false;
 
-        // Get up to 5 exchanges for summary generation
-        let exchanges = conv_mgr.get_all_exchanges(thread_id);
-        let exchanges: Vec<_> = exchanges.into_iter().take(5).collect();
-        if exchanges.is_empty() {
-            continue;
-        }
+        if needs_summary {
+            // Get up to 5 exchanges for summary generation
+            let exchanges = conv_mgr.get_all_exchanges(thread_id);
+            let exchanges: Vec<_> = exchanges.into_iter().take(5).collect();
+            if exchanges.is_empty() {
+                continue;
+            }
 
-        // Build conversation text
-        let mut conversation_text = String::new();
-        for (user, assistant) in &exchanges {
-            conversation_text.push_str(&format!("User: {}\nAssistant: {}\n\n", user, assistant));
-        }
+            // Build conversation text
+            let mut conversation_text = String::new();
+            for (user, assistant) in &exchanges {
+                conversation_text.push_str(&format!("User: {}\nAssistant: {}\n\n", user, assistant));
+            }
 
-        let use_case = UseCase::Chat;
-        let max_content_chars = backend.max_content_chars();
-        let req = LlmRequest {
-            context: format!("<conversation>\n{}</conversation>", conversation_text),
-            query: Some(template::append_language_instruction(template::THREAD_SUMMARY_PROMPT, language)),
-            trigger: TriggerType::AutoPattern,
-            session_ids: vec![],
-            use_case,
-            max_content_chars,
-            system_prompt: None,
-            enable_thinking: None,
-            tools: vec![],
-            extra_messages: vec![],
-        };
+            let use_case = UseCase::Chat;
+            let max_content_chars = backend.max_content_chars();
+            let req = LlmRequest {
+                context: format!("<conversation>\n{}</conversation>", conversation_text),
+                query: Some(template::append_language_instruction(template::THREAD_SUMMARY_PROMPT, language)),
+                trigger: TriggerType::AutoPattern,
+                session_ids: vec![],
+                use_case,
+                max_content_chars,
+                system_prompt: None,
+                enable_thinking: None,
+                tools: vec![],
+                extra_messages: vec![],
+            };
 
-        match backend.complete(&req).await {
-            Ok(resp) => {
-                let summary = crate::strip_thinking_block(&resp.text()).trim().to_string();
-                if !summary.is_empty() {
-                    let mut updated_meta = meta;
-                    updated_meta.summary = Some(summary);
-                    updated_meta.summary_rounds = Some(rounds);
-                    conv_mgr.save_meta(thread_id, &updated_meta);
-                    tracing::info!(
-                        "thread_summary: generated summary for thread {} ({} rounds)",
+            match backend.complete(&req).await {
+                Ok(resp) => {
+                    let summary = crate::strip_thinking_block(&resp.text()).trim().to_string();
+                    if !summary.is_empty() {
+                        updated_meta.summary = Some(summary);
+                        updated_meta.summary_rounds = Some(rounds);
+                        // Summary changed, invalidate the derived title_word so it
+                        // gets regenerated from the new summary below.
+                        updated_meta.title_word = None;
+                        meta_dirty = true;
+                        tracing::info!(
+                            "thread_summary: generated summary for thread {} ({} rounds)",
+                            thread_id,
+                            rounds
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "thread_summary: LLM failed for thread {}: {}",
                         thread_id,
-                        rounds
+                        e
                     );
                 }
             }
-            Err(e) => {
-                tracing::warn!(
-                    "thread_summary: LLM failed for thread {}: {}",
-                    thread_id,
-                    e
-                );
+        }
+
+        // After (re)generating summary, derive a single English word for the
+        // tmux window label when the thread has a summary but no title_word.
+        if updated_meta.summary.is_some() && updated_meta.title_word.is_none() {
+            let summary_text = updated_meta.summary.clone().unwrap();
+            let use_case = UseCase::Chat;
+            let max_content_chars = backend.max_content_chars();
+            // Prompt asks for a single English word; do NOT append a language instruction here.
+            let req = LlmRequest {
+                context: format!("<summary>\n{}\n</summary>", summary_text),
+                query: Some(template::THREAD_TITLE_WORD_PROMPT.to_string()),
+                trigger: TriggerType::AutoPattern,
+                session_ids: vec![],
+                use_case,
+                max_content_chars,
+                system_prompt: None,
+                enable_thinking: None,
+                tools: vec![],
+                extra_messages: vec![],
+            };
+
+            match backend.complete(&req).await {
+                Ok(resp) => {
+                    let raw = crate::strip_thinking_block(&resp.text());
+                    let word = normalize_title_word(raw.trim());
+                    if !word.is_empty() {
+                        updated_meta.title_word = Some(word.clone());
+                        meta_dirty = true;
+                        tracing::info!(
+                            "thread_summary: generated title_word '{}' for thread {}",
+                            word,
+                            thread_id
+                        );
+                    } else {
+                        tracing::warn!(
+                            "thread_summary: LLM did not yield an English word for thread {}: {:?}",
+                            thread_id,
+                            raw
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "thread_summary: title_word LLM failed for thread {}: {}",
+                        thread_id,
+                        e
+                    );
+                }
             }
+        }
+
+        if meta_dirty {
+            conv_mgr.save_meta(thread_id, &updated_meta);
         }
     }
 
@@ -231,5 +302,18 @@ mod tests {
         let meta3 = conv_mgr.load_meta(&id3);
         assert_eq!(meta3.summary_rounds, Some(5));
         // Even though rounds (6) > 5, summary_rounds is already 5 so no re-gen
+    }
+
+    #[test]
+    fn test_normalize_title_word() {
+        assert_eq!(normalize_title_word("deploy"), "deploy");
+        assert_eq!(normalize_title_word("Deploy"), "deploy");
+        assert_eq!(normalize_title_word("  deploy  "), "deploy");
+        assert_eq!(normalize_title_word("deploy pipeline"), "deploy");
+        assert_eq!(normalize_title_word("\"deploy\""), "deploy");
+        assert_eq!(normalize_title_word("deploy."), "deploy");
+        assert_eq!(normalize_title_word("部署"), "");
+        assert_eq!(normalize_title_word(""), "");
+        assert_eq!(normalize_title_word("123"), "");
     }
 }

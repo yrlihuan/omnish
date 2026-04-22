@@ -5,7 +5,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version - increment on any wire format change.
-pub const PROTOCOL_VERSION: u32 = 19;
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// Minimum protocol version this build can interoperate with.
 ///
@@ -332,6 +332,10 @@ pub struct ChatReady {
     /// forces ChatToolCall.sandboxed=false for this thread.
     #[serde(default)]
     pub sandbox_disabled: Option<bool>,
+    /// Single lowercase English word derived from `thread_summary`, used as
+    /// the tmux window label during chat mode. None when not yet generated.
+    #[serde(default)]
+    pub thread_title_word: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -751,6 +755,7 @@ mod tests {
                 error: None,
                 error_display: None,
                 sandbox_disabled: None,
+                thread_title_word: None,
             }),
             Message::ChatEnd(ChatEnd {
                 session_id: String::new(),
@@ -928,6 +933,7 @@ mod tests {
                 error: None,
                 error_display: None,
                 sandbox_disabled: None,
+                thread_title_word: Some("setup".to_string()),
             }),
         };
         let bytes = frame.to_bytes().unwrap();
