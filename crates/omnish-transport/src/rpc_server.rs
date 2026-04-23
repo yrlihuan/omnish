@@ -78,7 +78,7 @@ fn dump_fd_stats() {
     tracing::error!("fd stats: total={total} soft_limit={soft} hard_limit={hard}");
 
     let mut types: Vec<_> = by_type.into_iter().collect();
-    types.sort_by(|a, b| b.1.cmp(&a.1));
+    types.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     for (kind, count) in &types {
         let sample_list = samples
             .get(kind)
