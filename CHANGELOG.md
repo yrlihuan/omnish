@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.8.12 (2026-04-23)
+
+### Features
+- **deploy**: Deploy clients via SSH from config menu with first-deploy remote-side probing of client.toml, per-target failure exit codes, and host-only targets (#560, #577)
+- **deploy**: Arch-aware rollout reusing cached update package and recorded ssh target (#577)
+- **chat**: Set tmux window title to `> <word>` during chat mode; `/thread rename` provides sticky title override (#563, #580)
+- **chat**: Animate Thinking spinner while waiting for LLM response (#551)
+- **completion**: Split completion prompt into cacheable blocks for Anthropic prompt caching (#554)
+- **i18n**: Translate `/help` command output (#555)
+
+### Fixes
+- **client**: Make markdown NEWLINE boundaries style-safe; fix stray italics/underline after code spans (#582)
+- **client**: Enable modifyOtherKeys so Shift+Enter inserts newline in chat (#579)
+- **client**: Also set window title under GNU screen (#581)
+- **client**: Use plain ANSI green/red for tool status dot; GRAY instead of DIM for tool header param (#578)
+- **display**: Use LF+CHA for line breaks to avoid ConEmu+tmux CR drop (#558)
+- **display**: Replace em-dash with ASCII hyphen across codebase for terminal compatibility (#556)
+- **daemon**: Scope cwd fallback to current session and probe shell_cwd at SessionStart (#564)
+- **chat**: `/context chat` no longer strips `<system-reminder>` block via markdown renderer
+- **chat**: `/thread stats` no longer falls through to `/thread list` due to match arm order
+- **chat**: Keep Thinking spinner visible during tool-use loop
+- **chat**: Drain stale completion responses after chat mode exit
+- **completion**: Parse only the first balanced JSON array from LLM responses (#571)
+- **openai_compat**: Flatten user text blocks so completion prompts reach the server
+- **menu**: Use display width for cursor position when editing menu fields (#549)
+- **menu**: Auto-append Done button in form_mode submenus with existing buttons (#547)
+- **shell_hook**: Write hook files atomically (#562)
+- **anthropic**: Use string TTL format for cache_control
+- **deploy**: Recognize listen_addr without tcp:// scheme as TCP; propagate per-target failure; drop -n from write_remote_config
+
+### Refactoring
+- **daemon**: Bundle handler state into HandlerCtx and extract long match arms (#566)
+- **daemon**: Cache recent_frozen_until in build_completion_context
+- **llm**: Lift cache_control placement out of Anthropic backend into caller
+- **completion**: Each content block is self-contained XML
+
+### Tests
+- Drop fragile `/tmp` regex fallback in verify_issue_147 (#572)
+- Bump sandbox rule test LLM timeout to 300s for 429 backoff tolerance
+- Poll for Bash tool dispatch + widen echo capture in chat interrupt test (#568)
+- Dump byte-level pane state when verify_issue_147 fails (#572)
+- Wait for Thinking spinner before history navigation (#565); poll thinking spinner instead of fixed sleep (#561)
+- Force OMNISH_LANG=en by default in integration tests
+- Tighten early-cancel timing and drop fallback skips (#552)
+
 ## v0.8.11 (2026-04-16)
 
 ### Features
