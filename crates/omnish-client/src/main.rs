@@ -445,18 +445,27 @@ async fn download_and_extract_update(
 // extract_and_run_installer moved to omnish_common::update
 
 /// Issue #588: poll the daemon for a plugin bundle update and, if the
-/// daemon's checksum differs from our locally persisted one, download and
-/// mirror `~/.omnish/plugins/` from the bundle. "Mirror" means any on-disk
-/// file that is NOT in the bundle is deleted - the daemon is the source of
-/// truth.
+/// daemon's checksum differs from our current local `plugins/` state,
+/// download and mirror `~/.omnish/plugins/` from the bundle. "Mirror"
+/// means any on-disk file that is NOT in the bundle is deleted - the
+/// daemon is the source of truth.
+///
+/// The `current_checksum` we send is computed live from our actual
+/// on-disk plugins dir (via the shared `omnish_common::plugin_bundle`
+/// packager), not read from a persisted file. This is load-bearing for
+/// the same-host case: daemon and client sharing `~/.omnish/plugins/`
+/// see identical content, both sides compute the same checksum, and
+/// `available` is naturally false - no self-mutating download+extract.
 async fn sync_plugin_bundle(rpc: &RpcClient, hostname: &str) -> anyhow::Result<()> {
     let omnish_dir = omnish_common::config::omnish_dir();
     let plugins_dir = omnish_dir.join("plugins");
-    let checksum_file = plugins_dir.join(".bundle_checksum");
 
-    let current_checksum = tokio::fs::read_to_string(&checksum_file).await
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
+    let local_bundle = tokio::task::spawn_blocking({
+        let plugins_dir = plugins_dir.clone();
+        move || omnish_common::plugin_bundle::build_bundle(&plugins_dir)
+    }).await.context("plugin_sync: local build join")?
+      .context("plugin_sync: local build")?;
+    let current_checksum = local_bundle.checksum.clone();
 
     let info = rpc.call(Message::PluginSyncCheck {
         current_checksum: current_checksum.clone(),
@@ -471,13 +480,17 @@ async fn sync_plugin_bundle(rpc: &RpcClient, hostname: &str) -> anyhow::Result<(
         event_log::push("plugin_sync: up to date");
         return Ok(());
     }
-    event_log::push(format!("plugin_sync: fetching {} bytes (new={})", total_size, daemon_checksum));
+    event_log::push(format!(
+        "plugin_sync: fetching {} bytes ({} -> {})",
+        total_size,
+        if current_checksum.is_empty() { "<empty>" } else { &current_checksum },
+        daemon_checksum,
+    ));
 
     let bytes = download_plugin_bundle(rpc, hostname, &daemon_checksum).await?;
     tokio::task::spawn_blocking({
         let plugins_dir = plugins_dir.clone();
-        let checksum = daemon_checksum.clone();
-        move || extract_and_mirror_plugins(&bytes, &plugins_dir, &checksum)
+        move || extract_and_mirror_plugins(&bytes, &plugins_dir)
     }).await.context("plugin_sync: extract join")??;
 
     event_log::push(format!("plugin_sync: installed checksum={}", daemon_checksum));
@@ -543,12 +556,12 @@ async fn download_plugin_bundle(
 /// Mirror-extract a plugin bundle over `plugins_dir`. Files in the bundle
 /// are created/overwritten with their recorded permissions; files on disk
 /// that are NOT in the bundle are deleted, so the result is an exact
-/// mirror of the daemon's `plugins/` tree. `.bundle_checksum` is excluded
-/// from mirror accounting since it is purely client-local state.
+/// mirror of the daemon's `plugins/` tree. Dotfiles at the root (e.g.
+/// editor scratch files) are preserved - the shared packager's `walk()`
+/// also skips them, so they stay untouched in both directions.
 fn extract_and_mirror_plugins(
     bytes: &[u8],
     plugins_dir: &std::path::Path,
-    checksum: &str,
 ) -> anyhow::Result<()> {
     use std::path::PathBuf;
 
@@ -582,18 +595,12 @@ fn extract_and_mirror_plugins(
 
     // Mirror-delete: remove anything on disk that the bundle does not have.
     mirror_delete(plugins_dir, plugins_dir, &bundle_paths)?;
-
-    // Persist the installed checksum last so a crash mid-extract leaves the
-    // bookkeeping behind the actual state (next sync will redo the work).
-    std::fs::write(plugins_dir.join(".bundle_checksum"), checksum.as_bytes())
-        .context("write .bundle_checksum")?;
     Ok(())
 }
 
 /// Walk `dir` under `root` and delete any file not present in `keep`
-/// (paths in `keep` are relative to `root`). Empty directories left after
-/// deletion are also removed, except `root` itself. `.bundle_checksum` at
-/// the root is always kept (it is client-local bookkeeping).
+/// (paths in `keep` are relative to `root`). Dotfiles at the root are
+/// preserved (mirroring the packager's behaviour on the daemon side).
 fn mirror_delete(
     root: &std::path::Path,
     dir: &std::path::Path,
@@ -605,11 +612,14 @@ fn mirror_delete(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
-        // Preserve client-local bookkeeping.
-        if rel == std::path::Path::new(".bundle_checksum") {
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        // Preserve dotfiles at any level - they were excluded from the
+        // bundle on the daemon side, so the absence of a match in `keep`
+        // would otherwise cause spurious deletions.
+        if name.starts_with('.') {
             continue;
         }
+        let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
         let ft = match entry.file_type() {
             Ok(f) => f,
             Err(_) => continue,
@@ -3195,8 +3205,9 @@ mod tests {
 
     /// Issue #588: build a minimal plugin bundle and verify that
     /// `extract_and_mirror_plugins` creates the expected files, deletes
-    /// anything on disk that is not in the bundle, and preserves the
-    /// client-local `.bundle_checksum` bookkeeping file.
+    /// anything on disk that is not in the bundle, and preserves dotfiles
+    /// at the root (editor scratch files, etc. - the daemon's packager
+    /// skips dotfiles too, so they must not be treated as stale).
     #[test]
     fn test_extract_and_mirror_plugins_full_mirror_semantics() {
         use std::io::Write;
@@ -3207,12 +3218,12 @@ mod tests {
         // Pre-populate on disk with:
         //   - obsolete/stale_plugin/ (must be deleted by mirror)
         //   - my_plugin/old_file.txt (must be deleted; not in bundle)
-        //   - .bundle_checksum (must be PRESERVED - client-local state)
+        //   - .scratch (dotfile; must be PRESERVED - daemon skips it too)
         std::fs::create_dir_all(plugins_dir.join("obsolete/stale_plugin")).unwrap();
         std::fs::write(plugins_dir.join("obsolete/stale_plugin/script"), b"old").unwrap();
         std::fs::create_dir_all(plugins_dir.join("my_plugin")).unwrap();
         std::fs::write(plugins_dir.join("my_plugin/old_file.txt"), b"old").unwrap();
-        std::fs::write(plugins_dir.join(".bundle_checksum"), b"stale").unwrap();
+        std::fs::write(plugins_dir.join(".scratch"), b"local").unwrap();
 
         // Build a bundle containing only my_plugin/tool.json + my_plugin/run.
         let mut tar_bytes = Vec::new();
@@ -3249,7 +3260,7 @@ mod tests {
             e.finish().unwrap();
         }
 
-        extract_and_mirror_plugins(&gz, &plugins_dir, "new_checksum").unwrap();
+        extract_and_mirror_plugins(&gz, &plugins_dir).unwrap();
 
         // Bundle files should exist.
         assert!(plugins_dir.join("my_plugin/tool.json").exists());
@@ -3257,9 +3268,8 @@ mod tests {
         // Stale paths should be gone (mirror semantics).
         assert!(!plugins_dir.join("my_plugin/old_file.txt").exists());
         assert!(!plugins_dir.join("obsolete").exists());
-        // Client-local bookkeeping file updated, not deleted.
-        let cs = std::fs::read_to_string(plugins_dir.join(".bundle_checksum")).unwrap();
-        assert_eq!(cs, "new_checksum");
+        // Dotfiles preserved.
+        assert_eq!(std::fs::read_to_string(plugins_dir.join(".scratch")).unwrap(), "local");
     }
 
     #[test]

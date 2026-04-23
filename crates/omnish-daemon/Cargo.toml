@@ -27,9 +27,6 @@ tokio-cron-scheduler = "0.13"
 uuid = { workspace = true }
 toml = "0.8"
 reqwest = { workspace = true }
-tar = "0.4"
-sha2 = "0.10"
-flate2 = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { version = "0.29", features = ["term", "signal", "process", "fs", "hostname", "inotify"] }
