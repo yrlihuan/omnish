@@ -3228,54 +3228,45 @@ fn parse_completion_suggestions(
 ) -> Result<Vec<omnish_protocol::message::CompletionSuggestion>> {
     let trimmed = content.trim();
 
-    if let Some(json_str) = extract_first_json_array(trimmed) {
-        // Try string array format: ["suggestion1", "suggestion2"]
-        if let Ok(strings) = serde_json::from_str::<Vec<String>>(json_str) {
-            let suggestions: Vec<_> = strings
-                .into_iter()
-                .filter(|s| !s.is_empty())
-                .enumerate()
-                .map(|(i, text)| omnish_protocol::message::CompletionSuggestion {
-                    text,
-                    confidence: if i == 0 { 1.0 } else { 0.8 },
-                })
-                .collect();
-            return Ok(suggestions);
-        }
-
-        // Try object array format: [{"text": "...", "confidence": 0.9}]
-        #[derive(serde::Deserialize)]
-        struct RawSuggestion {
-            text: String,
-            confidence: f32,
-        }
-
-        if let Ok(raw) = serde_json::from_str::<Vec<RawSuggestion>>(json_str) {
-            return Ok(raw
-                .into_iter()
-                .map(|r| omnish_protocol::message::CompletionSuggestion {
-                    text: r.text,
-                    confidence: r.confidence.clamp(0.0, 1.0),
-                })
-                .collect());
-        }
-    }
-
-    // Plaintext fallback: only accept single-line content. Multi-line output
-    // almost always indicates the model returned prose around the suggestions,
-    // in which case adopting any of it as a completion is unsafe.
-    if trimmed.contains('\n') {
+    // Only accept a JSON array in one of the two documented shapes. Anything
+    // else (prose, a bare word, a JSON object like `{"error": "...", ...}`,
+    // etc.) is treated as a malformed response and discarded. Issue #586.
+    let Some(json_str) = extract_first_json_array(trimmed) else {
         return Ok(Vec::new());
+    };
+
+    // Try string array format: ["suggestion1", "suggestion2"]
+    if let Ok(strings) = serde_json::from_str::<Vec<String>>(json_str) {
+        let suggestions: Vec<_> = strings
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .enumerate()
+            .map(|(i, text)| omnish_protocol::message::CompletionSuggestion {
+                text,
+                confidence: if i == 0 { 1.0 } else { 0.8 },
+            })
+            .collect();
+        return Ok(suggestions);
     }
-    let text = trimmed.trim_matches(|c: char| c == '"' || c == '\'' || c.is_whitespace());
-    if text.is_empty() {
-        Ok(Vec::new())
-    } else {
-        Ok(vec![omnish_protocol::message::CompletionSuggestion {
-            text: text.to_string(),
-            confidence: 1.0,
-        }])
+
+    // Try object array format: [{"text": "...", "confidence": 0.9}]
+    #[derive(serde::Deserialize)]
+    struct RawSuggestion {
+        text: String,
+        confidence: f32,
     }
+
+    if let Ok(raw) = serde_json::from_str::<Vec<RawSuggestion>>(json_str) {
+        return Ok(raw
+            .into_iter()
+            .map(|r| omnish_protocol::message::CompletionSuggestion {
+                text: r.text,
+                confidence: r.confidence.clamp(0.0, 1.0),
+            })
+            .collect());
+    }
+
+    Ok(Vec::new())
 }
 
 #[cfg(test)]
@@ -3385,10 +3376,13 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_completion_suggestions_plaintext_fallback() {
-        let result = parse_completion_suggestions("status").unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].text, "status");
+    fn test_parse_completion_suggestions_plaintext_rejected() {
+        // Issue #586: only JSON arrays in the documented shapes are accepted.
+        // Plaintext (single word, JSON object, etc.) is treated as malformed.
+        assert!(parse_completion_suggestions("status").unwrap().is_empty());
+        assert!(parse_completion_suggestions("\"status\"").unwrap().is_empty());
+        let err_obj = r#"{"error": "No output provided by user, no command to complete.", "command": "exit"}"#;
+        assert!(parse_completion_suggestions(err_obj).unwrap().is_empty());
     }
 
     #[test]
