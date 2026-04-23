@@ -230,20 +230,33 @@ impl ConversationManager {
         }
     }
 
+    /// Atomic read-modify-write for thread meta. Load fresh meta from disk,
+    /// apply `f`, then persist. Prefer this over `load_meta` + mutate +
+    /// `save_meta` whenever the mutation is based on a snapshot older than
+    /// the call, since any fields the caller did not touch are preserved
+    /// from the current on-disk state. Notably used by `thread_summary`,
+    /// whose LLM calls can race with user commands that mutate unrelated
+    /// fields (e.g. `sandbox_disabled`). See issue #587.
+    pub fn update_meta<F: FnOnce(&mut ThreadMeta)>(&self, thread_id: &str, f: F) {
+        let mut meta = self.load_meta(thread_id);
+        f(&mut meta);
+        self.save_meta(thread_id, &meta);
+    }
+
     /// Set per-thread sandbox override and persist. `disabled=true` sets the
     /// override; `disabled=false` clears it (back to default "sandbox on").
     pub fn set_sandbox_disabled(&self, thread_id: &str, disabled: bool) {
-        let mut meta = self.load_meta(thread_id);
-        meta.sandbox_disabled = if disabled { Some(true) } else { None };
-        self.save_meta(thread_id, &meta);
+        self.update_meta(thread_id, |m| {
+            m.sandbox_disabled = if disabled { Some(true) } else { None };
+        });
     }
 
     /// Set or clear the user-specified thread title override and persist.
     /// Pass `None` to clear, which lets auto-generated `title_word` take over.
     pub fn set_title_override(&self, thread_id: &str, value: Option<String>) {
-        let mut meta = self.load_meta(thread_id);
-        meta.title_override = value;
-        self.save_meta(thread_id, &meta);
+        self.update_meta(thread_id, |m| {
+            m.title_override = value;
+        });
     }
 
     /// Load thread metadata from the sidecar `.meta.json` file.
@@ -777,6 +790,41 @@ mod tests {
 
         mgr.set_sandbox_disabled(&tid, false);
         assert_eq!(mgr.load_meta(&tid).sandbox_disabled, None);
+    }
+
+    #[test]
+    fn test_update_meta_preserves_concurrent_field_changes() {
+        // Issue #587 regression: thread_summary used to load meta, do async
+        // LLM work, then save its stale clone. Any concurrent mutation to
+        // unrelated fields (e.g. sandbox_disabled) during the LLM window
+        // was clobbered. update_meta re-reads before save, preserving
+        // fields the caller did not touch.
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+
+        let tid = mgr.create_thread(ThreadMeta::default());
+
+        // Simulate thread_summary taking a snapshot (stale from now on).
+        let _stale_snapshot = mgr.load_meta(&tid);
+
+        // Concurrent user action: /thread sandbox off.
+        mgr.set_sandbox_disabled(&tid, true);
+        assert_eq!(mgr.load_meta(&tid).sandbox_disabled, Some(true));
+
+        // thread_summary finishes LLM work and writes its owned fields.
+        // With the pre-fix `save_meta(&stale_snapshot)`, sandbox_disabled
+        // would revert to None. update_meta must preserve it.
+        mgr.update_meta(&tid, |m| {
+            m.summary = Some("generated summary".to_string());
+            m.summary_rounds = Some(1);
+            m.title_word = Some("acknowledgment".to_string());
+        });
+
+        let after = mgr.load_meta(&tid);
+        assert_eq!(after.sandbox_disabled, Some(true), "user change must survive");
+        assert_eq!(after.summary.as_deref(), Some("generated summary"));
+        assert_eq!(after.summary_rounds, Some(1));
+        assert_eq!(after.title_word.as_deref(), Some("acknowledgment"));
     }
 
     #[test]

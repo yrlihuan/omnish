@@ -213,7 +213,19 @@ async fn generate_thread_summaries(
         }
 
         if meta_dirty {
-            conv_mgr.save_meta(thread_id, &updated_meta);
+            // Issue #587: apply only the fields this task owns to a fresh
+            // on-disk meta, rather than saving our stale clone. The LLM
+            // calls above can take seconds, during which user commands
+            // (e.g. `/thread sandbox off`) may have mutated unrelated
+            // fields.
+            let new_summary = updated_meta.summary.clone();
+            let new_summary_rounds = updated_meta.summary_rounds;
+            let new_title_word = updated_meta.title_word.clone();
+            conv_mgr.update_meta(thread_id, |m| {
+                m.summary = new_summary;
+                m.summary_rounds = new_summary_rounds;
+                m.title_word = new_title_word;
+            });
         }
     }
 
