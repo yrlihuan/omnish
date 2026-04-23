@@ -98,18 +98,14 @@ impl ShellInputTracker {
                     self.bump();
                 }
                 // Ctrl+C -> cancel current input
-                0x03 => {
-                    if !self.input.is_empty() {
-                        self.input.clear();
-                        self.bump();
-                    }
+                0x03 if !self.input.is_empty() => {
+                    self.input.clear();
+                    self.bump();
                 }
                 // Ctrl+U -> clear line
-                0x15 => {
-                    if !self.input.is_empty() {
-                        self.input.clear();
-                        self.bump();
-                    }
+                0x15 if !self.input.is_empty() => {
+                    self.input.clear();
+                    self.bump();
                 }
                 // Backspace / DEL -> remove last char
                 0x7f | 0x08 => {
