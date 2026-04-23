@@ -2496,9 +2496,24 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
         "sessions" => cmd_display(mgr.format_sessions_list(&req.session_id).await),
         "conversations stats" => format_thread_stats(conv_mgr, active_threads, &req.session_id).await,
         s if s == "conversations" || s.starts_with("conversations ") => {
-            let limit = s.strip_prefix("conversations ")
-                .and_then(|n| n.trim().parse::<usize>().ok());
-            format_conversations_json(conv_mgr, active_threads, limit).await
+            let args: Vec<&str> = s.strip_prefix("conversations")
+                .map(|a| a.split_whitespace().collect())
+                .unwrap_or_default();
+            let mut limit: Option<usize> = None;
+            let mut current_host_only = false;
+            for a in &args {
+                match *a {
+                    "all" => limit = Some(usize::MAX),
+                    "current_host" => current_host_only = true,
+                    n => if let Ok(x) = n.parse::<usize>() { limit = Some(x); }
+                }
+            }
+            let host_filter = if current_host_only {
+                mgr.get_session_attr(&req.session_id, "hostname").await
+            } else {
+                None
+            };
+            format_conversations_json(conv_mgr, active_threads, limit, host_filter).await
         }
         "session" => match get_session_debug_info(&req.session_id, mgr).await {
             Ok(info) => cmd_display(info),
@@ -2575,8 +2590,24 @@ async fn handle_template(name: &str, mgr: &SessionManager, tool_registry: &omnis
 
 /// Format the list of conversations as JSON with display string, thread_ids, and locked status.
 /// When `limit` is None, defaults to 20 most recent threads.
-async fn format_conversations_json(conv_mgr: &Arc<ConversationManager>, active_threads: &ActiveThreads, limit: Option<usize>) -> serde_json::Value {
-    let conversations = conv_mgr.list_conversations();
+/// When `host_filter` is Some, only threads whose meta.host matches are included.
+async fn format_conversations_json(
+    conv_mgr: &Arc<ConversationManager>,
+    active_threads: &ActiveThreads,
+    limit: Option<usize>,
+    host_filter: Option<String>,
+) -> serde_json::Value {
+    let all_conversations = conv_mgr.list_conversations();
+    let conversations: Vec<_> = if let Some(ref host) = host_filter {
+        all_conversations
+            .into_iter()
+            .filter(|(tid, _, _, _)| {
+                conv_mgr.load_meta(tid).host.as_deref() == Some(host.as_str())
+            })
+            .collect()
+    } else {
+        all_conversations
+    };
     if conversations.is_empty() {
         return cmd_display("No conversations yet. Start a chat with :");
     }

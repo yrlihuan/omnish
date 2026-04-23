@@ -340,6 +340,7 @@ const COMMANDS: &[CommandEntry] = &[
 /// Chat-mode-only commands (not in COMMANDS registry).
 pub const CHAT_ONLY_COMMANDS: &[&str] = &[
     "/resume",
+    "/resume all",
     "/model",
     "/thread sandbox",
     "/thread sandbox on",
