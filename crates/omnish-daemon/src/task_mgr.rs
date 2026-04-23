@@ -15,6 +15,7 @@ pub struct DaemonContext {
     pub omnish_dir: PathBuf,
     pub restart_signal: Arc<tokio::sync::Notify>,
     pub update_cache: Arc<UpdateCache>,
+    pub plugin_bundler: Arc<crate::plugin_bundle::PluginBundler>,
 }
 
 /// Everything a scheduled task needs to build its job closure.
@@ -194,6 +195,7 @@ pub fn create_all_tasks(config: &omnish_common::config::TasksConfig) -> Vec<Box<
         Box::new(crate::cleanup::DiskCleanupTask::new(config.get("disk_cleanup").unwrap_or(&empty).clone())),
         Box::new(crate::auto_update::AutoUpdateTask::new(config.get("auto_update").unwrap_or(&empty).clone())),
         Box::new(crate::thread_summary::ThreadSummaryTask::new(config.get("thread_summary").unwrap_or(&empty).clone())),
+        Box::new(crate::plugin_bundle_task::PluginBundleTask::new(config.get("plugin_bundle").unwrap_or(&empty).clone())),
     ]
 }
 
@@ -207,6 +209,7 @@ pub fn inject_task_defaults(tasks: &mut omnish_common::config::TasksConfig) {
         ("disk_cleanup", crate::cleanup::DiskCleanupTask::defaults()),
         ("auto_update", crate::auto_update::AutoUpdateTask::defaults()),
         ("thread_summary", crate::thread_summary::ThreadSummaryTask::defaults()),
+        ("plugin_bundle", crate::plugin_bundle_task::PluginBundleTask::defaults()),
     ];
     for (name, defaults) in all_defaults {
         let entry = tasks.entry(name.to_string()).or_default();

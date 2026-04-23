@@ -76,6 +76,7 @@ mod tests {
             omnish_dir: mock_dir.path().to_path_buf(),
             restart_signal: Arc::new(tokio::sync::Notify::new()),
             update_cache: Arc::new(crate::update_cache::UpdateCache::new(mock_dir.path())),
+            plugin_bundler: Arc::new(crate::plugin_bundle::PluginBundler::new(mock_dir.path().join("plugins"))),
         });
         let daemon_config = Arc::new(std::sync::RwLock::new(omnish_common::config::DaemonConfig::default()));
         let ctx = TaskContext {

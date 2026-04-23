@@ -154,13 +154,6 @@ async fn async_main() -> Result<i32> {
     // Update cache: stores downloaded packages for distribution to clients
     let update_cache = Arc::new(omnish_daemon::update_cache::UpdateCache::new(&omnish_dir));
 
-    // Shared daemon-level context for scheduled tasks
-    let daemon_ctx = Arc::new(omnish_daemon::task_mgr::DaemonContext {
-        omnish_dir: omnish_dir.clone(),
-        restart_signal: Arc::clone(&restart_signal),
-        update_cache: Arc::clone(&update_cache),
-    });
-
     // Periodic scan of updates directory (every 60s) to refresh cached versions
     {
         let uc = Arc::clone(&update_cache);
@@ -220,25 +213,24 @@ async fn async_main() -> Result<i32> {
     let tool_registry_watcher = Arc::clone(&tool_registry);
     tokio::spawn(async move { plugin_mgr_watcher.watch_with(plugin_rx, tool_registry_watcher).await });
 
-    // Issue #588: package plugins/ into an in-memory tarball, refreshed on
-    // directory changes, so clients can sync their local `~/.omnish/plugins/`
-    // via the existing update streaming path.
+    // Issue #588: package plugins/ into an in-memory tarball so clients can
+    // mirror their local `~/.omnish/plugins/` via the update streaming
+    // path. Initial rebuild here makes the bundle available to the first
+    // client that polls before the scheduled PluginBundleTask fires;
+    // subsequent refreshes run on the task manager's schedule (default
+    // every 5 minutes).
     let plugin_bundler = Arc::new(omnish_daemon::plugin_bundle::PluginBundler::new(plugins_dir.clone()));
     plugin_bundler.rebuild();
-    {
-        let plugin_bundle_rx = file_watcher.watch(plugins_dir.clone());
-        let bundler = Arc::clone(&plugin_bundler);
-        tokio::spawn(async move {
-            let mut rx = plugin_bundle_rx;
-            while rx.changed().await.is_ok() {
-                // Debounce rapid inotify events (matches plugin override watcher).
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                let _ = rx.borrow_and_update();
-                let checksum = bundler.rebuild();
-                tracing::info!("plugin_bundle: rebuilt (checksum={})", checksum);
-            }
-        });
-    }
+
+    // Shared daemon-level context for scheduled tasks. Built here (not
+    // earlier) so it can carry plugin_bundler - the PluginBundleTask
+    // reaches the bundler through TaskContext.daemon.
+    let daemon_ctx = Arc::new(omnish_daemon::task_mgr::DaemonContext {
+        omnish_dir: omnish_dir.clone(),
+        restart_signal: Arc::clone(&restart_signal),
+        update_cache: Arc::clone(&update_cache),
+        plugin_bundler: Arc::clone(&plugin_bundler),
+    });
 
     let sandbox_rules = sandbox_rules::compile_config(&config.sandbox);
     let server_sandbox_rules: Arc<std::sync::RwLock<_>> = Arc::new(std::sync::RwLock::new(sandbox_rules));
