@@ -1,18 +1,14 @@
 //! Issue #588: periodic rebuild of the plugin bundle as a ScheduledTask.
 //!
-//! inotify on `~/.omnish/plugins/` does not see writes inside per-plugin
-//! subdirectories (it is non-recursive, and recursive subdir watches race
-//! on new directories). A fixed poll rebuilds the bundle, compares its
-//! checksum against the previous, and logs when the bundle actually
-//! changes. Because `PluginBundler::rebuild` produces deterministic bytes
-//! for identical content, a no-op rebuild swaps the cached snapshot for
-//! an identical copy - clients never re-download unless the checksum
-//! differs.
+//! The task is a baseline refresh; handlers already rebuild on demand
+//! when a client's checksum disagrees with the cache. This task catches
+//! slow drift even when no clients are polling, and emits an info-level
+//! log only when *its own* rebuild observed a change (before vs after),
+//! so handler-triggered refreshes don't show up here retroactively.
 
 use crate::task_mgr::{ScheduledTask, TaskContext};
 use anyhow::Result;
 use omnish_common::config::ConfigMap;
-use std::sync::Mutex;
 use tokio_cron_scheduler::Job;
 
 pub struct PluginBundleTask {
@@ -49,21 +45,21 @@ impl ScheduledTask for PluginBundleTask {
 
     fn create_job(&self, ctx: &TaskContext) -> Result<Job> {
         let bundler = ctx.daemon.plugin_bundler.clone();
-        let prev_checksum = std::sync::Arc::new(Mutex::new(bundler.checksum()));
         Ok(Job::new_async(self.schedule(), move |_uuid, _lock| {
             let bundler = bundler.clone();
-            let prev_checksum = prev_checksum.clone();
             Box::pin(async move {
                 tracing::debug!("task [plugin_bundle] started");
-                let checksum = bundler.rebuild().await;
-                let mut prev = prev_checksum.lock().unwrap();
-                if checksum != *prev {
+                // Compare cache before/after our own rebuild so handler-
+                // triggered updates (done outside this task) don't log as
+                // if this tick discovered them.
+                let before = bundler.checksum();
+                let after = bundler.rebuild().await;
+                if after != before {
                     tracing::info!(
                         "task [plugin_bundle] changed ({} -> {})",
-                        if prev.is_empty() { "<empty>".to_string() } else { prev.clone() },
-                        if checksum.is_empty() { "<empty>".to_string() } else { checksum.clone() },
+                        if before.is_empty() { "<empty>" } else { &before },
+                        if after.is_empty() { "<empty>" } else { &after },
                     );
-                    *prev = checksum;
                 }
                 tracing::debug!("task [plugin_bundle] finished");
             })
