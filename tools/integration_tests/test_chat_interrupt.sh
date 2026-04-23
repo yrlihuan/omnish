@@ -33,9 +33,26 @@ test_1() {
     send_keys "使用bash工具执行: sleep 30" 0.3
     send_enter 0.3
 
-    # Wait for the tool to be actively running before interrupting
-    sleep 15
-    echo -e "  Sending Ctrl-C to interrupt..."
+    # Poll for the Bash tool to actually dispatch before interrupting. Fixed
+    # sleep silently degrades to "early interrupt during LLM call" when the
+    # upstream API backs off on 429 (issue #568), which is Test 2's scenario,
+    # not Test 1's. 90s tolerates one upstream 60s retry backoff.
+    local waited=0
+    local tool_started=false
+    while [[ $waited -lt 90 ]]; do
+        if capture_pane -30 | grep -qE '● Bash\(sleep'; then
+            tool_started=true
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if ! $tool_started; then
+        show_capture "Tool never dispatched" "$(capture_pane -50)" 25
+        assert_fail "Bash(sleep ...) tool did not dispatch within 90s (likely upstream 429)"
+        return 1
+    fi
+    echo -e "  Tool dispatched after ${waited}s, sending Ctrl-C..."
     send_special C-c 2
 
     # Verify we're back at the chat prompt
@@ -60,7 +77,9 @@ test_1() {
         return 1
     fi
 
-    content=$(capture_pane -30)
+    # Capture a wide window: long LLM responses can push the echo line past
+    # the default view (issue #568).
+    content=$(capture_pane -200)
     show_capture "After response" "$content" 15
 
     # Strip ANSI codes
