@@ -496,10 +496,20 @@ fn resolve_dynamic_handler(path: &str) -> Option<String> {
     None
 }
 
-/// Apply config changes to daemon.toml. Returns deploy targets (`user@host`)
-/// that the caller should spawn deploys for - these come from `add_client` and
-/// `deploy_client` handlers which intentionally do not touch the TOML file.
-pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> anyhow::Result<Vec<String>> {
+/// Side effects produced by `apply_config_changes` that the caller must
+/// schedule after the TOML write succeeds. Handlers that intentionally do
+/// not touch the TOML file report their work here instead.
+#[derive(Default)]
+pub struct ConfigSideEffects {
+    /// `user@host` strings from `add_client` / `deploy_client` handlers.
+    pub deploy_targets: Vec<String>,
+    /// URLs or local paths from `install_plugin` handler submits.
+    pub plugin_installs: Vec<String>,
+}
+
+/// Apply config changes to daemon.toml. Returns side effects (deploys to
+/// spawn, plugins to install) that must be scheduled by the caller.
+pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> anyhow::Result<ConfigSideEffects> {
     let schema = parse_schema();
 
     let mut generic: Vec<&ConfigChange> = Vec::new();
@@ -537,7 +547,7 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
         }
     }
 
-    let mut deploy_targets: Vec<String> = Vec::new();
+    let mut effects = ConfigSideEffects::default();
 
     for (handler, changes) in &handler_groups {
         if handler == "edit_backend" {
@@ -548,11 +558,15 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
             handle_add_global_rule(config_path, changes)?;
         } else if handler == "add_client" {
             if let Some(target) = handle_add_client(changes)? {
-                deploy_targets.push(target);
+                effects.deploy_targets.push(target);
             }
         } else if handler == "deploy_client" {
             if let Some(target) = handle_deploy_client(changes)? {
-                deploy_targets.push(target);
+                effects.deploy_targets.push(target);
+            }
+        } else if handler == "install_plugin" {
+            if let Some(url) = handle_install_plugin(changes)? {
+                effects.plugin_installs.push(url);
             }
         } else if let Some(rest) = handler.strip_prefix("edit_global_rule:") {
             // handler format: "edit_global_rule:<plugin>:<index>"
@@ -566,7 +580,7 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
         }
     }
 
-    Ok(deploy_targets)
+    Ok(effects)
 }
 
 /// Manual `Add client` form. The submit (Deploy) button triggers the deploy;
@@ -615,6 +629,24 @@ fn handle_deploy_client(changes: &[&ConfigChange]) -> anyhow::Result<Option<Stri
         Some(t) => Ok(Some(t)),
         None => anyhow::bail!("deploy_client: invalid target"),
     }
+}
+
+/// `Install plugin` submit button (see `plugin_install.rs`). Returns the URL
+/// or local path the caller should hand to `spawn_install_plugin`. The
+/// daemon does the fetch/extract/merge asynchronously and reports via
+/// NoticePush.
+fn handle_install_plugin(changes: &[&ConfigChange]) -> anyhow::Result<Option<String>> {
+    let submit = changes.iter().find(|c| c.path.ends_with("._submit"))
+        .map(|c| c.value == "true").unwrap_or(false);
+    if !submit {
+        return Ok(None);
+    }
+    let url = changes.iter().find(|c| c.path.ends_with(".url"))
+        .map(|c| c.value.trim().to_string()).unwrap_or_default();
+    if url.is_empty() {
+        anyhow::bail!("Install plugin: URL or local path is required");
+    }
+    Ok(Some(url))
 }
 
 fn handle_add_global_rule(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::Result<()> {
@@ -854,15 +886,18 @@ mod tests {
         let config = DaemonConfig::default();
         let (_items, handlers) = build_config_items(&config, &[], &[]);
         // Label-only submenus (llm, shell_completion, sandbox) + dynamic placeholder (plugins)
-        // + handler submenu (add_backend)
+        // + handler submenus (add_backend, install_plugin)
         // Note: add_global_rule is now generated client-side
-        assert_eq!(handlers.len(), 5);
+        assert_eq!(handlers.len(), 6);
         let llm = handlers.iter().find(|h| h.path == "llm").unwrap();
         assert_eq!(llm.label, "LLM");
         assert_eq!(llm.handler, "");
         let add = handlers.iter().find(|h| h.path == "llm.backends.__new__").unwrap();
         assert_eq!(add.handler, "add_backend");
         assert_eq!(add.label, "Add backend");
+        let install = handlers.iter().find(|h| h.path == "plugins.__install__").unwrap();
+        assert_eq!(install.handler, "install_plugin");
+        assert_eq!(install.label, "Install plugin");
     }
 
     #[test]

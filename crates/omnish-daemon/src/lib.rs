@@ -25,6 +25,7 @@ pub mod hourly_summary;
 pub mod plugin;
 pub mod plugin_bundle;
 pub mod plugin_bundle_task;
+pub mod plugin_install;
 pub mod session_mgr;
 pub mod task_mgr;
 pub mod thread_summary;

@@ -1050,21 +1050,32 @@ async fn handle_config_update(
 ) {
     let result = crate::config_schema::apply_config_changes(&ctx.opts.config_path, &changes);
     match result {
-        Ok(deploy_targets) => {
+        Ok(effects) => {
             // Reload config after successful write
             if let Ok(mut new_config) = omnish_common::config::load_daemon_config() {
                 omnish_daemon::task_mgr::inject_task_defaults(&mut new_config.tasks);
                 *ctx.opts.daemon_config.write().unwrap() = new_config;
             }
             // Spawn background deploy tasks; results are pushed back as NoticePush.
-            if !deploy_targets.is_empty() {
+            if !effects.deploy_targets.is_empty() {
                 let omnish_dir = omnish_common::config::omnish_dir();
                 let listen_addr = ctx.opts.daemon_config.read().unwrap().listen_addr.clone();
-                for target in deploy_targets {
+                for target in effects.deploy_targets {
                     omnish_daemon::deploy::spawn_deploy(
                         omnish_dir.clone(),
                         target,
                         listen_addr.clone(),
+                        ctx.push_registry.clone(),
+                    );
+                }
+            }
+            // Spawn background plugin installs; results are pushed as NoticePush.
+            if !effects.plugin_installs.is_empty() {
+                let omnish_dir = omnish_common::config::omnish_dir();
+                for url in effects.plugin_installs {
+                    omnish_daemon::plugin_install::spawn_install_plugin(
+                        url,
+                        omnish_dir.clone(),
                         ctx.push_registry.clone(),
                     );
                 }

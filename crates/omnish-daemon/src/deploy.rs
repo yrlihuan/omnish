@@ -206,7 +206,10 @@ async fn broadcast_notice(registry: &PushRegistry, level: NoticeLevel, text: Str
         map.values().cloned().collect()
     };
     for tx in senders {
-        let msg = Message::NoticePush { level: level.clone(), text: text.clone() };
+        // Deploy notices are intentionally untagged: any connected client that
+        // kicked off the deploy (or a peer watching) sees the result. Old
+        // semantic preserved.
+        let msg = Message::NoticePush { level: level.clone(), text: text.clone(), kind: None };
         let _ = tx.send(msg).await;
     }
 }

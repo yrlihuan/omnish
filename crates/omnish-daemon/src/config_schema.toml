@@ -205,7 +205,33 @@ label = "Enabled"
 kind = "toggle"
 toml_key = "tasks.daily_notes.enabled"
 
-# ── Plugins (dynamic: expanded from plugin metadata at runtime) ──
+# ── Plugins ───────────────────────────────────────────
+# Install plugin form: URL or local path → submit. Daemon fetches the
+# tar.gz, validates structure (one top-level directory containing
+# tool.json), and merges into the plugins directory, preserving files
+# in an existing target that are absent from the archive (e.g.
+# tool.override.json).
+#
+# Declared before the dynamic expansion so the client emits the
+# `Install plugin` submenu at the top of `Plugins`, above the
+# per-plugin entries produced by `build_plugin_items`.
+[[items]]
+path = "plugins.__install__"
+label = "Install plugin"
+kind = "submenu"
+handler = "install_plugin"
+
+[[items]]
+path = "plugins.__install__.url"
+label = "URL or local path"
+kind = "text"
+
+[[items]]
+path = "plugins.__install__._submit"
+label = "Install"
+kind = "toggle"
+
+# Dynamic: per-plugin items expanded from plugin metadata at runtime.
 [[items]]
 path = "plugins"
 label = "Plugins"

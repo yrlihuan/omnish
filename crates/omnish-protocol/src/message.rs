@@ -5,7 +5,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version - increment on any wire format change.
-pub const PROTOCOL_VERSION: u32 = 21;
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// Minimum protocol version this build can interoperate with.
 ///
@@ -120,7 +120,14 @@ pub enum Message {
     /// Test helper: daemon closes this connection after `delay_secs` seconds.
     TestDisconnect { delay_secs: u64 },
     /// Daemon -> client push: a transient notice to render in the client UI.
-    NoticePush { level: NoticeLevel, text: String },
+    ///
+    /// `kind` is an optional category tag the client uses to decide whether to
+    /// react. `None` means "no category, always display" (e.g. legacy deploy
+    /// broadcasts). `Some(kind)` is consulted against the client's pending
+    /// expectation set: only the client that initiated an action of this kind
+    /// displays the notice; others drop it silently. See
+    /// `omnish_client::pending_notices`. PROTOCOL_VERSION 22.
+    NoticePush { level: NoticeLevel, text: String, kind: Option<String> },
     /// Issue #588: client polls daemon for the current `~/.omnish/plugins/`
     /// bundle. `current_checksum` is the SHA-256 of the last bundle the
     /// client successfully installed (empty string on first poll).
@@ -848,7 +855,7 @@ mod tests {
             Message::UpdateChunk { seq: 0, total_size: 1024, checksum: "abc".into(), data: vec![1,2,3], done: false, error: None },
             Message::ConfigClient { changes: vec![] },
             Message::TestDisconnect { delay_secs: 5 },
-            Message::NoticePush { level: NoticeLevel::Info, text: String::new() },
+            Message::NoticePush { level: NoticeLevel::Info, text: String::new(), kind: None },
             Message::PluginSyncCheck { current_checksum: String::new(), hostname: String::new() },
             Message::PluginSyncInfo { checksum: String::new(), available: false, total_size: 0 },
             Message::PluginSyncRequest { hostname: String::new() },

@@ -3398,6 +3398,20 @@ impl ChatSession {
                         .collect();
                     drop(pm);
 
+                    // Register an expectation so we display a matching
+                    // tagged NoticePush that this submit will produce. The
+                    // daemon pushes kind=handler_name; clients without a
+                    // matching pending entry drop the notice. 90s leaves
+                    // headroom over the daemon-side 60s install timeout.
+                    if !handler_name.is_empty()
+                        && find_change_value(&translated_changes, "._submit") == "true"
+                    {
+                        crate::pending_notices::expect(
+                            &handler_name,
+                            std::time::Duration::from_secs(90),
+                        );
+                    }
+
                     let update_result = rt.block_on(async {
                         rpc_ref.call(Message::ConfigUpdate { changes: config_changes }).await
                     });

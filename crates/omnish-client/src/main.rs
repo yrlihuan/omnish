@@ -4,6 +4,7 @@ mod client_plugin;
 mod command;
 mod completion;
 pub mod event_log;
+pub mod pending_notices;
 mod ghost_complete;
 mod display;
 use display::NEWLINE;
@@ -1765,12 +1766,25 @@ async fn main() -> Result<()> {
                             &mut prefix_bytes,
                         );
                     }
-                    Message::NoticePush { level, text } => {
-                        let prefix = match level {
-                            omnish_protocol::message::NoticeLevel::Info => "[omnish]",
-                            omnish_protocol::message::NoticeLevel::Error => "[omnish error]",
+                    Message::NoticePush { level, text, kind } => {
+                        // Tagged notices are only shown on the initiator -
+                        // other clients drop them so daemon-side broadcasts
+                        // of targeted actions (Install plugin, ...) don't
+                        // spam every connected session. Untagged notices
+                        // (deploy, legacy) always display.
+                        let show = match &kind {
+                            Some(k) => pending_notices::consume(k),
+                            None => true,
                         };
-                        notice(&format!("{} {}", prefix, text));
+                        if show {
+                            let prefix = match level {
+                                omnish_protocol::message::NoticeLevel::Info => "[omnish]",
+                                omnish_protocol::message::NoticeLevel::Error => "[omnish error]",
+                            };
+                            notice(&format!("{} {}", prefix, text));
+                        } else {
+                            event_log::push(format!("notice dropped (kind={:?})", kind));
+                        }
                     }
                     _ => {}
                 }
