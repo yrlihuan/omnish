@@ -57,6 +57,23 @@ struct CompletionInfo {
     latency_ms: u64,
 }
 
+/// Heuristic: detect when an LLM response looks like a captured shell prompt
+/// followed by a command (e.g. `titan:~/docker $ python foo.py`). Returns
+/// true if a " $ " or " # " terminator is preceded by content containing `:`,
+/// `~`, or `@` - the typical markers of `host:path`, `~/...`, or `user@host`
+/// prompt prefixes. Issue #439.
+fn looks_like_shell_prompt_dump(s: &str) -> bool {
+    for marker in [" $ ", " # "] {
+        if let Some(pos) = s.find(marker) {
+            let before = &s[..pos];
+            if before.contains(':') || before.contains('~') || before.contains('@') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 impl ShellCompleter {
     pub fn new() -> Self {
         Self {
@@ -267,42 +284,44 @@ impl ShellCompleter {
 
         if let Some(best) = best {
             if !best.text.is_empty() {
-                // Compute full suggestion based on what was sent to LLM
-                // LLM returns either:
-                // 1. Full command (may or may not start with request_input)
-                // 2. Suffix after cursor (does not include request_input)
-                // Determine which case based on whether suggestion starts with request_input
-                let full_suggestion = if request_input.is_empty() {
-                    // No sent input means LLM returned full command
-                    best.text.clone()
-                } else if best.text.starts_with(&request_input) {
-                    // Suggestion starts with request_input - it's a full command
-                    best.text.clone()
-                } else if request_input.starts_with(&best.text) {
-                    // LLM returned a prefix/subset of the input (e.g. input="rm 1.txt "
-                    // and LLM returned "rm 1.txt") - nothing to add, discard.
+                // Issue #439: defensive filters against common LLM misbehaviour
+                // that still technically passes the prefix check below.
+                if looks_like_shell_prompt_dump(&best.text) {
                     self.current_ghost = None;
-                    crate::event_log::push(format!("on_response seq={}: rejected (input is prefix of suggestion)", response.sequence_id));
+                    crate::event_log::push(format!(
+                        "on_response seq={}: rejected (shell prompt dump)",
+                        response.sequence_id
+                    ));
                     return None;
-                } else if best.text.trim().is_empty() {
-                    // Suggestion is just whitespace - discard (issue #91)
+                }
+                if request_input.len() >= 10
+                    && best.text.matches(request_input.as_str()).count() > 1
+                {
                     self.current_ghost = None;
-                    crate::event_log::push(format!("on_response seq={}: rejected (whitespace)", response.sequence_id));
+                    crate::event_log::push(format!(
+                        "on_response seq={}: rejected (request_input repeated)",
+                        response.sequence_id
+                    ));
                     return None;
+                }
+
+                // The completion prompt instructs the LLM to return FULL commands
+                // (see omnish-llm::template::COMPLETION_INSTRUCTIONS). Only two
+                // shapes are acceptable: empty request_input (LLM writes the
+                // whole command) or a suggestion that starts with request_input
+                // (normal prefix completion). Everything else - suggestion that
+                // is a subset of the input, whitespace-only output, typo
+                // corrections, or a synthesized suffix-append - is garbage and
+                // must not be shown. Issue #439.
+                let full_suggestion = if request_input.is_empty() || best.text.starts_with(&request_input) {
+                    best.text.clone()
                 } else {
-                    // Suggestion doesn't start with request_input.
-                    // Check if it shares a long common prefix (e.g. LLM corrected a typo
-                    // or the last char differs). Ghost text can only append, so discard.
-                    let common = request_input.chars().zip(best.text.chars())
-                        .take_while(|(a, b)| a == b).count();
-                    if common > request_input.len() / 2 {
-                        // Likely a variant/correction - can't show as ghost
-                        self.current_ghost = None;
-                        crate::event_log::push(format!("on_response seq={}: rejected (correction, common={}/{})", response.sequence_id, common, request_input.len()));
-                        return None;
-                    }
-                    // Genuine suffix (e.g. LLM returned just the completion part)
-                    format!("{}{}", request_input, best.text)
+                    self.current_ghost = None;
+                    crate::event_log::push(format!(
+                        "on_response seq={}: rejected (no prefix match)",
+                        response.sequence_id
+                    ));
+                    return None;
                 };
 
                 // Check if current input is a prefix of the full suggestion
@@ -542,7 +561,7 @@ mod tests {
         let resp = CompletionResponse {
             sequence_id: 5,
             suggestions: vec![CompletionSuggestion {
-                text: "tus".to_string(),
+                text: "git status".to_string(),
                 confidence: 0.9,
             }],
         };
@@ -560,7 +579,7 @@ mod tests {
         let resp = CompletionResponse {
             sequence_id: 5,
             suggestions: vec![CompletionSuggestion {
-                text: "tus".to_string(),
+                text: "git status".to_string(),
                 confidence: 0.9,
             }],
         };
@@ -580,7 +599,7 @@ mod tests {
         let resp = CompletionResponse {
             sequence_id: 5,
             suggestions: vec![CompletionSuggestion {
-                text: "tus".to_string(),
+                text: "git status".to_string(),
                 confidence: 0.9,
             }],
         };
@@ -598,9 +617,9 @@ mod tests {
         let resp = CompletionResponse {
             sequence_id: 3,
             suggestions: vec![
-                CompletionSuggestion { text: " status".to_string(), confidence: 0.7 },
-                CompletionSuggestion { text: " stash".to_string(), confidence: 0.9 },
-                CompletionSuggestion { text: " stage".to_string(), confidence: 0.5 },
+                CompletionSuggestion { text: "git status".to_string(), confidence: 0.7 },
+                CompletionSuggestion { text: "git stash".to_string(), confidence: 0.9 },
+                CompletionSuggestion { text: "git stage".to_string(), confidence: 0.5 },
             ],
         };
         let ghost = c.on_response(&resp, "git");
@@ -614,38 +633,39 @@ mod tests {
         c.on_input_changed("cd ", 1);
         c.mark_sent(1, "cd ");
 
-        // First suggestion: " work" (length 5 < 10), second: " workspace"
+        // First suggestion: "cd work" (length 7 < 10), second: "cd workspace"
         // First is prefix of second, should prefer second
         let resp = CompletionResponse {
             sequence_id: 1,
             suggestions: vec![
-                CompletionSuggestion { text: " work".to_string(), confidence: 0.9 },
-                CompletionSuggestion { text: " workspace".to_string(), confidence: 0.8 },
+                CompletionSuggestion { text: "cd work".to_string(), confidence: 0.9 },
+                CompletionSuggestion { text: "cd workspace".to_string(), confidence: 0.8 },
             ],
         };
         let ghost = c.on_response(&resp, "cd ");
-        // Should prefer " workspace" because " work" is a prefix and length < 10
-        assert_eq!(ghost, Some(" workspace"));
+        // Should prefer "cd workspace" because "cd work" suffix " work" is short
+        // enough (< 10) that the longer candidate wins.
+        assert_eq!(ghost, Some("workspace"));
     }
 
-    /// Issue #95: first suggestion length >= 10, don't apply the heuristic
+    /// Issue #95: first suggestion length >= 10 (relative to request), don't apply heuristic
     #[test]
     fn test_issue95_no_preference_when_first_long() {
         let mut c = ShellCompleter::new();
         c.on_input_changed("cd ", 1);
         c.mark_sent(1, "cd ");
 
-        // First suggestion: " verylongtext" (length 12 >= 10)
+        // First suggestion's suffix beyond "cd " is " verylongtext" (13 >= 10)
         let resp = CompletionResponse {
             sequence_id: 1,
             suggestions: vec![
-                CompletionSuggestion { text: " verylongtext".to_string(), confidence: 0.9 },
-                CompletionSuggestion { text: " workspace".to_string(), confidence: 0.8 },
+                CompletionSuggestion { text: "cd verylongtext".to_string(), confidence: 0.9 },
+                CompletionSuggestion { text: "cd workspace".to_string(), confidence: 0.8 },
             ],
         };
         let ghost = c.on_response(&resp, "cd ");
         // Should prefer first (higher confidence), not apply heuristic
-        assert_eq!(ghost, Some(" verylongtext"));
+        assert_eq!(ghost, Some("verylongtext"));
     }
 
     #[test]
@@ -657,7 +677,7 @@ mod tests {
         let resp = CompletionResponse {
             sequence_id: 3,
             suggestions: vec![CompletionSuggestion {
-                text: " status".to_string(),
+                text: "git status".to_string(),
                 confidence: 0.9,
             }],
         };
@@ -682,7 +702,7 @@ mod tests {
         let resp = CompletionResponse {
             sequence_id: 1,
             suggestions: vec![CompletionSuggestion {
-                text: " run".to_string(),
+                text: "cargo run".to_string(),
                 confidence: 0.9,
             }],
         };
@@ -777,7 +797,7 @@ mod tests {
         let resp = CompletionResponse {
             sequence_id: 5,
             suggestions: vec![CompletionSuggestion {
-                text: "tus".to_string(),
+                text: "git status".to_string(),
                 confidence: 0.9,
             }],
         };
@@ -812,7 +832,7 @@ mod tests {
         let resp = CompletionResponse {
             sequence_id: 1,
             suggestions: vec![CompletionSuggestion {
-                text: " run".to_string(),
+                text: "cargo run".to_string(),
                 confidence: 0.9,
             }],
         };
@@ -862,21 +882,15 @@ mod tests {
         assert_eq!(c.ghost(), Some("us"));
     }
 
-    /// Test scenario: completion request sent with prefix "git st", user continues
-    /// typing "at", when completion returns suffix "atus", ghost text should be "us".
+    /// Issue #439: suffix-only LLM responses are no longer accepted. The LLM is
+    /// instructed to return FULL commands; anything that does not start with
+    /// request_input is treated as garbage (repeated prompt, error echo, etc.).
     #[test]
-    fn test_ghost_calculation_when_suffix_returned_and_input_changes() {
+    fn test_suffix_only_response_rejected() {
         let mut c = ShellCompleter::new();
-
-        // Simulate request sent with input "git st", sequence_id 1
         c.on_input_changed("git st", 1);
         c.mark_sent(1, "git st");
 
-        // User continues typing "at" - input is now "git stat"
-        // Response arrives before on_input_changed is called (race condition)
-        // pending_seq remains 1, so response is not stale
-
-        // LLM returns suffix "atus" (relative to original input "git st")
         let resp = CompletionResponse {
             sequence_id: 1,
             suggestions: vec![CompletionSuggestion {
@@ -884,15 +898,76 @@ mod tests {
                 confidence: 0.9,
             }],
         };
-
-        // Current input is "git stat"
         let ghost = c.on_response(&resp, "git stat");
-        // With sent_input tracking, we can reconstruct full suggestion:
-        // sent_input = "git st", suffix = "atus" -> full = "git status"
-        // Current input "git stat" is a prefix of "git status"
-        // Ghost should be "us" (remaining suffix after current input)
-        assert_eq!(ghost, Some("us"), "Should compute correct ghost text when input changes during request");
-        assert_eq!(c.ghost(), Some("us"));
+        assert_eq!(ghost, None, "Suffix-only response must be rejected");
+        assert_eq!(c.ghost(), None);
+    }
+
+    /// Issue #439: LLM echoes back a shell prompt line it saw in context.
+    /// Even if current_input is empty (so the prefix check trivially passes),
+    /// a suggestion shaped like `host:path $ cmd` must be rejected.
+    #[test]
+    fn test_shell_prompt_dump_rejected_empty_input() {
+        let mut c = ShellCompleter::new();
+        c.on_input_changed("", 1);
+        c.mark_sent(1, "");
+
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: "titan:~/docker/qwen_coder $ python simple_test.py 9051 qwen36-35b".to_string(),
+                confidence: 0.9,
+            }],
+        };
+        let ghost = c.on_response(&resp, "");
+        assert_eq!(ghost, None, "Shell-prompt-shaped suggestion must be rejected");
+        assert_eq!(c.ghost(), None);
+    }
+
+    /// Issue #439: LLM hallucinates a duplicated command. When request_input
+    /// appears more than once as a substring in the suggestion, the
+    /// subsequent "ghost" would render a nonsensical repeat, so reject.
+    #[test]
+    fn test_request_input_repeated_in_suggestion_rejected() {
+        let mut c = ShellCompleter::new();
+        let long_input = "log stream --style compact --predicate 'subsystem == \"x\"";
+        c.on_input_changed(long_input, 1);
+        c.mark_sent(1, long_input);
+
+        let mut repeated = String::new();
+        for _ in 0..3 {
+            repeated.push_str(long_input);
+            repeated.push(' ');
+        }
+
+        let resp = CompletionResponse {
+            sequence_id: 1,
+            suggestions: vec![CompletionSuggestion {
+                text: repeated,
+                confidence: 0.9,
+            }],
+        };
+        let ghost = c.on_response(&resp, long_input);
+        assert_eq!(ghost, None, "Repeated-input suggestion must be rejected");
+        assert_eq!(c.ghost(), None);
+    }
+
+    /// The shell-prompt guard must not fire on ordinary commands that contain
+    /// `$` or `#` without the surrounding " $ " / " # " terminator context, or
+    /// where the preamble lacks a prompt-like marker.
+    #[test]
+    fn test_shell_prompt_guard_no_false_positives() {
+        // No " $ " terminator at all.
+        assert!(!looks_like_shell_prompt_dump("echo $HOME"));
+        assert!(!looks_like_shell_prompt_dump("git log --format='%h %s'"));
+        // Has " # " but no prompt-like preamble (no :, ~, @).
+        assert!(!looks_like_shell_prompt_dump("sudo vim /etc/hosts # comment"));
+        // Has " $ " but no prompt-like preamble.
+        assert!(!looks_like_shell_prompt_dump("echo a $ b"));
+        // Clear shell-prompt dumps.
+        assert!(looks_like_shell_prompt_dump("titan:~/docker $ python"));
+        assert!(looks_like_shell_prompt_dump("user@host:/tmp $ ls"));
+        assert!(looks_like_shell_prompt_dump("host:/etc # cat hosts"));
     }
 
     /// Test for issue 6: when current input is not a prefix of the full suggestion,
@@ -972,7 +1047,7 @@ mod tests {
         let resp = CompletionResponse {
             sequence_id: 1,
             suggestions: vec![CompletionSuggestion {
-                text: "atus".to_string(),
+                text: "git status".to_string(),
                 confidence: 0.9,
             }],
         };
@@ -998,7 +1073,7 @@ mod tests {
         let resp = CompletionResponse {
             sequence_id: 1,
             suggestions: vec![CompletionSuggestion {
-                text: "atus".to_string(),
+                text: "git status".to_string(),
                 confidence: 0.9,
             }],
         };
@@ -1115,33 +1190,32 @@ mod tests {
         // Now process responses in order - they should all work with current input "git s"
         let current_input = "git s";
 
-        // Response for "git" should be relevant (current input starts with original)
+        // Each response returns the full command "git status". The ghost against
+        // current_input "git s" is always "tatus".
         let resp1 = CompletionResponse {
             sequence_id: 1,
             suggestions: vec![CompletionSuggestion {
-                text: " status".to_string(),
+                text: "git status".to_string(),
                 confidence: 0.8,
             }],
         };
         let ghost1 = c.on_response(&resp1, current_input);
         assert_eq!(ghost1, Some("tatus"), "Response 1 should work");
 
-        // Response for "git " should be relevant
         let resp2 = CompletionResponse {
             sequence_id: 2,
             suggestions: vec![CompletionSuggestion {
-                text: "status".to_string(),
+                text: "git status".to_string(),
                 confidence: 0.9,
             }],
         };
         let ghost2 = c.on_response(&resp2, current_input);
         assert_eq!(ghost2, Some("tatus"), "Response 2 should work");
 
-        // Response for "git s" should be most relevant
         let resp3 = CompletionResponse {
             sequence_id: 3,
             suggestions: vec![CompletionSuggestion {
-                text: "tatus".to_string(),
+                text: "git status".to_string(),
                 confidence: 1.0,
             }],
         };
@@ -1227,7 +1301,7 @@ mod tests {
         let resp = CompletionResponse {
             sequence_id: 5,
             suggestions: vec![CompletionSuggestion {
-                text: "tus".to_string(),
+                text: "git status".to_string(),
                 confidence: 0.9,
             }],
         };
@@ -1254,7 +1328,7 @@ mod tests {
         let resp = CompletionResponse {
             sequence_id: 5,
             suggestions: vec![CompletionSuggestion {
-                text: "tus".to_string(),
+                text: "git status".to_string(),
                 confidence: 0.9,
             }],
         };
@@ -1276,7 +1350,7 @@ mod tests {
         let resp = CompletionResponse {
             sequence_id: 5,
             suggestions: vec![CompletionSuggestion {
-                text: "tus".to_string(),
+                text: "git status".to_string(),
                 confidence: 0.9,
             }],
         };
@@ -1298,7 +1372,7 @@ mod tests {
         let resp = CompletionResponse {
             sequence_id: 1,
             suggestions: vec![CompletionSuggestion {
-                text: " -la".to_string(),
+                text: "ls -la".to_string(),
                 confidence: 0.9,
             }],
         };
