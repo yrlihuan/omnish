@@ -37,3 +37,4 @@ tar = "0.4"
 [dev-dependencies]
 regex-lite = "0.1"
 vt100 = "0.15"
+tempfile = "3"

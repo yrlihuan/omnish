@@ -444,6 +444,195 @@ async fn download_and_extract_update(
 
 // extract_and_run_installer moved to omnish_common::update
 
+/// Issue #588: poll the daemon for a plugin bundle update and, if the
+/// daemon's checksum differs from our locally persisted one, download and
+/// mirror `~/.omnish/plugins/` from the bundle. "Mirror" means any on-disk
+/// file that is NOT in the bundle is deleted - the daemon is the source of
+/// truth.
+async fn sync_plugin_bundle(rpc: &RpcClient, hostname: &str) -> anyhow::Result<()> {
+    let omnish_dir = omnish_common::config::omnish_dir();
+    let plugins_dir = omnish_dir.join("plugins");
+    let checksum_file = plugins_dir.join(".bundle_checksum");
+
+    let current_checksum = tokio::fs::read_to_string(&checksum_file).await
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    let info = rpc.call(Message::PluginSyncCheck {
+        current_checksum: current_checksum.clone(),
+        hostname: hostname.to_string(),
+    }).await.context("plugin_sync: check")?;
+
+    let (daemon_checksum, available, total_size) = match info {
+        Message::PluginSyncInfo { checksum, available, total_size } => (checksum, available, total_size),
+        other => anyhow::bail!("plugin_sync: unexpected reply {:?}", std::mem::discriminant(&other)),
+    };
+    if !available {
+        event_log::push("plugin_sync: up to date");
+        return Ok(());
+    }
+    event_log::push(format!("plugin_sync: fetching {} bytes (new={})", total_size, daemon_checksum));
+
+    let bytes = download_plugin_bundle(rpc, hostname, &daemon_checksum).await?;
+    tokio::task::spawn_blocking({
+        let plugins_dir = plugins_dir.clone();
+        let checksum = daemon_checksum.clone();
+        move || extract_and_mirror_plugins(&bytes, &plugins_dir, &checksum)
+    }).await.context("plugin_sync: extract join")??;
+
+    event_log::push(format!("plugin_sync: installed checksum={}", daemon_checksum));
+    Ok(())
+}
+
+/// Stream the plugin bundle via `PluginSyncRequest` + `UpdateChunk` and
+/// return the fully-assembled tar.gz bytes. Verifies the checksum sent in
+/// the first chunk matches the expected daemon checksum.
+async fn download_plugin_bundle(
+    rpc: &RpcClient,
+    hostname: &str,
+    expected_checksum: &str,
+) -> anyhow::Result<Vec<u8>> {
+    let mut rx = rpc.call_stream(Message::PluginSyncRequest {
+        hostname: hostname.to_string(),
+    }).await.context("plugin_sync: call_stream")?;
+
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut chunk_count = 0u32;
+    let mut first_checksum = String::new();
+    let mut got_done = false;
+
+    while let Some(msg) = rx.recv().await {
+        match msg {
+            Message::UpdateChunk { seq, total_size: _, checksum, data, done, error } => {
+                if let Some(err) = error {
+                    anyhow::bail!("plugin_sync: server error: {}", err);
+                }
+                if seq == 0 { first_checksum = checksum; }
+                if !data.is_empty() { bytes.extend_from_slice(&data); }
+                chunk_count += 1;
+                if done { got_done = true; break; }
+            }
+            other => {
+                tracing::warn!("plugin_sync: unexpected message in stream {:?}", std::mem::discriminant(&other));
+                break;
+            }
+        }
+    }
+    if !got_done {
+        anyhow::bail!("plugin_sync: stream ended prematurely after {} chunks", chunk_count);
+    }
+    if !first_checksum.is_empty() && first_checksum != expected_checksum {
+        anyhow::bail!("plugin_sync: checksum mismatch: expected={}, got={}", expected_checksum, first_checksum);
+    }
+    // Always verify the bytes themselves hash to the expected checksum.
+    let actual = {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(&bytes);
+        h.finalize().iter().fold(String::with_capacity(64), |mut s, b| {
+            s.push_str(&format!("{:02x}", b));
+            s
+        })
+    };
+    if actual != expected_checksum {
+        anyhow::bail!("plugin_sync: content checksum mismatch: expected={}, got={}", expected_checksum, actual);
+    }
+    Ok(bytes)
+}
+
+/// Mirror-extract a plugin bundle over `plugins_dir`. Files in the bundle
+/// are created/overwritten with their recorded permissions; files on disk
+/// that are NOT in the bundle are deleted, so the result is an exact
+/// mirror of the daemon's `plugins/` tree. `.bundle_checksum` is excluded
+/// from mirror accounting since it is purely client-local state.
+fn extract_and_mirror_plugins(
+    bytes: &[u8],
+    plugins_dir: &std::path::Path,
+    checksum: &str,
+) -> anyhow::Result<()> {
+    use std::path::PathBuf;
+
+    std::fs::create_dir_all(plugins_dir)
+        .with_context(|| format!("create plugins_dir {}", plugins_dir.display()))?;
+
+    // Collect bundle paths first (for the mirror-delete pass afterwards) and
+    // extract in a second pass. Tar entries are iterated twice by decoding
+    // the gzip stream twice - simpler than buffering parsed entries.
+    let bundle_paths = {
+        let cursor = std::io::Cursor::new(bytes);
+        let gz = flate2::read::GzDecoder::new(cursor);
+        let mut ar = tar::Archive::new(gz);
+        let mut paths: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        for entry in ar.entries().context("tar entries")? {
+            let entry = entry.context("tar entry")?;
+            let p = entry.path().context("tar path")?.into_owned();
+            paths.insert(p);
+        }
+        paths
+    };
+
+    // Extract. tar::Archive::unpack handles overwriting and perms.
+    {
+        let cursor = std::io::Cursor::new(bytes);
+        let gz = flate2::read::GzDecoder::new(cursor);
+        let mut ar = tar::Archive::new(gz);
+        ar.set_preserve_permissions(true);
+        ar.unpack(plugins_dir).context("tar unpack")?;
+    }
+
+    // Mirror-delete: remove anything on disk that the bundle does not have.
+    mirror_delete(plugins_dir, plugins_dir, &bundle_paths)?;
+
+    // Persist the installed checksum last so a crash mid-extract leaves the
+    // bookkeeping behind the actual state (next sync will redo the work).
+    std::fs::write(plugins_dir.join(".bundle_checksum"), checksum.as_bytes())
+        .context("write .bundle_checksum")?;
+    Ok(())
+}
+
+/// Walk `dir` under `root` and delete any file not present in `keep`
+/// (paths in `keep` are relative to `root`). Empty directories left after
+/// deletion are also removed, except `root` itself. `.bundle_checksum` at
+/// the root is always kept (it is client-local bookkeeping).
+fn mirror_delete(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    keep: &std::collections::HashSet<std::path::PathBuf>,
+) -> anyhow::Result<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(()),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+        // Preserve client-local bookkeeping.
+        if rel == std::path::Path::new(".bundle_checksum") {
+            continue;
+        }
+        let ft = match entry.file_type() {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        if ft.is_dir() {
+            mirror_delete(root, &path, keep)?;
+            // Remove the dir only if it is now empty AND not in the bundle.
+            let bundle_has_dir = keep.contains(&rel)
+                || keep.iter().any(|p| p.starts_with(&rel));
+            if !bundle_has_dir {
+                let _ = std::fs::remove_dir_all(&path);
+            } else if std::fs::read_dir(&path).map(|mut it| it.next().is_none()).unwrap_or(false)
+                && !keep.contains(&rel)
+            {
+                let _ = std::fs::remove_dir(&path);
+            }
+        } else if !keep.contains(&rel) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
+}
+
 #[tokio::main(worker_threads = 4)]
 async fn main() -> Result<()> {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
@@ -865,6 +1054,22 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
+            }
+
+            // Issue #588: plugin bundle sync. Runs on the same cadence as
+            // UpdateCheck, fires unconditionally (the daemon-side checksum
+            // comparison tells us whether to do anything).
+            if let Some(ref rpc) = daemon_conn {
+                let hostname = nix::unistd::gethostname()
+                    .ok()
+                    .and_then(|h| h.into_string().ok())
+                    .unwrap_or_default();
+                let rpc = rpc.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = sync_plugin_bundle(&rpc, &hostname).await {
+                        event_log::push(format!("plugin_sync: {}", e));
+                    }
+                });
             }
         }
 
@@ -2987,6 +3192,75 @@ pub(crate) async fn handle_slash_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #588: build a minimal plugin bundle and verify that
+    /// `extract_and_mirror_plugins` creates the expected files, deletes
+    /// anything on disk that is not in the bundle, and preserves the
+    /// client-local `.bundle_checksum` bookkeeping file.
+    #[test]
+    fn test_extract_and_mirror_plugins_full_mirror_semantics() {
+        use std::io::Write;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let plugins_dir = tmp.path().to_path_buf();
+
+        // Pre-populate on disk with:
+        //   - obsolete/stale_plugin/ (must be deleted by mirror)
+        //   - my_plugin/old_file.txt (must be deleted; not in bundle)
+        //   - .bundle_checksum (must be PRESERVED - client-local state)
+        std::fs::create_dir_all(plugins_dir.join("obsolete/stale_plugin")).unwrap();
+        std::fs::write(plugins_dir.join("obsolete/stale_plugin/script"), b"old").unwrap();
+        std::fs::create_dir_all(plugins_dir.join("my_plugin")).unwrap();
+        std::fs::write(plugins_dir.join("my_plugin/old_file.txt"), b"old").unwrap();
+        std::fs::write(plugins_dir.join(".bundle_checksum"), b"stale").unwrap();
+
+        // Build a bundle containing only my_plugin/tool.json + my_plugin/run.
+        let mut tar_bytes = Vec::new();
+        {
+            let mut b = tar::Builder::new(&mut tar_bytes);
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(tar::EntryType::Directory);
+            h.set_size(0);
+            h.set_mode(0o755);
+            h.set_cksum();
+            b.append_data(&mut h, "my_plugin", std::io::empty()).unwrap();
+
+            let tool_json = b"{\"name\":\"my_plugin\"}";
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(tar::EntryType::Regular);
+            h.set_size(tool_json.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            b.append_data(&mut h, "my_plugin/tool.json", &tool_json[..]).unwrap();
+
+            let run = b"#!/bin/sh\necho hi";
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(tar::EntryType::Regular);
+            h.set_size(run.len() as u64);
+            h.set_mode(0o755);
+            h.set_cksum();
+            b.append_data(&mut h, "my_plugin/run", &run[..]).unwrap();
+            b.finish().unwrap();
+        }
+        let mut gz = Vec::new();
+        {
+            let mut e = flate2::write::GzEncoder::new(&mut gz, flate2::Compression::default());
+            e.write_all(&tar_bytes).unwrap();
+            e.finish().unwrap();
+        }
+
+        extract_and_mirror_plugins(&gz, &plugins_dir, "new_checksum").unwrap();
+
+        // Bundle files should exist.
+        assert!(plugins_dir.join("my_plugin/tool.json").exists());
+        assert!(plugins_dir.join("my_plugin/run").exists());
+        // Stale paths should be gone (mirror semantics).
+        assert!(!plugins_dir.join("my_plugin/old_file.txt").exists());
+        assert!(!plugins_dir.join("obsolete").exists());
+        // Client-local bookkeeping file updated, not deleted.
+        let cs = std::fs::read_to_string(plugins_dir.join(".bundle_checksum")).unwrap();
+        assert_eq!(cs, "new_checksum");
+    }
 
     #[test]
     fn test_alt_screen_detect_1049h() {
