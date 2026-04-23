@@ -501,8 +501,10 @@ fn resolve_dynamic_handler(path: &str) -> Option<String> {
 /// not touch the TOML file report their work here instead.
 #[derive(Default)]
 pub struct ConfigSideEffects {
-    /// `user@host` strings from `add_client` / `deploy_client` handlers.
-    pub deploy_targets: Vec<String>,
+    /// `(target, handler_kind)` pairs from `add_client` / `deploy_client`
+    /// handlers. The kind tags the resulting `NoticePush` so only the
+    /// initiating client displays the outcome.
+    pub deploy_targets: Vec<(String, &'static str)>,
     /// URLs or local paths from `install_plugin` handler submits.
     pub plugin_installs: Vec<String>,
 }
@@ -558,11 +560,11 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
             handle_add_global_rule(config_path, changes)?;
         } else if handler == "add_client" {
             if let Some(target) = handle_add_client(changes)? {
-                effects.deploy_targets.push(target);
+                effects.deploy_targets.push((target, "add_client"));
             }
         } else if handler == "deploy_client" {
             if let Some(target) = handle_deploy_client(changes)? {
-                effects.deploy_targets.push(target);
+                effects.deploy_targets.push((target, "deploy_client"));
             }
         } else if handler == "install_plugin" {
             if let Some(url) = handle_install_plugin(changes)? {

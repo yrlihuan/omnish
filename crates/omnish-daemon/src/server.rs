@@ -1060,12 +1060,13 @@ async fn handle_config_update(
             if !effects.deploy_targets.is_empty() {
                 let omnish_dir = omnish_common::config::omnish_dir();
                 let listen_addr = ctx.opts.daemon_config.read().unwrap().listen_addr.clone();
-                for target in effects.deploy_targets {
+                for (target, kind) in effects.deploy_targets {
                     omnish_daemon::deploy::spawn_deploy(
                         omnish_dir.clone(),
                         target,
                         listen_addr.clone(),
                         ctx.push_registry.clone(),
+                        kind,
                     );
                 }
             }

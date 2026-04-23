@@ -71,11 +71,15 @@ pub fn parse_target(target: &str) -> Option<String> {
 /// `listen_addr` is the daemon's configured listen address (forwarded to
 /// deploy.sh as `OMNISH_DAEMON_ADDR`). The script uses it to generate a
 /// minimal `client.toml` on first deploy when the remote has none.
+/// `kind` tags the resulting NoticePush so only the initiating client
+/// displays it (e.g. "add_client" or "deploy_client"). Pass a static str
+/// matching the handler name the client side `expect()`ed.
 pub fn spawn_deploy(
     omnish_dir: PathBuf,
     target: String,
     listen_addr: String,
     push_registry: PushRegistry,
+    kind: &'static str,
 ) {
     tokio::spawn(async move {
         let outcome = match tokio::time::timeout(
@@ -116,7 +120,7 @@ pub fn spawn_deploy(
                 format!("Deploy to {} failed: {}", target, err),
             ),
         };
-        broadcast_notice(&push_registry, level, text).await;
+        broadcast_notice(&push_registry, level, text, kind).await;
     });
 }
 
@@ -200,16 +204,17 @@ async fn run_deploy(omnish_dir: &Path, target: &str, listen_addr: &str) -> Deplo
     }
 }
 
-async fn broadcast_notice(registry: &PushRegistry, level: NoticeLevel, text: String) {
+async fn broadcast_notice(registry: &PushRegistry, level: NoticeLevel, text: String, kind: &'static str) {
     let senders: Vec<_> = {
         let map = registry.lock().await;
         map.values().cloned().collect()
     };
     for tx in senders {
-        // Deploy notices are intentionally untagged: any connected client that
-        // kicked off the deploy (or a peer watching) sees the result. Old
-        // semantic preserved.
-        let msg = Message::NoticePush { level: level.clone(), text: text.clone(), kind: None };
+        let msg = Message::NoticePush {
+            level: level.clone(),
+            text: text.clone(),
+            kind: Some(kind.to_string()),
+        };
         let _ = tx.send(msg).await;
     }
 }
