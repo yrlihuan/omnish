@@ -79,15 +79,12 @@ test_2() {
     # Stash the captured content for Test 3's post-mortem.
     CONTEXT_CONTENT="$content"
 
-    # Check for current directory indicators (commands should show /tmp from cd)
-    if echo "$content" | grep -qE "(WORKING DIR:|/tmp|LAST 5 COMMANDS)"; then
-        # Extract cwd from command history or WORKING DIR
-        CONTEXT_CWD=$(echo "$content" | grep -oE '/tmp[^[:space:]]*' | head -1)
-        CONTEXT_CWD_SOURCE="fallback_regex"
-        if [[ -z "$CONTEXT_CWD" ]]; then
-            CONTEXT_CWD=$(echo "$content" | grep "WORKING DIR:" | sed 's/.*WORKING DIR: *//' | tr -d '[:space:]' | head -1)
-            CONTEXT_CWD_SOURCE="WORKING_DIR_line"
-        fi
+    # WORKING DIR: is the authoritative application-level output; do NOT fall
+    # back to regex scraping the pane, which can latch onto CI render garbling
+    # of /tmp... tokens (issue #572).
+    if echo "$content" | grep -q "WORKING DIR:"; then
+        CONTEXT_CWD=$(echo "$content" | grep "WORKING DIR:" | sed 's/.*WORKING DIR: *//' | tr -d '[:space:]' | head -1)
+        CONTEXT_CWD_SOURCE="WORKING_DIR_line"
         echo -e "  Extracted CONTEXT_CWD='${CONTEXT_CWD}' (source: ${CONTEXT_CWD_SOURCE})"
 
         if echo "$CONTEXT_CWD" | grep -q 'tmp'; then
@@ -96,7 +93,7 @@ test_2() {
         fi
     fi
 
-    assert_fail "/context does not show directory info containing /tmp"
+    assert_fail "/context does not show WORKING DIR: containing /tmp"
     return 1
 }
 
