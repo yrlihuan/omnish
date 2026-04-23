@@ -220,6 +220,26 @@ async fn async_main() -> Result<i32> {
     let tool_registry_watcher = Arc::clone(&tool_registry);
     tokio::spawn(async move { plugin_mgr_watcher.watch_with(plugin_rx, tool_registry_watcher).await });
 
+    // Issue #588: package plugins/ into an in-memory tarball, refreshed on
+    // directory changes, so clients can sync their local `~/.omnish/plugins/`
+    // via the existing update streaming path.
+    let plugin_bundler = Arc::new(omnish_daemon::plugin_bundle::PluginBundler::new(plugins_dir.clone()));
+    plugin_bundler.rebuild();
+    {
+        let plugin_bundle_rx = file_watcher.watch(plugins_dir.clone());
+        let bundler = Arc::clone(&plugin_bundler);
+        tokio::spawn(async move {
+            let mut rx = plugin_bundle_rx;
+            while rx.changed().await.is_ok() {
+                // Debounce rapid inotify events (matches plugin override watcher).
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                let _ = rx.borrow_and_update();
+                let checksum = bundler.rebuild();
+                tracing::info!("plugin_bundle: rebuilt (checksum={})", checksum);
+            }
+        });
+    }
+
     let sandbox_rules = sandbox_rules::compile_config(&config.sandbox);
     let server_sandbox_rules: Arc<std::sync::RwLock<_>> = Arc::new(std::sync::RwLock::new(sandbox_rules));
 
@@ -375,7 +395,7 @@ async fn async_main() -> Result<i32> {
         let _ = formatter_mgr.register_external(&name, path).await;
     }
     let formatter_mgr = Arc::new(formatter_mgr);
-    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr.clone(), tool_registry.clone(), server_opts, formatter_mgr, Arc::clone(&update_cache));
+    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr.clone(), tool_registry.clone(), server_opts, formatter_mgr, Arc::clone(&update_cache), Arc::clone(&plugin_bundler));
 
     // Push client-relevant config changes to all connected clients via push_registry.
     // Only watches [client] section; sandbox settings are now client-local.

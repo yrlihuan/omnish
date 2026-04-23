@@ -198,6 +198,7 @@ struct HandlerCtx {
     active_threads: ActiveThreads,
     opts: Arc<ServerOpts>,
     update_cache: Arc<omnish_daemon::update_cache::UpdateCache>,
+    plugin_bundler: Arc<omnish_daemon::plugin_bundle::PluginBundler>,
     io_requests: Arc<AtomicU64>,
     io_bytes: Arc<AtomicU64>,
     push_registry: PushRegistry,
@@ -225,6 +226,7 @@ pub struct DaemonServer {
     active_threads: ActiveThreads,
     opts: Arc<ServerOpts>,
     update_cache: Arc<omnish_daemon::update_cache::UpdateCache>,
+    plugin_bundler: Arc<omnish_daemon::plugin_bundle::PluginBundler>,
     pub push_registry: PushRegistry,
 }
 
@@ -442,6 +444,7 @@ impl DaemonServer {
         opts: Arc<ServerOpts>,
         formatter_mgr: Arc<omnish_daemon::formatter_mgr::FormatterManager>,
         update_cache: Arc<omnish_daemon::update_cache::UpdateCache>,
+        plugin_bundler: Arc<omnish_daemon::plugin_bundle::PluginBundler>,
     ) -> Self {
         Self {
             session_mgr,
@@ -456,6 +459,7 @@ impl DaemonServer {
             active_threads: Arc::new(Mutex::new(HashMap::new())),
             opts,
             update_cache,
+            plugin_bundler,
             push_registry: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
@@ -540,6 +544,7 @@ impl DaemonServer {
             active_threads: self.active_threads.clone(),
             opts: self.opts.clone(),
             update_cache: self.update_cache.clone(),
+            plugin_bundler: self.plugin_bundler.clone(),
             io_requests,
             io_bytes,
             push_registry: self.push_registry.clone(),
@@ -796,6 +801,19 @@ async fn handle_message(
         Message::UpdateRequest { os, arch, version, hostname } => {
             handle_update_request(os, arch, version, hostname, ctx, tx).await;
         }
+        Message::PluginSyncCheck { current_checksum, .. } => {
+            let daemon_checksum = ctx.plugin_bundler.checksum();
+            let bundle = ctx.plugin_bundler.snapshot();
+            let available = !daemon_checksum.is_empty() && daemon_checksum != current_checksum;
+            let _ = tx.send(Message::PluginSyncInfo {
+                checksum: daemon_checksum,
+                available,
+                total_size: bundle.bytes.len() as u64,
+            }).await;
+        }
+        Message::PluginSyncRequest { hostname } => {
+            handle_plugin_sync_request(hostname, ctx, tx).await;
+        }
         _ => {
             let _ = tx.send(Message::Ack).await;
         }
@@ -1049,6 +1067,67 @@ async fn handle_config_update(
     }
 }
 
+/// Outcome of a `stream_chunks` run. `Completed(seq)` = streamed `seq + 1`
+/// chunks (including the done marker). `Aborted(seq)` = client disconnected
+/// at `seq`. `Err(msg)` = read error; caller should emit the error via
+/// `send_update_error`.
+enum StreamOutcome {
+    Completed(u32),
+    Aborted(u32),
+    Err(String),
+}
+
+/// Shared byte-streaming helper for binary updates and plugin sync (issue
+/// #588). Reads from `reader` in 64KB chunks and emits `UpdateChunk`
+/// messages: the first chunk carries `total_size` + `checksum`, subsequent
+/// chunks carry data only, and a final empty `done: true` chunk closes the
+/// stream. Returns `Aborted` if the channel send fails (client disconnect).
+async fn stream_chunks<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+    total_size: u64,
+    checksum: String,
+    tx: &mpsc::Sender<Message>,
+) -> StreamOutcome {
+    use tokio::io::AsyncReadExt;
+    let mut seq = 0u32;
+    let mut buf = vec![0u8; 65536];
+    loop {
+        let n = match reader.read(&mut buf).await {
+            Ok(n) => n,
+            Err(e) => return StreamOutcome::Err(format!("read error: {}", e)),
+        };
+        let done = n == 0;
+        let chunk = Message::UpdateChunk {
+            seq,
+            total_size: if seq == 0 { total_size } else { 0 },
+            checksum: if seq == 0 { checksum.clone() } else { String::new() },
+            data: if done { vec![] } else { buf[..n].to_vec() },
+            done,
+            error: None,
+        };
+        if tx.send(chunk).await.is_err() {
+            return StreamOutcome::Aborted(seq);
+        }
+        if done {
+            return StreamOutcome::Completed(seq);
+        }
+        seq += 1;
+    }
+}
+
+/// Send an error chunk followed by a done marker (2 messages) so the
+/// call_stream Ack sentinel is delivered to the client.
+async fn send_update_error(tx: &mpsc::Sender<Message>, seq: u32, msg: String) {
+    let _ = tx.send(Message::UpdateChunk {
+        seq, total_size: 0, checksum: String::new(),
+        data: vec![], done: false, error: Some(msg),
+    }).await;
+    let _ = tx.send(Message::UpdateChunk {
+        seq: seq + 1, total_size: 0, checksum: String::new(),
+        data: vec![], done: true, error: None,
+    }).await;
+}
+
 async fn handle_update_request(
     os: String,
     arch: String,
@@ -1057,24 +1136,9 @@ async fn handle_update_request(
     ctx: &HandlerCtx,
     tx: mpsc::Sender<Message>,
 ) {
-    // Helper: send error + done (2 messages) so call_stream Ack sentinel is sent
-    macro_rules! send_update_error {
-        ($tx:expr, $seq:expr, $msg:expr) => {{
-            let _ = $tx.send(Message::UpdateChunk {
-                seq: $seq, total_size: 0, checksum: String::new(),
-                data: vec![], done: false,
-                error: Some($msg),
-            }).await;
-            let _ = $tx.send(Message::UpdateChunk {
-                seq: $seq + 1, total_size: 0, checksum: String::new(),
-                data: vec![], done: true, error: None,
-            }).await;
-        }};
-    }
-
     let update_cache = &ctx.update_cache;
     if !update_cache.try_acquire_transfer(&hostname) {
-        send_update_error!(tx, 0, "transfer already in progress for this platform, retry later".into());
+        send_update_error(&tx, 0, "transfer already in progress for this platform, retry later".into()).await;
         return;
     }
 
@@ -1083,57 +1147,67 @@ async fn handle_update_request(
         Some((cached_ver, path)) if cached_ver == version => {
             tracing::info!("streaming update package {}-{} v{} to {}", os, arch, version, hostname);
             match tokio::fs::File::open(&path).await {
-                Ok(mut file) => {
-                    use tokio::io::AsyncReadExt;
+                Ok(file) => {
                     let total_size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
                     let path_for_checksum = path.clone();
                     let checksum = match tokio::task::spawn_blocking(move || {
                         omnish_common::update::checksum(&path_for_checksum)
                     }).await {
                         Ok(Ok(c)) => c,
-                        Ok(Err(e)) => { send_update_error!(tx, 0, format!("checksum error: {}", e)); return; }
-                        Err(e) => { send_update_error!(tx, 0, format!("join error: {}", e)); return; }
+                        Ok(Err(e)) => { send_update_error(&tx, 0, format!("checksum error: {}", e)).await; return; }
+                        Err(e) => { send_update_error(&tx, 0, format!("join error: {}", e)).await; return; }
                     };
-                    let mut seq = 0u32;
-                    let mut buf = vec![0u8; 65536];
-                    let mut send_failed = false;
-                    loop {
-                        let n = match file.read(&mut buf).await {
-                            Ok(n) => n,
-                            Err(e) => {
-                                send_update_error!(tx, seq, format!("read error: {}", e));
-                                return;
-                            }
-                        };
-                        let done = n == 0;
-                        let chunk = Message::UpdateChunk {
-                            seq,
-                            total_size: if seq == 0 { total_size } else { 0 },
-                            checksum: if seq == 0 { checksum.clone() } else { String::new() },
-                            data: if done { vec![] } else { buf[..n].to_vec() },
-                            done,
-                            error: None,
-                        };
-                        if tx.send(chunk).await.is_err() {
-                            send_failed = true;
-                            break;
+                    match stream_chunks(file, total_size, checksum, &tx).await {
+                        StreamOutcome::Completed(seq) => {
+                            tracing::info!("streaming {}-{} v{} to {} complete ({} chunks)", os, arch, version, hostname, seq + 1);
                         }
-                        if done { break; }
-                        seq += 1;
-                    }
-                    if send_failed {
-                        tracing::warn!("streaming {}-{} v{} to {} aborted (client disconnected at chunk {})", os, arch, version, hostname, seq);
-                    } else {
-                        tracing::info!("streaming {}-{} v{} to {} complete ({} chunks)", os, arch, version, hostname, seq + 1);
+                        StreamOutcome::Aborted(seq) => {
+                            tracing::warn!("streaming {}-{} v{} to {} aborted (client disconnected at chunk {})", os, arch, version, hostname, seq);
+                        }
+                        StreamOutcome::Err(msg) => {
+                            send_update_error(&tx, 0, msg).await;
+                        }
                     }
                 }
                 Err(e) => {
-                    send_update_error!(tx, 0, format!("open error: {}", e));
+                    send_update_error(&tx, 0, format!("open error: {}", e)).await;
                 }
             }
         }
         _ => {
-            send_update_error!(tx, 0, "not available or version mismatch".into());
+            send_update_error(&tx, 0, "not available or version mismatch".into()).await;
+        }
+    }
+}
+
+/// Issue #588: stream the in-memory plugin bundle to a client. Reuses the
+/// shared `stream_chunks` helper, so the chunk format is identical to the
+/// binary update path - the client demultiplexes by which request the
+/// stream belongs to, not by any per-chunk discriminator.
+async fn handle_plugin_sync_request(
+    hostname: String,
+    ctx: &HandlerCtx,
+    tx: mpsc::Sender<Message>,
+) {
+    let bundle = ctx.plugin_bundler.snapshot();
+    if bundle.bytes.is_empty() {
+        send_update_error(&tx, 0, "no plugin bundle available".into()).await;
+        return;
+    }
+    tracing::info!(
+        "streaming plugin bundle ({} bytes, checksum={}) to {}",
+        bundle.bytes.len(), bundle.checksum, hostname,
+    );
+    let total_size = bundle.bytes.len() as u64;
+    match stream_chunks(bundle.bytes.as_slice(), total_size, bundle.checksum, &tx).await {
+        StreamOutcome::Completed(seq) => {
+            tracing::info!("plugin bundle to {} complete ({} chunks)", hostname, seq + 1);
+        }
+        StreamOutcome::Aborted(seq) => {
+            tracing::warn!("plugin bundle to {} aborted at chunk {}", hostname, seq);
+        }
+        StreamOutcome::Err(msg) => {
+            send_update_error(&tx, 0, msg).await;
         }
     }
 }

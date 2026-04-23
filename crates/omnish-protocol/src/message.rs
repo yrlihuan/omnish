@@ -5,7 +5,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version - increment on any wire format change.
-pub const PROTOCOL_VERSION: u32 = 20;
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// Minimum protocol version this build can interoperate with.
 ///
@@ -121,6 +121,26 @@ pub enum Message {
     TestDisconnect { delay_secs: u64 },
     /// Daemon -> client push: a transient notice to render in the client UI.
     NoticePush { level: NoticeLevel, text: String },
+    /// Issue #588: client polls daemon for the current `~/.omnish/plugins/`
+    /// bundle. `current_checksum` is the SHA-256 of the last bundle the
+    /// client successfully installed (empty string on first poll).
+    PluginSyncCheck {
+        current_checksum: String,
+        hostname: String,
+    },
+    /// Response to `PluginSyncCheck`. `available = true` means the daemon's
+    /// current bundle checksum differs from the client's; the client should
+    /// then send a `PluginSyncRequest` to fetch it. `total_size` is an
+    /// advisory byte count for logging.
+    PluginSyncInfo {
+        checksum: String,
+        available: bool,
+        total_size: u64,
+    },
+    /// Client -> daemon (streaming): fetch the current plugin bundle. The
+    /// daemon responds with a stream of `UpdateChunk` messages carrying the
+    /// tarball bytes, same shape as the binary update path.
+    PluginSyncRequest { hostname: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -657,7 +677,7 @@ mod tests {
     /// reminding you to bump PROTOCOL_VERSION if the wire format changed.
     #[test]
     fn message_variant_guard() {
-        const EXPECTED_VARIANT_COUNT: usize = 34;
+        const EXPECTED_VARIANT_COUNT: usize = 37;
 
         let variants: Vec<Message> = vec![
             Message::SessionStart(SessionStart {
@@ -829,6 +849,9 @@ mod tests {
             Message::ConfigClient { changes: vec![] },
             Message::TestDisconnect { delay_secs: 5 },
             Message::NoticePush { level: NoticeLevel::Info, text: String::new() },
+            Message::PluginSyncCheck { current_checksum: String::new(), hostname: String::new() },
+            Message::PluginSyncInfo { checksum: String::new(), available: false, total_size: 0 },
+            Message::PluginSyncRequest { hostname: String::new() },
         ];
 
         // Exhaustive match - no wildcard. Compiler will error if a variant is missing.
@@ -867,7 +890,10 @@ mod tests {
                 | Message::UpdateRequest { .. }
                 | Message::UpdateChunk { .. }
                 | Message::TestDisconnect { .. }
-                | Message::NoticePush { .. } => {}
+                | Message::NoticePush { .. }
+                | Message::PluginSyncCheck { .. }
+                | Message::PluginSyncInfo { .. }
+                | Message::PluginSyncRequest { .. } => {}
             }
         }
 
@@ -904,6 +930,11 @@ mod tests {
 
         // New variants must go at the end - ConfigClient was the first such addition
         assert_eq!(variant_index(&Message::ConfigClient { changes: vec![] }), 31, "ConfigClient index shifted");
+
+        // Plugin sync variants - issue #588. Must be appended at the very end.
+        assert_eq!(variant_index(&Message::PluginSyncCheck { current_checksum: String::new(), hostname: String::new() }), 34, "PluginSyncCheck index shifted");
+        assert_eq!(variant_index(&Message::PluginSyncInfo { checksum: String::new(), available: false, total_size: 0 }), 35, "PluginSyncInfo index shifted");
+        assert_eq!(variant_index(&Message::PluginSyncRequest { hostname: String::new() }), 36, "PluginSyncRequest index shifted");
     }
 
     /// Regression test: ChatReady with populated history must survive a bincode round-trip.
