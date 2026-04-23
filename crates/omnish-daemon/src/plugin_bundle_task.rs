@@ -55,7 +55,7 @@ impl ScheduledTask for PluginBundleTask {
             let prev_checksum = prev_checksum.clone();
             Box::pin(async move {
                 tracing::debug!("task [plugin_bundle] started");
-                let checksum = bundler.rebuild();
+                let checksum = bundler.rebuild().await;
                 let mut prev = prev_checksum.lock().unwrap();
                 if checksum != *prev {
                     tracing::info!(

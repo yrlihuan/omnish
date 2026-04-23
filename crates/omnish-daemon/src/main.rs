@@ -220,7 +220,7 @@ async fn async_main() -> Result<i32> {
     // subsequent refreshes run on the task manager's schedule (default
     // every 5 minutes).
     let plugin_bundler = Arc::new(omnish_daemon::plugin_bundle::PluginBundler::new(plugins_dir.clone()));
-    plugin_bundler.rebuild();
+    plugin_bundler.rebuild().await;
 
     // Shared daemon-level context for scheduled tasks. Built here (not
     // earlier) so it can carry plugin_bundler - the PluginBundleTask

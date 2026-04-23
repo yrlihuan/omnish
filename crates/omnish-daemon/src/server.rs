@@ -802,7 +802,20 @@ async fn handle_message(
             handle_update_request(os, arch, version, hostname, ctx, tx).await;
         }
         Message::PluginSyncCheck { current_checksum, .. } => {
-            let daemon_checksum = ctx.plugin_bundler.checksum();
+            // Issue #588: if the client's checksum matches our cache, the
+            // cache is trivially correct relative to the client and no
+            // rebuild is needed. If it disagrees, the cache may be up to
+            // 5 minutes stale (the scheduled task's interval); rebuild
+            // before announcing to avoid advertising a pre-edit snapshot
+            // as the current state. `rebuild` is the single code path for
+            // all refresh callers (scheduled task + handler) so they
+            // serialize on the same mutex and never duplicate the tar.
+            let cached = ctx.plugin_bundler.checksum();
+            let daemon_checksum = if cached == current_checksum {
+                cached
+            } else {
+                ctx.plugin_bundler.rebuild().await
+            };
             let bundle = ctx.plugin_bundler.snapshot();
             let available = !daemon_checksum.is_empty() && daemon_checksum != current_checksum;
             let _ = tx.send(Message::PluginSyncInfo {
