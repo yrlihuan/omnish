@@ -31,9 +31,9 @@ fn strip_thinking(content: &str) -> String {
 
 /// Claude Opus 4.7 dropped manual extended-thinking (`budget_tokens`) mode and
 /// now requires `thinking: {type: "adaptive"}`. Returns true for 4.7 and any
-/// later Opus release named `claude-opus-<major>-<minor>[-...]` with version
-/// >= 4.7. Unknown or non-Opus models return false so they keep the manual
-/// shape that older Claude 4 models and Anthropic-compat providers expect.
+/// later Opus release named `claude-opus-<major>-<minor>[-...]` whose version
+/// is 4.7 or greater. Unknown or non-Opus models return false so they keep the
+/// manual shape that older Claude 4 models and Anthropic-compat providers expect.
 fn is_opus_4_7_or_later(model: &str) -> bool {
     let Some(rest) = model.strip_prefix("claude-opus-") else {
         return false;
