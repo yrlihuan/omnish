@@ -39,10 +39,7 @@ pub fn expect(kind: &str, ttl: Duration) {
 pub fn consume(kind: &str) -> bool {
     let mut r = REGISTRY.lock().unwrap();
     let now = Instant::now();
-    match r.expectations.remove(kind) {
-        Some(deadline) if now <= deadline => true,
-        _ => false,
-    }
+    matches!(r.expectations.remove(kind), Some(deadline) if now <= deadline)
 }
 
 #[cfg(test)]

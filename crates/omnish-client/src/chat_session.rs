@@ -3407,7 +3407,7 @@ impl ChatSession {
                         && find_change_value(&translated_changes, "._submit") == "true"
                     {
                         crate::pending_notices::expect(
-                            &handler_name,
+                            handler_name,
                             std::time::Duration::from_secs(90),
                         );
                     }
