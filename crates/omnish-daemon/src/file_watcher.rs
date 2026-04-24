@@ -50,19 +50,29 @@ impl FileWatcher {
         #[cfg(target_os = "linux")]
         {
             use nix::sys::inotify::AddWatchFlags;
-            // IN_CLOSE_WRITE: in-place writes (nano, gedit, etc.)
-            // IN_MOVED_TO: atomic writes via rename (vim, sed -i)
-            // Intentionally omit IN_CREATE: it fires when the file is
-            // created but still empty (e.g. vim delete-then-recreate),
-            // causing a spurious reload with an empty config.
-            let flags = AddWatchFlags::IN_CLOSE_WRITE
-                | AddWatchFlags::IN_MOVED_TO;
-            // For files, watch parent directory (survives editor rename patterns).
+            // For files, watch the parent directory and filter by filename.
             // For directories, watch the directory itself.
-            let watch_target = if path.is_dir() {
-                path.clone()
+            let (watch_target, flags) = if path.is_dir() {
+                // Directory watches care about the full lifecycle of children:
+                // IN_CLOSE_WRITE/IN_MOVED_TO for file additions or rewrites,
+                // IN_CREATE for mkdir of a new subdirectory (e.g. a new plugin
+                // being dropped in), IN_DELETE/IN_MOVED_FROM for removal.
+                (
+                    path.clone(),
+                    AddWatchFlags::IN_CLOSE_WRITE
+                        | AddWatchFlags::IN_MOVED_TO
+                        | AddWatchFlags::IN_CREATE
+                        | AddWatchFlags::IN_DELETE
+                        | AddWatchFlags::IN_MOVED_FROM,
+                )
             } else {
-                path.parent().unwrap_or(std::path::Path::new("/")).to_path_buf()
+                // File watches intentionally omit IN_CREATE: it fires when the
+                // file is created but still empty (e.g. vim delete-then-recreate),
+                // causing a spurious reload with an empty config.
+                (
+                    path.parent().unwrap_or(std::path::Path::new("/")).to_path_buf(),
+                    AddWatchFlags::IN_CLOSE_WRITE | AddWatchFlags::IN_MOVED_TO,
+                )
             };
             if let Err(e) = self.inotify.add_watch(&watch_target, flags) {
                 tracing::warn!("failed to watch {}: {}", watch_target.display(), e);

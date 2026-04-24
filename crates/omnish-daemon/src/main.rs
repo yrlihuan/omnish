@@ -1,8 +1,9 @@
 mod config_schema;
 mod config_watcher;
-mod file_watcher;
 mod sandbox_rules;
 mod server;
+
+use omnish_daemon::file_watcher;
 
 use anyhow::Result;
 use omnish_common::config::{load_daemon_config, omnish_dir};
@@ -207,11 +208,20 @@ async fn async_main() -> Result<i32> {
         &file_watcher,
     );
 
-    // Watch tool.override.json files for hot-reload via shared file watcher
+    // Watch plugin subdirectories for hot-reload via shared file watcher.
+    // The initial rescan subscribes every existing plugin subdir to the
+    // watcher so edits inside them (tool.json, tool.override.json) fire,
+    // which inotify-on-plugins_dir alone would miss (non-recursive).
     let plugin_mgr_watcher = Arc::clone(&plugin_mgr);
     let plugin_rx = file_watcher.watch(plugins_dir.clone());
     let tool_registry_watcher = Arc::clone(&tool_registry);
-    tokio::spawn(async move { plugin_mgr_watcher.watch_with(plugin_rx, tool_registry_watcher).await });
+    let file_watcher_for_plugin = Arc::clone(&file_watcher);
+    plugin_mgr.rescan(&tool_registry, Some(&file_watcher));
+    tokio::spawn(async move {
+        plugin_mgr_watcher
+            .watch_with(plugin_rx, tool_registry_watcher, file_watcher_for_plugin)
+            .await
+    });
 
     // Issue #588: package plugins/ into an in-memory tarball so clients can
     // mirror their local `~/.omnish/plugins/` via the update streaming
@@ -320,7 +330,10 @@ async fn async_main() -> Result<i32> {
         });
     }
 
-    // Hot-reload plugins on config change (enable/disable)
+    // Hot-reload plugins on config change (enable/disable). Both this path
+    // and the filesystem event path go through `rescan` so there is one
+    // reconciliation routine: whichever event wakes up first, it reads the
+    // already-mirrored `[plugins]` section and produces the same final state.
     {
         let plugins_rx = config_watcher.subscribe(config_watcher::ConfigSection::Plugins);
         let pm = Arc::clone(&plugin_mgr);
@@ -329,7 +342,8 @@ async fn async_main() -> Result<i32> {
             let mut rx = plugins_rx;
             while rx.changed().await.is_ok() {
                 let config = rx.borrow_and_update().clone();
-                pm.reload_plugins(&config.plugins, &tr);
+                pm.update_plugins_config(&config.plugins);
+                pm.rescan(&tr, None);
             }
         });
     }

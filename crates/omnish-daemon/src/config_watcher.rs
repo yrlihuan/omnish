@@ -1,4 +1,4 @@
-use crate::file_watcher::FileWatcher;
+use omnish_daemon::file_watcher::FileWatcher;
 use omnish_common::config::DaemonConfig;
 use std::collections::HashMap;
 use std::path::PathBuf;

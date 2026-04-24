@@ -1,9 +1,9 @@
 use omnish_llm::backend::CacheHint;
 use omnish_llm::tool::ToolDef;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Return type for `reload_overrides`: (changed, descriptions, override_params).
 pub type OverrideReloadResult = (bool, HashMap<String, String>, HashMap<String, HashMap<String, serde_json::Value>>);
@@ -73,6 +73,15 @@ pub struct PluginManager {
     tool_index: RwLock<HashMap<String, (usize, usize)>>,
     /// Prompt overrides, updated on file changes.
     prompt_cache: RwLock<PromptCache>,
+    /// Latest plugins section of DaemonConfig, kept in sync with daemon.toml.
+    /// `rescan` consults this to honour `enabled = false` when it discovers
+    /// a new subdirectory, so a freshly-dropped plugin respects its config.
+    plugins_config: RwLock<HashMap<String, omnish_common::config::ConfigMap>>,
+    /// Plugin subdirectories we've already registered with the shared
+    /// FileWatcher. Used by `rescan` to skip duplicate `watch()` calls -
+    /// each call adds a `(path, sender)` entry, so repeated registration
+    /// would slowly grow the watcher's list without bound.
+    watched_subdirs: Mutex<HashSet<PathBuf>>,
 }
 
 #[derive(Deserialize)]
@@ -373,9 +382,245 @@ impl PluginManager {
                 descriptions: HashMap::new(),
                 override_params: HashMap::new(),
             }),
+            plugins_config: RwLock::new(plugins_config.clone()),
+            watched_subdirs: Mutex::new(HashSet::new()),
         };
         mgr.reload_overrides();
         mgr
+    }
+
+    /// Keep the cached plugins section in sync with daemon.toml. Called when
+    /// the `[plugins]` section changes so `rescan` sees the latest enabled flags.
+    pub fn update_plugins_config(&self, cfg: &HashMap<String, omnish_common::config::ConfigMap>) {
+        *self.plugins_config.write().unwrap() = cfg.clone();
+    }
+
+    /// Re-scan `plugins_dir`, registering plugins for any new subdirectory
+    /// and unregistering those whose directory has disappeared. Idempotent
+    /// and cheap when nothing changed. Also subscribes the shared
+    /// `FileWatcher` to every plugin subdirectory it sees, so subsequent
+    /// file drops inside a freshly-created plugin dir trigger another
+    /// rescan (inotify on `plugins_dir` is non-recursive, so without
+    /// per-subdir watches a two-step `mkdir` + `cp tool.json` would be
+    /// invisible).
+    ///
+    /// Returns true if the plugin list changed.
+    pub fn rescan(
+        &self,
+        registry: &crate::tool_registry::ToolRegistry,
+        file_watcher: Option<&crate::file_watcher::FileWatcher>,
+    ) -> bool {
+        // Distinguish "plugins_dir is unreadable" from "plugins_dir is empty":
+        // the former must skip reconciliation, otherwise a transient permission
+        // or filesystem error would mass-unload every loaded plugin.
+        let on_disk: Vec<String> = match std::fs::read_dir(&self.plugins_dir) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n != "builtin")
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    "rescan skipped: cannot read {}: {}",
+                    self.plugins_dir.display(),
+                    e
+                );
+                return false;
+            }
+        };
+
+        if let Some(fw) = file_watcher {
+            let mut seen = self.watched_subdirs.lock().unwrap();
+            for name in &on_disk {
+                let p = self.plugins_dir.join(name);
+                if seen.insert(p.clone()) {
+                    // Drop the returned receiver: FileWatcher dispatches any
+                    // event to every registered directory sender, so the main
+                    // plugins_dir subscriber will still wake on inner events.
+                    let _ = fw.watch(p);
+                }
+            }
+        }
+
+        let on_disk_set: HashSet<&str> = on_disk.iter().map(String::as_str).collect();
+        let plugins_config = self.plugins_config.read().unwrap().clone();
+
+        // Forget `watched_subdirs` entries whose directory has disappeared.
+        // Inotify already auto-removes the watch descriptor on IN_IGNORED,
+        // so we just drop our dedup marker - otherwise a later rebuild of
+        // the same-named plugin would never re-register an inotify watch.
+        {
+            let mut seen = self.watched_subdirs.lock().unwrap();
+            seen.retain(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| on_disk_set.contains(n))
+                    .unwrap_or(false)
+            });
+        }
+
+        let mut changed = false;
+        let mut plugins = self.plugins.write().unwrap();
+        let mut tool_index = self.tool_index.write().unwrap();
+
+        // Unload any loaded plugin whose directory is gone OR whose config
+        // flipped to `enabled = false`. Handling both cases here keeps the
+        // filesystem event path and the daemon.toml event path converging on
+        // the same final state regardless of which one ran first.
+        for plugin in plugins.iter_mut() {
+            if plugin.dir_name == "builtin" {
+                continue;
+            }
+            if plugin.tools.is_empty() {
+                continue;
+            }
+            let dir_gone = !on_disk_set.contains(plugin.dir_name.as_str());
+            let disabled = plugins_config
+                .get(&plugin.dir_name)
+                .and_then(|c| c.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .map(|b| !b)
+                .unwrap_or(false);
+            if dir_gone || disabled {
+                for te in &plugin.tools {
+                    tool_index.remove(&te.def.name);
+                }
+                plugin.tools.clear();
+                plugin.formatter_binary = None;
+                registry.unregister_by_plugin(&plugin.dir_name);
+                let reason = if dir_gone { "directory gone" } else { "config disabled" };
+                tracing::info!("plugin '{}' unloaded ({})", plugin.dir_name, reason);
+                changed = true;
+            }
+        }
+
+        // Register new / revive ghost entries for plugins now present on disk.
+        for name in &on_disk {
+            let tool_json_path = self.plugins_dir.join(name).join("tool.json");
+            if !tool_json_path.is_file() {
+                continue;
+            }
+
+            let existing_idx = plugins.iter().position(|p| p.dir_name == *name);
+            // Skip if already fully loaded. A ghost entry (empty tools) can
+            // arise from two paths: a prior disable, or a previous rescan
+            // that observed the dir while tool.json was missing.
+            let is_ghost = existing_idx.is_none_or(|i| plugins[i].tools.is_empty());
+            if !is_ghost {
+                continue;
+            }
+
+            let disabled = plugins_config
+                .get(name)
+                .and_then(|c| c.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .map(|b| !b)
+                .unwrap_or(false);
+
+            let content = match std::fs::read_to_string(&tool_json_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("failed to read {}: {}", tool_json_path.display(), e);
+                    continue;
+                }
+            };
+            let parsed: ToolJsonFile = match serde_json::from_str(&content) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("malformed {}: {}", tool_json_path.display(), e);
+                    continue;
+                }
+            };
+            let plugin_type = match parsed.plugin_type.as_str() {
+                "client_tool" => PluginType::ClientTool,
+                _ => PluginType::DaemonTool,
+            };
+
+            // Disabled plugin: keep metadata only, no tools registered.
+            if disabled {
+                if existing_idx.is_none() {
+                    plugins.push(PluginInfo {
+                        dir_name: name.clone(),
+                        plugin_type,
+                        tools: Vec::new(),
+                        formatter_binary: None,
+                        config_params: parsed.config_params,
+                    });
+                    changed = true;
+                }
+                continue;
+            }
+
+            // Reserve the PluginInfo slot before any tool registration so
+            // `plugin_idx` is the slot's final position. Building tools first
+            // and pushing later would work today but makes the indices depend
+            // on the `insert`/`push` ordering, which is easy to break later.
+            let plugin_idx = match existing_idx {
+                Some(idx) => idx,
+                None => {
+                    plugins.push(PluginInfo {
+                        dir_name: name.clone(),
+                        plugin_type,
+                        tools: Vec::new(),
+                        formatter_binary: None,
+                        config_params: parsed.config_params.clone(),
+                    });
+                    plugins.len() - 1
+                }
+            };
+
+            let mut tools = Vec::new();
+            for te in parsed.tools {
+                if tool_index.contains_key(&te.name) {
+                    tracing::warn!(
+                        "duplicate tool name '{}' in {}, skipping",
+                        te.name,
+                        tool_json_path.display()
+                    );
+                    continue;
+                }
+                let tool_idx = tools.len();
+                tool_index.insert(te.name.clone(), (plugin_idx, tool_idx));
+                let display_name = te.display_name.clone().unwrap_or_else(|| te.name.clone());
+                let formatter = te
+                    .formatter
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string());
+                registry.register(crate::tool_registry::ToolMeta {
+                    name: te.name.clone(),
+                    display_name: display_name.clone(),
+                    formatter: formatter.clone(),
+                    status_template: te.status_template.clone(),
+                    custom_status: None,
+                    plugin_type: Some(plugin_type),
+                    plugin_name: Some(name.clone()),
+                    summarization_prompt: te.summarization_prompt.clone(),
+                });
+                let def = ToolDef {
+                    name: te.name,
+                    description: te.description.into_string(),
+                    input_schema: te.input_schema,
+                    cache: CacheHint::None,
+                };
+                registry.register_def(def.clone());
+                tools.push(ToolEntry {
+                    def,
+                    status_template: te.status_template,
+                    display_name,
+                    formatter,
+                    summarization_prompt: te.summarization_prompt,
+                });
+            }
+
+            plugins[plugin_idx].tools = tools;
+            plugins[plugin_idx].formatter_binary = parsed.formatter_binary;
+            plugins[plugin_idx].config_params = parsed.config_params;
+            tracing::info!("plugin '{}' loaded via rescan", name);
+            changed = true;
+        }
+
+        changed
     }
 
     /// Re-read all tool.override.json files and update the prompt cache.
@@ -506,106 +751,16 @@ impl PluginManager {
             .collect()
     }
 
-    /// Reload plugins based on new config. Handles enable/disable changes
-    /// by adding/removing tools from the ToolRegistry.
-    pub fn reload_plugins(
-        &self,
-        new_config: &HashMap<String, omnish_common::config::ConfigMap>,
-        registry: &crate::tool_registry::ToolRegistry,
-    ) {
-        let mut plugins = self.plugins.write().unwrap();
-        let mut tool_index = self.tool_index.write().unwrap();
-
-        for (idx, plugin) in plugins.iter_mut().enumerate() {
-            if plugin.dir_name == "builtin" {
-                continue;
-            }
-
-            let was_disabled = plugin.tools.is_empty();
-            let now_disabled = new_config
-                .get(&plugin.dir_name)
-                .and_then(|cfg| cfg.get("enabled"))
-                .and_then(|v| v.as_bool())
-                .map(|b| !b)
-                .unwrap_or(false);
-
-            if !was_disabled && now_disabled {
-                // Enabled → Disabled: remove tools from registry and plugin
-                let tool_names: Vec<String> = plugin.tools.iter().map(|t| t.def.name.clone()).collect();
-                for name in &tool_names {
-                    tool_index.remove(name);
-                }
-                plugin.tools.clear();
-                plugin.formatter_binary = None;
-                registry.unregister_by_plugin(&plugin.dir_name);
-                tracing::info!("plugin '{}' disabled", plugin.dir_name);
-            } else if was_disabled && !now_disabled {
-                // Disabled → Enabled: re-read tool.json and register tools
-                let tool_json_path = self.plugins_dir.join(&plugin.dir_name).join("tool.json");
-                let content = match std::fs::read_to_string(&tool_json_path) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!("Failed to read {}: {}", tool_json_path.display(), e);
-                        continue;
-                    }
-                };
-                let parsed: ToolJsonFile = match serde_json::from_str(&content) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        tracing::warn!("Malformed {}: {}", tool_json_path.display(), e);
-                        continue;
-                    }
-                };
-
-                let mut tools = Vec::new();
-                for te in parsed.tools {
-                    if tool_index.contains_key(&te.name) {
-                        tracing::warn!(
-                            "Duplicate tool name '{}' in {}, skipping",
-                            te.name,
-                            tool_json_path.display()
-                        );
-                        continue;
-                    }
-                    let tool_idx = tools.len();
-                    tool_index.insert(te.name.clone(), (idx, tool_idx));
-                    let display_name = te.display_name.clone().unwrap_or_else(|| te.name.clone());
-                    let formatter = te.formatter.clone().unwrap_or_else(|| "default".to_string());
-                    // Register into ToolRegistry
-                    registry.register(crate::tool_registry::ToolMeta {
-                        name: te.name.clone(),
-                        display_name: display_name.clone(),
-                        formatter: formatter.clone(),
-                        status_template: te.status_template.clone(),
-                        custom_status: None,
-                        plugin_type: Some(plugin.plugin_type),
-                        plugin_name: Some(plugin.dir_name.clone()),
-                        summarization_prompt: te.summarization_prompt.clone(),
-                    });
-                    let def = ToolDef {
-                        name: te.name,
-                        description: te.description.into_string(),
-                        input_schema: te.input_schema,
-                        cache: CacheHint::None,
-                    };
-                    registry.register_def(def.clone());
-                    tools.push(ToolEntry {
-                        def,
-                        status_template: te.status_template,
-                        display_name,
-                        formatter,
-                        summarization_prompt: te.summarization_prompt,
-                    });
-                }
-                plugin.formatter_binary = parsed.formatter_binary;
-                plugin.tools = tools;
-                tracing::info!("plugin '{}' enabled with {} tools", plugin.dir_name, plugin.tools.len());
-            }
-        }
-    }
-
     /// Start watching plugin overrides using a shared file watcher receiver.
-    pub async fn watch_with(self: &Arc<Self>, mut rx: tokio::sync::watch::Receiver<()>, registry: std::sync::Arc<crate::tool_registry::ToolRegistry>) {
+    /// On every debounced tick we first `rescan` the plugins directory so
+    /// newly-dropped or removed plugin subdirectories take effect without a
+    /// daemon restart, then refresh `tool.override.json` content.
+    pub async fn watch_with(
+        self: &Arc<Self>,
+        mut rx: tokio::sync::watch::Receiver<()>,
+        registry: std::sync::Arc<crate::tool_registry::ToolRegistry>,
+        file_watcher: std::sync::Arc<crate::file_watcher::FileWatcher>,
+    ) {
         tracing::info!("watching plugin overrides via shared file watcher: {}", self.plugins_dir.display());
         while rx.changed().await.is_ok() {
             // Debounce: wait for rapid inotify events to settle
@@ -613,6 +768,7 @@ impl PluginManager {
             // Drain events accumulated during debounce
             let _ = rx.borrow_and_update();
 
+            self.rescan(&registry, Some(&file_watcher));
             let (changed, descs, params) = self.reload_overrides();
             if changed {
                 registry.update_overrides(descs, params);
@@ -941,5 +1097,147 @@ mod tests {
         // Should not overwrite
         let content = std::fs::read_to_string(plugin_dir.join("tool.json")).unwrap();
         assert_eq!(content, "custom");
+    }
+
+    const RESCAN_TOOL_JSON: &str = r#"{
+        "plugin_type": "client_tool",
+        "tools": [{
+            "name": "rescan_tool",
+            "description": "tool added post-startup",
+            "input_schema": {"type": "object"},
+            "status_template": ""
+        }]
+    }"#;
+
+    #[test]
+    fn test_rescan_picks_up_new_plugin_dir() {
+        use crate::tool_registry::ToolRegistry;
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
+        let reg = ToolRegistry::new();
+        mgr.register_all(&reg);
+        assert!(!reg.is_known("rescan_tool"));
+
+        // Simulate a user dropping a new plugin directory.
+        write_tool_json(tmp.path(), "newcomer", RESCAN_TOOL_JSON);
+        let changed = mgr.rescan(&reg, None);
+        assert!(changed);
+        assert!(reg.is_known("rescan_tool"));
+        assert!(reg.all_defs().iter().any(|d| d.name == "rescan_tool"));
+    }
+
+    #[test]
+    fn test_rescan_removes_deleted_plugin_dir() {
+        use crate::tool_registry::ToolRegistry;
+        let tmp = tempfile::tempdir().unwrap();
+        write_tool_json(tmp.path(), "goner", RESCAN_TOOL_JSON);
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
+        let reg = ToolRegistry::new();
+        mgr.register_all(&reg);
+        assert!(reg.is_known("rescan_tool"));
+
+        std::fs::remove_dir_all(tmp.path().join("goner")).unwrap();
+        let changed = mgr.rescan(&reg, None);
+        assert!(changed);
+        assert!(!reg.is_known("rescan_tool"));
+    }
+
+    #[test]
+    fn test_rescan_respects_disabled_config() {
+        use crate::tool_registry::ToolRegistry;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = HashMap::new();
+        let mut entry = HashMap::new();
+        entry.insert("enabled".to_string(), serde_json::json!(false));
+        cfg.insert(
+            "newcomer".to_string(),
+            omnish_common::config::ConfigMap::from(entry),
+        );
+        let mgr = PluginManager::load(tmp.path(), &cfg);
+        let reg = ToolRegistry::new();
+        mgr.register_all(&reg);
+
+        write_tool_json(tmp.path(), "newcomer", RESCAN_TOOL_JSON);
+        mgr.rescan(&reg, None);
+        assert!(!reg.is_known("rescan_tool"));
+
+        // Config meta should still list the plugin so the config menu can
+        // offer a toggle.
+        let meta = mgr.config_meta();
+        assert!(meta.iter().any(|m| m.name == "newcomer"));
+    }
+
+    #[test]
+    fn test_rescan_preserves_plugins_when_dir_unreadable() {
+        use crate::tool_registry::ToolRegistry;
+        let tmp = tempfile::tempdir().unwrap();
+        write_tool_json(tmp.path(), "present", RESCAN_TOOL_JSON);
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
+        let reg = ToolRegistry::new();
+        mgr.register_all(&reg);
+        assert!(reg.is_known("rescan_tool"));
+
+        // Simulate a transient I/O failure - plugins_dir disappears entirely.
+        // rescan must refuse to infer "every plugin is gone" from a failed
+        // read_dir and must leave the registry untouched.
+        std::fs::remove_dir_all(tmp.path()).unwrap();
+        let changed = mgr.rescan(&reg, None);
+        assert!(!changed);
+        assert!(
+            reg.is_known("rescan_tool"),
+            "rescan must not unload plugins on read_dir failure"
+        );
+    }
+
+    #[test]
+    fn test_rescan_unloads_when_config_disables_existing_plugin() {
+        use crate::tool_registry::ToolRegistry;
+        let tmp = tempfile::tempdir().unwrap();
+        write_tool_json(tmp.path(), "flipper", RESCAN_TOOL_JSON);
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
+        let reg = ToolRegistry::new();
+        mgr.register_all(&reg);
+        assert!(reg.is_known("rescan_tool"));
+
+        // Flip config to disabled and rescan - this is the config-change path.
+        let mut cfg = HashMap::new();
+        let mut entry = HashMap::new();
+        entry.insert("enabled".to_string(), serde_json::json!(false));
+        cfg.insert(
+            "flipper".to_string(),
+            omnish_common::config::ConfigMap::from(entry),
+        );
+        mgr.update_plugins_config(&cfg);
+        let changed = mgr.rescan(&reg, None);
+        assert!(changed);
+        assert!(!reg.is_known("rescan_tool"));
+
+        // Flip it back and rescan - the ghost entry should be reloaded.
+        let mut cfg = HashMap::new();
+        let mut entry = HashMap::new();
+        entry.insert("enabled".to_string(), serde_json::json!(true));
+        cfg.insert(
+            "flipper".to_string(),
+            omnish_common::config::ConfigMap::from(entry),
+        );
+        mgr.update_plugins_config(&cfg);
+        let changed = mgr.rescan(&reg, None);
+        assert!(changed);
+        assert!(reg.is_known("rescan_tool"));
+    }
+
+    #[test]
+    fn test_rescan_is_idempotent_for_known_plugin() {
+        use crate::tool_registry::ToolRegistry;
+        let tmp = tempfile::tempdir().unwrap();
+        write_tool_json(tmp.path(), "already_here", RESCAN_TOOL_JSON);
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
+        let reg = ToolRegistry::new();
+        mgr.register_all(&reg);
+        let baseline = reg.all_defs().len();
+
+        let changed = mgr.rescan(&reg, None);
+        assert!(!changed);
+        assert_eq!(reg.all_defs().len(), baseline);
     }
 }

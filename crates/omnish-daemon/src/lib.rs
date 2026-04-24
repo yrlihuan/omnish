@@ -20,6 +20,7 @@ pub mod conversation_mgr;
 pub mod daily_notes;
 pub mod deploy;
 pub mod eviction;
+pub mod file_watcher;
 pub mod formatter_mgr;
 pub mod hourly_summary;
 pub mod plugin;
