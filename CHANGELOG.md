@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.8.13 (2026-04-24)
+
+### Features
+- **plugin-sync**: Client auto-syncs plugins from daemon with full-mirror semantics; client-side checksum computation skips same-host self-mutation; scheduled rebuild as ScheduledTask with rebuild-on-check and 500 ms coalescing window to eliminate stale-cache race; PROTOCOL_VERSION bumped to 21 (#588)
+- **config**: Install plugin from URL or local tar.gz via config menu; NoticePush carries optional `kind` tag so only initiators see targeted action results; PROTOCOL_VERSION bumped to 22 (#589)
+- **chat**: Show `> chat` in tmux title on chat entry (#585); default chat-mode title renamed to `> omnish`
+- **resume**: `/resume` defaults to current host unbounded; add `/resume all` for cross-host picker (#583, #584)
+
+### Fixes
+- **llm**: Explicit thinking wire values for Anthropic/DeepSeek/Opus 4.7 adaptive mode; thread_summary call sites specify Some(false) rather than rely on backend defaults (#591)
+- **completion**: Reject non-prefix, shell-prompt, and repeated suggestions (#439)
+- **completion**: Discard non-array LLM responses to prevent error-shaped JSON from flowing through as suggestions (#586)
+- **daemon**: thread_summary no longer clobbers concurrent meta writes; added atomic update_meta helper (#587)
+- **deploy**: Tag deploy-client notices so only initiators see them (follow-up to #589)
+
+### Refactoring
+- **plugin-sync**: Move plugin bundle packager to omnish-common so daemon and client produce identical checksums (#588)
+- **plugin-sync**: Plugin bundle rebuild converted to ScheduledTask lifecycle (#588)
+- **plugin-sync**: Drop closure-local prev_checksum in bundle task; PluginBundler cache is single source of truth (#588)
+
+### Tests
+- **integration**: Avoid tmux server-exit race in session creation with has-session retry (#590)
+
+### Style
+- **client**: Fix clippy needless_borrow and match_like_matches_macro
+
 ## v0.8.12 (2026-04-23)
 
 ### Features
