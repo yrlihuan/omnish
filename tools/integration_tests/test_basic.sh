@@ -589,7 +589,8 @@ TOML
 
     # Start client with developer_mode config
     _tmux kill-session -t "$SESSION" 2>/dev/null || true
-    _tmux new -d -s "$SESSION" -n test "OMNISH_CLIENT_CONFIG=$dev_config $CLIENT"
+    _wait_for_server_gone
+    _tmux new -d -s "$SESSION" -n test "OMNISH_CLIENT_CONFIG=$dev_config $CLIENT" 2>/dev/null
     wait_for_client
 
     # Type "echo " then ":" - should NOT trigger chat mode

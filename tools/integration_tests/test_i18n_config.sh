@@ -25,7 +25,8 @@ test_init "i18n-config" "$@"
 start_client_lang() {
     local lang="$1"
     _tmux kill-session -t "$SESSION" 2>/dev/null || true
-    _tmux new -d -s "$SESSION" -n test "OMNISH_LANG=$lang $CLIENT"
+    _wait_for_server_gone
+    _tmux new -d -s "$SESSION" -n test "OMNISH_LANG=$lang $CLIENT" 2>/dev/null
 }
 
 # Helper: enter chat and open /config

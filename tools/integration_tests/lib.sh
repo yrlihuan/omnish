@@ -145,6 +145,21 @@ _show_help() {
 # start_client in the test script (see test_i18n_config.sh).
 OMNISH_LANG_DEFAULT="${OMNISH_LANG:-en}"
 
+# Wait for the tmux server to fully exit after a kill-session that
+# destroyed the last session. Without this, a subsequent `new -d` can
+# race the shutdown and report "server exited unexpectedly", leaving
+# the new session uncreated (see issue #590). Poll list-sessions: when
+# no server is reachable, tmux exits non-zero.
+_wait_for_server_gone() {
+    local deadline=$(($(date +%s) + 2))
+    while (( $(date +%s) < deadline )); do
+        if ! _tmux list-sessions >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.05
+    done
+}
+
 # Start a fresh omnish-client in the tmux session.
 # Kills any existing session first.
 # If -w already started the client, skip the first call.
@@ -153,8 +168,25 @@ start_client() {
         _WAIT_CLIENT_STARTED=false
         return
     fi
+    # Kill session then wait for server to fully exit; avoids race where
+    # `new -d` connects to a dying server (#590).
     _tmux kill-session -t "$SESSION" 2>/dev/null || true
-    _tmux new -d -s "$SESSION" -n test "OMNISH_LANG=$OMNISH_LANG_DEFAULT $CLIENT"
+    _wait_for_server_gone
+    # Retry on transient failure; stderr redirected to avoid noisy
+    # "server exited unexpectedly" leaking into test output.
+    local attempt
+    for attempt in 1 2 3; do
+        if _tmux new -d -s "$SESSION" -n test \
+                "OMNISH_LANG=$OMNISH_LANG_DEFAULT $CLIENT" 2>/dev/null; then
+            # Verify the session actually came up before returning.
+            if _tmux has-session -t "$SESSION" 2>/dev/null; then
+                return 0
+            fi
+        fi
+        sleep 0.2
+    done
+    echo -e "  ${RED}start_client: failed to create tmux session after 3 attempts${NC}" >&2
+    return 1
 }
 
 # Alias: kill + start (useful between test cases).
