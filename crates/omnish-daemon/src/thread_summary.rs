@@ -130,7 +130,7 @@ async fn generate_thread_summaries(
                 use_case,
                 max_content_chars,
                 system_prompt: None,
-                enable_thinking: None,
+                enable_thinking: Some(false),
                 tools: vec![],
                 extra_messages: vec![],
             };
@@ -177,7 +177,7 @@ async fn generate_thread_summaries(
                 use_case,
                 max_content_chars,
                 system_prompt: None,
-                enable_thinking: None,
+                enable_thinking: Some(false),
                 tools: vec![],
                 extra_messages: vec![],
             };

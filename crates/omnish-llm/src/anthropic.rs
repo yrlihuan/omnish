@@ -29,6 +29,24 @@ fn strip_thinking(content: &str) -> String {
     content.replace("\n<think>", "").replace("</think>", "")
 }
 
+/// Claude Opus 4.7 dropped manual extended-thinking (`budget_tokens`) mode and
+/// now requires `thinking: {type: "adaptive"}`. Returns true for 4.7 and any
+/// later Opus release named `claude-opus-<major>-<minor>[-...]` with version
+/// >= 4.7. Unknown or non-Opus models return false so they keep the manual
+/// shape that older Claude 4 models and Anthropic-compat providers expect.
+fn is_opus_4_7_or_later(model: &str) -> bool {
+    let Some(rest) = model.strip_prefix("claude-opus-") else {
+        return false;
+    };
+    let mut parts = rest.split('-');
+    let (Some(major), Some(minor)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    let Ok(major) = major.parse::<u32>() else { return false };
+    let Ok(minor) = minor.parse::<u32>() else { return false };
+    (major, minor) >= (4, 7)
+}
+
 /// Render a `CacheHint` into Anthropic's `cache_control` JSON object.
 /// Returns `None` for `CacheHint::None` (no field should be emitted).
 fn cache_control_value(hint: CacheHint) -> Option<serde_json::Value> {
@@ -177,14 +195,35 @@ fn build_request_body(req: &LlmRequest, model: &str) -> serde_json::Value {
         body_map.insert("tools".to_string(), serde_json::Value::Array(tools_json));
     }
 
-    // Add thinking parameter only when explicitly enabled.
-    // None or Some(false) means no thinking parameter sent (disabled by default).
-    if req.enable_thinking == Some(true) {
-        let mut thinking_map = serde_json::Map::new();
-        thinking_map.insert("type".to_string(), serde_json::Value::String("enabled".to_string()));
-        // Default budget_tokens: 4096 (can be made configurable in the future)
-        thinking_map.insert("budget_tokens".to_string(), serde_json::Value::Number(4096.into()));
-        body_map.insert("thinking".to_string(), serde_json::Value::Object(thinking_map));
+    // Translate enable_thinking to an explicit wire value. We avoid relying on
+    // backend defaults because Anthropic defaults to off when the field is
+    // omitted while DeepSeek's Anthropic-compat endpoint defaults to on; the
+    // daemon's Some(false) call sites must disable thinking on both.
+    //   Some(true)  + Opus 4.7+ -> {type: "adaptive"}
+    //                              (manual budget_tokens mode returns 400)
+    //   Some(true)  + others    -> {type: "enabled", budget_tokens: 4096}
+    //   Some(false)             -> {type: "disabled"}
+    //   None                    -> omit (backend default)
+    match req.enable_thinking {
+        Some(true) if is_opus_4_7_or_later(model) => {
+            body_map.insert(
+                "thinking".to_string(),
+                serde_json::json!({"type": "adaptive"}),
+            );
+        }
+        Some(true) => {
+            body_map.insert(
+                "thinking".to_string(),
+                serde_json::json!({"type": "enabled", "budget_tokens": 4096}),
+            );
+        }
+        Some(false) => {
+            body_map.insert(
+                "thinking".to_string(),
+                serde_json::json!({"type": "disabled"}),
+            );
+        }
+        None => {}
     }
 
     serde_json::Value::Object(body_map)
@@ -375,9 +414,56 @@ impl LlmBackend for AnthropicBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::build_request_body;
+    use super::{build_request_body, is_opus_4_7_or_later};
     use crate::backend::{CacheHint, CachedText, LlmRequest, TaggedMessage, TriggerType, UseCase};
     use crate::tool::ToolDef;
+
+    #[test]
+    fn thinking_enabled_manual_emits_budget_tokens() {
+        let mut req = empty_req();
+        req.enable_thinking = Some(true);
+        let body = build_request_body(&req, "claude-opus-4-6");
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 4096);
+    }
+
+    #[test]
+    fn thinking_enabled_on_opus_4_7_emits_adaptive() {
+        let mut req = empty_req();
+        req.enable_thinking = Some(true);
+        let body = build_request_body(&req, "claude-opus-4-7");
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert!(
+            body["thinking"].get("budget_tokens").is_none(),
+            "adaptive mode must not send budget_tokens"
+        );
+    }
+
+    #[test]
+    fn thinking_disabled_emits_explicit_disabled() {
+        let mut req = empty_req();
+        req.enable_thinking = Some(false);
+        let body = build_request_body(&req, "claude-opus-4-6");
+        assert_eq!(body["thinking"]["type"], "disabled");
+    }
+
+    #[test]
+    fn thinking_none_omits_field() {
+        let req = empty_req();
+        let body = build_request_body(&req, "claude-opus-4-6");
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn opus_version_detection() {
+        assert!(!is_opus_4_7_or_later("claude-opus-4-6"));
+        assert!(!is_opus_4_7_or_later("claude-sonnet-4-6"));
+        assert!(!is_opus_4_7_or_later("deepseek-chat"));
+        assert!(is_opus_4_7_or_later("claude-opus-4-7"));
+        assert!(is_opus_4_7_or_later("claude-opus-4-8"));
+        assert!(is_opus_4_7_or_later("claude-opus-5-0"));
+        assert!(is_opus_4_7_or_later("claude-opus-4-10"));
+    }
 
     fn empty_req() -> LlmRequest {
         LlmRequest {
