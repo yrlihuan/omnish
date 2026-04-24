@@ -992,7 +992,11 @@ async fn handle_chat_interrupt(ci: ChatInterrupt, ctx: &HandlerCtx, tx: mpsc::Se
     };
 
     if let Some(mut state) = state {
-        // Build tool_result content: completed results + "user interrupted" for the rest
+        // Build tool_result content: completed results + interrupt marker for the rest.
+        // The interrupt marker string matches Claude Code's convention so the LLM
+        // sees a well-formed tool_result + later-merged text blocks in a single
+        // user message (rather than a synthetic <event> assistant that would
+        // break Anthropic's thinking-block/tool-use pairing rules).
         let completed_ids: std::collections::HashSet<String> = state
             .completed_results
             .iter()
@@ -1010,13 +1014,12 @@ async fn handle_chat_interrupt(ci: ChatInterrupt, ctx: &HandlerCtx, tx: mpsc::Se
             }))
             .collect();
 
-        // Fill in "user interrupted" for tools not yet completed
         for tc in &state.pending_tool_calls {
             if !completed_ids.contains(&tc.id) {
                 result_content.push(serde_json::json!({
                     "type": "tool_result",
                     "tool_use_id": tc.id,
-                    "content": "user interrupted",
+                    "content": omnish_daemon::conversation_mgr::INTERRUPT_MARKER,
                     "is_error": true,
                 }));
             }
@@ -1024,7 +1027,6 @@ async fn handle_chat_interrupt(ci: ChatInterrupt, ctx: &HandlerCtx, tx: mpsc::Se
 
         persist_unsaved(&mut state, &ctx.conv_mgr, &[
             serde_json::json!({"role": "user", "content": result_content}),
-            serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
         ]);
         update_thread_usage(&ctx.conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
     } else if let Some(flag) = ctx.cancel_flags.lock().await.get(&ci.request_id) {
@@ -1032,11 +1034,9 @@ async fn handle_chat_interrupt(ci: ChatInterrupt, ctx: &HandlerCtx, tx: mpsc::Se
         // The loop will store partial state to conversation when it detects the flag.
         flag.store(true, std::sync::atomic::Ordering::Relaxed);
     } else {
-        // Loop already finished - just record the interrupt
-        ctx.conv_mgr.append_messages(&ci.thread_id, &[
-            serde_json::json!({"role": "user", "content": ci.query}),
-            serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
-        ]);
+        // Loop already finished before the interrupt reached us. Nothing to
+        // record - the conversation is already in a consistent state, and
+        // adding synthetic messages would only confuse the next LLM call.
     }
 
     tracing::info!("Chat interrupted by user (thread={}, request={})", ci.thread_id, ci.request_id);
@@ -1347,11 +1347,21 @@ async fn handle_chat_message(
     // Load prior conversation history as raw JSON
     let mut extra_messages = conv_mgr.load_raw_messages(&cm.thread_id);
 
-    // Sanitize orphaned tool_use blocks that can appear when a ChatInterrupt
-    // races with a new ChatMessage (both are dispatched concurrently).
+    // Two independent cleanups:
+    //  - sanitize_orphaned_tool_use: handle ChatInterrupt racing ChatMessage
+    //    (leaves dangling tool_use without tool_result)
+    //  - merge_interrupt_markers: collapse legacy <event>user interrupted</event>
+    //    assistant messages from pre-merge builds. Without this, older threads
+    //    send a text-only assistant message with no thinking block and trip
+    //    DeepSeek/Anthropic validators in thinking mode.
+    let mut history_dirty = false;
     if omnish_daemon::conversation_mgr::sanitize_orphaned_tool_use(&mut extra_messages) {
         tracing::warn!("Sanitized orphaned tool_use blocks before chat (thread={})", cm.thread_id);
-        conv_mgr.replace_messages(&cm.thread_id, &extra_messages);
+        history_dirty = true;
+    }
+    if omnish_daemon::conversation_mgr::merge_interrupt_markers(&mut extra_messages) {
+        tracing::warn!("Merged legacy interrupt markers before chat (thread={})", cm.thread_id);
+        history_dirty = true;
     }
 
     // Strip internal metadata fields that must not be sent to the LLM API
@@ -1361,16 +1371,53 @@ async fn handle_chat_message(
             obj.remove("_model");
         }
     }
-    let prior_len = extra_messages.len();
 
-    // User message (clean, without system-reminder)
-    let user_msg = serde_json::json!({"role": "user", "content": cm.query});
-    extra_messages.push(user_msg.clone());
+    // Forward-path interrupt merge: if the last persisted message is a user
+    // message with only tool_result blocks (i.e. an interrupt snapshot from a
+    // prior turn), append the interrupt marker and the new user query as two
+    // text blocks to that same message. This matches Claude Code's format and
+    // avoids injecting a synthetic assistant message without a thinking block.
+    let merged_into_last = extra_messages.last().is_some_and(
+        omnish_daemon::conversation_mgr::is_user_tool_result_only_public,
+    );
+    if merged_into_last {
+        if let Some(last) = extra_messages.last_mut() {
+            if let Some(arr) = last["content"].as_array_mut() {
+                arr.push(serde_json::json!({
+                    "type": "text",
+                    "text": format!("{}\n", omnish_daemon::conversation_mgr::INTERRUPT_MARKER),
+                }));
+                arr.push(serde_json::json!({
+                    "type": "text",
+                    "text": cm.query.clone(),
+                }));
+            }
+        }
+        // The merged edit lives in the last persisted line, so rewrite the
+        // whole file. Overwrite is safe because append_messages would have
+        // duplicated the line otherwise.
+        conv_mgr.replace_messages(&cm.thread_id, &extra_messages);
+        history_dirty = false; // replace_messages covered both cleanups + merge
+    } else {
+        // No interrupt snapshot at the tail - append a fresh user message.
+        let user_msg = serde_json::json!({"role": "user", "content": cm.query});
+        extra_messages.push(user_msg.clone());
+        if history_dirty {
+            conv_mgr.replace_messages(&cm.thread_id, &extra_messages);
+            history_dirty = false;
+        } else {
+            // Persist user message immediately so /resume works even if the
+            // agent loop hasn't finished (each message is handled in its own
+            // spawned task, so ChatEnd can race with the agent loop).
+            conv_mgr.append_messages(&cm.thread_id, &[user_msg]);
+        }
+    }
+    let _ = history_dirty; // future-proofing if new cleanup branches are added
 
-    // Persist user message immediately so /resume works even if the agent loop
-    // hasn't finished (each message is handled in its own spawned task, so
-    // ChatEnd can race with the agent loop).
-    conv_mgr.append_messages(&cm.thread_id, &[user_msg]);
+    // Everything in extra_messages has been persisted by this point (either
+    // append_messages for the fresh user turn, or replace_messages for the
+    // merge / cleanup paths).
+    let saved_up_to = extra_messages.len();
 
     // Wrap raw JSON messages in TaggedMessage carriers (cache hints set in Task 6).
     let extra_messages: Vec<omnish_llm::backend::TaggedMessage> = extra_messages
@@ -1399,7 +1446,7 @@ async fn handle_chat_message(
 
     let state = AgentLoopState {
         llm_req,
-        saved_up_to: prior_len + 1, // user message already persisted
+        saved_up_to,
         pending_tool_calls: vec![],
         completed_results: vec![],
         iteration: 0,
@@ -1577,7 +1624,7 @@ fn persist_unsaved_sanitized(
             serde_json::json!({
                 "type": "tool_result",
                 "tool_use_id": id,
-                "content": "user interrupted",
+                "content": omnish_daemon::conversation_mgr::INTERRUPT_MARKER,
                 "is_error": true,
             })
         }).collect();
@@ -1591,9 +1638,10 @@ fn persist_unsaved_sanitized(
         ));
     }
 
-    persist_unsaved(state, conv_mgr, &[
-        serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
-    ]);
+    // No synthetic assistant marker: the next chat message will merge its
+    // text into the trailing user[tool_result] message, which keeps the
+    // conversation Anthropic-protocol-valid.
+    persist_unsaved(state, conv_mgr, &[]);
     update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
 }
 
@@ -1945,7 +1993,6 @@ async fn run_agent_loop(
                     if cancelled {
                         // Cancelled mid-tool-execution - store partial state
                         tracing::info!("Agent loop cancelled during tool execution (thread={})", state.cm.thread_id);
-                        // Build tool results for completed tools + "user interrupted" for the rest
                         let completed_ids: std::collections::HashSet<&str> = tool_results
                             .iter()
                             .map(|r| r.tool_use_id.as_str())
@@ -1964,7 +2011,7 @@ async fn run_agent_loop(
                                 result_content.push(serde_json::json!({
                                     "type": "tool_result",
                                     "tool_use_id": tc.id,
-                                    "content": "user interrupted",
+                                    "content": omnish_daemon::conversation_mgr::INTERRUPT_MARKER,
                                     "is_error": true,
                                 }));
                             }
@@ -1976,9 +2023,7 @@ async fn run_agent_loop(
                             }),
                             omnish_llm::backend::CacheHint::None,
                         ));
-                        persist_unsaved(&mut state, conv_mgr, &[
-                            serde_json::json!({"role": "assistant", "content": "<event>user interrupted</event>"}),
-                        ]);
+                        persist_unsaved(&mut state, conv_mgr, &[]);
                         update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
                         return;
                     }
@@ -2272,35 +2317,53 @@ async fn reconstruct_history(
                         "text": text,
                     }));
                 } else if let Some(arr) = msg["content"].as_array() {
-                    // tool_result array
+                    // Mixed array: may contain tool_result blocks (interrupt
+                    // snapshot) plus text blocks for the merged user query.
                     for block in arr {
-                        if block["type"].as_str() == Some("tool_result") {
-                            let tool_use_id = block["tool_use_id"].as_str().unwrap_or("").to_string();
-                            let output = block["content"].as_str().unwrap_or("").to_string();
-                            let is_error = block["is_error"].as_bool().unwrap_or(false);
+                        match block["type"].as_str() {
+                            Some("tool_result") => {
+                                let tool_use_id = block["tool_use_id"].as_str().unwrap_or("").to_string();
+                                let output = block["content"].as_str().unwrap_or("").to_string();
+                                let is_error = block["is_error"].as_bool().unwrap_or(false);
 
-                            if let Some((tool_name, input)) = pending_tools.remove(&tool_use_id) {
-                                let display_name = tool_registry.display_name(&tool_name).to_string();
-                                let fmt_name = tool_registry.formatter_name(&tool_name);
-                                let fmt_out = formatter_mgr.format(&fmt_name, &omnish_plugin::formatter::FormatInput {
-                                    tool_name: tool_name.clone(),
-                                    params: input.clone(),
-                                    output,
-                                    is_error,
-                                }).await;
-                                let param_desc = tool_registry.status_text(&tool_name, &input);
-                                let icon_str = if is_error { "error" } else { "success" };
+                                if let Some((tool_name, input)) = pending_tools.remove(&tool_use_id) {
+                                    let display_name = tool_registry.display_name(&tool_name).to_string();
+                                    let fmt_name = tool_registry.formatter_name(&tool_name);
+                                    let fmt_out = formatter_mgr.format(&fmt_name, &omnish_plugin::formatter::FormatInput {
+                                        tool_name: tool_name.clone(),
+                                        params: input.clone(),
+                                        output,
+                                        is_error,
+                                    }).await;
+                                    let param_desc = tool_registry.status_text(&tool_name, &input);
+                                    let icon_str = if is_error { "error" } else { "success" };
+                                    entries.push(serde_json::json!({
+                                        "type": "tool_status",
+                                        "tool_name": tool_name,
+                                        "tool_call_id": tool_use_id,
+                                        "status_icon": icon_str,
+                                        "display_name": display_name,
+                                        "param_desc": param_desc,
+                                        "result_compact": fmt_out.result_compact,
+                                        "result_full": fmt_out.result_full,
+                                    }));
+                                }
+                            }
+                            Some("text") => {
+                                // Skip the interrupt marker; render the rest as user input.
+                                let text = block["text"].as_str().unwrap_or("");
+                                let trimmed = text.trim_end_matches('\n');
+                                if trimmed == omnish_daemon::conversation_mgr::INTERRUPT_MARKER
+                                    || text.is_empty()
+                                {
+                                    continue;
+                                }
                                 entries.push(serde_json::json!({
-                                    "type": "tool_status",
-                                    "tool_name": tool_name,
-                                    "tool_call_id": tool_use_id,
-                                    "status_icon": icon_str,
-                                    "display_name": display_name,
-                                    "param_desc": param_desc,
-                                    "result_compact": fmt_out.result_compact,
-                                    "result_full": fmt_out.result_full,
+                                    "type": "user_input",
+                                    "text": text,
                                 }));
                             }
+                            _ => {}
                         }
                     }
                 }

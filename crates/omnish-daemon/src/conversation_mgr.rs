@@ -169,6 +169,126 @@ pub fn sanitize_orphaned_tool_use(msgs: &mut Vec<serde_json::Value>) -> bool {
     changed
 }
 
+/// Text marker appended to merged user messages when continuing after an
+/// interrupt. Matches Claude Code's convention so the LLM gets the same
+/// structural signal about interrupted tool use.
+pub const INTERRUPT_MARKER: &str = "[Request interrupted by user for tool use]";
+
+/// Public wrapper for [`is_user_tool_result_only`], used by server code to
+/// decide whether to merge a new user query into the trailing interrupt
+/// snapshot instead of appending it as a separate message.
+pub fn is_user_tool_result_only_public(msg: &serde_json::Value) -> bool {
+    is_user_tool_result_only(msg)
+}
+
+/// True when a user message's content is a non-empty array of tool_result
+/// blocks only (no text blocks yet). These are interrupt snapshots waiting
+/// to be merged with the next user query.
+fn is_user_tool_result_only(msg: &serde_json::Value) -> bool {
+    if msg["role"].as_str() != Some("user") {
+        return false;
+    }
+    let arr = match msg["content"].as_array() {
+        Some(a) if !a.is_empty() => a,
+        _ => return false,
+    };
+    arr.iter().all(|b| b["type"].as_str() == Some("tool_result"))
+}
+
+/// True when an assistant message's content is exactly `<event>user interrupted</event>`,
+/// either as a plain string or as a single text block. This is the pre-merge
+/// format from older builds that we collapse into the preceding user message.
+fn is_interrupt_event_marker(msg: &serde_json::Value) -> bool {
+    if msg["role"].as_str() != Some("assistant") {
+        return false;
+    }
+    const MARKER: &str = "<event>user interrupted</event>";
+    if msg["content"].as_str() == Some(MARKER) {
+        return true;
+    }
+    if let Some(arr) = msg["content"].as_array() {
+        return arr.len() == 1
+            && arr[0]["type"].as_str() == Some("text")
+            && arr[0]["text"].as_str() == Some(MARKER);
+    }
+    false
+}
+
+/// Extract text from a user message's string-or-array content. Returns Some
+/// only when the content is a bare string or a single text block (i.e. a plain
+/// text user message with no tool_result). For merged user messages the caller
+/// should iterate content blocks directly.
+fn plain_user_text(msg: &serde_json::Value) -> Option<String> {
+    if msg["role"].as_str() != Some("user") {
+        return None;
+    }
+    if let Some(s) = msg["content"].as_str() {
+        return Some(s.to_string());
+    }
+    if let Some(arr) = msg["content"].as_array() {
+        if arr.len() == 1 && arr[0]["type"].as_str() == Some("text") {
+            return arr[0]["text"].as_str().map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+/// Collapse the legacy interrupt pattern
+/// `user[tool_result*] → assistant[<event>user interrupted</event>] → user[text]`
+/// into a single merged `user` message whose content array holds the
+/// tool_results plus two text blocks (the interrupt marker and the user's
+/// continuation text). Returns true if any changes were made.
+///
+/// Also handles the dangling case (no following user query yet) by just
+/// dropping the orphan `<event>` assistant so the next chat turn can do the
+/// forward-path merge cleanly.
+pub fn merge_interrupt_markers(msgs: &mut Vec<serde_json::Value>) -> bool {
+    let mut changed = false;
+    let mut i = 0;
+    while i < msgs.len() {
+        if !is_interrupt_event_marker(&msgs[i]) {
+            i += 1;
+            continue;
+        }
+
+        let prev_is_tool_result = i > 0 && is_user_tool_result_only(&msgs[i - 1]);
+        let next_text = if i + 1 < msgs.len() {
+            plain_user_text(&msgs[i + 1])
+        } else {
+            None
+        };
+
+        match (prev_is_tool_result, next_text) {
+            (true, Some(user_text)) => {
+                // Merge: append marker + user text as two text blocks to the
+                // preceding user[tool_result] message. Drop the <event> and
+                // the separate user message.
+                if let Some(arr) = msgs[i - 1]["content"].as_array_mut() {
+                    arr.push(serde_json::json!({
+                        "type": "text",
+                        "text": format!("{}\n", INTERRUPT_MARKER),
+                    }));
+                    arr.push(serde_json::json!({
+                        "type": "text",
+                        "text": user_text,
+                    }));
+                }
+                msgs.remove(i + 1);
+                msgs.remove(i);
+                changed = true;
+                // i now points to the merged message; advance past it
+                i = i.saturating_add(1).min(msgs.len());
+            }
+            _ => {
+                // No adjacent user continuation - just drop the orphan marker.
+                msgs.remove(i);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 impl ConversationManager {
     pub fn new(threads_dir: PathBuf) -> Self {
         std::fs::create_dir_all(&threads_dir).ok();
@@ -194,11 +314,22 @@ impl ConversationManager {
                     .filter(|l| !l.is_empty())
                     .filter_map(|l| serde_json::from_str(l).ok())
                     .collect();
+                let mut dirty = false;
                 if sanitize_orphaned_tool_use(&mut msgs) {
                     tracing::warn!(
                         "Sanitized orphaned tool_use blocks in thread {} at startup",
                         thread_id
                     );
+                    dirty = true;
+                }
+                if merge_interrupt_markers(&mut msgs) {
+                    tracing::warn!(
+                        "Merged legacy interrupt markers in thread {} at startup",
+                        thread_id
+                    );
+                    dirty = true;
+                }
+                if dirty {
                     Self::rewrite_thread_file(&threads_dir, &thread_id, &msgs);
                 }
                 threads.insert(thread_id, msgs);
@@ -872,6 +1003,172 @@ mod tests {
         ];
         assert!(!sanitize_orphaned_tool_use(&mut msgs));
         assert_eq!(msgs.len(), 4);
+    }
+
+    fn interrupt_event_string() -> serde_json::Value {
+        serde_json::json!({
+            "role": "assistant",
+            "content": "<event>user interrupted</event>"
+        })
+    }
+
+    fn interrupt_event_array() -> serde_json::Value {
+        serde_json::json!({
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "<event>user interrupted</event>"}
+            ]
+        })
+    }
+
+    fn tool_result_only_msg(tool_use_id: &str, content: &str, is_error: bool) -> serde_json::Value {
+        serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": tool_use_id, "content": content, "is_error": is_error}
+            ]
+        })
+    }
+
+    #[test]
+    fn test_merge_interrupt_markers_single_tool() {
+        // user[tool_result(interrupted)] → assistant[<event>] → user[text]
+        // collapses into a single user message with [tool_result, text, text].
+        let mut msgs = vec![
+            user_msg("run something"),
+            assistant_with_tool_use(),
+            tool_result_only_msg("toolu_1", "user interrupted", true),
+            interrupt_event_string(),
+            user_msg("retry please"),
+        ];
+        assert!(merge_interrupt_markers(&mut msgs));
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[2]["role"], "user");
+        let content = msgs[2]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], format!("{}\n", INTERRUPT_MARKER));
+        assert_eq!(content[2]["type"], "text");
+        assert_eq!(content[2]["text"], "retry please");
+    }
+
+    #[test]
+    fn test_merge_interrupt_markers_array_form() {
+        // The event marker can also appear as a single-text-block array
+        // (happens when cache_control rewrote the message content).
+        let mut msgs = vec![
+            tool_result_only_msg("toolu_1", "user interrupted", true),
+            interrupt_event_array(),
+            user_msg("go on"),
+        ];
+        assert!(merge_interrupt_markers(&mut msgs));
+        assert_eq!(msgs.len(), 1);
+        let content = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[2]["text"], "go on");
+    }
+
+    #[test]
+    fn test_merge_interrupt_markers_orphan_event() {
+        // assistant[<event>] not between tool_result and user[text] → just drop it.
+        let mut msgs = vec![
+            user_msg("hi"),
+            assistant_msg("hello"),
+            interrupt_event_string(),
+        ];
+        assert!(merge_interrupt_markers(&mut msgs));
+        assert_eq!(msgs.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_interrupt_markers_multiple_interrupts() {
+        // Two interrupt sequences in the same thread - both get merged.
+        let mut msgs = vec![
+            user_msg("first"),
+            assistant_with_tool_use(),
+            tool_result_only_msg("toolu_1", "user interrupted", true),
+            interrupt_event_string(),
+            user_msg("retry 1"),
+            assistant_with_tool_use(),
+            tool_result_only_msg("toolu_1", "user interrupted", true),
+            interrupt_event_string(),
+            user_msg("retry 2"),
+        ];
+        assert!(merge_interrupt_markers(&mut msgs));
+        assert_eq!(msgs.len(), 5);
+        // Both merged messages should contain the marker + user text
+        for idx in [2usize, 4usize] {
+            let content = msgs[idx]["content"].as_array().unwrap();
+            assert_eq!(content.len(), 3);
+            assert_eq!(content[0]["type"], "tool_result");
+            assert_eq!(content[1]["type"], "text");
+            assert_eq!(content[2]["type"], "text");
+        }
+        assert_eq!(msgs[2]["content"].as_array().unwrap()[2]["text"], "retry 1");
+        assert_eq!(msgs[4]["content"].as_array().unwrap()[2]["text"], "retry 2");
+    }
+
+    #[test]
+    fn test_merge_interrupt_markers_no_change_when_absent() {
+        // Normal conversation with no interrupts - no modifications.
+        let mut msgs = vec![
+            user_msg("do something"),
+            assistant_with_tool_use(),
+            tool_result_msg(),
+            assistant_msg("done"),
+        ];
+        assert!(!merge_interrupt_markers(&mut msgs));
+        assert_eq!(msgs.len(), 4);
+    }
+
+    #[test]
+    fn test_merge_interrupt_markers_parallel_tool_results() {
+        // Parallel case: user message with multiple tool_results, all interrupted.
+        let mut msgs = vec![
+            user_msg("run three things"),
+            serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "a", "input": {}},
+                    {"type": "tool_use", "id": "t2", "name": "b", "input": {}},
+                    {"type": "tool_use", "id": "t3", "name": "c", "input": {}},
+                ]
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "user interrupted", "is_error": true},
+                    {"type": "tool_result", "tool_use_id": "t2", "content": "user interrupted", "is_error": true},
+                    {"type": "tool_result", "tool_use_id": "t3", "content": "user interrupted", "is_error": true},
+                ]
+            }),
+            interrupt_event_string(),
+            user_msg("继续"),
+        ];
+        assert!(merge_interrupt_markers(&mut msgs));
+        assert_eq!(msgs.len(), 3);
+        let content = msgs[2]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 5);
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[3]["type"], "text");
+        assert_eq!(content[4]["text"], "继续");
+    }
+
+    #[test]
+    fn test_is_user_tool_result_only() {
+        assert!(is_user_tool_result_only(&tool_result_msg()));
+        assert!(!is_user_tool_result_only(&user_msg("hi")));
+        assert!(!is_user_tool_result_only(&assistant_msg("x")));
+        // Mixed content (has text block too) is not tool_result-only
+        let merged = serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "x", "is_error": false},
+                {"type": "text", "text": "hi"}
+            ]
+        });
+        assert!(!is_user_tool_result_only(&merged));
     }
 
     #[test]
