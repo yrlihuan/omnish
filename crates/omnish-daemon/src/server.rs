@@ -107,6 +107,12 @@ struct AgentLoopState {
     last_response_usage: omnish_llm::backend::Usage,
     /// Model name from the last LLM response.
     last_model: String,
+    /// Thread generation captured when this loop was started/resumed. Each
+    /// new ChatMessage on the thread bumps the counter; if the loop's saved
+    /// generation no longer matches `thread_generations[thread_id]`, the
+    /// loop is stale and must drop its in-flight work without writing to
+    /// disk or sending response messages.
+    generation: u64,
 }
 
 /// Tracks which session is actively using each thread.
@@ -173,6 +179,25 @@ type SandboxRules = Arc<std::sync::RwLock<HashMap<String, Vec<crate::sandbox_rul
 
 type CancelFlags = Arc<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>>;
 
+/// Per-thread monotonic counter. Bumped at the start of each ChatMessage so
+/// any agent loop still in-flight on the same thread (e.g. waiting on an LLM
+/// call that the user already abandoned) can detect supersession and discard
+/// its work instead of dirtying the conversation file.
+type ThreadGenerations = Arc<Mutex<HashMap<String, u64>>>;
+
+/// Bump and return the new generation for `thread_id`.
+async fn bump_generation(gens: &ThreadGenerations, thread_id: &str) -> u64 {
+    let mut map = gens.lock().await;
+    let entry = map.entry(thread_id.to_string()).or_insert(0);
+    *entry = entry.wrapping_add(1);
+    *entry
+}
+
+/// Read the current generation without mutating it.
+async fn current_generation(gens: &ThreadGenerations, thread_id: &str) -> u64 {
+    *gens.lock().await.get(thread_id).unwrap_or(&0)
+}
+
 /// Shared runtime options threaded through request handlers.
 pub struct ServerOpts {
     pub sandbox_rules: SandboxRules,
@@ -195,6 +220,7 @@ struct HandlerCtx {
     formatter_mgr: Arc<omnish_daemon::formatter_mgr::FormatterManager>,
     pending_loops: Arc<Mutex<HashMap<String, AgentLoopState>>>,
     cancel_flags: CancelFlags,
+    thread_generations: ThreadGenerations,
     active_threads: ActiveThreads,
     opts: Arc<ServerOpts>,
     update_cache: Arc<omnish_daemon::update_cache::UpdateCache>,
@@ -223,6 +249,8 @@ pub struct DaemonServer {
     /// Cancel flags for running agent loops (keyed by request_id).
     /// Set to true by ChatInterrupt to signal daemon-side loops to stop.
     cancel_flags: CancelFlags,
+    /// Per-thread generation counters used to invalidate superseded agent loops.
+    thread_generations: ThreadGenerations,
     active_threads: ActiveThreads,
     opts: Arc<ServerOpts>,
     update_cache: Arc<omnish_daemon::update_cache::UpdateCache>,
@@ -456,6 +484,7 @@ impl DaemonServer {
             formatter_mgr,
             pending_agent_loops: Arc::new(Mutex::new(HashMap::new())),
             cancel_flags: Arc::new(Mutex::new(HashMap::new())),
+            thread_generations: Arc::new(Mutex::new(HashMap::new())),
             active_threads: Arc::new(Mutex::new(HashMap::new())),
             opts,
             update_cache,
@@ -541,6 +570,7 @@ impl DaemonServer {
             formatter_mgr: self.formatter_mgr.clone(),
             pending_loops: self.pending_agent_loops.clone(),
             cancel_flags: self.cancel_flags.clone(),
+            thread_generations: self.thread_generations.clone(),
             active_threads: self.active_threads.clone(),
             opts: self.opts.clone(),
             update_cache: self.update_cache.clone(),
@@ -992,6 +1022,17 @@ async fn handle_chat_interrupt(ci: ChatInterrupt, ctx: &HandlerCtx, tx: mpsc::Se
     };
 
     if let Some(mut state) = state {
+        // If a newer ChatMessage has already bumped this thread's generation,
+        // the interrupt is moot - the new turn will sanitize/merge the dangling
+        // tool_use itself. Writing here would just race that path.
+        if is_superseded(&state, ctx).await {
+            tracing::info!(
+                "ChatInterrupt arrived for already-superseded loop (thread={}, request={}); skipping",
+                ci.thread_id, ci.request_id
+            );
+            let _ = tx.send(Message::Ack).await;
+            return;
+        }
         // Build tool_result content: completed results + interrupt marker for the rest.
         // The interrupt marker string matches Claude Code's convention so the LLM
         // sees a well-formed tool_result + later-merged text blocks in a single
@@ -1300,6 +1341,13 @@ async fn handle_chat_message(
     let conv_mgr = &ctx.conv_mgr;
     let tool_registry = &ctx.tool_registry;
 
+    // Bump the thread generation so any agent loop still in-flight on this
+    // thread (e.g. an LLM call the user already abandoned by interrupting and
+    // sending a new message) becomes stale and discards its work instead of
+    // racing us into the conversation file. Captured into AgentLoopState so
+    // the new loop knows its own generation.
+    let generation = bump_generation(&ctx.thread_generations, &cm.thread_id).await;
+
     // Handle model override
     if let Some(ref model_name) = cm.model {
         let mut meta = conv_mgr.load_meta(&cm.thread_id);
@@ -1458,6 +1506,7 @@ async fn handle_chat_message(
         cumulative_usage: Default::default(),
         last_response_usage: Default::default(),
         last_model: String::new(),
+        generation,
     };
 
     run_agent_loop(state, ctx, tx, cancel_flag).await;
@@ -1482,6 +1531,19 @@ async fn handle_tool_result(
             return;
         }
     };
+
+    // If a newer ChatMessage has bumped the thread generation, this tool
+    // result belongs to a turn the user already abandoned. Drop the state
+    // and acknowledge without resuming - the new turn owns the conversation.
+    if state.generation != current_generation(&ctx.thread_generations, &state.cm.thread_id).await {
+        tracing::info!(
+            "ChatToolResult for superseded loop (thread={}, request={}); discarding",
+            state.cm.thread_id, tr.request_id
+        );
+        map.remove(&tr.request_id);
+        let _ = tx.send(Message::Ack).await;
+        return;
+    }
 
     // Add the received client-side tool result
     let tool_call_id = tr.tool_call_id.clone();
@@ -1597,10 +1659,17 @@ async fn handle_tool_result(
 /// acceptable for error recovery (client disconnect) - the alternative of
 /// threading partial results through every call site adds complexity for a
 /// rare edge case where the client is already gone.
-fn persist_unsaved_sanitized(
+async fn persist_unsaved_sanitized(
     state: &mut AgentLoopState,
-    conv_mgr: &omnish_daemon::conversation_mgr::ConversationManager,
+    ctx: &HandlerCtx,
 ) {
+    // If a newer ChatMessage has bumped the thread generation, this loop's
+    // partial state is no longer authoritative; skip the write so we don't
+    // race the new turn into the conversation file.
+    if is_superseded(state, ctx).await {
+        return;
+    }
+    let conv_mgr = &ctx.conv_mgr;
     // Check whether the tail of extra_messages ends with an assistant message
     // containing tool_use blocks (i.e. no tool_result follows).
     let last_is_tool_use = state.llm_req.extra_messages.last().is_some_and(|msg| {
@@ -1728,6 +1797,22 @@ fn mark_chat_message_hints(messages: &mut [omnish_llm::backend::TaggedMessage]) 
     }
 }
 
+/// True when the loop's saved generation no longer matches the thread's
+/// current generation - meaning a newer ChatMessage has arrived and any
+/// progress this loop is about to commit would corrupt the conversation.
+async fn is_superseded(state: &AgentLoopState, ctx: &HandlerCtx) -> bool {
+    let current = current_generation(&ctx.thread_generations, &state.cm.thread_id).await;
+    if current != state.generation {
+        tracing::info!(
+            "Agent loop superseded (thread={}, loop_gen={}, current_gen={}); discarding work",
+            state.cm.thread_id, state.generation, current
+        );
+        true
+    } else {
+        false
+    }
+}
+
 /// Core agent loop: calls LLM, executes tools, pauses on client-side tools.
 /// Used by both `handle_chat_message` (initial) and `handle_tool_result` (resumption).
 /// Messages are sent incrementally through `tx` as they're produced (streaming).
@@ -1748,10 +1833,16 @@ async fn run_agent_loop(
     let max_iterations = 100;
 
     for iteration in state.iteration..max_iterations {
+        // Supersession trumps cancellation: if a newer ChatMessage has bumped
+        // the thread generation, drop this loop entirely without writing.
+        if is_superseded(&state, ctx).await {
+            return;
+        }
+
         // Check if user interrupted (Ctrl+C)
         if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
             tracing::info!("Agent loop cancelled by user at iteration {} (thread={})", iteration, state.cm.thread_id);
-            persist_unsaved_sanitized(&mut state, conv_mgr);
+            persist_unsaved_sanitized(&mut state, ctx).await;
             return;
         }
 
@@ -1815,7 +1906,7 @@ async fn run_agent_loop(
                                     result_compact: None,
                                     result_full: None,
                                 })).await.is_err() {
-                                    persist_unsaved_sanitized(&mut state, conv_mgr);
+                                    persist_unsaved_sanitized(&mut state, ctx).await;
                                     return;
                                 }
                         }
@@ -1846,7 +1937,7 @@ async fn run_agent_loop(
                             result_compact: None,
                             result_full: None,
                         })).await.is_err() {
-                            persist_unsaved_sanitized(&mut state, conv_mgr);
+                            persist_unsaved_sanitized(&mut state, ctx).await;
                             return;
                         }
 
@@ -1901,7 +1992,7 @@ async fn run_agent_loop(
                                 plugin_name: tool_registry.plugin_name(&tc.name).unwrap_or_else(|| "builtin".to_string()),
                                 sandboxed: matched_rule.is_none() && !thread_sandbox_off,
                             })).await.is_err() {
-                                persist_unsaved_sanitized(&mut state, conv_mgr);
+                                persist_unsaved_sanitized(&mut state, ctx).await;
                                 return;
                             }
                             has_client_tools = true;
@@ -1982,7 +2073,7 @@ async fn run_agent_loop(
                                 result_compact: Some(post_out.result_compact),
                                 result_full: Some(post_out.result_full),
                             })).await.is_err() {
-                                persist_unsaved_sanitized(&mut state, conv_mgr);
+                                persist_unsaved_sanitized(&mut state, ctx).await;
                                 return;
                             }
 
@@ -1991,7 +2082,13 @@ async fn run_agent_loop(
                     }
 
                     if cancelled {
-                        // Cancelled mid-tool-execution - store partial state
+                        // Cancelled mid-tool-execution - store partial state.
+                        // Skip if a newer ChatMessage has superseded this loop:
+                        // writing partial tool_results would duplicate the
+                        // synthetic ones the new turn already produced.
+                        if is_superseded(&state, ctx).await {
+                            return;
+                        }
                         tracing::info!("Agent loop cancelled during tool execution (thread={})", state.cm.thread_id);
                         let completed_ids: std::collections::HashSet<&str> = tool_results
                             .iter()
@@ -2065,7 +2162,13 @@ async fn run_agent_loop(
                     continue;
                 }
 
-                // EndTurn or MaxTokens - extract final text and store
+                // EndTurn or MaxTokens - extract final text and store.
+                // If a newer ChatMessage has superseded us, drop the response
+                // silently: the next turn won't see this assistant text and
+                // the user already moved on.
+                if is_superseded(&state, ctx).await {
+                    return;
+                }
                 let text = response.text();
                 tracing::info!(
                     "Chat LLM completed in {:?} ({} tool iterations, thread={})",
@@ -2119,6 +2222,13 @@ async fn run_agent_loop(
 
                 tracing::error!("Chat LLM failed: {}", e);
 
+                // If a newer ChatMessage has superseded us, swallow the error
+                // entirely: the user has already moved on and the new turn
+                // owns the conversation tail.
+                if is_superseded(&state, ctx).await {
+                    return;
+                }
+
                 // User-visible message: include truncated error string
                 let display_err: &str = if err_str.len() > 200 {
                     &err_str[..err_str.floor_char_boundary(200)]
@@ -2153,7 +2263,10 @@ async fn run_agent_loop(
         }
     }
 
-    // Exhausted iterations - store what we have
+    // Exhausted iterations - store what we have. Skip if superseded.
+    if is_superseded(&state, ctx).await {
+        return;
+    }
     tracing::warn!(
         "Agent loop exhausted {} iterations (thread={})",
         max_iterations,
