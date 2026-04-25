@@ -83,6 +83,43 @@ fn warn_unknown_message_fields(message: &serde_json::Value) {
 ///
 /// Falls back to inline `<think>` tag scanning for servers (e.g. some Qwen
 /// builds) that embed thinking inside `content` without a separate field.
+/// Coerce `content` to a single string regardless of whether the server
+/// returned a plain string, null, or a multi-part array (multimodal-style
+/// `[{"type":"text","text":"..."}, ...]`). Logs once per process if a
+/// non-string shape is encountered, so we know an array path actually
+/// fires in the wild.
+fn coerce_content_to_string(value: &serde_json::Value) -> String {
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static SAW_ARRAY: OnceLock<AtomicBool> = OnceLock::new();
+
+    if let Some(s) = value.as_str() {
+        return s.to_string();
+    }
+    if let Some(arr) = value.as_array() {
+        let logged = SAW_ARRAY.get_or_init(|| AtomicBool::new(false));
+        if !logged.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                "openai_compat: response `content` is an array; concatenating text parts. \
+                 Sample: {}",
+                serde_json::to_string(arr).unwrap_or_default().chars().take(300).collect::<String>()
+            );
+        }
+        return arr
+            .iter()
+            .filter_map(|b| {
+                if b["type"].as_str() == Some("text") {
+                    b["text"].as_str().map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    String::new()
+}
+
 fn parse_message_content_blocks(
     message: &serde_json::Value,
     enable_thinking: Option<bool>,
@@ -101,14 +138,15 @@ fn parse_message_content_blocks(
         }
     }
 
-    if let Some(raw_content) = message["content"].as_str() {
+    let raw_content = coerce_content_to_string(&message["content"]);
+    if !raw_content.is_empty() {
         let already_have_thinking = content_blocks
             .iter()
             .any(|b| matches!(b, ContentBlock::Thinking { .. }));
         let (think, text) = if enable_thinking == Some(false) || already_have_thinking {
-            (None, raw_content.to_string())
+            (None, raw_content)
         } else {
-            extract_thinking(raw_content)
+            extract_thinking(&raw_content)
         };
         if let Some(thinking) = think {
             content_blocks.push(ContentBlock::Thinking { thinking, signature: None });
@@ -118,7 +156,44 @@ fn parse_message_content_blocks(
         }
     }
 
+    // Diagnostic: when there are tool_calls but NO Text block was produced,
+    // dump the raw message once so we can verify whether the server actually
+    // returned a text content or genuinely emitted only reasoning + tool_calls.
+    let has_tool_calls = message["tool_calls"].as_array().is_some_and(|a| !a.is_empty());
+    let has_text = content_blocks.iter().any(|b| matches!(b, ContentBlock::Text(_)));
+    if has_tool_calls && !has_text {
+        diagnose_missing_text_content(message);
+    }
+
     content_blocks
+}
+
+/// One-shot diagnostic dump for the "tool_calls present, no text content" case.
+/// Helps distinguish between:
+///   (a) server genuinely returned content=null/empty → model behavior, not a bug
+///   (b) server returned content in an unexpected shape we silently dropped → parser bug
+/// Logs at most once per process to keep daemon.log readable.
+fn diagnose_missing_text_content(message: &serde_json::Value) {
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static LOGGED: OnceLock<AtomicBool> = OnceLock::new();
+    let flag = LOGGED.get_or_init(|| AtomicBool::new(false));
+    if flag.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let content_type = match &message["content"] {
+        serde_json::Value::Null => "null",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        _ => "other",
+    };
+    let preview = serde_json::to_string(message).unwrap_or_default();
+    let preview = preview.chars().take(800).collect::<String>();
+    tracing::info!(
+        "openai_compat: tool_calls present without text content (content_type={}); \
+         message preview: {}",
+        content_type, preview
+    );
 }
 
 /// Extract thinking from content and return (thinking, cleaned_content)
@@ -671,6 +746,29 @@ mod tests {
         let blocks = parse_message_content_blocks(&msg, Some(false));
         assert_eq!(blocks.len(), 1);
         assert!(matches!(&blocks[0], ContentBlock::Text(_)));
+    }
+
+    #[test]
+    fn test_parse_message_content_array_form() {
+        // Some OpenAI-compat servers return content as a multimodal-style
+        // array even for assistant text. Coerce to a single text block
+        // instead of silently dropping it.
+        let msg = serde_json::json!({
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "第 2 次完成。"},
+                {"type": "text", "text": "继续第 3 次："},
+            ],
+            "tool_calls": [{"id":"x","type":"function","function":{"name":"bash","arguments":"{}"}}],
+        });
+        let blocks = parse_message_content_blocks(&msg, Some(true));
+        let text = blocks.iter().find_map(|b| match b {
+            ContentBlock::Text(t) => Some(t.as_str()),
+            _ => None,
+        });
+        assert!(text.is_some(), "array-form content should be coerced into a Text block");
+        assert!(text.unwrap().contains("第 2 次完成"));
+        assert!(text.unwrap().contains("继续第 3 次"));
     }
 
     #[test]
