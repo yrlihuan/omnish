@@ -20,6 +20,53 @@ pub struct OpenAiCompatBackend {
     pub max_content_chars: Option<usize>,
 }
 
+/// Build the assistant content blocks from an OpenAI-compat `choices[0].message`.
+///
+/// Reasoning: DeepSeek (and other OpenAI-compat servers with native thinking
+/// support) return reasoning in a dedicated `reasoning_content` field, distinct
+/// from `content`. We must capture it as a Thinking block so the next round-trip
+/// via convert_extra_messages can write it back; otherwise the server rejects
+/// with "reasoning_content in the thinking mode must be passed back to the API".
+///
+/// Falls back to inline `<think>` tag scanning for servers (e.g. some Qwen
+/// builds) that embed thinking inside `content` without a separate field.
+fn parse_message_content_blocks(
+    message: &serde_json::Value,
+    enable_thinking: Option<bool>,
+) -> Vec<ContentBlock> {
+    let mut content_blocks = Vec::new();
+
+    if enable_thinking != Some(false) {
+        if let Some(rc) = message["reasoning_content"].as_str() {
+            if !rc.is_empty() {
+                content_blocks.push(ContentBlock::Thinking {
+                    thinking: rc.to_string(),
+                    signature: None,
+                });
+            }
+        }
+    }
+
+    if let Some(raw_content) = message["content"].as_str() {
+        let already_have_thinking = content_blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Thinking { .. }));
+        let (think, text) = if enable_thinking == Some(false) || already_have_thinking {
+            (None, raw_content.to_string())
+        } else {
+            extract_thinking(raw_content)
+        };
+        if let Some(thinking) = think {
+            content_blocks.push(ContentBlock::Thinking { thinking, signature: None });
+        }
+        if !text.is_empty() {
+            content_blocks.push(ContentBlock::Text(text));
+        }
+    }
+
+    content_blocks
+}
+
 /// Extract thinking from content and return (thinking, cleaned_content)
 fn extract_thinking(content: &str) -> (Option<String>, String) {
     let trimmed = content.trim_start();
@@ -332,22 +379,7 @@ impl LlmBackend for OpenAiCompatBackend {
             };
 
             // Parse content blocks
-            let mut content_blocks = Vec::new();
-
-            // Text content (may contain <think> tags for OpenAI-compat models)
-            if let Some(raw_content) = message["content"].as_str() {
-                let (think, text) = if req.enable_thinking == Some(false) {
-                    (None, raw_content.to_string())
-                } else {
-                    extract_thinking(raw_content)
-                };
-                if let Some(thinking) = think {
-                    content_blocks.push(ContentBlock::Thinking { thinking, signature: None });
-                }
-                if !text.is_empty() {
-                    content_blocks.push(ContentBlock::Text(text));
-                }
-            }
+            let mut content_blocks = parse_message_content_blocks(&message, req.enable_thinking);
 
             // Tool calls
             if let Some(tool_calls) = message["tool_calls"].as_array() {
@@ -533,6 +565,83 @@ mod tests {
 
         // Plain assistant message passes through
         assert_eq!(converted[3]["role"], "assistant");
+    }
+
+    #[test]
+    fn test_parse_message_content_captures_reasoning_content() {
+        // DeepSeek-style: reasoning lives in `reasoning_content`, not in `content`.
+        // Without this capture the assistant message persisted to disk would
+        // omit the thinking block, and the next request would fail with
+        // "reasoning_content in the thinking mode must be passed back".
+        let msg = serde_json::json!({
+            "role": "assistant",
+            "content": "Done.",
+            "reasoning_content": "Let me think about it...",
+        });
+        let blocks = parse_message_content_blocks(&msg, Some(true));
+        assert_eq!(blocks.len(), 2);
+        match &blocks[0] {
+            ContentBlock::Thinking { thinking, .. } => assert_eq!(thinking, "Let me think about it..."),
+            other => panic!("expected Thinking first, got {:?}", other),
+        }
+        match &blocks[1] {
+            ContentBlock::Text(t) => assert_eq!(t, "Done."),
+            other => panic!("expected Text second, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_message_content_falls_back_to_inline_think_tag() {
+        // Qwen-style: no reasoning_content field, thinking embedded as <think>.
+        let msg = serde_json::json!({
+            "role": "assistant",
+            "content": "<think>Reasoning here.</think>\nAnswer.",
+        });
+        let blocks = parse_message_content_blocks(&msg, Some(true));
+        assert_eq!(blocks.len(), 2);
+        match &blocks[0] {
+            ContentBlock::Thinking { thinking, .. } => assert_eq!(thinking, "Reasoning here."),
+            other => panic!("expected Thinking first, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_message_content_skips_thinking_when_disabled() {
+        // enable_thinking=Some(false) means do not synthesize Thinking blocks
+        // even if the server returned reasoning_content.
+        let msg = serde_json::json!({
+            "role": "assistant",
+            "content": "Done.",
+            "reasoning_content": "ignored",
+        });
+        let blocks = parse_message_content_blocks(&msg, Some(false));
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::Text(_)));
+    }
+
+    #[test]
+    fn test_parse_message_content_prefers_reasoning_content_over_inline_tag() {
+        // Some servers emit BOTH a reasoning_content field and an inline
+        // <think> tag; treat reasoning_content as authoritative and leave
+        // the content text untouched.
+        let msg = serde_json::json!({
+            "role": "assistant",
+            "content": "<think>inline</think>\nFinal.",
+            "reasoning_content": "structured",
+        });
+        let blocks = parse_message_content_blocks(&msg, Some(true));
+        let thinkings: Vec<&str> = blocks.iter().filter_map(|b| match b {
+            ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(thinkings, vec!["structured"]);
+        // The inline <think> tag is preserved in the text since we already
+        // captured the structured one.
+        let text = blocks.iter().find_map(|b| match b {
+            ContentBlock::Text(t) => Some(t.as_str()),
+            _ => None,
+        }).unwrap();
+        assert!(text.contains("<think>inline</think>"));
     }
 
     #[test]
