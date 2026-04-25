@@ -1465,9 +1465,14 @@ impl ChatSession {
                 continue;
             }
 
-            // /model
-            if trimmed == "/model" {
-                self.handle_model(session_id, rpc).await;
+            // /model [name]
+            if trimmed == "/model" || trimmed.starts_with("/model ") {
+                let arg = trimmed.strip_prefix("/model").unwrap().trim();
+                if arg.is_empty() {
+                    self.handle_model(session_id, rpc).await;
+                } else {
+                    self.handle_model_set(arg, session_id, rpc).await;
+                }
                 continue;
             }
 
@@ -2795,13 +2800,14 @@ impl ChatSession {
 
     // ── Model picker ─────────────────────────────────────────────────────
 
-    async fn handle_model(&mut self, session_id: &str, rpc: &RpcClient) {
-        // Build query with thread_id if available
+    /// Fetch the backend list from the daemon, with the current thread's
+    /// selected backend marked.  Returns None when the call fails or the
+    /// list is empty (caller should render `error.no_llm_backends`).
+    async fn fetch_models(&self, session_id: &str, rpc: &RpcClient) -> Option<Vec<serde_json::Value>> {
         let query = match &self.current_thread_id {
             Some(tid) => format!("__cmd:models {}", tid),
             None => "__cmd:models".to_string(),
         };
-
         let rid = Uuid::new_v4().to_string()[..8].to_string();
         let req = Message::Request(Request {
             request_id: rid.clone(),
@@ -2809,20 +2815,53 @@ impl ChatSession {
             query,
             scope: RequestScope::AllSessions,
         });
-
         let models = match rpc.call(req).await {
             Ok(Message::Response(resp)) if resp.request_id == rid => {
-                match super::parse_cmd_response(&resp.content) {
-                    Some(json) => json.get("models").and_then(|v| v.as_array()).cloned(),
-                    None => None,
-                }
+                super::parse_cmd_response(&resp.content)
+                    .and_then(|j| j.get("models").and_then(|v| v.as_array()).cloned())
             }
             _ => None,
         };
+        models.filter(|m| !m.is_empty())
+    }
 
-        let models = match models {
-            Some(m) if !m.is_empty() => m,
-            _ => {
+    /// Apply the selected backend: send a model-only ChatMessage when a
+    /// thread already exists, otherwise stash it in `pending_model` for the
+    /// first user query.  `display_name` is shown in the confirmation line.
+    async fn apply_model_selection(
+        &mut self,
+        name: String,
+        display_name: &str,
+        session_id: &str,
+        rpc: &RpcClient,
+    ) {
+        if let Some(ref tid) = self.current_thread_id {
+            let rid = Uuid::new_v4().to_string()[..8].to_string();
+            let msg = Message::ChatMessage(omnish_protocol::message::ChatMessage {
+                request_id: rid.clone(),
+                session_id: session_id.to_string(),
+                thread_id: tid.clone(),
+                query: String::new(),
+                model: Some(name),
+            });
+            match rpc.call(msg).await {
+                Ok(Message::Ack) => {
+                    write_stdout(&format!("{DIM}Switched to {}{RESET}{NEWLINE}", display_name));
+                }
+                _ => {
+                    write_stdout(&display::render_error(crate::i18n::t("error.failed_switch_model")));
+                }
+            }
+        } else {
+            self.pending_model = Some(name);
+            write_stdout(&format!("{DIM}Switched to {}{RESET}{NEWLINE}", display_name));
+        }
+    }
+
+    async fn handle_model(&mut self, session_id: &str, rpc: &RpcClient) {
+        let models = match self.fetch_models(session_id, rpc).await {
+            Some(m) => m,
+            None => {
                 write_stdout(&display::render_error(crate::i18n::t("error.no_llm_backends")));
                 return;
             }
@@ -2844,34 +2883,51 @@ impl ChatSession {
         match widgets::picker::pick_one_at("Select model:", &items, selected_idx) {
             Some(idx) if idx < models.len() => {
                 let name = models[idx]["name"].as_str().unwrap_or("").to_string();
-                let display_name = &item_strings[idx];
-
-                if let Some(ref tid) = self.current_thread_id {
-                    // Existing thread - send model-only ChatMessage
-                    let rid = Uuid::new_v4().to_string()[..8].to_string();
-                    let msg = Message::ChatMessage(omnish_protocol::message::ChatMessage {
-                        request_id: rid.clone(),
-                        session_id: session_id.to_string(),
-                        thread_id: tid.clone(),
-                        query: String::new(),
-                        model: Some(name),
-                    });
-                    match rpc.call(msg).await {
-                        Ok(Message::Ack) => {
-                            write_stdout(&format!("{DIM}Switched to {}{RESET}{NEWLINE}", display_name));
-                        }
-                        _ => {
-                            write_stdout(&display::render_error(crate::i18n::t("error.failed_switch_model")));
-                        }
-                    }
-                } else {
-                    // New thread - defer model selection to first message
-                    self.pending_model = Some(name);
-                    write_stdout(&format!("{DIM}Switched to {}{RESET}{NEWLINE}", display_name));
-                }
+                let display_name = item_strings[idx].clone();
+                self.apply_model_selection(name, &display_name, session_id, rpc).await;
             }
             _ => {} // ESC or no selection - do nothing
         }
+    }
+
+    /// `/model <name>` direct switch without picker. Validates the name
+    /// against the backend list returned by `__cmd:models`; on a miss prints
+    /// the available names so the user can correct the typo.
+    async fn handle_model_set(&mut self, name: &str, session_id: &str, rpc: &RpcClient) {
+        let models = match self.fetch_models(session_id, rpc).await {
+            Some(m) => m,
+            None => {
+                write_stdout(&display::render_error(crate::i18n::t("error.no_llm_backends")));
+                return;
+            }
+        };
+
+        let matched = models.iter().find(|m| {
+            m["name"].as_str().map(|s| s == name).unwrap_or(false)
+        });
+        let matched = match matched {
+            Some(m) => m,
+            None => {
+                let available: Vec<String> = models.iter().filter_map(|m| {
+                    let n = m["name"].as_str()?;
+                    let model = m["model"].as_str().unwrap_or("?");
+                    Some(format!("  {} ({})", n, strip_date_suffix(model)))
+                }).collect();
+                write_stdout(&format!(
+                    "{DIM}Unknown model: {}{RESET}{NEWLINE}{DIM}Available:{RESET}{NEWLINE}{}{NEWLINE}",
+                    name,
+                    available.join(NEWLINE),
+                ));
+                return;
+            }
+        };
+        let resolved = matched["name"].as_str().unwrap_or("").to_string();
+        let display_name = format!(
+            "{} ({})",
+            resolved,
+            strip_date_suffix(matched["model"].as_str().unwrap_or("?")),
+        );
+        self.apply_model_selection(resolved, &display_name, session_id, rpc).await;
     }
 
     // ── Test helpers (hidden from /help) ────────────────────────────────
