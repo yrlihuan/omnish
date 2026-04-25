@@ -49,6 +49,7 @@ test:
   - bash tools/integration_tests/test_sandbox_rules.sh
   - bash tools/integration_tests/test_config_backend.sh
   - bash tools/integration_tests/test_chat_interrupt.sh
+  - bash tools/integration_tests/test_interrupt_resume.sh
   - bash tools/integration_tests/test_thread_sandbox.sh
   - bash tools/integration_tests/test_erase_lines.sh
   - bash tools/integration_tests/test_plugin_cwd.sh
