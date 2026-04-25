@@ -20,6 +20,59 @@ pub struct OpenAiCompatBackend {
     pub max_content_chars: Option<usize>,
 }
 
+/// Top-level fields we know how to interpret in `choices[0].message`. Any key
+/// outside this set triggers a one-shot telemetry warn so a future vendor
+/// extension (the next `reasoning_content`-style field) gets surfaced rather
+/// than silently dropped on the floor.
+const KNOWN_MESSAGE_FIELDS: &[&str] = &[
+    "role",
+    "content",
+    "reasoning_content",
+    "tool_calls",
+    "refusal",      // OpenAI safety null-or-string
+    "function_call", // legacy single-call form
+    "audio",        // multimodal placeholder
+    "annotations",  // OpenAI citations
+    "name",         // tool/function role echo
+];
+
+/// Warn once per unknown field per process. Without de-duplication a single
+/// vendor would log thousands of identical warns - this turns it into a
+/// signal we'll actually notice on the first response and can act on.
+fn warn_unknown_message_fields(message: &serde_json::Value) {
+    use std::sync::OnceLock;
+    use std::sync::Mutex;
+    use std::collections::HashSet;
+
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let obj = match message.as_object() {
+        Some(o) => o,
+        None => return,
+    };
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    for key in obj.keys() {
+        if KNOWN_MESSAGE_FIELDS.iter().any(|k| k == key) {
+            continue;
+        }
+        let mut guard = seen.lock().unwrap();
+        if guard.insert(key.clone()) {
+            // Sample value preview to help debugging without leaking long content.
+            let preview: String = match obj.get(key) {
+                Some(v) => {
+                    let s = serde_json::to_string(v).unwrap_or_default();
+                    if s.len() > 200 { format!("{}...", &s[..s.floor_char_boundary(200)]) } else { s }
+                }
+                None => "null".to_string(),
+            };
+            tracing::warn!(
+                "openai_compat: unknown response field '{}' (preview: {}); \
+                 review whether it should be normalized into a ContentBlock",
+                key, preview
+            );
+        }
+    }
+}
+
 /// Build the assistant content blocks from an OpenAI-compat `choices[0].message`.
 ///
 /// Reasoning: DeepSeek (and other OpenAI-compat servers with native thinking
@@ -34,6 +87,7 @@ fn parse_message_content_blocks(
     message: &serde_json::Value,
     enable_thinking: Option<bool>,
 ) -> Vec<ContentBlock> {
+    warn_unknown_message_fields(message);
     let mut content_blocks = Vec::new();
 
     if enable_thinking != Some(false) {
