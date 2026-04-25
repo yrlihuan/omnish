@@ -1881,21 +1881,13 @@ impl ChatSession {
                                                     // Intermediate result - send and render status inline
                                                     match rpc.call(result_msg).await {
                                                         Ok(Message::ChatToolStatus(cts)) => {
-                                                            // Update running header in-place: move cursor up to the tool's line
-                                                            let lines_up = total - idx;
-                                                            let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
-                                                            let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
-                                                            let param_desc = cts.param_desc.as_deref().unwrap_or("");
-                                                            let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Success);
-                                                            let header = display::render_tool_header(icon, display_name, param_desc, cols as usize);
-                                                            write_stdout(&format!("\x1b[{}A\r\x1b[K{}\x1b[{}B\r", lines_up, header, lines_up));
-                                                            // Update scroll_history entry
                                                             let tool_call_id = cts.tool_call_id.clone();
                                                             if let Some(entry) = self.scroll_history.iter_mut().rev().find(|e| {
                                                                 matches!(e, ScrollEntry::ToolStatus(prev) if prev.tool_call_id == tool_call_id)
                                                             }) {
                                                                 *entry = ScrollEntry::ToolStatus(cts);
                                                             }
+                                                            self.redraw_tool_section();
                                                         }
                                                         Err(_) => {
                                                             send_failed = true;
