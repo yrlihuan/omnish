@@ -1420,34 +1420,26 @@ async fn handle_chat_message(
         }
     }
 
-    // Forward-path interrupt merge: if the last persisted message is a user
-    // message with only tool_result blocks (i.e. an interrupt snapshot from a
-    // prior turn), append the interrupt marker and the new user query as two
-    // text blocks to that same message. This matches Claude Code's format and
-    // avoids injecting a synthetic assistant message without a thinking block.
-    let merged_into_last = extra_messages.last().is_some_and(
-        omnish_daemon::conversation_mgr::is_user_tool_result_only_public,
+    // Forward-path merge: Anthropic forbids two consecutive user-role
+    // messages, so any user-role tail must absorb the new query rather than
+    // be followed by a fresh user message. Covers:
+    //  - tail = user[tool_result-only]: a fresh interrupt snapshot
+    //  - tail = user[tool_result + text + text]: an already-merged tail
+    //    (user sent two "继续" in quick succession; the first merge happened,
+    //    the second arrives before any assistant response)
+    //  - tail = user[text]: a prior user query whose agent loop got
+    //    superseded before it could persist any assistant response
+    let merge_into_tail = extra_messages.last().is_some_and(
+        omnish_daemon::conversation_mgr::is_user_message,
     );
-    if merged_into_last {
+    if merge_into_tail {
         if let Some(last) = extra_messages.last_mut() {
-            if let Some(arr) = last["content"].as_array_mut() {
-                arr.push(serde_json::json!({
-                    "type": "text",
-                    "text": format!("{}\n", omnish_daemon::conversation_mgr::INTERRUPT_MARKER),
-                }));
-                arr.push(serde_json::json!({
-                    "type": "text",
-                    "text": cm.query.clone(),
-                }));
-            }
+            omnish_daemon::conversation_mgr::merge_user_query_into_tail(last, &cm.query);
         }
-        // The merged edit lives in the last persisted line, so rewrite the
-        // whole file. Overwrite is safe because append_messages would have
-        // duplicated the line otherwise.
         conv_mgr.replace_messages(&cm.thread_id, &extra_messages);
         history_dirty = false; // replace_messages covered both cleanups + merge
     } else {
-        // No interrupt snapshot at the tail - append a fresh user message.
+        // Tail is assistant (or empty) - append a fresh user message.
         let user_msg = serde_json::json!({"role": "user", "content": cm.query});
         extra_messages.push(user_msg.clone());
         if history_dirty {

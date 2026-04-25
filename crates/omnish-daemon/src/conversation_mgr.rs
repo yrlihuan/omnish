@@ -174,18 +174,18 @@ pub fn sanitize_orphaned_tool_use(msgs: &mut Vec<serde_json::Value>) -> bool {
 /// structural signal about interrupted tool use.
 pub const INTERRUPT_MARKER: &str = "[Request interrupted by user for tool use]";
 
-/// Public wrapper for [`is_user_tool_result_only`], used by server code to
-/// decide whether to merge a new user query into the trailing interrupt
-/// snapshot instead of appending it as a separate message.
-pub fn is_user_tool_result_only_public(msg: &serde_json::Value) -> bool {
-    is_user_tool_result_only(msg)
+/// True when the message's role is `user`. Anthropic forbids two consecutive
+/// messages with the same role, so any tail that is already user-role forces
+/// the next chat turn to merge rather than append.
+pub fn is_user_message(msg: &serde_json::Value) -> bool {
+    msg["role"].as_str() == Some("user")
 }
 
 /// True when a user message's content is a non-empty array of tool_result
 /// blocks only (no text blocks yet). These are interrupt snapshots waiting
 /// to be merged with the next user query.
 fn is_user_tool_result_only(msg: &serde_json::Value) -> bool {
-    if msg["role"].as_str() != Some("user") {
+    if !is_user_message(msg) {
         return false;
     }
     let arr = match msg["content"].as_array() {
@@ -193,6 +193,46 @@ fn is_user_tool_result_only(msg: &serde_json::Value) -> bool {
         _ => return false,
     };
     arr.iter().all(|b| b["type"].as_str() == Some("tool_result"))
+}
+
+/// Merge a new user query into an existing user-role tail message, in-place.
+///
+/// Rules:
+/// - If `tail` is currently a string content, promote it to an array of text blocks
+///   (preserving the original string as the first text block).
+/// - If `tail` contains any `tool_result` block and does not already end with the
+///   interrupt marker text block, append the marker text block first.
+/// - Always append `query` as a final text block.
+///
+/// Caller is responsible for persisting the change.
+pub fn merge_user_query_into_tail(tail: &mut serde_json::Value, query: &str) {
+    debug_assert!(is_user_message(tail));
+    // Promote string content to array form so we can append blocks uniformly.
+    if let Some(s) = tail["content"].as_str() {
+        let s = s.to_string();
+        tail["content"] = serde_json::json!([
+            { "type": "text", "text": s }
+        ]);
+    }
+    let arr = match tail["content"].as_array_mut() {
+        Some(a) => a,
+        None => return,
+    };
+    let has_tool_result = arr.iter().any(|b| b["type"].as_str() == Some("tool_result"));
+    let already_has_marker = arr.iter().any(|b| {
+        b["type"].as_str() == Some("text")
+            && b["text"].as_str().is_some_and(|t| t.trim_end_matches('\n') == INTERRUPT_MARKER)
+    });
+    if has_tool_result && !already_has_marker {
+        arr.push(serde_json::json!({
+            "type": "text",
+            "text": format!("{}\n", INTERRUPT_MARKER),
+        }));
+    }
+    arr.push(serde_json::json!({
+        "type": "text",
+        "text": query,
+    }));
 }
 
 /// True when an assistant message's content is exactly `<event>user interrupted</event>`,
@@ -1169,6 +1209,69 @@ mod tests {
             ]
         });
         assert!(!is_user_tool_result_only(&merged));
+    }
+
+    #[test]
+    fn test_is_user_message() {
+        assert!(is_user_message(&user_msg("hi")));
+        assert!(is_user_message(&tool_result_msg()));
+        assert!(!is_user_message(&assistant_msg("x")));
+    }
+
+    #[test]
+    fn test_merge_user_query_into_tail_tool_result_only() {
+        // Fresh interrupt snapshot: tool_result + marker + new query.
+        let mut tail = tool_result_only_msg("t1", "user interrupted", true);
+        merge_user_query_into_tail(&mut tail, "继续");
+        let arr = tail["content"].as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0]["type"], "tool_result");
+        assert_eq!(arr[1]["type"], "text");
+        assert_eq!(arr[1]["text"], format!("{}\n", INTERRUPT_MARKER));
+        assert_eq!(arr[2]["text"], "继续");
+    }
+
+    #[test]
+    fn test_merge_user_query_into_tail_already_merged() {
+        // Second "继续" arriving on top of an already-merged tail must NOT
+        // duplicate the marker, only append the new query text.
+        let mut tail = serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "user interrupted", "is_error": true},
+                {"type": "text", "text": format!("{}\n", INTERRUPT_MARKER)},
+                {"type": "text", "text": "继续"},
+            ]
+        });
+        merge_user_query_into_tail(&mut tail, "再继续");
+        let arr = tail["content"].as_array().unwrap();
+        assert_eq!(arr.len(), 4);
+        assert_eq!(arr[3]["text"], "再继续");
+        // Only one marker in the array
+        let marker_count = arr.iter()
+            .filter(|b| b["type"].as_str() == Some("text")
+                && b["text"].as_str().is_some_and(|t| t.trim_end_matches('\n') == INTERRUPT_MARKER))
+            .count();
+        assert_eq!(marker_count, 1);
+    }
+
+    #[test]
+    fn test_merge_user_query_into_tail_plain_string() {
+        // Tail is a plain user query whose agent got superseded; promote
+        // the string to an array and append the new query (no marker since
+        // there's no tool_result to mark).
+        let mut tail = user_msg("first");
+        merge_user_query_into_tail(&mut tail, "second");
+        let arr = tail["content"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["text"], "first");
+        assert_eq!(arr[1]["text"], "second");
+        // No interrupt marker injected when there's no tool_result context
+        let marker_count = arr.iter()
+            .filter(|b| b["type"].as_str() == Some("text")
+                && b["text"].as_str().is_some_and(|t| t.trim_end_matches('\n') == INTERRUPT_MARKER))
+            .count();
+        assert_eq!(marker_count, 0);
     }
 
     #[test]
