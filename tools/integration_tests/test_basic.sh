@@ -14,7 +14,7 @@
 #   8. Shell prompt preserved when entering chat mode (#279)
 #   9. ESC dismisses ghost completion (#259)
 #  10. Ghost text completion via omnish_debug (#328)
-#  11. developer_mode blocks : when command line has content (#393)
+#  11. default mode blocks : when command line has content (#393)
 #  12. Stale completion not rendered after command execution (#507)
 #  13. Arrow key clears ghost text without display corruption (#518)
 
@@ -34,7 +34,7 @@ Test cases:
   8. Shell prompt preserved when entering chat (#279)
   9. ESC dismisses ghost completion (#259)
  10. Ghost text completion via omnish_debug (#328)
- 11. developer_mode blocks : when command line has content (#393)
+ 11. default mode blocks : when command line has content (#393)
  12. Stale completion not rendered after command execution (#507)
  13. Arrow key clears ghost text without display corruption (#518)
 EOF
@@ -575,19 +575,21 @@ test_10() {
     fi
 }
 
-# ── Test 11: developer_mode blocks : when command line has content (#393) ──
+# ── Test 11: default mode blocks : when command line has content (#393) ──
 test_11() {
-    echo -e "\n${YELLOW}=== Test 11: developer_mode blocks : when command line has content (#393) ===${NC}"
+    echo -e "\n${YELLOW}=== Test 11: default mode blocks : when command line has content (#393) ===${NC}"
 
-    # Create a temp config with developer_mode enabled
+    # Lower intercept_gap_ms so the 0.3s typing gap reliably exceeds the
+    # TimeGapGuard threshold; otherwise guard alone could forward ':' and
+    # mask whether developer_mode logic actually fires (issue #595).
     local dev_config
     dev_config=$(mktemp /tmp/omnish-test-dev-config.XXXXXX.toml)
     cat > "$dev_config" <<'TOML'
 [shell]
-developer_mode = true
+intercept_gap_ms = 100
 TOML
 
-    # Start client with developer_mode config
+    # Start client with the test config (developer_mode unset → default false)
     _tmux kill-session -t "$SESSION" 2>/dev/null || true
     _wait_for_server_gone
     _tmux new -d -s "$SESSION" -n test "OMNISH_CLIENT_CONFIG=$dev_config $CLIENT" 2>/dev/null
@@ -606,7 +608,7 @@ TOML
 
     # ":" should be forwarded to shell (visible on command line), not trigger chat
     if is_chat_prompt "$content"; then
-        assert_fail "Chat mode triggered despite developer_mode + content on line"
+        assert_fail "Chat mode triggered despite default mode + content on line"
         send_special C-c 0.5
         rm -f "$dev_config"
         return 1
@@ -629,7 +631,7 @@ TOML
     show_capture "After bare ':'" "$content" 5
 
     if echo "$content" | grep -q '> '; then
-        assert_pass "developer_mode: ':' blocked with content, allowed when empty (#393)"
+        assert_pass "default mode: ':' blocked with content, allowed when empty (#393)"
         send_special Escape 0.5
         sleep 1.5
         rm -f "$dev_config"
@@ -819,5 +821,5 @@ test_13() {
     return 0
 }
 
-echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history, cursor, ghost-dismiss, completion, developer_mode, stale-completion, arrow-ghost${NC}"
+echo -e "${YELLOW}Basic integration test: debug, context, conversations, resume, delete, history, cursor, ghost-dismiss, completion, default-mode, stale-completion, arrow-ghost${NC}"
 run_tests 13
