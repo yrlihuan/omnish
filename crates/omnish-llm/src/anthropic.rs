@@ -242,7 +242,7 @@ impl LlmBackend for AnthropicBackend {
         let client = &self.client;
 
         let body = build_request_body(req, &self.model);
-        crate::message_log::log_request(&body, req.use_case);
+        let log_tag = crate::message_log::log_request(&body, req.use_case);
 
         // Retry loop for connection errors, 429 (rate limit) and 529 (overloaded)
         let mut last_error = None;
@@ -317,6 +317,7 @@ impl LlmBackend for AnthropicBackend {
                         status, e, preview
                     )
                 })?;
+            crate::message_log::log_response(log_tag.as_deref(), &json);
 
             // Check for other API errors
             if !status.is_success() {

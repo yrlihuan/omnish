@@ -156,44 +156,7 @@ fn parse_message_content_blocks(
         }
     }
 
-    // Diagnostic: when there are tool_calls but NO Text block was produced,
-    // dump the raw message once so we can verify whether the server actually
-    // returned a text content or genuinely emitted only reasoning + tool_calls.
-    let has_tool_calls = message["tool_calls"].as_array().is_some_and(|a| !a.is_empty());
-    let has_text = content_blocks.iter().any(|b| matches!(b, ContentBlock::Text(_)));
-    if has_tool_calls && !has_text {
-        diagnose_missing_text_content(message);
-    }
-
     content_blocks
-}
-
-/// One-shot diagnostic dump for the "tool_calls present, no text content" case.
-/// Helps distinguish between:
-///   (a) server genuinely returned content=null/empty → model behavior, not a bug
-///   (b) server returned content in an unexpected shape we silently dropped → parser bug
-/// Logs at most once per process to keep daemon.log readable.
-fn diagnose_missing_text_content(message: &serde_json::Value) {
-    use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static LOGGED: OnceLock<AtomicBool> = OnceLock::new();
-    let flag = LOGGED.get_or_init(|| AtomicBool::new(false));
-    if flag.swap(true, Ordering::Relaxed) {
-        return;
-    }
-    let content_type = match &message["content"] {
-        serde_json::Value::Null => "null",
-        serde_json::Value::String(_) => "string",
-        serde_json::Value::Array(_) => "array",
-        _ => "other",
-    };
-    let preview = serde_json::to_string(message).unwrap_or_default();
-    let preview = preview.chars().take(800).collect::<String>();
-    tracing::info!(
-        "openai_compat: tool_calls present without text content (content_type={}); \
-         message preview: {}",
-        content_type, preview
-    );
 }
 
 /// Extract thinking from content and return (thinking, cleaned_content)
@@ -395,7 +358,7 @@ impl LlmBackend for OpenAiCompatBackend {
         }
 
         let body = serde_json::Value::Object(body_map);
-        crate::message_log::log_request(&body, req.use_case);
+        let log_tag = crate::message_log::log_request(&body, req.use_case);
 
         /// Parse `retry-after` header value (seconds) from response headers.
         fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
@@ -475,6 +438,7 @@ impl LlmBackend for OpenAiCompatBackend {
                         status, e, preview
                     )
                 })?;
+            crate::message_log::log_response(log_tag.as_deref(), &json);
 
             // Check for other API errors
             if !status.is_success() {
