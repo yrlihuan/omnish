@@ -3207,12 +3207,10 @@ impl ChatSession {
                     },
                     MenuItem::TextInput {
                         label: "API key".to_string(),
-                        value: if api_key.is_empty() { String::new() } else {
-                            if api_key.len() > 8 {
-                                format!("{}...{}", &api_key[..4], &api_key[api_key.len()-4..])
-                            } else {
-                                "****".to_string()
-                            }
+                        value: if api_key.is_empty() { String::new() } else if api_key.len() > 8 {
+                            format!("{}...{}", &api_key[..4], &api_key[api_key.len()-4..])
+                        } else {
+                            "****".to_string()
                         },
                     },
                     MenuItem::Toggle {

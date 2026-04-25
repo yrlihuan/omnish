@@ -472,7 +472,7 @@ impl LlmBackend for OpenAiCompatBackend {
             };
 
             // Parse content blocks
-            let mut content_blocks = parse_message_content_blocks(&message, req.enable_thinking);
+            let mut content_blocks = parse_message_content_blocks(message, req.enable_thinking);
 
             // Tool calls
             if let Some(tool_calls) = message["tool_calls"].as_array() {

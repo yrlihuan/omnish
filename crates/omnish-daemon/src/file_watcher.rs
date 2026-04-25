@@ -16,6 +16,12 @@ struct WatcherInner {
     mtimes: HashMap<PathBuf, std::time::SystemTime>,
 }
 
+impl Default for FileWatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FileWatcher {
     pub fn new() -> Self {
         #[cfg(target_os = "linux")]
