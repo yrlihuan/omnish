@@ -154,6 +154,10 @@
           "offset": {
             "type": "number",
             "description": "Skip first N lines/entries before applying head_limit. Default: 0."
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Maximum search time in seconds. Default: 60. Clamped to [1, 300]. Returns partial results with a trailer when reached."
           }
         },
         "required": ["pattern"]

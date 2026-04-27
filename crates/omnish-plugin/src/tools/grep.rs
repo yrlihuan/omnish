@@ -77,6 +77,9 @@ impl GrepTool {
             }
         };
 
+        let timeout_secs = input["timeout"].as_u64().unwrap_or(60).clamp(1, 300);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+
         let output_mode = input["output_mode"]
             .as_str()
             .unwrap_or("files_with_matches");
@@ -147,15 +150,25 @@ impl GrepTool {
         // Check if searching a single file
         let is_single_file = search_path.is_file();
 
-        // Collect files to search
-        let files: Vec<std::path::PathBuf> = if is_single_file {
-            vec![search_path.clone()]
+        let base_path = if is_single_file {
+            search_path.parent().unwrap_or(&search_path).to_path_buf()
+        } else {
+            search_path.clone()
+        };
+
+        // Build a lazy iterator over files so the timeout can interrupt walk
+        // and search interleaved (heavy trees can stall walk alone for minutes).
+        let walk_iter: Box<dyn Iterator<Item = std::path::PathBuf>> = if is_single_file {
+            Box::new(std::iter::once(search_path.clone()))
         } else {
             let glob_pattern = input["glob"].as_str().unwrap_or("");
             let type_filter = input["type"].as_str().unwrap_or("");
 
             let mut walk = WalkBuilder::new(&search_path);
             walk.hidden(false);
+            // Defensive: ignore crate already defaults to false, but make the
+            // no-symlink-following contract explicit so it can't drift.
+            walk.follow_links(false);
 
             if !type_filter.is_empty() {
                 let mut types = TypesBuilder::new();
@@ -174,26 +187,29 @@ impl GrepTool {
                 }
             }
 
-            walk.build()
-                .filter_map(|e| e.ok())
-                .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()))
-                .map(|e| e.into_path())
-                .collect()
-        };
-
-        let base_path = if is_single_file {
-            search_path.parent().unwrap_or(&search_path).to_path_buf()
-        } else {
-            search_path.clone()
+            Box::new(
+                walk.build()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()))
+                    .map(|e| e.into_path()),
+            )
         };
 
         // Search through files using grep-searcher
         let mut output_lines: Vec<String> = Vec::new();
+        let mut files_scanned: usize = 0;
+        let mut timed_out = false;
 
-        for file_path in &files {
+        for file_path in walk_iter {
+            if std::time::Instant::now() >= deadline {
+                timed_out = true;
+                break;
+            }
+            files_scanned += 1;
+
             let rel_path = file_path
                 .strip_prefix(&base_path)
-                .unwrap_or(file_path)
+                .unwrap_or(&file_path)
                 .to_string_lossy()
                 .to_string();
 
@@ -203,7 +219,7 @@ impl GrepTool {
                     let mut found = false;
                     let _ = searcher.search_path(
                         &matcher,
-                        file_path,
+                        &file_path,
                         Lossy(|_line_num, _line| {
                             found = true;
                             Ok(false) // stop after first match
@@ -217,7 +233,7 @@ impl GrepTool {
                     let mut count = 0usize;
                     let _ = searcher.search_path(
                         &matcher,
-                        file_path,
+                        &file_path,
                         Lossy(|_line_num, line| {
                             // Count all pattern occurrences within each reported line
                             let _ = matcher.find_iter(line.as_bytes(), |_m| {
@@ -237,16 +253,24 @@ impl GrepTool {
                         show_line_numbers,
                         output_lines: &mut output_lines,
                     };
-                    let _ = searcher.search_path(&matcher, file_path, &mut sink);
+                    let _ = searcher.search_path(&matcher, &file_path, &mut sink);
                 }
                 _ => {}
             }
         }
 
         if output_lines.is_empty() {
+            let content = if timed_out {
+                format!(
+                    "No matches found before timeout ({}s, {} files scanned, partial result)",
+                    timeout_secs, files_scanned
+                )
+            } else {
+                "No matches found".to_string()
+            };
             return ToolResult {
                 tool_use_id: String::new(),
-                content: "No matches found".to_string(),
+                content,
                 is_error: false,
             };
         }
@@ -271,6 +295,13 @@ impl GrepTool {
                 "\n... ({} more lines, {} total)",
                 total - end,
                 total
+            ));
+        }
+
+        if timed_out {
+            result.push_str(&format!(
+                "\n... (timed out after {}s, {} files scanned, partial result)",
+                timeout_secs, files_scanned
             ));
         }
 
@@ -580,5 +611,31 @@ mod tests {
         }));
         assert!(!result.is_error);
         assert!(result.content.contains("hello world"));
+    }
+
+    #[test]
+    fn test_grep_timeout_param_accepted() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_search_tree(tmp.path());
+        let tool = GrepTool::new();
+        // A roomy timeout should not affect a small tree's outcome.
+        let result = tool.execute(&serde_json::json!({
+            "pattern": "hello",
+            "path": tmp.path().to_str().unwrap(),
+            "output_mode": "files_with_matches",
+            "timeout": 30
+        }));
+        assert!(!result.is_error);
+        assert!(result.content.contains("main.rs"));
+        assert!(!result.content.contains("timed out"));
+
+        // Out-of-range values clamp; should still succeed (clamps to 300).
+        let result_high = tool.execute(&serde_json::json!({
+            "pattern": "hello",
+            "path": tmp.path().to_str().unwrap(),
+            "output_mode": "files_with_matches",
+            "timeout": 99999
+        }));
+        assert!(!result_high.is_error);
     }
 }
