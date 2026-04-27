@@ -221,11 +221,17 @@ pub fn render_ghost_text(ghost: &str) -> String {
 /// a line boundary; when `false`, only `\x1b[K` is emitted.
 pub fn erase_ghost_text(wrapped: bool) -> &'static [u8] {
     if wrapped {
-        // \x1b[K   - erase from cursor to end of current line
-        // \x1b[1B  - move cursor down one line
-        // \r\x1b[K - move to column 0, erase that line
-        // \x1b[1A  - move cursor back up one line
-        b"\x1b[K\x1b[1B\r\x1b[K\x1b[1A"
+        // \x1b7        - save cursor position (row + col)
+        // \x1b[K       - erase from cursor to end of current line
+        // \x1b[1B\r    - move down one line, then to column 0
+        // \x1b[K       - erase that line
+        // \x1b8        - restore saved cursor position
+        //
+        // Save/restore is required: the inner `\r` clobbers the column,
+        // so a plain `\x1b[1A` only puts the cursor back on the original
+        // row at column 0 - subsequent shell echo would then write at
+        // column 1 instead of after the user's input. (issue #599)
+        b"\x1b7\x1b[K\x1b[1B\r\x1b[K\x1b8"
     } else {
         b"\x1b[K"
     }
@@ -835,6 +841,38 @@ mod tests {
         assert!(row.contains("cargo test"), "divergent input should be visible");
         // Ghost text " run" must NOT be visible
         assert!(!row.contains("run"), "ghost text should be erased after divergent input");
+    }
+
+    /// Regression for issue #599: when the wrapped variant of `erase_ghost_text`
+    /// was emitted (`\x1b[K\x1b[1B\r\x1b[K\x1b[1A`), the trailing `\r` clobbered
+    /// the cursor column and `\x1b[1A` only restored the row. A subsequent shell
+    /// echo would then write at column 1, overwriting the prompt.
+    #[test]
+    fn test_erase_ghost_text_wrapped_restores_cursor_column() {
+        let cols: u16 = 30;
+        let mut output = String::new();
+
+        // Simulate: prompt + typed "echo " puts cursor at col 8, then a long
+        // ghost wraps onto the next line.
+        output.push_str("$ echo ");                        // 7 cols, cursor at col 7
+        output.push_str(&render_ghost_text("hello world wrapped suggestion")); // wraps
+        // Save the original cursor col before erase (should be 7).
+        // After erase, the cursor must come back to col 7 so a following ":" lands there.
+        output.push_str(std::str::from_utf8(erase_ghost_text(true)).unwrap());
+        output.push(':');
+
+        let parser = parse_ansi(&output, cols, 4);
+        let screen = parser.screen();
+        let row0 = get_row(screen, 0, cols);
+        let row1 = get_row(screen, 1, cols);
+
+        assert!(row0.starts_with("$ echo :"),
+            "':' must land after 'echo ' on the prompt row, got: {row0:?}");
+        assert!(!row0.contains("hello"), "ghost text on row 0 must be erased");
+        assert!(!row1.contains("wrapped"), "wrapped ghost on row 1 must be erased");
+        // Cursor should be one column past the colon (col 8).
+        let (_, col) = screen.cursor_position();
+        assert_eq!(col, 8, "cursor should be after the appended ':'");
     }
 
     // -- erase_lines tests --
