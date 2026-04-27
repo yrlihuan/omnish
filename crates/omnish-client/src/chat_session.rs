@@ -2743,6 +2743,14 @@ impl ChatSession {
     /// Compare thread's previous host/cwd against current environment.
     /// Returns None if no mismatch, or Some(action) after prompting the user.
     fn check_resume_mismatch(&self, ready: &ChatReady) -> Option<ResumeMismatchAction> {
+        // macOS gethostname() may report either "host" or "host.local" depending
+        // on whether mDNS / scutil HostName is in play; treat them as the same.
+        fn normalize_host(h: &str) -> &str {
+            h.strip_suffix(".local")
+                .or_else(|| h.strip_suffix(".LOCAL"))
+                .unwrap_or(h)
+        }
+
         let cur_host = nix::unistd::gethostname()
             .ok()
             .and_then(|h| h.into_string().ok())
@@ -2757,7 +2765,8 @@ impl ChatSession {
             return None;
         }
 
-        let same_host = thread_host.is_empty() || thread_host == cur_host;
+        let same_host = thread_host.is_empty()
+            || normalize_host(thread_host).eq_ignore_ascii_case(normalize_host(&cur_host));
         let same_cwd = thread_cwd.is_empty() || thread_cwd == cur_cwd;
 
         if same_host && same_cwd {
