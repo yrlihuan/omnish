@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.8.14 (2026-05-05)
+
+### Features
+- **plugin/grep**: Default 60s timeout (clamped to 1-300s, LLM may opt up to 5min via `timeout` parameter); WalkBuilder driven lazily so deadline check fires per file across both directory traversal and content scanning; explicit `follow_links(false)` locks in no-symlink-following contract; on timeout returns partial result with elapsed/files-scanned trailer (#601)
+- **daemon**: Auto-activate plugins on subdirectory add/remove without daemon restart; FileWatcher listens for IN_CREATE/IN_DELETE/IN_MOVED_FROM and PluginManager::rescan reconciles on-disk subdirs against in-memory plugin list; reload_plugins folded into rescan to converge daemon.toml and filesystem event paths (#593)
+- **client**: `/model <name>` for direct backend switch without picker; bare `/model` still opens picker; lookup falls back to listing available names on miss
+- **llm**: Record LLM responses alongside requests in `~/.omnish/logs/messages/` ({ts}.req.json + {ts}.resp.json paired by timestamp tag); rolling cap raised from 30 to 60 to keep ~30 request/response pairs
+
+### Fixes
+- **client**: Treat macOS host and host.local as the same machine on resume by stripping single trailing `.local` suffix on both sides before comparing (#600)
+- **client**: Restore cursor column in `erase_ghost_text(wrapped=true)` via `\x1b7...\x1b8` save/restore so subsequent shell echo doesn't overwrite prompt's first character (#599)
+- **client**: Replace broken cursor math in tool result rendering with `redraw_tool_section()`; fixes duplicate tool headers when long commands wrap header rows and tools complete within 200ms spinner interval (#592)
+- **daemon**: Merge new query into any user-role tail (not just tool_result-only); broadens predicate via `merge_user_query_into_tail` helper to handle three tail shapes (tool_result-only, tool_result+marker+text, plain text) and avoid two consecutive user-role messages
+- **daemon**: Supersede stale agent loops via per-thread monotonic generation token; `is_superseded` check at every disk-write/client-send site prevents duplicate tool_use_ids when interrupt+new ChatMessage race into the same thread file
+- **daemon**: Merge interrupt into user message to preserve thinking contract; on Ctrl-C during tool use, persist only `user[tool_result*]` snapshot and append interrupt marker + new query as two text blocks to the same user message; matches Claude Code's continue-after-interrupt format (#594)
+- **llm**: Capture `reasoning_content` from OpenAI-compat responses as Thinking block (DeepSeek's dedicated field, separate from `content`); prevents 400 "reasoning_content in thinking mode must be passed back" on round-trip; falls back to inline `<think>` tag scanning for Qwen and similar
+- **llm**: Coerce `message.content` to string regardless of shape (concatenate text parts when array form is returned) so multimodal-style content isn't silently dropped
+- **llm**: Warn once per process on unknown OpenAI-compat response fields outside the known set (role/content/reasoning_content/tool_calls + ignored OpenAI spec fields), with 200-char preview to surface vendor extensions
+
+### Tests
+- **integration**: New `test_interrupt_resume.sh` covering interrupt+resume contract across model matrix (serial two-bash-sleep prompt, Ctrl-C mid-tool, /continue, Ctrl-C mid-Thinking, /continue, alternating-role assertion); `TEST_CHAT_MODELS` env repeats per model
+- **integration**: Align test_11 with inverted developer_mode semantics (#595); drop explicit `developer_mode = true` and lower `intercept_gap_ms` to 100 so TimeGapGuard reliably allows interception on slow CI runners
+
+### Style
+- Resolve clippy warnings across three crates (redundant `&` in openai_compat, missing Default impl on FileWatcher, collapsed `else { if }` in chat_session)
+- Fix clippy `doc_lazy_continuation` in `is_opus_4_7_or_later`
+
 ## v0.8.13 (2026-04-24)
 
 ### Features
