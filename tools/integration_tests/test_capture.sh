@@ -224,9 +224,13 @@ test_4() {
         return 1
     fi
 
-    # Final state must be present.
-    if ! grep -q "Progress: 20/20" "$out_file"; then
-        assert_fail "final 'Progress: 20/20' missing from capture"
+    # The final state must appear as its own row. Anchoring matters: the
+    # echoed command line contains the literal "Progress: %2d/20" pattern,
+    # so an unanchored substring match would false-positive on
+    # `printf '\rProgress: %2d/20'` (especially on CI where the long
+    # hostname prompt wraps the command across multiple visible rows).
+    if ! grep -qE "^Progress: 20/20\$" "$out_file"; then
+        assert_fail "final 'Progress: 20/20' missing as a standalone row"
         echo "    --- file contents ---"
         sed 's/^/    /' "$out_file" | tail -20
         echo "    ----------------------"
@@ -236,31 +240,26 @@ test_4() {
         return 1
     fi
 
-    # Intermediate states must NOT appear (they were overwritten by \r).
-    # Spot-check several middle values; one false positive proves the
-    # intermediate rendering leaked through.
+    # Intermediate states must NOT appear as standalone rows (they were
+    # overwritten by \r). Spot-check several middle values.
     local leaked=""
     local i
     for i in 1 5 10 15 19; do
-        local marker
-        marker="$(printf 'Progress: %2d/20' $i)"
-        if grep -qF "$marker" "$out_file"; then
-            leaked+="$marker; "
+        local pad
+        pad="$(printf '%2d' $i)"
+        if grep -qE "^Progress: ${pad}/20\$" "$out_file"; then
+            leaked+="Progress: ${pad}/20; "
         fi
     done
 
-    # Also assert there is at most ONE row containing "Progress:" - the final.
-    local prog_rows
-    prog_rows=$(grep -c "Progress:" "$out_file" || true)
-
-    if [[ -z "$leaked" ]] && (( prog_rows == 1 )); then
-        assert_pass "carriage-return bar collapsed: only 'Progress: 20/20' present (rows=$prog_rows)"
+    if [[ -z "$leaked" ]]; then
+        assert_pass "carriage-return bar collapsed: no intermediate rows leaked"
         rm -f "$out_file"
         send_special Escape 0.5
         sleep 1.5
         return 0
     else
-        assert_fail "intermediates leaked: '$leaked' (rows containing Progress:=$prog_rows)"
+        assert_fail "intermediates leaked: $leaked"
         echo "    --- file contents ---"
         sed 's/^/    /' "$out_file" | tail -25
         echo "    ----------------------"
