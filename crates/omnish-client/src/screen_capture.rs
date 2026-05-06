@@ -30,7 +30,7 @@ impl ScreenCapture {
         if rows == self.rows && cols == self.cols {
             return;
         }
-        self.parser.set_size(rows, cols);
+        self.parser.screen_mut().set_size(rows, cols);
         self.rows = rows;
         self.cols = cols;
     }
@@ -70,7 +70,7 @@ impl ScreenCapture {
         let prev_offset = self.parser.screen().scrollback();
 
         // Discover actual scrollback size by clamping a huge offset.
-        self.parser.set_scrollback(usize::MAX);
+        self.parser.screen_mut().set_scrollback(usize::MAX);
         let s = self.parser.screen().scrollback();
 
         let total = s + v;
@@ -89,7 +89,7 @@ impl ScreenCapture {
             } else {
                 (0, i - s)
             };
-            self.parser.set_scrollback(offset_x);
+            self.parser.screen_mut().set_scrollback(offset_x);
             let take = (total - i).min(v - skip);
             let mut taken = 0;
             for (k, row) in self.parser.screen().rows(0, self.cols).enumerate() {
@@ -106,7 +106,7 @@ impl ScreenCapture {
         }
 
         // Restore prior scroll position (we always feed at offset 0 normally).
-        self.parser.set_scrollback(prev_offset);
+        self.parser.screen_mut().set_scrollback(prev_offset);
 
         // Trim trailing blanks.
         let mut tail: Vec<String> = all_rows

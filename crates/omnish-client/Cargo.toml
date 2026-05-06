@@ -33,7 +33,7 @@ toml_edit = "0.22"
 sha2 = "0.10"
 flate2 = "1"
 tar = "0.4"
-vt100 = "0.15"
+vt100 = "0.16"
 
 [dev-dependencies]
 regex-lite = "0.1"
