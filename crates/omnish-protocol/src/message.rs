@@ -5,7 +5,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version - increment on any wire format change.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// Minimum protocol version this build can interoperate with.
 ///
@@ -13,7 +13,7 @@ pub const PROTOCOL_VERSION: u32 = 22;
 /// - Breaking changes (modified existing variant fields): bump both to the same value.
 ///
 /// Server auth accepts peers whose `protocol_version >= MIN_COMPATIBLE_VERSION`.
-pub const MIN_COMPATIBLE_VERSION: u32 = 14;
+pub const MIN_COMPATIBLE_VERSION: u32 = 23;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigItem {
@@ -36,6 +36,16 @@ pub enum ConfigItemKind {
     /// Non-interactive data carrier - invisible in menus, used to pass
     /// structured data (e.g. JSON) between daemon and client.
     Data { value: String },
+    /// One-shot action button. Pressing it emits a ConfigChange with
+    /// `value = "true"` for the item's path, then the daemon-side handler
+    /// dispatches based on the path suffix (`._delete`, `._submit`, ...).
+    Button { style: ButtonStyle },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ButtonStyle {
+    Default,
+    Destructive,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -444,7 +444,7 @@ fn rule_form_fields(
         items.push(ConfigItem {
             path: format!("{}._delete", params.prefix),
             label: crate::i18n::t("config.delete").to_string(),
-            kind: ConfigItemKind::Toggle { value: false },
+            kind: ConfigItemKind::Button { style: omnish_protocol::message::ButtonStyle::Destructive },
             prefills: vec![],
         });
     }
@@ -797,7 +797,7 @@ fn item_value(item: &ConfigItem) -> String {
                 value.clone()
             }
         }
-        ConfigItemKind::Label | ConfigItemKind::Data { .. } => String::new(),
+        ConfigItemKind::Label | ConfigItemKind::Data { .. } | ConfigItemKind::Button { .. } => String::new(),
     }
 }
 
@@ -807,11 +807,11 @@ fn compute_config_diff(old_items: &[ConfigItem], new_items: &[ConfigItem]) -> Ve
     // Skip Label items - they're non-interactive and include client-side
     // placeholders that differ between daemon response and expanded form.
     let old_map: std::collections::BTreeMap<&str, &ConfigItem> = old_items.iter()
-        .filter(|i| !matches!(i.kind, ConfigItemKind::Label | ConfigItemKind::Data { .. }))
+        .filter(|i| !matches!(i.kind, ConfigItemKind::Label | ConfigItemKind::Data { .. } | ConfigItemKind::Button { .. }))
         .map(|i| (i.path.as_str(), i))
         .collect();
     let new_map: std::collections::BTreeMap<&str, &ConfigItem> = new_items.iter()
-        .filter(|i| !matches!(i.kind, ConfigItemKind::Label | ConfigItemKind::Data { .. }))
+        .filter(|i| !matches!(i.kind, ConfigItemKind::Label | ConfigItemKind::Data { .. } | ConfigItemKind::Button { .. }))
         .map(|i| (i.path.as_str(), i))
         .collect();
 
@@ -958,39 +958,40 @@ fn build_menu_tree(
         let mut current = &mut root;
         for (i, seg) in segments.iter().enumerate() {
             if i == segments.len() - 1 {
-                // Leaf item
-                // ._delete toggles render as destructive Buttons
+                // Leaf item: dispatch on kind. Button styling (destructive vs
+                // default) is carried in the kind payload, set by the daemon
+                // schema; client no longer special-cases path suffixes here.
                 let translated = crate::i18n::translate_label(&item.label);
-                let menu_item = if item.path.ends_with("._delete") {
-                    MenuItem::Button { label: translated.clone() }
-                } else {
-                    match &item.kind {
-                        ConfigItemKind::Toggle { value } => MenuItem::Toggle {
+                let menu_item = match &item.kind {
+                    ConfigItemKind::Toggle { value } => MenuItem::Toggle {
+                        label: translated.clone(),
+                        value: *value,
+                    },
+                    ConfigItemKind::Select { options, selected } => {
+                        let display_options = if item.path == "general.language" {
+                            options.iter().map(|o| lang_code_to_display(o).to_string()).collect()
+                        } else {
+                            options.clone()
+                        };
+                        MenuItem::Select {
                             label: translated.clone(),
-                            value: *value,
-                        },
-                        ConfigItemKind::Select { options, selected } => {
-                            let display_options = if item.path == "general.language" {
-                                options.iter().map(|o| lang_code_to_display(o).to_string()).collect()
-                            } else {
-                                options.clone()
-                            };
-                            MenuItem::Select {
-                                label: translated.clone(),
-                                options: display_options,
-                                selected: *selected,
-                                prefills: item.prefills.clone(),
-                            }
-                        },
-                        ConfigItemKind::TextInput { value } => MenuItem::TextInput {
-                            label: translated.clone(),
-                            value: value.clone(),
-                        },
-                        ConfigItemKind::Label => MenuItem::Label {
-                            label: translated.clone(),
-                        },
-                        ConfigItemKind::Data { .. } => continue, // data items are invisible
-                    }
+                            options: display_options,
+                            selected: *selected,
+                            prefills: item.prefills.clone(),
+                        }
+                    },
+                    ConfigItemKind::TextInput { value } => MenuItem::TextInput {
+                        label: translated.clone(),
+                        value: value.clone(),
+                    },
+                    ConfigItemKind::Label => MenuItem::Label {
+                        label: translated.clone(),
+                    },
+                    ConfigItemKind::Data { .. } => continue, // data items are invisible
+                    ConfigItemKind::Button { style } => MenuItem::Button {
+                        label: translated.clone(),
+                        destructive: matches!(style, omnish_protocol::message::ButtonStyle::Destructive),
+                    },
                 };
                 current.push(menu_item);
 

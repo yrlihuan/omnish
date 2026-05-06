@@ -69,6 +69,8 @@ pub enum MenuItem {
     /// Action button (e.g. Confirm in form mode).
     Button {
         label: String,
+        /// Render in red. Used for destructive actions like Delete.
+        destructive: bool,
     },
     /// Non-interactive label for displaying descriptions or section notes.
     Label {
@@ -175,16 +177,16 @@ fn render_menu_item(item: &MenuItem, selected: bool) -> String {
     }
 
     // Button items render without brackets, aligned with other items.
-    // Destructive buttons (Delete) render in red.
-    if matches!(item, MenuItem::Button { .. }) {
-        let destructive = label == "Delete" || label == crate::i18n::t("config.delete");
+    // Destructive buttons render in red (flag is set by the daemon-side schema
+    // via ConfigItemKind::Button { style: ButtonStyle::Destructive }).
+    if let MenuItem::Button { destructive, .. } = item {
         if selected {
-            if destructive {
+            if *destructive {
                 return format!("\r{}{RED}\x1b[7m{}{RESET}\x1b[K", indent, label);
             }
             return format!("\r{}{BOLD_REVERSE}{}{RESET}\x1b[K", indent, label);
         } else {
-            if destructive {
+            if *destructive {
                 return format!("\r{}{RED}{}{RESET}\x1b[K", indent, label);
             }
             return format!("\r{}{}\x1b[K", indent, label);
@@ -870,8 +872,8 @@ pub fn run_menu(
                         if *form_mode {
                             let done_label = submit_label.clone()
                                 .unwrap_or_else(|| crate::i18n::t("config.done").to_string());
-                            if !children.iter().any(|c| matches!(c, MenuItem::Button { label } if *label == done_label)) {
-                                children.push(MenuItem::Button { label: done_label });
+                            if !children.iter().any(|c| matches!(c, MenuItem::Button { label, .. } if *label == done_label)) {
+                                children.push(MenuItem::Button { label: done_label, destructive: false });
                             }
                         }
                         let label_clone = label.clone();
@@ -1050,7 +1052,7 @@ pub fn run_menu(
                     MenuItem::Label { .. } => {
                         // Non-interactive - do nothing
                     }
-                    MenuItem::Button { label: btn_label } => {
+                    MenuItem::Button { label: btn_label, .. } => {
                         let btn_label = btn_label.clone();
                         // Button confirm: trigger handler and pop level
                         if let Some(ref handler_name) = current_handler {

@@ -302,7 +302,7 @@ pub fn build_config_items(
         items.push(ConfigItem {
             path: format!("{}._delete", prefix),
             label: "Delete".to_string(),
-            kind: ConfigItemKind::Toggle { value: false },
+            kind: ConfigItemKind::Button { style: omnish_protocol::message::ButtonStyle::Destructive },
             prefills: vec![],
         });
 
@@ -355,7 +355,7 @@ pub fn build_config_items(
             items.push(ConfigItem {
                 path: format!("{}._submit", prefix),
                 label: "Deploy".to_string(),
-                kind: ConfigItemKind::Toggle { value: false },
+                kind: ConfigItemKind::Button { style: omnish_protocol::message::ButtonStyle::Default },
                 prefills: vec![],
             });
 
