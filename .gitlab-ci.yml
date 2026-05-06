@@ -54,6 +54,7 @@ test:
   - bash tools/integration_tests/test_erase_lines.sh
   - bash tools/integration_tests/test_plugin_cwd.sh
   - bash tools/integration_tests/test_i18n_config.sh
+  - bash tools/integration_tests/test_capture.sh
 
 .setup_daemon: &setup_daemon
   - cargo build --release

@@ -12,6 +12,7 @@ mod i18n;
 mod interceptor;
 mod markdown;
 mod probe;
+mod screen_capture;
 mod shell_hook;
 mod shell_input;
 mod throttle;
@@ -827,6 +828,13 @@ async fn main() -> Result<()> {
     let mut master_fd = proxy.master_raw_fd();
     setup_sigwinch(master_fd);
 
+    // In-memory terminal emulator that mirrors what the shell writes to the
+    // user's screen. Used by /test capture to expose the visible screen and
+    // recent scrollback (see screen_capture.rs).
+    let initial_size = get_terminal_size().unwrap_or((24, 80));
+    let screen_capture: screen_capture::SharedScreenCapture =
+        screen_capture::shared(initial_size.0, initial_size.1);
+
     // Main I/O loop using poll
     let mut input_buf = [0u8; 4096];
     let mut output_buf = [0u8; 4096];
@@ -1097,6 +1105,7 @@ async fn main() -> Result<()> {
                             &session_id, &shell, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
                             &onboarded, locked, &config, Arc::clone(&sandbox_state),
+                            Arc::clone(&screen_capture),
                         ).await;
                         // Drain stale completion responses accumulated during chat
                         shell_completer.clear();
@@ -1302,6 +1311,7 @@ async fn main() -> Result<()> {
                             &session_id, &shell, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
                             &onboarded, locked, &config, Arc::clone(&sandbox_state),
+                            Arc::clone(&screen_capture),
                         ).await;
                         // Drain stale completion responses accumulated during chat
                         shell_completer.clear();
@@ -1327,6 +1337,7 @@ async fn main() -> Result<()> {
                             &session_id, &shell, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
                             &onboarded, locked, &config, Arc::clone(&sandbox_state),
+                            Arc::clone(&screen_capture),
                         ).await;
                         // Drain stale completion responses accumulated during chat
                         shell_completer.clear();
@@ -1417,6 +1428,15 @@ async fn main() -> Result<()> {
                     };
 
                     nix::unistd::write(std::io::stdout(), display_data)?;
+
+                    // Mirror PTY output into the in-memory terminal emulator so
+                    // that /test capture can return a tmux-pane-like snapshot.
+                    if let Ok(mut sc) = screen_capture.lock() {
+                        if let Some((rows, cols)) = get_terminal_size() {
+                            sc.resize(rows, cols);
+                        }
+                        sc.feed(display_data);
+                    }
 
                     // Track cursor position on display (stripped) data - must happen
                     // before ghost rendering so col_tracker.col reflects where the
@@ -2684,6 +2704,7 @@ async fn enter_chat_mode(
     locked: bool,
     config: &omnish_common::config::ClientConfig,
     sandbox_state: Arc<RwLock<ClientSandboxConfig>>,
+    screen_capture: screen_capture::SharedScreenCapture,
 ) -> chat_session::ChatExitAction {
     notice_queue::defer();
     set_chat_tmux_title(None);
@@ -2703,6 +2724,7 @@ async fn enter_chat_mode(
                 std::mem::take(chat_history),
                 config.shell.extended_unicode,
                 Arc::clone(&sandbox_state),
+                Arc::clone(&screen_capture),
             );
 
             // One-time sandbox notice per chat entry (#514)

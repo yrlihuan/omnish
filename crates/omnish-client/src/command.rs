@@ -348,6 +348,7 @@ pub const CHAT_ONLY_COMMANDS: &[&str] = &[
     "/thread rename",
     "/test lock",
     "/test disconnect",
+    "/test capture",
 ];
 
 /// Priority order for ghost-text completion (first match wins).

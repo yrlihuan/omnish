@@ -12,7 +12,7 @@ use omnish_protocol::message::{ChatToolStatus, ConfigHandlerInfo, StatusIcon};
 use omnish_pty::proxy::PtyProxy;
 use omnish_transport::rpc_client::RpcClient;
 
-use crate::{client_plugin, command, display, ghost_complete, markdown, widgets};
+use crate::{client_plugin, command, display, ghost_complete, markdown, screen_capture, widgets};
 use crate::display::{BOLD, BRIGHT_WHITE, CYAN, DIM, GRAY, GREEN, NEWLINE, RED, RESET, YELLOW};
 use widgets::scroll_view::ScrollView;
 
@@ -77,6 +77,9 @@ pub struct ChatSession {
     /// Buffered /thread sandbox preference before a thread exists. Applied
     /// right after ChatReady for a new thread, then cleared.
     pending_sandbox_off: Option<bool>,
+    /// In-memory terminal emulator that mirrors PTY output, queried by
+    /// `/test capture`.
+    screen_capture: screen_capture::SharedScreenCapture,
 }
 
 fn write_stdout(s: &str) {
@@ -1050,6 +1053,7 @@ impl ChatSession {
         chat_history: VecDeque<String>,
         extended_unicode: bool,
         sandbox_state: Arc<RwLock<ClientSandboxConfig>>,
+        screen_capture: screen_capture::SharedScreenCapture,
     ) -> Self {
         // Snapshot sandbox config for ClientPluginManager; subsequent menu
         // edits only affect the NEXT chat session.
@@ -1086,6 +1090,7 @@ impl ChatSession {
             sandbox_state,
             cancelled_input: None,
             pending_sandbox_off: None,
+            screen_capture,
         }
     }
 
@@ -1478,7 +1483,13 @@ impl ChatSession {
 
             // /test - hidden test commands
             if trimmed == "/test" || trimmed.starts_with("/test ") {
-                let arg = trimmed.strip_prefix("/test").unwrap().trim();
+                // Strip pipe/redirect suffixes from the dispatch string but
+                // capture them so /test capture (and any future text-output
+                // /test command) supports the same pipe/redirect grammar as
+                // other slash commands.
+                let (without_redirect, redirect) = command::parse_redirect_pub(trimmed);
+                let (base_cmd, limit) = command::parse_limit_pub(without_redirect);
+                let arg = base_cmd.strip_prefix("/test").unwrap_or("").trim();
                 match arg {
                     "" => {
                         write_stdout(&format!("{DIM}Available /test commands:{RESET}{NEWLINE}"));
@@ -1487,6 +1498,7 @@ impl ChatSession {
                         write_stdout(&format!("{DIM}  /test menu                - multi-level menu widget{RESET}{NEWLINE}"));
                         write_stdout(&format!("{DIM}  /test lock on|off         - toggle Landlock sandbox for shell{RESET}{NEWLINE}"));
                         write_stdout(&format!("{DIM}  /test disconnect N1 [N2]  - daemon disconnects after N1s, reconnect delay N2s{RESET}{NEWLINE}"));
+                        write_stdout(&format!("{DIM}  /test capture [N]         - dump current screen, or last N rows of history{RESET}{NEWLINE}"));
                     }
                     "multi_level_picker" => self.handle_test_multi_level_picker(),
                     "menu" => self.handle_test_menu(),
@@ -1497,6 +1509,8 @@ impl ChatSession {
                             self.handle_test_picker(idx);
                         } else if other.starts_with("disconnect") {
                             self.handle_test_disconnect(other, rpc).await;
+                        } else if other == "capture" || other.starts_with("capture ") {
+                            self.handle_test_capture(other, redirect.map(|s| s.to_string()), limit);
                         } else {
                             write_stdout(&format!(
                                 "{DIM}Unknown test: {}. Run /test for a list.{RESET}{NEWLINE}",
@@ -2945,6 +2959,54 @@ impl ChatSession {
             None => crate::i18n::t("chat.cancelled").to_string(),
         };
         write_stdout(&format!("{DIM}{}{RESET}{NEWLINE}", msg));
+    }
+
+    /// Implements `/test capture` (visible screen) and `/test capture N`
+    /// (last N rows of scrollback + visible). Output flows through the
+    /// same redirect/limit pipeline as other slash commands so it can
+    /// be redirected to a file (`> path`) or filtered (`| head`/`| tail`).
+    fn handle_test_capture(
+        &self,
+        arg: &str,
+        redirect: Option<String>,
+        limit: Option<command::OutputLimit>,
+    ) {
+        // arg looks like "capture" or "capture N"
+        let rest = arg.strip_prefix("capture").unwrap_or("").trim();
+        let content = if rest.is_empty() {
+            let cap = self.screen_capture.lock().unwrap();
+            cap.capture_visible()
+        } else {
+            match rest.parse::<usize>() {
+                Ok(n) => {
+                    let mut cap = self.screen_capture.lock().unwrap();
+                    cap.capture_history(n)
+                }
+                Err(_) => {
+                    write_stdout(&format!(
+                        "{DIM}Usage: /test capture [N]   (N must be a non-negative integer){RESET}{NEWLINE}"
+                    ));
+                    return;
+                }
+            }
+        };
+
+        let content = if let Some(ref l) = limit {
+            command::apply_limit(&content, l)
+        } else {
+            content
+        };
+
+        if let Some(ref path) = redirect {
+            super::handle_command_result(&content, Some(path), self.shell_cwd.as_deref());
+        } else {
+            // Plain text output, mirror the behavior of other text-emitting
+            // slash commands: leading newline if multi-line, trailing newline.
+            let is_multiline = content.contains('\n');
+            let prefix = if is_multiline { NEWLINE } else { "" };
+            let output = format!("{}{}{NEWLINE}", prefix, content.replace('\n', NEWLINE));
+            write_stdout(&output);
+        }
     }
 
     async fn handle_test_disconnect(&self, arg: &str, rpc: &RpcClient) {
