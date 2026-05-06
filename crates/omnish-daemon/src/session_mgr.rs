@@ -69,6 +69,10 @@ struct Session {
 
 pub struct SessionManager {
     base_dir: PathBuf,
+    /// Persistent index of every client that has ever connected. Survives
+    /// per-session 48h cleanup so the deploy menu retains stale hosts.
+    clients_history: RwLock<crate::clients_history::ClientsHistory>,
+    clients_history_path: PathBuf,
     sessions: RwLock<HashMap<String, Arc<Session>>>,
     context_config: ContextConfig,
     completion_writer: mpsc::Sender<CompletionRecord>,
@@ -133,6 +137,22 @@ fn format_idle(secs: u64) -> String {
     }
 }
 
+/// Extract `(deploy_addr, hostname)` from session attrs for clients-history
+/// bookkeeping. Returns None when hostname is missing or empty (no useful
+/// menu entry can be derived without it). `client_addr` falls back to
+/// `hostname` so legacy clients without the ClientAddrProbe still register.
+fn history_pair_from_attrs(
+    attrs: &std::collections::HashMap<String, String>,
+) -> Option<(String, String)> {
+    let hostname = attrs.get("hostname").cloned().filter(|s| !s.is_empty())?;
+    let deploy_addr = attrs
+        .get("client_addr")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| hostname.clone());
+    Some((deploy_addr, hostname))
+}
+
 fn pending_to_sample(
     pending: PendingSample,
     next_command: Option<&str>,
@@ -163,13 +183,17 @@ impl SessionManager {
         let sessions_dir = omnish_dir.join("sessions");
         let completions_dir = omnish_dir.join("logs").join("completions");
         let session_updates_dir = omnish_dir.join("logs").join("sessions");
+        let clients_history_path = omnish_dir.join("clients.json");
         std::fs::create_dir_all(&sessions_dir).ok();
         let completion_writer = omnish_store::completion::spawn_writer_thread(completions_dir);
         let session_writer = omnish_store::session_update::spawn_writer_thread(session_updates_dir);
         let samples_dir = omnish_dir.join("logs").join("samples");
         let sample_writer = omnish_store::sample::spawn_sample_writer(samples_dir);
+        let clients_history = crate::clients_history::ClientsHistory::load(&clients_history_path);
         Self {
             base_dir: sessions_dir,
+            clients_history: RwLock::new(clients_history),
+            clients_history_path,
             sessions: RwLock::new(HashMap::new()),
             context_config,
             completion_writer,
@@ -180,6 +204,48 @@ impl SessionManager {
             sample_writer,
             last_sample_time: Mutex::new(None),
         }
+    }
+
+    /// Persist a `(deploy_addr, hostname)` pair to the history index.
+    /// No-op when the pair is None.
+    async fn touch_clients_history(&self, pair: Option<(String, String)>) {
+        let Some((deploy_addr, hostname)) = pair else { return };
+        let mut hist = self.clients_history.write().await;
+        hist.touch(&deploy_addr, &hostname);
+        if let Err(e) = hist.save(&self.clients_history_path) {
+            tracing::warn!("clients_history: save failed: {}", e);
+        }
+    }
+
+    /// Remove all history entries with the given deploy address.
+    /// Returns the number of entries removed; 0 means the addr was unknown.
+    pub async fn forget_client_addr(&self, deploy_addr: &str) -> usize {
+        let mut hist = self.clients_history.write().await;
+        let removed = hist.forget_by_addr(deploy_addr);
+        if removed > 0 {
+            if let Err(e) = hist.save(&self.clients_history_path) {
+                tracing::warn!("clients_history: save after forget failed: {}", e);
+            }
+        }
+        removed
+    }
+
+    /// Prune entries older than `max_age` from the persisted history.
+    /// Called at startup; logs the prune count if > 0.
+    pub async fn prune_clients_history(&self, max_age: chrono::Duration) -> usize {
+        let mut hist = self.clients_history.write().await;
+        let pruned = hist.prune(max_age);
+        if pruned > 0 {
+            if let Err(e) = hist.save(&self.clients_history_path) {
+                tracing::warn!("clients_history: save after prune failed: {}", e);
+            }
+            tracing::info!(
+                "clients_history: pruned {} entries older than {} days",
+                pruned,
+                max_age.num_days()
+            );
+        }
+        pruned
     }
 
     pub async fn load_existing(&self) -> Result<usize> {
@@ -262,6 +328,11 @@ impl SessionManager {
             tracing::info!("cleaned up {} expired session directories on startup", cleaned);
         }
 
+        // Prune clients_history entries older than 90 days. Independent of
+        // the per-session 48h cleanup so the deploy menu retains hosts that
+        // were last touched up to 3 months ago.
+        self.prune_clients_history(chrono::Duration::days(90)).await;
+
         Ok(count)
     }
 
@@ -271,6 +342,8 @@ impl SessionManager {
         parent_session_id: Option<String>,
         attrs: std::collections::HashMap<String, String>,
     ) -> Result<()> {
+        let history_pair = history_pair_from_attrs(&attrs);
+
         // Fast path: check if session exists with read lock
         {
             let sessions = self.sessions.read().await;
@@ -279,6 +352,9 @@ impl SessionManager {
                 meta.attrs = attrs;
                 meta.save(&session.dir)?;
                 tracing::info!("session {} re-registered (reconnect)", session_id);
+                drop(meta);
+                drop(sessions);
+                self.touch_clients_history(history_pair).await;
                 return Ok(());
             }
         }
@@ -292,6 +368,9 @@ impl SessionManager {
             meta.attrs = attrs;
             meta.save(&session.dir)?;
             tracing::info!("session {} re-registered (reconnect)", session_id);
+            drop(meta);
+            drop(sessions);
+            self.touch_clients_history(history_pair).await;
             return Ok(());
         }
 
@@ -327,6 +406,9 @@ impl SessionManager {
                 pending_sample: Mutex::new(None),
             }),
         );
+        drop(sessions);
+
+        self.touch_clients_history(history_pair).await;
         Ok(())
     }
 
@@ -606,39 +688,40 @@ impl SessionManager {
         result
     }
 
-    /// Returns `(deploy_addr, hostname, is_active)` triples for unique clients
-    /// seen in in-memory sessions. `deploy_addr` is `attrs["client_addr"]` if
-    /// present (the ssh target last used to deploy this host, e.g.
-    /// `alice@box1`); otherwise it falls back to `hostname` so legacy clients
-    /// without the new probe still show up.
+    /// Returns `(deploy_addr, hostname, is_active)` triples for clients ever
+    /// seen by this daemon. The persisted `clients_history` index is the
+    /// source of truth (so hosts that disconnected days ago still appear in
+    /// the deploy menu); `is_active` is overlaid from in-memory sessions.
     ///
-    /// Entries are keyed by `(deploy_addr, hostname)` so the same host
-    /// reached via two different users (e.g. `alice@box1` vs `bob@box1`)
-    /// appears as two separate menu items. `is_active` is true when at
-    /// least one session for that pair has not ended. Sorted by
-    /// `deploy_addr` then `hostname` for stable menu order.
+    /// `deploy_addr` is `attrs["client_addr"]` (the ssh target last used to
+    /// deploy this host, e.g. `alice@box1`); otherwise it falls back to
+    /// `hostname`. Entries are keyed by `(deploy_addr, hostname)` so the
+    /// same host reached via different users renders as separate items.
+    /// Sorted by `deploy_addr` then `hostname` for stable menu order.
     pub async fn list_clients(&self) -> Vec<(String, String, bool)> {
+        let mut by_client: HashMap<(String, String), bool> = {
+            let hist = self.clients_history.read().await;
+            hist.list().into_iter().map(|p| (p, false)).collect()
+        };
+
         let session_arcs: Vec<_> = {
             let sessions = self.sessions.read().await;
             sessions.values().cloned().collect()
         };
-        let mut by_client: HashMap<(String, String), bool> = HashMap::new();
         for session in &session_arcs {
             let meta = session.meta.read().await;
-            let hostname = match meta.attrs.get("hostname") {
-                Some(h) if !h.is_empty() => h.clone(),
-                _ => continue,
+            let Some((deploy_addr, hostname)) = history_pair_from_attrs(&meta.attrs) else {
+                continue;
             };
-            let deploy_addr = meta.attrs.get("client_addr")
-                .filter(|s| !s.is_empty())
-                .cloned()
-                .unwrap_or_else(|| hostname.clone());
             let active = meta.ended_at.is_none();
-            let entry = by_client.entry((deploy_addr, hostname)).or_insert(false);
-            if active {
-                *entry = true;
-            }
+            // Insert with at-least-active=true; a persisted-only entry
+            // stays false, but a persisted entry with an active session
+            // upgrades to true.
+            by_client.entry((deploy_addr, hostname))
+                .and_modify(|a| if active { *a = true; })
+                .or_insert(active);
         }
+
         let mut result: Vec<(String, String, bool)> = by_client.into_iter()
             .map(|((addr, host), active)| (addr, host, active))
             .collect();
@@ -2423,5 +2506,67 @@ mod tests {
         assert_eq!(clients[0], ("alice@box1".to_string(), "box1".to_string(), true));
         assert_eq!(clients[1], ("bob@box1".to_string(), "box1".to_string(), true));
         assert_eq!(clients[2], ("box2".to_string(), "box2".to_string(), true));
+    }
+
+    #[tokio::test]
+    async fn test_list_clients_includes_persisted_history_with_inactive_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+
+        // First daemon run: register a client, then drop the manager
+        // (simulates daemon shutdown). The session goes away from memory
+        // but clients_history.json persists on disk.
+        {
+            let mgr = SessionManager::new(base.clone(), Default::default());
+            let mut a = HashMap::new();
+            a.insert("hostname".to_string(), "box1".to_string());
+            a.insert("client_addr".to_string(), "alice@box1".to_string());
+            mgr.register("s1", None, a).await.unwrap();
+            assert!(base.join("clients.json").exists());
+        }
+
+        // Second daemon run: no in-memory sessions, but the persisted
+        // history should still surface the client with active=false.
+        let mgr = SessionManager::new(base.clone(), Default::default());
+        let clients = mgr.list_clients().await;
+        assert_eq!(clients, vec![
+            ("alice@box1".to_string(), "box1".to_string(), false),
+        ]);
+
+        // Forget removes it from the menu.
+        let removed = mgr.forget_client_addr("alice@box1").await;
+        assert_eq!(removed, 1);
+        let clients = mgr.list_clients().await;
+        assert!(clients.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_clients_overlays_active_on_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+
+        // Seed history: addrA was seen previously but no live session now.
+        {
+            let mgr = SessionManager::new(base.clone(), Default::default());
+            let mut a = HashMap::new();
+            a.insert("hostname".to_string(), "boxA".to_string());
+            a.insert("client_addr".to_string(), "alice@boxA".to_string());
+            mgr.register("s_old", None, a).await.unwrap();
+        }
+
+        // Fresh daemon, register addrB live; list should show A inactive, B active.
+        let mgr = SessionManager::new(base, Default::default());
+        let mut b = HashMap::new();
+        b.insert("hostname".to_string(), "boxB".to_string());
+        b.insert("client_addr".to_string(), "alice@boxB".to_string());
+        mgr.register("s_new", None, b).await.unwrap();
+
+        let clients = mgr.list_clients().await;
+        assert_eq!(clients.len(), 2);
+        let by_addr: HashMap<&str, bool> = clients.iter()
+            .map(|(a, _, active)| (a.as_str(), *active))
+            .collect();
+        assert!(!by_addr["alice@boxA"]);
+        assert!(by_addr["alice@boxB"]);
     }
 }

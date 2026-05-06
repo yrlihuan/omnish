@@ -358,6 +358,16 @@ pub fn build_config_items(
                 kind: ConfigItemKind::Button { style: omnish_protocol::message::ButtonStyle::Default },
                 prefills: vec![],
             });
+            // Inline destructive button to drop the host from the persisted
+            // clients_history index (e.g. after retiring a machine). Keyed
+            // off the deploy_addr alone; if that addr maps to multiple
+            // hostnames in history all of them are forgotten in one click.
+            items.push(ConfigItem {
+                path: format!("{}._forget", prefix),
+                label: "Forget".to_string(),
+                kind: ConfigItemKind::Button { style: omnish_protocol::message::ButtonStyle::Destructive },
+                prefills: vec![],
+            });
 
             handlers.push(ConfigHandlerInfo {
                 path: prefix,
@@ -472,6 +482,12 @@ fn resolve_dynamic_handler(path: &str) -> Option<String> {
     if let Some(rest) = path.strip_prefix("general.clients.") {
         let segments = omnish_common::config_edit::split_key_path(rest);
         if segments.len() >= 2 && segments[0] != "__add__" {
+            // The Forget button drops the host from the persisted clients
+            // history; route to a separate handler so deploy_client doesn't
+            // need to inspect the suffix.
+            if segments.last().map(|s| s.as_str()) == Some("_forget") {
+                return Some("forget_client".to_string());
+            }
             return Some("deploy_client".to_string());
         }
     }
@@ -507,6 +523,9 @@ pub struct ConfigSideEffects {
     pub deploy_targets: Vec<(String, &'static str)>,
     /// URLs or local paths from `install_plugin` handler submits.
     pub plugin_installs: Vec<String>,
+    /// Deploy addresses to drop from the persisted clients-history index
+    /// (Forget button). The caller invokes `SessionManager::forget_client_addr`.
+    pub client_forgets: Vec<String>,
 }
 
 /// Apply config changes to daemon.toml. Returns side effects (deploys to
@@ -565,6 +584,10 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
         } else if handler == "deploy_client" {
             if let Some(target) = handle_deploy_client(changes)? {
                 effects.deploy_targets.push((target, "deploy_client"));
+            }
+        } else if handler == "forget_client" {
+            if let Some(addr) = handle_forget_client(changes)? {
+                effects.client_forgets.push(addr);
             }
         } else if handler == "install_plugin" {
             if let Some(url) = handle_install_plugin(changes)? {
@@ -631,6 +654,28 @@ fn handle_deploy_client(changes: &[&ConfigChange]) -> anyhow::Result<Option<Stri
         Some(t) => Ok(Some(t)),
         None => anyhow::bail!("deploy_client: invalid target"),
     }
+}
+
+/// Per-client `Forget` button. Returns the deploy address whose history
+/// entry should be removed; the caller hands it to
+/// `SessionManager::forget_client_addr`. The path encodes only the addr,
+/// so all hostnames recorded under that addr are forgotten in one click.
+fn handle_forget_client(changes: &[&ConfigChange]) -> anyhow::Result<Option<String>> {
+    let pressed = changes.iter().find(|c| c.path.ends_with("._forget"))
+        .map(|c| c.value == "true").unwrap_or(false);
+    if !pressed {
+        return Ok(None);
+    }
+    let deploy_addr = changes.iter().find_map(|c| {
+        let rest = c.path.strip_prefix("general.clients.")?;
+        let segments = omnish_common::config_edit::split_key_path(rest);
+        if segments.len() >= 2 && segments[0] != "__add__" {
+            Some(segments[0].clone())
+        } else {
+            None
+        }
+    }).ok_or_else(|| anyhow::anyhow!("forget_client: cannot determine target"))?;
+    Ok(Some(deploy_addr))
 }
 
 /// `Install plugin` submit button (see `plugin_install.rs`). Returns the URL

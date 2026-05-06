@@ -1122,6 +1122,11 @@ async fn handle_config_update(
                     );
                 }
             }
+            // Drop history entries for clients the user pressed Forget on.
+            for addr in &effects.client_forgets {
+                let removed = ctx.session_mgr.forget_client_addr(addr).await;
+                tracing::info!("forget_client: removed {} entries for addr={}", removed, addr);
+            }
             let _ = tx.send(Message::ConfigUpdateResult { ok: true, error: None }).await;
         }
         Err(e) => {
