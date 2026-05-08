@@ -471,6 +471,55 @@ show_capture() {
     echo "$content" | tail -"$lines" | sed 's/^/    /'
 }
 
+# dump_failure_context [pane_lines=200]
+#   Print everything useful for diagnosing a CI-only flake: full pane
+#   (more than show_capture's default), tail of daemon.log + client.log,
+#   process snapshot. Call from the failure path of an assertion BEFORE
+#   recovery keypresses (Escapes, etc.) so the captured state is the one
+#   that actually triggered the failure.
+dump_failure_context() {
+    local pane_lines="${1:-200}"
+    local omnish_dir="${OMNISH_HOME:-$HOME/.omnish}"
+
+    echo -e "  ${YELLOW}── failure context ──${NC}"
+
+    # Full pane (capture_pane's history flag is negative).
+    echo -e "  Pane (-${pane_lines}):"
+    capture_pane "-${pane_lines}" | sed 's/^/    /'
+
+    # Daemon log: today's rotated file (YYYY-MM-DD suffix) is the active
+    # one in normal operation. Fall back to plain daemon.log on the off
+    # chance rotation isn't in effect.
+    local today
+    today=$(date +%Y-%m-%d)
+    local daemon_log="$omnish_dir/logs/daemon.log.$today"
+    [[ -f "$daemon_log" ]] || daemon_log="$omnish_dir/logs/daemon.log"
+    if [[ -f "$daemon_log" ]]; then
+        echo -e "  Daemon log tail ($daemon_log):"
+        tail -200 "$daemon_log" 2>/dev/null | sed 's/^/    /'
+    else
+        echo -e "  Daemon log: not found at $daemon_log"
+    fi
+
+    local client_log="$omnish_dir/client.log"
+    if [[ -f "$client_log" ]]; then
+        echo -e "  Client log tail ($client_log):"
+        tail -200 "$client_log" 2>/dev/null | sed 's/^/    /'
+    else
+        echo -e "  Client log: not found at $client_log"
+    fi
+
+    # Process snapshot: confirms daemon/client/shell are still alive and
+    # not zombied/blocked at the moment of capture.
+    echo -e "  Process snapshot:"
+    ps axo pid,ppid,stat,etime,cmd 2>/dev/null \
+        | grep -E "omnish-(daemon|client)|bash --" \
+        | grep -v grep \
+        | sed 's/^/    /' || true
+
+    echo -e "  ${YELLOW}── end failure context ──${NC}"
+}
+
 # ── Context helpers ──────────────────────────────────────────────────────
 
 # dump_context_to_file [type="chat"] [timeout=10]

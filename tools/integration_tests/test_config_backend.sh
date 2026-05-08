@@ -132,6 +132,7 @@ test_1() {
 
     if ! echo "$content" | grep -q "Add backend"; then
         assert_fail "Step 1: not inside Add backend form"
+        dump_failure_context
         send_special Escape 0.5; send_special Escape 0.5; send_special Escape 0.5
         return 1
     fi
@@ -173,6 +174,7 @@ test_1() {
     else
         show_capture "daemon.toml" "$(cat "$DAEMON_TOML")" 30
         assert_fail "Step 1: test backend not found in daemon.toml"
+        dump_failure_context
         return 1
     fi
 
@@ -185,6 +187,7 @@ test_1() {
 
     if ! navigate_to_menu_item "test-del"; then
         assert_fail "Step 2: could not find test-del in Backends submenu"
+        dump_failure_context
         send_special Escape 0.5; send_special Escape 0.5; send_special Escape 0.5; send_special Escape 0.5
         cleanup_test_backend
         return 1
@@ -199,6 +202,7 @@ test_1() {
     # Verify we entered the correct backend form
     if ! echo "$content" | grep -q "test-del"; then
         assert_fail "Step 2: entered wrong backend (expected test-del)"
+        dump_failure_context
         send_special Escape 0.5; send_special Escape 0.5; send_special Escape 0.5; send_special Escape 0.5
         cleanup_test_backend
         return 1
@@ -224,6 +228,7 @@ test_1() {
     if grep -q '\[llm\.backends\.test-del\]' "$DAEMON_TOML"; then
         assert_fail "Step 3: test backend still present in daemon.toml after delete"
         show_capture "daemon.toml" "$(cat "$DAEMON_TOML")" 30
+        dump_failure_context
         cleanup_test_backend
         return 1
     fi
@@ -245,6 +250,7 @@ test_1() {
 
     if echo "$content" | grep -q "test-del"; then
         assert_fail "Step 4: test backend still visible in menu after delete"
+        dump_failure_context
         return 1
     fi
 
