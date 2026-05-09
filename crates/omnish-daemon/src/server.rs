@@ -2860,6 +2860,24 @@ async fn handle_template(name: &str, mgr: &SessionManager, tool_registry: &omnis
     }
 }
 
+/// Render a hostname for the `/resume all` listing. Strips the macOS
+/// `.local` mDNS suffix and truncates to 12 chars (with `..` ellipsis)
+/// so the host column doesn't crowd out the title and last-question
+/// columns. Missing or empty host (legacy threads) renders as `?`.
+fn short_host(host: Option<&str>) -> String {
+    let Some(h) = host.map(str::trim).filter(|s| !s.is_empty()) else {
+        return "?".to_string();
+    };
+    let h = h.strip_suffix(".local").unwrap_or(h);
+    const MAX: usize = 12;
+    if h.chars().count() <= MAX {
+        h.to_string()
+    } else {
+        let head: String = h.chars().take(MAX - 2).collect();
+        format!("{}..", head)
+    }
+}
+
 /// Format the list of conversations as JSON with display string, thread_ids, and locked status.
 /// When `limit` is None, defaults to 20 most recent threads.
 /// When `host_filter` is Some, only threads whose meta.host matches are included.
@@ -2893,6 +2911,13 @@ async fn format_conversations_json(
         threads.keys().cloned().collect()
     };
 
+    // Cross-host mode (`/resume all`) inserts the originating host between
+    // time and turns so users can scan which machine each thread came from.
+    // Single-host mode (default `/resume`) skips it: the filter already
+    // guarantees every line shares the current host, so the column would
+    // be redundant clutter.
+    let show_host = host_filter.is_none();
+
     let mut output = String::from("Conversations:\n");
     let mut thread_ids = Vec::new();
     let mut locked_threads = Vec::new();
@@ -2912,20 +2937,28 @@ async fn format_conversations_json(
             }
         };
 
+        let host_segment = if show_host {
+            format!("@{} | ", short_host(meta.host.as_deref()))
+        } else {
+            String::new()
+        };
+
         if let Some(ref title) = meta.summary {
             output.push_str(&format!(
-                "  [{}] {} | {} turns | {} | {}\n",
+                "  [{}] {} | {}{} turns | {} | {}\n",
                 i + 1,
                 time_ago,
+                host_segment,
                 exchange_count,
                 truncate_display(title, 30),
                 truncate_display(&last_question, 30),
             ));
         } else {
             output.push_str(&format!(
-                "  [{}] {} | {} turns | {}\n",
+                "  [{}] {} | {}{} turns | {}\n",
                 i + 1,
                 time_ago,
+                host_segment,
                 exchange_count,
                 truncate_display(&last_question, 50),
             ));
@@ -3551,6 +3584,24 @@ mod tests {
     use std::sync::Arc;
     use std::time::Instant;
     use tokio::time::{sleep, Duration};
+
+    #[test]
+    fn test_short_host() {
+        // Missing / empty host (legacy threads): renders as "?".
+        assert_eq!(short_host(None), "?");
+        assert_eq!(short_host(Some("")), "?");
+        assert_eq!(short_host(Some("   ")), "?");
+
+        // Plain host under the limit: rendered as-is.
+        assert_eq!(short_host(Some("box1")), "box1");
+        assert_eq!(short_host(Some("workstation1")), "workstation1");
+
+        // .local mDNS suffix stripped (matches the resume-mismatch fix in #600).
+        assert_eq!(short_host(Some("box1.local")), "box1");
+
+        // Over the 12-char limit: head + ".." (10 + 2 = 12).
+        assert_eq!(short_host(Some("really-long-hostname")), "really-lon..");
+    }
 
     #[test]
     fn test_unwrap_thinking_tags() {
