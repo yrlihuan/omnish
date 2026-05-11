@@ -2802,7 +2802,7 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
         sub if sub == "commands" || sub.starts_with("commands ") => {
             let args = sub.strip_prefix("commands").unwrap_or("").trim();
             let count: usize = args.parse().unwrap_or(30);
-            cmd_display(command_query_tool.list_history(count))
+            cmd_display(command_query_tool.list_history(count, None))
         }
         sub if sub == "command" || sub.starts_with("command ") => {
             let args = sub.strip_prefix("command").unwrap_or("").trim();

@@ -21,23 +21,60 @@ impl CommandQueryTool {
         Self { commands, stream_reader }
     }
 
-    pub fn list_history(&self, count: usize) -> String {
+    pub fn list_history(&self, count: usize, grep: Option<&str>) -> String {
         let commands = &self.commands;
         if commands.is_empty() {
             return "No commands in history.".to_string();
         }
+
+        let pattern = match grep {
+            Some(p) if !p.is_empty() => match regex::RegexBuilder::new(p)
+                .case_insensitive(true)
+                .build()
+            {
+                Ok(re) => Some(re),
+                Err(e) => return format!("Error: invalid regex {:?}: {}", p, e),
+            },
+            _ => None,
+        };
+
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let start = commands.len().saturating_sub(count);
-        let mut lines = Vec::new();
-        for (i, cmd) in commands[start..].iter().enumerate() {
+
+        // Walk commands newest-first, collect up to `count` matches, then reverse to
+        // chronological order. With a grep filter, this means "last N matches" rather
+        // than "search within last N commands".
+        let mut picked: Vec<(usize, &CommandRecord)> = Vec::new();
+        for (idx, cmd) in commands.iter().enumerate().rev() {
             let cmd_line = match cmd.command_line.as_deref() {
                 Some(line) if !line.is_empty() => line,
                 _ => continue,
             };
-            let seq = start + i + 1; // 1-based
+            if let Some(re) = &pattern {
+                if !re.is_match(cmd_line) {
+                    continue;
+                }
+            }
+            picked.push((idx, cmd));
+            if picked.len() >= count {
+                break;
+            }
+        }
+        picked.reverse();
+
+        if picked.is_empty() {
+            return match grep {
+                Some(p) if !p.is_empty() => format!("No commands matching {:?}.", p),
+                _ => "No commands in history.".to_string(),
+            };
+        }
+
+        let mut lines = Vec::new();
+        for (idx, cmd) in picked {
+            let cmd_line = cmd.command_line.as_deref().unwrap_or("");
+            let seq = idx + 1; // 1-based
             let exit = cmd.exit_code.map(|c| format!("exit {}", c)).unwrap_or_default();
             let ago = format_ago(now_ms, cmd.started_at);
             lines.push(format!("[seq={}] {}  ({}, {})", seq, cmd_line, exit, ago));
@@ -197,7 +234,8 @@ impl CommandQueryTool {
         match tool_name {
             "omnish_list_history" => {
                 let count = input["count"].as_u64().unwrap_or(20) as usize;
-                let content = self.list_history(count);
+                let grep = input["grep"].as_str();
+                let content = self.list_history(count, grep);
                 ToolResult { tool_use_id, content, is_error: false }
             }
             "omnish_get_output" => {
@@ -252,7 +290,10 @@ impl CommandQueryTool {
             match tool_name {
                 "omnish_list_history" => {
                     let count = input["count"].as_u64().unwrap_or(20);
-                    format!("last {}", count)
+                    match input["grep"].as_str() {
+                        Some(p) if !p.is_empty() => format!("grep {:?}, last {}", p, count),
+                        _ => format!("last {}", count),
+                    }
                 }
                 "omnish_get_output" => {
                     let seq = input["seq"].as_u64().unwrap_or(0);
@@ -291,15 +332,27 @@ impl CommandQueryTool {
 
         registry.register_def(omnish_llm::tool::ToolDef {
             name: "omnish_list_history".to_string(),
-            description: "List recent shell command history. \
-                The last 5 commands are provided in <system-reminder> at the end of each user message, \
-                so you do NOT need to call this unless you need older commands.".to_string(),
+            description: "List recent shell command history.\n\
+                \n\
+                Use `grep` only when the user explicitly asks about a specific command \
+                (e.g. \"find the git command I ran earlier\", \"show me the cargo test invocation\"). \
+                For general questions about recent activity, omit `grep` and just list with `count`.\n\
+                \n\
+                Examples:\n\
+                - {\"count\": 50}                  - the last 50 commands, no filter\n\
+                - {\"grep\": \"^git\"}             - recent commands starting with `git`\n\
+                - {\"grep\": \"cargo (test|build)\"} - recent cargo test/build commands\n\
+                - {\"grep\": \"docker\", \"count\": 5} - last 5 docker-related commands".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "count": {
                         "type": "integer",
-                        "description": "Number of recent commands to list (default 20)"
+                        "description": "Number of commands to return (default 20). When `grep` is set, this caps the number of matches returned (newest first)."
+                    },
+                    "grep": {
+                        "type": "string",
+                        "description": "Optional case-insensitive Rust regex applied to each command line; only matching commands are returned. Use anchors (^, $) and groups freely. Omit to list recent commands without filtering."
                     }
                 }
             }),
@@ -527,5 +580,103 @@ mod tests {
         assert_eq!(reg.status_text("omnish_get_output", &input), "[3] git status");
         let input2 = serde_json::json!({"count": 10});
         assert_eq!(reg.status_text("omnish_list_history", &input2), "last 10");
+        let input3 = serde_json::json!({"count": 5, "grep": "git"});
+        assert_eq!(reg.status_text("omnish_list_history", &input3), "grep \"git\", last 5");
+    }
+
+    #[test]
+    fn test_list_history_no_grep_returns_recent() {
+        let commands: Vec<_> = (1..=5)
+            .map(|i| make_cmd(&format!("cmd{}", i), None, Some(0)))
+            .collect();
+        let tool = make_tool(commands);
+        let out = tool.list_history(3, None);
+        assert!(!out.contains("cmd2"));
+        assert!(out.contains("[seq=3] cmd3"));
+        assert!(out.contains("[seq=4] cmd4"));
+        assert!(out.contains("[seq=5] cmd5"));
+    }
+
+    #[test]
+    fn test_list_history_grep_filters_by_regex() {
+        let tool = make_tool(vec![
+            make_cmd("git status", None, Some(0)),
+            make_cmd("ls", None, Some(0)),
+            make_cmd("git log", None, Some(0)),
+            make_cmd("cargo build", None, Some(0)),
+            make_cmd("git diff", None, Some(0)),
+        ]);
+        let out = tool.list_history(10, Some("git"));
+        assert!(out.contains("[seq=1] git status"));
+        assert!(out.contains("[seq=3] git log"));
+        assert!(out.contains("[seq=5] git diff"));
+        assert!(!out.contains("ls"));
+        assert!(!out.contains("cargo build"));
+    }
+
+    #[test]
+    fn test_list_history_grep_case_insensitive() {
+        let tool = make_tool(vec![
+            make_cmd("Git Status", None, Some(0)),
+            make_cmd("CARGO build", None, Some(0)),
+        ]);
+        let out = tool.list_history(10, Some("git"));
+        assert!(out.contains("Git Status"));
+        assert!(!out.contains("CARGO build"));
+    }
+
+    #[test]
+    fn test_list_history_grep_count_caps_matches() {
+        let commands: Vec<_> = (1..=5)
+            .map(|i| make_cmd(&format!("git op{}", i), None, Some(0)))
+            .collect();
+        let tool = make_tool(commands);
+        let out = tool.list_history(2, Some("git"));
+        // count=2 keeps the two most recent matches in chronological order
+        assert!(!out.contains("op1"));
+        assert!(!out.contains("op2"));
+        assert!(!out.contains("op3"));
+        assert!(out.contains("[seq=4] git op4"));
+        assert!(out.contains("[seq=5] git op5"));
+    }
+
+    #[test]
+    fn test_list_history_grep_regex_anchors() {
+        let tool = make_tool(vec![
+            make_cmd("git status", None, Some(0)),
+            make_cmd("agit status", None, Some(0)),
+        ]);
+        let out = tool.list_history(10, Some("^git"));
+        assert!(out.contains("[seq=1] git status"));
+        assert!(!out.contains("agit"));
+    }
+
+    #[test]
+    fn test_list_history_grep_no_match_message() {
+        let tool = make_tool(vec![
+            make_cmd("ls", None, Some(0)),
+            make_cmd("pwd", None, Some(0)),
+        ]);
+        let out = tool.list_history(10, Some("git"));
+        assert!(out.contains("No commands matching"));
+        assert!(out.contains("\"git\""));
+    }
+
+    #[test]
+    fn test_list_history_invalid_regex_returns_error() {
+        let tool = make_tool(vec![make_cmd("ls", None, Some(0))]);
+        let out = tool.list_history(10, Some("(unclosed"));
+        assert!(out.starts_with("Error: invalid regex"));
+    }
+
+    #[test]
+    fn test_list_history_empty_grep_treated_as_unset() {
+        let tool = make_tool(vec![
+            make_cmd("ls", None, Some(0)),
+            make_cmd("pwd", None, Some(0)),
+        ]);
+        let out = tool.list_history(10, Some(""));
+        assert!(out.contains("ls"));
+        assert!(out.contains("pwd"));
     }
 }
