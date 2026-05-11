@@ -309,7 +309,7 @@ const COMMANDS: &[CommandEntry] = &[
     CommandEntry {
         path: "/thread stats",
         kind: CommandKind::Daemon("conversations stats"),
-        help: "Show token usage statistics for all threads",
+        help: "Show token usage statistics (current thread, or top N=10 when none)",
     },
     CommandEntry {
         path: "/thread del",

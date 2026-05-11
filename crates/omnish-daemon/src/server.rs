@@ -2766,7 +2766,15 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
             }
         }
         "sessions" => cmd_display(mgr.format_sessions_list(&req.session_id).await),
-        "conversations stats" => format_thread_stats(conv_mgr, active_threads, &req.session_id).await,
+        s if s == "conversations stats" || s.starts_with("conversations stats ") => {
+            let limit = s
+                .strip_prefix("conversations stats")
+                .map(|a| a.trim())
+                .filter(|a| !a.is_empty())
+                .and_then(|a| a.parse::<usize>().ok())
+                .unwrap_or(10);
+            format_thread_stats(conv_mgr, active_threads, &req.session_id, limit).await
+        }
         s if s == "conversations" || s.starts_with("conversations ") => {
             let args: Vec<&str> = s.strip_prefix("conversations")
                 .map(|a| a.split_whitespace().collect())
@@ -2985,7 +2993,11 @@ async fn format_conversations_json(
 /// - Last exchange tokens (input+output)
 /// - Total tokens (sum of all exchanges, reset on model switch)
 /// - Cache hit rate (cache_read / input)
-async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads: &ActiveThreads, session_id: &str) -> serde_json::Value {
+///
+/// `limit` caps the number of threads shown when no active thread is bound to
+/// this session. With an active thread, only that one is shown and the limit
+/// is irrelevant.
+async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads: &ActiveThreads, session_id: &str, limit: usize) -> serde_json::Value {
     // Find the thread currently claimed by this session, if any.
     let current_thread_id: Option<String> = {
         let threads = active_threads.lock().await;
@@ -3043,7 +3055,7 @@ async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads
         return cmd_display(output);
     }
 
-    // No active thread: fall back to showing all threads.
+    // No active thread: fall back to showing the most recent `limit` threads.
     let conversations = conv_mgr.list_conversations();
     if conversations.is_empty() {
         return cmd_display("No conversations yet. Start a chat with :");
@@ -3053,6 +3065,9 @@ async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads
         let threads = active_threads.lock().await;
         threads.keys().cloned().collect()
     };
+
+    let total = conversations.len();
+    let shown: Vec<_> = conversations.into_iter().take(limit).collect();
 
     let mut output = String::from("Thread Stats:\n");
     let truncate_display = |s: &str, max: usize| -> String {
@@ -3065,7 +3080,8 @@ async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads
         }
     };
 
-    for (i, (thread_id, modified, exchange_count, _last_question)) in conversations.into_iter().enumerate() {
+    let shown_count = shown.len();
+    for (i, (thread_id, modified, exchange_count, _last_question)) in shown.into_iter().enumerate() {
         // _last_question is intentionally not shown here; stats display uses title + usage data instead.
         let time_ago = format_relative_time(modified);
         let meta = conv_mgr.load_meta(&thread_id);
@@ -3108,6 +3124,12 @@ async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads
         if meta.sandbox_disabled == Some(true) {
             output.push_str("       sandbox: off\n");
         }
+    }
+    if total > shown_count {
+        output.push_str(&format!(
+            "  ({} total, showing {}. Use /thread stats N to see more)\n",
+            total, shown_count,
+        ));
     }
     cmd_display(output)
 }
