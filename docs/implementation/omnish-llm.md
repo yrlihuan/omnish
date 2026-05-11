@@ -185,7 +185,7 @@ Anthropic API后端实现：
 - `max_tokens`固定为8192
 - 多轮对话支持：conversation历史映射为messages数组，上下文注入第一条user消息
 - 系统提示词支持：通过Anthropic `system` 顶层字段（数组格式，附带`cache_control`用于提示缓存）
-- 思考模式：`enable_thinking == Some(true)` 时启用（budget_tokens: 4096）；`Some(false)` 和 `None` 时均不发送思考参数（不再为 `Some(false)` 显式发送禁用参数）
+- 思考模式：enable_thinking 翻译为显式 wire 形状以跨后端保持意图（Anthropic 省略=禁用，DeepSeek Anthropic-compat 端点默认启用，必须显式禁用）；Opus 4.7+ 走 adaptive 模式发送 `{"type": "enabled"}` 不带 budget_tokens（手动 budget 被新版模型拒绝），其余模型显式启用时 `budget_tokens: 4096`
 - 思考块签名保留：解析响应中`thinking` block的`signature`字段并存储为`Option<String>`，多轮对话回传时包含签名（Anthropic API要求）
 - 工具调用支持：通过`tools`字段提供工具定义，解析响应中的`tool_use` content blocks
 - 供应商扩展字段捕获：解析 `tool_use` content blocks 时，除 `id`/`name`/`input` 外的字段保留到 `ToolCall.extra`，确保供应商特有字段（如签名等）在多轮回传时不丢失
@@ -213,7 +213,7 @@ OpenAI兼容API后端实现：
 - 系统提示词支持：作为 `role: "system"` 消息前置
 - 思考模式：通过 `chat_template_kwargs` 传递 `enable_thinking: false`（适配vLLM/Qwen3）
 - 工具调用支持：通过`tools`字段提供工具定义，解析响应中的`tool_calls`
-- `extract_thinking()` 辅助函数解析响应中的 `<think>` 标签（提取为 `ContentBlock::Thinking`）
+- `parse_message_content_blocks(message, enable_thinking)`：解析 `choices[0].message`，content 字段容忍 string/array/null 三种形状（array 拼接 text 部分），thinking 启用时优先取 `reasoning_content` 字段作为 Thinking 块（DeepSeek），回退到 inline `<think>` 标签扫描（Qwen 等）；未知 message 字段一次性 warn 日志（200 字符值预览）
 - `convert_extra_messages()` 辅助函数将 Anthropic 格式的 extra_messages（含 `tool_use`/`tool_result`/`thinking` 内容块）转换为 OpenAI 格式（`tool_calls`/`tool` role/`reasoning_content`），同时保留 `ToolCall.extra` 中的供应商特定扩展字段
 - 错误诊断增强：非 OpenAI 标准格式的错误响应（无 `error.message` 字段）和 JSON 解码失败时，错误信息包含完整响应体内容，便于调试非标准 API 实现
 - 连接错误自动重试：`.send()`遇到连接错误（`is_connect()`/`is_request()`）时最多重试3次，指数退避（5s起步，最大60s）
@@ -252,11 +252,13 @@ Langfuse可观测性包装器，透明地为LLM调用添加追踪：
 
 ### 请求日志（message_log）
 
-LLM请求payload本地日志记录：
-- 仅记录`UseCase::Chat`类型的请求
-- 保存完整JSON请求体到 `~/.omnish/logs/messages/{timestamp}.json`
-- 滚动清理：最多保留30个日志文件
-- 用途：调试和审计LLM请求内容
+LLM请求/响应payload本地日志记录：
+- 仅记录`UseCase::Chat`类型
+- 请求与响应成对保存：`log_request` 写入 `{timestamp}.req.json` 并返回时间戳 tag，`log_response(tag)` 写入对应 `{timestamp}.resp.json`，共享前缀以便排序与配对
+- Anthropic 与 OpenAI-compat 后端均在解析响应后调用 `log_response`
+- 滚动清理：最多保留60个文件（约30对）
+- 用途：post-mortem "模型为什么这样做"--可同时查看发送内容与返回内容
+- 文件名变化（旧版 `{ts}.json`）对外部脚本不向后兼容
 
 ### 配置结构
 
@@ -351,14 +353,20 @@ Langfuse可观测性配置结构体：
 - 当前工作目录单独包裹在`<system-reminder>`标签中（commit 458db9f），格式为：`<system-reminder>\n# workingDirectory\n{path}\n</system-reminder>`
 - Claude等模型对`<system-reminder>`标签有特殊训练，可提升理解效果
 
-### `message_log::log_request()`
-保存LLM请求payload到本地日志文件。
+### `message_log::log_request()` / `log_response()`
+成对保存LLM请求与响应payload到本地日志文件。
 
-**参数:**
+**`log_request` 参数:**
 - `body: &serde_json::Value` - 完整的请求JSON体
 - `use_case: UseCase` - 请求用途（仅Chat类型会被记录）
 
-**用途:** 将Chat请求的完整payload以pretty JSON格式写入`~/.omnish/logs/messages/{timestamp}.json`，滚动保留最近30个文件。
+**返回:** `Option<String>` - 时间戳 tag，传入 `log_response` 配对响应
+
+**`log_response` 参数:**
+- `tag: &Option<String>` - 来自 `log_request` 的时间戳 tag
+- `body: &serde_json::Value` - 完整响应 JSON
+
+**用途:** 将Chat请求/响应以pretty JSON格式写入`~/.omnish/logs/messages/{timestamp}.req.json` 与 `{timestamp}.resp.json`，滚动保留最近 60 个文件（约 30 对）。
 
 ### `prompt_template()`
 获取提示模板。
@@ -831,3 +839,34 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
    - 完成补全：`system_prompt` 标为 Long，上下文通过 Anthropic user message content block 上的 `cache_control: ephemeral` 缓存（`build_request_body` 在单轮 completion 分支内构造）
 
 **相关 issue:** #550
+
+### 2026-04-24 - 显式 thinking wire 值与 Opus 4.7 adaptive 模式（#591）
+
+**主要变更:**
+
+1. **enable_thinking 翻译为显式 wire 形状** (commit 2719b52):
+   - Anthropic 原生 API 默认禁用 thinking（省略即关），DeepSeek 的 Anthropic-compat 端点默认启用 thinking（必须显式禁用）。translate_enable_thinking 将 Some(true)/Some(false)/None 映射为后端期望的显式 wire 值，确保意图跨后端一致
+   - `thread_summary` 等场景调用点显式传 `Some(false)` 而非依赖后端默认行为
+2. **Opus 4.7+ adaptive thinking 模式**:
+   - 新增 `is_opus_4_7_or_later(model)` 检测：Opus 4.7+ 模型拒绝手动 `budget_tokens` 字段
+   - 检测到 Opus 4.7+ 时切换到 adaptive 模式：发送 `{"type": "enabled"}` 不带 budget，让模型自决预算
+
+**相关 issue:** #591
+
+### 2026-04-25 - OpenAI-compat 响应增强、思考块捕获、响应日志
+
+**主要变更:**
+
+1. **捕获 `reasoning_content` 思考块** (commit 7b0b697):
+   - DeepSeek OpenAI 端点将思考置于 `reasoning_content` 字段（与 `content` 分离），此前解析器只扫描 `content` 内的 `<think>` 标签导致思考块被丢弃，下一轮回传时 API 返回 400
+   - 提取 `parse_message_content_blocks(message, enable_thinking)` 函数：thinking 启用时优先取 `reasoning_content` 字段作为 Thinking 块，回退到 inline `<think>` 标签扫描（Qwen 等无结构化字段的 OpenAI-compat 兼容）
+2. **未知字段诊断** (commit 8bdf088):
+   - `choices[0].message` 出现已知字段集合外的键时一次性 warn 日志（per-process 去重，含 200 字符值预览），暴露供应商扩展
+3. **content 形状容忍** (commit d269be1):
+   - `message.content` 支持 string/array/null 三种形状，array 形态拼接 `text` 部分而非默默丢弃（首次见到 array 形态时一次性 info 日志）
+   - tool_calls 存在但未生成 Text 块时一次性 info 记录原始 message JSON（800 字符上限）
+4. **成对记录请求与响应** (commit f351412):
+   - `log_request` 写入 `{ts}.req.json` 并返回时间戳 tag；`log_response(tag)` 写入对应 `{ts}.resp.json`
+   - 两端共享时间戳前缀以便排序与配对，Anthropic 与 OpenAI-compat 后端都在解析响应后调用 `log_response`
+   - 滚动保留上限从 30 提升至 60（约 30 对）；移除 `diagnose_missing_text_content` 一次性诊断（被完整响应日志替代）
+   - 文件名变化对外部按旧 `{ts}.json` 形态 grep 的脚本不向后兼容

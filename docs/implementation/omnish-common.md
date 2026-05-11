@@ -401,6 +401,25 @@ permit_rules = ["command starts_with glab", "command starts_with docker"]
 - 完成后自动清理解压目录
 - 解压和安装各步骤附带 `anyhow::Context` 错误上下文，便于排查失败原因
 
+## plugin_bundle 模块
+
+共享插件包打包器（守护进程与客户端复用）：守护进程产出客户端镜像同步用的 tarball，客户端基于本地 `plugins/` 计算 checksum 以判断 daemon 是否有更新。
+
+### `Bundle` 结构
+- `bytes: Vec<u8>` - 包字节（gzip 压缩的 tar）
+- `checksum: String` - SHA-256 十六进制
+- `total_size: u64` - 字节数
+
+### `build_bundle(plugins_dir: &Path) -> Result<Bundle>`
+确定性地构建 `plugins_dir` 的 gzip tar：
+- 文件权限归一化（目录与可执行 0755，数据 0644）
+- mtime 固定，相同输入产生相同 checksum 跨重建稳定
+- 顶层 dotfile 与子目录中 dotfile 一律跳过（用户本地编辑如 `tool.override.json` 在镜像端保留）
+- `plugins_dir` 不存在时返回空 bundle（checksum 仍稳定）
+
+### 设计目的
+守护进程与客户端共享同一打包逻辑后，客户端的 `current_checksum` 由本地状态实时计算，而非读取 `.bundle_checksum` 持久文件。同主机部署（默认 Unix socket 或 TCP loopback）下客户端 checksum 与 daemon 自然相等，避免守护进程侧重建后客户端误以为有差异并镜像下载自己的本地文件（含与并发本地编辑的竞态）。
+
 ## auth 模块
 
 omnish-common 包含认证令牌管理工具函数，用于客户端和守护进程之间的身份验证。
@@ -472,4 +491,5 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 - **2026-03-30**: `LlmBackendConfig` 新增 `use_proxy`（是否使用全局代理）和 `context_window`（上下文窗口大小）字段；`max_content_chars` 更新为高级覆盖项，未设置时由 `context_window * 1.5` 推导；`LlmConfig`、`LangfuseConfig`、`LlmBackendConfig` 新增 `PartialEq` 派生，用于热重载配置差异检测。
 - **2026-04-02**: 统一动态配置架构--新增 `ConfigMap` 新类型（含 `get_bool`/`get_u64`/`get_string`/`get_opt_string` 访问方法）；`TasksConfig` 从带类型字段的结构体改为 `HashMap<String, ConfigMap>`，删除 `EvictionConfig`、`HourlySummaryConfig`、`DailyNotesConfig`、`DiskCleanupConfig`、`AutoUpdateConfig`、`ThreadSummaryConfig`、`PeriodicSummaryConfig` 等子结构，各任务默认值改为内部硬编码；`PluginsConfig` 从 `enabled: Vec<String>` 改为 `HashMap<String, ConfigMap>`；`ContextConfig` 移除 `hourly_summary`/`daily_summary` 死代码字段；`DaemonConfig` 移除 `tools` 字段（合并入 `plugins`）；`config_edit` 新增 `set_toml_value_nested_int()` 和引号感知的 `split_key_path()`，支持含点号的后端名称（如 `gemini-3.1`）。
 - **2026-04-09b**: `SandboxConfig` 新增 `backend` 字段（`"bwrap"` | `"landlock"` | `"macos"`），支持多后端沙箱选择，Linux 默认 `"bwrap"`，macOS 默认 `"macos"`。
+- **2026-04-23**: 新增 `plugin_bundle` 模块。`Bundle` 结构 + `build_bundle(plugins_dir)` 函数生成确定性 gzip tar（文件权限/mtime 归一化），守护进程与客户端复用同一打包逻辑（共享通过 omnish-common 而非各自实现）；客户端实时计算本地 checksum，使同主机部署不再触发自我变更同步。dotfile 在任意层级一律跳过（保留 `tool.override.json` 等本地编辑）。
 - **2026-04-09**: 配置架构重构--`proxy`/`no_proxy` 从顶层字段迁移到 `ProxyConfig` 结构（`[proxy]` 表），自定义反序列化支持旧版字符串格式向后兼容；`completion_enabled` 从 `ClientConfig` 迁移到 `ShellConfig`；新增 `extended_unicode` 配置项；`ConfigMap` 封装内部结构，新增 `defaults` 层和 `set_defaults()`/`get()`/`contains_key()`/`iter()` 方法；新增 `ClientSection` 结构支持守护进程到客户端的配置推送；`load_daemon_config()` 新增 `sanitize_toml()` 容错（处理重复表头和重复键）和 `normalize()` 旧格式迁移；新增 `string_or_bool` serde helper。
