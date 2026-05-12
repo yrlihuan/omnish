@@ -85,6 +85,8 @@
   "config.use_cases": "用途",
   "config.backends": "后端列表",
   "config.tasks": "定时任务",
+  "config.house_keeping": "会话清理",
+  "config.session_retention": "会话保留时长",
   "config.hourly_summary": "每小时总结",
   "config.daily_summary": "每日总结",
   "config.rules": "规则",

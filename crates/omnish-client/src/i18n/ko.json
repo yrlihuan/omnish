@@ -85,6 +85,8 @@
   "config.use_cases": "사용 사례",
   "config.backends": "백엔드 목록",
   "config.tasks": "예약 작업",
+  "config.house_keeping": "세션 정리",
+  "config.session_retention": "세션 보존 기간",
   "config.hourly_summary": "시간별 요약",
   "config.daily_summary": "일일 요약",
   "config.rules": "규칙",

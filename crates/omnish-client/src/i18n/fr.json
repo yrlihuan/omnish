@@ -85,6 +85,8 @@
   "config.use_cases": "Cas d'utilisation",
   "config.backends": "Liste des backends",
   "config.tasks": "Tâches planifiées",
+  "config.house_keeping": "Nettoyage des sessions",
+  "config.session_retention": "Rétention des sessions",
   "config.hourly_summary": "Résumé horaire",
   "config.daily_summary": "Résumé quotidien",
   "config.rules": "Règles",

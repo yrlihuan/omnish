@@ -85,6 +85,8 @@
   "config.use_cases": "Use Cases",
   "config.backends": "Backends",
   "config.tasks": "Scheduled tasks",
+  "config.house_keeping": "House Keeping",
+  "config.session_retention": "Session retention",
   "config.hourly_summary": "Hourly Summary",
   "config.daily_summary": "Daily Summary",
   "config.rules": "Rules",

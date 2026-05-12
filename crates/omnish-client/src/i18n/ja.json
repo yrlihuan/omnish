@@ -85,6 +85,8 @@
   "config.use_cases": "用途",
   "config.backends": "バックエンド一覧",
   "config.tasks": "スケジュールタスク",
+  "config.house_keeping": "セッションクリーンアップ",
+  "config.session_retention": "セッション保持期間",
   "config.hourly_summary": "時間別サマリー",
   "config.daily_summary": "日次サマリー",
   "config.rules": "ルール",

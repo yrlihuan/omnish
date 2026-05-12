@@ -85,6 +85,8 @@
   "config.use_cases": "حالات الاستخدام",
   "config.backends": "قائمة الواجهات",
   "config.tasks": "المهام المجدولة",
+  "config.house_keeping": "تنظيف الجلسات",
+  "config.session_retention": "مدة الاحتفاظ بالجلسات",
   "config.hourly_summary": "ملخص كل ساعة",
   "config.daily_summary": "الملخص اليومي",
   "config.rules": "القواعد",
