@@ -110,66 +110,45 @@ impl TaskManager {
         lines.join("\n")
     }
 
-    /// Incrementally reload tasks: only remove/recreate tasks whose config
-    /// actually changed. Unchanged tasks keep their scheduler position so
-    /// their next trigger time is preserved.
+    /// Reload all tasks unconditionally: remove every registered job and
+    /// re-register from the supplied task list. Captures the full set of
+    /// config fields (period, idle_minutes, check_url, prompts, etc.) that
+    /// would otherwise be invisible to a diff based on enabled+schedule
+    /// alone.
+    ///
+    /// Cron expressions schedule by wall-clock time, so re-registering does
+    /// not shift trigger times; config changes are infrequent enough that
+    /// rebuilding the small number of tasks is cheaper than maintaining a
+    /// per-field fingerprint.
     pub async fn reload(
         &mut self,
         tasks: &[Box<dyn ScheduledTask>],
         ctx: &TaskContext,
     ) -> Result<()> {
-        let mut changed = Vec::new();
+        let prev_uuids: Vec<Uuid> = self.tasks.values().map(|e| e.uuid).collect();
+        for uuid in prev_uuids {
+            if let Err(e) = self.scheduler.remove(&uuid).await {
+                tracing::warn!("failed to remove task during reload: {}", e);
+            }
+        }
+        self.tasks.clear();
 
         for task in tasks {
-            let name = task.name();
-            let want_enabled = task.enabled();
-            let want_schedule = task.schedule();
-
-            match self.tasks.get(name) {
-                Some(entry) if entry.enabled == want_enabled && entry.cron == want_schedule => {
-                    // Unchanged - keep existing job
-                    continue;
+            if !task.enabled() {
+                tracing::debug!("task '{}' is disabled, skipping", task.name());
+                continue;
+            }
+            match task.create_job(ctx) {
+                Ok(job) => {
+                    self.register(task.name(), task.schedule(), job).await?;
                 }
-                Some(_) => {
-                    // Config changed - remove old job, will re-register below
-                    if let Some(entry) = self.tasks.remove(name) {
-                        if entry.enabled {
-                            if let Err(e) = self.scheduler.remove(&entry.uuid).await {
-                                tracing::warn!("failed to remove task '{}': {}", name, e);
-                            }
-                        }
-                    }
-                    changed.push(task);
-                }
-                None => {
-                    // New task (shouldn't happen in practice, but handle it)
-                    changed.push(task);
+                Err(e) => {
+                    tracing::warn!("failed to create job for '{}': {}", task.name(), e);
                 }
             }
         }
 
-        if changed.is_empty() {
-            tracing::debug!("task reload: no changes detected");
-            return Ok(());
-        }
-
-        for task in changed {
-            if task.enabled() {
-                match task.create_job(ctx) {
-                    Ok(job) => {
-                        self.register(task.name(), task.schedule(), job).await?;
-                    }
-                    Err(e) => {
-                        tracing::warn!("failed to create job for '{}': {}", task.name(), e);
-                    }
-                }
-            } else {
-                tracing::debug!("task '{}' is now disabled", task.name());
-            }
-        }
-
-        let active = self.tasks.values().filter(|e| e.enabled).count();
-        tracing::info!("task reload complete: {} active tasks", active);
+        tracing::info!("task reload complete: {} active tasks", self.tasks.len());
         Ok(())
     }
 }
