@@ -77,6 +77,7 @@
   "config.operator": "Operador",
   "config.pattern": "Patrón",
   "config.scope": "Ámbito",
+  "config.title": "Configuración",
   "config.general": "General",
   "config.hotkeys": "Atajos de teclado",
   "config.shell_completion": "Completado de Shell",

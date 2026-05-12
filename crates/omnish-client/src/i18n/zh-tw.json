@@ -77,6 +77,7 @@
   "config.operator": "運算子",
   "config.pattern": "模式",
   "config.scope": "作用域",
+  "config.title": "設定",
   "config.general": "一般",
   "config.hotkeys": "快速鍵",
   "config.shell_completion": "Shell 補全",

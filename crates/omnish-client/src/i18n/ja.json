@@ -77,6 +77,7 @@
   "config.operator": "演算子",
   "config.pattern": "パターン",
   "config.scope": "スコープ",
+  "config.title": "設定",
   "config.general": "一般",
   "config.hotkeys": "ホットキー",
   "config.shell_completion": "シェル補完",

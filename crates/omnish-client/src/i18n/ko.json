@@ -77,6 +77,7 @@
   "config.operator": "연산자",
   "config.pattern": "패턴",
   "config.scope": "범위",
+  "config.title": "설정",
   "config.general": "일반",
   "config.hotkeys": "단축키",
   "config.shell_completion": "셸 자동완성",

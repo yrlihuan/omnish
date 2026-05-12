@@ -3325,7 +3325,7 @@ impl ChatSession {
             }
         };
 
-        let result = widgets::menu::run_menu("Config", &mut items, Some(&mut handler_callback), Some(&mut change_callback));
+        let result = widgets::menu::run_menu(crate::i18n::t("config.title"), &mut items, Some(&mut handler_callback), Some(&mut change_callback));
         match result {
             MenuResult::Done(changes) => {
                 // With on_change, only form-mode (handler submenu) changes remain here
@@ -3604,7 +3604,7 @@ impl ChatSession {
                 }
             };
 
-            widgets::menu::run_menu("Config", &mut menu_items, Some(&mut handler_callback), Some(&mut change_callback))
+            widgets::menu::run_menu(crate::i18n::t("config.title"), &mut menu_items, Some(&mut handler_callback), Some(&mut change_callback))
         });
 
         // Show diff of changes on exit

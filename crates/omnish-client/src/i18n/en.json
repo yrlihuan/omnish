@@ -77,6 +77,7 @@
   "config.operator": "Operator",
   "config.pattern": "Pattern",
   "config.scope": "Scope",
+  "config.title": "Config",
   "config.general": "General",
   "config.hotkeys": "Hotkeys",
   "config.shell_completion": "Shell Completion",
