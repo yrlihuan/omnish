@@ -343,20 +343,14 @@ impl SessionManager {
             }
         }
 
-        // Drop the write lock before calling cleanup_expired_dirs
-        // to avoid deadlock (cleanup_expired_dirs acquires a read lock)
+        // Drop the write lock; expired-directory cleanup is the responsibility
+        // of the hourly `house_keeping` task, which uses the user-configured
+        // retention period rather than a hardcoded threshold.
         drop(sessions);
 
-        // Clean up expired directories on startup (48 hours)
-        let max_age = std::time::Duration::from_secs(48 * 3600);
-        let cleaned = self.cleanup_expired_dirs(max_age).await;
-        if cleaned > 0 {
-            tracing::info!("cleaned up {} expired session directories on startup", cleaned);
-        }
-
         // Prune clients_history entries older than 90 days. Independent of
-        // the per-session 48h cleanup so the deploy menu retains hosts that
-        // were last touched up to 3 months ago.
+        // the per-session retention because the deploy menu should retain
+        // hosts that were last touched up to 3 months ago.
         self.prune_clients_history(chrono::Duration::days(90)).await;
 
         Ok(count)

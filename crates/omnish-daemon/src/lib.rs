@@ -15,14 +15,13 @@ pub fn strip_thinking_block(text: &str) -> String {
 
 pub mod auto_update;
 pub mod update_cache;
-pub mod cleanup;
 pub mod clients_history;
 pub mod conversation_mgr;
 pub mod daily_notes;
 pub mod deploy;
-pub mod eviction;
 pub mod file_watcher;
 pub mod formatter_mgr;
+pub mod house_keeping;
 pub mod hourly_summary;
 pub mod plugin;
 pub mod plugin_bundle;

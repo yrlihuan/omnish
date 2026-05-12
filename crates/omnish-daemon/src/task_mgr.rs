@@ -189,10 +189,9 @@ pub fn normalize_cron(expr: &str) -> String {
 pub fn create_all_tasks(config: &omnish_common::config::TasksConfig) -> Vec<Box<dyn ScheduledTask>> {
     let empty = omnish_common::config::ConfigMap::default();
     vec![
-        Box::new(crate::eviction::EvictionTask::new(config.get("eviction").unwrap_or(&empty).clone())),
+        Box::new(crate::house_keeping::HouseKeepingTask::new(config.get("house_keeping").unwrap_or(&empty).clone())),
         Box::new(crate::hourly_summary::HourlySummaryTask::new(config.get("hourly_summary").unwrap_or(&empty).clone())),
         Box::new(crate::daily_notes::DailyNotesTask::new(config.get("daily_notes").unwrap_or(&empty).clone())),
-        Box::new(crate::cleanup::DiskCleanupTask::new(config.get("disk_cleanup").unwrap_or(&empty).clone())),
         Box::new(crate::auto_update::AutoUpdateTask::new(config.get("auto_update").unwrap_or(&empty).clone())),
         Box::new(crate::thread_summary::ThreadSummaryTask::new(config.get("thread_summary").unwrap_or(&empty).clone())),
         Box::new(crate::plugin_bundle_task::PluginBundleTask::new(config.get("plugin_bundle").unwrap_or(&empty).clone())),
@@ -204,10 +203,9 @@ pub fn create_all_tasks(config: &omnish_common::config::TasksConfig) -> Vec<Box<
 /// Called at startup and on every config reload.
 pub fn inject_task_defaults(tasks: &mut omnish_common::config::TasksConfig) {
     let all_defaults: Vec<(&str, HashMap<String, serde_json::Value>)> = vec![
-        ("eviction", crate::eviction::EvictionTask::defaults()),
+        ("house_keeping", crate::house_keeping::HouseKeepingTask::defaults()),
         ("hourly_summary", crate::hourly_summary::HourlySummaryTask::defaults()),
         ("daily_notes", crate::daily_notes::DailyNotesTask::defaults()),
-        ("disk_cleanup", crate::cleanup::DiskCleanupTask::defaults()),
         ("auto_update", crate::auto_update::AutoUpdateTask::defaults()),
         ("thread_summary", crate::thread_summary::ThreadSummaryTask::defaults()),
         ("plugin_bundle", crate::plugin_bundle_task::PluginBundleTask::defaults()),

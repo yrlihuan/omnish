@@ -194,6 +194,22 @@ kind = "text"
 
 # ── Tasks ────────────────────────────────────────────
 [[items]]
+path = "tasks.house_keeping.enabled"
+label = "Enabled"
+kind = "toggle"
+toml_key = "tasks.house_keeping.enabled"
+
+# Session retention period - controls how stale a session must be before
+# both in-memory eviction and on-disk directory cleanup apply. The task
+# itself runs hourly; this select only changes the inactivity threshold.
+[[items]]
+path = "tasks.house_keeping.period"
+label = "Session retention"
+kind = "select"
+toml_key = "tasks.house_keeping.period"
+options = ["1 day", "2 days", "1 week", "2 weeks", "1 month"]
+
+[[items]]
 path = "tasks.hourly_summary.enabled"
 label = "Enabled"
 kind = "toggle"
