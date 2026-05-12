@@ -1010,28 +1010,33 @@ fn build_menu_tree(
                 let display_key = display_parts.join(".");
                 path_map.insert(display_key, item.path.clone());
             } else {
-                // Intermediate segment - find or create submenu
+                // Intermediate segment - find or create submenu.
+                // Dedup by (label, handler) rather than label alone: two distinct
+                // schema paths can produce the same auto-generated label (e.g. duplicate
+                // sandbox rules with identical text), but their handlers always differ
+                // because handler strings encode the rule index.
                 let schema_path_so_far = segments[..=i].join(".");
                 let label = submenu_lookup.get(schema_path_so_far.as_str())
                     .map(|(_, lbl)| crate::i18n::translate_label(lbl))
                     .unwrap_or_else(|| crate::i18n::translate_label(&segment_to_label(seg)));
+                let new_handler: Option<String> = submenu_lookup.get(schema_path_so_far.as_str())
+                    .and_then(|(name, _)| if name.is_empty() { None } else { Some(name.to_string()) });
 
                 let pos = current.iter().position(|m| {
-                    matches!(m, MenuItem::Submenu { label: l, .. } if *l == label)
+                    matches!(m, MenuItem::Submenu { label: l, handler: h, .. }
+                        if *l == label && h.as_deref() == new_handler.as_deref())
                 });
                 let idx = match pos {
                     Some(idx) => idx,
                     None => {
-                        let handler = submenu_lookup.get(schema_path_so_far.as_str())
-                            .and_then(|(name, _)| if name.is_empty() { None } else { Some(name.to_string()) });
                         // Submenus with a handler are forms: fields filled by the user
                         // are collected and dispatched to the handler on Done/ESC.
-                        let form_mode = handler.is_some();
+                        let form_mode = new_handler.is_some();
                         let submit_label = submit_labels.get(&schema_path_so_far).cloned();
                         current.push(MenuItem::Submenu {
                             label: label.clone(),
                             children: Vec::new(),
-                            handler,
+                            handler: new_handler,
                             form_mode,
                             submit_label,
                         });
@@ -4520,5 +4525,66 @@ mod tests {
         // 40 CJK chars also truncated to 32 scalars, not bytes
         let cjk = "中".repeat(40);
         assert_eq!(normalize_thread_name(&cjk).chars().count(), 32);
+    }
+
+    /// Regression test for the bug where two sandbox rules with identical
+    /// rule text (e.g. duplicate entries in `permit_rules`) had their edit
+    /// form fields merged into a single submenu. The handler labels were
+    /// identical (`bash command starts_with x [global]`), and the menu
+    /// builder previously deduped submenus by label alone.
+    #[test]
+    fn test_build_menu_tree_distinguishes_same_label_different_handler() {
+        use omnish_protocol::message::{ConfigHandlerInfo, ConfigItem, ConfigItemKind};
+        use widgets::menu::MenuItem;
+
+        let make_field = |prefix: &str, name: &str, value: &str| ConfigItem {
+            path: format!("{}.{}", prefix, name),
+            label: name.to_string(),
+            kind: ConfigItemKind::TextInput { value: value.to_string() },
+            prefills: vec![],
+        };
+
+        // Two rule edit forms with IDENTICAL labels but DIFFERENT handlers.
+        let items = vec![
+            make_field("sandbox.rules._r0", "field", "command"),
+            make_field("sandbox.rules._r0", "value", "x"),
+            make_field("sandbox.rules._r1", "field", "command"),
+            make_field("sandbox.rules._r1", "value", "x"),
+        ];
+        let handlers = vec![
+            ConfigHandlerInfo {
+                path: "sandbox.rules._r0".to_string(),
+                label: "bash command starts_with x [global]".to_string(),
+                handler: "edit_global_rule:bash:0".to_string(),
+            },
+            ConfigHandlerInfo {
+                path: "sandbox.rules._r1".to_string(),
+                label: "bash command starts_with x [global]".to_string(),
+                handler: "edit_global_rule:bash:1".to_string(),
+            },
+        ];
+
+        let (tree, _) = build_menu_tree(&items, &handlers);
+
+        // Walk down to the inner `rules` submenu. Outer segments use
+        // segment_to_label, so we descend by structure rather than label text.
+        fn first_submenu_children(items: &[MenuItem]) -> &Vec<MenuItem> {
+            items.iter().find_map(|m| match m {
+                MenuItem::Submenu { children, .. } => Some(children),
+                _ => None,
+            }).expect("submenu")
+        }
+        let sandbox = first_submenu_children(&tree);
+        let rules = first_submenu_children(sandbox);
+
+        // Two distinct rule edit submenus, each with exactly its own fields.
+        let rule_submenus: Vec<&Vec<MenuItem>> = rules.iter().filter_map(|m| match m {
+            MenuItem::Submenu { label, children, .. } if label.contains("[global]") => Some(children),
+            _ => None,
+        }).collect();
+        assert_eq!(rule_submenus.len(), 2, "expected two separate rule submenus, got {}", rule_submenus.len());
+        for children in &rule_submenus {
+            assert_eq!(children.len(), 2, "each rule submenu should have exactly 2 fields, got {}", children.len());
+        }
     }
 }
