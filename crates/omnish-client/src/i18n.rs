@@ -114,6 +114,20 @@ pub fn translate_label(label: &str) -> String {
     label.to_string()
 }
 
+/// Translate a select option display value. Uses the English option string as
+/// the lookup key (prefixed with "config.option.") after normalizing to
+/// snake_case. Returns the translated string, or the original if no entry
+/// exists for this language (so options without translations - language
+/// codes, backend names - stay as-is).
+pub fn translate_option(opt: &str) -> String {
+    let key = format!("config.option.{}", label_to_key(opt));
+    let translated = t(&key);
+    if translated != key {
+        return translated.to_string();
+    }
+    opt.to_string()
+}
+
 /// Convert a label like "Ghost text timeout (ms)" to "ghost_text_timeout_ms".
 fn label_to_key(label: &str) -> String {
     label
@@ -188,6 +202,14 @@ mod tests {
         assert_eq!(t("on"), "[تشغيل]");
         assert_eq!(t("confirm"), "تأكيد");
         assert_eq!(translate_label("LLM"), "نموذج لغوي كبير");
+
+        // translate_option: known keys translate, unknown values pass through
+        init("zh");
+        assert_eq!(translate_option("1 day"), "1 天");
+        assert_eq!(translate_option("2 weeks"), "2 周");
+        assert_eq!(translate_option("en"), "en"); // language codes have no translation, fall back
+        init("ja");
+        assert_eq!(translate_option("1 month"), "1 ヶ月");
 
         // Reset to English
         init("en");

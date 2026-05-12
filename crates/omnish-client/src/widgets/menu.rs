@@ -159,7 +159,10 @@ fn render_menu_item(item: &MenuItem, selected: bool) -> String {
             }
         }
         MenuItem::Select { options, selected: idx, .. } => {
-            let val = options.get(*idx).map(|s| s.as_str()).unwrap_or("");
+            let val = options
+                .get(*idx)
+                .map(|s| crate::i18n::translate_option(s))
+                .unwrap_or_default();
             format!(" {GRAY}[{}]{RESET}", val)
         }
         MenuItem::Submenu { .. } => format!(" {GRAY}\u{25b8}{RESET}"),
@@ -951,7 +954,14 @@ pub fn run_menu(
 
                         let select_title = format!("{} > {}", breadcrumb_parts.join(" > "), label_clone);
                         let mut prefill_applied = false;
-                        if let Some(idx) = run_select(&select_title, &options_clone, old_selected) {
+                        // Picker shows translated option labels; the index it
+                        // returns still refers to the original English options
+                        // array so storage and matching stay locale-independent.
+                        let display_options: Vec<String> = options_clone
+                            .iter()
+                            .map(|s| crate::i18n::translate_option(s))
+                            .collect();
+                        if let Some(idx) = run_select(&select_title, &display_options, old_selected) {
                             *selected = idx;
                             if idx != old_selected {
                                 let path = build_path(&breadcrumb_parts, &label_clone);
