@@ -52,10 +52,34 @@ impl StreamReader for MultiSessionReader {
     }
 }
 
+/// Live state for a session's stream.bin file.
+///
+/// `writer` is `None` when no I/O has flowed recently (or yet) - the file
+/// descriptor is released so a long-lived daemon doesn't accumulate fds for
+/// every loaded session. `current_stream_pos` mirrors the file size on disk
+/// regardless of whether `writer` is open, so `receive_command` can compute
+/// stream offsets without needing an open writer.
 struct StreamWriterState {
-    writer: StreamWriter,
+    writer: Option<StreamWriter>,
     last_command_stream_pos: u64,
+    current_stream_pos: u64,
     last_active: Instant,
+}
+
+impl StreamWriterState {
+    /// Ensure `writer` is open, lazily creating or appending to stream.bin.
+    /// Returns a mutable reference to the now-open writer.
+    fn ensure_writer(&mut self, stream_path: &std::path::Path) -> Result<&mut StreamWriter> {
+        if self.writer.is_none() {
+            let w = if stream_path.exists() {
+                StreamWriter::open_append(stream_path)?
+            } else {
+                StreamWriter::create(stream_path)?
+            };
+            self.writer = Some(w);
+        }
+        Ok(self.writer.as_mut().unwrap())
+    }
 }
 
 struct Session {
@@ -276,11 +300,12 @@ impl SessionManager {
                 let meta = SessionMeta::load(&dir)?;
                 let commands = CommandRecord::load_all(&dir)?;
                 let stream_path = dir.join("stream.bin");
-                let stream_writer = if stream_path.exists() {
-                    StreamWriter::open_append(&stream_path)?
-                } else {
-                    StreamWriter::create(&stream_path)?
-                };
+
+                // Read current file size without opening the writer - keeps fd
+                // usage at zero for loaded-but-inactive sessions.
+                let current_stream_pos = std::fs::metadata(&stream_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
 
                 let last_command_stream_pos = commands
                     .last()
@@ -297,8 +322,9 @@ impl SessionManager {
                         meta: RwLock::new(meta),
                         commands: RwLock::new(commands),
                         stream_writer: Mutex::new(StreamWriterState {
-                            writer: stream_writer,
+                            writer: None,
                             last_command_stream_pos,
+                            current_stream_pos,
                             last_active,
                         }),
                         last_update: Mutex::new(None),
@@ -389,7 +415,7 @@ impl SessionManager {
         };
         meta.save(&session_dir)?;
 
-        let stream_writer = StreamWriter::create(&session_dir.join("stream.bin"))?;
+        // stream.bin is created lazily on first feed_io; no fd opened here.
 
         sessions.insert(
             session_id.to_string(),
@@ -398,8 +424,9 @@ impl SessionManager {
                 meta: RwLock::new(meta),
                 commands: RwLock::new(Vec::new()),
                 stream_writer: Mutex::new(StreamWriterState {
-                    writer: stream_writer,
+                    writer: None,
                     last_command_stream_pos: 0,
+                    current_stream_pos: 0,
                     last_active: Instant::now(),
                 }),
                 last_update: Mutex::new(None),
@@ -457,8 +484,12 @@ impl SessionManager {
             sessions.get(session_id).cloned()
         };
         if let Some(session) = session {
+            let stream_path = session.dir.join("stream.bin");
             let mut sw = session.stream_writer.lock().await;
-            sw.writer.write_entry(timestamp_ms, direction, data)?;
+            let writer = sw.ensure_writer(&stream_path)?;
+            writer.write_entry(timestamp_ms, direction, data)?;
+            let pos = writer.position();
+            sw.current_stream_pos = pos;
             sw.last_active = Instant::now();
         }
         Ok(())
@@ -473,11 +504,11 @@ impl SessionManager {
             // Extract command line before record is moved
             let next_cmd_line = record.command_line.clone();
 
-            // Lock stream_writer to get position info
-            let current_pos;
+            // Position info comes from current_stream_pos which mirrors the
+            // file size whether or not the writer is currently open.
             {
                 let mut sw = session.stream_writer.lock().await;
-                current_pos = sw.writer.position();
+                let current_pos = sw.current_stream_pos;
                 record.stream_offset = sw.last_command_stream_pos;
                 record.stream_length = current_pos - sw.last_command_stream_pos;
                 sw.last_command_stream_pos = current_pos;
@@ -571,6 +602,14 @@ impl SessionManager {
 
             let commands = session.commands.read().await;
             CommandRecord::save_all(&commands, &session.dir)?;
+
+            // Release the stream.bin fd now that the shell has exited.
+            // The session remains in memory for history queries; if more I/O
+            // arrives later (re-register), the writer will be reopened lazily.
+            {
+                let mut sw = session.stream_writer.lock().await;
+                sw.writer.take();
+            }
 
             // Flush any pending sample without next_command
             let pending = {
@@ -912,6 +951,34 @@ impl SessionManager {
             tracing::info!("evicted {} inactive session(s) from memory", evicted);
         }
         evicted
+    }
+
+    /// Close stream.bin writers for sessions whose last_active exceeds
+    /// `max_idle`, releasing the file descriptor while keeping the session
+    /// in memory for history queries. The writer is reopened lazily on the
+    /// next `write_io` call.
+    ///
+    /// This is the safety net for cases where neither `end_session` nor a
+    /// connection-close signal fires (client crash, network drop).
+    pub async fn close_idle_writers(&self, max_idle: std::time::Duration) -> usize {
+        let session_arcs: Vec<_> = {
+            let sessions = self.sessions.read().await;
+            sessions.values().cloned().collect()
+        };
+
+        let mut closed = 0;
+        for session in &session_arcs {
+            let mut sw = session.stream_writer.lock().await;
+            if sw.writer.is_some() && sw.last_active.elapsed() >= max_idle {
+                sw.writer.take();
+                closed += 1;
+            }
+        }
+
+        if closed > 0 {
+            tracing::info!("closed {} idle stream.bin writer(s)", closed);
+        }
+        closed
     }
 
     /// Clean up session directories that have been inactive longer than `max_age`.
@@ -1745,6 +1812,58 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_close_idle_writers_releases_fd() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+        let mgr = SessionManager::new(base, Default::default());
+
+        mgr.register("idle_sess", None, Default::default())
+            .await
+            .unwrap();
+
+        // No writer should be open yet (lazy creation).
+        {
+            let sessions = mgr.sessions.read().await;
+            let session = sessions.get("idle_sess").unwrap();
+            let sw = session.stream_writer.lock().await;
+            assert!(sw.writer.is_none(), "writer should be lazy");
+        }
+
+        // First write opens the writer.
+        mgr.write_io("idle_sess", 100, 0, b"hello").await.unwrap();
+        {
+            let sessions = mgr.sessions.read().await;
+            let session = sessions.get("idle_sess").unwrap();
+            let sw = session.stream_writer.lock().await;
+            assert!(sw.writer.is_some(), "writer should be open after write_io");
+        }
+
+        // With max_idle = 0, the writer is past its idle deadline immediately.
+        let closed = mgr.close_idle_writers(std::time::Duration::ZERO).await;
+        assert_eq!(closed, 1);
+        {
+            let sessions = mgr.sessions.read().await;
+            let session = sessions.get("idle_sess").unwrap();
+            let sw = session.stream_writer.lock().await;
+            assert!(sw.writer.is_none(), "writer should be closed after idle sweep");
+        }
+
+        // Subsequent write reopens the writer; data still flows through.
+        mgr.write_io("idle_sess", 200, 1, b"world").await.unwrap();
+        {
+            let sessions = mgr.sessions.read().await;
+            let session = sessions.get("idle_sess").unwrap();
+            let sw = session.stream_writer.lock().await;
+            assert!(sw.writer.is_some(), "writer should reopen on next write");
+            assert_eq!(sw.current_stream_pos, sw.writer.as_ref().unwrap().position());
+        }
+
+        // With a large max_idle, an active writer is not closed.
+        let closed = mgr.close_idle_writers(std::time::Duration::from_secs(3600)).await;
+        assert_eq!(closed, 0);
+    }
 
     #[tokio::test]
     async fn test_load_existing_restores_sessions() {

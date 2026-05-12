@@ -33,3 +33,4 @@ pub mod task_mgr;
 pub mod thread_summary;
 pub mod tool_registry;
 pub mod tools;
+pub mod writer_idle;
