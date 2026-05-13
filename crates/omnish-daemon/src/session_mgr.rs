@@ -1507,13 +1507,25 @@ impl SessionManager {
         current_session_id: &str,
         max_context_chars: Option<usize>,
     ) -> Result<String> {
+        // Mirror the real request layout for debugging: when the live cwd is
+        // known, populate cwd_history with the latest N commands in that cwd
+        // (empty prefix matches all). This is what `/context auto-complete`
+        // surfaces to the user.
+        let cwd = self.get_live_cwd(current_session_id).await;
+        let cwd_query = cwd.as_deref().map(|c| CwdQuery { cwd: c, prefix: "" });
         let sections = self
-            .build_completion_sections(current_session_id, max_context_chars, None)
+            .build_completion_sections(current_session_id, max_context_chars, cwd_query)
             .await?;
-        if sections.stable_prefix.is_empty() && sections.remainder.is_empty() {
+        if sections.stable_prefix.is_empty()
+            && sections.remainder.is_empty()
+            && sections.cwd_history.is_empty()
+        {
             Ok(String::new())
         } else {
-            Ok(format!("{}{}", sections.stable_prefix, sections.remainder))
+            Ok(format!(
+                "{}{}{}",
+                sections.stable_prefix, sections.remainder, sections.cwd_history
+            ))
         }
     }
 
