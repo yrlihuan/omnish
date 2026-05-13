@@ -6,58 +6,40 @@
 # Output: {"summary":"...","compact":[...],"full":[...]}
 #
 # Compact: title + URL + content line count
-# Full:    title + URL + first N lines of content
+# Full:    title + URL + first 30 lines of content
 
-set -uo pipefail
+PROG=$(cat <<'JQEOF'
+def fmt:
+  if .is_error then
+    (.output + "\n") as $o | {summary: $o, compact: [$o], full: [$o]}
+  else
+    (.output | split("\n")) as $lines
+    | (($lines[0] // "") | sub("^# "; "")) as $title
+    | ($lines[1] // "") as $url_line
+    | ($url_line | test("^URL: ")) as $has_url
+    | ([0, ($lines | length) - 3] | max) as $total
+    | 30 as $max
+    | {
+        summary: null,
+        compact: [
+          (if $title != "" then $title else empty end),
+          (if $has_url then $url_line else empty end),
+          "(\($total) lines)"
+        ],
+        full: (
+          [ (if $title != "" then $title else empty end)
+          , (if $has_url then $url_line else empty end)
+          , ""
+          ]
+          + $lines[3:3+$max]
+          + (if $total > $max
+             then ["[2;90m(+\($total - $max) more lines)[0m"]
+             else [] end)
+        )
+      }
+  end;
 
-MAX_LINES=30
-
-TMPFILE=$(mktemp)
-trap 'rm -f "$TMPFILE"' EXIT
-
-while IFS= read -r line; do
-    # Write input line to temp file to avoid ARG_MAX with large output
-    echo "$line" > "$TMPFILE"
-    output=$(jq -r '.output // ""' < "$TMPFILE")
-    is_error=$(jq -r '.is_error // false' < "$TMPFILE")
-
-    if [ "$is_error" = "true" ]; then
-        echo "$output" | jq -Rsc '{"summary": ., "compact": [.], "full": [.]}'
-        continue
-    fi
-
-    # Extract title (first line starting with "# ")
-    title=$(echo "$output" | head -1 | sed 's/^# //')
-    # Extract URL line
-    url_line=$(echo "$output" | sed -n '2p')
-
-    # Count total content lines (skip title + URL + blank line)
-    total_lines=$(echo "$output" | tail -n +4 | wc -l)
-
-    # Build compact JSON array
-    compact_json=$(
-        {
-            [ -n "$title" ] && echo "$title"
-            echo "$url_line" | grep -q '^URL: ' && echo "$url_line"
-            echo "($total_lines lines)"
-        } | jq -R . | jq -sc .
-    )
-
-    # Build full JSON array
-    full_json=$(
-        {
-            [ -n "$title" ] && echo "$title"
-            echo "$url_line" | grep -q '^URL: ' && echo "$url_line"
-            echo ""
-            echo "$output" | tail -n +4 | head -n "$MAX_LINES"
-            if [ "$total_lines" -gt "$MAX_LINES" ]; then
-                remaining=$((total_lines - MAX_LINES))
-                printf '\033[2;90m(+%d more lines)\033[0m' "$remaining"
-            fi
-        } | jq -R . | jq -sc .
-    )
-
-    # Output JSON - use --argjson to pass pre-built arrays
-    jq -cn --argjson compact "$compact_json" --argjson full "$full_json" \
-        '{"summary": null, "compact": $compact, "full": $full}'
-done
+inputs | fmt
+JQEOF
+)
+exec jq -cn --unbuffered "$PROG"
