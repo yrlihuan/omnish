@@ -1736,7 +1736,19 @@ impl SessionManager {
             }
         };
 
-        sections.cwd_history = build_cwd_history(&all_commands, cwd_query, cc.cwd_history_limit);
+        let cwd_history = build_cwd_history(&all_commands, cwd_query, cc.cwd_history_limit);
+        // Lead with "\n\n" when stable_prefix/remainder is non-empty so any
+        // downstream concat (e.g. /context display, prompt_for_sample) keeps a
+        // visible boundary between </system-reminder> and <cwd_history>. The
+        // wire format (build_completion_extra_messages) puts each section in
+        // its own content block, so the leading whitespace there is benign.
+        if !cwd_history.is_empty()
+            && (!sections.stable_prefix.is_empty() || !sections.remainder.is_empty())
+        {
+            sections.cwd_history = format!("\n\n{}", cwd_history);
+        } else {
+            sections.cwd_history = cwd_history;
+        }
         Ok(sections)
     }
 
