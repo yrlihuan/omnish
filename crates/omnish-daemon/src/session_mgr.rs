@@ -52,6 +52,53 @@ impl StreamReader for MultiSessionReader {
     }
 }
 
+/// Per-request cwd filter for `build_completion_sections`. When `Some`, the
+/// resulting `CompletionSections.cwd_history` is populated with command lines
+/// matching `(cwd, prefix)`. `None` skips cwd_history entirely (used by the
+/// KV cache warmup path which must keep its payload minimal and input-independent).
+pub struct CwdQuery<'a> {
+    /// Current cwd, already `shorten_home`'d by the caller.
+    pub cwd: &'a str,
+    /// Input prefix to match against `command_line`. Empty matches all commands.
+    pub prefix: &'a str,
+}
+
+/// Filter `all_commands` by cwd and command-line prefix, take the latest `limit`
+/// (chronological order preserved), render as `<cwd_history>...</cwd_history>`.
+/// Returns "" when feature is disabled, query is None, or no matches.
+fn build_cwd_history(
+    all_commands: &[CommandRecord],
+    cwd_query: Option<CwdQuery<'_>>,
+    limit: usize,
+) -> String {
+    if limit == 0 {
+        return String::new();
+    }
+    let Some(query) = cwd_query else {
+        return String::new();
+    };
+    let mut matched: Vec<&CommandRecord> = all_commands.iter()
+        .filter(|c| {
+            let cwd_match = c.cwd.as_deref()
+                .map(|cmd_cwd| omnish_context::shorten_home(cmd_cwd) == query.cwd)
+                .unwrap_or(false);
+            let prefix_match = c.command_line.as_deref()
+                .map(|cl| cl.starts_with(query.prefix))
+                .unwrap_or(false);
+            cwd_match && prefix_match
+        })
+        .collect();
+    if matched.is_empty() {
+        return String::new();
+    }
+    matched.sort_by_key(|c| c.started_at);
+    let start = matched.len().saturating_sub(limit);
+    let lines: Vec<String> = matched[start..].iter()
+        .filter_map(|c| c.command_line.clone())
+        .collect();
+    omnish_context::recent::format_cwd_history(&lines)
+}
+
 /// Live state for a session's stream.bin file.
 ///
 /// `writer` is `None` when no I/O has flowed recently (or yet) - the file
@@ -1461,7 +1508,7 @@ impl SessionManager {
         max_context_chars: Option<usize>,
     ) -> Result<String> {
         let sections = self
-            .build_completion_sections(current_session_id, max_context_chars)
+            .build_completion_sections(current_session_id, max_context_chars, None)
             .await?;
         if sections.stable_prefix.is_empty() && sections.remainder.is_empty() {
             Ok(String::new())
@@ -1484,6 +1531,7 @@ impl SessionManager {
         &self,
         current_session_id: &str,
         max_context_chars: Option<usize>,
+        cwd_query: Option<CwdQuery<'_>>,
     ) -> Result<CompletionSections> {
         let cc = &self.context_config.completion;
 
@@ -1632,10 +1680,10 @@ impl SessionManager {
         let mut current_detailed = detailed_count;
         let mut current_history = total.saturating_sub(detailed_count);
 
-        loop {
+        let mut sections = loop {
             let current_total = current_detailed + current_history;
             if current_total == 0 {
-                return Ok(CompletionSections::default());
+                break CompletionSections::default();
             }
 
             let strategy = RecentCommands::new(current_total);
@@ -1661,7 +1709,7 @@ impl SessionManager {
                 }
             };
             if fits {
-                return Ok(sections);
+                break sections;
             }
 
             // Reduce detailed first to preserve history prefix stability
@@ -1672,9 +1720,23 @@ impl SessionManager {
                 let reduction = (current_history / 4).max(1);
                 current_history = current_history.saturating_sub(reduction);
             } else {
-                return Ok(sections);
+                break sections;
             }
-        }
+        };
+
+        sections.cwd_history = build_cwd_history(&all_commands, cwd_query, cc.cwd_history_limit);
+        Ok(sections)
+    }
+
+    /// Read the live shell cwd (already shorten_home'd) for a session.
+    /// Returns None when the session is unknown or has no `shell_cwd` attribute.
+    pub async fn get_live_cwd(&self, session_id: &str) -> Option<String> {
+        let session = {
+            let sessions = self.sessions.read().await;
+            sessions.get(session_id).cloned()?
+        };
+        let meta = session.meta.read().await;
+        meta.attrs.get("shell_cwd").map(|c| omnish_context::shorten_home(c))
     }
 
     /// Build completion context and compare with cached version.
@@ -1706,7 +1768,7 @@ impl SessionManager {
         max_context_chars: Option<usize>,
     ) -> Result<Option<CompletionSections>> {
         let new_sections = self
-            .build_completion_sections(session_id, max_context_chars)
+            .build_completion_sections(session_id, max_context_chars, None)
             .await?;
         let new_context = if new_sections.stable_prefix.is_empty()
             && new_sections.remainder.is_empty()
@@ -1756,7 +1818,7 @@ impl SessionManager {
         // Rebuild sections with the advanced cutoff so the returned payload
         // matches what subsequent requests will send.
         let rebuilt = self
-            .build_completion_sections(session_id, max_context_chars)
+            .build_completion_sections(session_id, max_context_chars, None)
             .await?;
 
         // Keep last_completion_context in sync with the rebuilt form so the
@@ -2158,6 +2220,7 @@ mod tests {
                 max_context_chars: None,
                 detailed_min: 20,
                 detailed_max: 30,
+                cwd_history_limit: 10,
             },
         };
         let mgr_no_limit = SessionManager::new(dir.path().to_path_buf(), cc_no_limit);
@@ -2200,6 +2263,7 @@ mod tests {
                 max_context_chars: Some(200), // Small limit
                 detailed_min: 20,
                 detailed_max: 30,
+                cwd_history_limit: 10,
             },
         };
         let mgr_limited = SessionManager::new(dir.path().to_path_buf(), cc_limited);
@@ -2270,6 +2334,7 @@ mod tests {
                 max_context_chars: None,
                 detailed_min: 20,
                 detailed_max: 30,
+                cwd_history_limit: 10,
             },
         };
         let mgr = SessionManager::new(dir.path().to_path_buf(), cc);
@@ -2297,7 +2362,7 @@ mod tests {
             .unwrap();
         }
 
-        let before = mgr.build_completion_sections("sess1", None).await.unwrap();
+        let before = mgr.build_completion_sections("sess1", None, None).await.unwrap();
         assert!(!before.stable_prefix.is_empty(), "stable_prefix should not be empty");
 
         mgr.receive_command(
@@ -2318,7 +2383,7 @@ mod tests {
         .await
         .unwrap();
 
-        let after = mgr.build_completion_sections("sess1", None).await.unwrap();
+        let after = mgr.build_completion_sections("sess1", None, None).await.unwrap();
 
         assert_eq!(
             before.stable_prefix, after.stable_prefix,
@@ -2681,5 +2746,131 @@ mod tests {
             .collect();
         assert!(!by_addr["alice@boxA"]);
         assert!(by_addr["alice@boxB"]);
+    }
+
+    fn make_rec(seq: u64, cwd: &str, cmd: &str) -> CommandRecord {
+        CommandRecord {
+            command_id: format!("c{}", seq),
+            session_id: "s".into(),
+            command_line: Some(cmd.into()),
+            cwd: Some(cwd.into()),
+            started_at: 1000 + seq,
+            ended_at: Some(2000 + seq),
+            output_summary: "".into(),
+            stream_offset: 0,
+            stream_length: 0,
+            exit_code: Some(0),
+        }
+    }
+
+    #[test]
+    fn test_build_cwd_history_none_query_returns_empty() {
+        let cmds = vec![make_rec(1, "/tmp", "ls")];
+        assert_eq!(build_cwd_history(&cmds, None, 10), "");
+    }
+
+    #[test]
+    fn test_build_cwd_history_zero_limit_returns_empty() {
+        let cmds = vec![make_rec(1, "/tmp", "ls")];
+        let q = CwdQuery { cwd: "/tmp", prefix: "" };
+        assert_eq!(build_cwd_history(&cmds, Some(q), 0), "");
+    }
+
+    #[test]
+    fn test_build_cwd_history_filters_by_cwd_strict() {
+        let cmds = vec![
+            make_rec(1, "/tmp", "ls"),
+            make_rec(2, "/etc", "cat passwd"),
+            make_rec(3, "/tmp", "pwd"),
+        ];
+        let q = CwdQuery { cwd: "/tmp", prefix: "" };
+        let out = build_cwd_history(&cmds, Some(q), 10);
+        assert!(out.contains("ls"));
+        assert!(out.contains("pwd"));
+        assert!(!out.contains("cat passwd"));
+    }
+
+    #[test]
+    fn test_build_cwd_history_filters_by_prefix() {
+        let cmds = vec![
+            make_rec(1, "/tmp", "git status"),
+            make_rec(2, "/tmp", "ls -la"),
+            make_rec(3, "/tmp", "git diff"),
+        ];
+        let q = CwdQuery { cwd: "/tmp", prefix: "git" };
+        let out = build_cwd_history(&cmds, Some(q), 10);
+        assert!(out.contains("git status"));
+        assert!(out.contains("git diff"));
+        assert!(!out.contains("ls -la"));
+    }
+
+    #[test]
+    fn test_build_cwd_history_empty_prefix_matches_all() {
+        let cmds = vec![
+            make_rec(1, "/tmp", "git status"),
+            make_rec(2, "/tmp", "ls -la"),
+        ];
+        let q = CwdQuery { cwd: "/tmp", prefix: "" };
+        let out = build_cwd_history(&cmds, Some(q), 10);
+        assert!(out.contains("git status"));
+        assert!(out.contains("ls -la"));
+    }
+
+    #[test]
+    fn test_build_cwd_history_takes_last_n_chronological() {
+        let cmds = vec![
+            make_rec(1, "/tmp", "a"),
+            make_rec(2, "/tmp", "b"),
+            make_rec(3, "/tmp", "c"),
+            make_rec(4, "/tmp", "d"),
+            make_rec(5, "/tmp", "e"),
+        ];
+        let q = CwdQuery { cwd: "/tmp", prefix: "" };
+        let out = build_cwd_history(&cmds, Some(q), 3);
+        // Latest 3 in chronological order: c, d, e
+        assert_eq!(
+            out,
+            "<cwd_history>\nc\nd\ne\n</cwd_history>"
+        );
+    }
+
+    #[test]
+    fn test_build_cwd_history_preserves_duplicates_and_order() {
+        let cmds = vec![
+            make_rec(1, "/tmp", "git status"),
+            make_rec(2, "/tmp", "git status"),
+            make_rec(3, "/tmp", "git diff"),
+            make_rec(4, "/tmp", "git status"),
+        ];
+        let q = CwdQuery { cwd: "/tmp", prefix: "git" };
+        let out = build_cwd_history(&cmds, Some(q), 10);
+        // No dedup: all 4 commands preserved in time order
+        assert_eq!(
+            out,
+            "<cwd_history>\ngit status\ngit status\ngit diff\ngit status\n</cwd_history>"
+        );
+    }
+
+    #[test]
+    fn test_build_cwd_history_no_matches_returns_empty() {
+        let cmds = vec![make_rec(1, "/tmp", "ls")];
+        let q = CwdQuery { cwd: "/other", prefix: "" };
+        assert_eq!(build_cwd_history(&cmds, Some(q), 10), "");
+    }
+
+    #[test]
+    fn test_build_cwd_history_cwd_shorten_home_normalization() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if home.is_empty() {
+            return; // skip when HOME is not set
+        }
+        let cmds = vec![
+            // command stored with literal HOME path
+            make_rec(1, &format!("{}/project", home), "cargo build"),
+        ];
+        // query passes the already-shortened form
+        let q = CwdQuery { cwd: "~/project", prefix: "" };
+        let out = build_cwd_history(&cmds, Some(q), 10);
+        assert!(out.contains("cargo build"), "expected match after shorten_home, got: {:?}", out);
     }
 }

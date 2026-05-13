@@ -170,11 +170,11 @@ omnish-daemon::server：
 | 文件 | 改动 |
 |---|---|
 | `crates/omnish-common/src/config.rs` | `CompletionContextConfig` 加字段 + default |
-| `crates/omnish-daemon/src/config_schema.toml` | 新增 schema item + i18n key |
-| `crates/omnish-context/src/recent.rs` | `CompletionSections` 加字段；`CompletionFormatter::format_cwd_history` |
-| `crates/omnish-daemon/src/session_mgr.rs` | `build_completion_sections` 签名 + 实现；新增 `get_live_cwd` getter |
-| `crates/omnish-daemon/src/server.rs` | `handle_completion_request` 传 prefix；warmup 传 `None`；`build_completion_extra_messages` 多一个 block；采样字段拼 cwd_history |
-| 客户端 i18n 字符串 | 新配置项的中英文标签 |
+| `crates/omnish-context/src/recent.rs` | `CompletionSections` 加字段；`format_cwd_history` 自由函数 |
+| `crates/omnish-daemon/src/session_mgr.rs` | `CwdQuery` 类型 + `build_cwd_history` 自由函数；`build_completion_sections` 签名 + 实现；新增 `get_live_cwd` getter |
+| `crates/omnish-daemon/src/server.rs` | `handle_completion_request` 计算 cwd_query 并透传；ratio 比较只看 stable 部分；`build_completion_extra_messages` 多一个 block |
+
+注：`cwd_history_limit` 跟 `head_lines`/`history_commands` 等同级配置一样只通过 `daemon.toml` 调整，不进 `/config` TUI 菜单（保持一致性）。
 
 ### 配置默认值
 

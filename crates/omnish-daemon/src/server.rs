@@ -2331,9 +2331,11 @@ async fn try_warmup_kv_cache(
 
 /// Build the user message's content blocks for a completion-style request.
 ///
-/// Layout: `[stable_prefix, remainder, query]` with `cache_control` on the
-/// stable_prefix block (cache_pos=0). Between warmups, Block 0 is byte-stable
-/// so Anthropic's KV cache hits on the cached breakpoint.
+/// Layout: `[stable_prefix, remainder, cwd_history, query]` with `cache_control`
+/// on the stable_prefix block (cache_pos=0). Between warmups, Block 0 is
+/// byte-stable so Anthropic's KV cache hits on the cached breakpoint. The
+/// cwd_history block depends on per-request input and is never cached; it sits
+/// after remainder so it's the last context the LLM sees before the query.
 fn build_completion_extra_messages(
     sections: &omnish_context::recent::CompletionSections,
     query: &str,
@@ -2350,6 +2352,12 @@ fn build_completion_extra_messages(
         blocks.push(serde_json::json!({
             "type": "text",
             "text": sections.remainder,
+        }));
+    }
+    if !sections.cwd_history.is_empty() {
+        blocks.push(serde_json::json!({
+            "type": "text",
+            "text": sections.cwd_history,
         }));
     }
     blocks.push(serde_json::json!({
@@ -3365,20 +3373,40 @@ async fn handle_completion_request(
     // Get previous context for prefix match ratio calculation
     let last_context = mgr.get_last_completion_context().await;
 
+    // Resolve current cwd: prefer client-reported (more accurate at request
+    // time), fall back to polled shell_cwd attribute on the session.
+    let cwd = match req.cwd.as_deref() {
+        Some(c) => Some(omnish_context::shorten_home(c)),
+        None => mgr.get_live_cwd(&req.session_id).await,
+    };
+    let cwd_query = cwd.as_deref().map(|c| omnish_daemon::session_mgr::CwdQuery {
+        cwd: c,
+        prefix: req.input.as_str(),
+    });
+
     let sections = mgr
-        .build_completion_sections(&req.session_id, max_context_chars)
+        .build_completion_sections(&req.session_id, max_context_chars, cwd_query)
         .await?;
-    let context = if sections.stable_prefix.is_empty() && sections.remainder.is_empty() {
+    // Stable portion for prefix-ratio comparison (mirrors what
+    // `check_and_warmup_sections` caches into `last_completion_context`).
+    let stable_context = if sections.stable_prefix.is_empty() && sections.remainder.is_empty() {
         String::new()
     } else {
         format!("{}{}", sections.stable_prefix, sections.remainder)
     };
+    let context = if stable_context.is_empty() && sections.cwd_history.is_empty() {
+        String::new()
+    } else {
+        format!("{}{}", stable_context, sections.cwd_history)
+    };
 
-    // Log prefix match ratio with previous completion request
+    // Log prefix match ratio with previous completion request.
+    // Compare on the stable portion only - cwd_history depends on per-request
+    // input and would skew the ratio without informing KV-cache stability.
     if !last_context.is_empty() {
         let common_prefix_len = last_context
             .bytes()
-            .zip(context.bytes())
+            .zip(stable_context.bytes())
             .take_while(|(a, b)| a == b)
             .count();
         let ratio = common_prefix_len as f64 / last_context.len() as f64;
@@ -3703,6 +3731,41 @@ mod tests {
         fn model_name(&self) -> &str {
             "mock-model"
         }
+    }
+
+    #[test]
+    fn test_build_completion_extra_messages_inserts_cwd_history_block() {
+        let sections = omnish_context::recent::CompletionSections {
+            stable_prefix: "<history>S</history>".into(),
+            remainder: "<system-reminder>R</system-reminder>".into(),
+            cwd_history: "<cwd_history>\ngit status\n</cwd_history>".into(),
+        };
+        let msgs = build_completion_extra_messages(&sections, "Current input: `git`");
+        assert_eq!(msgs.len(), 1);
+        let blocks = msgs[0].content["content"].as_array().unwrap();
+        // Order: stable_prefix, remainder, cwd_history, query
+        assert_eq!(blocks.len(), 4);
+        assert_eq!(blocks[0]["text"], "<history>S</history>");
+        assert_eq!(blocks[1]["text"], "<system-reminder>R</system-reminder>");
+        assert_eq!(blocks[2]["text"], "<cwd_history>\ngit status\n</cwd_history>");
+        assert_eq!(blocks[3]["text"], "Current input: `git`");
+        // Cache hint sits on block 0 (the stable_prefix).
+        assert_eq!(msgs[0].cache_pos, Some(0));
+    }
+
+    #[test]
+    fn test_build_completion_extra_messages_skips_empty_cwd_history() {
+        let sections = omnish_context::recent::CompletionSections {
+            stable_prefix: "S".into(),
+            remainder: "R".into(),
+            cwd_history: String::new(),
+        };
+        let msgs = build_completion_extra_messages(&sections, "q");
+        let blocks = msgs[0].content["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 3); // no cwd_history block when empty
+        assert_eq!(blocks[0]["text"], "S");
+        assert_eq!(blocks[1]["text"], "R");
+        assert_eq!(blocks[2]["text"], "q");
     }
 
     #[test]

@@ -767,6 +767,11 @@ pub struct CompletionContextConfig {
     /// Maximum number of detailed commands before elastic window reset.
     #[serde(default = "default_detailed_max", deserialize_with = "string_or_int::deserialize")]
     pub detailed_max: usize,
+    /// Number of recent commands executed under the current cwd to append as a
+    /// <cwd_history> block. Optionally filtered by the user's input prefix.
+    /// 0 disables the feature.
+    #[serde(default = "default_cwd_history_limit", deserialize_with = "string_or_int::deserialize")]
+    pub cwd_history_limit: usize,
 }
 
 impl Default for CompletionContextConfig {
@@ -781,6 +786,7 @@ impl Default for CompletionContextConfig {
             max_context_chars: default_max_context_chars(),
             detailed_min: default_detailed_min(),
             detailed_max: default_detailed_max(),
+            cwd_history_limit: default_cwd_history_limit(),
         }
     }
 }
@@ -825,6 +831,10 @@ fn default_detailed_min() -> usize {
 
 fn default_detailed_max() -> usize {
     30
+}
+
+fn default_cwd_history_limit() -> usize {
+    10
 }
 
 #[cfg(test)]

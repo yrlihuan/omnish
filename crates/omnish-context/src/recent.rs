@@ -355,6 +355,12 @@ pub struct CompletionSections {
     /// Leads with `\n\n` when `stable_prefix` is non-empty so downstream concat
     /// preserves visual separation between blocks.
     pub remainder: String,
+    /// `<cwd_history>...</cwd_history>` block listing recent command lines in
+    /// the current cwd (optionally filtered by input prefix). Empty when the
+    /// feature is disabled, the cwd is unknown, or no matching commands exist.
+    /// Belongs after `remainder` in the wire layout but is computed separately
+    /// because it depends on the per-request input prefix.
+    pub cwd_history: String,
 }
 
 /// Formats commands for completion context, optimized for KV cache hit rate.
@@ -516,7 +522,7 @@ impl CompletionFormatter {
             remainder.push_str(&trailer);
         }
 
-        CompletionSections { stable_prefix: stable, remainder }
+        CompletionSections { stable_prefix: stable, remainder, cwd_history: String::new() }
     }
 }
 
@@ -525,6 +531,21 @@ impl ContextFormatter for CompletionFormatter {
         let s = self.format_sections(history, detailed, None);
         format!("{}{}", s.stable_prefix, s.remainder)
     }
+}
+
+/// Render a list of command lines as a `<cwd_history>...</cwd_history>` block.
+/// Returns an empty string when `commands` is empty.
+pub fn format_cwd_history(commands: &[String]) -> String {
+    if commands.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("<cwd_history>\n");
+    for cmd in commands {
+        out.push_str(cmd);
+        out.push('\n');
+    }
+    out.push_str("</cwd_history>");
+    out
 }
 
 #[cfg(test)]
@@ -1350,5 +1371,28 @@ mod tests {
         let s = formatter.format_sections(&[], &[], None);
         assert!(s.stable_prefix.is_empty());
         assert!(s.remainder.is_empty());
+    }
+
+    #[test]
+    fn test_format_cwd_history_empty_returns_empty_string() {
+        assert_eq!(format_cwd_history(&[]), "");
+    }
+
+    #[test]
+    fn test_format_cwd_history_wraps_and_preserves_order() {
+        let cmds = vec![
+            "git status".to_string(),
+            "git diff src/foo.rs".to_string(),
+            "git commit -m \"fix\"".to_string(),
+        ];
+        let out = format_cwd_history(&cmds);
+        assert_eq!(
+            out,
+            "<cwd_history>\n\
+             git status\n\
+             git diff src/foo.rs\n\
+             git commit -m \"fix\"\n\
+             </cwd_history>"
+        );
     }
 }
