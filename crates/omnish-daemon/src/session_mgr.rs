@@ -72,22 +72,37 @@ fn build_cwd_history(
     limit: usize,
 ) -> String {
     if limit == 0 {
+        tracing::debug!("cwd_history: limit=0, returning empty");
         return String::new();
     }
     let Some(query) = cwd_query else {
+        tracing::debug!("cwd_history: query=None, returning empty");
         return String::new();
     };
-    let mut matched: Vec<&CommandRecord> = all_commands.iter()
+    tracing::debug!(
+        "cwd_history: query.cwd={:?} prefix={:?} total_commands={}",
+        query.cwd, query.prefix, all_commands.len()
+    );
+    let cwd_only_matches: Vec<&CommandRecord> = all_commands.iter()
         .filter(|c| {
-            let cwd_match = c.cwd.as_deref()
+            c.cwd.as_deref()
                 .map(|cmd_cwd| omnish_context::shorten_home(cmd_cwd) == query.cwd)
-                .unwrap_or(false);
-            let prefix_match = c.command_line.as_deref()
-                .map(|cl| cl.starts_with(query.prefix))
-                .unwrap_or(false);
-            cwd_match && prefix_match
+                .unwrap_or(false)
         })
         .collect();
+    tracing::debug!(
+        "cwd_history: cwd_only_matches={} (sample cmd.cwd values: {:?})",
+        cwd_only_matches.len(),
+        all_commands.iter().take(3).map(|c| c.cwd.clone()).collect::<Vec<_>>()
+    );
+    let mut matched: Vec<&CommandRecord> = cwd_only_matches.into_iter()
+        .filter(|c| {
+            c.command_line.as_deref()
+                .map(|cl| cl.starts_with(query.prefix))
+                .unwrap_or(false)
+        })
+        .collect();
+    tracing::debug!("cwd_history: matched={}", matched.len());
     if matched.is_empty() {
         return String::new();
     }
