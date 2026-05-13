@@ -794,12 +794,12 @@ impl SessionManager {
                 continue;
             };
             let active = meta.ended_at.is_none();
-            // Insert with at-least-active=true; a persisted-only entry
-            // stays false, but a persisted entry with an active session
-            // upgrades to true.
+            // Only upgrade an existing history entry to active; never
+            // re-insert a row that was just forgotten via the Forget
+            // button (#618). On the next reconnect, `register` calls
+            // `touch_clients_history` which adds the row back legitimately.
             by_client.entry((deploy_addr, hostname))
-                .and_modify(|a| if active { *a = true; })
-                .or_insert(active);
+                .and_modify(|a| if active { *a = true; });
         }
 
         let mut result: Vec<(String, String, bool)> = by_client.into_iter()
@@ -2770,6 +2770,27 @@ mod tests {
             .collect();
         assert!(!by_addr["alice@boxA"]);
         assert!(by_addr["alice@boxB"]);
+    }
+
+    /// Regression for #618: forgetting a client whose session is still in
+    /// memory must drop it from the menu. Before the fix, list_clients
+    /// re-inserted the row from the live session and Forget appeared to
+    /// be a no-op.
+    #[tokio::test]
+    async fn test_forget_with_live_session_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+
+        let mut a = HashMap::new();
+        a.insert("hostname".to_string(), "box1".to_string());
+        a.insert("client_addr".to_string(), "alice@box1".to_string());
+        mgr.register("s1", None, a).await.unwrap();
+        assert_eq!(mgr.list_clients().await.len(), 1);
+
+        let removed = mgr.forget_client_addr("alice@box1").await;
+        assert_eq!(removed, 1);
+        assert!(mgr.list_clients().await.is_empty(),
+            "forget must remove the row even while the session is still in sessions map");
     }
 
     fn make_rec(seq: u64, cwd: &str, cmd: &str) -> CommandRecord {
