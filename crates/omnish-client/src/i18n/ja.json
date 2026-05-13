@@ -93,6 +93,8 @@
   "config.option.1_week": "1 週間",
   "config.option.2_weeks": "2 週間",
   "config.option.1_month": "1 ヶ月",
+  "config.option.3_months": "3 ヶ月",
+  "config.option.6_months": "6 ヶ月",
   "config.hourly_summary": "時間別サマリー",
   "config.daily_summary": "日次サマリー",
   "config.rules": "ルール",

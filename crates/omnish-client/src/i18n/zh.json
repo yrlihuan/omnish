@@ -93,6 +93,8 @@
   "config.option.1_week": "1 周",
   "config.option.2_weeks": "2 周",
   "config.option.1_month": "1 个月",
+  "config.option.3_months": "3 个月",
+  "config.option.6_months": "6 个月",
   "config.hourly_summary": "每小时总结",
   "config.daily_summary": "每日总结",
   "config.rules": "规则",

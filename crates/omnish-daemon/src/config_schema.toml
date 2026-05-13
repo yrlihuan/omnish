@@ -207,7 +207,7 @@ path = "tasks.house_keeping.period"
 label = "Session retention"
 kind = "select"
 toml_key = "tasks.house_keeping.period"
-options = ["1 day", "2 days", "1 week", "2 weeks", "1 month"]
+options = ["1 day", "2 days", "1 week", "2 weeks", "1 month", "3 months", "6 months"]
 
 [[items]]
 path = "tasks.hourly_summary.enabled"

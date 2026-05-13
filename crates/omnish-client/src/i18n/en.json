@@ -93,6 +93,8 @@
   "config.option.1_week": "1 week",
   "config.option.2_weeks": "2 weeks",
   "config.option.1_month": "1 month",
+  "config.option.3_months": "3 months",
+  "config.option.6_months": "6 months",
   "config.hourly_summary": "Hourly Summary",
   "config.daily_summary": "Daily Summary",
   "config.rules": "Rules",

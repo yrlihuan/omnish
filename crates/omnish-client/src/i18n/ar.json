@@ -93,6 +93,8 @@
   "config.option.1_week": "أسبوع واحد",
   "config.option.2_weeks": "أسبوعان",
   "config.option.1_month": "شهر واحد",
+  "config.option.3_months": "3 أشهر",
+  "config.option.6_months": "6 أشهر",
   "config.hourly_summary": "ملخص كل ساعة",
   "config.daily_summary": "الملخص اليومي",
   "config.rules": "القواعد",

@@ -28,6 +28,8 @@ fn period_to_hours(period: &str) -> u64 {
         "1 week" => 24 * 7,
         "2 weeks" => 24 * 14,
         "1 month" => 24 * 30,
+        "3 months" => 24 * 90,
+        "6 months" => 24 * 180,
         _ => 24 * 14,
     }
 }
@@ -94,6 +96,8 @@ mod tests {
         assert_eq!(period_to_hours("1 week"), 168);
         assert_eq!(period_to_hours("2 weeks"), 336);
         assert_eq!(period_to_hours("1 month"), 720);
+        assert_eq!(period_to_hours("3 months"), 2160);
+        assert_eq!(period_to_hours("6 months"), 4320);
         // Unknown values fall back to the 2-weeks default.
         assert_eq!(period_to_hours("bogus"), 336);
         assert_eq!(period_to_hours(""), 336);

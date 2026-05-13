@@ -93,6 +93,8 @@
   "config.option.1_week": "1주",
   "config.option.2_weeks": "2주",
   "config.option.1_month": "1개월",
+  "config.option.3_months": "3개월",
+  "config.option.6_months": "6개월",
   "config.hourly_summary": "시간별 요약",
   "config.daily_summary": "일일 요약",
   "config.rules": "규칙",
