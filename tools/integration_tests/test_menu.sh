@@ -48,10 +48,27 @@ EOF
 test_init "menu" "$@"
 
 # Helper: enter chat mode and open /test menu
+#
+# Waits for the root menu breadcrumb "Config" to appear before returning.
+# A fixed sleep is unreliable in CI: when the menu's render+input loop
+# hasn't started by the time the test's first key arrives, keys may be
+# consumed by the LineEditor (Down = history navigation, no-op on empty
+# history) or fragmented across the LineEditor->handle_test_menu
+# transition, so the menu cursor doesn't move as the test expects.
 open_test_menu() {
     enter_chat
     send_keys "/test menu" 0.3
     send_enter 1
+    local deadline=$(($(date +%s) + 5))
+    while (( $(date +%s) < deadline )); do
+        # Root breadcrumb is "Config" alone (no " > submenu" suffix).
+        if capture_pane -20 | grep -qE '^[[:space:]]*Config[[:space:]]*$'; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    echo -e "  ${RED}open_test_menu: menu did not render within 5s${NC}" >&2
+    return 1
 }
 
 # ── Test 1: Menu renders with breadcrumb, items, and hints ───────────────
