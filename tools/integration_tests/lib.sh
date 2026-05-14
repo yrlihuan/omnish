@@ -411,22 +411,48 @@ wait_for_prompt() {
 }
 
 # wait_for_chat_response [timeout=180] [interval=2]
-#   Poll until chat prompt "> " appears in the pane or timeout.
+#   Poll until the LLM response is complete or timeout.
 #   Returns 0 on success, 1 on timeout.
+#
+#   Correctness note: is_chat_prompt cannot distinguish the user's
+#   just-echoed input line "> <text>" from a new empty "> " prompt - both
+#   render as cyan "> " + content after ANSI stripping. Naively checking
+#   is_chat_prompt on the first poll causes a false-positive return before
+#   the LLM has even started responding (the race is widest on the first
+#   chat message, where show_thinking() is preceded by a synchronous
+#   ChatStart RPC roundtrip - see chat_session.rs).
+#
+#   To avoid the race, require the Thinking spinner to have both appeared
+#   AND been cleared before accepting the prompt. The spinner is shown
+#   synchronously around every LLM call and erased only when the response
+#   is complete, so it's a reliable lifecycle marker.
 wait_for_chat_response() {
     local timeout="${1:-180}"
     local interval="${2:-2}"
     local elapsed=0
     echo -e "  Waiting up to ${timeout}s for LLM response..."
+    local thinking_seen=false
     while [[ $elapsed -lt $timeout ]]; do
         local content
         content=$(capture_pane -10)
-        if is_chat_prompt "$content"; then
+        local has_thinking=false
+        if echo "$content" | grep -q 'Thinking'; then
+            has_thinking=true
+            thinking_seen=true
+        fi
+        if $thinking_seen && ! $has_thinking && is_chat_prompt "$content"; then
             sleep 1  # brief pause for visual observation
             return 0
         fi
-        sleep "$interval"
-        elapsed=$((elapsed + interval))
+        # Poll fast for the first few seconds to reliably catch the
+        # Thinking spinner transition; back off after.
+        if (( elapsed < 4 )); then
+            sleep 0.3
+            elapsed=$((elapsed + 1))
+        else
+            sleep "$interval"
+            elapsed=$((elapsed + interval))
+        fi
     done
     return 1
 }
