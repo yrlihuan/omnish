@@ -580,6 +580,20 @@ impl DaemonServer {
             push_registry: self.push_registry.clone(),
         });
 
+        // Mark sessions whose transport connection just dropped as pending
+        // end. The DisconnectSweepTask scheduled job does the actual
+        // end_session after the grace window, so brief disconnects (daemon
+        // restart, network blip) don't trip a false positive.
+        let on_disconnect: omnish_transport::rpc_server::OnDisconnect = {
+            let mgr = self.session_mgr.clone();
+            Arc::new(move |conn_id: u64| {
+                let mgr = mgr.clone();
+                Box::pin(async move {
+                    let _ = mgr.mark_conn_disconnected(conn_id).await;
+                })
+            })
+        };
+
         server
             .serve(
                 move |msg, tx| {
@@ -590,6 +604,7 @@ impl DaemonServer {
                 tls_acceptor,
                 Some(self.push_registry.clone()),
                 on_push_connect,
+                Some(on_disconnect),
             )
             .await
     }
@@ -610,8 +625,11 @@ async fn handle_message(
     let mgr = &*ctx.session_mgr;
     match msg {
         Message::SessionStart(s) => {
+            let conn_id = omnish_transport::rpc_server::CONN_ID
+                .try_with(|id| *id)
+                .ok();
             if let Err(e) = mgr
-                .register(&s.session_id, s.parent_session_id, s.attrs)
+                .register(&s.session_id, s.parent_session_id, s.attrs, conn_id)
                 .await
             {
                 tracing::error!("register error: {}", e);
@@ -3850,7 +3868,7 @@ mod tests {
         ));
 
         // Register a session to have some context
-        mgr.register("test_session", None, std::collections::HashMap::new())
+        mgr.register("test_session", None, std::collections::HashMap::new(), None)
             .await
             .unwrap();
 
@@ -3928,10 +3946,10 @@ mod tests {
         ));
 
         // Register two different sessions
-        mgr.register("session_a", None, std::collections::HashMap::new())
+        mgr.register("session_a", None, std::collections::HashMap::new(), None)
             .await
             .unwrap();
-        mgr.register("session_b", None, std::collections::HashMap::new())
+        mgr.register("session_b", None, std::collections::HashMap::new(), None)
             .await
             .unwrap();
 

@@ -19,6 +19,20 @@ pub type PushRegistry = Arc<Mutex<HashMap<u64, mpsc::Sender<Message>>>>;
 /// Receives the push sender so it can send initial messages (e.g. current config).
 pub type OnPushConnect = Arc<dyn Fn(mpsc::Sender<Message>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
+/// Callback invoked when a per-connection task is about to exit. Receives the
+/// transport-assigned `conn_id` so the upper layer can clean up state keyed on
+/// it (e.g. ending sessions whose client disconnected without sending a final
+/// SessionEnd).
+pub type OnDisconnect = Arc<dyn Fn(u64) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+tokio::task_local! {
+    /// Set by the transport for the duration of each message-handling task.
+    /// Upper layers can read it via `CONN_ID.try_with(|id| *id)` when they
+    /// need to associate the message with the connection it arrived on.
+    /// Not present outside a serve()-spawned handler.
+    pub static CONN_ID: u64;
+}
+
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 
 fn is_fd_exhausted(e: &std::io::Error) -> bool {
@@ -140,6 +154,7 @@ impl RpcServer {
         tls_acceptor: Option<TlsAcceptor>,
         push_registry: Option<PushRegistry>,
         on_push_connect: Option<OnPushConnect>,
+        on_disconnect: Option<OnDisconnect>,
     ) -> Result<()>
     where
         F: Fn(Message, mpsc::Sender<Message>) -> Pin<Box<dyn Future<Output = ()> + Send>>
@@ -174,7 +189,7 @@ impl RpcServer {
                         }
                     }
                     let (reader, writer) = stream.into_split();
-                    spawn_connection(reader, writer, handler.clone(), auth_token.clone(), push_registry.clone(), on_push_connect.clone());
+                    spawn_connection(reader, writer, handler.clone(), auth_token.clone(), push_registry.clone(), on_push_connect.clone(), on_disconnect.clone());
                 }
                 Listener::Tcp(l) => {
                     let (stream, _) = match l.accept().await {
@@ -197,6 +212,7 @@ impl RpcServer {
                                     auth_token.clone(),
                                     push_registry.clone(),
                                     on_push_connect.clone(),
+                                    on_disconnect.clone(),
                                 );
                             }
                             Err(e) => {
@@ -206,7 +222,7 @@ impl RpcServer {
                         }
                     } else {
                         let (reader, writer) = stream.into_split();
-                        spawn_connection(reader, writer, handler.clone(), auth_token.clone(), push_registry.clone(), on_push_connect.clone());
+                        spawn_connection(reader, writer, handler.clone(), auth_token.clone(), push_registry.clone(), on_push_connect.clone(), on_disconnect.clone());
                     }
                 }
             }
@@ -251,6 +267,7 @@ fn spawn_connection<R, W, F>(
     auth_token: Option<Arc<String>>,
     push_registry: Option<PushRegistry>,
     on_push_connect: Option<OnPushConnect>,
+    on_disconnect: Option<OnDisconnect>,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -387,11 +404,15 @@ fn spawn_connection<R, W, F>(
                         let (tx, mut rx) = mpsc::channel::<Message>(16);
                         let request_id = frame.request_id;
 
-                        // Spawn handler - it sends messages through tx
-                        tokio::spawn(async move {
+                        // Spawn handler - it sends messages through tx.
+                        // Wrap with CONN_ID.scope so the handler (and anything
+                        // it awaits) can recover the connection id via
+                        // CONN_ID.try_with when it needs to associate the
+                        // message with its connection.
+                        tokio::spawn(CONN_ID.scope(conn_id, async move {
                             handler(frame.payload, tx).await;
                             // tx is dropped when handler completes
-                        });
+                        }));
 
                         // Read from channel and write to connection as messages arrive
                         let mut count = 0u32;
@@ -434,6 +455,12 @@ fn spawn_connection<R, W, F>(
         if let Some(ref registry) = push_registry {
             registry.lock().await.remove(&conn_id);
         }
+
+        // Notify upper layer so it can release state keyed on conn_id (e.g.
+        // end sessions whose client disconnected without sending SessionEnd).
+        if let Some(ref cb) = on_disconnect {
+            cb(conn_id).await;
+        }
     });
 }
 
@@ -471,6 +498,7 @@ mod tests {
                             let _ = tx.send(reply).await;
                         })
                     },
+                    None,
                     None,
                     None,
                     None,
@@ -550,6 +578,7 @@ mod tests {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await
                 .ok();
@@ -611,6 +640,7 @@ mod tests {
                             let _ = tx.send(reply).await;
                         })
                     },
+                    None,
                     None,
                     None,
                     None,
@@ -683,6 +713,7 @@ mod tests {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await
                 .ok();
@@ -740,6 +771,7 @@ mod tests {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await
                 .ok();
@@ -789,6 +821,7 @@ mod tests {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await
                 .ok();
@@ -826,6 +859,7 @@ mod tests {
                 .serve(
                     |_msg, tx| Box::pin(async move { let _ = tx.send(Message::Ack).await; }),
                     Some("some-token".to_string()),
+                    None,
                     None,
                     None,
                     None,

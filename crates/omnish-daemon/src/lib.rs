@@ -19,6 +19,7 @@ pub mod clients_history;
 pub mod conversation_mgr;
 pub mod daily_notes;
 pub mod deploy;
+pub mod disconnect_sweep;
 pub mod file_watcher;
 pub mod formatter_mgr;
 pub mod house_keeping;

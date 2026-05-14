@@ -40,6 +40,39 @@ type MessageBuffer = Arc<Mutex<VecDeque<Message>>>;
 
 const MAX_BUFFER_SIZE: usize = 10_000;
 
+/// Set by the SIGHUP/SIGTERM handler so the main poll loop can break out and
+/// run the same SessionEnd-then-exit path that a normal shell exit takes.
+/// Without this, signals (e.g. tmux kill-session sending SIGHUP) drop the
+/// client immediately and the daemon never sees SessionEnd.
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Install handlers that flip SHUTDOWN_REQUESTED on first signal. Safe to call
+/// once at startup. Failures are non-fatal: without the handler we lose
+/// graceful SessionEnd on signal, but the daemon's disconnect-grace sweep
+/// still cleans up the session after the grace period elapses.
+fn install_shutdown_signal_handlers() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let kinds = [
+        ("SIGHUP", SignalKind::hangup()),
+        ("SIGTERM", SignalKind::terminate()),
+    ];
+    for (name, kind) in kinds {
+        match signal(kind) {
+            Ok(mut sig) => {
+                tokio::spawn(async move {
+                    if sig.recv().await.is_some() {
+                        SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+                        event_log::push(format!("shutdown signal: {}", name));
+                    }
+                });
+            }
+            Err(e) => {
+                tracing::warn!("failed to install {} handler: {}", name, e);
+            }
+        }
+    }
+}
+
 fn should_buffer(msg: &Message) -> bool {
     matches!(msg, Message::IoData(_) | Message::CommandComplete(_) | Message::SessionUpdate(_))
 }
@@ -672,6 +705,10 @@ async fn main() -> Result<()> {
     let config = load_client_config().unwrap_or_default();
     let lang = std::env::var("OMNISH_LANG").unwrap_or_else(|_| config.shell.language.clone());
     i18n::init(&lang);
+
+    // Catch SIGHUP / SIGTERM so the main loop can break out and send a
+    // proper SessionEnd before exit (tmux kill-session, manual kill, etc).
+    install_shutdown_signal_handlers();
     let onboarded = Arc::new(AtomicBool::new(config.onboarded));
     let resume_args = parse_resume_args();
 
@@ -1825,6 +1862,12 @@ async fn main() -> Result<()> {
 
         // Check if PTY hung up
         if fds[1].revents & libc::POLLHUP != 0 {
+            break;
+        }
+
+        // Graceful exit on SIGHUP/SIGTERM: fall through to the SessionEnd
+        // path below so the daemon sees the session as cleanly ended.
+        if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
             break;
         }
     }

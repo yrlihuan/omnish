@@ -20,6 +20,7 @@ async fn test_session_register_and_list() {
             ("tty".to_string(), "/dev/pts/0".to_string()),
             ("cwd".to_string(), "/home/user".to_string()),
         ]),
+        None,
     )
     .await
     .unwrap();
@@ -32,6 +33,7 @@ async fn test_session_register_and_list() {
             ("tty".to_string(), "/dev/pts/1".to_string()),
             ("cwd".to_string(), "/tmp".to_string()),
         ]),
+        None,
     )
     .await
     .unwrap();
@@ -54,6 +56,7 @@ async fn test_session_end() {
             ("tty".to_string(), "/dev/pts/0".to_string()),
             ("cwd".to_string(), "/home/user".to_string()),
         ]),
+        None,
     )
     .await
     .unwrap();
@@ -75,6 +78,7 @@ async fn test_command_recording_via_receive_command() {
             ("shell".to_string(), "/bin/bash".to_string()),
             ("cwd".to_string(), "/home/user".to_string()),
         ]),
+        None,
     )
     .await
     .unwrap();
@@ -141,6 +145,7 @@ async fn test_commands_persisted_on_session_end() {
             ("shell".to_string(), "/bin/bash".to_string()),
             ("cwd".to_string(), "/tmp".to_string()),
         ]),
+        None,
     )
     .await
     .unwrap();
@@ -197,6 +202,7 @@ async fn test_multi_command_session_e2e() {
             ("shell".to_string(), "/bin/bash".to_string()),
             ("cwd".to_string(), "/home/user/project".to_string()),
         ]),
+        None,
     )
     .await
     .unwrap();
@@ -289,7 +295,7 @@ async fn test_multi_command_session_e2e() {
 async fn test_session_register_with_parent() {
     let dir = tempfile::tempdir().unwrap();
     let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
-    mgr.register("child1", Some("parent1".to_string()), HashMap::new())
+    mgr.register("child1", Some("parent1".to_string()), HashMap::new(), None)
         .await
         .unwrap();
     let active = mgr.list_active().await;
@@ -302,10 +308,10 @@ async fn test_nested_session_parent_child_relationship() {
     let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
 
     // Register parent session (no parent)
-    mgr.register("parent1", None, HashMap::new()).await.unwrap();
+    mgr.register("parent1", None, HashMap::new(), None).await.unwrap();
 
     // Register child session with parent
-    mgr.register("child1", Some("parent1".to_string()), HashMap::new())
+    mgr.register("child1", Some("parent1".to_string()), HashMap::new(), None)
         .await
         .unwrap();
 
@@ -355,6 +361,7 @@ async fn test_debug_context_request() {
             ("shell".to_string(), "/bin/bash".to_string()),
             ("cwd".to_string(), "/tmp".to_string()),
         ]),
+        None,
     )
     .await
     .unwrap();
@@ -406,8 +413,8 @@ async fn test_interleaved_two_session_context_at_10_and_20_commands() {
     };
     let mgr = SessionManager::new(dir.path().to_path_buf(), cc);
 
-    mgr.register("sessA", None, HashMap::new()).await.unwrap();
-    mgr.register("sessB", None, HashMap::new()).await.unwrap();
+    mgr.register("sessA", None, HashMap::new(), None).await.unwrap();
+    mgr.register("sessB", None, HashMap::new(), None).await.unwrap();
 
     // Helper: simulate running `echo "{sid} {seq}"` on a session.
     // Each call writes IO entries and a CommandComplete.
@@ -533,7 +540,7 @@ async fn test_register_idempotent_reuses_existing_session() {
         ("tty".to_string(), "/dev/pts/0".to_string()),
         ("cwd".to_string(), "/home/user".to_string()),
     ]);
-    mgr.register("sess1", None, attrs1).await.unwrap();
+    mgr.register("sess1", None, attrs1, None).await.unwrap();
 
     // Record a command in the first registration
     mgr.receive_command(
@@ -561,7 +568,7 @@ async fn test_register_idempotent_reuses_existing_session() {
         ("tty".to_string(), "/dev/pts/0".to_string()),
         ("cwd".to_string(), "/tmp".to_string()),
     ]);
-    mgr.register("sess1", None, attrs2).await.unwrap();
+    mgr.register("sess1", None, attrs2, None).await.unwrap();
 
     // Session should still be active
     let active = mgr.list_active().await;
@@ -584,7 +591,7 @@ async fn test_ended_session_commands_visible_to_new_session_context() {
     let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
 
     // Client 1: register, run a command, disconnect
-    mgr.register("client1", None, HashMap::new()).await.unwrap();
+    mgr.register("client1", None, HashMap::new(), None).await.unwrap();
     mgr.write_io("client1", 1000, 1, b"$ ").await.unwrap();
     mgr.write_io("client1", 1001, 0, b"ls\r\n").await.unwrap();
     mgr.write_io("client1", 1001, 1, b"ls\r\n").await.unwrap();
@@ -614,7 +621,7 @@ async fn test_ended_session_commands_visible_to_new_session_context() {
     assert!(!mgr.list_active().await.contains(&"client1".to_string()));
 
     // Client 2: register a new session, query all-sessions context
-    mgr.register("client2", None, HashMap::new()).await.unwrap();
+    mgr.register("client2", None, HashMap::new(), None).await.unwrap();
     let ctx = mgr.get_all_sessions_context("client2").await.unwrap();
     assert!(
         ctx.contains("ls"),

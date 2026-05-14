@@ -136,6 +136,14 @@ struct Session {
     stream_writer: Mutex<StreamWriterState>,
     last_update: Mutex<Option<u64>>, // timestamp_ms of last SessionUpdate
     pending_sample: Mutex<Option<PendingSample>>,
+    /// `Some(conn_id)` while a transport connection has actively claimed
+    /// this session via SessionStart; `None` after end_session, or for
+    /// sessions reloaded from disk before any client reconnects.
+    current_conn: Mutex<Option<u64>>,
+    /// Set when the bound connection drops without a preceding SessionEnd.
+    /// The periodic sweep ends the session once this value's age exceeds
+    /// the grace period. Cleared on re-register.
+    disconnect_pending_since: Mutex<Option<Instant>>,
 }
 
 pub struct SessionManager {
@@ -361,6 +369,17 @@ impl SessionManager {
 
                 let last_active = infer_last_active(&commands, &meta);
 
+                // Sessions reloaded from disk with no recorded ended_at lost
+                // their client at some earlier point (daemon restart, crash,
+                // tmux kill, etc). Start the disconnect grace timer now so
+                // the periodic sweep ends them if no client re-registers in
+                // time. Already-ended sessions don't need a timer.
+                let pending_since = if meta.ended_at.is_none() {
+                    Some(Instant::now())
+                } else {
+                    None
+                };
+
                 let session_id = meta.session_id.clone();
                 sessions.insert(
                     session_id,
@@ -376,6 +395,8 @@ impl SessionManager {
                         }),
                         last_update: Mutex::new(None),
                         pending_sample: Mutex::new(None),
+                        current_conn: Mutex::new(None),
+                        disconnect_pending_since: Mutex::new(pending_since),
                     }),
                 );
                 count += 1;
@@ -408,6 +429,7 @@ impl SessionManager {
         session_id: &str,
         parent_session_id: Option<String>,
         attrs: std::collections::HashMap<String, String>,
+        conn_id: Option<u64>,
     ) -> Result<()> {
         let history_pair = history_pair_from_attrs(&attrs);
 
@@ -415,11 +437,7 @@ impl SessionManager {
         {
             let sessions = self.sessions.read().await;
             if let Some(session) = sessions.get(session_id) {
-                let mut meta = session.meta.write().await;
-                meta.attrs = attrs;
-                meta.save(&session.dir)?;
-                tracing::info!("session {} re-registered (reconnect)", session_id);
-                drop(meta);
+                Self::rebind_existing(session, attrs, conn_id).await?;
                 drop(sessions);
                 self.touch_clients_history(history_pair).await;
                 return Ok(());
@@ -431,11 +449,7 @@ impl SessionManager {
 
         // Double-check after acquiring write lock
         if let Some(session) = sessions.get(session_id) {
-            let mut meta = session.meta.write().await;
-            meta.attrs = attrs;
-            meta.save(&session.dir)?;
-            tracing::info!("session {} re-registered (reconnect)", session_id);
-            drop(meta);
+            Self::rebind_existing(session, attrs, conn_id).await?;
             drop(sessions);
             self.touch_clients_history(history_pair).await;
             return Ok(());
@@ -472,12 +486,107 @@ impl SessionManager {
                 }),
                 last_update: Mutex::new(None),
                 pending_sample: Mutex::new(None),
+                current_conn: Mutex::new(conn_id),
+                disconnect_pending_since: Mutex::new(None),
             }),
         );
         drop(sessions);
 
         self.touch_clients_history(history_pair).await;
         Ok(())
+    }
+
+    /// Re-bind an existing in-memory session to the (re)connecting client.
+    /// Called from both register fast-path and slow-path double-check.
+    /// Updates attrs, refreshes the conn binding, cancels any pending
+    /// disconnect timer, and defensively clears `meta.ended_at` so a
+    /// previously-ended session reactivates cleanly (e.g. when the sweep
+    /// raced ahead of the client's reconnect).
+    async fn rebind_existing(
+        session: &Arc<Session>,
+        attrs: std::collections::HashMap<String, String>,
+        conn_id: Option<u64>,
+    ) -> Result<()> {
+        let mut meta = session.meta.write().await;
+        let was_ended = meta.ended_at.is_some();
+        meta.attrs = attrs;
+        meta.ended_at = None;
+        meta.save(&session.dir)?;
+        drop(meta);
+        *session.current_conn.lock().await = conn_id;
+        *session.disconnect_pending_since.lock().await = None;
+        if was_ended {
+            tracing::info!("session {} re-registered (was ended, reactivated)", session.dir.display());
+        } else {
+            tracing::info!("session re-registered (reconnect): {}", session.dir.display());
+        }
+        Ok(())
+    }
+
+    /// Called from the transport's on_disconnect hook. Walks every loaded
+    /// session and, for any whose `current_conn == Some(conn_id)`, starts
+    /// the disconnect grace timer. Returns the count of sessions affected.
+    pub async fn mark_conn_disconnected(&self, conn_id: u64) -> Vec<String> {
+        let session_arcs: Vec<_> = {
+            let sessions = self.sessions.read().await;
+            sessions.values().cloned().collect()
+        };
+
+        let mut affected = Vec::new();
+        let now = Instant::now();
+        for session in &session_arcs {
+            let mut cur = session.current_conn.lock().await;
+            if *cur == Some(conn_id) {
+                *cur = None;
+                drop(cur);
+                *session.disconnect_pending_since.lock().await = Some(now);
+                let sid = session.meta.read().await.session_id.clone();
+                affected.push(sid);
+            }
+        }
+        if !affected.is_empty() {
+            tracing::debug!("conn#{} disconnected: {} session(s) entered grace", conn_id, affected.len());
+        }
+        affected
+    }
+
+    /// Periodic sweep: end any session whose disconnect grace has expired.
+    /// Returns the session_ids that were ended (so callers can release any
+    /// other state keyed on them, e.g. active_threads).
+    pub async fn sweep_disconnected(&self, grace: Duration) -> Vec<String> {
+        let session_arcs: Vec<_> = {
+            let sessions = self.sessions.read().await;
+            sessions.values().cloned().collect()
+        };
+
+        let now = Instant::now();
+        let mut to_end = Vec::new();
+        for session in &session_arcs {
+            let pending = *session.disconnect_pending_since.lock().await;
+            if let Some(since) = pending {
+                if now.duration_since(since) >= grace {
+                    let meta = session.meta.read().await;
+                    // Don't re-end an already-ended session; just clear the
+                    // pending marker to keep the table compact.
+                    if meta.ended_at.is_none() {
+                        to_end.push(meta.session_id.clone());
+                    } else {
+                        drop(meta);
+                        *session.disconnect_pending_since.lock().await = None;
+                    }
+                }
+            }
+        }
+
+        for sid in &to_end {
+            if let Err(e) = self.end_session(sid).await {
+                tracing::warn!("sweep: end_session({}) failed: {}", sid, e);
+            }
+        }
+        if !to_end.is_empty() {
+            tracing::info!("sweep: ended {} session(s) after disconnect grace", to_end.len());
+        }
+        to_end
     }
 
     pub async fn update_attrs(
@@ -640,6 +749,12 @@ impl SessionManager {
             let mut meta = session.meta.write().await;
             meta.ended_at = Some(chrono::Utc::now().to_rfc3339());
             meta.save(&session.dir)?;
+
+            // Drop conn binding and grace timer so a subsequent on_disconnect
+            // for the same conn doesn't try to end this session again, and
+            // the sweep skips it.
+            *session.current_conn.lock().await = None;
+            *session.disconnect_pending_since.lock().await = None;
 
             let commands = session.commands.read().await;
             CommandRecord::save_all(&commands, &session.dir)?;
@@ -1899,7 +2014,7 @@ mod tests {
         let base = dir.path().to_path_buf();
         let mgr = SessionManager::new(base, Default::default());
 
-        mgr.register("idle_sess", None, Default::default())
+        mgr.register("idle_sess", None, Default::default(), None)
             .await
             .unwrap();
 
@@ -1954,7 +2069,7 @@ mod tests {
         // Register a session and add a command via normal flow
         {
             let mgr = SessionManager::new(base.clone(), Default::default());
-            mgr.register("sess1", None, Default::default())
+            mgr.register("sess1", None, Default::default(), None)
                 .await
                 .unwrap();
             mgr.write_io("sess1", 100, 0, b"$ ls\n").await.unwrap();
@@ -1999,13 +2114,13 @@ mod tests {
         let mgr = SessionManager::new(base, Default::default());
 
         // Register three sessions with commands, all on the same host (default "?")
-        mgr.register("active1", None, Default::default())
+        mgr.register("active1", None, Default::default(), None)
             .await
             .unwrap();
-        mgr.register("active2", None, Default::default())
+        mgr.register("active2", None, Default::default(), None)
             .await
             .unwrap();
-        mgr.register("dead1", None, Default::default())
+        mgr.register("dead1", None, Default::default(), None)
             .await
             .unwrap();
 
@@ -2090,13 +2205,13 @@ mod tests {
         let mgr = SessionManager::new(base, Default::default());
 
         // Create 1 active and 2 dead sessions, all on the same host
-        mgr.register("active1", None, Default::default())
+        mgr.register("active1", None, Default::default(), None)
             .await
             .unwrap();
-        mgr.register("dead1", None, Default::default())
+        mgr.register("dead1", None, Default::default(), None)
             .await
             .unwrap();
-        mgr.register("dead2", None, Default::default())
+        mgr.register("dead2", None, Default::default(), None)
             .await
             .unwrap();
 
@@ -2145,12 +2260,12 @@ mod tests {
         // Create sessions on different hosts
         let mut attrs = std::collections::HashMap::new();
         attrs.insert("hostname".to_string(), "workstation".to_string());
-        mgr.register("workstation_active", None, attrs.clone()).await.unwrap();
+        mgr.register("workstation_active", None, attrs.clone(), None).await.unwrap();
 
         attrs.insert("hostname".to_string(), "server".to_string());
-        mgr.register("server_active1", None, attrs.clone()).await.unwrap();
-        mgr.register("server_active2", None, attrs.clone()).await.unwrap();
-        mgr.register("server_dead", None, attrs.clone()).await.unwrap();
+        mgr.register("server_active1", None, attrs.clone(), None).await.unwrap();
+        mgr.register("server_active2", None, attrs.clone(), None).await.unwrap();
+        mgr.register("server_dead", None, attrs.clone(), None).await.unwrap();
 
         // Add commands
         mgr.receive_command("workstation_active", CommandRecord {
@@ -2248,7 +2363,7 @@ mod tests {
             },
         };
         let mgr_no_limit = SessionManager::new(dir.path().to_path_buf(), cc_no_limit);
-        mgr_no_limit.register("sess1", None, Default::default())
+        mgr_no_limit.register("sess1", None, Default::default(), None)
             .await
             .unwrap();
 
@@ -2291,7 +2406,7 @@ mod tests {
             },
         };
         let mgr_limited = SessionManager::new(dir.path().to_path_buf(), cc_limited);
-        mgr_limited.register("sess1", None, Default::default())
+        mgr_limited.register("sess1", None, Default::default(), None)
             .await
             .unwrap();
 
@@ -2362,7 +2477,7 @@ mod tests {
             },
         };
         let mgr = SessionManager::new(dir.path().to_path_buf(), cc);
-        mgr.register("sess1", None, Default::default())
+        mgr.register("sess1", None, Default::default(), None)
             .await
             .unwrap();
 
@@ -2493,7 +2608,7 @@ mod tests {
         old_meta.save(&old_meta_dir).unwrap();
 
         // Test 2: Active session in memory - should NOT be cleaned up even if directory is old
-        mgr.register("active_session", None, Default::default())
+        mgr.register("active_session", None, Default::default(), None)
             .await
             .unwrap();
 
@@ -2609,7 +2724,7 @@ mod tests {
         let mgr1 = SessionManager::new(base.clone(), Default::default());
 
         // Register a fresh session first
-        mgr1.register("fresh_session", None, Default::default())
+        mgr1.register("fresh_session", None, Default::default(), None)
             .await
             .unwrap();
 
@@ -2687,21 +2802,21 @@ mod tests {
         let mut a = HashMap::new();
         a.insert("hostname".to_string(), "box1".to_string());
         a.insert("client_addr".to_string(), "alice@box1".to_string());
-        mgr.register("s1", None, a).await.unwrap();
+        mgr.register("s1", None, a, None).await.unwrap();
 
         // Same host reached by a different user - should appear as a
         // separate menu entry because deploy target differs.
         let mut b = HashMap::new();
         b.insert("hostname".to_string(), "box1".to_string());
         b.insert("client_addr".to_string(), "bob@box1".to_string());
-        mgr.register("s2", None, b).await.unwrap();
+        mgr.register("s2", None, b, None).await.unwrap();
 
         // Legacy client with no client_addr - falls back to hostname,
         // should collapse with any other client that reports hostname
         // as its deploy target.
         let mut c = HashMap::new();
         c.insert("hostname".to_string(), "box2".to_string());
-        mgr.register("s3", None, c).await.unwrap();
+        mgr.register("s3", None, c, None).await.unwrap();
 
         let clients = mgr.list_clients().await;
         assert_eq!(clients.len(), 3);
@@ -2723,7 +2838,7 @@ mod tests {
             let mut a = HashMap::new();
             a.insert("hostname".to_string(), "box1".to_string());
             a.insert("client_addr".to_string(), "alice@box1".to_string());
-            mgr.register("s1", None, a).await.unwrap();
+            mgr.register("s1", None, a, None).await.unwrap();
             assert!(base.join("clients.json").exists());
         }
 
@@ -2753,7 +2868,7 @@ mod tests {
             let mut a = HashMap::new();
             a.insert("hostname".to_string(), "boxA".to_string());
             a.insert("client_addr".to_string(), "alice@boxA".to_string());
-            mgr.register("s_old", None, a).await.unwrap();
+            mgr.register("s_old", None, a, None).await.unwrap();
         }
 
         // Fresh daemon, register addrB live; list should show A inactive, B active.
@@ -2761,7 +2876,7 @@ mod tests {
         let mut b = HashMap::new();
         b.insert("hostname".to_string(), "boxB".to_string());
         b.insert("client_addr".to_string(), "alice@boxB".to_string());
-        mgr.register("s_new", None, b).await.unwrap();
+        mgr.register("s_new", None, b, None).await.unwrap();
 
         let clients = mgr.list_clients().await;
         assert_eq!(clients.len(), 2);
@@ -2784,13 +2899,91 @@ mod tests {
         let mut a = HashMap::new();
         a.insert("hostname".to_string(), "box1".to_string());
         a.insert("client_addr".to_string(), "alice@box1".to_string());
-        mgr.register("s1", None, a).await.unwrap();
+        mgr.register("s1", None, a, None).await.unwrap();
         assert_eq!(mgr.list_clients().await.len(), 1);
 
         let removed = mgr.forget_client_addr("alice@box1").await;
         assert_eq!(removed, 1);
         assert!(mgr.list_clients().await.is_empty(),
             "forget must remove the row even while the session is still in sessions map");
+    }
+
+    /// Reconnect within grace cancels the pending end.
+    #[tokio::test]
+    async fn test_disconnect_then_reconnect_within_grace_no_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+
+        mgr.register("s1", None, HashMap::new(), Some(42)).await.unwrap();
+        // Drop conn 42; session enters grace.
+        let affected = mgr.mark_conn_disconnected(42).await;
+        assert_eq!(affected, vec!["s1".to_string()]);
+
+        // Client reconnects on conn 43 with same sid before grace expires.
+        mgr.register("s1", None, HashMap::new(), Some(43)).await.unwrap();
+
+        // Even a zero-grace sweep must NOT end this session - it was rebound.
+        let ended = mgr.sweep_disconnected(Duration::from_secs(0)).await;
+        assert!(ended.is_empty(), "rebound session must not be ended");
+        assert_eq!(mgr.list_active().await, vec!["s1".to_string()]);
+    }
+
+    /// No reconnect within grace: sweep ends the session.
+    #[tokio::test]
+    async fn test_disconnect_no_reconnect_sweep_ends_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+
+        mgr.register("s1", None, HashMap::new(), Some(7)).await.unwrap();
+        mgr.mark_conn_disconnected(7).await;
+
+        // Zero grace: anything pending should be ended immediately.
+        let ended = mgr.sweep_disconnected(Duration::from_secs(0)).await;
+        assert_eq!(ended, vec!["s1".to_string()]);
+        assert!(mgr.list_active().await.is_empty(), "session should be marked ended");
+    }
+
+    /// Disconnect on conn X must not touch sessions bound to conn Y.
+    #[tokio::test]
+    async fn test_disconnect_only_affects_matching_conn() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+
+        mgr.register("s1", None, HashMap::new(), Some(1)).await.unwrap();
+        mgr.register("s2", None, HashMap::new(), Some(2)).await.unwrap();
+
+        let affected = mgr.mark_conn_disconnected(1).await;
+        assert_eq!(affected, vec!["s1".to_string()]);
+
+        let ended = mgr.sweep_disconnected(Duration::from_secs(0)).await;
+        assert_eq!(ended, vec!["s1".to_string()]);
+        // s2 must still be active.
+        assert_eq!(mgr.list_active().await, vec!["s2".to_string()]);
+    }
+
+    /// load_existing must arm the grace timer on loaded active sessions
+    /// so daemon restart eventually cleans up zombies whose clients are
+    /// not reconnecting.
+    #[tokio::test]
+    async fn test_load_existing_arms_grace_on_active_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // First instance registers a session then is dropped without
+        // explicitly ending it (simulating crash / restart).
+        {
+            let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+            mgr.register("s1", None, HashMap::new(), Some(99)).await.unwrap();
+        }
+
+        // Second instance loads it from disk.
+        let mgr2 = SessionManager::new(dir.path().to_path_buf(), Default::default());
+        let count = mgr2.load_existing().await.unwrap();
+        assert_eq!(count, 1);
+
+        // Zero-grace sweep should end the loaded session because no client
+        // re-registered.
+        let ended = mgr2.sweep_disconnected(Duration::from_secs(0)).await;
+        assert_eq!(ended, vec!["s1".to_string()]);
     }
 
     fn make_rec(seq: u64, cwd: &str, cmd: &str) -> CommandRecord {

@@ -175,6 +175,7 @@ pub fn create_all_tasks(config: &omnish_common::config::TasksConfig) -> Vec<Box<
         Box::new(crate::thread_summary::ThreadSummaryTask::new(config.get("thread_summary").unwrap_or(&empty).clone())),
         Box::new(crate::plugin_bundle_task::PluginBundleTask::new(config.get("plugin_bundle").unwrap_or(&empty).clone())),
         Box::new(crate::writer_idle::WriterIdleTask::new(config.get("writer_idle").unwrap_or(&empty).clone())),
+        Box::new(crate::disconnect_sweep::DisconnectSweepTask::new(config.get("disconnect_sweep").unwrap_or(&empty).clone())),
     ]
 }
 
@@ -189,6 +190,9 @@ pub fn inject_task_defaults(tasks: &mut omnish_common::config::TasksConfig) {
         ("thread_summary", crate::thread_summary::ThreadSummaryTask::defaults()),
         ("plugin_bundle", crate::plugin_bundle_task::PluginBundleTask::defaults()),
         ("writer_idle", crate::writer_idle::WriterIdleTask::defaults()),
+        // disconnect_sweep is a system-level maintenance task with no
+        // intended user configuration; its defaults are hardcoded in the
+        // task itself and not surfaced in daemon.toml.
     ];
     for (name, defaults) in all_defaults {
         let entry = tasks.entry(name.to_string()).or_default();
