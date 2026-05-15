@@ -824,24 +824,29 @@ async fn main() -> Result<()> {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
 
-                if !changed.is_empty() {
-                    // Update tmux/screen window title if child_process changed
-                    if let Some(child_process) = changed.get("child_process") {
-                        let in_mux = in_title_mux();
-                        let process_name = child_process.split(':').next().unwrap_or(child_process.as_str());
-                        let process_name = if process_name.is_empty() { "omnish" } else { process_name };
-                        if let Some(title) = tmux_title(process_name, in_mux) {
-                            nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
-                        }
+                // Update tmux/screen window title if child_process changed
+                if let Some(child_process) = changed.get("child_process") {
+                    let in_mux = in_title_mux();
+                    let process_name = child_process.split(':').next().unwrap_or(child_process.as_str());
+                    let process_name = if process_name.is_empty() { "omnish" } else { process_name };
+                    if let Some(title) = tmux_title(process_name, in_mux) {
+                        nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
                     }
-
-                    let msg = Message::SessionUpdate(SessionUpdate {
-                        session_id: sid_poll.clone(),
-                        timestamp_ms: timestamp_ms(),
-                        attrs: changed,
-                    });
-                    send_or_buffer(&rpc_poll, msg, &poll_buffer).await;
                 }
+
+                // Always send a SessionUpdate, even when nothing changed.
+                // The empty payload doubles as a heartbeat: it exercises the
+                // TCP write path so kernel retransmit eventually surfaces
+                // broken sockets that would otherwise stay half-open
+                // indefinitely on an idle terminal. Daemon-side cost is
+                // ~zero - update_attrs has an empty-attrs fast path that
+                // skips disk I/O.
+                let msg = Message::SessionUpdate(SessionUpdate {
+                    session_id: sid_poll.clone(),
+                    timestamp_ms: timestamp_ms(),
+                    attrs: changed,
+                });
+                send_or_buffer(&rpc_poll, msg, &poll_buffer).await;
 
                 last_attrs = current;
 

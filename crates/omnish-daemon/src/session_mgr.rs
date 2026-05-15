@@ -595,21 +595,37 @@ impl SessionManager {
         timestamp_ms: u64,
         attrs: HashMap<String, String>,
     ) -> Result<()> {
-        let sessions = self.sessions.read().await;
-        let session = sessions
-            .get(session_id)
-            .ok_or_else(|| anyhow!("session {} not found", session_id))?;
-        let mut meta = session.meta.write().await;
+        let session = {
+            let sessions = self.sessions.read().await;
+            sessions
+                .get(session_id)
+                .cloned()
+                .ok_or_else(|| anyhow!("session {} not found", session_id))?
+        };
 
-        // Update session attributes
+        // Liveness markers - updated for every SessionUpdate including
+        // empty heartbeats. Any traffic on a session implies the client
+        // is alive on the current connection, so cancel any pending
+        // disconnect-grace timer set by an earlier on_disconnect (defensive
+        // second line of defense; rebind_existing already does this on
+        // explicit SessionStart re-register).
+        *session.last_update.lock().await = Some(timestamp_ms);
+        *session.disconnect_pending_since.lock().await = None;
+
+        // Heartbeat fast path: empty attrs means "I'm alive, nothing
+        // changed". Skip the disk write and CSV append; the in-memory
+        // liveness markers above are enough. Clients send these every
+        // ~60s so cutting their cost matters at scale.
+        if attrs.is_empty() {
+            return Ok(());
+        }
+
+        let mut meta = session.meta.write().await;
         for (k, v) in &attrs {
             meta.attrs.insert(k.clone(), v.clone());
         }
         meta.save(&session.dir)?;
-
-        // Update last_update timestamp
-        let mut last_update = session.last_update.lock().await;
-        *last_update = Some(timestamp_ms);
+        drop(meta);
 
         // Send to session writer for logging (non-blocking)
         let record = omnish_store::session_update::SessionUpdateRecord::new(
@@ -2959,6 +2975,30 @@ mod tests {
         assert_eq!(ended, vec!["s1".to_string()]);
         // s2 must still be active.
         assert_eq!(mgr.list_active().await, vec!["s2".to_string()]);
+    }
+
+    /// Empty SessionUpdate is treated as a liveness heartbeat: cancels
+    /// any pending disconnect timer and refreshes last_update without
+    /// touching meta.json. Belt-and-suspenders companion to
+    /// rebind_existing: even if SessionStart was somehow skipped after a
+    /// reconnect, the next probe-driven heartbeat will keep the session
+    /// from being swept.
+    #[tokio::test]
+    async fn test_empty_session_update_clears_disconnect_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+
+        mgr.register("s1", None, HashMap::new(), Some(11)).await.unwrap();
+        mgr.mark_conn_disconnected(11).await;
+
+        // Heartbeat (empty attrs) arrives on a fresh notional connection.
+        mgr.update_attrs("s1", 12345, HashMap::new()).await.unwrap();
+
+        // Even a zero-grace sweep must not end this session - it just
+        // proved it's alive.
+        let ended = mgr.sweep_disconnected(Duration::from_secs(0)).await;
+        assert!(ended.is_empty(), "heartbeat must cancel pending end");
+        assert_eq!(mgr.list_active().await, vec!["s1".to_string()]);
     }
 
     /// load_existing must arm the grace timer on loaded active sessions
