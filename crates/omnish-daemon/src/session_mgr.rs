@@ -968,9 +968,6 @@ impl SessionManager {
         let mut all_commands = Vec::new();
         for session in &session_arcs {
             let commands = session.commands.read().await;
-            if commands.is_empty() {
-                continue;
-            }
             let meta = session.meta.read().await;
             let sw = session.stream_writer.lock().await;
             let cmd_count = commands.iter().filter(|c| c.command_line.is_some()).count();
@@ -2975,6 +2972,25 @@ mod tests {
         assert_eq!(ended, vec!["s1".to_string()]);
         // s2 must still be active.
         assert_eq!(mgr.list_active().await, vec!["s2".to_string()]);
+    }
+
+    /// A freshly registered session with no commands yet must still
+    /// appear in /sessions as active. Previously these were filtered
+    /// out, which made the disconnect-grace machinery look like it was
+    /// killing live sessions when in reality the shell just hadn't
+    /// typed anything yet.
+    #[tokio::test]
+    async fn test_format_sessions_list_includes_empty_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+
+        let mut attrs = HashMap::new();
+        attrs.insert("hostname".into(), "h1".into());
+        mgr.register("fresh", None, attrs, Some(1)).await.unwrap();
+
+        let out = mgr.format_sessions_list("fresh").await;
+        assert!(out.contains("fresh"), "empty session must appear in output: {}", out);
+        assert!(out.contains("[active]"), "empty session must show as active: {}", out);
     }
 
     /// Empty SessionUpdate is treated as a liveness heartbeat: cancels
