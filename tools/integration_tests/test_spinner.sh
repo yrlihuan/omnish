@@ -50,10 +50,12 @@ test_1() {
     send_keys "运行 sleep 10" 0.3
     send_enter 0.3
 
-    # Wait for the tool status line to appear (Bash tool header with spinner)
+    # Wait for the tool status line to appear (Bash tool header with spinner).
+    # Budget matches wait_for_chat_response: tolerates slow first-token + one
+    # 429 backoff retry before the LLM emits the tool_use block.
     local waited=0
     local content=""
-    while [[ $waited -lt 30 ]]; do
+    while [[ $waited -lt 120 ]]; do
         content=$(capture_pane -20)
         if echo "$content" | grep -qE "[$SPINNER_CHARS].*Bash"; then
             break
@@ -62,9 +64,9 @@ test_1() {
         waited=$((waited + 1))
     done
 
-    if [[ $waited -ge 30 ]]; then
+    if [[ $waited -ge 120 ]]; then
         show_capture "Pane content (no spinner found)" "$content" 20
-        assert_fail "No spinner character found in tool header within 15s"
+        assert_fail "No spinner character found in tool header within 60s"
         return 1
     fi
 
