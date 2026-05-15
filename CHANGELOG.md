@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.15 (2026-05-15)
+
+### Fixes
+- **daemon**: End leaked sessions via disconnect-grace timer plus client SIGHUP/SIGTERM handler. Sessions whose transport connection drops without a preceding `SessionEnd` (tmux kill-session on integration-test clients, SIGTERM, machine reboot) are now marked pending-end on the `Session` struct via `current_conn` / `disconnect_pending_since`; the new `DisconnectSweepTask` ends them after a 1h grace, while same-grace reconnects (network blip, daemon auto-update restart) hit the rebind path and cancel the timer. `load_existing` arms the timer on every active session it reloads, so historical zombies left from earlier code paths self-clean 1h after the next daemon restart. Transport's `RpcServer::serve` gains an optional `on_disconnect` callback; `conn_id` flows to the daemon handler via a tokio `task_local` (`CONN_ID`) without touching the handler signature.
+- **client,daemon**: Probe polling now sends an empty `SessionUpdate` every interval as a heartbeat, so idle terminals exercise the TCP write path - kernel retransmit surfaces broken sockets within minutes instead of waiting on user input. `update_attrs` got an empty-attrs fast path that refreshes `last_update` and clears `disconnect_pending_since` without touching disk, keeping the daemon-side cost negligible at 1000+ clients. Any traffic on a session (not just `SessionStart`) now cancels the pending-end timer as a second line of defense.
+- **daemon**: `format_sessions_list` no longer hides sessions with zero commands; freshly spawned shells appear as `[active] cmds=0/0` immediately rather than waiting for the first command (avoids looking like the new disconnect-grace machinery was killing live sessions).
+
 ## v0.8.14 (2026-05-05)
 
 ### Features
