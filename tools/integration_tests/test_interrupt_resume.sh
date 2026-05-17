@@ -97,8 +97,12 @@ API_ERROR_RE='AI service returned an error|Connection to the AI service was lost
 # fire after the tool already finished, which is why the first Ctrl-C
 # previously arrived too late.
 THINKING_RE='Thinking…'
-TOOL_RUNNING_RE='[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏][[:space:]]+Bash\(sleep'
-TOOL_ANY_RE='[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏●][[:space:]]+Bash\(sleep'
+# The Bash(...) header shows the literal command the LLM dispatched, which is
+# not always a bare `sleep` - models sometimes wrap it in echo for debug noise
+# (e.g. `Bash(echo "[1] start" && sleep 5 && echo "[1] end")`). Match `sleep`
+# anywhere inside the parens to stay robust across phrasings.
+TOOL_RUNNING_RE='[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏][[:space:]]+Bash\(.*sleep'
+TOOL_ANY_RE='[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏●][[:space:]]+Bash\(.*sleep'
 
 # wait_for_pattern <regex> <timeout_seconds> [poll_interval=0.1] [history_lines=-50]
 # Returns 0 once `capture_pane` matches; 1 on timeout.  Default interval is
