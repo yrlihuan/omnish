@@ -4452,17 +4452,24 @@ fn parse_key_after_esc(stdin_fd: i32) -> Option<KeyEvent> {
 }
 
 fn wait_for_ctrl_c(stop: std::sync::mpsc::Receiver<()>) -> bool {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc::TryRecvError;
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    crate::event_log::push(format!("wait_for_ctrl_c[{}]: enter", id));
     let stdin_fd = std::io::stdin().as_raw_fd();
     let mut byte = [0u8; 1];
-    loop {
+    let mut eaten: u64 = 0;
+    let exit_reason: &str;
+    let result = loop {
         // Exit on either an explicit stop signal OR a dropped sender. The
         // `is_ok()` check used previously only matched `Ok(_)`, so a dropped
         // `stop_tx` (panic unwind, future cancellation, early return) left
         // this task alive and silently consuming every non-Ctrl-C byte from
         // stdin.
         match stop.try_recv() {
-            Ok(_) | Err(TryRecvError::Disconnected) => return false,
+            Ok(_) => { exit_reason = "stop"; break false; }
+            Err(TryRecvError::Disconnected) => { exit_reason = "disconnect"; break false; }
             Err(TryRecvError::Empty) => {}
         }
         let mut pfd = libc::pollfd {
@@ -4475,11 +4482,16 @@ fn wait_for_ctrl_c(stop: std::sync::mpsc::Receiver<()>) -> bool {
             continue;
         }
         match nix::unistd::read(stdin_fd, &mut byte) {
-            Ok(1) if byte[0] == 0x03 => return true,
-            Ok(1) => {}
-            _ => return false,
+            Ok(1) if byte[0] == 0x03 => { exit_reason = "ctrl-c"; break true; }
+            Ok(1) => { eaten += 1; }
+            _ => { exit_reason = "read-err"; break false; }
         }
-    }
+    };
+    crate::event_log::push(format!(
+        "wait_for_ctrl_c[{}]: exit reason={} ate={}",
+        id, exit_reason, eaten
+    ));
+    result
 }
 
 fn save_to_history(history: &mut VecDeque<String>, command: &str, capacity: usize) {
