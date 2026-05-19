@@ -4452,11 +4452,18 @@ fn parse_key_after_esc(stdin_fd: i32) -> Option<KeyEvent> {
 }
 
 fn wait_for_ctrl_c(stop: std::sync::mpsc::Receiver<()>) -> bool {
+    use std::sync::mpsc::TryRecvError;
     let stdin_fd = std::io::stdin().as_raw_fd();
     let mut byte = [0u8; 1];
     loop {
-        if stop.try_recv().is_ok() {
-            return false;
+        // Exit on either an explicit stop signal OR a dropped sender. The
+        // `is_ok()` check used previously only matched `Ok(_)`, so a dropped
+        // `stop_tx` (panic unwind, future cancellation, early return) left
+        // this task alive and silently consuming every non-Ctrl-C byte from
+        // stdin.
+        match stop.try_recv() {
+            Ok(_) | Err(TryRecvError::Disconnected) => return false,
+            Err(TryRecvError::Empty) => {}
         }
         let mut pfd = libc::pollfd {
             fd: stdin_fd,
