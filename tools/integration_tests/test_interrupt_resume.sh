@@ -244,7 +244,7 @@ run_interrupt_cycle() {
     # Wait for the resumed turn to come back. Allow extra time because
     # the resume includes the merged interrupt marker plus any pending
     # tool output.
-    if ! wait_for_chat_response 240 2; then
+    if ! wait_for_chat_response 240; then
         show_capture "No final response" "$(capture_pane -120)" 60
         assert_fail "No chat response within 240s after second /continue"
         return 1

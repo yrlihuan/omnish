@@ -410,7 +410,7 @@ wait_for_prompt() {
     sleep "${1:-0.5}"
 }
 
-# wait_for_chat_response [timeout=180] [interval=2]
+# wait_for_chat_response [timeout=180]
 #   Poll until the LLM response is complete or timeout.
 #   Returns 0 on success, 1 on timeout.
 #
@@ -426,13 +426,16 @@ wait_for_prompt() {
 #   AND been cleared before accepting the prompt. The spinner is shown
 #   synchronously around every LLM call and erased only when the response
 #   is complete, so it's a reliable lifecycle marker.
+#
+#   Poll at 0.25s throughout: the Thinking window after a fast LLM
+#   tool-result response can be sub-second, so wider intervals risk
+#   stepping over the appear/clear transition entirely.
 wait_for_chat_response() {
     local timeout="${1:-180}"
-    local interval="${2:-2}"
-    local elapsed=0
+    local deadline=$(($(date +%s) + timeout))
     echo -e "  Waiting up to ${timeout}s for LLM response..."
     local thinking_seen=false
-    while [[ $elapsed -lt $timeout ]]; do
+    while (( $(date +%s) < deadline )); do
         local content
         content=$(capture_pane -10)
         local has_thinking=false
@@ -444,15 +447,7 @@ wait_for_chat_response() {
             sleep 1  # brief pause for visual observation
             return 0
         fi
-        # Poll fast for the first few seconds to reliably catch the
-        # Thinking spinner transition; back off after.
-        if (( elapsed < 4 )); then
-            sleep 0.3
-            elapsed=$((elapsed + 1))
-        else
-            sleep "$interval"
-            elapsed=$((elapsed + interval))
-        fi
+        sleep 0.25
     done
     return 1
 }
