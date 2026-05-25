@@ -74,6 +74,7 @@ _WAIT_CLIENT_STARTED=false  # true if -w already started the client
 _TEST_CASES="all"
 _TEST_MAX=0  # set by caller via run_tests
 _THREADS_BEFORE=0  # thread count before tests, for cleanup
+_FAILURE_DUMPED=false  # reset before each test; set by dump_failure_context
 
 # ── Dependency check ────────────────────────────────────────────────────
 _check_deps() {
@@ -478,8 +479,15 @@ assert_pass() {
 }
 
 # assert_fail <message>
+#   Records a failure. By default also calls dump_failure_context (once per
+#   test) to capture pane + logs + client /debug events. Disable with
+#   OMNISH_TEST_AUTO_DUMP=false (e.g. for tests that already dump manually
+#   before assert_fail and want exact ordering).
 assert_fail() {
     echo -e "  ${RED}FAIL: $1${NC}"
+    if [[ "${OMNISH_TEST_AUTO_DUMP:-true}" == "true" ]] && [[ "$_FAILURE_DUMPED" != "true" ]]; then
+        dump_failure_context
+    fi
 }
 
 # show_capture <label> <content> [tail_lines=10]
@@ -501,6 +509,9 @@ show_capture() {
 dump_failure_context() {
     local pane_lines="${1:-200}"
     local omnish_dir="${OMNISH_HOME:-$HOME/.omnish}"
+
+    # Mark dumped so assert_fail does not re-dump on the same test.
+    _FAILURE_DUMPED=true
 
     echo -e "  ${YELLOW}── failure context ──${NC}"
 
@@ -538,7 +549,37 @@ dump_failure_context() {
         | grep -v grep \
         | sed 's/^/    /' || true
 
+    dump_client_events
+
     echo -e "  ${YELLOW}── end failure context ──${NC}"
+}
+
+# dump_client_events
+#   Best-effort: enter chat mode and run /debug events to dump the client's
+#   in-memory event ring buffer. May not work if the client is mid-picker,
+#   in alt screen, or has a non-default chat-mode prefix. Called automatically
+#   by dump_failure_context. Disturbs client state so should only run on
+#   failure paths where the test is about to abort or restart_client.
+dump_client_events() {
+    echo -e "  ${YELLOW}── client /debug events (best-effort) ──${NC}"
+    # Escape first to bail out of any picker/menu/edit-mode the test might be
+    # sitting in. Two escapes for safety (one closes picker, second closes
+    # chat). Errors ignored: pane may have died.
+    _tmux send-keys -t "$PANE" Escape 2>/dev/null || true
+    sleep 0.2
+    _tmux send-keys -t "$PANE" Escape 2>/dev/null || true
+    sleep 0.2
+    _tmux send-keys -t "$PANE" -- ":" 2>/dev/null || true
+    sleep 0.3
+    _tmux send-keys -t "$PANE" -- "/debug events" 2>/dev/null || true
+    sleep 0.2
+    _tmux send-keys -t "$PANE" Enter 2>/dev/null || true
+    sleep 1.5
+    capture_pane -200 | sed 's/^/    /'
+    # Cleanup: exit chat mode so a subsequent restart_client doesn't trip
+    # on lingering input. Errors ignored.
+    _tmux send-keys -t "$PANE" Escape 2>/dev/null || true
+    echo -e "  ${YELLOW}── end client /debug events ──${NC}"
 }
 
 # ── Context helpers ──────────────────────────────────────────────────────
@@ -720,6 +761,7 @@ run_tests() {
     for i in $(seq 1 "$_TEST_MAX"); do
         if [[ "$_TEST_CASES" == "all" || "$_TEST_CASES" == "$i" ]]; then
             ((_TEST_TOTAL++))
+            _FAILURE_DUMPED=false
             if "test_$i"; then
                 ((_TEST_PASSED++))
             fi
