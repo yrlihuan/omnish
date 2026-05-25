@@ -717,23 +717,39 @@ async fn handle_message(
                 req.sequence_id
             );
             // Debug shortcut: return canned suggestions for testing
-            // Supports: "omnish_debug" (immediate) and "omnish_debug delay <ms>" (delayed)
+            // Supports:
+            //   "omnish_debug"               -> ghost " yes"
+            //   "omnish_debug delay <ms>"    -> sleep <ms> then ghost " yes"
+            //   "omnish_debug <N>"           -> ghost of exact length N (issue #629)
             let trimmed = req.input.trim();
             if trimmed == "omnish_debug" || trimmed.starts_with("omnish_debug ") {
-                // Parse optional delay: "omnish_debug delay 2000" → sleep 2s before responding
-                let delay_ms = trimmed.strip_prefix("omnish_debug delay ")
+                let arg = trimmed.strip_prefix("omnish_debug").map(str::trim).unwrap_or("");
+                let delay_ms = arg.strip_prefix("delay ")
                     .and_then(|s| s.trim().parse::<u64>().ok());
+                let suffix_len = arg.parse::<usize>().ok();
                 if let Some(ms) = delay_ms {
                     tracing::info!("omnish_debug delay {}ms, seq={}", ms, req.sequence_id);
                     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                } else if let Some(n) = suffix_len {
+                    tracing::info!("omnish_debug len={}, seq={}", n, req.sequence_id);
                 } else {
                     tracing::info!("omnish_debug matched, returning canned suggestions");
                 }
+                let primary_suffix = match suffix_len {
+                    Some(n) if n > 0 => {
+                        // Leading space + (N-1) 'x' chars = N-char ghost suffix.
+                        let mut s = String::with_capacity(n);
+                        s.push(' ');
+                        s.extend(std::iter::repeat('x').take(n - 1));
+                        s
+                    }
+                    _ => " yes".to_string(),
+                };
                 let _ = tx.send(Message::CompletionResponse(omnish_protocol::message::CompletionResponse {
                     sequence_id: req.sequence_id,
                     suggestions: vec![
                         omnish_protocol::message::CompletionSuggestion {
-                            text: format!("{} yes", trimmed),
+                            text: format!("{}{}", trimmed, primary_suffix),
                             confidence: 1.0,
                         },
                         omnish_protocol::message::CompletionSuggestion {
