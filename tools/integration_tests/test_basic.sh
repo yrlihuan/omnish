@@ -338,11 +338,18 @@ test_6() {
     wait_for_client
 
     send_keys ":" 0.5
-    wait_for_prompt
 
-    # Get cursor X position via tmux
-    local cursor_x
-    cursor_x=$(_tmux display-message -p -t "$PANE" '#{cursor_x}')
+    # Poll cursor_x because the chat prompt write is two syscalls
+    # (NEWLINE -> "> "), and under CI load with concurrent daemon work the
+    # one-shot sample at a fixed 1s deadline could land between them and
+    # read 0 even though the prompt was about to render. Retry every 100ms
+    # for up to 3s; the success criterion is unchanged.
+    local cursor_x=0
+    for _ in $(seq 1 30); do
+        cursor_x=$(_tmux display-message -p -t "$PANE" '#{cursor_x}')
+        [[ "$cursor_x" == "2" ]] && break
+        sleep 0.1
+    done
 
     if [[ "$cursor_x" == "2" ]]; then
         assert_pass "Cursor at column 2 (after \"> \") when entering chat mode"
@@ -350,6 +357,7 @@ test_6() {
         sleep 1.5
         return 0
     else
+        show_capture "Pane at failure" "$(capture_pane -10)" 10
         assert_fail "Cursor at column $cursor_x, expected 2 (after \"> \")"
         send_special Escape 0.5
         sleep 1.5
