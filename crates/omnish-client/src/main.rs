@@ -922,7 +922,7 @@ async fn main() -> Result<()> {
     let mut deferred_ghost_width: usize = 0;
     // Whether the currently-rendered ghost text wrapped to the next terminal line.
     // Set at render time, used at clear time to decide whether to erase the next line.
-    let mut ghost_wrapped = false;
+    let mut ghost_wrap_rows: usize = 0;
     // When we triggered readline report (for timeout)
     let mut readline_trigger_time: Option<std::time::Instant> = None;
     let in_mux = in_title_mux();
@@ -1247,8 +1247,8 @@ async fn main() -> Result<()> {
                         } else if bytes == [0x1b] && shell_completer.ghost().is_some() {
                             // Bare ESC dismisses ghost text - consume the key (don't forward to PTY)
                             if shell_completer.dismiss() {
-                                erase_ghost_with_log(ghost_wrapped, "esc_dismiss");
-                                ghost_wrapped = false;
+                                erase_ghost_with_log(ghost_wrap_rows, "esc_dismiss");
+                                ghost_wrap_rows = 0;
                                 if let Some(ref rpc) = daemon_conn {
                                     let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
                                     send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd);
@@ -1280,8 +1280,8 @@ async fn main() -> Result<()> {
                                             send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd);
                                         }
                                         shell_completer.clear();
-                                        erase_ghost_with_log(ghost_wrapped, "readline_key");
-                                        ghost_wrapped = false;
+                                        erase_ghost_with_log(ghost_wrap_rows, "readline_key");
+                                        ghost_wrap_rows = 0;
                                     }
                                 } else if bytes.contains(&0x12) {
                                     // Ctrl+R enters isearch mode (different keymap)
@@ -1297,8 +1297,8 @@ async fn main() -> Result<()> {
                                             send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd);
                                         }
                                         shell_completer.clear();
-                                        erase_ghost_with_log(ghost_wrapped, "ctrl_r_isearch");
-                                        ghost_wrapped = false;
+                                        erase_ghost_with_log(ghost_wrap_rows, "ctrl_r_isearch");
+                                        ghost_wrap_rows = 0;
                                     }
                                 }
                             }
@@ -1311,8 +1311,8 @@ async fn main() -> Result<()> {
                             if let Some((input, seq)) = shell_input.take_change() {
                                 if shell_completer.on_input_changed(input, seq) {
                                     // Ghost was cleared - erase stale ghost text from screen
-                                    erase_ghost_with_log(ghost_wrapped, "input_changed_forward");
-                                    ghost_wrapped = false;
+                                    erase_ghost_with_log(ghost_wrap_rows, "input_changed_forward");
+                                    ghost_wrap_rows = 0;
                                     // Send completion summary (ignored - user typed different input)
                                     if let Some(ref rpc) = daemon_conn {
                                         let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
@@ -1416,8 +1416,8 @@ async fn main() -> Result<()> {
                         // Bare ESC dismisses ghost text - consume the key
                         if bytes == [0x1b] && shell_completer.ghost().is_some() {
                             if shell_completer.dismiss() {
-                                erase_ghost_with_log(ghost_wrapped, "esc_batch_end");
-                                ghost_wrapped = false;
+                                erase_ghost_with_log(ghost_wrap_rows, "esc_batch_end");
+                                ghost_wrap_rows = 0;
                                 if let Some(ref rpc) = daemon_conn {
                                     let shell_cwd = get_shell_cwd(proxy.child_pid() as u32);
                                     send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd);
@@ -1493,10 +1493,10 @@ async fn main() -> Result<()> {
                     // fragment overwrites the previously-rendered ghost.
                     if let Some(ghost_render) = deferred_ghost.take() {
                         let cols = get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
-                        ghost_wrapped = col_tracker.col as usize + deferred_ghost_width > cols;
+                        ghost_wrap_rows = count_ghost_wrap_rows(col_tracker.col as usize, deferred_ghost_width, cols);
                         event_log::push(format!(
-                            "ghost render(deferred#1) col={} width={} cols={} wrapped={}",
-                            col_tracker.col, deferred_ghost_width, cols, ghost_wrapped
+                            "ghost render(deferred#1) col={} width={} cols={} wrap_rows={}",
+                            col_tracker.col, deferred_ghost_width, cols, ghost_wrap_rows
                         ));
                         nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
                     } else if !display_data.is_empty()
@@ -1506,10 +1506,10 @@ async fn main() -> Result<()> {
                         if let Some(suffix) = shell_completer.ghost() {
                             let cols = get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
                             let width = display::display_width(suffix);
-                            ghost_wrapped = col_tracker.col as usize + width > cols;
+                            ghost_wrap_rows = count_ghost_wrap_rows(col_tracker.col as usize, width, cols);
                             event_log::push(format!(
-                                "ghost render(active) col={} width={} cols={} wrapped={}",
-                                col_tracker.col, width, cols, ghost_wrapped
+                                "ghost render(active) col={} width={} cols={} wrap_rows={}",
+                                col_tracker.col, width, cols, ghost_wrap_rows
                             ));
                             let ghost_render = display::render_ghost_text(suffix);
                             nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
@@ -1642,8 +1642,8 @@ async fn main() -> Result<()> {
                                         pending_completion_responses.clear();
                                         if shell_completer.ghost().is_some() {
                                             shell_completer.clear();
-                                            erase_ghost_with_log(ghost_wrapped, "rl_cursor_not_at_end");
-                                            ghost_wrapped = false;
+                                            erase_ghost_with_log(ghost_wrap_rows, "rl_cursor_not_at_end");
+                                            ghost_wrap_rows = 0;
                                         }
                                     }
                                     readline_triggered_for_completions = false;
@@ -1654,8 +1654,8 @@ async fn main() -> Result<()> {
                                     let had_ghost = shell_completer.ghost().is_some();
                                     if shell_completer.on_input_changed(input, seq) {
                                         event_log::push(format!("on_input_changed cleared ghost input={:?}", input));
-                                        erase_ghost_with_log(ghost_wrapped, "rl_input_changed");
-                                        ghost_wrapped = false;
+                                        erase_ghost_with_log(ghost_wrap_rows, "rl_input_changed");
+                                        ghost_wrap_rows = 0;
                                     } else if had_ghost {
                                         event_log::push(format!("on_input_changed kept ghost input={:?}", input));
                                     }
@@ -1709,10 +1709,10 @@ async fn main() -> Result<()> {
                     // Ghost text uses DECSC/DECRC so cursor position is preserved.
                     if let Some(ghost_render) = deferred_ghost.take() {
                         let cols = get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
-                        ghost_wrapped = col_tracker.col as usize + deferred_ghost_width > cols;
+                        ghost_wrap_rows = count_ghost_wrap_rows(col_tracker.col as usize, deferred_ghost_width, cols);
                         event_log::push(format!(
-                            "ghost render(deferred#2 post-OSC) col={} width={} cols={} wrapped={}",
-                            col_tracker.col, deferred_ghost_width, cols, ghost_wrapped
+                            "ghost render(deferred#2 post-OSC) col={} width={} cols={} wrap_rows={}",
+                            col_tracker.col, deferred_ghost_width, cols, ghost_wrap_rows
                         ));
                         nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
                     }
@@ -1814,10 +1814,10 @@ async fn main() -> Result<()> {
                             if let Some(ghost) = shell_completer.on_response(&resp, current) {
                                 let cols = get_terminal_size().map(|(_, c)| c as usize).unwrap_or(80);
                                 let width = display::display_width(ghost);
-                                ghost_wrapped = col_tracker.col as usize + width > cols;
+                                ghost_wrap_rows = count_ghost_wrap_rows(col_tracker.col as usize, width, cols);
                                 event_log::push(format!(
-                                    "ghost render(timeout) col={} width={} cols={} wrapped={}",
-                                    col_tracker.col, width, cols, ghost_wrapped
+                                    "ghost render(timeout) col={} width={} cols={} wrap_rows={}",
+                                    col_tracker.col, width, cols, ghost_wrap_rows
                                 ));
                                 let ghost_render = display::render_ghost_text(ghost);
                                 nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
@@ -1878,8 +1878,8 @@ async fn main() -> Result<()> {
                 send_completion_summary(rpc, &mut shell_completer, &session_id, false, shell_cwd);
             }
             shell_completer.clear();
-            erase_ghost_with_log(ghost_wrapped, "ghost_timeout");
-            ghost_wrapped = false;
+            erase_ghost_with_log(ghost_wrap_rows, "ghost_timeout");
+            ghost_wrap_rows = 0;
         }
 
         // Check if PTY hung up
@@ -2352,11 +2352,19 @@ fn do_respawn(
 
 /// Erase ghost text from the terminal and record the erase event. Centralizing
 /// the event_log push here ensures every clear path is visible in `/debug
-/// events` with the wrapped flag and call site for #628 / future flake
+/// events` with the wrap-row count and call site for #628 / future flake
 /// diagnostics.
-fn erase_ghost_with_log(wrapped: bool, site: &str) {
-    event_log::push(format!("erase_ghost site={site} wrapped={wrapped}"));
-    nix::unistd::write(std::io::stdout(), display::erase_ghost_text(wrapped)).ok();
+fn erase_ghost_with_log(wrap_rows: usize, site: &str) {
+    event_log::push(format!("erase_ghost site={site} wrap_rows={wrap_rows}"));
+    let bytes = display::erase_ghost_text(wrap_rows);
+    nix::unistd::write(std::io::stdout(), &bytes[..]).ok();
+}
+
+/// Number of physical rows the ghost text occupies *below* the prompt row,
+/// given the column where the ghost starts and its display width.
+fn count_ghost_wrap_rows(start_col: usize, width: usize, cols: usize) -> usize {
+    let total = start_col + width;
+    if total <= cols { 0 } else { (total - 1) / cols }
 }
 
 pub(crate) fn get_terminal_size() -> Option<(u16, u16)> {

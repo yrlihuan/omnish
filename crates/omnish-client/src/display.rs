@@ -211,30 +211,25 @@ pub fn render_ghost_text(ghost: &str) -> String {
 
 /// Erase ghost text from the terminal.
 ///
-/// When ghost text wraps to the next line (prompt + input + ghost > terminal
-/// width), a plain `\x1b[K` only clears the current line.  The wrapped
-/// portion on the next line remains as a stale artifact.
+/// When ghost text wraps below the prompt row, plain `\x1b[K` only clears
+/// the current line - the wrapped portion on each row below remains as a
+/// stale artifact. `wrap_rows` is the number of physical rows the ghost
+/// occupies *below* the cursor row; when non-zero each is erased in turn.
 ///
-/// This function erases the current line from the cursor **and** one line
-/// below, then restores the cursor position so the prompt is untouched.
-/// `wrapped` should be `true` when the caller knows the ghost text crossed
-/// a line boundary; when `false`, only `\x1b[K` is emitted.
-pub fn erase_ghost_text(wrapped: bool) -> &'static [u8] {
-    if wrapped {
-        // \x1b7        - save cursor position (row + col)
-        // \x1b[K       - erase from cursor to end of current line
-        // \x1b[1B\r    - move down one line, then to column 0
-        // \x1b[K       - erase that line
-        // \x1b8        - restore saved cursor position
-        //
-        // Save/restore is required: the inner `\r` clobbers the column,
-        // so a plain `\x1b[1A` only puts the cursor back on the original
-        // row at column 0 - subsequent shell echo would then write at
-        // column 1 instead of after the user's input. (issue #599)
-        b"\x1b7\x1b[K\x1b[1B\r\x1b[K\x1b8"
-    } else {
-        b"\x1b[K"
+/// Save/restore (`\x1b7`/`\x1b8`) is required: the inner `\r` clobbers the
+/// column, so a relative move back up would leave the cursor at column 0
+/// and a subsequent shell echo would overwrite the prompt (issue #599).
+pub fn erase_ghost_text(wrap_rows: usize) -> Vec<u8> {
+    if wrap_rows == 0 {
+        return b"\x1b[K".to_vec();
     }
+    let mut out = Vec::with_capacity(8 + 8 * wrap_rows);
+    out.extend_from_slice(b"\x1b7\x1b[K");
+    for _ in 0..wrap_rows {
+        out.extend_from_slice(b"\x1b[1B\r\x1b[K");
+    }
+    out.extend_from_slice(b"\x1b8");
+    out
 }
 
 /// Spinner frames for running tool status animation.
@@ -858,7 +853,7 @@ mod tests {
         output.push_str(&render_ghost_text("hello world wrapped suggestion")); // wraps
         // Save the original cursor col before erase (should be 7).
         // After erase, the cursor must come back to col 7 so a following ":" lands there.
-        output.push_str(std::str::from_utf8(erase_ghost_text(true)).unwrap());
+        output.push_str(std::str::from_utf8(&erase_ghost_text(1)).unwrap());
         output.push(':');
 
         let parser = parse_ansi(&output, cols, 4);
@@ -873,6 +868,47 @@ mod tests {
         // Cursor should be one column past the colon (col 8).
         let (_, col) = screen.cursor_position();
         assert_eq!(col, 8, "cursor should be after the appended ':'");
+    }
+
+    /// Regression for issue #629: when ghost text wraps across two or more
+    /// rows below the prompt, dismissing it must erase every wrap row, not
+    /// just the first one. The old `bool` variant only walked down one row.
+    #[test]
+    fn test_erase_ghost_text_wrapped_multiple_rows() {
+        let cols: u16 = 20;
+        let mut output = String::new();
+
+        // Prompt at col 0..7; ghost of 50 'x' chars wraps onto rows 1 and 2
+        // (7 + 50 = 57 cols; rows 1 and 2 each hold 20 cols, row 3 holds 17).
+        output.push_str("$ echo ");
+        let ghost: String = std::iter::repeat('x').take(50).collect();
+        output.push_str(&render_ghost_text(&ghost));
+
+        // Wrap rows = ceil((7 + 50) / 20) - 1 = ceil(57/20) - 1 = 3 - 1 = 2.
+        output.push_str(std::str::from_utf8(&erase_ghost_text(2)).unwrap());
+        output.push(':');
+
+        let parser = parse_ansi(&output, cols, 6);
+        let screen = parser.screen();
+        let row0 = get_row(screen, 0, cols);
+        let row1 = get_row(screen, 1, cols);
+        let row2 = get_row(screen, 2, cols);
+
+        assert!(row0.starts_with("$ echo :"),
+            "':' must land at col 7 on the prompt row, got: {row0:?}");
+        assert!(!row0.contains('x'), "row 0 must have no ghost char");
+        assert!(!row1.contains('x'), "row 1 (first wrap) must be erased");
+        assert!(!row2.contains('x'), "row 2 (second wrap) must be erased");
+
+        let (cursor_row, cursor_col) = screen.cursor_position();
+        assert_eq!(cursor_row, 0, "cursor must be back on the prompt row");
+        assert_eq!(cursor_col, 8, "cursor must be after the appended ':'");
+    }
+
+    #[test]
+    fn test_erase_ghost_text_no_wrap_is_kill_only() {
+        let bytes = erase_ghost_text(0);
+        assert_eq!(bytes.as_slice(), b"\x1b[K");
     }
 
     // -- erase_lines tests --
