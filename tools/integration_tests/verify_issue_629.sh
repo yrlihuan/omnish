@@ -50,6 +50,21 @@ _strip_ansi() {
     sed 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/\x1b[78]//g'
 }
 
+# Capture pane WITHOUT -J so wrapped rows stay as separate physical lines.
+# Required for #629 where ghost text wraps and we must count rows below
+# the prompt that still contain ghost characters.
+_capture_pane_unwrapped() {
+    local lines="${1:--40}"
+    _tmux capture-pane -p -t "$PANE" -S "$lines"
+}
+
+# Count physical pane rows that contain >= 50 consecutive 'x' (the ghost
+# fill character). Each wrap row produced by "omnish_debug N" contributes
+# exactly one such row up to N/80.
+_dense_x_row_count() {
+    _capture_pane_unwrapped -40 | _strip_ansi | grep -cE 'x{50,}' || true
+}
+
 # ── Test 1: long wrapping ghost; ESC erases all wrapped lines ──
 test_1() {
     echo -e "\n${YELLOW}=== Test 1: Long ghost wraps; ESC clears wrapped portions (#629) ===${NC}"
@@ -64,44 +79,36 @@ test_1() {
 
     # Poll for ghost text to appear (debounce ~500ms + round trip).
     sleep 0.5
-    local content=""
     local ghost_appeared=false
     local attempt
     for attempt in $(seq 1 20); do
         sleep 0.5
-        content=$(capture_pane -40)
-        local stripped
-        stripped=$(echo "$content" | _strip_ansi)
-        # The N-char ghost is " xxxx...". Detect by looking for a run of
-        # at least 50 'x' characters anywhere in the pane (covers both the
-        # current line and any wrapped lines below).
-        if echo "$stripped" | grep -qE 'x{50,}'; then
+        if [[ $(_dense_x_row_count) -ge 1 ]]; then
             ghost_appeared=true
             break
         fi
     done
 
+    local raw_before
+    raw_before=$(_capture_pane_unwrapped -40)
+
     if ! $ghost_appeared; then
-        show_capture "No ghost text" "$content" 24
+        show_capture "No ghost text" "$raw_before" 24
         assert_fail "Ghost text did not appear for 'omnish_debug 200'"
         send_special C-c 0.5
         return 1
     fi
 
-    show_capture "Ghost visible (wrapping)" "$content" 24
+    show_capture "Ghost visible (wrapping)" "$raw_before" 24
 
-    # Find the prompt row (last line ending with shell prompt + typed input).
-    local stripped
-    stripped=$(echo "$content" | _strip_ansi)
-
-    # Count how many wrap lines the ghost occupies. The 200-char suffix
-    # written after ~30 cols of prompt+input on an 80-col pane should
-    # produce at least two wrap lines worth of 'x' below the prompt row.
+    # Count how many physical wrap rows the ghost occupies. The 200-char
+    # suffix on an 80-col pane should produce >= 2 rows containing dense
+    # 'x' runs.
     local wrap_lines_before
-    wrap_lines_before=$(echo "$stripped" | grep -cE 'x{50,}' || true)
-    echo -e "  Lines containing dense ghost runs before ESC: ${wrap_lines_before}"
+    wrap_lines_before=$(_dense_x_row_count)
+    echo -e "  Rows containing dense ghost runs before ESC: ${wrap_lines_before}"
     if [[ $wrap_lines_before -lt 2 ]]; then
-        assert_fail "Expected ghost to wrap across multiple lines (saw ${wrap_lines_before})"
+        assert_fail "Expected ghost to wrap across multiple rows (saw ${wrap_lines_before})"
         send_special C-c 0.5
         return 1
     fi
@@ -115,15 +122,14 @@ test_1() {
     send_special Escape 0.5
     sleep 0.5
 
-    content=$(capture_pane -40)
-    show_capture "After ESC dismiss" "$content" 24
+    local raw_after
+    raw_after=$(_capture_pane_unwrapped -40)
+    show_capture "After ESC dismiss" "$raw_after" 24
 
-    stripped=$(echo "$content" | _strip_ansi)
-
-    # After dismiss, NO line should contain a long 'x' run anymore.
+    # After dismiss, NO row should contain a long 'x' run anymore.
     local wrap_lines_after
-    wrap_lines_after=$(echo "$stripped" | grep -cE 'x{50,}' || true)
-    echo -e "  Lines containing dense ghost runs after ESC: ${wrap_lines_after}"
+    wrap_lines_after=$(_dense_x_row_count)
+    echo -e "  Rows containing dense ghost runs after ESC: ${wrap_lines_after}"
 
     # Cursor row should match the prompt row (same as before, since ESC
     # only dismisses ghost; it must not move the prompt).
@@ -145,7 +151,7 @@ test_1() {
 
     # Real input on the prompt row should still be present.
     local prompt_line
-    prompt_line=$(echo "$stripped" | sed -n "$((cursor_y_after + 1))p")
+    prompt_line=$(echo "$raw_after" | _strip_ansi | sed -n "$((cursor_y_after + 1))p")
     echo -e "  Prompt row after ESC: '${prompt_line}'"
     if ! echo "$prompt_line" | grep -q 'omnish_debug 200'; then
         assert_fail "Typed input 'omnish_debug 200' missing from prompt row after dismiss"
