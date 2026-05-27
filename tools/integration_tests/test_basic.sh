@@ -73,7 +73,7 @@ test_1() {
     wait_for_prompt
 
     send_keys "/debug client" 0.3
-    send_enter 1
+    send_enter 2
 
     local content=$(capture_pane -30)
     show_capture "/debug client output" "$content" 15
@@ -105,7 +105,7 @@ test_2() {
     wait_for_prompt
 
     send_keys "/debug session" 0.3
-    send_enter 1
+    send_enter 2
 
     local content=$(capture_pane -30)
     show_capture "/debug session output" "$content" 15
@@ -134,7 +134,7 @@ test_3() {
     wait_for_prompt
 
     send_keys "/context | tail -n 10" 0.3
-    send_enter 1
+    send_enter 2
 
     local content=$(capture_pane -30)
     show_capture "/context | tail output" "$content" 15
