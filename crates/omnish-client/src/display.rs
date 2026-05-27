@@ -881,7 +881,7 @@ mod tests {
         // Prompt at col 0..7; ghost of 50 'x' chars wraps onto rows 1 and 2
         // (7 + 50 = 57 cols; rows 1 and 2 each hold 20 cols, row 3 holds 17).
         output.push_str("$ echo ");
-        let ghost: String = std::iter::repeat('x').take(50).collect();
+        let ghost: String = "x".repeat(50);
         output.push_str(&render_ghost_text(&ghost));
 
         // Wrap rows = ceil((7 + 50) / 20) - 1 = ceil(57/20) - 1 = 3 - 1 = 2.

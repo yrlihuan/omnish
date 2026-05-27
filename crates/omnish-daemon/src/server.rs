@@ -740,7 +740,7 @@ async fn handle_message(
                         // Leading space + (N-1) 'x' chars = N-char ghost suffix.
                         let mut s = String::with_capacity(n);
                         s.push(' ');
-                        s.extend(std::iter::repeat('x').take(n - 1));
+                        s.extend(std::iter::repeat_n('x', n - 1));
                         s
                     }
                     _ => " yes".to_string(),
