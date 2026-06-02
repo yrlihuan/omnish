@@ -20,6 +20,26 @@ test_init "config-backend" "$@"
 
 DAEMON_TOML="${OMNISH_HOME:-$HOME/.omnish}/daemon.toml"
 
+# Wait until daemon.toml contains (or stops containing) the test-del backend,
+# up to <timeout> seconds. Use this in place of a fixed sleep after pressing
+# Enter on Done / Delete - the daemon roundtrip + write is fast in dev but
+# unpredictable under CI load (issue #631).
+# Args: <"present"|"absent"> [timeout=10]
+wait_for_test_backend() {
+    local want="$1"
+    local timeout="${2:-10}"
+    local deadline=$(($(date +%s) + timeout))
+    while (( $(date +%s) < deadline )); do
+        if grep -q '\[llm\.backends\.test-del\]' "$DAEMON_TOML" 2>/dev/null; then
+            [[ "$want" == "present" ]] && return 0
+        else
+            [[ "$want" == "absent"  ]] && return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
 # Helper: enter chat and open /config
 open_config() {
     enter_chat
@@ -44,9 +64,11 @@ enter_backends() {
 navigate_to_menu_item() {
     local target="$1"
 
-    # Scroll to bottom so target is likely visible
+    # Scroll to bottom so target is likely visible.
+    # 0.15s/key keeps each arrow above the 50ms parse_esc_seq poll window
+    # so split \x1b[B reads don't get treated as bare ESC under CI load.
     for _ in $(seq 1 30); do
-        send_special Down 0.1
+        send_special Down 0.15
     done
     sleep 0.3
 
@@ -95,6 +117,26 @@ navigate_to_menu_item() {
         send_special Up 0.15
     done
     sleep 0.3
+    return 0
+}
+
+# Send Enter on a TextInput edit, then poll the captured pane until the
+# inline editor hint is gone before continuing. The inline editor swallows
+# stray keys, so racing into the next send_special after a fixed sleep can
+# silently drop the navigation keystrokes (issue #631).
+commit_text_edit() {
+    local wait="${1:-0.5}"
+    send_enter "$wait"
+    local deadline=$(($(date +%s) + 3))
+    while (( $(date +%s) < deadline )); do
+        local pane
+        pane=$(capture_pane -5)
+        # While editing, the hint is "Enter confirm  ESC cancel" (no "↑↓ move").
+        if echo "$pane" | grep -q '↑↓ move'; then
+            return 0
+        fi
+        sleep 0.1
+    done
     return 0
 }
 
@@ -150,30 +192,33 @@ test_1() {
     # Navigate to Name (Down 1 from Provider)
     send_special Down 0.3
 
-    # Edit Name: clear prefilled value, type "test-del"
+    # Edit Name: clear prefilled value, type "test-del".
+    # 0.15s per BSpace keeps each \x1b[ above the inline editor's 50ms
+    # parse_esc_seq poll (no actual ESC here, but the slower cadence also
+    # prevents tmux from coalescing multiple BSpaces past read boundaries).
     send_enter 0.5
-    for _ in $(seq 1 30); do send_special BSpace 0.05; done
+    for _ in $(seq 1 30); do send_special BSpace 0.15; done
     send_keys "test-del" 0.3
-    send_enter 0.5
+    commit_text_edit 0.5
 
-    # Navigate all the way down to Done button (Down 20 overshoots but stops at last item)
+    # Navigate all the way down to Done button (Down 20 overshoots but
+    # stops at last item). 0.15s/key for the same reason as above.
     for i in $(seq 1 20); do
-        send_special Down 0.1
+        send_special Down 0.15
     done
     sleep 0.3
 
     content=$(capture_pane -25)
     show_capture "Add form (filled)" "$content" 15
 
-    # Cursor on Done button → Enter to submit
+    # Cursor on Done button → Enter to submit.
     send_enter 1.5
 
-    sleep 1
-    if grep -q '\[llm\.backends\.test-del\]' "$DAEMON_TOML"; then
+    if wait_for_test_backend present 10; then
         assert_pass "Step 1: test backend added to daemon.toml"
     else
         show_capture "daemon.toml" "$(cat "$DAEMON_TOML")" 30
-        assert_fail "Step 1: test backend not found in daemon.toml"
+        assert_fail "Step 1: test backend not found in daemon.toml after 10s"
         dump_failure_context
         return 1
     fi
@@ -220,13 +265,12 @@ test_1() {
 
     # Press Enter to trigger Delete
     send_enter 1.0
-    sleep 1
 
     # ── Step 3: Verify backend removed from daemon.toml ──
     echo -e "  ${YELLOW}--- Step 3: Verify backend removed from daemon.toml ---${NC}"
 
-    if grep -q '\[llm\.backends\.test-del\]' "$DAEMON_TOML"; then
-        assert_fail "Step 3: test backend still present in daemon.toml after delete"
+    if ! wait_for_test_backend absent 10; then
+        assert_fail "Step 3: test backend still present in daemon.toml after delete (10s)"
         show_capture "daemon.toml" "$(cat "$DAEMON_TOML")" 30
         dump_failure_context
         cleanup_test_backend
