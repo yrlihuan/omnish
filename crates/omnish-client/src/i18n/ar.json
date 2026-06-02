@@ -128,6 +128,7 @@
   "command.help.debug_daemon": "عرض إصدار الـ daemon والمهام وحالة التحديث التلقائي",
   "command.help.debug_commands": "عرض أوامر shell الأخيرة (الافتراضي 30)",
   "command.help.debug_command": "عرض التفاصيل الكاملة لأمر برقم seq",
+  "command.help.debug_log": "تسجيل إدخال لوحة المفاتيح والأحداث في ملف (/debug log <path> | off)",
   "command.help.sessions": "عرض الجلسات",
   "command.help.thread": "إدارة خيوط المحادثة",
   "command.help.thread_list": "عرض الخيوط الأخيرة (الافتراضي 20، /thread list N لعرض المزيد)",

@@ -3,6 +3,7 @@ mod chat_session;
 mod client_plugin;
 mod command;
 mod completion;
+pub mod debug_log;
 pub mod event_log;
 pub mod pending_notices;
 mod ghost_complete;
@@ -1169,6 +1170,7 @@ async fn main() -> Result<()> {
             if n == 0 {
                 break;
             }
+            debug_log::log_input(&input_buf[..n]);
             deferred_ghost = None; // User typed - cancel pending ghost render
 
             // Suppress interceptor when not at prompt (child process running:

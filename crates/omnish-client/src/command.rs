@@ -232,6 +232,26 @@ fn events_command(args: &str) -> String {
     }
 }
 
+fn debug_log_command(args: &str) -> String {
+    let arg = args.trim();
+    if arg.is_empty() {
+        return match crate::debug_log::status() {
+            Some(path) => format!("debug log enabled: {}", path),
+            None => "debug log disabled. Use /debug log <path> to enable.".to_string(),
+        };
+    }
+    if arg == "off" {
+        return match crate::debug_log::disable() {
+            Some(path) => format!("debug log disabled (was: {})", path),
+            None => "debug log already disabled.".to_string(),
+        };
+    }
+    match crate::debug_log::enable(arg) {
+        Ok(()) => format!("debug log enabled: {}", arg),
+        Err(e) => format!("failed to enable debug log: {}", e),
+    }
+}
+
 const COMMANDS: &[CommandEntry] = &[
     CommandEntry {
         path: "/context",
@@ -290,6 +310,11 @@ const COMMANDS: &[CommandEntry] = &[
         path: "/debug command",
         kind: CommandKind::Daemon("command"),
         help: "Show full details of a command by seq number",
+    },
+    CommandEntry {
+        path: "/debug log",
+        kind: CommandKind::Local(debug_log_command),
+        help: "Log keyboard input and events to a file (/debug log <path> | off)",
     },
     CommandEntry {
         path: "/sessions",
@@ -772,6 +797,48 @@ mod tests {
             }
             _ => panic!("expected Command"),
         }
+    }
+
+    #[test]
+    fn test_debug_log_no_args_shows_status() {
+        // Ensure logger is disabled at the start (other tests may have toggled it).
+        let _ = crate::debug_log::disable();
+        match dispatch("/debug log") {
+            ChatAction::Command { result, .. } => {
+                assert!(result.contains("disabled"));
+            }
+            _ => panic!("expected Command"),
+        }
+    }
+
+    #[test]
+    fn test_debug_log_off_disables() {
+        match dispatch("/debug log off") {
+            ChatAction::Command { result, .. } => {
+                assert!(result.contains("disabled"));
+            }
+            _ => panic!("expected Command"),
+        }
+    }
+
+    #[test]
+    fn test_debug_log_enable_with_path() {
+        let tmp = std::env::temp_dir().join(format!(
+            "omnish-debug-log-dispatch-{}.log",
+            std::process::id()
+        ));
+        let path = tmp.to_str().unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        match dispatch(&format!("/debug log {}", path)) {
+            ChatAction::Command { result, .. } => {
+                assert!(result.contains("enabled"));
+                assert!(result.contains(path));
+            }
+            _ => panic!("expected Command"),
+        }
+        // Disable so other tests aren't polluted.
+        let _ = crate::debug_log::disable();
+        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]

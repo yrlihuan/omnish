@@ -128,6 +128,7 @@
   "command.help.debug_daemon": "Afficher la version du daemon, les tâches et l'état de la mise à jour auto",
   "command.help.debug_commands": "Afficher les commandes shell récentes (30 par défaut)",
   "command.help.debug_command": "Afficher les détails complets d'une commande par numéro seq",
+  "command.help.debug_log": "Enregistrer les entrées clavier et événements dans un fichier (/debug log <path> | off)",
   "command.help.sessions": "Lister les sessions",
   "command.help.thread": "Gérer les fils de conversation",
   "command.help.thread_list": "Lister les fils récents (20 par défaut, /thread list N pour plus)",

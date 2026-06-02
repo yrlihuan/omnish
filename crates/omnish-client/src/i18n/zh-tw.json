@@ -128,6 +128,7 @@
   "command.help.debug_daemon": "顯示守護程式版本、任務和自動更新狀態",
   "command.help.debug_commands": "顯示最近的 shell 命令（預設 30 條）",
   "command.help.debug_command": "透過 seq 號顯示命令的完整詳情",
+  "command.help.debug_log": "將鍵盤輸入和事件記錄到檔案 (/debug log <path> | off)",
   "command.help.sessions": "列出工作階段",
   "command.help.thread": "管理對話執行緒",
   "command.help.thread_list": "列出最近的執行緒（預設 20，使用 /thread list N 顯示更多）",

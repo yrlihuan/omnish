@@ -25,8 +25,9 @@ pub fn push(event: impl std::fmt::Display) {
     let elapsed = log.start.elapsed();
     let secs = elapsed.as_secs();
     let millis = elapsed.subsec_millis();
-    log.events
-        .push_back(format!("+{secs:>5}.{millis:03} {event}"));
+    let line = format!("+{secs:>5}.{millis:03} {event}");
+    crate::debug_log::log_event(&line);
+    log.events.push_back(line);
 }
 
 /// Return the last `n` events (oldest first).

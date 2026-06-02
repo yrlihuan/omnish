@@ -128,6 +128,7 @@
   "command.help.debug_daemon": "데몬 버전, 작업, 자동 업데이트 상태 표시",
   "command.help.debug_commands": "최근 쉘 명령 표시 (기본 30개)",
   "command.help.debug_command": "seq 번호로 명령의 전체 정보 표시",
+  "command.help.debug_log": "키보드 입력과 이벤트를 파일에 기록 (/debug log <path> | off)",
   "command.help.sessions": "세션 나열",
   "command.help.thread": "대화 스레드 관리",
   "command.help.thread_list": "최근 스레드 나열 (기본 20, /thread list N 으로 더 보기)",
