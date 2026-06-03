@@ -92,6 +92,12 @@ pub fn log_event(event: &str) {
     }
 }
 
+/// Serializes tests that touch the global LOGGER state. `cargo test` runs
+/// tests in parallel within a single process; without this, tests in
+/// command::tests and debug_log::tests race on the shared static.
+#[cfg(test)]
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn escape_bytes(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for &b in bytes {
@@ -122,6 +128,7 @@ mod tests {
 
     #[test]
     fn test_enable_disable_writes_to_file() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!(
             "omnish-debug-log-test-{}.log",
             std::process::id()

@@ -801,7 +801,7 @@ mod tests {
 
     #[test]
     fn test_debug_log_no_args_shows_status() {
-        // Ensure logger is disabled at the start (other tests may have toggled it).
+        let _guard = crate::debug_log::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::debug_log::disable();
         match dispatch("/debug log") {
             ChatAction::Command { result, .. } => {
@@ -813,6 +813,7 @@ mod tests {
 
     #[test]
     fn test_debug_log_off_disables() {
+        let _guard = crate::debug_log::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         match dispatch("/debug log off") {
             ChatAction::Command { result, .. } => {
                 assert!(result.contains("disabled"));
@@ -823,6 +824,7 @@ mod tests {
 
     #[test]
     fn test_debug_log_enable_with_path() {
+        let _guard = crate::debug_log::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!(
             "omnish-debug-log-dispatch-{}.log",
             std::process::id()
@@ -836,7 +838,6 @@ mod tests {
             }
             _ => panic!("expected Command"),
         }
-        // Disable so other tests aren't polluted.
         let _ = crate::debug_log::disable();
         let _ = std::fs::remove_file(&tmp);
     }
