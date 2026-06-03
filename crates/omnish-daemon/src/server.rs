@@ -2303,7 +2303,7 @@ async fn run_agent_loop(
                     continue;
                 }
 
-                tracing::error!("Chat LLM failed: {}", e);
+                tracing::error!("Chat LLM failed: {:#}", e);
 
                 // If a newer ChatMessage has superseded us, swallow the error
                 // entirely: the user has already moved on and the new turn
