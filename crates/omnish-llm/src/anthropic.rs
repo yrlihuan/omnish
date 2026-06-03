@@ -304,7 +304,36 @@ impl LlmBackend for AnthropicBackend {
                 return Err(last_error.unwrap());
             }
 
-            let resp_text = resp.text().await?;
+            // Drain the body chunk-by-chunk so we can tolerate a missing TLS
+            // close_notify from sloppy proxies (e.g. LiteLLM / uvicorn) when the
+            // body is actually complete. If close_notify is missing we still try
+            // to parse what we received; if it really is truncated the existing
+            // JSON-parse error path will surface a body preview.
+            let mut resp = resp;
+            let mut buf = Vec::new();
+            let mut close_notify_tolerated = false;
+            loop {
+                match resp.chunk().await {
+                    Ok(Some(b)) => buf.extend_from_slice(&b),
+                    Ok(None) => break,
+                    Err(e) => {
+                        let chain = format!("{:#}", anyhow::Error::new(e));
+                        if chain.contains("close_notify") {
+                            tracing::warn!(
+                                "Anthropic API TLS close_notify missing (received {} bytes); parsing what was received",
+                                buf.len()
+                            );
+                            close_notify_tolerated = true;
+                            break;
+                        }
+                        return Err(anyhow::anyhow!(
+                            "Anthropic API body read error ({}): {}",
+                            status, chain
+                        ));
+                    }
+                }
+            }
+            let resp_text = String::from_utf8_lossy(&buf).into_owned();
             let json: serde_json::Value = serde_json::from_str(&resp_text)
                 .map_err(|e| {
                     let preview = if resp_text.len() > 1000 {
@@ -313,8 +342,8 @@ impl LlmBackend for AnthropicBackend {
                         resp_text.clone()
                     };
                     anyhow::anyhow!(
-                        "Anthropic API response decode error ({}): {} - body: {}",
-                        status, e, preview
+                        "Anthropic API response decode error ({}, close_notify_tolerated={}): {} - body: {}",
+                        status, close_notify_tolerated, e, preview
                     )
                 })?;
             crate::message_log::log_response(log_tag.as_deref(), &json);
