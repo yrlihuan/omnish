@@ -2284,7 +2284,7 @@ async fn run_agent_loop(
                 return;
             }
             Err(e) => {
-                let err_str = e.to_string();
+                let err_str = format!("{:#}", e);
                 let is_connection = err_str.contains("connection")
                     || err_str.contains("tls")
                     || err_str.contains("close_notify")
