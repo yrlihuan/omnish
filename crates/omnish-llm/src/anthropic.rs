@@ -163,7 +163,7 @@ fn build_request_body(req: &LlmRequest, model: &str) -> serde_json::Value {
 
     let mut body_map = serde_json::Map::new();
     body_map.insert("model".to_string(), serde_json::Value::String(model.to_string()));
-    body_map.insert("max_tokens".to_string(), serde_json::Value::Number(8192.into()));
+    body_map.insert("max_tokens".to_string(), serde_json::Value::Number(32768.into()));
     body_map.insert("messages".to_string(), serde_json::Value::Array(messages));
 
     // System prompt: optional cache_control based on hint.
@@ -201,7 +201,7 @@ fn build_request_body(req: &LlmRequest, model: &str) -> serde_json::Value {
     // daemon's Some(false) call sites must disable thinking on both.
     //   Some(true)  + Opus 4.7+ -> {type: "adaptive"}
     //                              (manual budget_tokens mode returns 400)
-    //   Some(true)  + others    -> {type: "enabled", budget_tokens: 4096}
+    //   Some(true)  + others    -> {type: "enabled", budget_tokens: 16384}
     //   Some(false)             -> {type: "disabled"}
     //   None                    -> omit (backend default)
     match req.enable_thinking {
@@ -214,7 +214,7 @@ fn build_request_body(req: &LlmRequest, model: &str) -> serde_json::Value {
         Some(true) => {
             body_map.insert(
                 "thinking".to_string(),
-                serde_json::json!({"type": "enabled", "budget_tokens": 4096}),
+                serde_json::json!({"type": "enabled", "budget_tokens": 16384}),
             );
         }
         Some(false) => {
@@ -454,7 +454,7 @@ mod tests {
         req.enable_thinking = Some(true);
         let body = build_request_body(&req, "claude-opus-4-6");
         assert_eq!(body["thinking"]["type"], "enabled");
-        assert_eq!(body["thinking"]["budget_tokens"], 4096);
+        assert_eq!(body["thinking"]["budget_tokens"], 16384);
     }
 
     #[test]
