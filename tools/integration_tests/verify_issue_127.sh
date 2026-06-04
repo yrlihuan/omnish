@@ -28,7 +28,7 @@ test_1() {
     # Clear terminal to dismiss any ghost text that could wrap and merge
     # with the chat prompt when tmux captures with -J (join wrapped lines).
     send_keys "clear" 0.3
-    send_enter 1
+    send_enter 1.5  # exceed intercept_gap_ms (1000ms default); 1s is on the edge
 
     send_keys ":" 0.5
     wait_for_prompt
