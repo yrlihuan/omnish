@@ -1049,6 +1049,41 @@ mod tests {
         }
     }
 
+    /// Sanity: a ChatStart with non-empty project_instructions must serialize
+    /// to more bytes than the same payload with None, guarding against
+    /// accidental removal of the field.
+    #[test]
+    fn chat_start_project_instructions_length_sanity() {
+        let with_some = Frame {
+            request_id: 7,
+            payload: Message::ChatStart(ChatStart {
+                request_id: "abc".to_string(),
+                session_id: "sess".to_string(),
+                new_thread: true,
+                thread_id: None,
+                project_instructions: Some("hello world".to_string()),
+            }),
+        };
+        let with_none = Frame {
+            request_id: 7,
+            payload: Message::ChatStart(ChatStart {
+                request_id: "abc".to_string(),
+                session_id: "sess".to_string(),
+                new_thread: true,
+                thread_id: None,
+                project_instructions: None,
+            }),
+        };
+        let some_bytes = with_some.to_bytes().expect("serialize some");
+        let none_bytes = with_none.to_bytes().expect("serialize none");
+        assert!(
+            some_bytes.len() > none_bytes.len(),
+            "Some(non-empty) must serialize longer than None; got some={} none={}",
+            some_bytes.len(),
+            none_bytes.len(),
+        );
+    }
+
     /// Regression guard: CompletionSummary.extra must survive a bincode round-trip
     /// even when non-empty. The field type is `HashMap<String, String>` (not Value)
     /// for the same reason as ChatReady.history.
