@@ -6,6 +6,7 @@ mod completion;
 pub mod debug_log;
 pub mod event_log;
 pub mod pending_notices;
+mod project_instructions;
 mod ghost_complete;
 mod display;
 use display::NEWLINE;
