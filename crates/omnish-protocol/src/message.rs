@@ -5,7 +5,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version - increment on any wire format change.
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// Minimum protocol version this build can interoperate with.
 ///
@@ -13,7 +13,7 @@ pub const PROTOCOL_VERSION: u32 = 23;
 /// - Breaking changes (modified existing variant fields): bump both to the same value.
 ///
 /// Server auth accepts peers whose `protocol_version >= MIN_COMPATIBLE_VERSION`.
-pub const MIN_COMPATIBLE_VERSION: u32 = 23;
+pub const MIN_COMPATIBLE_VERSION: u32 = 24;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigItem {
@@ -334,6 +334,11 @@ pub struct ChatStart {
     /// If set, resume this specific thread instead of creating a new one.
     #[serde(default)]
     pub thread_id: Option<String>,
+    /// Pre-formatted `<project_instructions>` block read from
+    /// `<shell_cwd>/CLAUDE.md` on the client. `None` when absent or
+    /// unreadable. Already truncated and wrapped; daemon appends as-is.
+    #[serde(default)]
+    pub project_instructions: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -624,6 +629,7 @@ mod tests {
                 session_id: "sess1".to_string(),
                 new_thread: false,
                 thread_id: None,
+                project_instructions: None,
             }),
         };
         let bytes = frame.to_bytes().unwrap();
@@ -778,6 +784,7 @@ mod tests {
                 session_id: String::new(),
                 new_thread: false,
                 thread_id: None,
+                project_instructions: None,
             }),
             Message::ChatReady(ChatReady {
                 request_id: String::new(),
@@ -993,6 +1000,52 @@ mod tests {
             assert!(h[1].contains("hi there"));
         } else {
             panic!("expected ChatReady");
+        }
+    }
+
+    /// Regression test: ChatStart with populated project_instructions must
+    /// survive a bincode round-trip. Guards against accidental removal of
+    /// the field or a wire-format mismatch when MIN_COMPATIBLE_VERSION is bumped.
+    #[test]
+    fn chat_start_with_project_instructions_round_trips() {
+        let body = "<project_instructions>\nSource: /tmp/x/CLAUDE.md\n\nhello world\n</project_instructions>".to_string();
+        let frame = Frame {
+            request_id: 7,
+            payload: Message::ChatStart(ChatStart {
+                request_id: "abc".to_string(),
+                session_id: "sess".to_string(),
+                new_thread: true,
+                thread_id: None,
+                project_instructions: Some(body.clone()),
+            }),
+        };
+        let bytes = frame.to_bytes().expect("serialize");
+        let decoded = Frame::from_bytes(&bytes).expect("deserialize");
+        match decoded.payload {
+            Message::ChatStart(cs) => assert_eq!(cs.project_instructions, Some(body)),
+            other => panic!("unexpected variant: {:?}", other),
+        }
+    }
+
+    /// Same as above but with `project_instructions = None`. The Option tag
+    /// must still be emitted, and a None must round-trip back to None.
+    #[test]
+    fn chat_start_without_project_instructions_round_trips() {
+        let frame = Frame {
+            request_id: 7,
+            payload: Message::ChatStart(ChatStart {
+                request_id: "abc".to_string(),
+                session_id: "sess".to_string(),
+                new_thread: true,
+                thread_id: None,
+                project_instructions: None,
+            }),
+        };
+        let bytes = frame.to_bytes().expect("serialize");
+        let decoded = Frame::from_bytes(&bytes).expect("deserialize");
+        match decoded.payload {
+            Message::ChatStart(cs) => assert!(cs.project_instructions.is_none()),
+            other => panic!("unexpected variant: {:?}", other),
         }
     }
 
