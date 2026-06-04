@@ -267,6 +267,46 @@ fn merge_tool_params(target: &mut serde_json::Value, params: &HashMap<String, se
     }
 }
 
+/// Parse `omnish_debug` arguments into (delay_ms, suffix_len).
+///
+/// Accepts keywords in any order plus the legacy bare-number form:
+///   ""                       -> (None, None)
+///   "60"                     -> (None, Some(60))         legacy bare N
+///   "delay 500"              -> (Some(500), None)
+///   "length 60"              -> (None, Some(60))
+///   "delay 500 length 60"    -> (Some(500), Some(60))
+///   "length 60 delay 500"    -> (Some(500), Some(60))
+///
+/// Unknown tokens are silently ignored so the parser stays forgiving in
+/// test fixtures. The bare-number form is only consulted when no `length`
+/// keyword has set `suffix_len` yet.
+fn parse_omnish_debug_args(arg: &str) -> (Option<u64>, Option<usize>) {
+    let mut delay_ms: Option<u64> = None;
+    let mut suffix_len: Option<usize> = None;
+    let mut iter = arg.split_whitespace();
+    while let Some(tok) = iter.next() {
+        match tok {
+            "delay" => {
+                if let Some(v) = iter.next().and_then(|s| s.parse::<u64>().ok()) {
+                    delay_ms = Some(v);
+                }
+            }
+            "length" | "len" => {
+                if let Some(v) = iter.next().and_then(|s| s.parse::<usize>().ok()) {
+                    suffix_len = Some(v);
+                }
+            }
+            s if suffix_len.is_none() => {
+                if let Ok(n) = s.parse::<usize>() {
+                    suffix_len = Some(n);
+                }
+            }
+            _ => {}
+        }
+    }
+    (delay_ms, suffix_len)
+}
+
 /// Compare two DaemonConfig values and return client-relevant changes.
 pub fn diff_client_config(old: &omnish_common::config::DaemonConfig, new: &omnish_common::config::DaemonConfig) -> Vec<ConfigChange> {
     let mut changes = Vec::new();
@@ -717,23 +757,31 @@ async fn handle_message(
                 req.sequence_id
             );
             // Debug shortcut: return canned suggestions for testing
-            // Supports:
-            //   "omnish_debug"               -> ghost " yes"
-            //   "omnish_debug delay <ms>"    -> sleep <ms> then ghost " yes"
-            //   "omnish_debug <N>"           -> ghost of exact length N (issue #629)
+            // Supports (keywords may be combined in any order):
+            //   "omnish_debug"                          -> ghost " yes"
+            //   "omnish_debug delay <ms>"               -> sleep <ms> then ghost " yes"
+            //   "omnish_debug <N>"                      -> ghost of exact length N (issue #629)
+            //   "omnish_debug length <N>"               -> same as bare N
+            //   "omnish_debug delay <ms> length <N>"    -> sleep <ms> then N-char ghost (issue #635)
             let trimmed = req.input.trim();
             if trimmed == "omnish_debug" || trimmed.starts_with("omnish_debug ") {
                 let arg = trimmed.strip_prefix("omnish_debug").map(str::trim).unwrap_or("");
-                let delay_ms = arg.strip_prefix("delay ")
-                    .and_then(|s| s.trim().parse::<u64>().ok());
-                let suffix_len = arg.parse::<usize>().ok();
-                if let Some(ms) = delay_ms {
-                    tracing::info!("omnish_debug delay {}ms, seq={}", ms, req.sequence_id);
-                    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-                } else if let Some(n) = suffix_len {
-                    tracing::info!("omnish_debug len={}, seq={}", n, req.sequence_id);
-                } else {
-                    tracing::info!("omnish_debug matched, returning canned suggestions");
+                let (delay_ms, suffix_len) = parse_omnish_debug_args(arg);
+                match (delay_ms, suffix_len) {
+                    (Some(ms), Some(n)) => {
+                        tracing::info!("omnish_debug delay {}ms len={}, seq={}", ms, n, req.sequence_id);
+                        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                    }
+                    (Some(ms), None) => {
+                        tracing::info!("omnish_debug delay {}ms, seq={}", ms, req.sequence_id);
+                        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                    }
+                    (None, Some(n)) => {
+                        tracing::info!("omnish_debug len={}, seq={}", n, req.sequence_id);
+                    }
+                    (None, None) => {
+                        tracing::info!("omnish_debug matched, returning canned suggestions");
+                    }
                 }
                 let primary_suffix = match suffix_len {
                     Some(n) if n > 0 => {
@@ -3720,6 +3768,53 @@ mod tests {
     use std::sync::Arc;
     use std::time::Instant;
     use tokio::time::{sleep, Duration};
+
+    #[test]
+    fn test_parse_omnish_debug_args() {
+        // Empty: defaults
+        assert_eq!(parse_omnish_debug_args(""), (None, None));
+
+        // Legacy bare number: length only
+        assert_eq!(parse_omnish_debug_args("60"), (None, Some(60)));
+        assert_eq!(parse_omnish_debug_args("0"), (None, Some(0)));
+
+        // Delay only
+        assert_eq!(parse_omnish_debug_args("delay 500"), (Some(500), None));
+
+        // Length keyword (and short form)
+        assert_eq!(parse_omnish_debug_args("length 60"), (None, Some(60)));
+        assert_eq!(parse_omnish_debug_args("len 60"), (None, Some(60)));
+
+        // Combined, both orders
+        assert_eq!(
+            parse_omnish_debug_args("delay 500 length 60"),
+            (Some(500), Some(60))
+        );
+        assert_eq!(
+            parse_omnish_debug_args("length 60 delay 500"),
+            (Some(500), Some(60))
+        );
+
+        // Mixed bare-number + delay (length wins via keyword, bare ignored
+        // once length is set)
+        assert_eq!(
+            parse_omnish_debug_args("delay 200 60"),
+            (Some(200), Some(60))
+        );
+
+        // Bare-number only set once; subsequent ones ignored
+        assert_eq!(parse_omnish_debug_args("60 80"), (None, Some(60)));
+
+        // Unknown tokens are silently skipped
+        assert_eq!(
+            parse_omnish_debug_args("foo delay 100 bar length 30 baz"),
+            (Some(100), Some(30))
+        );
+
+        // Missing values after keyword: keyword absorbed, default kept
+        assert_eq!(parse_omnish_debug_args("delay"), (None, None));
+        assert_eq!(parse_omnish_debug_args("length"), (None, None));
+    }
 
     #[test]
     fn test_short_host() {
