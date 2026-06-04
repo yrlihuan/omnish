@@ -1608,11 +1608,16 @@ impl ChatSession {
             // Lazily create thread
             if self.current_thread_id.is_none() {
                 let req_id = Uuid::new_v4().to_string()[..8].to_string();
+                let project_instructions = self
+                    .shell_cwd
+                    .as_deref()
+                    .and_then(crate::project_instructions::load_for_cwd);
                 let start_msg = Message::ChatStart(ChatStart {
                     request_id: req_id.clone(),
                     session_id: session_id.to_string(),
                     new_thread: true,
                     thread_id: None,
+                    project_instructions,
                 });
                 match rpc.call(start_msg).await {
                     Ok(Message::ChatReady(ready)) if ready.request_id == req_id => {
@@ -2658,11 +2663,16 @@ impl ChatSession {
     async fn handle_resume_tid(&mut self, tid: &str, session_id: &str, rpc: &RpcClient) -> bool {
         crate::event_log::push(format!("resume_tid: sending ChatStart thread={}", tid));
         let rid = Uuid::new_v4().to_string()[..8].to_string();
+        let project_instructions = self
+            .shell_cwd
+            .as_deref()
+            .and_then(crate::project_instructions::load_for_cwd);
         let start_msg = Message::ChatStart(ChatStart {
             request_id: rid.clone(),
             session_id: session_id.to_string(),
             new_thread: false,
             thread_id: Some(tid.to_string()),
+            project_instructions,
         });
         crate::event_log::push("resume_tid: awaiting ChatReady (timeout 15s)");
         let result = tokio::time::timeout(
@@ -2680,11 +2690,16 @@ impl ChatSession {
                         // Resume the selected thread (locked items are disabled in picker,
                         // so this should not hit thread_locked again)
                         let rid2 = Uuid::new_v4().to_string()[..8].to_string();
+                        let project_instructions = self
+                            .shell_cwd
+                            .as_deref()
+                            .and_then(crate::project_instructions::load_for_cwd);
                         let start2 = Message::ChatStart(ChatStart {
                             request_id: rid2.clone(),
                             session_id: session_id.to_string(),
                             new_thread: false,
                             thread_id: Some(alt_tid),
+                            project_instructions,
                         });
                         if let Ok(Ok(Message::ChatReady(r2))) = tokio::time::timeout(
                             std::time::Duration::from_secs(15),
