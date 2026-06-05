@@ -860,7 +860,6 @@ async fn handle_message(
             } else {
                 tracing::debug!("[ChatEnd] thread={} not in active_threads", ce.thread_id);
             }
-            ctx.conv_mgr.clear_project_instructions(&ce.thread_id);
             let _ = tx.send(Message::Ack).await;
         }
         Message::ChatMessage(cm) => {
@@ -1093,9 +1092,6 @@ async fn handle_chat_start(
             }
         }
     };
-    if let Message::ChatReady(ChatReady { thread_id, error: None, .. }) = &ready {
-        conv_mgr.set_project_instructions(thread_id, cs.project_instructions.clone());
-    }
     let _ = tx.send(ready).await;
 }
 
@@ -1481,7 +1477,7 @@ async fn handle_chat_message(
     meta.system_reminder = Some(reminder.clone());
     conv_mgr.save_meta(&cm.thread_id, &meta);
 
-    let project_instructions = conv_mgr.get_project_instructions(&cm.thread_id);
+    let project_instructions = cm.project_instructions.clone();
 
     let full_system_prompt = match project_instructions {
         Some(ref pi) => format!("{}\n\n{}\n\n{}", system_prompt, reminder, pi),

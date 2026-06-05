@@ -1,6 +1,17 @@
-# Move CLAUDE.md Injection to Client via ChatStart Design
+# Move CLAUDE.md Injection from Daemon to Client Design
 
 **Issue:** #637 - CLAUDE.md 注入在 client/daemon 跨机部署下失效
+
+> **Revision 2 (post-review):** The original design (sections below tagged R1)
+> attached `project_instructions` to `ChatStart` with a per-thread cache on the
+> daemon. Code review flagged that `shell_cwd` can change mid-chat via two
+> paths (`ResumeMismatchAction::CdToOld` after thread resume, and tool-driven
+> cwd changes during the agent loop), which the cache would silently ignore.
+> The design now attaches `project_instructions` to **`ChatMessage`** instead.
+> Daemon reads `cm.project_instructions` directly each turn; no per-thread
+> cache. This eliminates the stale-content failure mode at the cost of
+> re-sending CLAUDE.md (typically a few KB) with each user message, which
+> is acceptable given chat turn rate.
 
 ## Overview
 
@@ -11,15 +22,15 @@ contain the file at the path reported by the client, and the read silently
 returns `NotFound`. The feature is dead in any cross-machine deployment.
 
 This design moves the read to the **client side** and ships the prepared
-content with `ChatStart`. The daemon caches it per-thread in memory and
-appends it to the system prompt during `handle_chat_message`, with no
-filesystem I/O of its own.
+content with each `ChatMessage`. The daemon reads it directly from the message
+and appends it to the system prompt for that turn, with no filesystem I/O of
+its own and no per-thread state.
 
 ### Goals
 
 - Eliminate daemon-side reading of client-provided paths.
-- Refresh CLAUDE.md content on every chat entry (new or resume), including
-  cross-machine thread resume (B-machine resume picks up B's CLAUDE.md).
+- Reflect current client cwd on every chat turn, including mid-chat changes
+  driven by resume cwd negotiation or tool execution.
 - Minimize protocol surface and daemon state.
 - Fail loudly on protocol mismatch (auth reject) rather than silently dropping
   CLAUDE.md, matching the existing project convention.
@@ -28,8 +39,6 @@ filesystem I/O of its own.
 
 - Parent-directory walk (a-la Claude Code). Stay with `<cwd>/CLAUDE.md` only,
   matching #626 behavior.
-- Refreshing CLAUDE.md mid-chat without re-entering chat. Users who edit
-  CLAUDE.md mid-thread must `/exit` and re-enter to pick up changes.
 - Backward compatibility with old peers via graceful degradation. We bump
   `MIN_COMPATIBLE_VERSION` and force coordinated upgrade.
 
@@ -38,54 +47,51 @@ filesystem I/O of its own.
 CLAUDE.md flows as follows:
 
 ```
-client.enter_chat:
-    block = load_for_cwd(shell_cwd)         # Option<String>, pre-wrapped
-    send ChatStart { project_instructions: block, ... }
-      ↓ RPC
-daemon.handle_chat_start:
-    conv_mgr.set_project_instructions(thread_id, cs.project_instructions)
-    reply ChatReady
-      ↓
-client.send ChatMessage { thread_id, query, ... }
+client.send_chat_message:
+    block = load_for_cwd(self.shell_cwd)    # Option<String>, pre-wrapped
+    send ChatMessage { query, project_instructions: block, ... }
       ↓ RPC
 daemon.handle_chat_message:
-    pi = conv_mgr.get_project_instructions(thread_id)   # Option<String>
+    pi = cm.project_instructions
     system = base_prompt + "\n\n" + reminder + (pi ? "\n\n" + pi : "")
     call LLM
-      ↓ ... ↓
-client.exit chat:
-    send ChatEnd
-      ↓
-daemon.handle_chat_end:
-    conv_mgr.clear_project_instructions(thread_id)
 ```
+
+`ChatStart`/`ChatEnd` no longer carry any project-instructions state. Each
+`ChatMessage` is self-contained: the client reads `<shell_cwd>/CLAUDE.md` at
+send time, so any mid-chat cwd change (via `ResumeMismatchAction::CdToOld` or
+tool-driven cwd updates) is reflected on the next turn without any refresh
+protocol path.
 
 ## Components
 
 ### 1. omnish-protocol
 
-**`ChatStart` gains one field:**
+**`ChatMessage` gains one field:**
 
 ```rust
-pub struct ChatStart {
+pub struct ChatMessage {
     pub request_id: String,
     pub session_id: String,
-    pub new_thread: bool,
-    #[serde(default)]
-    pub thread_id: Option<String>,
+    pub thread_id: String,
+    pub query: String,
+    pub model: Option<String>,
     /// Pre-formatted `<project_instructions>` block read from
-    /// `<shell_cwd>/CLAUDE.md` on the client. `None` when absent or
-    /// unreadable. Already truncated and wrapped; daemon appends as-is.
+    /// `<shell_cwd>/CLAUDE.md` on the client at message-send time. `None`
+    /// when absent or unreadable. Already truncated and wrapped; daemon
+    /// appends as-is.
     #[serde(default)]
     pub project_instructions: Option<String>,
 }
 ```
 
+`ChatStart` is unchanged from its #626 shape (no new field).
+
 **Version bump:**
 
 ```rust
-pub const PROTOCOL_VERSION: u32 = 24;
-pub const MIN_COMPATIBLE_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 25;
+pub const MIN_COMPATIBLE_VERSION: u32 = 25;
 ```
 
 Rationale: bincode 1.x is positional. Adding a field to an existing variant is
@@ -141,116 +147,75 @@ pub fn load_for_cwd(cwd: &str) -> Option<String> {
 }
 ```
 
-**Callsites:** all three `Message::ChatStart(...)` constructions in
-`chat_session.rs` (lines 1611, 2661, 2683) read `shell_cwd` from the existing
-client-side state and pass `load_for_cwd(&shell_cwd)` into the new field.
+**Callsites:** the primary `Message::ChatMessage(...)` construction in
+`chat_session.rs` (the user-message send path) reads `self.shell_cwd` from
+existing client-side state and passes `load_for_cwd(&shell_cwd)` into the new
+field. The secondary `ChatMessage` site that sends an empty-query model-change
+ack passes `project_instructions: None` because the daemon short-circuits on
+empty query before building any system prompt.
 
-Other `Message::*` constructions are not touched.
+`Message::ChatStart(...)` constructions are not modified.
 
-### 3. omnish-daemon: in-memory cache on ConversationManager
+### 3. omnish-daemon: direct read from `ChatMessage`
 
-Add to `ConversationManager`:
-
-```rust
-project_instructions: Mutex<HashMap<String, String>>,
-```
-
-Methods:
+No new fields or methods on `ConversationManager`. In `handle_chat_message`,
+replace the old filesystem read:
 
 ```rust
-pub fn set_project_instructions(&self, thread_id: &str, content: Option<String>) {
-    let mut map = self.project_instructions.lock().unwrap();
-    match content {
-        Some(s) => { map.insert(thread_id.to_string(), s); }
-        None => { map.remove(thread_id); }
-    }
-}
-
-pub fn get_project_instructions(&self, thread_id: &str) -> Option<String> {
-    self.project_instructions.lock().unwrap().get(thread_id).cloned()
-}
-
-pub fn clear_project_instructions(&self, thread_id: &str) {
-    self.project_instructions.lock().unwrap().remove(thread_id);
-}
+let project_instructions = session_attrs
+    .get("shell_cwd")
+    .and_then(|cwd| load_project_instructions(cwd));
 ```
 
-**Callsites:**
+with:
 
-- `handle_chat_start` (after the thread is successfully created or resumed -
-  skip on `thread_locked` and any other error path that returns `ChatReady`
-  with `error` set): `conv_mgr.set_project_instructions(&thread_id, cs.project_instructions.clone())`.
-- `handle_chat_message` (`server.rs:1525-1532`): replace the
-  `session_attrs.get("shell_cwd").and_then(load_project_instructions)` chain
-  with `conv_mgr.get_project_instructions(&cm.thread_id)`.
-- `handle_chat_end` (`server.rs:848`): `conv_mgr.clear_project_instructions(&ce.thread_id)`.
+```rust
+let project_instructions = cm.project_instructions.clone();
+```
+
+The existing concatenation block (`format!("{}\n\n{}\n\n{}", ...)`) is
+unchanged.
 
 **Removed:**
 
-- `MAX_PROJECT_INSTRUCTIONS_BYTES` constant (`server.rs:1420`).
-- `load_project_instructions` function (`server.rs:1426-1463`).
+- `MAX_PROJECT_INSTRUCTIONS_BYTES` constant (`server.rs`).
+- `load_project_instructions` function (`server.rs`).
 
-## Data Flow & Concurrency
+## Data Flow
 
 ### Paths
 
-**A. New thread:**
+**A. Standard user turn:**
 ```
-client: load_for_cwd -> Some(block_A)
-        ChatStart{new_thread=true, thread_id=None, project_instructions=Some(block_A)}
-daemon: create_thread -> T1
-        set_project_instructions(T1, Some(block_A))
-        reply ChatReady{thread_id=T1}
-client: ChatMessage{thread_id=T1, ...}
-daemon: get_project_instructions(T1) -> Some(block_A)
-        system = base + "\n\n" + reminder + "\n\n" + block_A
+client: load_for_cwd(self.shell_cwd) -> Some(block)
+        ChatMessage{ query, project_instructions: Some(block), ... }
+daemon: pi = cm.project_instructions
+        system = base + "\n\n" + reminder + "\n\n" + block
         call LLM
 ```
 
-**B. Resume thread (same or cross machine):**
+**B. Mid-chat cwd change (CdToOld after resume, or tool-driven cd):**
 ```
-client: load_for_cwd -> Some(block_B)   # fresh read from current shell_cwd
-        ChatStart{new_thread=false, thread_id=Some(T1), project_instructions=Some(block_B)}
-daemon: set_project_instructions(T1, Some(block_B))   # overwrites prior
-        reply ChatReady
+client: previously at /projectB; user resumes T1 (born in /projectA), picks CdToOld
+        self.shell_cwd updated to /projectA
+        user sends next message
+        load_for_cwd(/projectA) -> Some(block_from_A)
+        ChatMessage{ ..., project_instructions: Some(block_from_A) }
+daemon: uses block_from_A for this turn
 ```
-
-Resume always re-reads CLAUDE.md on the client, so:
-- Daemon restart followed by client resume repopulates the cache.
-- Cross-machine resume picks up B's CLAUDE.md (semantically: project
-  instructions follow the current working directory, not the thread's birth
-  host).
 
 **C. No CLAUDE.md in cwd:**
 ```
 client: load_for_cwd -> None
-        ChatStart{..., project_instructions=None}
-daemon: set_project_instructions(T, None)   # removes any prior entry
-client: ChatMessage
-daemon: get_project_instructions(T) -> None
-        system = base + "\n\n" + reminder   # no <project_instructions>
+        ChatMessage{ ..., project_instructions: None }
+daemon: system = base + "\n\n" + reminder   # no <project_instructions>
 ```
 
-### Concurrency
+### State
 
-`Mutex<HashMap>` over `RwLock` because the critical sections are sub-microsecond
-and writes are common (every ChatStart).
-
-Potential races:
-- **Concurrent ChatStart for the same thread** (two clients race to resume the
-  same thread). The daemon's existing `thread_locked` mechanism prevents this
-  in normal flows. If it ever happens, last-writer-wins is acceptable.
-- **ChatMessage arriving before ChatStart.** Cannot happen: client awaits
-  `ChatReady` before sending the first `ChatMessage`. Even if it did, `get`
-  returns `None` and chat degrades to "no CLAUDE.md", no crash.
-- **ChatEnd followed by stray ChatMessage.** `get` returns `None`, system
-  prompt omits the block. Acceptable.
-
-### Memory Footprint
-
-Each entry is at most 128KB. Active threads are bounded (typically tens to
-hundreds). Worst case ~120MB. No eviction hook for now; if thread counts grow
-in the future a hook into thread eviction can be added later.
+The daemon holds no project-instructions state across messages. Each turn is
+self-contained. There is no race window, no cache invalidation, no eviction
+concern.
 
 ## Error Handling
 
@@ -268,16 +233,15 @@ in the future a hook into thread eviction can be added later.
 
 | Condition | Behavior |
 |---|---|
-| `cs.project_instructions == None` | `set(thread_id, None)` removes any prior entry |
-| map has no entry for thread | `get` returns `None`, system prompt omits block |
-| daemon restart | cache empty; first new ChatStart (incl. resume) repopulates |
+| `cm.project_instructions == None` | system prompt omits the `<project_instructions>` block |
+| daemon restart | no state to recover; next ChatMessage carries fresh content |
 
 ### Protocol Compatibility
 
 | Combination | Outcome |
 |---|---|
 | new client + new daemon | works |
-| new client + old daemon (PV 23) | auth rejected (`MIN_COMPATIBLE_VERSION=24`); explicit upgrade prompt |
+| new client + old daemon (PV < 25) | auth rejected (`MIN_COMPATIBLE_VERSION=25`); explicit upgrade prompt |
 | old client + new daemon | auth rejected; explicit upgrade prompt |
 | cross-machine deployment | no longer reads daemon-side files; bug fixed |
 
@@ -285,9 +249,9 @@ in the future a hook into thread eviction can be added later.
 
 ### omnish-protocol
 
-- `ChatStart` bincode round-trip with `project_instructions = Some("...")` and
+- `ChatMessage` bincode round-trip with `project_instructions = Some("...")` and
   `None`.
-- Length sanity check: a `ChatStart` with `Some(non-empty)` serializes longer
+- Length sanity check: a `ChatMessage` with `Some(non-empty)` serializes longer
   than the same with `None`, guarding against accidental field removal.
 
 ### omnish-client (`project_instructions` module)
@@ -304,14 +268,12 @@ Pure-function unit tests against `tempdir`:
 
 ### omnish-daemon
 
-- `ConversationManager::{set,get,clear}_project_instructions` basic
-  behaviors, including `set(None)` overwriting `Some` to `None`.
-- `handle_chat_start` integration: mock RPC, feed `ChatStart{project_instructions=Some("BLOCK")}`,
-  assert `get` returns `Some("BLOCK")`.
-- `handle_chat_message` integration: pre-seed cache, capture system prompt
-  passed to the LLM mock, assert it contains `"BLOCK"`. With no pre-seed,
-  assert it does not contain `<project_instructions>`.
-- `handle_chat_end` integration: confirm `get` returns `None` afterward.
+No daemon-side unit tests are added in R2 (the cache is gone). The
+ChatMessage round-trip in `omnish-protocol` covers the wire format; the
+manual smoke regression covers the end-to-end injection path. If
+mock-RPC handler tests are added to the codebase later, a focused test
+on `handle_chat_message` reading `cm.project_instructions` should be
+included then.
 
 ### Cross-machine manual regression
 
@@ -331,8 +293,8 @@ Any unit test for the deleted `load_project_instructions` function in `server.rs
 
 ## Implementation Notes
 
-- Order of work: protocol → client module → daemon plumbing → integration
-  tests. Keep removal of `load_project_instructions` in the same patch as the
-  new daemon code so there is no transient state where both code paths run.
+- Order of work: protocol -> client module -> daemon plumbing. Keep removal
+  of `load_project_instructions` in the same patch as the new daemon code so
+  there is no transient state where both code paths run.
 - The build is always release per project convention (`CLAUDE.md`).
 - Do not run `omnish-daemon` from automation; ask the user to start it.

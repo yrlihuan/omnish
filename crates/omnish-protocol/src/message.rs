@@ -5,7 +5,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version - increment on any wire format change.
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// Minimum protocol version this build can interoperate with.
 ///
@@ -13,7 +13,7 @@ pub const PROTOCOL_VERSION: u32 = 24;
 /// - Breaking changes (modified existing variant fields): bump both to the same value.
 ///
 /// Server auth accepts peers whose `protocol_version >= MIN_COMPATIBLE_VERSION`.
-pub const MIN_COMPATIBLE_VERSION: u32 = 24;
+pub const MIN_COMPATIBLE_VERSION: u32 = 25;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigItem {
@@ -334,11 +334,6 @@ pub struct ChatStart {
     /// If set, resume this specific thread instead of creating a new one.
     #[serde(default)]
     pub thread_id: Option<String>,
-    /// Pre-formatted `<project_instructions>` block read from
-    /// `<shell_cwd>/CLAUDE.md` on the client. `None` when absent or
-    /// unreadable. Already truncated and wrapped; daemon appends as-is.
-    #[serde(default)]
-    pub project_instructions: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -393,6 +388,15 @@ pub struct ChatMessage {
     pub thread_id: String,
     pub query: String,
     pub model: Option<String>,
+    /// Pre-formatted `<project_instructions>` block read from
+    /// `<shell_cwd>/CLAUDE.md` on the client at message-send time. `None`
+    /// when absent or unreadable. Already truncated and wrapped; daemon
+    /// appends as-is. Carried per-message rather than per-thread so that
+    /// mid-chat cwd changes (e.g. CdToOld on resume, tool-driven cd) are
+    /// reflected on the next message without needing a separate refresh
+    /// protocol path.
+    #[serde(default)]
+    pub project_instructions: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -629,7 +633,6 @@ mod tests {
                 session_id: "sess1".to_string(),
                 new_thread: false,
                 thread_id: None,
-                project_instructions: None,
             }),
         };
         let bytes = frame.to_bytes().unwrap();
@@ -682,6 +685,7 @@ mod tests {
                 thread_id: "thread-uuid".to_string(),
                 query: "hello".to_string(),
                 model: None,
+                project_instructions: None,
             }),
         };
         let bytes = frame.to_bytes().unwrap();
@@ -784,7 +788,6 @@ mod tests {
                 session_id: String::new(),
                 new_thread: false,
                 thread_id: None,
-                project_instructions: None,
             }),
             Message::ChatReady(ChatReady {
                 request_id: String::new(),
@@ -811,6 +814,7 @@ mod tests {
                 thread_id: String::new(),
                 query: String::new(),
                 model: None,
+                project_instructions: None,
             }),
             Message::ChatResponse(ChatResponse {
                 request_id: String::new(),
@@ -1003,26 +1007,27 @@ mod tests {
         }
     }
 
-    /// Regression test: ChatStart with populated project_instructions must
+    /// Regression test: ChatMessage with populated project_instructions must
     /// survive a bincode round-trip. Guards against accidental removal of
     /// the field or a wire-format mismatch when MIN_COMPATIBLE_VERSION is bumped.
     #[test]
-    fn chat_start_with_project_instructions_round_trips() {
+    fn chat_message_with_project_instructions_round_trips() {
         let body = "<project_instructions>\nSource: /tmp/x/CLAUDE.md\n\nhello world\n</project_instructions>".to_string();
         let frame = Frame {
             request_id: 7,
-            payload: Message::ChatStart(ChatStart {
+            payload: Message::ChatMessage(ChatMessage {
                 request_id: "abc".to_string(),
                 session_id: "sess".to_string(),
-                new_thread: true,
-                thread_id: None,
+                thread_id: "t1".to_string(),
+                query: "hello".to_string(),
+                model: None,
                 project_instructions: Some(body.clone()),
             }),
         };
         let bytes = frame.to_bytes().expect("serialize");
         let decoded = Frame::from_bytes(&bytes).expect("deserialize");
         match decoded.payload {
-            Message::ChatStart(cs) => assert_eq!(cs.project_instructions, Some(body)),
+            Message::ChatMessage(cm) => assert_eq!(cm.project_instructions, Some(body)),
             other => panic!("unexpected variant: {:?}", other),
         }
     }
@@ -1030,47 +1035,50 @@ mod tests {
     /// Same as above but with `project_instructions = None`. The Option tag
     /// must still be emitted, and a None must round-trip back to None.
     #[test]
-    fn chat_start_without_project_instructions_round_trips() {
+    fn chat_message_without_project_instructions_round_trips() {
         let frame = Frame {
             request_id: 7,
-            payload: Message::ChatStart(ChatStart {
+            payload: Message::ChatMessage(ChatMessage {
                 request_id: "abc".to_string(),
                 session_id: "sess".to_string(),
-                new_thread: true,
-                thread_id: None,
+                thread_id: "t1".to_string(),
+                query: "hello".to_string(),
+                model: None,
                 project_instructions: None,
             }),
         };
         let bytes = frame.to_bytes().expect("serialize");
         let decoded = Frame::from_bytes(&bytes).expect("deserialize");
         match decoded.payload {
-            Message::ChatStart(cs) => assert!(cs.project_instructions.is_none()),
+            Message::ChatMessage(cm) => assert!(cm.project_instructions.is_none()),
             other => panic!("unexpected variant: {:?}", other),
         }
     }
 
-    /// Sanity: a ChatStart with non-empty project_instructions must serialize
+    /// Sanity: a ChatMessage with non-empty project_instructions must serialize
     /// to more bytes than the same payload with None, guarding against
     /// accidental removal of the field.
     #[test]
-    fn chat_start_project_instructions_length_sanity() {
+    fn chat_message_project_instructions_length_sanity() {
         let with_some = Frame {
             request_id: 7,
-            payload: Message::ChatStart(ChatStart {
+            payload: Message::ChatMessage(ChatMessage {
                 request_id: "abc".to_string(),
                 session_id: "sess".to_string(),
-                new_thread: true,
-                thread_id: None,
+                thread_id: "t1".to_string(),
+                query: "hello".to_string(),
+                model: None,
                 project_instructions: Some("hello world".to_string()),
             }),
         };
         let with_none = Frame {
             request_id: 7,
-            payload: Message::ChatStart(ChatStart {
+            payload: Message::ChatMessage(ChatMessage {
                 request_id: "abc".to_string(),
                 session_id: "sess".to_string(),
-                new_thread: true,
-                thread_id: None,
+                thread_id: "t1".to_string(),
+                query: "hello".to_string(),
+                model: None,
                 project_instructions: None,
             }),
         };
