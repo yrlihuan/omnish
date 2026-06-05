@@ -61,8 +61,14 @@ impl ThreadMeta {
 
 pub struct ConversationManager {
     threads_dir: PathBuf,
-    /// In-memory store: thread_id → raw JSON messages.
+    /// In-memory store: thread_id -> raw JSON messages.
     threads: Mutex<HashMap<String, Vec<serde_json::Value>>>,
+    /// In-memory cache: thread_id -> pre-wrapped <project_instructions> block
+    /// supplied by the client at chat-entry (ChatStart). Populated by
+    /// handle_chat_start, read by handle_chat_message, cleared by ChatEnd.
+    /// Not persisted; daemon restart drops entries and they are replenished
+    /// the next time the client sends ChatStart.
+    project_instructions: Mutex<HashMap<String, String>>,
 }
 
 /// Extract tool_use IDs from an assistant message's content array.
@@ -377,7 +383,11 @@ impl ConversationManager {
         }
         tracing::info!("Loaded {} conversation threads from disk", threads.len());
 
-        Self { threads_dir, threads: Mutex::new(threads) }
+        Self {
+            threads_dir,
+            threads: Mutex::new(threads),
+            project_instructions: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Create a new thread with optional metadata, return its UUID.
@@ -437,6 +447,33 @@ impl ConversationManager {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default()
+    }
+
+    /// Store the pre-wrapped `<project_instructions>` block for a thread.
+    /// `None` removes any prior entry, which is what `handle_chat_start`
+    /// should pass when the client reports no CLAUDE.md.
+    pub fn set_project_instructions(&self, thread_id: &str, content: Option<String>) {
+        let mut map = self.project_instructions.lock().unwrap();
+        match content {
+            Some(s) => {
+                map.insert(thread_id.to_string(), s);
+            }
+            None => {
+                map.remove(thread_id);
+            }
+        }
+    }
+
+    /// Look up the cached `<project_instructions>` block for a thread.
+    /// Returns `None` when no entry exists (daemon restart, ChatEnd already
+    /// fired, or the client never sent one).
+    pub fn get_project_instructions(&self, thread_id: &str) -> Option<String> {
+        self.project_instructions.lock().unwrap().get(thread_id).cloned()
+    }
+
+    /// Drop the cached entry for a thread. Called from the ChatEnd handler.
+    pub fn clear_project_instructions(&self, thread_id: &str) {
+        self.project_instructions.lock().unwrap().remove(thread_id);
     }
 
     /// Get the most recent thread by file modification time, or None.
@@ -1384,5 +1421,34 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
         assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn project_instructions_set_get_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+
+        assert!(mgr.get_project_instructions("t1").is_none());
+
+        mgr.set_project_instructions("t1", Some("BLOCK_A".to_string()));
+        assert_eq!(mgr.get_project_instructions("t1").as_deref(), Some("BLOCK_A"));
+
+        mgr.set_project_instructions("t1", Some("BLOCK_B".to_string()));
+        assert_eq!(mgr.get_project_instructions("t1").as_deref(), Some("BLOCK_B"));
+
+        mgr.clear_project_instructions("t1");
+        assert!(mgr.get_project_instructions("t1").is_none());
+    }
+
+    #[test]
+    fn project_instructions_set_none_removes_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+
+        mgr.set_project_instructions("t1", Some("BLOCK".to_string()));
+        assert!(mgr.get_project_instructions("t1").is_some());
+
+        mgr.set_project_instructions("t1", None);
+        assert!(mgr.get_project_instructions("t1").is_none());
     }
 }
