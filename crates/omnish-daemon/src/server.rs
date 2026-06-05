@@ -860,6 +860,7 @@ async fn handle_message(
             } else {
                 tracing::debug!("[ChatEnd] thread={} not in active_threads", ce.thread_id);
             }
+            ctx.conv_mgr.clear_project_instructions(&ce.thread_id);
             let _ = tx.send(Message::Ack).await;
         }
         Message::ChatMessage(cm) => {
@@ -1092,6 +1093,9 @@ async fn handle_chat_start(
             }
         }
     };
+    if let Message::ChatReady(ChatReady { thread_id, error: None, .. }) = &ready {
+        conv_mgr.set_project_instructions(thread_id, cs.project_instructions.clone());
+    }
     let _ = tx.send(ready).await;
 }
 
@@ -1417,51 +1421,6 @@ async fn build_chat_setup(mgr: &SessionManager, tool_registry: &omnish_daemon::t
     ChatSetup { command_query_tool, tools, system_prompt }
 }
 
-const MAX_PROJECT_INSTRUCTIONS_BYTES: usize = 128 * 1024;
-
-/// Read `<cwd>/CLAUDE.md` and wrap it in a `<project_instructions>` block for
-/// appending to the chat system prompt. Returns `None` when the file is
-/// absent or unreadable. Files larger than `MAX_PROJECT_INSTRUCTIONS_BYTES`
-/// are truncated at a char boundary with a trailing marker.
-fn load_project_instructions(cwd: &str) -> Option<String> {
-    let path = std::path::Path::new(cwd).join("CLAUDE.md");
-    let content = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(e) => {
-            tracing::warn!("[CLAUDE.md] read failed at {}: {}", path.display(), e);
-            return None;
-        }
-    };
-    let (body, truncated) = if content.len() > MAX_PROJECT_INSTRUCTIONS_BYTES {
-        let mut end = MAX_PROJECT_INSTRUCTIONS_BYTES;
-        while !content.is_char_boundary(end) {
-            end -= 1;
-        }
-        (&content[..end], true)
-    } else {
-        (content.as_str(), false)
-    };
-    if truncated {
-        tracing::warn!(
-            "[CLAUDE.md] {} truncated at {}KB",
-            path.display(),
-            MAX_PROJECT_INSTRUCTIONS_BYTES / 1024
-        );
-    }
-    let tail = if truncated {
-        "\n[... truncated: file exceeded 128KB ...]\n"
-    } else {
-        "\n"
-    };
-    Some(format!(
-        "<project_instructions>\nSource: {}\n\n{}{}</project_instructions>",
-        path.display(),
-        body,
-        tail
-    ))
-}
-
 async fn handle_chat_message(
     cm: ChatMessage,
     ctx: &HandlerCtx,
@@ -1522,9 +1481,7 @@ async fn handle_chat_message(
     meta.system_reminder = Some(reminder.clone());
     conv_mgr.save_meta(&cm.thread_id, &meta);
 
-    let project_instructions = session_attrs
-        .get("shell_cwd")
-        .and_then(|cwd| load_project_instructions(cwd));
+    let project_instructions = conv_mgr.get_project_instructions(&cm.thread_id);
 
     let full_system_prompt = match project_instructions {
         Some(ref pi) => format!("{}\n\n{}\n\n{}", system_prompt, reminder, pi),
