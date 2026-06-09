@@ -327,15 +327,23 @@ impl InputInterceptor {
         self.suppressed = suppressed;
     }
 
-    /// Note output from shell (to detect prompt and reset state)
+    /// Note output from shell. Only updates command_line_has_content; does not
+    /// touch chat-buffering state. Routine PTY output (e.g. responses to our
+    /// own readline trigger \x1b[13337~) can race with a freshly-buffered
+    /// prefix, and silently dropping the buffer here loses the user's keystroke
+    /// (issue #639). Chat state is now reset only on the explicit OSC 133;A /
+    /// 133;D semantic prompt events via `on_prompt()`.
     pub fn note_output(&mut self, _data: &[u8]) {
-        // On any output from shell, reset chat state
-        // This handles Ctrl+C, Ctrl+D, etc. that cancel partial input
-        if self.in_chat {
-            self.in_chat = false;
-            self.buffer.clear();
-        }
-        // Shell output indicates prompt is displayed, command line is empty
+        self.command_line_has_content = false;
+    }
+
+    /// Called on OSC 133;A (PromptStart) or 133;D (CommandEnd) - shell is
+    /// drawing a fresh prompt, so any buffered prefix or chat state from the
+    /// previous prompt cycle is stale.
+    pub fn on_prompt(&mut self) {
+        self.in_chat = false;
+        self.buffer.clear();
+        self.esc_filter = None;
         self.command_line_has_content = false;
     }
 
@@ -676,13 +684,28 @@ mod tests {
     }
 
     #[test]
-    fn test_note_output_resets_chat_state() {
+    fn test_note_output_preserves_chat_state() {
+        // Routine PTY output (e.g. readline trigger response) must not drop
+        // the buffered prefix - issue #639.
         let mut interceptor = new_interceptor("::");
         interceptor.feed_byte(b':');
         interceptor.feed_byte(b':');
-        // Now in chat mode
+        // Now in chat mode with prefix buffered
         interceptor.note_output(b"some output");
-        // Chat state should be reset
+        // Chat state must be preserved
+        assert!(interceptor.in_chat);
+        assert_eq!(interceptor.buffer.len(), 2);
+    }
+
+    #[test]
+    fn test_on_prompt_resets_chat_state() {
+        // OSC 133;A / 133;D explicitly signals a new prompt - any stale
+        // chat-buffering state from the previous cycle is cleared.
+        let mut interceptor = new_interceptor("::");
+        interceptor.feed_byte(b':');
+        interceptor.feed_byte(b':');
+        assert!(interceptor.in_chat);
+        interceptor.on_prompt();
         assert!(!interceptor.in_chat);
         assert_eq!(interceptor.buffer.len(), 0);
     }
@@ -1478,7 +1501,7 @@ mod tests {
         assert_eq!(sim.timeout(), LoopOutcome::Timeout);
 
         // Simulate shell output after chat exits (resets state)
-        sim.ic.note_output(b"$ ");
+        sim.ic.on_prompt();
 
         // 2. Run a normal command
         assert_eq!(sim.feed(b'l'), LoopOutcome::Forward);
@@ -1490,7 +1513,7 @@ mod tests {
         assert_eq!(sim.feed(b':'), LoopOutcome::ResumeChat);
 
         // Simulate shell output after chat exits
-        sim.ic.note_output(b"$ ");
+        sim.ic.on_prompt();
 
         // 4. Another normal command
         assert_eq!(sim.feed(b'p'), LoopOutcome::Forward);

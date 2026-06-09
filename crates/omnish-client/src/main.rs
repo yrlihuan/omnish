@@ -1553,6 +1553,7 @@ async fn main() -> Result<()> {
                             Osc133EventKind::PromptStart => {
                                 event_log::push("osc133 PromptStart");
                                 shell_input.on_prompt();
+                                interceptor.on_prompt();
                                 shell_completer.clear();
                                 pending_completion_responses.clear();
                                 readline_triggered_for_completions = false;
@@ -1566,6 +1567,7 @@ async fn main() -> Result<()> {
                             Osc133EventKind::CommandEnd { exit_code } => {
                                 event_log::push(format!("osc133 CommandEnd exit_code={exit_code}"));
                                 shell_input.on_prompt();
+                                interceptor.on_prompt();
                                 shell_completer.clear();
                                 pending_completion_responses.clear();
                                 readline_triggered_for_completions = false;
