@@ -35,7 +35,10 @@ Do not include any other text outside the JSON array.";
 /// cached via Anthropic cache_control on a dedicated user message content block.
 pub fn build_completion_parts(input: &str, cursor_pos: usize) -> (String, String) {
     let user = if input.is_empty() {
-        "Current input: (empty - user just returned to the shell prompt)".to_string()
+        "Current input: (empty - user just returned to the shell prompt).\n\
+         With no input to anchor intent, keep each suggestion short (length <= 20 characters). \
+         Prefer [] over a long speculative completion."
+            .to_string()
     } else {
         format!("Current input: `{}`\nCursor position: {}", input, cursor_pos)
     };
@@ -158,6 +161,9 @@ mod tests {
     fn test_completion_parts_empty_input() {
         let (_, user) = build_completion_parts("", 0);
         assert!(user.contains("empty"));
+        // Issue #640: empty input must carry a short-suggestion constraint so
+        // the LLM does not generate long speculative end-to-end scripts.
+        assert!(user.contains("length <= 20"));
     }
 
     /// System prompt (instructions) is a constant - identical for every call.
