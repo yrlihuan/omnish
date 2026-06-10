@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.8.16 (2026-06-10)
+
+### Features
+- **client,daemon**: Inject project CLAUDE.md into chat system prompt (#626, #637). Client reads `<shell_cwd>/CLAUDE.md` fresh at each message send (new `project_instructions` module, 128 KiB cap with UTF-8-safe truncation) and attaches it to `ChatMessage.project_instructions`; daemon injects it into the system prompt each turn. Reading on ChatMessage rather than ChatStart fixes stale instructions after mid-chat cwd changes (resume cd-to-old, tool-driven cd) by construction - no daemon disk read, no per-thread cache to invalidate. PROTOCOL_VERSION + MIN_COMPATIBLE_VERSION bumped to 25.
+- **client**: `/debug log <path>` captures raw stdin bytes (escape-encoded) and event_log entries to a file for diagnosing terminal-app issues (e.g. vim paste failures inside omnish); `/debug log off` disables (#632)
+- **llm**: Bump chat max_tokens to 32768 and thinking budget_tokens to 16384
+
+### Fixes
+- **llm**: Cap completion suggestions to <= 20 characters on empty input via a hint in the empty-input branch of the user message; system prompt stays constant to preserve KV-cache (#640)
+- **client**: Preserve buffered chat prefix across routine PTY output (#639). `note_output()` cleared in_chat/buffer on any PTY byte, so bash's `bind -x` readline-trigger response racing with a typed `:` under CI load dropped the prefix and leaked subsequent input to the shell. Buffer reset now happens only on explicit OSC 133;A/;D prompt events via new `on_prompt()`.
+- **llm,daemon**: Tolerate missing TLS close_notify in Anthropic body read (#634). LiteLLM-style ASGI proxies close TCP without close_notify; drain body via `chunk()` and JSON-parse the bytes already received (tagged `close_notify_tolerated=true` in logs), classify the decode error as retryable, and log the full anyhow error chain on Chat LLM failure.
+- **client**: Erase every wrap row when dismissing ghost text; `ghost_wrap_rows` computed from start_col, ghost width and terminal width replaces the single-row boolean, fixing stale artifacts when long completions wrap on narrow panes (#629)
+- **client**: Exit `wait_for_ctrl_c` when the stop sender is dropped (match `Err(Disconnected)`, not just `Ok`), preventing a leaked spawn_blocking task from silently consuming stdin (#624)
+
+### Tests
+- **integration**: New `verify_issue_635.sh` covering arrow-key clear of wrapped ghost text; new `test_interrupt_resume` wrapped-sleep matcher (#623) and 60s tool-header wait (#622); spinner poll at 0.25s (#625); cursor_x polling after chat entry (#627); 2s post-Enter waits (#630); slow keystroke cadence + daemon.toml polling in config test (#631); serialize debug_log tests sharing global logger state (#633); widen pre-prefix wait in verify_issue_127 (#636); `omnish_debug delay <ms> length <N>` combined args
+- **protocol**: Round-trip + length sanity guards for `ChatMessage.project_instructions` (#637)
+
+### Style
+- Silence clippy `manual_str_repeat` / `manual_repeat_n`
+
 ## v0.8.15 (2026-05-15)
 
 ### Fixes
