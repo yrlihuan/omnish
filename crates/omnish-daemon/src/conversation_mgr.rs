@@ -608,13 +608,14 @@ impl ConversationManager {
             .unwrap_or_default()
             .as_secs();
         let src = self.threads_dir.join(format!("{}.jsonl", thread_id));
+        // Same-second collisions are harmless: a second compaction finds nothing new and skips.
         let snap = snap_dir.join(format!("{}.{}.jsonl", thread_id, ts));
         std::fs::copy(&src, &snap).map_err(|e| format!("snapshot failed: {}", e))?;
 
         *msgs = candidate;
         Self::rewrite_thread_file(&self.threads_dir, thread_id, msgs);
         tracing::info!(
-            "compacted thread {}: {} blocks, {} -> {} chars (snapshot: {})",
+            "Compacted thread {}: {} blocks, {} -> {} chars (snapshot: {})",
             thread_id, stats.blocks, stats.chars_before, stats.chars_after,
             snap.display()
         );
@@ -1557,5 +1558,4 @@ mod tests {
         let ids = mgr2.list_thread_ids();
         assert_eq!(ids, vec![id]);
     }
-
 }
