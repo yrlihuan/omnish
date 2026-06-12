@@ -2775,6 +2775,35 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
             omnish_llm::template::TEMPLATE_NAMES.join("|")
         ));
     }
+    // Handle /compact - truncate bulky tool_result blocks in a thread (issue #641).
+    // Payload form: `compact:<tid>`.
+    if let Some(tid) = sub.strip_prefix("compact:") {
+        if tid.is_empty() {
+            return cmd_display("Error: missing thread_id");
+        }
+        if !conv_mgr.thread_exists(tid) {
+            return cmd_display("Error: thread not found");
+        }
+        // Refuse while an agent loop is parked waiting for client tool
+        // results; compacting now would orphan its in-flight work.
+        {
+            let loops = ctx.pending_loops.lock().await;
+            if loops.values().any(|s| s.cm.thread_id == tid) {
+                return cmd_display("Error: thread is waiting for tool results, try again later");
+            }
+        }
+        // Invalidate any in-flight agent loop (e.g. awaiting an LLM response)
+        // so it discards its work instead of appending to the rewritten file.
+        bump_generation(&ctx.thread_generations, tid).await;
+        return match conv_mgr.compact_thread(tid) {
+            Ok(Some(stats)) => cmd_display(format!(
+                "compacted {} tool result(s): {} -> {} chars",
+                stats.blocks, stats.chars_before, stats.chars_after
+            )),
+            Ok(None) => cmd_display("nothing to compact"),
+            Err(e) => cmd_display(format!("Error: {}", e)),
+        };
+    }
     // Handle /thread rename - set or clear a sticky user title override.
     // Payload form: `thread rename <name>:<tid>` to set, `thread rename:<tid>` to clear.
     if let Some(rest) = sub.strip_prefix("thread rename") {
