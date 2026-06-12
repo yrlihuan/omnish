@@ -219,6 +219,7 @@ fn help_command(_args: &str) -> String {
     // Chat-mode-only commands not in the registry.
     output.push_str(&format!("  /resume - {}\n", crate::i18n::t("command.help.resume")));
     output.push_str(&format!("  /model [name] - {}\n", crate::i18n::t("command.help.model")));
+    output.push_str(&format!("  /compact - {}\n", crate::i18n::t("command.help.compact")));
     output
 }
 
@@ -367,6 +368,7 @@ pub const CHAT_ONLY_COMMANDS: &[&str] = &[
     "/resume",
     "/resume all",
     "/model",
+    "/compact",
     "/thread sandbox",
     "/thread sandbox on",
     "/thread sandbox off",

@@ -139,5 +139,6 @@
   "command.help.thread_sandbox": "Activer/désactiver la sandbox pour le fil courant (mode chat)",
   "command.help.thread_rename": "Renommer le fil courant (vide pour effacer)",
   "command.help.resume": "Reprendre un fil de conversation précédent",
-  "command.help.model": "Changer de modèle LLM"
+  "command.help.model": "Changer de modèle LLM",
+  "command.help.compact": "Compacter les gros résultats d'outils du fil actuel"
 }

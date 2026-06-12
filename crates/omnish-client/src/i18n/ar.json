@@ -139,5 +139,6 @@
   "command.help.thread_sandbox": "تبديل تطبيق sandbox للخيط الحالي (وضع الدردشة)",
   "command.help.thread_rename": "إعادة تسمية الخيط الحالي (فارغ للمسح)",
   "command.help.resume": "استئناف خيط محادثة سابق",
-  "command.help.model": "تبديل نموذج LLM"
+  "command.help.model": "تبديل نموذج LLM",
+  "command.help.compact": "ضغط نتائج الأدوات الكبيرة في المحادثة الحالية"
 }

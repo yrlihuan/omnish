@@ -139,5 +139,6 @@
   "command.help.thread_sandbox": "Alternar aplicación de sandbox para el hilo actual (modo chat)",
   "command.help.thread_rename": "Renombrar hilo actual (vacío para limpiar)",
   "command.help.resume": "Reanudar un hilo de conversación anterior",
-  "command.help.model": "Cambiar de modelo LLM"
+  "command.help.model": "Cambiar de modelo LLM",
+  "command.help.compact": "Compactar resultados de herramientas voluminosos del hilo actual"
 }

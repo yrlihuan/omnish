@@ -139,5 +139,6 @@
   "command.help.thread_sandbox": "切換目前執行緒的沙箱強制（聊天模式）",
   "command.help.thread_rename": "重新命名目前執行緒（參數為空時清除）",
   "command.help.resume": "恢復之前的對話執行緒",
-  "command.help.model": "切換 LLM 模型"
+  "command.help.model": "切換 LLM 模型",
+  "command.help.compact": "壓縮當前線程中的大體積工具結果"
 }

@@ -139,5 +139,6 @@
   "command.help.thread_sandbox": "Toggle sandbox enforcement for current thread (chat mode)",
   "command.help.thread_rename": "Rename current thread (empty to clear override)",
   "command.help.resume": "Resume a previous conversation thread",
-  "command.help.model": "Switch LLM model"
+  "command.help.model": "Switch LLM model",
+  "command.help.compact": "Compact bulky tool results in current thread"
 }

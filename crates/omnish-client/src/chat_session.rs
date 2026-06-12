@@ -1460,6 +1460,12 @@ impl ChatSession {
                 continue;
             }
 
+            // /compact - truncate bulky tool results in current thread
+            if trimmed == "/compact" {
+                self.handle_compact(session_id, rpc).await;
+                continue;
+            }
+
             // /resume_tid <thread_id> (internal - used by :: resume shortcut)
             if let Some(tid) = trimmed.strip_prefix("/resume_tid ") {
                 if !self.handle_resume_tid(tid.trim(), session_id, rpc).await && is_fast_resume {
@@ -2352,6 +2358,39 @@ impl ChatSession {
                 write_stdout(&display::render_error(
                     crate::i18n::t("error.failed_rename_thread"),
                 ));
+            }
+        }
+    }
+
+    async fn handle_compact(&mut self, session_id: &str, rpc: &RpcClient) {
+        let tid = match self.current_thread_id.as_deref() {
+            Some(t) if !t.is_empty() => t.to_string(),
+            _ => {
+                write_stdout(&display::render_error(
+                    crate::i18n::t("error.no_active_thread"),
+                ));
+                return;
+            }
+        };
+
+        let rid = Uuid::new_v4().to_string()[..8].to_string();
+        let request = Message::Request(Request {
+            request_id: rid.clone(),
+            session_id: session_id.to_string(),
+            query: format!("__cmd:compact:{}", tid),
+            scope: RequestScope::AllSessions,
+        });
+        match rpc.call(request).await {
+            Ok(Message::Response(resp)) if resp.request_id == rid => {
+                let display_text = if let Some(json) = super::parse_cmd_response(&resp.content) {
+                    super::cmd_display_str(&json)
+                } else {
+                    resp.content
+                };
+                write_stdout(&display::render_response(&display_text));
+            }
+            _ => {
+                write_stdout(&display::render_error("compact failed"));
             }
         }
     }

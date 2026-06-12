@@ -139,5 +139,6 @@
   "command.help.thread_sandbox": "切换当前线程的沙箱强制（聊天模式）",
   "command.help.thread_rename": "重命名当前线程（参数为空时清除）",
   "command.help.resume": "恢复之前的对话线程",
-  "command.help.model": "切换 LLM 模型"
+  "command.help.model": "切换 LLM 模型",
+  "command.help.compact": "压缩当前线程中的大体积工具结果"
 }
