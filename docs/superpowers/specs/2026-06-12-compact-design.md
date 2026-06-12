@@ -21,9 +21,12 @@ assistant 文本。
    - 渲染守护进程返回的 display 文本
 2. 守护进程 `handle_builtin_command`（server.rs）新增 `compact:<tid>` 分支：
    - 校验 `thread_exists`
-   - 检查 `active_threads`：该线程有进行中的 agent loop 时拒绝压缩并提示稍后再试。
-     原因：进行中的循环持有压缩前的内存消息列表，结束时按 `saved_up_to` 增量追加，
-     与重写后的文件错位会损坏线程
+   - 检查 `pending_loops`：该线程有暂停等待客户端工具结果的 agent loop 时拒绝
+     压缩并提示稍后再试（注意不能用 `active_threads`，发起 /compact 的会话自己
+     就持有该线程的 claim）
+   - `bump_generation`：使任何仍在等待 LLM 响应的 in-flight 循环失效。既有的
+     generation 失配机制保证这类循环会丢弃工作而不写盘，避免按 `saved_up_to`
+     增量追加时与重写后的文件错位
    - 调用 `ConversationManager::compact_thread(tid)`，返回统计信息
 3. 全程无 LLM 调用，同步完成
 
@@ -61,8 +64,8 @@ assistant 文本。
 - `replace_messages` 同时更新内存 map 与磁盘文件，主 JSONL 保持
   "下一轮发送内容的精确副本" 这一既有不变量（`_usage`/`_model` 字段发送前剥离，
   属既有行为，不受影响）
-- 压缩在 `__cmd` 请求处理中同步执行，与 agent loop 的互斥由 `active_threads`
-  检查保证
+- 压缩在 `__cmd` 请求处理中同步执行，与 agent loop 的互斥由 `pending_loops`
+  检查 + `bump_generation` 保证
 
 ## 错误处理
 
@@ -79,5 +82,5 @@ assistant 文本。
   - 幂等性（二次 compact 无变化、不产生新快照）
   - 快照文件生成与内容完整性
   - delete_thread 清理快照
-- server 侧：active_threads 占用时拒绝的分支测试
+- server 侧分支（pending_loops 拒绝）构造成本高，以手动验证代替
 - 视情况补一条 integration test（tools/integration_tests）
