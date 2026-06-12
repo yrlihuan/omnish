@@ -516,6 +516,16 @@ impl ConversationManager {
             std::fs::remove_file(&path).ok();
             let meta_path = self.threads_dir.join(format!("{}.meta.json", thread_id));
             std::fs::remove_file(&meta_path).ok();
+            // Remove precompact snapshots belonging to this thread
+            let snap_dir = self.threads_dir.join("precompact");
+            if let Ok(rd) = std::fs::read_dir(&snap_dir) {
+                let prefix = format!("{}.", thread_id);
+                for entry in rd.filter_map(|e| e.ok()) {
+                    if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                        std::fs::remove_file(entry.path()).ok();
+                    }
+                }
+            }
         }
         removed
     }
@@ -568,6 +578,47 @@ impl ConversationManager {
         let mut threads = self.threads.lock().unwrap();
         threads.insert(thread_id.to_string(), msgs.to_vec());
         Self::rewrite_thread_file(&self.threads_dir, thread_id, msgs);
+    }
+
+    /// Compact bulky tool_result blocks in a thread (issue #641).
+    ///
+    /// Snapshots the current JSONL to `precompact/{tid}.{unix_ts}.jsonl`
+    /// before the destructive rewrite; a failed snapshot aborts the rewrite.
+    /// Returns Ok(None) when there is nothing to compact.
+    pub fn compact_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<crate::compact::CompactStats>, String> {
+        let mut threads = self.threads.lock().unwrap();
+        let msgs = threads
+            .get_mut(thread_id)
+            .ok_or_else(|| "thread not found".to_string())?;
+
+        let mut candidate = msgs.clone();
+        let stats = crate::compact::compact_messages(&mut candidate);
+        if stats.blocks == 0 {
+            return Ok(None);
+        }
+
+        let snap_dir = self.threads_dir.join("precompact");
+        std::fs::create_dir_all(&snap_dir)
+            .map_err(|e| format!("snapshot dir failed: {}", e))?;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let src = self.threads_dir.join(format!("{}.jsonl", thread_id));
+        let snap = snap_dir.join(format!("{}.{}.jsonl", thread_id, ts));
+        std::fs::copy(&src, &snap).map_err(|e| format!("snapshot failed: {}", e))?;
+
+        *msgs = candidate;
+        Self::rewrite_thread_file(&self.threads_dir, thread_id, msgs);
+        tracing::info!(
+            "compacted thread {}: {} blocks, {} -> {} chars (snapshot: {})",
+            thread_id, stats.blocks, stats.chars_before, stats.chars_after,
+            snap.display()
+        );
+        Ok(Some(stats))
     }
 
     /// Get all user-assistant exchanges in a thread, ordered chronologically.
@@ -1387,6 +1438,124 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
         assert_eq!(lines.len(), 3);
+    }
+
+    fn big_tool_round(id: &str) -> Vec<serde_json::Value> {
+        let big = (1..=50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        vec![
+            serde_json::json!({"role": "user", "content": "run it"}),
+            serde_json::json!({"role": "assistant", "content": [
+                {"type": "tool_use", "id": id, "name": "bash", "input": {}}
+            ]}),
+            serde_json::json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": id, "content": big}
+            ]}),
+            serde_json::json!({"role": "assistant", "content": [
+                {"type": "text", "text": "done"}
+            ]}),
+        ]
+    }
+
+    fn snapshot_files(dir: &std::path::Path, thread_id: &str) -> Vec<std::path::PathBuf> {
+        let snap_dir = dir.join("precompact");
+        match std::fs::read_dir(&snap_dir) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(&format!("{}.", thread_id))
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_compact_thread_writes_snapshot_and_rewrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+        // 3 rounds; the first is outside the protected window
+        for r in 0..3 {
+            mgr.append_messages(&id, &big_tool_round(&format!("tu_{}", r)));
+        }
+        let original = mgr.load_raw_messages(&id);
+
+        let stats = mgr.compact_thread(&id).unwrap().expect("should compact");
+        assert_eq!(stats.blocks, 1);
+
+        // In-memory and on-disk both rewritten
+        let after = mgr.load_raw_messages(&id);
+        assert_ne!(original, after);
+        let compacted_text = after[2]["content"][0]["content"].as_str().unwrap();
+        assert!(compacted_text.contains(crate::compact::COMPACT_MARKER));
+        let mgr2 = ConversationManager::new(dir.path().to_path_buf());
+        assert_eq!(mgr2.load_raw_messages(&id), after);
+
+        // Snapshot exists and contains the original messages
+        let snaps = snapshot_files(dir.path(), &id);
+        assert_eq!(snaps.len(), 1);
+        let snap_content = std::fs::read_to_string(&snaps[0]).unwrap();
+        let snap_msgs: Vec<serde_json::Value> = snap_content
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(snap_msgs, original);
+    }
+
+    #[test]
+    fn test_compact_thread_nothing_to_compact() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+        mgr.append_messages(&id, &[user_msg("hi"), assistant_msg("hello")]);
+
+        let res = mgr.compact_thread(&id).unwrap();
+        assert!(res.is_none());
+        // No snapshot written
+        assert!(snapshot_files(dir.path(), &id).is_empty());
+    }
+
+    #[test]
+    fn test_compact_thread_unknown_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        assert!(mgr.compact_thread("nope").is_err());
+    }
+
+    #[test]
+    fn test_delete_thread_removes_snapshots() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+        for r in 0..3 {
+            mgr.append_messages(&id, &big_tool_round(&format!("tu_{}", r)));
+        }
+        mgr.compact_thread(&id).unwrap().expect("should compact");
+        assert_eq!(snapshot_files(dir.path(), &id).len(), 1);
+
+        assert!(mgr.delete_thread(&id));
+        assert!(snapshot_files(dir.path(), &id).is_empty());
+    }
+
+    #[test]
+    fn test_snapshot_not_listed_as_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+        for r in 0..3 {
+            mgr.append_messages(&id, &big_tool_round(&format!("tu_{}", r)));
+        }
+        mgr.compact_thread(&id).unwrap().expect("should compact");
+
+        // Reload from disk: only the real thread must be discovered
+        let mgr2 = ConversationManager::new(dir.path().to_path_buf());
+        let ids = mgr2.list_thread_ids();
+        assert_eq!(ids, vec![id]);
     }
 
 }
