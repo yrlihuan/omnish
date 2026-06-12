@@ -24,7 +24,8 @@ pub struct CompactStats {
 }
 
 /// True for a real user input message (has text content), as opposed to a
-/// tool_result-only user message. Mirrors ConversationManager::is_user_input.
+/// tool_result-only user message. Like ConversationManager::is_user_input, but
+/// also accepts merged array-form user messages (text block present).
 fn is_real_user_input(msg: &serde_json::Value) -> bool {
     if msg["role"].as_str() != Some("user") {
         return false;
@@ -67,7 +68,8 @@ fn compact_text(text: &str) -> Option<String> {
     let head = lines[..HEAD_LINES].join("\n");
     let tail = lines[lines.len() - TAIL_LINES..].join("\n");
     let omitted_lines = lines.len() - HEAD_LINES - TAIL_LINES;
-    let omitted_chars = text.len().saturating_sub(head.len() + tail.len());
+    // Approximate: includes newlines belonging to the omitted region.
+    let omitted_chars = text.chars().count().saturating_sub(head.chars().count() + tail.chars().count());
     Some(format!(
         "{}\n... {} omitted {} lines, {} chars] ...\n{}",
         head, COMPACT_MARKER, omitted_lines, omitted_chars, tail
@@ -81,8 +83,8 @@ fn compact_tool_result(block: &mut serde_json::Value, stats: &mut CompactStats) 
     match &mut block["content"] {
         serde_json::Value::String(s) => {
             if let Some(c) = compact_text(s) {
-                chars_before += s.len();
-                chars_after += c.len();
+                chars_before += s.chars().count();
+                chars_after += c.chars().count();
                 *s = c;
                 changed = true;
             }
@@ -94,8 +96,8 @@ fn compact_tool_result(block: &mut serde_json::Value, stats: &mut CompactStats) 
                 }
                 if let serde_json::Value::String(s) = &mut inner["text"] {
                     if let Some(c) = compact_text(s) {
-                        chars_before += s.len();
-                        chars_after += c.len();
+                        chars_before += s.chars().count();
+                        chars_after += c.chars().count();
                         *s = c;
                         changed = true;
                     }
