@@ -31,6 +31,7 @@
   "error.usage_thread_sandbox": "Utilisation : /thread sandbox [on|off]",
   "error.no_active_thread": "Aucun fil actif",
   "error.failed_rename_thread": "Échec du renommage du fil",
+  "error.compact_failed": "Échec du compactage",
   "error.failed_receive_response_main": "Échec de réception de la réponse",
   "error.daemon_not_connected": "Démon non connecté",
 

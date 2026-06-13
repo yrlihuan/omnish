@@ -2390,7 +2390,7 @@ impl ChatSession {
                 write_stdout(&display::render_response(&display_text));
             }
             _ => {
-                write_stdout(&display::render_error("compact failed"));
+                write_stdout(&display::render_error(crate::i18n::t("error.compact_failed")));
             }
         }
     }

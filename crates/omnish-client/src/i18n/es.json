@@ -31,6 +31,7 @@
   "error.usage_thread_sandbox": "Uso: /thread sandbox [on|off]",
   "error.no_active_thread": "Sin hilo activo",
   "error.failed_rename_thread": "Error al renombrar el hilo",
+  "error.compact_failed": "Error al compactar",
   "error.failed_receive_response_main": "Error al recibir la respuesta",
   "error.daemon_not_connected": "Demonio no conectado",
 

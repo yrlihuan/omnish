@@ -31,6 +31,7 @@
   "error.usage_thread_sandbox": "사용법: /thread sandbox [on|off]",
   "error.no_active_thread": "활성 스레드가 없습니다",
   "error.failed_rename_thread": "스레드 이름 변경 실패",
+  "error.compact_failed": "압축 실패",
   "error.failed_receive_response_main": "응답 수신 실패",
   "error.daemon_not_connected": "데몬 미연결",
 

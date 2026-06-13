@@ -31,6 +31,7 @@
   "error.usage_thread_sandbox": "Usage: /thread sandbox [on|off]",
   "error.no_active_thread": "No active thread",
   "error.failed_rename_thread": "Failed to rename thread",
+  "error.compact_failed": "Compact failed",
   "error.failed_receive_response_main": "Failed to receive response",
   "error.daemon_not_connected": "Daemon not connected",
 

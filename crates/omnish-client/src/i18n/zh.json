@@ -31,6 +31,7 @@
   "error.usage_thread_sandbox": "用法: /thread sandbox [on|off]",
   "error.no_active_thread": "没有活动线程",
   "error.failed_rename_thread": "重命名线程失败",
+  "error.compact_failed": "压缩失败",
   "error.failed_receive_response_main": "接收响应失败",
   "error.daemon_not_connected": "守护进程未连接",
 

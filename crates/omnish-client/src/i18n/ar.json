@@ -31,6 +31,7 @@
   "error.usage_thread_sandbox": "الاستخدام: /thread sandbox [on|off]",
   "error.no_active_thread": "لا يوجد خيط نشط",
   "error.failed_rename_thread": "فشل في إعادة تسمية الخيط",
+  "error.compact_failed": "فشل الضغط",
   "error.failed_receive_response_main": "فشل في استقبال الاستجابة",
   "error.daemon_not_connected": "الخادم غير متصل",
 

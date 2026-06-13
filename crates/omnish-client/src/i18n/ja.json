@@ -31,6 +31,7 @@
   "error.usage_thread_sandbox": "使用法: /thread sandbox [on|off]",
   "error.no_active_thread": "アクティブなスレッドがありません",
   "error.failed_rename_thread": "スレッドの改名に失敗しました",
+  "error.compact_failed": "圧縮に失敗しました",
   "error.failed_receive_response_main": "応答の受信に失敗しました",
   "error.daemon_not_connected": "デーモン未接続",
 
