@@ -2069,7 +2069,7 @@ impl ChatSession {
             let req = Message::Request(Request {
                 request_id: rid.clone(),
                 session_id: session_id.to_string(),
-                query: "__cmd:conversations".to_string(),
+                query: "__cmd:conversations all".to_string(),
                 scope: RequestScope::AllSessions,
             });
             match rpc.call(req).await {
@@ -2125,7 +2125,7 @@ impl ChatSession {
             let req = Message::Request(Request {
                 request_id: rid.clone(),
                 session_id: session_id.to_string(),
-                query: "__cmd:conversations".to_string(),
+                query: "__cmd:conversations all".to_string(),
                 scope: RequestScope::AllSessions,
             });
             if let Ok(Message::Response(resp)) = rpc.call(req).await {
