@@ -2832,10 +2832,20 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
         // so it discards its work instead of appending to the rewritten file.
         bump_generation(&ctx.thread_generations, tid).await;
         return match conv_mgr.compact_thread(tid) {
-            Ok(Some(stats)) => cmd_display(format!(
-                "compacted {} tool result(s): {} -> {} chars",
-                stats.blocks, stats.chars_before, stats.chars_after
-            )),
+            Ok(Some(stats)) => {
+                let pct = if stats.total_before > 0 {
+                    (1.0 - stats.total_after as f64 / stats.total_before as f64) * 100.0
+                } else {
+                    0.0
+                };
+                cmd_display(format!(
+                    "compacted {} tool result(s)\ncontext: {} -> {} chars (-{:.0}%)",
+                    stats.blocks,
+                    format_count(stats.total_before as u64),
+                    format_count(stats.total_after as u64),
+                    pct
+                ))
+            }
             Ok(None) => cmd_display("nothing to compact"),
             Err(e) => cmd_display(format!("Error: {}", e)),
         };
@@ -3201,8 +3211,8 @@ async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads
             output.push_str(&format!(
                 "  model: {} | context: {} | total: {} | cache: {:.1}%\n",
                 last_model,
-                format_tokens(last.input_tokens + last.cache_read_input_tokens + last.cache_creation_input_tokens + last.output_tokens),
-                format_tokens(total.input_tokens + total.cache_read_input_tokens + total.cache_creation_input_tokens + total.output_tokens),
+                format_count(last.input_tokens + last.cache_read_input_tokens + last.cache_creation_input_tokens + last.output_tokens),
+                format_count(total.input_tokens + total.cache_read_input_tokens + total.cache_creation_input_tokens + total.output_tokens),
                 cache_rate,
             ));
         } else {
@@ -3274,8 +3284,8 @@ async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads
             output.push_str(&format!(
                 "       model: {} | context: {} | total: {} | cache: {:.1}%\n",
                 last_model,
-                format_tokens(last.input_tokens + last.cache_read_input_tokens + last.cache_creation_input_tokens + last.output_tokens),
-                format_tokens(total.input_tokens + total.cache_read_input_tokens + total.cache_creation_input_tokens + total.output_tokens),
+                format_count(last.input_tokens + last.cache_read_input_tokens + last.cache_creation_input_tokens + last.output_tokens),
+                format_count(total.input_tokens + total.cache_read_input_tokens + total.cache_creation_input_tokens + total.output_tokens),
                 cache_rate,
             ));
         } else {
@@ -3294,8 +3304,8 @@ async fn format_thread_stats(conv_mgr: &Arc<ConversationManager>, active_threads
     cmd_display(output)
 }
 
-/// Format token count with K/M suffix for readability.
-fn format_tokens(n: u64) -> String {
+/// Format a count (tokens or chars) with K/M suffix for readability.
+fn format_count(n: u64) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)
     } else if n >= 1_000 {

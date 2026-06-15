@@ -21,6 +21,20 @@ pub struct CompactStats {
     pub chars_before: usize,
     /// Total chars of those blocks after compaction.
     pub chars_after: usize,
+    /// Total chars of the whole message list before compaction (serialized,
+    /// covering text, thinking, tool_use inputs and tool_results alike). A
+    /// proxy for how much the LLM context shrank, not just the touched blocks.
+    pub total_before: usize,
+    /// Total chars of the whole message list after compaction.
+    pub total_after: usize,
+}
+
+/// Total serialized char count across all messages. Consistent before/after
+/// measure of the whole context size.
+fn total_chars(msgs: &[serde_json::Value]) -> usize {
+    msgs.iter()
+        .map(|m| serde_json::to_string(m).map(|s| s.chars().count()).unwrap_or(0))
+        .sum()
 }
 
 /// True for a real user input message (has text content), as opposed to a
@@ -117,6 +131,7 @@ fn compact_tool_result(block: &mut serde_json::Value, stats: &mut CompactStats) 
 /// means nothing changed.
 pub fn compact_messages(msgs: &mut [serde_json::Value]) -> CompactStats {
     let mut stats = CompactStats::default();
+    stats.total_before = total_chars(msgs);
     let boundary = protect_boundary(msgs);
     for msg in &mut msgs[..boundary] {
         if msg["role"].as_str() != Some("user") {
@@ -131,6 +146,7 @@ pub fn compact_messages(msgs: &mut [serde_json::Value]) -> CompactStats {
             }
         }
     }
+    stats.total_after = total_chars(msgs);
     stats
 }
 
@@ -224,6 +240,26 @@ mod tests {
         let stats = compact_messages(&mut msgs);
         assert_eq!(stats.blocks, 1);
         assert!(result_text(&msgs[2]).contains(COMPACT_MARKER));
+    }
+
+    #[test]
+    fn reports_whole_context_size() {
+        let mut msgs = build_thread(3, true);
+        let stats = compact_messages(&mut msgs);
+        // Whole-context totals cover all messages, so they exceed the
+        // single touched block's char counts.
+        assert!(stats.total_before > stats.chars_before);
+        assert!(stats.total_after < stats.total_before);
+        assert!(stats.total_after > stats.chars_after);
+    }
+
+    #[test]
+    fn totals_unchanged_when_nothing_compacts() {
+        // Two rounds: fully protected, nothing compacts; totals stay equal.
+        let mut msgs = build_thread(2, true);
+        let stats = compact_messages(&mut msgs);
+        assert_eq!(stats.blocks, 0);
+        assert_eq!(stats.total_before, stats.total_after);
     }
 
     #[test]
