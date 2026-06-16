@@ -121,6 +121,29 @@ pub fn create_default_backend(llm_config: &LlmConfig, proxy: Option<&str>, no_pr
     create_backend(backend_name, backend_config, proxy, no_proxy)
 }
 
+/// Try to initialize every configured backend, returning `(name, error)` for
+/// the ones that fail. Used after a config save to surface backend mistakes
+/// (e.g. an `api_key_cmd` that is a literal key instead of a command) to the
+/// user, since `MultiBackend::new` only logs these as warnings and silently
+/// drops the broken backend (it then disappears from `/model`).
+pub fn check_backends(
+    llm_config: &LlmConfig,
+    proxy: Option<&str>,
+    no_proxy: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut failures: Vec<(String, String)> = llm_config
+        .backends
+        .iter()
+        .filter_map(|(name, cfg)| {
+            create_backend(name, cfg, proxy, no_proxy)
+                .err()
+                .map(|e| (name.clone(), e.to_string()))
+        })
+        .collect();
+    failures.sort_by(|a, b| a.0.cmp(&b.0));
+    failures
+}
+
 /// Shared LLM backend holder. All consumers read through this; hot-reload
 /// swaps the inner Arc atomically via the RwLock.
 pub type SharedLlmBackend = Arc<RwLock<Arc<MultiBackend>>>;
@@ -340,6 +363,37 @@ mod tests {
     fn test_resolve_api_key_missing() {
         let result = resolve_api_key(&None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_check_backends_flags_literal_key() {
+        use omnish_common::config::LlmConfig;
+        let mut llm = LlmConfig::default();
+        llm.backends.clear();
+        // A literal key in api_key_cmd: `sh -c "sk-literal-xyz"` fails to run.
+        llm.backends.insert("broken".to_string(), LlmBackendConfig {
+            backend_type: "openai-compat".to_string(),
+            model: "gpt-4o".to_string(),
+            api_key_cmd: Some("sk-literal-xyz".to_string()),
+            base_url: Some("https://api.openai.com/v1".to_string()),
+            use_proxy: false,
+            context_window: None,
+            max_content_chars: None,
+        });
+        // A correctly wrapped one initializes fine.
+        llm.backends.insert("ok".to_string(), LlmBackendConfig {
+            backend_type: "openai-compat".to_string(),
+            model: "gpt-4o".to_string(),
+            api_key_cmd: Some("echo sk-good".to_string()),
+            base_url: Some("https://api.openai.com/v1".to_string()),
+            use_proxy: false,
+            context_window: None,
+            max_content_chars: None,
+        });
+
+        let failures = check_backends(&llm, None, None);
+        assert_eq!(failures.len(), 1, "failures: {:?}", failures);
+        assert_eq!(failures[0].0, "broken");
     }
 
     #[test]

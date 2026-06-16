@@ -526,6 +526,10 @@ pub struct ConfigSideEffects {
     /// Deploy addresses to drop from the persisted clients-history index
     /// (Forget button). The caller invokes `SessionManager::forget_client_addr`.
     pub client_forgets: Vec<String>,
+    /// Set when the save added or edited an LLM backend. The caller re-validates
+    /// the backends and pushes a notice for any that fail to initialize, so a
+    /// broken backend doesn't just silently disappear from `/model`.
+    pub backends_changed: bool,
 }
 
 /// Apply config changes to daemon.toml. Returns side effects (deploys to
@@ -603,6 +607,16 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
         } else {
             anyhow::bail!("unknown handler: {}", handler);
         }
+    }
+
+    // A backend was added or edited via its form handler, or its fields were
+    // changed through the generic path (edit_backend handles most, but flag
+    // defensively on any llm.backends.* change).
+    if handler_groups.contains_key("add_backend")
+        || handler_groups.contains_key("edit_backend")
+        || changes.iter().any(|c| c.path.starts_with("llm.backends."))
+    {
+        effects.backends_changed = true;
     }
 
     Ok(effects)
@@ -788,6 +802,11 @@ fn handle_edit_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow:
         if field == "use_proxy" {
             let bool_val: bool = change.value.parse().unwrap_or(false);
             omnish_common::config_edit::set_toml_value_nested_bool(config_path, toml_key, bool_val)?;
+        } else if field == "api_key_cmd" {
+            // Same forgiveness as the add form: a bare key pasted here is
+            // wrapped in `echo` so it doesn't get executed as a command.
+            let cmd_value = api_key_to_cmd(&change.value);
+            omnish_common::config_edit::set_toml_value_nested(config_path, toml_key, &cmd_value)?;
         } else if field == "context_window" {
             if let Ok(int_val) = change.value.parse::<i64>() {
                 omnish_common::config_edit::set_toml_value_nested_int(config_path, toml_key, int_val)?;
@@ -800,6 +819,24 @@ fn handle_edit_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow:
         }
     }
     Ok(())
+}
+
+/// Normalize an API-key form field into an `api_key_cmd` value.
+///
+/// `api_key_cmd` is run as a shell command and its stdout is used as the key,
+/// so a literal key pasted here (e.g. `sk-abc`) would be executed as a command,
+/// fail, and the backend would silently vanish from `/model`. To make the menu
+/// forgiving we wrap a bare token (no whitespace) as `echo <key>`, while values
+/// that contain whitespace are assumed to already be a command (`pass show x`,
+/// `echo y`, `cat /path`) and kept verbatim. This is idempotent for values
+/// already of the form `echo <key>`.
+fn api_key_to_cmd(value: &str) -> String {
+    let v = value.trim();
+    if !v.is_empty() && !v.contains(char::is_whitespace) {
+        format!("echo {}", v)
+    } else {
+        v.to_string()
+    }
 }
 
 fn handle_add_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::Result<()> {
@@ -830,9 +867,9 @@ fn handle_add_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::
         }
         // Convert plain api_key input to api_key_cmd = "echo <key>"
         if field == "api_key" {
-            if !change.value.is_empty() {
+            if !change.value.trim().is_empty() {
                 let toml_key = format!("llm.backends.{}.api_key_cmd", quoted_name);
-                let cmd_value = format!("echo {}", change.value);
+                let cmd_value = api_key_to_cmd(&change.value);
                 omnish_common::config_edit::set_toml_value_nested(config_path, &toml_key, &cmd_value)?;
             }
             continue;
@@ -857,6 +894,80 @@ fn handle_add_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::
 mod tests {
     use super::*;
     use omnish_common::config::DaemonConfig;
+    use omnish_protocol::message::ConfigChange;
+
+    fn tmp_cfg(contents: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("omnish_cfg_{}_{}", std::process::id(), rand_suffix()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("daemon.toml");
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    fn rand_suffix() -> u64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64
+    }
+
+    #[test]
+    fn test_api_key_to_cmd_wraps_bare_token() {
+        assert_eq!(api_key_to_cmd("sk-abc123"), "echo sk-abc123");
+        // base64-ish keys with /+= but no space are still bare tokens.
+        assert_eq!(api_key_to_cmd("ab/cd+ef=="), "echo ab/cd+ef==");
+        assert_eq!(api_key_to_cmd("  sk-trim  "), "echo sk-trim");
+    }
+
+    #[test]
+    fn test_api_key_to_cmd_keeps_commands() {
+        assert_eq!(api_key_to_cmd("echo sk-abc"), "echo sk-abc");
+        assert_eq!(api_key_to_cmd("pass show claude"), "pass show claude");
+        assert_eq!(api_key_to_cmd("cat /home/me/.key"), "cat /home/me/.key");
+        assert_eq!(api_key_to_cmd(""), "");
+    }
+
+    #[test]
+    fn test_add_backend_wraps_plain_key() {
+        let cfg = tmp_cfg("[llm]\ndefault = \"claude\"\n");
+        let changes = vec![
+            ConfigChange { path: "llm.backends.__new__.name".into(), value: "mygpt".into() },
+            ConfigChange { path: "llm.backends.__new__.backend_type".into(), value: "openai-compat".into() },
+            ConfigChange { path: "llm.backends.__new__.model".into(), value: "gpt-4o".into() },
+            ConfigChange { path: "llm.backends.__new__.api_key".into(), value: "sk-rawkey".into() },
+        ];
+        let effects = apply_config_changes(&cfg, &changes).unwrap();
+        assert!(effects.backends_changed);
+        let out = std::fs::read_to_string(&cfg).unwrap();
+        assert!(out.contains("api_key_cmd = \"echo sk-rawkey\""), "got:\n{}", out);
+    }
+
+    #[test]
+    fn test_edit_backend_wraps_plain_key() {
+        // Existing backend whose api_key_cmd is a literal key (the bug case).
+        let cfg = tmp_cfg(
+            "[llm]\ndefault = \"claude\"\n\n[llm.backends.gpt]\nbackend_type = \"openai-compat\"\nmodel = \"gpt-4o\"\napi_key_cmd = \"old\"\n",
+        );
+        let changes = vec![
+            ConfigChange { path: "llm.backends.gpt.api_key_cmd".into(), value: "sk-newrawkey".into() },
+        ];
+        let effects = apply_config_changes(&cfg, &changes).unwrap();
+        assert!(effects.backends_changed);
+        let out = std::fs::read_to_string(&cfg).unwrap();
+        assert!(out.contains("api_key_cmd = \"echo sk-newrawkey\""), "got:\n{}", out);
+    }
+
+    #[test]
+    fn test_edit_backend_keeps_command() {
+        let cfg = tmp_cfg(
+            "[llm]\ndefault = \"claude\"\n\n[llm.backends.gpt]\nbackend_type = \"openai-compat\"\nmodel = \"gpt-4o\"\napi_key_cmd = \"old\"\n",
+        );
+        let changes = vec![
+            ConfigChange { path: "llm.backends.gpt.api_key_cmd".into(), value: "pass show gpt".into() },
+        ];
+        apply_config_changes(&cfg, &changes).unwrap();
+        let out = std::fs::read_to_string(&cfg).unwrap();
+        assert!(out.contains("api_key_cmd = \"pass show gpt\""), "got:\n{}", out);
+    }
 
     #[test]
     fn test_parse_schema() {

@@ -1209,6 +1209,42 @@ async fn handle_config_update(
                 let removed = ctx.session_mgr.forget_client_addr(addr).await;
                 tracing::info!("forget_client: removed {} entries for addr={}", removed, addr);
             }
+            // If a backend was added/edited, re-validate so a broken one (e.g.
+            // a literal key left in api_key_cmd) surfaces instead of silently
+            // vanishing from /model. The hot-reload watcher also rebuilds the
+            // backends, but only logs failures; here we report them to clients.
+            if effects.backends_changed {
+                let (llm, http_proxy, no_proxy) = {
+                    let cfg = ctx.opts.daemon_config.read().unwrap();
+                    (cfg.llm.clone(), cfg.proxy.http_proxy.clone(), cfg.proxy.no_proxy.clone())
+                };
+                let failures = omnish_llm::factory::check_backends(
+                    &llm,
+                    http_proxy.as_deref(),
+                    no_proxy.as_deref(),
+                );
+                if !failures.is_empty() {
+                    let text = format!(
+                        "backend failed to initialize and won't appear in /model: {}",
+                        failures
+                            .iter()
+                            .map(|(name, err)| format!("'{}' ({})", name, err))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    );
+                    let senders: Vec<_> = {
+                        let map = ctx.push_registry.lock().await;
+                        map.values().cloned().collect()
+                    };
+                    for ptx in senders {
+                        let _ = ptx.send(Message::NoticePush {
+                            level: NoticeLevel::Error,
+                            text: text.clone(),
+                            kind: None,
+                        }).await;
+                    }
+                }
+            }
             let _ = tx.send(Message::ConfigUpdateResult { ok: true, error: None }).await;
         }
         Err(e) => {
