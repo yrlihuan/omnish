@@ -41,13 +41,15 @@ impl ScheduledTask for ThreadSummaryTask {
         let conv_mgr = ctx.conv_mgr.clone();
         let llm_holder = ctx.llm_backend.clone();
         let daemon_config = ctx.daemon_config.clone();
+        let push_registry = ctx.daemon.push_registry.clone();
         Ok(Job::new_async(self.schedule(), move |_uuid, _lock| {
             let conv_mgr = conv_mgr.clone();
+            let push_registry = push_registry.clone();
             let llm = llm_holder.read().unwrap().get_backend(UseCase::Chat);
             let language = daemon_config.read().unwrap().client.language.clone();
             Box::pin(async move {
                 tracing::debug!("task [thread_summary] started");
-                if let Err(e) = generate_thread_summaries(&conv_mgr, Some(llm.as_ref()), &language).await {
+                if let Err(e) = generate_thread_summaries(&conv_mgr, Some(llm.as_ref()), &language, &push_registry).await {
                     tracing::warn!("task [thread_summary] failed: {}", e);
                 }
                 tracing::debug!("task [thread_summary] finished");
@@ -75,6 +77,7 @@ async fn generate_thread_summaries(
     conv_mgr: &ConversationManager,
     llm_backend: Option<&dyn LlmBackend>,
     language: &str,
+    push_registry: &omnish_transport::rpc_server::PushRegistry,
 ) -> anyhow::Result<()> {
     let backend = match llm_backend {
         Some(b) => b,
@@ -189,6 +192,11 @@ async fn generate_thread_summaries(
                     if !word.is_empty() {
                         updated_meta.title_word = Some(word.clone());
                         meta_dirty = true;
+                        crate::push::broadcast_server_push(
+                            push_registry,
+                            "thread_title_update",
+                            serde_json::json!({ "thread_id": thread_id, "title": word }),
+                        ).await;
                         tracing::info!(
                             "thread_summary: generated title_word '{}' for thread {}",
                             word,
@@ -253,7 +261,8 @@ mod tests {
         conv_mgr.append_messages(&id, &[user_msg("hello"), assistant_msg("hi")]);
 
         // No LLM → should succeed without generating summary
-        generate_thread_summaries(&conv_mgr, None, "en").await.unwrap();
+        let registry = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        generate_thread_summaries(&conv_mgr, None, "en", &registry).await.unwrap();
         let meta = conv_mgr.load_meta(&id);
         assert!(meta.summary.is_none());
     }
@@ -265,7 +274,8 @@ mod tests {
         let _id = conv_mgr.create_thread(ThreadMeta::default());
 
         // Empty thread → should be skipped
-        generate_thread_summaries(&conv_mgr, None, "en").await.unwrap();
+        let registry = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        generate_thread_summaries(&conv_mgr, None, "en", &registry).await.unwrap();
     }
 
     #[test]
@@ -327,7 +337,8 @@ mod tests {
         conv_mgr.append_messages(&id, &[user_msg("q"), assistant_msg("a")]);
 
         // Running with no LLM should still leave title_override intact.
-        generate_thread_summaries(&conv_mgr, None, "en").await.unwrap();
+        let registry = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        generate_thread_summaries(&conv_mgr, None, "en", &registry).await.unwrap();
         let meta = conv_mgr.load_meta(&id);
         assert_eq!(meta.title_override.as_deref(), Some("sticky name"));
     }

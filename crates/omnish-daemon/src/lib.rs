@@ -20,6 +20,7 @@ pub mod compact;
 pub mod conversation_mgr;
 pub mod daily_notes;
 pub mod deploy;
+pub mod push;
 pub mod disconnect_sweep;
 pub mod file_watcher;
 pub mod formatter_mgr;

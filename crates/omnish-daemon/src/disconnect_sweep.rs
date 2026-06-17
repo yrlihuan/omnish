@@ -113,6 +113,7 @@ mod tests {
             plugin_bundler: Arc::new(crate::plugin_bundle::PluginBundler::new(
                 mock_dir.path().join("plugins"),
             )),
+            push_registry: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         });
         let daemon_config = Arc::new(std::sync::RwLock::new(
             omnish_common::config::DaemonConfig::default(),
