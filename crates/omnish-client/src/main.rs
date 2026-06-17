@@ -783,6 +783,16 @@ async fn main() -> Result<()> {
     let client_addr_opt = config.client_addr.clone();
     let daemon_conn = connect_daemon(&daemon_addr, &session_id, parent_session_id, proxy.child_pid() as u32, client_addr_opt.clone(), pending_buffer.clone(), update_needed.clone()).await;
 
+    // Shared map of thread_id -> latest pushed title, awaiting application by
+    // the chat render thread. Filled by the push dispatcher, consumed by
+    // enter_chat_mode (wired in a later task). Declared here so it outlives
+    // both the dispatcher spawn and the main loop.
+    let pending_titles: PendingTitles =
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    // Fallback channel: the dispatcher task forwards push messages it does not
+    // handle directly (ConfigClient/NoticePush) to the main loop here.
+    let (fallback_tx, mut fallback_rx) = tokio::sync::mpsc::channel::<Message>(256);
+
     // Spawn shell info polling task (progressive interval: 1/2/4/8/15/30s, then 60s)
     // Reset to 1s on each command start
     let (cmd_start_tx, mut cmd_start_rx) = mpsc::channel::<()>(1);
@@ -856,6 +866,24 @@ async fn main() -> Result<()> {
                 if interval_idx < intervals.len() - 1 {
                     interval_idx += 1;
                 }
+            }
+        });
+
+        // Dispatcher: sole consumer of push_rx. Handles ServerPush directly,
+        // forwards ConfigClient/NoticePush to the shell loop via fallback_rx.
+        let rpc_push = rpc.clone();
+        let pending_push = pending_titles.clone();
+        let fallback_tx_disp = fallback_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                while let Some(msg) = rpc_push.try_recv_push().await {
+                    if let Some(forward) = route_push(msg, &pending_push) {
+                        if fallback_tx_disp.send(forward).await.is_err() {
+                            return; // receiver gone
+                        }
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
         });
     }
@@ -1837,41 +1865,41 @@ async fn main() -> Result<()> {
             }
         }
 
-        // Check for pushed config changes from daemon (non-blocking)
-        if let Some(ref rpc) = daemon_conn {
-            while let Some(msg) = rpc.try_recv_push().await {
-                match msg {
-                    Message::ConfigClient { changes } => {
-                        apply_client_config_changes(
-                            &changes,
-                            &mut interceptor,
-                            &mut completion_enabled,
-                            &mut ghost_timeout_ms,
-                            &mut prefix_bytes,
-                        );
-                    }
-                    Message::NoticePush { level, text, kind } => {
-                        // Tagged notices are only shown on the initiator -
-                        // other clients drop them so daemon-side broadcasts
-                        // of targeted actions (Install plugin, ...) don't
-                        // spam every connected session. Untagged notices
-                        // (deploy, legacy) always display.
-                        let show = match &kind {
-                            Some(k) => pending_notices::consume(k),
-                            None => true,
-                        };
-                        if show {
-                            let prefix = match level {
-                                omnish_protocol::message::NoticeLevel::Info => "[omnish]",
-                                omnish_protocol::message::NoticeLevel::Error => "[omnish error]",
-                            };
-                            notice(&format!("{} {}", prefix, text));
-                        } else {
-                            event_log::push(format!("notice dropped (kind={:?})", kind));
-                        }
-                    }
-                    _ => {}
+        // Drain push messages forwarded by the dispatcher task. The dispatcher
+        // is the sole consumer of rpc.try_recv_push(); it handles ServerPush
+        // directly and forwards the rest here.
+        while let Ok(msg) = fallback_rx.try_recv() {
+            match msg {
+                Message::ConfigClient { changes } => {
+                    apply_client_config_changes(
+                        &changes,
+                        &mut interceptor,
+                        &mut completion_enabled,
+                        &mut ghost_timeout_ms,
+                        &mut prefix_bytes,
+                    );
                 }
+                Message::NoticePush { level, text, kind } => {
+                    // Tagged notices are only shown on the initiator -
+                    // other clients drop them so daemon-side broadcasts
+                    // of targeted actions (Install plugin, ...) don't
+                    // spam every connected session. Untagged notices
+                    // (deploy, legacy) always display.
+                    let show = match &kind {
+                        Some(k) => pending_notices::consume(k),
+                        None => true,
+                    };
+                    if show {
+                        let prefix = match level {
+                            omnish_protocol::message::NoticeLevel::Info => "[omnish]",
+                            omnish_protocol::message::NoticeLevel::Error => "[omnish error]",
+                        };
+                        notice(&format!("{} {}", prefix, text));
+                    } else {
+                        event_log::push(format!("notice dropped (kind={:?})", kind));
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -1914,6 +1942,33 @@ async fn main() -> Result<()> {
 
     let exit_code = proxy.wait().unwrap_or(1);
     std::process::exit(exit_code);
+}
+
+/// Shared map of thread_id -> latest pushed title, awaiting application by the
+/// chat render thread.
+pub type PendingTitles = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>;
+
+/// Handle a pushed message. Returns `Some(msg)` for messages that should be
+/// forwarded to the shell loop's existing handling; returns `None` when the
+/// dispatcher fully handled it (currently: ServerPush).
+fn route_push(msg: Message, pending: &PendingTitles) -> Option<Message> {
+    match msg {
+        Message::ServerPush { kind, payload } => {
+            if kind == "thread_title_update" {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&payload) {
+                    if let (Some(tid), Some(title)) =
+                        (v["thread_id"].as_str(), v["title"].as_str())
+                    {
+                        pending.lock().unwrap().insert(tid.to_string(), title.to_string());
+                    }
+                }
+            } else {
+                event_log::push(format!("unknown ServerPush kind: {kind}"));
+            }
+            None
+        }
+        other => Some(other),
+    }
 }
 
 fn apply_client_config_changes(
@@ -3325,6 +3380,25 @@ pub(crate) async fn handle_slash_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn route_push_stores_title_and_forwards_others() {
+        let pending: PendingTitles =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
+        let handled = route_push(
+            Message::ServerPush {
+                kind: "thread_title_update".into(),
+                payload: serde_json::json!({ "thread_id": "t1", "title": "deploy" }).to_string(),
+            },
+            &pending,
+        );
+        assert!(handled.is_none());
+        assert_eq!(pending.lock().unwrap().get("t1").map(String::as_str), Some("deploy"));
+
+        let forwarded = route_push(Message::ConfigClient { changes: vec![] }, &pending);
+        assert!(matches!(forwarded, Some(Message::ConfigClient { .. })));
+    }
 
     /// Issue #588: build a minimal plugin bundle and verify that
     /// `extract_and_mirror_plugins` creates the expected files, deletes
