@@ -513,6 +513,7 @@ impl DaemonServer {
         formatter_mgr: Arc<omnish_daemon::formatter_mgr::FormatterManager>,
         update_cache: Arc<omnish_daemon::update_cache::UpdateCache>,
         plugin_bundler: Arc<omnish_daemon::plugin_bundle::PluginBundler>,
+        push_registry: PushRegistry,
     ) -> Self {
         Self {
             session_mgr,
@@ -529,7 +530,7 @@ impl DaemonServer {
             opts,
             update_cache,
             plugin_bundler,
-            push_registry: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            push_registry,
         }
     }
 

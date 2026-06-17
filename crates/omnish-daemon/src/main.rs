@@ -235,11 +235,15 @@ async fn async_main() -> Result<i32> {
     // Shared daemon-level context for scheduled tasks. Built here (not
     // earlier) so it can carry plugin_bundler - the PluginBundleTask
     // reaches the bundler through TaskContext.daemon.
+    let push_registry: omnish_transport::rpc_server::PushRegistry =
+        std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+
     let daemon_ctx = Arc::new(omnish_daemon::task_mgr::DaemonContext {
         omnish_dir: omnish_dir.clone(),
         restart_signal: Arc::clone(&restart_signal),
         update_cache: Arc::clone(&update_cache),
         plugin_bundler: Arc::clone(&plugin_bundler),
+        push_registry: push_registry.clone(),
     });
 
     let sandbox_rules = sandbox_rules::compile_config(&config.sandbox);
@@ -401,7 +405,7 @@ async fn async_main() -> Result<i32> {
         let _ = formatter_mgr.register_external(&name, path).await;
     }
     let formatter_mgr = Arc::new(formatter_mgr);
-    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr.clone(), tool_registry.clone(), server_opts, formatter_mgr, Arc::clone(&update_cache), Arc::clone(&plugin_bundler));
+    let server = DaemonServer::new(session_mgr, llm_backend, task_mgr, conv_mgr, plugin_mgr.clone(), tool_registry.clone(), server_opts, formatter_mgr, Arc::clone(&update_cache), Arc::clone(&plugin_bundler), push_registry);
 
     // Push client-relevant config changes to all connected clients via push_registry.
     // Only watches [client] section; sandbox settings are now client-local.

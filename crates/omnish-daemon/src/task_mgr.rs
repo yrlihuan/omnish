@@ -9,6 +9,7 @@ use crate::conversation_mgr::ConversationManager;
 use crate::session_mgr::SessionManager;
 use crate::update_cache::UpdateCache;
 use omnish_llm::factory::SharedLlmBackend;
+use omnish_transport::rpc_server::PushRegistry;
 
 /// Shared daemon-level context (non-per-request state).
 pub struct DaemonContext {
@@ -16,6 +17,7 @@ pub struct DaemonContext {
     pub restart_signal: Arc<tokio::sync::Notify>,
     pub update_cache: Arc<UpdateCache>,
     pub plugin_bundler: Arc<crate::plugin_bundle::PluginBundler>,
+    pub push_registry: PushRegistry,
 }
 
 /// Everything a scheduled task needs to build its job closure.
