@@ -80,10 +80,18 @@ pub struct ChatSession {
     /// In-memory terminal emulator that mirrors PTY output, queried by
     /// `/test capture`.
     screen_capture: screen_capture::SharedScreenCapture,
+    /// Shared map of thread_id -> pushed title, applied at safe render points.
+    pending_titles: crate::PendingTitles,
 }
 
 fn write_stdout(s: &str) {
     nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+}
+
+/// Remove and return the pending title for the `current` thread, if any.
+fn pick_pending_title(pending: &crate::PendingTitles, current: Option<&str>) -> Option<String> {
+    let tid = current?;
+    pending.lock().unwrap().remove(tid)
 }
 
 /// Normalize a user-provided thread name for `/thread rename`.
@@ -1060,6 +1068,7 @@ impl ChatSession {
         extended_unicode: bool,
         sandbox_state: Arc<RwLock<ClientSandboxConfig>>,
         screen_capture: screen_capture::SharedScreenCapture,
+        pending_titles: crate::PendingTitles,
     ) -> Self {
         // Snapshot sandbox config for ClientPluginManager; subsequent menu
         // edits only affect the NEXT chat session.
@@ -1097,6 +1106,7 @@ impl ChatSession {
             cancelled_input: None,
             pending_sandbox_off: None,
             screen_capture,
+            pending_titles,
         }
     }
 
@@ -1111,6 +1121,15 @@ impl ChatSession {
     /// Return the thread ID used in this chat session (if any).
     pub fn thread_id(&self) -> Option<&str> {
         self.current_thread_id.as_deref()
+    }
+
+    /// Apply a pushed title for the current thread, if one is pending. Called
+    /// only from the chat render flow so the tmux escape is written by a single
+    /// thread (full stdout serialization is tracked in issue #644).
+    fn apply_pending_title(&self) {
+        if let Some(title) = pick_pending_title(&self.pending_titles, self.current_thread_id.as_deref()) {
+            super::set_chat_tmux_title(Some(&title));
+        }
     }
 
     /// Return a pending cd path set by resume mismatch handler.
@@ -1377,6 +1396,7 @@ impl ChatSession {
 
         let mut exit_action = ChatExitAction::Normal;
         loop {
+            self.apply_pending_title();
             let (input, is_fast_resume) = if let Some(msg) = self.pending_input.take() {
                 (msg, true)
             } else {
@@ -3894,6 +3914,15 @@ impl ChatSession {
         }
 
         loop {
+            // Safe between-reads point: apply any pushed title before we block
+            // on input. No escape sequence is mid-parse here. This refreshes the
+            // tmux title even while the prompt sits idle waiting for input.
+            // Skip while buffering a paste so we don't interleave with the
+            // redraw that finalizes the paste block below.
+            if !paste_buffering {
+                self.apply_pending_title();
+            }
+
             // Paste buffer finalization on timeout
             if paste_buffering && !bracketed_paste {
                 let mut pfd =
@@ -4554,6 +4583,22 @@ fn save_to_history(history: &mut VecDeque<String>, command: &str, capacity: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pick_pending_title_matches_current_thread() {
+        let pending: crate::PendingTitles =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        pending.lock().unwrap().insert("t1".into(), "deploy".into());
+
+        // Non-matching thread / no thread: nothing taken, entry stays.
+        assert_eq!(pick_pending_title(&pending, Some("other")), None);
+        assert_eq!(pick_pending_title(&pending, None), None);
+        assert!(pending.lock().unwrap().contains_key("t1"));
+
+        // Matching thread: taken and removed.
+        assert_eq!(pick_pending_title(&pending, Some("t1")), Some("deploy".to_string()));
+        assert!(pending.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn test_normalize_thread_name_basic() {

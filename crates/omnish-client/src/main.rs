@@ -1179,7 +1179,7 @@ async fn main() -> Result<()> {
                             &session_id, &shell, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
                             &onboarded, locked, &config, Arc::clone(&sandbox_state),
-                            Arc::clone(&screen_capture),
+                            Arc::clone(&screen_capture), &pending_titles,
                         ).await;
                         // Drain stale completion responses accumulated during chat
                         shell_completer.clear();
@@ -1386,7 +1386,7 @@ async fn main() -> Result<()> {
                             &session_id, &shell, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
                             &onboarded, locked, &config, Arc::clone(&sandbox_state),
-                            Arc::clone(&screen_capture),
+                            Arc::clone(&screen_capture), &pending_titles,
                         ).await;
                         // Drain stale completion responses accumulated during chat
                         shell_completer.clear();
@@ -1412,7 +1412,7 @@ async fn main() -> Result<()> {
                             &session_id, &shell, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
                             &onboarded, locked, &config, Arc::clone(&sandbox_state),
-                            Arc::clone(&screen_capture),
+                            Arc::clone(&screen_capture), &pending_titles,
                         ).await;
                         // Drain stale completion responses accumulated during chat
                         shell_completer.clear();
@@ -2854,6 +2854,7 @@ async fn enter_chat_mode(
     config: &omnish_common::config::ClientConfig,
     sandbox_state: Arc<RwLock<ClientSandboxConfig>>,
     screen_capture: screen_capture::SharedScreenCapture,
+    pending_titles: &PendingTitles,
 ) -> chat_session::ChatExitAction {
     notice_queue::defer();
     set_chat_tmux_title(None);
@@ -2874,6 +2875,7 @@ async fn enter_chat_mode(
                 config.shell.extended_unicode,
                 Arc::clone(&sandbox_state),
                 Arc::clone(&screen_capture),
+                pending_titles.clone(),
             );
 
             // One-time sandbox notice per chat entry (#514)
