@@ -236,14 +236,14 @@ async fn async_main() -> Result<i32> {
     // earlier) so it can carry plugin_bundler - the PluginBundleTask
     // reaches the bundler through TaskContext.daemon.
     let push_registry: omnish_transport::rpc_server::PushRegistry =
-        std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
     let daemon_ctx = Arc::new(omnish_daemon::task_mgr::DaemonContext {
         omnish_dir: omnish_dir.clone(),
         restart_signal: Arc::clone(&restart_signal),
         update_cache: Arc::clone(&update_cache),
         plugin_bundler: Arc::clone(&plugin_bundler),
-        push_registry: push_registry.clone(),
+        push_registry: Arc::clone(&push_registry),
     });
 
     let sandbox_rules = sandbox_rules::compile_config(&config.sandbox);
