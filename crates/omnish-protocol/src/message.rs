@@ -158,12 +158,11 @@ pub enum Message {
     /// daemon responds with a stream of `UpdateChunk` messages carrying the
     /// tarball bytes, same shape as the binary update path.
     PluginSyncRequest { hostname: String },
-    /// Generic daemon -> client push. `kind` names the semantics, `payload`
-    /// is the kind-specific JSON body as a JSON-encoded string. Client
-    /// dispatches on `kind`. Stored as String (not serde_json::Value) because
-    /// bincode cannot deserialize serde_json::Value (calls deserialize_any).
-    /// First kind: "thread_title_update" with payload { thread_id, title }.
-    /// PROTOCOL_VERSION 26.
+    /// Generic daemon -> client push. `kind` names the semantics and the
+    /// client dispatches on it. First kind: "thread_title_update" with payload
+    /// `{ thread_id, title }`. `payload` is the kind-specific body as a
+    /// JSON-encoded string (not serde_json::Value, which bincode cannot
+    /// deserialize - it calls deserialize_any). PROTOCOL_VERSION 26.
     ServerPush { kind: String, payload: String },
 }
 
@@ -1136,20 +1135,23 @@ mod tests {
 
     #[test]
     fn server_push_round_trip() {
-        let msg = Message::ServerPush {
-            kind: "thread_title_update".to_string(),
-            payload: serde_json::json!({ "thread_id": "t1", "title": "deploy" }).to_string(),
+        let frame = Frame {
+            request_id: 0,
+            payload: Message::ServerPush {
+                kind: "thread_title_update".to_string(),
+                payload: serde_json::json!({ "thread_id": "t1", "title": "deploy" }).to_string(),
+            },
         };
-        let bytes = bincode::serialize(&msg).expect("serialize");
-        let back: Message = bincode::deserialize(&bytes).expect("deserialize");
-        match back {
+        let bytes = frame.to_bytes().unwrap();
+        let decoded = Frame::from_bytes(&bytes).unwrap();
+        match decoded.payload {
             Message::ServerPush { kind, payload } => {
                 assert_eq!(kind, "thread_title_update");
                 let v: serde_json::Value = serde_json::from_str(&payload).expect("parse payload");
                 assert_eq!(v["thread_id"], "t1");
                 assert_eq!(v["title"], "deploy");
             }
-            _ => panic!("wrong variant"),
+            _ => panic!("expected ServerPush"),
         }
     }
 
