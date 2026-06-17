@@ -3957,16 +3957,31 @@ impl ChatSession {
                 }
             }
 
-            // Idle timeout: exit chat after 30 minutes of no input
+            // Idle timeout: exit chat after 30 minutes of no input. Poll in
+            // short ticks instead of one long block so a title pushed while the
+            // prompt sits idle is applied promptly (apply_pending_title only
+            // runs here on the render thread). Cumulative idle still exits at
+            // 30 minutes, and any input breaks out to the read path unchanged.
             {
                 let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
-                let timeout_ms = 30 * 60 * 1000; // 30 minutes
-                let ready = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
-                if ready == 0 {
-                    // Timeout - auto-exit chat mode. KeyboardModeGuard resets
-                    // bracketed paste + modifyOtherKeys on drop.
-                    write_stdout(&format!("{NEWLINE}{DIM}(chat closed due to inactivity){RESET}{NEWLINE}"));
-                    return None;
+                let idle_limit_ms: u64 = 30 * 60 * 1000; // 30 minutes
+                let tick_ms: i32 = 1000;
+                let mut waited_ms: u64 = 0;
+                loop {
+                    let ready = unsafe { libc::poll(&mut pfd, 1, tick_ms) };
+                    if ready != 0 {
+                        break; // input ready (or poll error) - proceed to read
+                    }
+                    waited_ms += tick_ms as u64;
+                    if waited_ms >= idle_limit_ms {
+                        // Timeout - auto-exit chat mode. KeyboardModeGuard resets
+                        // bracketed paste + modifyOtherKeys on drop.
+                        write_stdout(&format!("{NEWLINE}{DIM}(chat closed due to inactivity){RESET}{NEWLINE}"));
+                        return None;
+                    }
+                    if !paste_buffering {
+                        self.apply_pending_title();
+                    }
                 }
             }
             match nix::unistd::read(stdin_fd, &mut byte) {
