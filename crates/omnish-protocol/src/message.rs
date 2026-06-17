@@ -5,7 +5,7 @@ use std::collections::HashMap;
 const MAGIC: [u8; 2] = [0x4F, 0x53]; // "OS" for OmniSh
 
 /// Protocol version - increment on any wire format change.
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 26;
 
 /// Minimum protocol version this build can interoperate with.
 ///
@@ -158,6 +158,13 @@ pub enum Message {
     /// daemon responds with a stream of `UpdateChunk` messages carrying the
     /// tarball bytes, same shape as the binary update path.
     PluginSyncRequest { hostname: String },
+    /// Generic daemon -> client push. `kind` names the semantics, `payload`
+    /// is the kind-specific JSON body as a JSON-encoded string. Client
+    /// dispatches on `kind`. Stored as String (not serde_json::Value) because
+    /// bincode cannot deserialize serde_json::Value (calls deserialize_any).
+    /// First kind: "thread_title_update" with payload { thread_id, title }.
+    /// PROTOCOL_VERSION 26.
+    ServerPush { kind: String, payload: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -704,7 +711,7 @@ mod tests {
     /// reminding you to bump PROTOCOL_VERSION if the wire format changed.
     #[test]
     fn message_variant_guard() {
-        const EXPECTED_VARIANT_COUNT: usize = 37;
+        const EXPECTED_VARIANT_COUNT: usize = 38;
 
         let variants: Vec<Message> = vec![
             Message::SessionStart(SessionStart {
@@ -880,6 +887,7 @@ mod tests {
             Message::PluginSyncCheck { current_checksum: String::new(), hostname: String::new() },
             Message::PluginSyncInfo { checksum: String::new(), available: false, total_size: 0 },
             Message::PluginSyncRequest { hostname: String::new() },
+            Message::ServerPush { kind: String::new(), payload: String::new() },
         ];
 
         // Exhaustive match - no wildcard. Compiler will error if a variant is missing.
@@ -921,7 +929,8 @@ mod tests {
                 | Message::NoticePush { .. }
                 | Message::PluginSyncCheck { .. }
                 | Message::PluginSyncInfo { .. }
-                | Message::PluginSyncRequest { .. } => {}
+                | Message::PluginSyncRequest { .. }
+                | Message::ServerPush { .. } => {}
             }
         }
 
@@ -963,6 +972,7 @@ mod tests {
         assert_eq!(variant_index(&Message::PluginSyncCheck { current_checksum: String::new(), hostname: String::new() }), 34, "PluginSyncCheck index shifted");
         assert_eq!(variant_index(&Message::PluginSyncInfo { checksum: String::new(), available: false, total_size: 0 }), 35, "PluginSyncInfo index shifted");
         assert_eq!(variant_index(&Message::PluginSyncRequest { hostname: String::new() }), 36, "PluginSyncRequest index shifted");
+        assert_eq!(variant_index(&Message::ServerPush { kind: String::new(), payload: String::new() }), 37, "ServerPush index shifted");
     }
 
     /// Regression test: ChatReady with populated history must survive a bincode round-trip.
@@ -1121,6 +1131,25 @@ mod tests {
             assert_eq!(cs.extra.len(), 2);
         } else {
             panic!("expected CompletionSummary");
+        }
+    }
+
+    #[test]
+    fn server_push_round_trip() {
+        let msg = Message::ServerPush {
+            kind: "thread_title_update".to_string(),
+            payload: serde_json::json!({ "thread_id": "t1", "title": "deploy" }).to_string(),
+        };
+        let bytes = bincode::serialize(&msg).expect("serialize");
+        let back: Message = bincode::deserialize(&bytes).expect("deserialize");
+        match back {
+            Message::ServerPush { kind, payload } => {
+                assert_eq!(kind, "thread_title_update");
+                let v: serde_json::Value = serde_json::from_str(&payload).expect("parse payload");
+                assert_eq!(v["thread_id"], "t1");
+                assert_eq!(v["title"], "deploy");
+            }
+            _ => panic!("wrong variant"),
         }
     }
 
