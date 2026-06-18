@@ -3914,15 +3914,6 @@ impl ChatSession {
         }
 
         loop {
-            // Safe between-reads point: apply any pushed title before we block
-            // on input. No escape sequence is mid-parse here. This refreshes the
-            // tmux title even while the prompt sits idle waiting for input.
-            // Skip while buffering a paste so we don't interleave with the
-            // redraw that finalizes the paste block below.
-            if !paste_buffering {
-                self.apply_pending_title();
-            }
-
             // Paste buffer finalization on timeout
             if paste_buffering && !bracketed_paste {
                 let mut pfd =
