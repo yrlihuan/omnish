@@ -687,7 +687,12 @@ async fn handle_message(
         }
         Message::SessionUpdate(su) => {
             if let Err(e) = mgr.update_attrs(&su.session_id, su.timestamp_ms, su.attrs).await {
-                tracing::error!("update_attrs error: {}", e);
+                // A heartbeat for an unknown session is usually benign (the
+                // session was already evicted/ended and its data is safe on
+                // disk), but with the live-connection eviction guard it
+                // should no longer happen for an active client. Keep it at
+                // info so an unexpected eviction is still visible.
+                tracing::info!("update_attrs skipped: {}", e);
             }
             let _ = tx.send(Message::Ack).await;
         }

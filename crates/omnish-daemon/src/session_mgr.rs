@@ -1095,6 +1095,16 @@ impl SessionManager {
             let sessions = self.sessions.read().await;
             let mut candidates = Vec::new();
             for (sid, session) in sessions.iter() {
+                // A live transport connection means the client is still
+                // here even if no terminal I/O has flowed (an idle shell
+                // keeps sending heartbeats but never touches last_active).
+                // Evicting such a session would drop a live session from
+                // memory and make every subsequent heartbeat fail with
+                // "session not found". Only disconnected sessions (conn
+                // cleared by mark_conn_disconnected / sweep) are evictable.
+                if session.current_conn.lock().await.is_some() {
+                    continue;
+                }
                 let sw = session.stream_writer.lock().await;
                 if sw.last_active.elapsed() >= max_inactive {
                     candidates.push(sid.clone());
@@ -3015,6 +3025,31 @@ mod tests {
         let ended = mgr.sweep_disconnected(Duration::from_secs(0)).await;
         assert!(ended.is_empty(), "heartbeat must cancel pending end");
         assert_eq!(mgr.list_active().await, vec!["s1".to_string()]);
+    }
+
+    /// A session with a live transport connection must never be evicted,
+    /// even when it has been I/O-idle longer than max_inactive. An idle
+    /// shell keeps sending heartbeats but never refreshes last_active;
+    /// evicting it would drop a live session and make its heartbeats fail
+    /// with "session not found". Once disconnected, the same idle session
+    /// becomes evictable.
+    #[tokio::test]
+    async fn test_evict_skips_live_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+
+        mgr.register("live", None, HashMap::new(), Some(1)).await.unwrap();
+
+        // Zero max_inactive => every I/O-idle session is a candidate, but a
+        // session with a bound connection must be spared.
+        let evicted = mgr.evict_inactive(Duration::from_secs(0)).await;
+        assert_eq!(evicted, 0, "session with live conn must not be evicted");
+        assert_eq!(mgr.list_active().await, vec!["live".to_string()]);
+
+        // After the connection drops, the same idle session is evictable.
+        mgr.mark_conn_disconnected(1).await;
+        let evicted = mgr.evict_inactive(Duration::from_secs(0)).await;
+        assert_eq!(evicted, 1, "disconnected idle session must be evicted");
     }
 
     /// load_existing must arm the grace timer on loaded active sessions
