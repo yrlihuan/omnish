@@ -130,8 +130,10 @@ fn compact_tool_result(block: &mut serde_json::Value, stats: &mut CompactStats) 
 /// Compact bulky tool_result blocks in-place. Returns stats; `blocks == 0`
 /// means nothing changed.
 pub fn compact_messages(msgs: &mut [serde_json::Value]) -> CompactStats {
-    let mut stats = CompactStats::default();
-    stats.total_before = total_chars(msgs);
+    let mut stats = CompactStats {
+        total_before: total_chars(msgs),
+        ..Default::default()
+    };
     let boundary = protect_boundary(msgs);
     for msg in &mut msgs[..boundary] {
         if msg["role"].as_str() != Some("user") {
