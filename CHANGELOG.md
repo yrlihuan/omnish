@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.8.17 (2026-06-22)
+
+### Features
+- **protocol,daemon,client**: ServerPush daemon-to-client mechanism with live thread-title push. New generic `ServerPush` message lets the daemon push events to connected clients; `thread_summary` broadcasts `thread_title_update` once a title is generated, the client's push dispatcher task buffers them in `PendingTitles`, applies the pushed title at safe chat render points, and refreshes the tmux/screen window title while the chat prompt is idle. `push_registry` is shared with scheduled tasks via `DaemonContext`. PROTOCOL_VERSION bumped to 26 (MIN_COMPATIBLE_VERSION stays 25).
+- **client,daemon**: `/compact` chat command to compact the current thread (#641). Daemon-side `ConversationManager::compact_thread` replaces tool_result payloads with a precompact snapshot via pure compaction logic, the `__cmd:compact` builtin drives it, and the result reports whole-context character reduction.
+- **client**: Expand `@path` imports in CLAUDE.md project instructions, inlining referenced files into the chat system prompt (#638)
+
+### Fixes
+- **daemon**: Don't evict sessions with a live connection (#645)
+- **config**: Wrap plain API key on backend edit and report backend init failures
+- **client**: Show all threads in the `/thread del` picker (#642)
+- **deploy**: Override `ssh_config` RemoteCommand in deploy.sh so the daemon launch command isn't clobbered
+
+### Tests
+- **integration**: Increase wait in test_basic case 8 so the chat prompt has time to render on slow CI, fixing a flake (#646)
+
+### Style
+- Fix clippy `field-reassign-with-default` in compact_messages; drop per-keystroke title apply; review polish across ServerPush and compaction paths
+
 ## v0.8.16 (2026-06-10)
 
 ### Features
