@@ -416,7 +416,10 @@ test_8() {
     wait_for_client
 
     send_keys ":" 0.5
-    wait_for_prompt
+    # Chat entry can print a "bwrap not available -> Landlock" warning before
+    # the "> " prompt renders; on slow CI the default 0.5s is too short, so the
+    # prompt isn't drawn yet when we capture. Wait longer to avoid the flake.
+    wait_for_prompt 2
 
     local content
     content=$(capture_pane -10)
