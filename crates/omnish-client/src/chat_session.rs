@@ -85,7 +85,7 @@ pub struct ChatSession {
 }
 
 fn write_stdout(s: &str) {
-    nix::unistd::write(std::io::stdout(), s.as_bytes()).ok();
+    crate::term_out::write_str(s);
 }
 
 /// Remove and return the pending title for the `current` thread, if any.
@@ -1168,8 +1168,7 @@ impl ChatSession {
     }
 
     fn print_line(&mut self, line: &str) {
-        write_stdout(line);
-        write_stdout(NEWLINE);
+        write_stdout(&format!("{line}{NEWLINE}"));
         let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
         self.lines_printed += Self::visual_rows(line, cols as usize);
     }
@@ -1192,11 +1191,15 @@ impl ChatSession {
             None => return,
         };
 
+        // Build the whole redraw into one buffer and emit it with a single
+        // locked write, so the cursor-move + erase + re-render sequence cannot
+        // be split by a concurrent write (e.g. a pushed tmux-title escape).
+        let mut out = String::new();
         let lines_up = self.lines_printed - start_line;
         if lines_up > 0 {
-            write_stdout(&format!("\x1b[{}A", lines_up));
+            out.push_str(&format!("\x1b[{lines_up}A"));
         }
-        write_stdout("\r\x1b[J"); // erase from cursor to end of screen
+        out.push_str("\r\x1b[J"); // erase from cursor to end of screen
 
         let (_, cols) = super::get_terminal_size().unwrap_or((24, 80));
         let cols = cols as usize;
@@ -1217,14 +1220,14 @@ impl ChatSession {
                     let sf = if *icon == StatusIcon::Running { Some(self.spinner_frame) } else { None };
                     if *icon == StatusIcon::Running { seen_running = true; }
                     let header = display::render_tool_header_with_spinner(icon, display_name, param_desc, cols, sf);
-                    write_stdout(&header);
-                    write_stdout(NEWLINE);
+                    out.push_str(&header);
+                    out.push_str(NEWLINE);
                     count += Self::visual_rows(&header, cols);
                     if let Some(ref lines) = cts.result_compact {
                         let rendered = display::render_tool_output_with_cols(lines, cols, self.extended_unicode);
                         for line in &rendered {
-                            write_stdout(line);
-                            write_stdout(NEWLINE);
+                            out.push_str(line);
+                            out.push_str(NEWLINE);
                             count += Self::visual_rows(line, cols);
                         }
                     }
@@ -1234,7 +1237,7 @@ impl ChatSession {
                     }
                 }
                 ScrollEntry::LlmText(text) => {
-                    write_stdout(NEWLINE);
+                    out.push_str(NEWLINE);
                     count += 1;
                     for (i, line) in text.split('\n').enumerate() {
                         let formatted = if i == 0 {
@@ -1242,8 +1245,8 @@ impl ChatSession {
                         } else {
                             format!("  {}", line)
                         };
-                        write_stdout(&formatted);
-                        write_stdout(NEWLINE);
+                        out.push_str(&formatted);
+                        out.push_str(NEWLINE);
                         count += Self::visual_rows(&formatted, cols);
                     }
                     if !seen_running {
@@ -1255,6 +1258,7 @@ impl ChatSession {
             }
         }
 
+        write_stdout(&out);
         self.lines_printed = start_line + count;
 
         // Advance section markers past completed entries so future spinner

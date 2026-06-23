@@ -17,6 +17,7 @@ mod probe;
 mod screen_capture;
 mod shell_hook;
 mod shell_input;
+mod term_out;
 mod throttle;
 mod util;
 mod onboarding;
@@ -842,7 +843,7 @@ async fn main() -> Result<()> {
                     let process_name = child_process.split(':').next().unwrap_or(child_process.as_str());
                     let process_name = if process_name.is_empty() { "omnish" } else { process_name };
                     if let Some(title) = tmux_title(process_name, in_mux) {
-                        nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
+                        crate::term_out::write_stdout(title.as_bytes());
                     }
                 }
 
@@ -959,7 +960,7 @@ async fn main() -> Result<()> {
     let mut readline_trigger_time: Option<std::time::Instant> = None;
     let in_mux = in_title_mux();
     if let Some(title) = tmux_title("omnish", in_mux) {
-        nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
+        crate::term_out::write_stdout(title.as_bytes());
     }
     let mut shell_completer = completion::ShellCompleter::new();
     let (completion_tx, mut completion_rx) = tokio::sync::mpsc::channel::<
@@ -1502,7 +1503,7 @@ async fn main() -> Result<()> {
                         &stripped
                     };
 
-                    nix::unistd::write(std::io::stdout(), display_data)?;
+                    crate::term_out::write_stdout_res(display_data)?;
 
                     // Mirror PTY output into the in-memory terminal emulator so
                     // that /test capture can return a tmux-pane-like snapshot.
@@ -1531,7 +1532,7 @@ async fn main() -> Result<()> {
                             "ghost render(deferred#1) col={} width={} cols={} wrap_rows={}",
                             col_tracker.col, deferred_ghost_width, cols, ghost_wrap_rows
                         ));
-                        nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                        crate::term_out::write_stdout(ghost_render.as_bytes());
                     } else if !display_data.is_empty()
                         && shell_input.at_prompt()
                         && shell_input.cursor_at_end()
@@ -1545,7 +1546,7 @@ async fn main() -> Result<()> {
                                 col_tracker.col, width, cols, ghost_wrap_rows
                             ));
                             let ghost_render = display::render_ghost_text(suffix);
-                            nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                            crate::term_out::write_stdout(ghost_render.as_bytes());
                         }
                     }
 
@@ -1591,7 +1592,7 @@ async fn main() -> Result<()> {
                                 last_readline_content = None;
                                 query_cursor_position();
                                 if let Some(title) = tmux_title("omnish", in_mux) {
-                                    nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
+                                    crate::term_out::write_stdout(title.as_bytes());
                                 }
                             }
                             Osc133EventKind::CommandEnd { exit_code } => {
@@ -1605,7 +1606,7 @@ async fn main() -> Result<()> {
                                 last_readline_content = None;
                                 query_cursor_position();
                                 if let Some(title) = tmux_title("omnish", in_mux) {
-                                    nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
+                                    crate::term_out::write_stdout(title.as_bytes());
                                 }
                             }
                             // 133;B / 133;C: In our bash hook these fire together
@@ -1635,7 +1636,7 @@ async fn main() -> Result<()> {
                                 let _ = cmd_start_tx_for_loop.try_send(());
                                 if let Some(cmd) = command {
                                     if let Some(title) = tmux_title(command_basename(cmd), in_mux) {
-                                        nix::unistd::write(std::io::stdout(), title.as_bytes()).ok();
+                                        crate::term_out::write_stdout(title.as_bytes());
                                     }
                                 }
                             }
@@ -1749,7 +1750,7 @@ async fn main() -> Result<()> {
                             "ghost render(deferred#2 post-OSC) col={} width={} cols={} wrap_rows={}",
                             col_tracker.col, deferred_ghost_width, cols, ghost_wrap_rows
                         ));
-                        nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                        crate::term_out::write_stdout(ghost_render.as_bytes());
                     }
                 }
                 Err(_) => break,
@@ -1855,7 +1856,7 @@ async fn main() -> Result<()> {
                                     col_tracker.col, width, cols, ghost_wrap_rows
                                 ));
                                 let ghost_render = display::render_ghost_text(ghost);
-                                nix::unistd::write(std::io::stdout(), ghost_render.as_bytes()).ok();
+                                crate::term_out::write_stdout(ghost_render.as_bytes());
                             }
                         }
                     } else {
@@ -2322,7 +2323,7 @@ fn handle_lock(
     if lock == *locked {
         let status = if lock { "already locked" } else { "already unlocked" };
         let msg = format!("{NEWLINE}{}{}{}{NEWLINE}", display::YELLOW, status, display::RESET);
-        nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
+        crate::term_out::write_stdout(msg.as_bytes());
         return;
     }
 
@@ -2368,7 +2369,7 @@ fn handle_lock(
                     }
                     Err(e) => {
                         let msg = format!("{NEWLINE}{}Sandbox setup failed: {}{}{NEWLINE}", display::RED, e, display::RESET);
-                        nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
+                        crate::term_out::write_stdout(msg.as_bytes());
                     }
                 }
             }
@@ -2377,7 +2378,7 @@ fn handle_lock(
                     "{NEWLINE}{}No sandbox backend available, cannot lock shell{}{NEWLINE}",
                     display::YELLOW, display::RESET
                 );
-                nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
+                crate::term_out::write_stdout(msg.as_bytes());
             }
         }
     } else {
@@ -2410,11 +2411,11 @@ fn do_respawn(
             let status = if lock { "locked" } else { "unlocked" };
             event_log::push(format!("lock: shell respawned ({})", status));
             let msg = format!("{NEWLINE}{}Shell {}{}{NEWLINE}", display::GREEN, status, display::RESET);
-            nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
+            crate::term_out::write_stdout(msg.as_bytes());
         }
         Err(e) => {
             let msg = format!("{NEWLINE}{}Failed to respawn shell: {}{}{NEWLINE}", display::RED, e, display::RESET);
-            nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
+            crate::term_out::write_stdout(msg.as_bytes());
         }
     }
 }
@@ -2426,7 +2427,7 @@ fn do_respawn(
 fn erase_ghost_with_log(wrap_rows: usize, site: &str) {
     event_log::push(format!("erase_ghost site={site} wrap_rows={wrap_rows}"));
     let bytes = display::erase_ghost_text(wrap_rows);
-    nix::unistd::write(std::io::stdout(), &bytes[..]).ok();
+    crate::term_out::write_stdout(&bytes[..]);
 }
 
 /// Number of physical rows the ghost text occupies *below* the prompt row,
@@ -2774,7 +2775,7 @@ pub(crate) fn set_chat_tmux_title(summary: Option<&str>) {
         None => "> omnish".to_string(),
     };
     if let Some(seq) = tmux_title(&name, in_mux) {
-        nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+        crate::term_out::write_stdout(seq.as_bytes());
     }
 }
 
@@ -2880,7 +2881,7 @@ async fn enter_chat_mode(
 
             // One-time sandbox notice per chat entry (#514)
             if let Some(msg) = sandbox_notice(session.sandbox_status()) {
-                nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
+                crate::term_out::write_stdout(msg.as_bytes());
             }
 
             action = session.run(rpc, session_id, proxy, initial_msg, &dbg_fn, onboarded, col_tracker.col, col_tracker.row).await;
@@ -2899,11 +2900,11 @@ async fn enter_chat_mode(
         (action, pending_cd)
     } else {
         let err = display::render_error(i18n::t("error.daemon_not_connected"));
-        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+        crate::term_out::write_stdout(err.as_bytes());
         (chat_session::ChatExitAction::Normal, None)
     };
 
-    nix::unistd::write(std::io::stdout(), b"\r\x1b[K").ok();
+    crate::term_out::write_stdout(b"\r\x1b[K");
     notice_queue::flush();
     // Clear the shell command line before restoring state.
     // Bash readline: Ctrl-U (kill backward) + Ctrl-K (kill forward)
@@ -3223,16 +3224,16 @@ pub(crate) fn handle_command_result(content: &str, redirect: Option<&str>, cwd: 
         match std::fs::write(&resolved_path, content) {
             Ok(_) => {
                 let msg = display::render_response(&format!("Written to {}", resolved_path.display()));
-                nix::unistd::write(std::io::stdout(), msg.as_bytes()).ok();
+                crate::term_out::write_stdout(msg.as_bytes());
             }
             Err(e) => {
                 let err = display::render_error(&format!("Write failed: {}", e));
-                nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                crate::term_out::write_stdout(err.as_bytes());
             }
         }
     } else {
         let output = display::render_response(content);
-        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+        crate::term_out::write_stdout(output.as_bytes());
     }
 }
 
@@ -3252,7 +3253,7 @@ async fn send_daemon_query(
     let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
     let mut status = LineStatus::new(cols as usize, 5);
     if show_thinking {
-        nix::unistd::write(std::io::stdout(), status.show("(thinking...)").as_bytes()).ok();
+        crate::term_out::write_stdout(status.show("(thinking...)").as_bytes());
     }
 
     let request_id = Uuid::new_v4().to_string()[..8].to_string();
@@ -3272,20 +3273,20 @@ async fn send_daemon_query(
             };
             if show_thinking {
                 std::fs::write("/tmp/omnish_last_response.txt", &display).ok();
-                nix::unistd::write(std::io::stdout(), status.clear().as_bytes()).ok();
+                crate::term_out::write_stdout(status.clear().as_bytes());
             }
             handle_command_result(&display, redirect, cwd);
             if show_thinking {
                 let (_rows, cols) = get_terminal_size().unwrap_or((24, 80));
                 let separator = display::render_separator(cols);
                 let sep_line = format!("{}{NEWLINE}", separator);
-                nix::unistd::write(std::io::stdout(), sep_line.as_bytes()).ok();
+                crate::term_out::write_stdout(sep_line.as_bytes());
             }
         }
         _ => {
-            nix::unistd::write(std::io::stdout(), status.clear().as_bytes()).ok();
+            crate::term_out::write_stdout(status.clear().as_bytes());
             let err = display::render_error(i18n::t("error.failed_receive_response_main"));
-            nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+            crate::term_out::write_stdout(err.as_bytes());
         }
     }
 }
@@ -3320,7 +3321,7 @@ pub(crate) async fn handle_slash_command(
                 let is_multiline = display_result.contains('\n');
                 let prefix = if is_multiline { NEWLINE } else { "" };
                 let output = format!("{}{}{NEWLINE}", prefix, display_result.replace('\n', NEWLINE));
-                nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                crate::term_out::write_stdout(output.as_bytes());
             }
             true
         }
@@ -3338,7 +3339,7 @@ pub(crate) async fn handle_slash_command(
                 } else {
                     // Plain text output - skip markdown rendering to preserve blank lines
                     let output = format!("{NEWLINE}{}{NEWLINE}", display_result.replace('\n', NEWLINE));
-                    nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                    crate::term_out::write_stdout(output.as_bytes());
                 }
                 return true;
             } else if query == "__cmd:update" {
@@ -3370,11 +3371,11 @@ pub(crate) async fn handle_slash_command(
                         };
                         // Command output is plain text - skip markdown rendering
                         let output = format!("{NEWLINE}{}{NEWLINE}", display.replace('\n', NEWLINE));
-                        nix::unistd::write(std::io::stdout(), output.as_bytes()).ok();
+                        crate::term_out::write_stdout(output.as_bytes());
                     }
                     _ => {
                         let err = display::render_error(i18n::t("error.failed_receive_response_main"));
-                        nix::unistd::write(std::io::stdout(), err.as_bytes()).ok();
+                        crate::term_out::write_stdout(err.as_bytes());
                     }
                 }
             }

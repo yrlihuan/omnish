@@ -20,7 +20,7 @@ pub fn render_separator(cols: u16) -> String {
 
 /// Write raw bytes to stdout (for terminal escape sequences).
 pub fn write_stdout(data: &[u8]) {
-    nix::unistd::write(std::io::stdout(), data).ok();
+    crate::term_out::write_stdout(data);
 }
 
 /// Parse escape sequence after ESC byte.

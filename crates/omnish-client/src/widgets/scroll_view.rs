@@ -134,12 +134,12 @@ impl ScrollView {
         let stdin_fd = std::io::stdin().as_raw_fd();
 
         // Enter alternate screen - main screen is preserved automatically
-        nix::unistd::write(std::io::stdout(), b"\x1b[?1049h\x1b[H").ok();
+        crate::term_out::write_stdout(b"\x1b[?1049h\x1b[H");
         let saved_rendered = self.rendered_lines;
         self.rendered_lines = 0;
 
         let seq = self.enter_browse();
-        nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+        crate::term_out::write_stdout(seq.as_bytes());
 
         loop {
             let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
@@ -156,10 +156,10 @@ impl ScrollView {
                         if n >= 2 && buf[0] == b'[' {
                             if buf[1] == b'A' {
                                 let seq = self.scroll_up(1);
-                                nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                                crate::term_out::write_stdout(seq.as_bytes());
                             } else if buf[1] == b'B' {
                                 let seq = self.scroll_down(1);
-                                nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                                crate::term_out::write_stdout(seq.as_bytes());
                             }
                             continue;
                         }
@@ -172,19 +172,19 @@ impl ScrollView {
             match byte[0] {
                 b'j' | b'J' => {
                     let seq = self.scroll_down(1);
-                    nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                    crate::term_out::write_stdout(seq.as_bytes());
                 }
                 b'k' | b'K' => {
                     let seq = self.scroll_up(1);
-                    nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                    crate::term_out::write_stdout(seq.as_bytes());
                 }
                 0x06 => { // Ctrl-F: page down
                     let seq = self.scroll_down(self.expanded_height);
-                    nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                    crate::term_out::write_stdout(seq.as_bytes());
                 }
                 0x02 => { // Ctrl-B: page up
                     let seq = self.scroll_up(self.expanded_height);
-                    nix::unistd::write(std::io::stdout(), seq.as_bytes()).ok();
+                    crate::term_out::write_stdout(seq.as_bytes());
                 }
                 b'q' | b'Q' | 0x03 | 0x0f => break, // q, Ctrl-C, Ctrl-O
                 _ => {}
@@ -194,7 +194,7 @@ impl ScrollView {
         // Leave alternate screen - main screen restored automatically
         self.mode = ViewMode::Compact;
         self.rendered_lines = saved_rendered;
-        nix::unistd::write(std::io::stdout(), b"\x1b[?1049l").ok();
+        crate::term_out::write_stdout(b"\x1b[?1049l");
     }
 
     /// Erase everything from screen.  Returns ANSI sequence.
