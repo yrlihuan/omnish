@@ -79,6 +79,7 @@ Langfuse可观测性集成配置（派生`PartialEq`，用于热重载配置差�
 - `min_current_session_commands`: 当前会话最少保留命令数（默认：5）
 - `max_context_chars`: 上下文最大字符数限制（可选，超出时自动缩减窗口）
 - `detailed_min` / `detailed_max`: 弹性详细窗口范围（默认：20/30）
+- `cwd_history_limit`: 追加为 `<cwd_history>` 块的当前 cwd 最近命令数（可按输入前缀过滤，默认：10，0 禁用）
 
 ### `ProxyConfig`
 代理配置结构，包含：

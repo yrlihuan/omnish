@@ -23,6 +23,9 @@ omnish-client 是终端用户直接交互的客户端程序，作为PTY代理运
 15. **守护进程配置推送**: 接收 `ConfigClient` 消息并将守护进程端的客户端配置（命令前缀、补全开关、ghost 超时等）缓存到本地 `client.toml`
 16. **ANSI 样式常量**: `display.rs` 集中定义共享 ANSI 颜色/样式常量（DIM、BOLD、CYAN 等），全模块统一引用
 17. **i18n 多语言**: `i18n.rs` 提供编译期内嵌的翻译系统，`t()`/`tf()`/`translate_label()` API；语言包 JSON 编译进二进制（`en/zh/zh-tw/ja/ko/fr/es/ar`）；语言由 `OMNISH_LANG` 环境变量或 `/config` 菜单切换；客户端默认 `en`，由守护进程通过 `ConfigClient` 推送其检测到的系统语言覆盖
+18. **统一 stdout 写入**: `term_out.rs` 提供进程级互斥锁守护的 `write_stdout`/`write_str`/`write_stdout_res`，串行化来自渲染、polling 任务 tmux 标题、ServerPush dispatcher 等多线程的 stdout 写入，避免逻辑转义序列被其它线程的写入打断而损坏终端；所有 raw `nix::unistd::write(stdout)` 站点均经此漏斗，`redraw_tool_section`/`print_line` 合并为单次缓冲写入
+19. **项目指令注入**: `project_instructions.rs` 读取 CWD 的 CLAUDE.md，格式化为 `<project_instructions>` 块随每条 `ChatMessage` 发送；支持 Claude Code 的 `@path` import 语法（递归展开至深度 5，环检测，128KB 共享预算，越界截断/丢弃并记入 event_log）
+20. **调试日志**: `/debug log <path>` 将原始 stdin 字节（转义编码）和 event_log 条目写入文件，用于诊断终端程序问题（如 omnish 内 vim 粘贴失败）；`/debug log off` 关闭
 
 ## 重要数据结构
 
@@ -957,9 +960,13 @@ Config > LLM                          ← 面包屑（带层级指示）
 - 协议升级到 v8：`ChatStart.thread_id`（恢复指定线程）、`ChatReady.history/error/error_display`（结构化恢复响应）、`ChatEnd`（释放绑定）
 
 **自动关闭空闲聊天会话 (commit 65b6b15, #360):**
-- 客户端以30分钟超时轮询stdin；超时后自动退出聊天模式，显示 "(chat closed due to inactivity)"
+- 客户端以 1s 为节拍轮询输入 fd（而非单次 30 分钟阻塞），累计空闲满 30 分钟后退出聊天模式，显示 "(chat closed due to inactivity)"；改用小节拍使空闲等待中也能应用推送的 thread_title_update，而不必等下一次按键
 - 守护进程后台任务每60秒清理超过30分10秒未活动的线程绑定，作为崩溃客户端的安全网
 - `ChatMessage` 和 `ChatToolResult` 消息刷新线程活跃时间戳
+
+**ServerPush 线程标题推送 (ServerPush thread_title_update):**
+- 客户端注册 push dispatcher 任务接收守护进程的 `ServerPush`，按 `kind` 分发；`thread_title_update` 写入 `PendingTitles`（线程 ID -> 标题）
+- 聊天提示空闲轮询和安全的 chat 渲染点应用 `PendingTitles` 中匹配当前线程的标题，更新 tmux 窗口标签（来源为守护进程 thread_summary 任务广播）
 
 **线程恢复 UX 改进 (commit d497b68, bd9eb7f, 82382eb, bebbcc3, 75f71bc, 344eec7, #372, #374):**
 - 恢复对话时检测上次使用的 host 和 cwd，若不同则弹出提示
@@ -1156,6 +1163,9 @@ Config > LLM                          ← 面包屑（带层级指示）
   - 索引按数值排序而非字典序（fix f7b4ebb）
 - `/thread sandbox [on|off]` - 线程级沙箱覆盖开关（commit eeba721, #535）。无参数查询当前状态；`on` 恢复沙箱执行，`off` 关闭 Landlock/bwrap 强制。状态写入 `ThreadMeta.sandbox_disabled` 并随 `ChatReady` 同步回客户端，resume 时以黄色警告提示。尚未建线程时指令缓冲在客户端，新建线程后随第一条 `ChatMessage` 前下发生效
 - `/thread help` - 显示线程相关命令清单（commit fc9ba99）
+
+**上下文压缩命令:**
+- `/compact` (#641) - 请求守护进程压缩当前线程的对话历史（折叠 tool_result 等），转发到守护进程命令 `__cmd:compact`；返回整体上下文缩减量；失败消息走 i18n 本地化
 
 **模型选择命令:**
 - `/model` - 显示所有已配置LLM backend的picker选择器（commit 2a2e8d0），选中后切换当前线程使用的模型

@@ -95,6 +95,8 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - `stream_writer`: `Mutex<StreamWriterState>` - 流数据写入器状态
 - `last_update`: `Mutex<Option<u64>>` - 上一次 SessionUpdate 的时间戳
 - `pending_sample`: `Mutex<Option<PendingSample>>` - 待写入的补全采样
+- `current_conn`: `Mutex<Option<u64>>` - 客户端通过 SessionStart 认领该会话时持有的 `conn_id`；`end_session` 后或从磁盘重载尚未重连时为 `None`。`evict_inactive` 跳过 `current_conn` 为 `Some` 的会话，避免驱逐仍有活跃连接的会话（#645）
+- `disconnect_pending_since`: `Mutex<Option<Instant>>` - 绑定连接未先发 SessionEnd 就断开时设置；`disconnect_sweep` 任务在其存续超过宽限期后结束该会话，重新注册时清除
 
 ### `PluginManager`
 元数据驱动的插件管理器，从 `~/.omnish/plugins/` 下各子目录的 `tool.json` 文件加载工具定义，包含：
@@ -428,7 +430,7 @@ permit_rules = [
 
 - **`omnish_list_history`**
   - 功能：列出最近 N 条命令（默认 20），包含序号、命令行、退出码、相对时间
-  - 输入参数：`count`（可选，整数）
+  - 输入参数：`count`（可选，整数）；`grep`（可选，字符串，#609）按子串过滤命令行后再取最近 N 条
   - 说明：最近 5 条命令已包含在 `<system-reminder>` 中，只有需要更多历史时才调用此工具
 
 - **`omnish_get_output`**
@@ -837,6 +839,15 @@ Assistant: {{final response}}
 
 **返回:** `bool`（线程是否存在并已删除）
 
+##### `ConversationManager::compact_thread()` (#641)
+压缩线程历史中体积庞大的 `tool_result` 块，缩减 LLM 上下文。
+
+**行为:**
+- 销毁式重写前先快照当前 JSONL 到 `precompact/{tid}.{unix_ts}.jsonl`；快照失败则中止重写
+- 调用 `compact_messages()`（`compaction` 模块的纯函数）就地处理：仅压缩超过 `MIN_LINES`（30 行）的 `tool_result` 文本，截断为 head + 标记 + tail；标记同时作为幂等标志（含标记的文本不再二次压缩）；最近 `PROTECTED_ROUNDS` 轮（从尾部数的真实用户输入）的工具结果永不压缩
+- 返回 `CompactStats`（压缩块数、前/后字符数），`blocks == 0` 表示无改动；返回 `Ok(None)` 表示无可压缩内容
+- `delete_thread()` 同时清理该线程的 precompact 快照
+
 ##### `ConversationManager::append_messages()`
 追加原始 JSON 消息到线程。双写到内存缓存和磁盘 JSONL 文件。
 
@@ -905,6 +916,7 @@ Assistant: {{final response}}
 - `ChatSetup` 包含 `CommandQueryTool`、合并的工具列表、系统提示词
 - 系统提示词通过 `PromptManager` 加载：基础 `chat.json`（编译期内嵌，启动时写入 `~/.omnish/plugins/builtin/tool.json`）+ 用户 `chat.override.json`
 - system-reminder 包含实时 `shell_cwd`（从会话探测获取），附加到系统提示词而非用户消息
+- **项目指令 (`<project_instructions>`，#637)**：客户端在每条 `ChatMessage.project_instructions` 中携带 CWD 的 CLAUDE.md 预格式化块（含 `@path` import 展开）。守护进程不再自行读盘，改为按线程缓存：`set_project_instructions()` 存入、`get_project_instructions()` 取出附加到系统提示词的单个 text block（保持单一 `cache_control` 单元，不增加缓存碎片），`ChatEnd` 时 `clear_project_instructions()` 清理
 - **线程级模型选择**：`ChatMessage.model` 字段指定模型名时，保存到 `ThreadMeta.model`，后续对话从元数据中读取并通过 `backend.get_backend_by_name()` 解析为具体后端
 - 所有消息（包括工具调用）以原始 JSON 格式存储，用户消息只包含纯查询文本（不再附加 `<system-reminder>`）
 - thinking 块以完整 `ContentBlock::Thinking` 数组存储到对话历史，供后续轮次使用
@@ -967,7 +979,8 @@ Assistant: {{final response}}
 - 普通变更：根据 kind 调用 `set_toml_value_nested()` 或 `set_toml_value_nested_bool()` 直接写入；路径以 `.use_proxy` 结尾或 `plugins.<name>.enabled` 格式时自动推断为 "toggle" 类型
 - handler 变更：分组后调用对应处理函数：
   - `handle_add_backend` - 将新后端的各字段写入 `llm.backends.<name>.*`，纯 `api_key` 自动转换为 `api_key_cmd = "echo {key}"`
-  - `handle_edit_backend` - 修改已有后端字段；检测 `._delete` 按钮变更时调用 `remove_toml_table()` 删除整个后端表
+  - `handle_edit_backend` - 修改已有后端字段；编辑 `api_key_cmd` 时若用户填入的是裸密钥（非命令）会自动 wrap 为 `echo {key}`；检测 `._delete` 按钮变更时调用 `remove_toml_table()` 删除整个后端表
+  - 配置保存后通过 `omnish_llm::check_backends()` 逐个尝试初始化后端，将失败项（如 `api_key_cmd` 误填字面密钥）以 `NoticePush` 反馈给用户，避免 `MultiBackend::new` 静默丢弃损坏后端后其从 `/model` 消失而无提示
   - `handle_add_global_rule` - 从表单字段（plugin/field/operator/value）组装规则字符串，追加到 `sandbox.plugins.<plugin>.permit_rules` 数组
   - `handle_edit_global_rule` - 按 plugin 和 index 修改或删除（`._delete`）已有全局规则
 
@@ -1063,7 +1076,7 @@ Assistant: {{final response}}
 `TaskManager` 是一个集中式的定时任务管理器，用于管理守护进程中的所有定时任务。它基于 `tokio-cron-scheduler` 库实现，提供了统一的任务注册、启动、列表、禁用和增量热重载等功能。
 
 **ScheduledTask trait:**
-统一的定时任务接口，所有 6 个内置任务均实现此 trait：
+统一的定时任务接口，所有内置任务均实现此 trait：
 - `name() -> &'static str` - 人类可读的任务名称（作为 TaskManager 的 key）
 - `schedule() -> &str` - cron 表达式
 - `enabled() -> bool` - 是否启用（从 ConfigMap 读取，硬编码默认值）
@@ -1080,9 +1093,10 @@ Assistant: {{final response}}
 - `omnish_dir`: `PathBuf` - omnish 基础目录
 - `restart_signal`: `Arc<Notify>` - 重启信号
 - `update_cache`: `Arc<UpdateCache>` - 更新缓存
+- `push_registry`: `PushRegistry` - 与定时任务共享的客户端推送通道注册表，供任务（如 `thread_summary`）通过 `broadcast_server_push`（`push.rs`）向所有已连接客户端广播 `ServerPush`
 
 **ConfigMap 配置：**
-每个任务通过 `ConfigMap`（即 `HashMap<String, toml::Value>` 的包装）获取配置，使用 `get_string(key, default)` / `get_bool(key, default)` 等方法读取，具有硬编码默认值。`create_all_tasks(config: &TasksConfig)` 工厂函数从 `TasksConfig`（`HashMap<String, ConfigMap>`）中按任务名提取对应的 ConfigMap 创建全部 6 个任务实例。
+每个任务通过 `ConfigMap`（即 `HashMap<String, toml::Value>` 的包装）获取配置，使用 `get_string(key, default)` / `get_bool(key, default)` 等方法读取，具有硬编码默认值。`create_all_tasks(config: &TasksConfig)` 工厂函数从 `TasksConfig`（`HashMap<String, ConfigMap>`）中按任务名提取对应的 ConfigMap 创建全部任务实例（house_keeping、hourly_summary、daily_notes、auto_update、thread_summary、plugin_bundle、writer_idle、disconnect_sweep）。`disconnect_sweep` 为系统级维护任务，默认值硬编码、不写入 daemon.toml，故 `inject_task_defaults` 不注入其默认值。
 
 **结构说明:**
 - `scheduler`: `JobScheduler` - 底层的 cron 任务调度器
@@ -1103,15 +1117,16 @@ Assistant: {{final response}}
 
 守护进程注册了以下内置定时任务：
 
-#### 1. `eviction` - 会话驱逐任务
-**执行周期:** 每小时 (`0 0 * * * *`)
-**功能:** 驱逐长时间不活跃的会话，防止内存无限增长
+#### 1. `house_keeping` - 会话保留维护任务（#613）
+**执行周期:** 每小时 (`0 * * * *`)
+**功能:** 合并原 `eviction` 与 `disk_cleanup` 两个独立任务，以单一保留期同时驱逐不活跃的内存会话（`evict_inactive`）和清理过期会话目录（`cleanup_expired_dirs`）
 **相关配置:**
 ```toml
-[tasks.eviction]
-session_evict_hours = 48  # 默认：48小时后驱逐
+[tasks.house_keeping]
+period = "2 weeks"  # 保留期 select，可选 1 day/2 days/1 week/2 weeks/1 month/3 months/6 months
 ```
-**实现:** 通过 `EvictionTask` 实现 `ScheduledTask` trait
+- `period_to_hours()` 将用户可见的 period 字符串映射为小时数（未知值回退 2 weeks）；3 months/6 months 为新增的长保留选项（#605/#331a01b）
+**实现:** 通过 `HouseKeepingTask` 实现 `ScheduledTask` trait
 
 #### 2. `hourly_summary` - 定期总结任务
 **执行周期:** 每4小时 (默认 `0 0 */4 * * *`)
@@ -1155,15 +1170,6 @@ schedule = "0 10 0 * * *" # 每天 00:10 生成
 ```
 **实现:** 通过 `DailyNotesTask` 实现 `ScheduledTask` trait
 
-#### 4. `disk_cleanup` - 磁盘清理任务
-**执行周期:** 默认每6小时 (`0 0 */6 * * *`)
-**功能:** 清理距今超过48小时的过期会话目录，释放磁盘空间
-**相关配置:**
-```toml
-[tasks.disk_cleanup]
-schedule = "0 0 */6 * * *"  # Cron 表达式，默认每6小时
-```
-**实现:** 通过 `DiskCleanupTask` 实现 `ScheduledTask` trait
 
 #### 5. `thread_summary` - 对话摘要任务
 **执行周期:** 每10分钟 (`0 */10 * * * *`)
@@ -1172,6 +1178,7 @@ schedule = "0 0 */6 * * *"  # Cron 表达式，默认每6小时
 - 只对有内容（`rounds > 0`）且摘要已过期（新增轮次超过阈值）的线程生成摘要
 - 调用 LLM 后端生成简短摘要文本，使用 `SharedLlmBackend` 和 `max_content_chars()`；LLM 响应经 `strip_thinking_block()` 去除 `<thinking>` 标签（#527）
 - `summary` 变化时用第二次 LLM 调用（`TITLE_WORD_PROMPT`）推导出单个小写英文单词 `title_word`，用作聊天模式的 tmux 窗口标签（通过 `ChatReady.thread_title_word` 推送给客户端）。既有线程无需重跑 summary，本任务下次 tick 会补全 `title_word`
+- 派生出新 `title_word` 时通过 `broadcast_server_push`（`push.rs`）向所有已连接客户端广播 `ServerPush { kind: "thread_title_update" }`，使正处于该线程聊天中的客户端无需等待 resume 即可更新 tmux 标签
 - 无 LLM 后端时自动跳过
 **实现:** 通过 `ThreadSummaryTask` 实现 `ScheduledTask` trait
 
@@ -1217,6 +1224,15 @@ clients = ["user@host1", "user@host2"]  # 要分发的客户端机器列表
   schedule = '*/5 * * * *'
   ```
 **实现：** 通过 `PluginBundleTask` 实现 `ScheduledTask` trait（`crates/omnish-daemon/src/plugin_bundle_task.rs`），通过 `DaemonContext.plugin_bundler` 访问 `PluginBundler`；与 `PluginSyncCheck` handler 共享同一 `rebuild()` 入口（mutex 串行化 + 500ms 合并窗口）消除 scheduled vs handler 间的陈旧缓存竞态
+
+#### 8. `writer_idle` - 空闲 writer 回收任务（#614）
+**功能：** 周期性关闭空闲的 `stream.bin` writer 释放 fd，作为既未收到 `SessionEnd` 也未收到连接关闭信号（客户端崩溃等）时的安全网。与 `SessionManager` 的 lazy-open writer 配套：writer 在首条 I/O 数据到达时按需打开
+**实现：** 通过 `WriterIdleTask` 实现 `ScheduledTask` trait（`crates/omnish-daemon/src/writer_idle.rs`）
+
+#### 9. `disconnect_sweep` - 断连会话清理任务
+**执行周期：** 每 10 分钟（硬编码，不写入 daemon.toml）
+**功能：** 与 transport 的 `on_disconnect` 回调配套：连接断开但未先发 `SessionEnd` 时，会话被标记为 pending-end；本任务定期结束宽限期（默认 1 小时，`DEFAULT_GRACE_MINUTES`）已过的会话。宽限期覆盖短暂网络抖动、守护进程自更新重启、笔记本休眠等；宽限期内重新注册会取消计时器，避免误判
+**实现：** 通过 `DisconnectSweepTask` 实现 `ScheduledTask` trait（`crates/omnish-daemon/src/disconnect_sweep.rs`）
 
 ### TaskManager 关键函数说明
 
@@ -1530,6 +1546,8 @@ max_line_width = 128
 **用途:** 使用弹性窗口和 `CompletionFormatter` 构建前缀稳定的补全上下文。使用会话属性中的 `shell_cwd`（实时工作目录）作为 `<current_path>` 标签值，而非上一条命令记录的 cwd
 
 **KV cache 分块：** 配合 `CompletionFormatter::format_sections(warmup_cutoff_ts)`，守护进程追踪 `recent_frozen_until`（惰性初始化，避免新命令到达时扫入 `stable_prefix` 而导致缓存失效），仅在 warmup 阶段通过 `check_and_warmup_sections()` 推进截止时间戳。返回的 `stable_prefix` / `remainder` 送入 `TaggedMessage.cache_pos`，将 Anthropic 的 `cache_control` 断点钉在 `stable_prefix`。
+
+**`<cwd_history>` 块（#610）：** 当 `completion.cwd_history_limit > 0` 时，从当前 cwd 下的命令中取最近 N 条（可按用户输入前缀过滤，不去重以保留命令序列），经 `format_cwd_history()` 渲染为 `<cwd_history>` 块，置于 `remainder` 之后并独占未缓存内容块，以保护 `stable_prefix` 的缓存命中。warmup 路径传 `None` 不发该块。`/context` 自动完成预览中也展示 `<cwd_history>`（a823a1e）。
 
 ### `SessionManager::store_pending_sample()`
 存储一个 pending 补全采样。
@@ -2017,6 +2035,7 @@ async fn main() -> anyhow::Result<()> {
 - `__cmd:tasks [disable <name>]` - 查看或管理定时任务
 - `__cmd:debug commands [N]` - 显示最近 N 条（默认 30）shell 命令历史（完整格式，含参数）
 - `__cmd:debug command <seq>` - 显示指定序号命令的完整详情和输出（通过 `CommandQueryTool::get_command_detail(seq)` 获取）
+- `__cmd:compact` (#641) - 压缩当前线程对话历史中体积庞大的 `tool_result` 块（`ConversationManager::compact_thread`），返回压缩前后**整体**消息字符数及缩减百分比（`format_count` 统一格式化），而非仅被改动的块；无活跃线程或无可压缩内容时给出相应提示
 
 这些命令由客户端的`/`命令转发，通过`handle_builtin_command()`函数处理。
 

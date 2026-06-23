@@ -63,11 +63,15 @@ RPC服务器结构，负责：
 - `listener`: 监听器（Unix或TCP）
 - 为每个连接生成独立的异步任务，分配唯一 `conn_id`
 
-### `PushRegistry` / `OnPushConnect`
-服务器推送机制的核心类型：
+### `PushRegistry` / `OnPushConnect` / `OnDisconnect`
+服务器推送与断连回调的核心类型：
 - `PushRegistry`: `Arc<Mutex<HashMap<u64, mpsc::Sender<Message>>>>`，按连接 ID 维护推送通道
 - `OnPushConnect`: 新连接注册到 PushRegistry 后的回调，用于发送初始消息（如当前客户端配置）
+- `OnDisconnect`: 每连接任务即将退出时的回调，接收 transport 分配的 `conn_id`，供上层清理以 conn_id 为键的状态（如客户端未发 SessionEnd 就断开时结束其会话）
 - 连接断开时自动从 PushRegistry 中移除
+
+### `CONN_ID` task_local
+`tokio::task_local!` 定义的连接 ID 上下文。serve() 为每个消息处理任务通过 `CONN_ID.scope(conn_id, ...)` 注入，使处理器（及其 await 的内容）可用 `CONN_ID.try_with(|id| *id)` 取回消息所属连接 ID，处理器签名保持不变。仅在 serve() 派生的处理器内可用。
 
 ### TLS支持
 
@@ -205,6 +209,7 @@ pub struct Frame {
 - `tls_acceptor: Option<TlsAcceptor>` - TLS接受器（Some时启用TLS，仅TCP）
 - `push_registry: Option<PushRegistry>` - 推送通道注册表（Some时启用服务器主动推送）
 - `on_push_connect: Option<OnPushConnect>` - 新连接注册后的回调（用于发送初始推送消息）
+- `on_disconnect: Option<OnDisconnect>` - 每连接任务退出前的回调，接收 `conn_id`（用于上层清理以 conn_id 为键的状态，如客户端无 SessionEnd 断开时结束会话）
 
 **返回:** `Result<()>`
 **用途:** 循环接受连接并为每个连接生成处理任务

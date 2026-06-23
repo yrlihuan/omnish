@@ -27,14 +27,14 @@
 
 ## omnish-protocol
 
-客户端与守护进程之间的二进制通信协议，使用 bincode 序列化，帧以魔术字节 "OS" 验证，当前协议版本 v23，最低兼容版本 v23。
+客户端与守护进程之间的二进制通信协议，使用 bincode 序列化，帧以魔术字节 "OS" 验证，当前协议版本 v26，最低兼容版本 v25。
 
 - **Message 枚举**：定义全部消息类型，涵盖会话生命周期、终端 I/O 转发、事件通知、LLM 请求/响应、命令补全、聊天会话、工具调用转发、认证、配置管理、客户端更新等
 - **会话消息**：SessionStart/SessionEnd/SessionUpdate，携带会话 ID、时间戳、退出码及 Probe 采集的属性
 - **I/O 与事件消息**：IoData 传输带方向的原始终端数据；Event 通知非零退出、模式匹配、命令边界等事件
 - **LLM 请求/响应**：Request 携带查询与作用域；Response 支持流式与最终标记；CommandComplete 返回命令记录
 - **命令补全**：CompletionRequest/Response 实现光标位置感知的自动补全；CompletionSummary 记录补全交互指标
-- **聊天会话**：ChatStart/Ready/End/Message/Response/Interrupt 管理聊天生命周期与线程恢复；ChatToolStatus 流式推送工具执行状态
+- **聊天会话**：ChatStart/Ready/End/Message/Response/Interrupt 管理聊天生命周期与线程恢复；ChatMessage 携带 project_instructions（CWD 的 CLAUDE.md）；ChatToolStatus 流式推送工具执行状态
 - **客户端侧工具调用**：ChatToolCall/ChatToolResult 实现守护进程到客户端的工具执行转发，支持 Landlock 沙箱标记；ChatToolResult 含 `needs_summarization` 字段请求 LLM 摘要
 - **认证**：Auth 发送令牌与协议版本；AuthResult 统一成功/失败响应，版本不匹配时保持连接
 - **配置管理**：ConfigQuery/Response/Update/UpdateResult 实现远程配置查询与修改；ConfigItem 支持 Toggle/Select/TextInput/Label/Data/Button 类型及 prefills 预填充数据；ConfigClient 实现守护进程到客户端的配置推送
@@ -42,6 +42,7 @@
 - **插件包同步**：PluginSyncCheck/PluginSyncInfo/PluginSyncRequest 实现客户端插件目录与守护进程的镜像同步
 - **测试辅助**：TestDisconnect 消息用于测试客户端断线恢复
 - **UI 通知推送**：NoticePush（Info/Error 级别）由守护进程主动推送瞬时通知到客户端 UI，可定向到发起者
+- **通用服务端推送**：ServerPush（kind+payload）由守护进程主动推送到客户端，首个用途为线程标题更新
 - **Frame 与序列化**：帧封装请求 ID 与消息负载；消息格式为 [魔术字节(2)][长度(4)][序列化消息]
 - **协议版本管理**：PROTOCOL_VERSION + MIN_COMPATIBLE_VERSION 管理兼容范围，编译时守卫测试检测枚举变体变化和变体索引稳定性
 
@@ -153,7 +154,7 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **粘贴支持**：括号粘贴模式、快速粘贴检测、多行折叠显示
 - **客户端插件系统**：ClientPluginManager 通过子进程执行工具，统一多后端沙箱（bwrap/landlock/seatbelt）、运行时可用性检测、`/test lock on/off` 命令、JSON 协议；execute_tool 返回 `(content, is_error, needs_summarization)` 三元组
 - **自更新系统**：`/update` 透明自重启（execvp 恢复 PTY/session）、mtime 自动检测、协议级 UpdateCheck 轮询+后台下载+缓存机制
-- **多轮聊天模式**：ChatSession 驱动的多轮对话循环，线程懒创建、双前缀快速恢复、线程绑定与多会话保护、空闲自动关闭、ChatLayout 统一渲染、Ctrl-C 中断、聊天历史持久化、`/thread` 命令族（stats/sandbox/list/rename）、`/model [name]` 直接切换
+- **多轮聊天模式**：ChatSession 驱动的多轮对话循环，线程懒创建、双前缀快速恢复、线程绑定与多会话保护、空闲自动关闭、ChatLayout 统一渲染、Ctrl-C 中断、聊天历史持久化、`/thread` 命令族（stats/sandbox/list/rename）、`/model [name]` 直接切换、`/compact` 压缩上下文、随消息发送 CWD 的 CLAUDE.md 项目指令
 - **插件包同步**：与守护进程同步本地 `plugins/` 目录，保留用户本地编辑的文件
 - **Probe 系统**：可插拔数据收集器，静态 Probe 和动态 Probe，平台信息来自客户端上报
 - **主事件循环**：poll I/O 多路复用，stdin/PTY master 监控，DSR 过滤，前缀匹配计时，OSC 133 命令跟踪
@@ -175,7 +176,7 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **AgentLoopState**：智能体循环状态，含 saved_up_to 增量持久化索引、用量追踪、cancel_flag 守护进程侧取消、per-thread generation token
 - **SessionManager**：会话生命周期管理（注册、结束、驱逐），I/O 数据流写入（stream.bin writer lazy open / 空闲关闭以释放 fd），命令记录存储，补全上下文构建（弹性窗口+KV cache 预热），补全采样，后台 JSONL 写入线程
 - **ClientsHistory**：持久化客户端连接历史，供 deploy 菜单使用
-- **ConversationManager**：多轮聊天线程管理（创建、存储、加载、删除），JSONL 文件+内存双写，线程元数据（含用量统计、system_reminder 变更检测、sandbox_disabled per-thread 沙箱覆盖、title_override 用户重命名）
+- **ConversationManager**：多轮聊天线程管理（创建、存储、加载、删除、compact_thread 压缩历史），JSONL 文件+内存双写，per-thread project_instructions 缓存，线程元数据（含用量统计、system_reminder 变更检测、sandbox_disabled per-thread 沙箱覆盖、title_override 用户重命名）
 - **PluginManager**：元数据驱动的插件系统，从 tool.json 加载工具定义，DaemonTool/ClientTool 双类型分发，tool.override.json 描述覆盖与热重载（inotify/轮询），内嵌资源自动安装；插件目录变更时自动激活/卸载工具
 - **PluginBundler 与 PluginBundleTask**：守护进程侧插件包打包，作为定时任务定期重建，供客户端镜像同步
 - **ToolRegistry**：统一工具元数据注册表，启动时填充后以 Arc 共享只读，支持运行时描述覆盖和热重载原子更新
@@ -189,7 +190,7 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **UpdateCache 与客户端更新**：更新包缓存管理器（多平台包缓存、版本比较、传输锁），UpdateCheck 版本检查，UpdateRequest 流式包分发
 - **SandboxRules**：沙箱许可规则模块，白名单规则
 - **FileWatcher 与 ConfigWatcher**：共享文件监视基础设施，ConfigWatcher 分节发布/订阅机制，支持 LLM 后端热重载
-- **TaskManager 与定时任务**：基于 tokio-cron-scheduler 的集中式任务管理器，内置任务：eviction、hourly_summary、daily_notes（基于 hourly summaries 汇总）、disk_cleanup、thread_summary、auto_update、plugin_bundle、writer_idle（周期性关闭空闲 stream.bin writer 释放 fd）；均使用 SharedLlmBackend
+- **TaskManager 与定时任务**：基于 tokio-cron-scheduler 的集中式任务管理器，内置任务：house_keeping（合并会话驱逐与磁盘清理，统一保留期）、hourly_summary、daily_notes（基于 hourly summaries 汇总）、thread_summary、auto_update、plugin_bundle、writer_idle（周期性关闭空闲 stream.bin writer 释放 fd）、disconnect_sweep（清理无 SessionEnd 断连的会话）；均使用 SharedLlmBackend
 - **补全采样**：pending sample 捕获→accepted 标志更新→条件写入，JSONL 持久化
 - **update_thread_usage() / format_thread_stats()**：线程用量持久化（last_response + cumulative 双参数），`/thread stats` 显示
 - **并发与锁设计**：RwLock 分层（sessions/meta/commands 读多写少），Mutex 独占，两阶段驱逐和快照式清理避免锁争用

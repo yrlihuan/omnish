@@ -108,10 +108,13 @@ pub struct CompletionFormatter {
   ```
 - Claude 模型针对 `<system-reminder>` 标签有特殊训练，能更好地理解和利用工作目录上下文
 
-**`format_sections()` 拆分缓存块：** 在 `format()` 之外提供 `format_sections(history, detailed, warmup_cutoff_ts)`，返回 `CompletionSections { stable_prefix, remainder }` 两段内容：
+**`format_sections()` 拆分缓存块：** 在 `format()` 之外提供 `format_sections(history, detailed, warmup_cutoff_ts)`，返回 `CompletionSections { stable_prefix, remainder, cwd_history }` 三段内容：
 - `warmup_cutoff_ts` 为 `None` 时所有 detailed 视为 warmup，全部进入 `stable_prefix`；为 `Some(ts)` 时 `started_at <= ts` 进入 warmup（`stable_prefix`），`> ts` 进入 tail（`remainder`）
 - 每段都是**自包含的合法 XML**：`stable_prefix` 含 `<history>...</history>` 与完整的 `<recent>{warmup}</recent>`；`remainder` 含一个独立的 `<recent>{tail}</recent>` 后接 `<system-reminder>` 工作目录尾段
 - `stable_prefix` 在新命令到达时保持字节稳定，用于 Anthropic prompt cache 的 `cache_control` 断点
+- `cwd_history` 为 `<cwd_history>...</cwd_history>` 块，列出当前 cwd 下最近命令行（可按输入前缀过滤）。由 `format_sections` 置空，因依赖每请求的输入前缀单独计算；位于 `remainder` 之后并独占未缓存内容块以保护 stable_prefix 的 KV 缓存命中
+
+**`format_cwd_history(commands)`：** 将命令行列表渲染为 `<cwd_history>...</cwd_history>` 块；`commands` 为空时返回空串。
 
 **工作目录来源优先级:** 优先使用 `live_cwd`（daemon session probe 通过 `/proc/<pid>/cwd` 轮询获取的实时 shell 工作目录），回退到最后一条当前会话 CommandRecord 的 cwd。这解决了 OSC 133;B DEBUG trap 在命令执行前触发的问题--例如 `cd /tmp` 记录的是旧 cwd 而非新目录。
 

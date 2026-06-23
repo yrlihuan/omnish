@@ -4,7 +4,7 @@
 
 ## 模块概述
 
-omnish-protocol 定义了客户端和守护进程之间交换的消息类型，使用bincode进行二进制序列化。协议包含一个简单的帧格式，每个帧包含请求ID和消息负载，使用魔术字节"OS"(0x4F 0x53)进行验证。当前协议版本为v23（`PROTOCOL_VERSION = 23`），最低兼容版本为v23（`MIN_COMPATIBLE_VERSION = 23`）。服务器在认证阶段检查对端版本是否 >= MIN_COMPATIBLE_VERSION，配合帧反序列化失败时的跳过机制，实现新旧版本共存。
+omnish-protocol 定义了客户端和守护进程之间交换的消息类型，使用bincode进行二进制序列化。协议包含一个简单的帧格式，每个帧包含请求ID和消息负载，使用魔术字节"OS"(0x4F 0x53)进行验证。当前协议版本为v26（`PROTOCOL_VERSION = 26`），最低兼容版本为v25（`MIN_COMPATIBLE_VERSION = 25`）。服务器在认证阶段检查对端版本是否 >= MIN_COMPATIBLE_VERSION，配合帧反序列化失败时的跳过机制，实现新旧版本共存。
 
 ## 重要数据结构
 
@@ -44,6 +44,7 @@ omnish-protocol 定义了客户端和守护进程之间交换的消息类型，�
 - `ConfigClient`: 守护进程主动推送配置变更到客户端
 - `TestDisconnect`: 测试辅助消息，daemon在指定延迟后断开连接
 - `NoticePush`: 守护进程 -> 客户端推送临时 UI 通知（`NoticeLevel::Info`/`Error`），含可选 `kind` 标签--`Some(kind)` 用于初始者定向通知（仅注册了同 kind 期望的客户端显示），`None` 用于无差别广播
+- `ServerPush`: 通用守护进程 -> 客户端推送，`kind` 命名语义、`payload` 为 kind 特定的 JSON 字符串（存为 String 而非 `serde_json::Value`，因 bincode 无法反序列化后者）；客户端按 `kind` 分发，首个 kind 为 `"thread_title_update"`（payload `{ thread_id, title }`）
 - `PluginSyncCheck`/`PluginSyncInfo`/`PluginSyncRequest`: 客户端轮询守护进程的 `~/.omnish/plugins/` 包，按 SHA-256 checksum 比对，PluginSyncRequest 复用 `UpdateChunk` 流式下载 tarball 字节
 
 ### `SessionStart`
@@ -196,6 +197,7 @@ LLM响应消息，包含：
 - `thread_id`: 线程标识符
 - `query`: 用户查询内容
 - `model`: 指定使用的模型（可选，用于per-thread模型选择，通过`/model`命令设置）
+- `project_instructions`: 预格式化的 `<project_instructions>` 块（可选，读自 CWD 的 CLAUDE.md）。v24 引入时位于 `ChatStart`，v25 改挂到 `ChatMessage`，使每条消息都能携带当前 CWD 的项目指令
 
 ### `ChatResponse`
 聊天响应（守护进程返回LLM回复），包含：
@@ -455,7 +457,7 @@ let restored_frame = Frame::from_bytes(&frame_bytes).unwrap();
 
 ## 协议版本管理
 
-协议版本通过`PROTOCOL_VERSION`（当前值23）和`MIN_COMPATIBLE_VERSION`（当前值23）两个常量定义。服务器接受对端版本 >= MIN_COMPATIBLE_VERSION 的连接。`versions_compatible(my_min, peer_version)` 函数封装此判断。
+协议版本通过`PROTOCOL_VERSION`（当前值26）和`MIN_COMPATIBLE_VERSION`（当前值25）两个常量定义。服务器接受对端版本 >= MIN_COMPATIBLE_VERSION 的连接。`versions_compatible(my_min, peer_version)` 函数封装此判断。
 
 **追加规则：** 新 Message 变体**必须**追加到枚举末尾。bincode 使用 u32 变体索引序列化枚举，在中间插入会移位已有索引，导致旧版客户端解析失败。`variant_indices_are_stable` 测试锁定关键消息的变体索引。
 
@@ -482,4 +484,7 @@ let restored_frame = Frame::from_bytes(&frame_bytes).unwrap();
 - v21: 新增 `PluginSyncCheck`/`PluginSyncInfo`/`PluginSyncRequest` 三条消息，实现客户端 `~/.omnish/plugins/` 镜像同步；PluginSyncRequest 复用 `UpdateChunk` 流式传输 tarball 字节，不引入并行的 chunk 形状
 - v22: `NoticePush` 新增可选 `kind: Option<String>` 标签--`Some(kind)` 用于初始者定向通知（pending_notices 配合 expect/consume 决定显示），`None` 用于无差别广播；旧客户端因变体 wire 形状变化静默丢弃新 daemon 发来的 NoticePush
 - v23: 新增 `ConfigItemKind::Button { style: ButtonStyle }` 变体（`ButtonStyle::Default`/`Destructive`），替代基于路径后缀和 label 字符串的渲染 hack；MIN_COMPATIBLE_VERSION 同步抬升至 23 拒绝旧客户端 auth（连接保持以便 /update 滚动升级）
+- v24: `ChatStart` 新增 `project_instructions: Option<String>` 字段，携带 CWD 的 CLAUDE.md 预格式化 `<project_instructions>` 块；MIN_COMPATIBLE_VERSION 同步抬升至 24
+- v25: `project_instructions` 字段从 `ChatStart` 移到 `ChatMessage`，使每条消息都按当前 CWD 携带项目指令（而非仅会话开始时一次）；MIN_COMPATIBLE_VERSION 同步抬升至 25
+- v26: 新增通用 `ServerPush { kind, payload }` 消息（守护进程 -> 客户端），`payload` 为 kind 特定的 JSON 字符串，首个 kind 为 `"thread_title_update"`；追加到枚举末尾（变体索引 37），旧客户端因帧反序列化失败优雅跳过
 

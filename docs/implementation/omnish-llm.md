@@ -182,10 +182,10 @@ Anthropic API后端实现：
 - `model_name()`：返回模型名称（`&self.model`）
 - 使用Anthropic Messages API (v1/messages，API版本2024-04-04）
 - 支持`base_url`配置（默认api.anthropic.com），可用于代理或自托管
-- `max_tokens`固定为8192
+- `max_tokens`固定为32768
 - 多轮对话支持：conversation历史映射为messages数组，上下文注入第一条user消息
 - 系统提示词支持：通过Anthropic `system` 顶层字段（数组格式，附带`cache_control`用于提示缓存）
-- 思考模式：enable_thinking 翻译为显式 wire 形状以跨后端保持意图（Anthropic 省略=禁用，DeepSeek Anthropic-compat 端点默认启用，必须显式禁用）；Opus 4.7+ 走 adaptive 模式发送 `{"type": "enabled"}` 不带 budget_tokens（手动 budget 被新版模型拒绝），其余模型显式启用时 `budget_tokens: 4096`
+- 思考模式：enable_thinking 翻译为显式 wire 形状以跨后端保持意图（Anthropic 省略=禁用，DeepSeek Anthropic-compat 端点默认启用，必须显式禁用）；Opus 4.7+ 走 adaptive 模式发送 `{"type": "enabled"}` 不带 budget_tokens（手动 budget 被新版模型拒绝），其余模型显式启用时 `budget_tokens: 16384`
 - 思考块签名保留：解析响应中`thinking` block的`signature`字段并存储为`Option<String>`，多轮对话回传时包含签名（Anthropic API要求）
 - 工具调用支持：通过`tools`字段提供工具定义，解析响应中的`tool_use` content blocks
 - 供应商扩展字段捕获：解析 `tool_use` content blocks 时，除 `id`/`name`/`input` 外的字段保留到 `ToolCall.extra`，确保供应商特有字段（如签名等）在多轮回传时不丢失
@@ -198,6 +198,7 @@ Anthropic API后端实现：
 - 连接错误自动重试：`.send()`遇到连接错误（`is_connect()`/`is_request()`）时最多重试3次，指数退避（5s起步，最大60s）
 - 429/529自动重试：最多3次重试，指数退避（默认5s起步，最大60s），支持解析`retry-after`响应头
 - 错误诊断增强：响应JSON解码失败时，错误信息包含响应体预览（最多1000字节，超出截断并显示总长度），便于调试代理错误等场景
+- TLS close_notify 容错：逐块（`resp.chunk()`）读取响应体而非 `resp.text()`，当 sloppy 代理（如 LiteLLM/uvicorn）在 body 实际完整时漏发 TLS close_notify 时，记录 warn 并解析已收到字节（`close_notify_tolerated=true` 标记带入解码错误信息）；若确为截断则由 JSON 解析错误路径暴露 body 预览
 - Usage解析：从API响应中提取`input_tokens`、`output_tokens`、`cache_read_input_tokens`、`cache_creation_input_tokens`
 - 请求日志：Chat请求的完整payload记录到`~/.omnish/logs/messages/`
 
@@ -301,6 +302,9 @@ Langfuse可观测性配置结构体：
 **返回:** `Result<Arc<dyn LlmBackend>>` - 装箱的LLM后端实例
 **用途:** 工厂函数，根据配置类型创建对应的后端实现。仅当后端配置的`use_proxy`为true时，HTTP客户端才会使用全局代理。创建时通过`effective_max_content_chars()`计算`max_content_chars`并传入后端实例。
 
+### `check_backends()`
+逐个初始化所有已配置后端，返回失败项的 `(name, error)` 列表（按名称排序）。用于配置保存后向用户暴露后端错误（如 `api_key_cmd` 误填字面密钥而非命令），因为 `MultiBackend::new` 仅以 warning 记录并静默丢弃损坏后端（随后从 `/model` 消失）。
+
 ### `effective_max_content_chars()`
 计算后端的有效最大上下文字符数。
 
@@ -346,7 +350,7 @@ Langfuse可观测性配置结构体：
 - `cursor_pos: usize` - 光标位置
 
 **返回:** `String` - 格式化后的补全提示
-**用途:** 统一空输入和非空输入的模板，指令+上下文形成稳定前缀，仅末尾的 `Current input:` 行变化。返回JSON数组格式 `["cmd1", "cmd2"]`，最多2个建议。第二个建议优先使用完整命令（issue #93）。禁止建议 `&&` 链式命令除非用户输入中已包含（issue #95）。此设计使LLM服务器可在连续请求间复用KV cache。
+**用途:** 统一空输入和非空输入的模板，指令+上下文形成稳定前缀，仅末尾的 `Current input:` 行变化。返回JSON数组格式 `["cmd1", "cmd2"]`，最多2个建议。第二个建议优先使用完整命令（issue #93）。禁止建议 `&&` 链式命令除非用户输入中已包含（issue #95）。此设计使LLM服务器可在连续请求间复用KV cache。空输入分支（user 消息）额外附加"保持每条建议简短（length <= 20 字符），宁可返回 `[]` 也不要长推测补全"的提示，避免空提示下 LLM 生成长多步脚本（#640）；system 提示保持不变以保护 KV 缓存。
 
 **上下文格式说明:**
 - 历史命令和最近命令使用原有的`<history>`和`<recent>`标签
