@@ -732,8 +732,17 @@ async fn main() -> Result<()> {
     // Resolve shell and hook args early so they're available for respawn.
     let shell = resolve_shell(&config.shell.command);
 
+    // Detect whether omnish itself was started as a login shell. The Unix
+    // convention is that login/getty/sshd exec the shell with argv[0] prefixed
+    // by '-' (e.g. "-omnish"). We replay the login profile chain into the bash
+    // rcfile in that case (issue #649).
+    let is_login_shell = std::env::args_os()
+        .next()
+        .map(|a0| a0.to_string_lossy().starts_with('-'))
+        .unwrap_or(false);
+
     // Install shell-specific OSC 133 hook
-    let osc133_rcfile = shell_hook::install_bash_hook(&shell);
+    let osc133_rcfile = shell_hook::install_bash_hook(&shell, is_login_shell);
     let osc133_zdotdir = shell_hook::install_zsh_hook(&shell);
     let osc133_hook_installed = osc133_rcfile.is_some() || osc133_zdotdir.is_some();
 

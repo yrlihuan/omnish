@@ -121,9 +121,39 @@ precmd_functions+=(__omnish_precmd)
 preexec_functions+=(__omnish_preexec)
 "#;
 
+/// Build the `source` lines for a bash login shell's profile chain.
+///
+/// A real interactive login bash reads `/etc/profile` then the first existing
+/// of `~/.bash_profile`, `~/.bash_login`, `~/.profile`. omnish spawns bash as a
+/// non-login shell (so `--rcfile`, and thus the OSC 133 hook, keeps working), so
+/// when omnish itself was started as a login shell we replay that profile chain
+/// here to restore PATH / env / ssh-agent setup (issue #649). Empty when no
+/// profile file exists.
+fn bash_login_profile_sources() -> String {
+    let mut out = String::new();
+    let etc_profile = PathBuf::from("/etc/profile");
+    if etc_profile.exists() {
+        out.push_str(&format!("source \"{}\"\n", etc_profile.to_string_lossy()));
+    }
+    if let Some(home) = dirs::home_dir() {
+        // Bash stops at the first existing file in this order.
+        for name in &[".bash_profile", ".bash_login", ".profile"] {
+            let p = home.join(name);
+            if p.exists() {
+                out.push_str(&format!("source \"{}\"\n", p.to_string_lossy()));
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// Generate an rcfile that sources the user's original bashrc then loads the OSC 133 hook.
+/// When `is_login` is true (omnish started as a login shell), the login profile
+/// chain (`/etc/profile`, `~/.bash_profile` chain) is sourced first so login
+/// initialization is not lost.
 /// Returns the rcfile path, or None if the shell is not bash.
-pub fn install_bash_hook(shell: &str) -> Option<PathBuf> {
+pub fn install_bash_hook(shell: &str, is_login: bool) -> Option<PathBuf> {
     if !shell.ends_with("bash") {
         return None;
     }
@@ -142,12 +172,18 @@ pub fn install_bash_hook(shell: &str) -> Option<PathBuf> {
         write_atomic(&hook_path, BASH_HOOK.as_bytes()).ok()?;
     }
 
-    // Write an rcfile that sources the user's bashrc first, then the hook
-    let rcfile_path = dir.join("bashrc");
+    // Write an rcfile that (for login shells) replays the login profile chain,
+    // then sources the user's bashrc, then the hook.
+    // Use a login-specific filename so a login and a non-login session on the
+    // same host do not overwrite each other's rcfile.
+    let rcfile_path = dir.join(if is_login { "bashrc.login" } else { "bashrc" });
     let bashrc = dirs::home_dir()
         .map(|h| h.join(".bashrc"))
         .filter(|p| p.exists());
     let mut content = String::new();
+    if is_login {
+        content.push_str(&bash_login_profile_sources());
+    }
     if let Some(ref bashrc) = bashrc {
         content.push_str(&format!(
             "source \"{}\"\n",
@@ -237,13 +273,13 @@ mod tests {
 
     #[test]
     fn test_non_bash_returns_none() {
-        assert!(install_bash_hook("/bin/zsh").is_none());
-        assert!(install_bash_hook("/bin/fish").is_none());
+        assert!(install_bash_hook("/bin/zsh", false).is_none());
+        assert!(install_bash_hook("/bin/fish", false).is_none());
     }
 
     #[test]
     fn test_bash_returns_rcfile_path() {
-        let result = install_bash_hook("/bin/bash");
+        let result = install_bash_hook("/bin/bash", false);
         assert!(result.is_some());
         let rcfile = result.unwrap();
         assert!(rcfile.exists());
@@ -251,6 +287,40 @@ mod tests {
         let content = std::fs::read_to_string(&rcfile).unwrap();
         // rcfile sources the hook script
         assert!(content.contains("bash_hook.sh"), "rcfile should source hook: {content}");
+    }
+
+    #[test]
+    fn test_login_uses_separate_rcfile_and_sources_profile() {
+        let non_login = install_bash_hook("/bin/bash", false).unwrap();
+        let login = install_bash_hook("/bin/bash", true).unwrap();
+
+        // Login and non-login rcfiles must not clobber each other.
+        assert_ne!(non_login, login);
+        assert!(login.to_string_lossy().ends_with("bashrc.login"));
+
+        let content = std::fs::read_to_string(&login).unwrap();
+        // Still sources the OSC 133 hook.
+        assert!(content.contains("bash_hook.sh"), "login rcfile should source hook: {content}");
+        // Sources at least one login profile file when one exists on the host.
+        let has_profile = std::path::Path::new("/etc/profile").exists()
+            || dirs::home_dir().is_some_and(|h| {
+                [".bash_profile", ".bash_login", ".profile"]
+                    .iter()
+                    .any(|n| h.join(n).exists())
+            });
+        if has_profile {
+            assert!(
+                content.contains("/etc/profile")
+                    || content.contains(".bash_profile")
+                    || content.contains(".bash_login")
+                    || content.contains(".profile"),
+                "login rcfile should source a login profile: {content}"
+            );
+        }
+
+        // Non-login rcfile must NOT pull in the profile chain.
+        let non_login_content = std::fs::read_to_string(&non_login).unwrap();
+        assert!(!non_login_content.contains("/etc/profile"), "non-login rcfile must not source /etc/profile: {non_login_content}");
     }
 
     #[test]
