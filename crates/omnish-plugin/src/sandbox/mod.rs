@@ -147,6 +147,29 @@ fn git_repo_root(dir: &Path) -> Option<PathBuf> {
         .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
 }
 
+/// Resolve symlinks so bind-mount destinations are always real paths.
+///
+/// bwrap cannot bind-mount onto a symlink destination: `--bind <link> <link>`
+/// fails with "Unable to mount source on destination: No such file or
+/// directory" and aborts the whole sandbox, so a symlinked cwd or a symlinked
+/// `~/.omnish` breaks every tool call (issue #648). Canonicalizing also lets
+/// cwd and git-root dedup when they resolve to the same place. Falls back to
+/// the original path when it does not exist or cannot be resolved (the backends
+/// already skip non-existent paths).
+fn canonicalize_or_keep(p: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&p).unwrap_or(p)
+}
+
+/// Canonicalize every path and drop duplicates while preserving order.
+fn canonicalize_and_dedup(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = std::collections::HashSet::new();
+    paths
+        .into_iter()
+        .map(canonicalize_or_keep)
+        .filter(|p| seen.insert(p.clone()))
+        .collect()
+}
+
 fn common_writable_paths(cwd: Option<&Path>) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = vec![
         "/tmp".into(),
@@ -185,12 +208,16 @@ fn common_writable_paths(cwd: Option<&Path>) -> Vec<PathBuf> {
         paths.push(cwd.to_path_buf());
     }
 
-    paths
+    // Resolve symlinks so bind-mount destinations are real paths (issue #648).
+    canonicalize_and_dedup(paths)
 }
 
 pub fn plugin_policy(data_dir: &Path, cwd: Option<&Path>) -> SandboxPolicy {
     let mut writable = common_writable_paths(cwd);
-    writable.insert(0, data_dir.to_path_buf());
+    let data_dir = canonicalize_or_keep(data_dir.to_path_buf());
+    if !writable.contains(&data_dir) {
+        writable.insert(0, data_dir);
+    }
     SandboxPolicy {
         writable_paths: writable,
         deny_read: Vec::new(),
@@ -203,5 +230,51 @@ pub fn lock_policy(cwd: Option<&Path>) -> SandboxPolicy {
         writable_paths: common_writable_paths(cwd),
         deny_read: Vec::new(),
         allow_network: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #648: a symlinked cwd must be resolved to its real path so bwrap
+    /// never tries to bind-mount onto a symlink destination.
+    #[test]
+    fn symlinked_cwd_is_canonicalized_in_writable_paths() {
+        let tmp = std::env::temp_dir().join(format!("omnish_sbx_test_{}", std::process::id()));
+        let real = tmp.join("realdir");
+        let link = tmp.join("linkdir");
+        std::fs::create_dir_all(&real).unwrap();
+        let _ = std::fs::remove_file(&link);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let real_canon = std::fs::canonicalize(&real).unwrap();
+        let paths = common_writable_paths(Some(&link));
+
+        assert!(
+            paths.contains(&real_canon),
+            "resolved real cwd {:?} must be present, got {:?}",
+            real_canon,
+            paths
+        );
+        assert!(
+            !paths.contains(&link),
+            "symlink path {:?} must not be bound directly, got {:?}",
+            link,
+            paths
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Duplicate resolved paths (e.g. cwd == git root after resolution) collapse.
+    #[test]
+    fn writable_paths_have_no_duplicates() {
+        let paths = common_writable_paths(None);
+        let mut sorted = paths.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), paths.len(), "writable paths must be unique");
     }
 }
