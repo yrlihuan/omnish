@@ -209,7 +209,14 @@ pub fn install_bash_hook(shell: &str, is_login: bool) -> Option<PathBuf> {
 /// Install the zsh OSC 133 hook.
 /// Returns the ZDOTDIR path containing a `.zshrc` that sources the hook,
 /// or None if the shell is not zsh.
-pub fn install_zsh_hook(shell: &str) -> Option<PathBuf> {
+///
+/// When `is_login` is true (omnish started as a login shell), the generated
+/// `.zshrc` also replays the login profile chain (`.zprofile` before, `.zlogin`
+/// after) from the user's original ZDOTDIR/HOME plus the system-wide
+/// `/etc/zprofile` and `/etc/zlogin`. omnish overrides ZDOTDIR and spawns zsh
+/// non-login, so without this those login files (e.g. macOS `/etc/zprofile`
+/// path_helper, user PATH setup) would be lost (issue #649).
+pub fn install_zsh_hook(shell: &str, is_login: bool) -> Option<PathBuf> {
     if !shell.ends_with("zsh") {
         return None;
     }
@@ -230,11 +237,21 @@ pub fn install_zsh_hook(shell: &str) -> Option<PathBuf> {
 
     // Create a ZDOTDIR with a .zshrc that sources user config then our hook.
     // Zsh doesn't have --rcfile; ZDOTDIR is the standard override mechanism.
-    let zdotdir = dir.join("zdotdir");
+    // Login and non-login sessions use separate ZDOTDIRs so their generated
+    // .zshrc do not clobber each other on the same host.
+    let zdotdir = dir.join(if is_login { "zdotdir.login" } else { "zdotdir" });
     std::fs::create_dir_all(&zdotdir).ok()?;
 
     let zshrc_path = zdotdir.join(".zshrc");
     let mut content = String::new();
+    if is_login {
+        // Login files sourced before .zshrc, mirroring real zsh startup order.
+        content.push_str(
+            "# (login) source login profile files before .zshrc\n\
+             [[ -f /etc/zprofile ]] && source /etc/zprofile\n\
+             [[ -f \"${OMNISH_ORIG_ZDOTDIR:-$HOME}/.zprofile\" ]] && source \"${OMNISH_ORIG_ZDOTDIR:-$HOME}/.zprofile\"\n"
+        );
+    }
     // Source user's original .zshrc from their real home or original ZDOTDIR
     content.push_str(
         "# Source user's .zshrc from original ZDOTDIR (or HOME)\n\
@@ -246,6 +263,14 @@ pub fn install_zsh_hook(shell: &str) -> Option<PathBuf> {
         "source \"{}\"\n",
         hook_path.to_string_lossy()
     ));
+    if is_login {
+        // .zlogin is sourced last in a real interactive login zsh.
+        content.push_str(
+            "# (login) source login files after .zshrc\n\
+             [[ -f /etc/zlogin ]] && source /etc/zlogin\n\
+             [[ -f \"${OMNISH_ORIG_ZDOTDIR:-$HOME}/.zlogin\" ]] && source \"${OMNISH_ORIG_ZDOTDIR:-$HOME}/.zlogin\"\n"
+        );
+    }
 
     let should_write_rc = match std::fs::read(&zshrc_path) {
         Ok(existing) => existing != content.as_bytes(),
@@ -340,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_zsh_returns_zdotdir() {
-        let result = install_zsh_hook("/bin/zsh");
+        let result = install_zsh_hook("/bin/zsh", false);
         assert!(result.is_some());
         let zdotdir = result.unwrap();
         assert!(zdotdir.exists());
@@ -350,15 +375,41 @@ mod tests {
         assert!(zshrc.exists());
         let content = std::fs::read_to_string(&zshrc).unwrap();
         assert!(content.contains("zsh_hook.zsh"), "zshrc should source hook: {content}");
+        // Non-login zshrc must not replay the login profile chain.
+        assert!(!content.contains(".zprofile"), "non-login zshrc must not source .zprofile: {content}");
+        assert!(!content.contains(".zlogin"), "non-login zshrc must not source .zlogin: {content}");
     }
 
     #[test]
     fn test_zsh_hook_preserves_original_zdotdir() {
-        let result = install_zsh_hook("/usr/bin/zsh");
+        let result = install_zsh_hook("/usr/bin/zsh", false);
         assert!(result.is_some());
         let zdotdir = result.unwrap();
         let zshrc = zdotdir.join(".zshrc");
         let content = std::fs::read_to_string(&zshrc).unwrap();
         assert!(content.contains("OMNISH_ORIG_ZDOTDIR"), "should reference original ZDOTDIR: {content}");
+    }
+
+    #[test]
+    fn test_zsh_login_uses_separate_zdotdir_and_sources_profile() {
+        let non_login = install_zsh_hook("/bin/zsh", false).unwrap();
+        let login = install_zsh_hook("/bin/zsh", true).unwrap();
+
+        // Login and non-login sessions must not share a ZDOTDIR.
+        assert_ne!(non_login, login);
+        assert!(login.to_string_lossy().ends_with("zdotdir.login"));
+
+        let content = std::fs::read_to_string(login.join(".zshrc")).unwrap();
+        // Still sources the OSC 133 hook and the user's .zshrc.
+        assert!(content.contains("zsh_hook.zsh"), "login zshrc should source hook: {content}");
+        assert!(content.contains("OMNISH_ORIG_ZDOTDIR"), "login zshrc should source user .zshrc: {content}");
+        // Replays the login profile chain, in the right order (.zprofile before
+        // .zshrc, .zlogin after).
+        let zprofile_at = content.find(".zprofile").expect("should source .zprofile");
+        let zshrc_at = content.find("/.zshrc").expect("should source user .zshrc");
+        let zlogin_at = content.find(".zlogin").expect("should source .zlogin");
+        assert!(zprofile_at < zshrc_at, "zprofile must come before zshrc: {content}");
+        assert!(zshrc_at < zlogin_at, "zlogin must come after zshrc: {content}");
+        assert!(content.contains("/etc/zprofile"), "should source /etc/zprofile: {content}");
     }
 }

@@ -743,7 +743,7 @@ async fn main() -> Result<()> {
 
     // Install shell-specific OSC 133 hook
     let osc133_rcfile = shell_hook::install_bash_hook(&shell, is_login_shell);
-    let osc133_zdotdir = shell_hook::install_zsh_hook(&shell);
+    let osc133_zdotdir = shell_hook::install_zsh_hook(&shell, is_login_shell);
     let osc133_hook_installed = osc133_rcfile.is_some() || osc133_zdotdir.is_some();
 
     let shell_args: Vec<String> = if let Some(ref rcfile) = osc133_rcfile {
