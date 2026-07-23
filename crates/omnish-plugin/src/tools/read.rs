@@ -1,5 +1,7 @@
 use omnish_llm::tool::ToolResult;
 
+use super::decode_bytes;
+
 /// Maximum bytes to return.
 const MAX_OUTPUT_BYTES: usize = 50_000;
 /// Maximum characters per line before truncation.
@@ -35,8 +37,11 @@ impl ReadTool {
         // 0 means unlimited; only apply DEFAULT_LIMIT when explicitly requested
         let limit = input["limit"].as_u64().unwrap_or(0) as usize;
 
-        let content = match std::fs::read_to_string(file_path) {
-            Ok(c) => c,
+        // Read raw bytes and decode into UTF-8. Non-UTF-8 files (e.g. GB2312/GBK
+        // Chinese text) are transcoded via charset detection instead of failing
+        // with "stream did not contain valid UTF-8".
+        let bytes = match std::fs::read(file_path) {
+            Ok(b) => b,
             Err(e) => {
                 return ToolResult {
                     tool_use_id: String::new(),
@@ -45,6 +50,7 @@ impl ReadTool {
                 };
             }
         };
+        let content = decode_bytes(&bytes);
 
         if content.is_empty() {
             return ToolResult {
@@ -192,6 +198,37 @@ mod tests {
         assert!(result.content.contains("..."));
         // Should contain exactly 2000 x's + "..."
         assert!(!result.content.contains(&"x".repeat(2001)));
+    }
+
+    #[test]
+    fn test_read_gb2312_file() {
+        // "你好世界，这是一段中文测试文本。" encoded as GB2312. Enough text for
+        // chardetng to confidently detect the GBK family and transcode it.
+        let (gb_bytes, _, _) =
+            encoding_rs::GBK.encode("你好世界，这是一段中文测试文本。");
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&gb_bytes).unwrap();
+        let tool = ReadTool::new();
+        let result = tool.execute(&serde_json::json!({"file_path": tmp.path().to_str().unwrap()}));
+        assert!(!result.is_error, "content: {}", result.content);
+        assert!(result.content.contains("你好世界"), "content: {}", result.content);
+        assert!(!result.content.contains('\u{FFFD}'), "content: {}", result.content);
+    }
+
+    #[test]
+    fn test_read_invalid_bytes_no_error() {
+        // Bytes that match no clean encoding must still not error (lossy fallback).
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&[b'o', b'k', 0xFF, 0xFE, 0x00]).unwrap();
+        let tool = ReadTool::new();
+        let result = tool.execute(&serde_json::json!({"file_path": tmp.path().to_str().unwrap()}));
+        assert!(!result.is_error, "content: {}", result.content);
+        assert!(result.content.contains("ok"));
+    }
+
+    #[test]
+    fn test_decode_utf8_fast_path() {
+        assert_eq!(decode_bytes("héllo 世界".as_bytes()), "héllo 世界");
     }
 
     #[test]

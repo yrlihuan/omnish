@@ -1,5 +1,7 @@
 use omnish_llm::tool::ToolResult;
 
+use super::decode_bytes;
+
 /// Build a self-contained diff snippet showing context, old lines (-), and new lines (+).
 /// Uses both old and new content to produce a unified-diff-like output.
 /// Line numbers are 1-based.
@@ -145,8 +147,11 @@ impl EditTool {
             };
         }
 
-        let content = match std::fs::read_to_string(file_path) {
-            Ok(c) => c,
+        // Read raw bytes and decode (transcoding non-UTF-8 files like GB2312 via
+        // charset detection) instead of failing on "stream did not contain valid
+        // UTF-8". The edited file is written back as UTF-8.
+        let content = match std::fs::read(file_path) {
+            Ok(b) => decode_bytes(&b),
             Err(e) => {
                 return ToolResult {
                     tool_use_id: String::new(),
@@ -245,6 +250,28 @@ mod tests {
         }));
         assert!(!result.is_error, "{}", result.content);
         assert_eq!(fs::read_to_string(&path).unwrap(), "goodbye world");
+    }
+
+    #[test]
+    fn test_edit_gb2312_file() {
+        // A GB2312/GBK-encoded file must be editable (transcoded, not rejected).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gb.txt");
+        let (gb_bytes, _, _) =
+            encoding_rs::GBK.encode("你好世界，这是一段中文测试文本。");
+        fs::write(&path, &gb_bytes).unwrap();
+        let tool = EditTool::new();
+        let result = tool.execute(&serde_json::json!({
+            "file_path": path.to_str().unwrap(),
+            "old_string": "你好世界",
+            "new_string": "再见世界"
+        }));
+        assert!(!result.is_error, "{}", result.content);
+        // File is rewritten as UTF-8 with the replacement applied.
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "再见世界，这是一段中文测试文本。"
+        );
     }
 
     #[test]
