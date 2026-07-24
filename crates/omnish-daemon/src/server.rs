@@ -3936,6 +3936,14 @@ fn extract_first_json_array(s: &str) -> Option<&str> {
     None
 }
 
+/// Take the first line of an LLM completion candidate. Ghost text is rendered
+/// on a single line, so any embedded newline is a defect: the LLM sometimes
+/// glues two candidates together with `\n` (issue #654) or appends a trailing
+/// newline (issue #652). Truncating at the first `\n`/`\r` handles both.
+fn first_line(s: &str) -> String {
+    s.split(['\n', '\r']).next().unwrap_or("").to_string()
+}
+
 fn parse_completion_suggestions(
     content: &str,
 ) -> Result<Vec<omnish_protocol::message::CompletionSuggestion>> {
@@ -3952,9 +3960,10 @@ fn parse_completion_suggestions(
     if let Ok(strings) = serde_json::from_str::<Vec<String>>(json_str) {
         let suggestions: Vec<_> = strings
             .into_iter()
-            // Strip trailing newlines the LLM sometimes appends to a candidate
-            // (issue #652); an unwanted \n breaks ghost-text insertion.
-            .map(|s| s.trim_end_matches(['\n', '\r']).to_string())
+            // Keep only the first line; the LLM sometimes joins two candidates
+            // with `\n` (issue #654) or appends a trailing newline (issue #652),
+            // and an embedded \n breaks ghost-text insertion.
+            .map(|s| first_line(&s))
             .filter(|s| !s.is_empty())
             .enumerate()
             .map(|(i, text)| omnish_protocol::message::CompletionSuggestion {
@@ -3976,8 +3985,8 @@ fn parse_completion_suggestions(
         return Ok(raw
             .into_iter()
             .map(|r| omnish_protocol::message::CompletionSuggestion {
-                // Strip trailing newlines (issue #652).
-                text: r.text.trim_end_matches(['\n', '\r']).to_string(),
+                // Keep only the first line (issues #652, #654).
+                text: first_line(&r.text),
                 confidence: r.confidence.clamp(0.0, 1.0),
             })
             .filter(|s| !s.text.is_empty())
@@ -4249,6 +4258,22 @@ mod tests {
         let result = parse_completion_suggestions(obj).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].text, "ls -la");
+    }
+
+    #[test]
+    fn test_parse_completion_suggestions_truncates_embedded_newline() {
+        // Issue #654: LLM sometimes glues two candidates together with `\n`
+        // inside a single string. Only the first line is kept.
+        let input = "[\"scp a.tar.gz eagle4:~/\\nscp a.tar.gz eagle4:~/\"]";
+        let result = parse_completion_suggestions(input).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].text, "scp a.tar.gz eagle4:~/");
+
+        // Object-array format truncates embedded newlines too.
+        let obj = "[{\"text\": \"git commit\\ngit push\", \"confidence\": 0.9}]";
+        let result = parse_completion_suggestions(obj).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].text, "git commit");
     }
 
     #[test]
