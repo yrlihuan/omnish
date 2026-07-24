@@ -4367,6 +4367,21 @@ impl ChatSession {
                                 redraw(&editor, "", false);
                             }
                         }
+                        0x17 => {
+                            // Ctrl-W - delete the word before the cursor
+                            editor.delete_word_back();
+                            has_ghost = false;
+                            ghost_text.clear();
+                            let content = editor.content();
+                            if let Some(g) = self.completer.update(&content) {
+                                ghost_text = g.to_string();
+                                has_ghost = true;
+                                redraw(&editor, &ghost_text, true);
+                            } else {
+                                self.completer.clear();
+                                redraw(&editor, "", false);
+                            }
+                        }
                         0x04 if editor.is_empty() && paste_blocks.borrow().is_empty() => {
                             return None;
                         }

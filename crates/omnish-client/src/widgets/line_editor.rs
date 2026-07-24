@@ -187,6 +187,27 @@ impl LineEditor {
         self.cursor.1 = 0;
     }
 
+    /// Delete the word before the cursor (Ctrl-W): skip preceding whitespace,
+    /// then remove the run of non-whitespace characters. At the start of a line
+    /// (col == 0) it falls back to merging with the previous line.
+    pub fn delete_word_back(&mut self) {
+        let (row, col) = self.cursor;
+        if col == 0 {
+            self.delete_back();
+            return;
+        }
+        let line = &self.lines[row];
+        let mut i = col;
+        while i > 0 && line[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !line[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        self.lines[row].drain(i..col);
+        self.cursor.1 = i;
+    }
+
     pub fn newline(&mut self) {
         let (row, col) = self.cursor;
         let rest = self.lines[row].split_off(col);
@@ -458,6 +479,55 @@ mod tests {
         ed.cursor = (0, 5);
         ed.kill_to_start();
         assert_eq!(ed.content(), " world");
+        assert_eq!(ed.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn test_delete_word_back() {
+        let mut ed = LineEditor::new();
+        ed.set_content("hello world");
+        ed.delete_word_back();
+        assert_eq!(ed.content(), "hello ");
+        assert_eq!(ed.cursor(), (0, 6));
+        ed.delete_word_back();
+        assert_eq!(ed.content(), "");
+        assert_eq!(ed.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn test_delete_word_back_mid_line() {
+        let mut ed = LineEditor::new();
+        ed.set_content("foo bar baz");
+        ed.cursor = (0, 7); // after "bar"
+        ed.delete_word_back();
+        assert_eq!(ed.content(), "foo  baz");
+        assert_eq!(ed.cursor(), (0, 4));
+    }
+
+    #[test]
+    fn test_delete_word_back_trailing_whitespace() {
+        let mut ed = LineEditor::new();
+        ed.set_content("foo   ");
+        ed.delete_word_back();
+        assert_eq!(ed.content(), "");
+        assert_eq!(ed.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn test_delete_word_back_at_line_start_merges() {
+        let mut ed = LineEditor::new();
+        ed.set_content("ab\ncd");
+        ed.cursor = (1, 0);
+        ed.delete_word_back();
+        assert_eq!(ed.content(), "abcd");
+        assert_eq!(ed.cursor(), (0, 2));
+    }
+
+    #[test]
+    fn test_delete_word_back_at_start_noop() {
+        let mut ed = LineEditor::new();
+        ed.delete_word_back();
+        assert_eq!(ed.content(), "");
         assert_eq!(ed.cursor(), (0, 0));
     }
 
