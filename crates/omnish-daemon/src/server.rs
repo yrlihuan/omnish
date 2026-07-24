@@ -2534,6 +2534,12 @@ fn cmd_display(s: impl Into<String>) -> serde_json::Value {
     serde_json::json!({ "display": s.into() })
 }
 
+/// Like `cmd_display` but attaches a machine-readable `status` so the client
+/// can render a localized message instead of the English `display` fallback.
+fn cmd_status(display: impl Into<String>, status: &str) -> serde_json::Value {
+    serde_json::json!({ "display": display.into(), "status": status })
+}
+
 /// Reconstruct structured history entries from stored raw LLM messages.
 ///
 /// Iterates over raw messages and produces a JSON array with typed entries:
@@ -3234,7 +3240,7 @@ async fn handle_conversations_search(
 
     let conversations = conv_mgr.list_conversations();
     if conversations.is_empty() {
-        return cmd_display("No conversations yet. Start a chat with :");
+        return cmd_status("No conversations yet. Start a chat with :", "no_conversations");
     }
 
     // Build the thread block: each thread's id, title, and the user's questions.
@@ -3290,12 +3296,12 @@ async fn handle_conversations_search(
         }
         Err(_) => {
             tracing::warn!("resume search LLM timed out after 45s");
-            return cmd_display("Conversation search timed out. Please try again.");
+            return cmd_status("Conversation search timed out. Please try again.", "timeout");
         }
     };
 
     if matched.is_empty() {
-        return cmd_display("No matching conversation found.");
+        return cmd_status("No matching conversation found.", "no_match");
     }
 
     let locked_set: std::collections::HashSet<String> = {

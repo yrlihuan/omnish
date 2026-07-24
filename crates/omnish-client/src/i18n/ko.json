@@ -145,5 +145,6 @@
   "chat.resume_search_prompt": "찾을 대화를 설명하세요:",
   "chat.resume_searching": "대화 검색 중...(Ctrl-C 취소)",
   "chat.search_cancelled": "검색을 취소했습니다.",
-  "error.resume_search_timed_out": "대화 검색 시간이 초과되었습니다. 다시 시도하세요."
+  "error.resume_search_timed_out": "대화 검색 시간이 초과되었습니다. 다시 시도하세요.",
+  "chat.no_matching_conversation": "일치하는 대화를 찾을 수 없습니다."
 }

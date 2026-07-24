@@ -145,5 +145,6 @@
   "chat.resume_search_prompt": "Describe the conversation to find:",
   "chat.resume_searching": "Searching conversations... (Ctrl-C to cancel)",
   "chat.search_cancelled": "Search cancelled.",
-  "error.resume_search_timed_out": "Conversation search timed out. Please try again."
+  "error.resume_search_timed_out": "Conversation search timed out. Please try again.",
+  "chat.no_matching_conversation": "No matching conversation found."
 }

@@ -145,5 +145,6 @@
   "chat.resume_search_prompt": "Describe la conversación que buscas:",
   "chat.resume_searching": "Buscando conversaciones... (Ctrl-C para cancelar)",
   "chat.search_cancelled": "Búsqueda cancelada.",
-  "error.resume_search_timed_out": "La búsqueda de conversaciones expiró. Inténtalo de nuevo."
+  "error.resume_search_timed_out": "La búsqueda de conversaciones expiró. Inténtalo de nuevo.",
+  "chat.no_matching_conversation": "No se encontró ninguna conversación coincidente."
 }

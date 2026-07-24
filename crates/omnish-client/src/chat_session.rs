@@ -2634,8 +2634,22 @@ impl ChatSession {
                     .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
                     .unwrap_or_default();
                 if ids.is_empty() {
-                    // Daemon returned a plain "no match" (or empty) message.
-                    write_stdout(&display::render_response(&super::cmd_display_str(&json)));
+                    // No matches. Localize via the daemon's machine-readable
+                    // `status`, falling back to its English `display` text.
+                    match json.get("status").and_then(|v| v.as_str()) {
+                        Some("no_match") => {
+                            write_stdout(&display::render_response(crate::i18n::t("chat.no_matching_conversation")));
+                        }
+                        Some("no_conversations") => {
+                            write_stdout(&display::render_response(crate::i18n::t("error.no_conversations_to_resume")));
+                        }
+                        Some("timeout") => {
+                            write_stdout(&display::render_error(crate::i18n::t("error.resume_search_timed_out")));
+                        }
+                        _ => {
+                            write_stdout(&display::render_response(&super::cmd_display_str(&json)));
+                        }
+                    }
                     return None;
                 }
                 self.cached_thread_ids = ids.clone();

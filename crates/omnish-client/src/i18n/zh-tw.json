@@ -145,5 +145,6 @@
   "chat.resume_search_prompt": "描述想要尋找的對話：",
   "chat.resume_searching": "正在搜尋對話...(Ctrl-C 取消)",
   "chat.search_cancelled": "已取消搜尋。",
-  "error.resume_search_timed_out": "對話搜尋逾時，請重試。"
+  "error.resume_search_timed_out": "對話搜尋逾時，請重試。",
+  "chat.no_matching_conversation": "找不到符合的對話。"
 }

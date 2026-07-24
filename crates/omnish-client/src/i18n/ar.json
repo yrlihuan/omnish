@@ -145,5 +145,6 @@
   "chat.resume_search_prompt": "صف المحادثة التي تبحث عنها:",
   "chat.resume_searching": "جارٍ البحث في المحادثات... (Ctrl-C للإلغاء)",
   "chat.search_cancelled": "تم إلغاء البحث.",
-  "error.resume_search_timed_out": "انتهت مهلة البحث في المحادثة. يرجى المحاولة مرة أخرى."
+  "error.resume_search_timed_out": "انتهت مهلة البحث في المحادثة. يرجى المحاولة مرة أخرى.",
+  "chat.no_matching_conversation": "لم يتم العثور على محادثة مطابقة."
 }

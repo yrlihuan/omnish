@@ -145,5 +145,6 @@
   "chat.resume_search_prompt": "探したい会話を説明してください：",
   "chat.resume_searching": "会話を検索中...(Ctrl-C でキャンセル)",
   "chat.search_cancelled": "検索をキャンセルしました。",
-  "error.resume_search_timed_out": "会話検索がタイムアウトしました。もう一度お試しください。"
+  "error.resume_search_timed_out": "会話検索がタイムアウトしました。もう一度お試しください。",
+  "chat.no_matching_conversation": "一致する会話が見つかりませんでした。"
 }
