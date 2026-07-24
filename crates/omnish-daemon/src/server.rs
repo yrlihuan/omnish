@@ -3168,6 +3168,28 @@ async fn format_conversations_json(
     })
 }
 
+/// Bound a user question for the `/resume ?` prompt: keep at most 3 lines,
+/// each capped at 200 chars, eliding the remainder with "..." so a large
+/// pasted block cannot dominate the payload.
+fn truncate_question(q: &str) -> String {
+    let mut lines: Vec<String> = q
+        .lines()
+        .take(3)
+        .map(|l| {
+            if l.chars().count() > 200 {
+                let s: String = l.chars().take(197).collect();
+                format!("{}...", s)
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+    if q.lines().count() > 3 {
+        lines.push("...".to_string());
+    }
+    lines.join("\n  ")
+}
+
 /// Parse the LLM's `/resume ?` search reply into `(thread_id, reason)` pairs.
 /// Keeps the LLM's order, drops unknown thread_ids and duplicates. Any
 /// malformed output yields an empty result (treated as "no match").
@@ -3227,10 +3249,9 @@ async fn handle_conversations_search(
             if q.is_empty() {
                 continue;
             }
-            // Collapse newlines and cap each question so a pasted blob cannot
-            // dominate the payload.
-            let q: String = q.replace('\n', " ").chars().take(300).collect();
-            threads_block.push_str(&format!("  Q: {}\n", q));
+            // Keep questions readable but bound pasted blobs: at most 3 lines
+            // (each capped), rest elided with "...".
+            threads_block.push_str(&format!("  Q: {}\n", truncate_question(q)));
         }
         threads_block.push('\n');
         valid.insert(tid.clone());
@@ -3253,11 +3274,23 @@ async fn handle_conversations_search(
         extra_messages: vec![],
     };
 
-    let matched = match llm_backend.complete(&req).await {
-        Ok(resp) => parse_resume_search(&resp.text(), &valid),
-        Err(e) => {
+    // Bound the LLM call: the remote can stall, and reqwest has no request
+    // timeout, so a hung connection would otherwise block forever. The timeout
+    // aborts the in-flight request when it fires.
+    let matched = match tokio::time::timeout(
+        std::time::Duration::from_secs(45),
+        llm_backend.complete(&req),
+    )
+    .await
+    {
+        Ok(Ok(resp)) => parse_resume_search(&resp.text(), &valid),
+        Ok(Err(e)) => {
             tracing::warn!("resume search LLM failed: {}", e);
             Vec::new()
+        }
+        Err(_) => {
+            tracing::warn!("resume search LLM timed out after 45s");
+            return cmd_display("Conversation search timed out. Please try again.");
         }
     };
 
@@ -4152,6 +4185,20 @@ mod tests {
     fn test_parse_completion_suggestions_empty() {
         let result = parse_completion_suggestions("[]").unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_truncate_question() {
+        // Short single line unchanged.
+        assert_eq!(truncate_question("deploy the app"), "deploy the app");
+        // More than 3 lines -> first 3 kept, rest elided.
+        let q = "line1\nline2\nline3\nline4\nline5";
+        assert_eq!(truncate_question(q), "line1\n  line2\n  line3\n  ...");
+        // Over-long single line capped at 200 chars with ellipsis.
+        let long = "x".repeat(500);
+        let out = truncate_question(&long);
+        assert_eq!(out.chars().count(), 200);
+        assert!(out.ends_with("..."));
     }
 
     #[test]

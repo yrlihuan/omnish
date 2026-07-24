@@ -2583,7 +2583,7 @@ impl ChatSession {
     /// asks the LLM which threads match, and show the matches (LLM order) in
     /// the picker. Returns the selected thread_id, or None on empty/cancel.
     async fn show_resume_search_picker(&mut self, description: &str, session_id: &str, rpc: &RpcClient) -> Option<String> {
-        write_stdout("Searching conversations...\r\n");
+        write_stdout("Searching conversations... (Ctrl-C to cancel)\r\n");
         let rid = Uuid::new_v4().to_string()[..8].to_string();
         let req = Message::Request(Request {
             request_id: rid.clone(),
@@ -2591,7 +2591,38 @@ impl ChatSession {
             query: format!("__cmd:conversations search {}", description),
             scope: RequestScope::AllSessions,
         });
-        match rpc.call(req).await {
+
+        // The daemon runs an LLM call that can stall; race the request against
+        // a Ctrl-C signal and a hard timeout so the UI never freezes.
+        let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        tokio::task::spawn_blocking(move || {
+            if wait_for_ctrl_c(stop_rx) {
+                let _ = cancel_tx.send(true);
+            }
+        });
+        let raced = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            tokio::select! {
+                r = rpc.call(req) => Some(r),
+                _ = watch_true(&mut cancel_rx) => None,
+            }
+        })
+        .await;
+        let _ = stop_tx.send(()); // stop the Ctrl-C watcher
+
+        let call_result = match raced {
+            Err(_) => {
+                write_stdout(&display::render_error("Conversation search timed out. Please try again."));
+                return None;
+            }
+            Ok(None) => {
+                write_stdout(&display::render_response("Search cancelled."));
+                return None;
+            }
+            Ok(Some(r)) => r,
+        };
+
+        match call_result {
             Ok(Message::Response(resp)) if resp.request_id == rid => {
                 let Some(json) = super::parse_cmd_response(&resp.content) else {
                     write_stdout(&display::render_error(crate::i18n::t("error.failed_list_conversations")));
@@ -4615,6 +4646,18 @@ fn parse_key_after_esc(stdin_fd: i32) -> Option<KeyEvent> {
         ([b'2', b'0', b'0'], b'~') => Some(KeyEvent::PasteStart),
         ([b'2', b'0', b'1'], b'~') => Some(KeyEvent::PasteEnd),
         _ => None,
+    }
+}
+
+/// Resolve once a watch channel becomes `true` (used to await a Ctrl-C signal).
+async fn watch_true(rx: &mut tokio::sync::watch::Receiver<bool>) {
+    loop {
+        if *rx.borrow() {
+            return;
+        }
+        if rx.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
     }
 }
 
