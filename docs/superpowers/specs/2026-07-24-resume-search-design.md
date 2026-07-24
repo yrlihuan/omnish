@@ -4,8 +4,9 @@
 
 Add `/resume ?` to the chat client. It prompts the user for a free-text
 description, then uses the LLM to search across all conversation threads
-(all hosts) and returns every relevant thread, sorted by confidence, in the
-existing resume picker with a per-entry relevance reason.
+(all hosts) and returns the threads it considers relevant, in the LLM's own
+relevance order, in the existing resume picker with a per-entry relevance
+reason.
 
 ## Current behavior (baseline)
 
@@ -34,9 +35,9 @@ state but has no standalone blocking driver yet.
    empty submission cancels (returns to the chat prompt, no request sent).
 3. The client sends the description to the daemon and receives a ranked list
    of matching threads with reasons.
-4. The client shows all matches in the resume picker, in confidence order,
-   each annotated with its short relevance reason. Empty result -> a
-   "no matching conversation" message, no picker.
+4. The client shows all matches in the resume picker, in the order the LLM
+   returned them, each annotated with its short relevance reason. Empty
+   result -> a "no matching conversation" message, no picker.
 5. Selecting an entry resumes it via the existing lock-aware
    `handle_resume_tid` path.
 
@@ -89,13 +90,12 @@ Handler steps:
 3. Build a single LLM request (`UseCase::Analysis`):
    - System/prompt instructs: given the user's description and a numbered list
      of threads (id + summary + that thread's user questions), return a JSON
-     array of every relevant thread as
-     `[{"thread_id": "...", "confidence": 0.0-1.0, "reason": "<short>"}]`.
-     Omit irrelevant threads. Return `[]` if none match.
+     array of only the relevant threads, ordered most-relevant first, as
+     `[{"thread_id": "...", "reason": "<short>"}]`. Omit irrelevant threads.
+     Return `[]` if none match.
 4. Parse the JSON robustly (reuse the `extract_first_json_array` approach from
-   the completion parser). Drop entries whose `thread_id` is unknown or whose
-   `confidence` is out of range.
-5. Sort by `confidence` descending.
+   the completion parser). Drop entries whose `thread_id` is unknown.
+5. Preserve the LLM's order (no re-sorting).
 6. Return `{thread_ids: [...], reasons: [...], locked_threads: [...], display: ...}`
    in the same envelope the existing `conversations` command produces, so the
    client picker rendering path is reused.
@@ -112,7 +112,7 @@ strict JSON output contract above.
 /resume ?  ->  prompt_line (client)  ->  description
    -> __cmd:conversations search <description>  (client -> daemon)
    -> gather user questions per thread  ->  LLM ranking call
-   -> parse + sort by confidence  ->  {thread_ids, reasons, locked_threads, display}
+   -> parse (keep LLM order)  ->  {thread_ids, reasons, locked_threads, display}
    -> picker with reasons (client)  ->  handle_resume_tid
 ```
 
@@ -127,9 +127,9 @@ strict JSON output contract above.
 
 ## Testing
 
-- Daemon: unit-test the search-response parser/sorter with a mocked LLM
-  backend (from_single): relevant subset returned, confidence sorting,
-  malformed JSON -> empty, unknown thread_id dropped.
+- Daemon: unit-test the search-response parser with a mocked LLM backend
+  (from_single): relevant subset returned in LLM order, malformed JSON ->
+  empty, unknown thread_id dropped.
 - Client: unit-test `prompt_line` byte handling (printable, backspace, Enter,
   ESC) following the `line_editor` test style; test the `handle_resume`
   argument parsing for `?` and `? <inline>`.
@@ -139,5 +139,6 @@ strict JSON output contract above.
 
 - No keyword prefilter or embeddings; single LLM call over all threads (user
   chose precision over cost).
-- No fixed result cap; the LLM decides relevance, daemon sorts by confidence.
+- No fixed result cap and no confidence score; the LLM returns only the
+  threads it deems relevant, in its own order, and the daemon preserves it.
 - No changes to `/resume`, `/resume all`, `/resume N`, or the `::` shortcut.
