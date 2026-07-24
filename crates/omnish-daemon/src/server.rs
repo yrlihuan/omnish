@@ -2951,6 +2951,13 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
                 .unwrap_or(10);
             format_thread_stats(conv_mgr, active_threads, &req.session_id, limit).await
         }
+        s if s == "conversations search" || s.starts_with("conversations search ") => {
+            let desc = s
+                .strip_prefix("conversations search")
+                .map(|a| a.trim())
+                .unwrap_or("");
+            handle_conversations_search(conv_mgr, active_threads, llm_backend, desc).await
+        }
         s if s == "conversations" || s.starts_with("conversations ") => {
             let args: Vec<&str> = s.strip_prefix("conversations")
                 .map(|a| a.split_whitespace().collect())
@@ -3154,6 +3161,150 @@ async fn format_conversations_json(
     if total > thread_ids.len() {
         output.push_str(&format!("  ({} total, showing {}. Use /thread list N to see more)\n", total, thread_ids.len()));
     }
+    serde_json::json!({
+        "display": output,
+        "thread_ids": thread_ids,
+        "locked_threads": locked_threads,
+    })
+}
+
+/// Parse the LLM's `/resume ?` search reply into `(thread_id, reason)` pairs.
+/// Keeps the LLM's order, drops unknown thread_ids and duplicates. Any
+/// malformed output yields an empty result (treated as "no match").
+fn parse_resume_search(
+    content: &str,
+    valid: &std::collections::HashSet<String>,
+) -> Vec<(String, String)> {
+    let Some(json_str) = extract_first_json_array(content.trim()) else {
+        return Vec::new();
+    };
+
+    #[derive(serde::Deserialize)]
+    struct Raw {
+        thread_id: String,
+        #[serde(default)]
+        reason: String,
+    }
+
+    let Ok(raw) = serde_json::from_str::<Vec<Raw>>(json_str) else {
+        return Vec::new();
+    };
+
+    let mut seen = std::collections::HashSet::new();
+    raw.into_iter()
+        .filter(|r| valid.contains(&r.thread_id) && seen.insert(r.thread_id.clone()))
+        .map(|r| (r.thread_id, r.reason))
+        .collect()
+}
+
+/// Handle `__cmd:conversations search <description>` (the `/resume ?` feature):
+/// ask the LLM which of all threads (all hosts) match the description, and
+/// return the matches (LLM order) in the same envelope the picker consumes.
+async fn handle_conversations_search(
+    conv_mgr: &Arc<ConversationManager>,
+    active_threads: &ActiveThreads,
+    llm_backend: &Arc<MultiBackend>,
+    description: &str,
+) -> serde_json::Value {
+    if description.is_empty() {
+        return cmd_display("Please provide a description to search for.");
+    }
+
+    let conversations = conv_mgr.list_conversations();
+    if conversations.is_empty() {
+        return cmd_display("No conversations yet. Start a chat with :");
+    }
+
+    // Build the thread block: each thread's id, title, and the user's questions.
+    let mut threads_block = String::new();
+    let mut valid: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (tid, _modified, _count, _last_q) in &conversations {
+        let meta = conv_mgr.load_meta(tid);
+        let title = meta.summary.as_deref().unwrap_or("untitled");
+        threads_block.push_str(&format!("[{}] {}\n", tid, title));
+        for (user_q, _assistant) in conv_mgr.get_all_exchanges(tid) {
+            let q = user_q.trim();
+            if q.is_empty() {
+                continue;
+            }
+            // Collapse newlines and cap each question so a pasted blob cannot
+            // dominate the payload.
+            let q: String = q.replace('\n', " ").chars().take(300).collect();
+            threads_block.push_str(&format!("  Q: {}\n", q));
+        }
+        threads_block.push('\n');
+        valid.insert(tid.clone());
+    }
+
+    let query = format!(
+        "{}\n\nThe user is looking for: {}",
+        omnish_llm::template::RESUME_SEARCH_PROMPT, description
+    );
+    let req = LlmRequest {
+        context: format!("<threads>\n{}</threads>", threads_block),
+        query: Some(query),
+        trigger: TriggerType::Manual,
+        session_ids: vec![],
+        use_case: UseCase::Analysis,
+        max_content_chars: llm_backend.get_max_content_chars(UseCase::Analysis),
+        system_prompt: None,
+        enable_thinking: Some(false),
+        tools: vec![],
+        extra_messages: vec![],
+    };
+
+    let matched = match llm_backend.complete(&req).await {
+        Ok(resp) => parse_resume_search(&resp.text(), &valid),
+        Err(e) => {
+            tracing::warn!("resume search LLM failed: {}", e);
+            Vec::new()
+        }
+    };
+
+    if matched.is_empty() {
+        return cmd_display("No matching conversation found.");
+    }
+
+    let locked_set: std::collections::HashSet<String> = {
+        let threads = active_threads.lock().await;
+        threads.keys().cloned().collect()
+    };
+
+    let truncate = |s: &str, max: usize| -> String {
+        let one = s.replace('\n', " ");
+        if one.chars().count() > max {
+            let end: String = one.chars().take(max - 3).collect();
+            format!("{}...", end)
+        } else {
+            one
+        }
+    };
+
+    let mut output = String::from("Matching conversations:\n");
+    let mut thread_ids = Vec::new();
+    let mut locked_threads = Vec::new();
+    for (i, (tid, reason)) in matched.iter().enumerate() {
+        let meta = conv_mgr.load_meta(tid);
+        let (modified, turns) = conversations
+            .iter()
+            .find(|(t, _, _, _)| t == tid)
+            .map(|(_, m, c, _)| (*m, *c))
+            .unwrap_or((std::time::SystemTime::UNIX_EPOCH, 0));
+        let time_ago = format_relative_time(modified);
+        let title = meta.summary.as_deref().unwrap_or("untitled");
+        output.push_str(&format!(
+            "  [{}] {} | @{} | {} turns | {} | {}\n",
+            i + 1,
+            time_ago,
+            short_host(meta.host.as_deref()),
+            turns,
+            truncate(title, 30),
+            truncate(reason, 40),
+        ));
+        thread_ids.push(tid.clone());
+        locked_threads.push(locked_set.contains(tid));
+    }
+
     serde_json::json!({
         "display": output,
         "thread_ids": thread_ids,
@@ -4001,6 +4152,34 @@ mod tests {
     fn test_parse_completion_suggestions_empty() {
         let result = parse_completion_suggestions("[]").unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_resume_search() {
+        let valid: std::collections::HashSet<String> =
+            ["t1", "t2", "t3"].iter().map(|s| s.to_string()).collect();
+
+        // Relevant subset returned in LLM order, unknown id dropped.
+        let content = r#"prose [{"thread_id":"t2","reason":"deploy pipeline"},{"thread_id":"t1","reason":"docker build"},{"thread_id":"nope","reason":"x"}]"#;
+        let result = parse_resume_search(content, &valid);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], ("t2".to_string(), "deploy pipeline".to_string()));
+        assert_eq!(result[1], ("t1".to_string(), "docker build".to_string()));
+
+        // Duplicate thread_id kept once (first occurrence).
+        let dup = r#"[{"thread_id":"t1","reason":"a"},{"thread_id":"t1","reason":"b"}]"#;
+        let result = parse_resume_search(dup, &valid);
+        assert_eq!(result, vec![("t1".to_string(), "a".to_string())]);
+
+        // Missing reason defaults to empty.
+        let no_reason = r#"[{"thread_id":"t3"}]"#;
+        let result = parse_resume_search(no_reason, &valid);
+        assert_eq!(result, vec![("t3".to_string(), String::new())]);
+
+        // Empty array and malformed output -> no matches.
+        assert!(parse_resume_search("[]", &valid).is_empty());
+        assert!(parse_resume_search("not json", &valid).is_empty());
+        assert!(parse_resume_search(r#"{"thread_id":"t1"}"#, &valid).is_empty());
     }
 
     #[test]

@@ -2423,6 +2423,27 @@ impl ChatSession {
         // Argument after /resume.  "" and "all" open picker (current host vs all hosts);
         // a numeric arg picks from the last-fetched cache.
         let rest = trimmed.strip_prefix("/resume").map(str::trim).unwrap_or("");
+
+        // `/resume ? [description]` - LLM semantic search across all threads.
+        // With no inline description, prompt the user for one.
+        if rest == "?" || rest.starts_with("? ") {
+            let inline = rest.strip_prefix('?').map(str::trim).unwrap_or("");
+            let description = if inline.is_empty() {
+                match widgets::line_prompt::prompt_line("Describe the conversation to find:") {
+                    Some(d) => d,
+                    None => return false,
+                }
+            } else {
+                inline.to_string()
+            };
+            let tid = self.show_resume_search_picker(&description, session_id, rpc).await;
+            return if let Some(tid) = tid {
+                self.handle_resume_tid(&tid, session_id, rpc).await
+            } else {
+                false
+            };
+        }
+
         let tid: Option<String> = if rest.is_empty() || rest == "all" {
             self.show_resume_picker(session_id, rpc, rest == "all").await
         } else {
@@ -2549,6 +2570,66 @@ impl ChatSession {
                 } else {
                     write_stdout(&display::render_error(crate::i18n::t("error.no_conversations_to_resume")));
                     None
+                }
+            }
+            _ => {
+                write_stdout(&display::render_error(crate::i18n::t("error.failed_list_conversations")));
+                None
+            }
+        }
+    }
+
+    /// Semantic `/resume ?` search: send the description to the daemon, which
+    /// asks the LLM which threads match, and show the matches (LLM order) in
+    /// the picker. Returns the selected thread_id, or None on empty/cancel.
+    async fn show_resume_search_picker(&mut self, description: &str, session_id: &str, rpc: &RpcClient) -> Option<String> {
+        write_stdout("Searching conversations...\r\n");
+        let rid = Uuid::new_v4().to_string()[..8].to_string();
+        let req = Message::Request(Request {
+            request_id: rid.clone(),
+            session_id: session_id.to_string(),
+            query: format!("__cmd:conversations search {}", description),
+            scope: RequestScope::AllSessions,
+        });
+        match rpc.call(req).await {
+            Ok(Message::Response(resp)) if resp.request_id == rid => {
+                let Some(json) = super::parse_cmd_response(&resp.content) else {
+                    write_stdout(&display::render_error(crate::i18n::t("error.failed_list_conversations")));
+                    return None;
+                };
+                let ids: Vec<String> = json
+                    .get("thread_ids")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                if ids.is_empty() {
+                    // Daemon returned a plain "no match" (or empty) message.
+                    write_stdout(&display::render_response(&super::cmd_display_str(&json)));
+                    return None;
+                }
+                self.cached_thread_ids = ids.clone();
+                let display_str = super::cmd_display_str(&json);
+                let item_strings: Vec<String> = display_str
+                    .lines()
+                    .filter(|l| l.trim_start().starts_with('['))
+                    .map(|l| l.trim_start().to_string())
+                    .collect();
+                let items: Vec<&str> = item_strings.iter().map(|s| s.as_str()).collect();
+                if items.is_empty() {
+                    write_stdout(&display::render_response(&display_str));
+                    return None;
+                }
+                use widgets::picker::DisabledIcon;
+                let disabled: Vec<Option<DisabledIcon>> = json
+                    .get("locked_threads")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().map(|v| {
+                        if v.as_bool().unwrap_or(false) { Some(DisabledIcon::Key) } else { None }
+                    }).collect())
+                    .unwrap_or_else(|| vec![None; items.len()]);
+                match widgets::picker::pick_one_with_disabled("Resume conversation:", &items, &disabled) {
+                    Some(idx) if idx < ids.len() => Some(ids[idx].clone()),
+                    _ => None,
                 }
             }
             _ => {

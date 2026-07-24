@@ -86,6 +86,19 @@ pub const THREAD_TITLE_WORD_PROMPT: &str =
      The word MUST be English, even if the summary uses another language. \
      No quotes, no punctuation, no explanation - just the single word.";
 
+/// The `/resume ?` conversation-search prompt (English base). The caller
+/// supplies `<threads>` (each thread's id, title, and the user's questions)
+/// as context and appends the user's description to this instruction.
+pub const RESUME_SEARCH_PROMPT: &str =
+    "Below in <threads> is a list of the user's past conversation threads. \
+     Each thread has a thread id, a title, and the questions the user asked in it. \
+     The user wants to resume one and describes what they are looking for. \
+     Identify which threads are relevant to that description. \
+     Reply ONLY with a JSON array of the relevant threads, most relevant first: \
+     [{\"thread_id\": \"<id>\", \"reason\": \"<short reason, under 10 words>\"}]. \
+     Include only genuinely relevant threads; return [] if none match. \
+     Do not output anything except the JSON array.";
+
 /// Append a language instruction to a prompt.
 pub fn append_language_instruction(prompt: &str, language: &str) -> String {
     let instruction = match language {

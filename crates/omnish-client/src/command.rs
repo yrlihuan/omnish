@@ -367,6 +367,7 @@ const COMMANDS: &[CommandEntry] = &[
 pub const CHAT_ONLY_COMMANDS: &[&str] = &[
     "/resume",
     "/resume all",
+    "/resume ?",
     "/model",
     "/compact",
     "/thread sandbox",
