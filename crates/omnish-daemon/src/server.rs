@@ -3762,6 +3762,9 @@ fn parse_completion_suggestions(
     if let Ok(strings) = serde_json::from_str::<Vec<String>>(json_str) {
         let suggestions: Vec<_> = strings
             .into_iter()
+            // Strip trailing newlines the LLM sometimes appends to a candidate
+            // (issue #652); an unwanted \n breaks ghost-text insertion.
+            .map(|s| s.trim_end_matches(['\n', '\r']).to_string())
             .filter(|s| !s.is_empty())
             .enumerate()
             .map(|(i, text)| omnish_protocol::message::CompletionSuggestion {
@@ -3783,9 +3786,11 @@ fn parse_completion_suggestions(
         return Ok(raw
             .into_iter()
             .map(|r| omnish_protocol::message::CompletionSuggestion {
-                text: r.text,
+                // Strip trailing newlines (issue #652).
+                text: r.text.trim_end_matches(['\n', '\r']).to_string(),
                 confidence: r.confidence.clamp(0.0, 1.0),
             })
+            .filter(|s| !s.text.is_empty())
             .collect());
     }
 
@@ -3996,6 +4001,22 @@ mod tests {
     fn test_parse_completion_suggestions_empty() {
         let result = parse_completion_suggestions("[]").unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_completion_suggestions_strips_trailing_newline() {
+        // Issue #652: LLM sometimes appends a trailing newline to a candidate.
+        let input = "[\"git status\\n\", \"git stash\\r\\n\"]";
+        let result = parse_completion_suggestions(input).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].text, "git status");
+        assert_eq!(result[1].text, "git stash");
+
+        // Object-array format is stripped too, and a newline-only candidate is dropped.
+        let obj = "[{\"text\": \"ls -la\\n\", \"confidence\": 0.9}, {\"text\": \"\\n\", \"confidence\": 0.5}]";
+        let result = parse_completion_suggestions(obj).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].text, "ls -la");
     }
 
     #[test]
