@@ -141,5 +141,9 @@
   "command.help.thread_rename": "重新命名目前執行緒（參數為空時清除）",
   "command.help.resume": "恢復之前的對話執行緒",
   "command.help.model": "切換 LLM 模型",
-  "command.help.compact": "壓縮當前線程中的大體積工具結果"
+  "command.help.compact": "壓縮當前線程中的大體積工具結果",
+  "chat.resume_search_prompt": "描述想要尋找的對話：",
+  "chat.resume_searching": "正在搜尋對話...(Ctrl-C 取消)",
+  "chat.search_cancelled": "已取消搜尋。",
+  "error.resume_search_timed_out": "對話搜尋逾時，請重試。"
 }

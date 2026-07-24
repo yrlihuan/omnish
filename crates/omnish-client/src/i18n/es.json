@@ -141,5 +141,9 @@
   "command.help.thread_rename": "Renombrar hilo actual (vacío para limpiar)",
   "command.help.resume": "Reanudar un hilo de conversación anterior",
   "command.help.model": "Cambiar de modelo LLM",
-  "command.help.compact": "Compactar resultados de herramientas voluminosos del hilo actual"
+  "command.help.compact": "Compactar resultados de herramientas voluminosos del hilo actual",
+  "chat.resume_search_prompt": "Describe la conversación que buscas:",
+  "chat.resume_searching": "Buscando conversaciones... (Ctrl-C para cancelar)",
+  "chat.search_cancelled": "Búsqueda cancelada.",
+  "error.resume_search_timed_out": "La búsqueda de conversaciones expiró. Inténtalo de nuevo."
 }

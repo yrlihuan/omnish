@@ -2429,7 +2429,7 @@ impl ChatSession {
         if rest == "?" || rest.starts_with("? ") {
             let inline = rest.strip_prefix('?').map(str::trim).unwrap_or("");
             let description = if inline.is_empty() {
-                match widgets::line_prompt::prompt_line("Describe the conversation to find:") {
+                match widgets::line_prompt::prompt_line(crate::i18n::t("chat.resume_search_prompt")) {
                     Some(d) => d,
                     None => return false,
                 }
@@ -2583,7 +2583,7 @@ impl ChatSession {
     /// asks the LLM which threads match, and show the matches (LLM order) in
     /// the picker. Returns the selected thread_id, or None on empty/cancel.
     async fn show_resume_search_picker(&mut self, description: &str, session_id: &str, rpc: &RpcClient) -> Option<String> {
-        write_stdout("Searching conversations... (Ctrl-C to cancel)\r\n");
+        write_stdout(&format!("{}\r\n", crate::i18n::t("chat.resume_searching")));
         let rid = Uuid::new_v4().to_string()[..8].to_string();
         let req = Message::Request(Request {
             request_id: rid.clone(),
@@ -2612,11 +2612,11 @@ impl ChatSession {
 
         let call_result = match raced {
             Err(_) => {
-                write_stdout(&display::render_error("Conversation search timed out. Please try again."));
+                write_stdout(&display::render_error(crate::i18n::t("error.resume_search_timed_out")));
                 return None;
             }
             Ok(None) => {
-                write_stdout(&display::render_response("Search cancelled."));
+                write_stdout(&display::render_response(crate::i18n::t("chat.search_cancelled")));
                 return None;
             }
             Ok(Some(r)) => r,
