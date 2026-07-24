@@ -87,7 +87,7 @@ Handler steps:
    all-hosts `conversations` listing).
 2. For each thread, load `get_all_exchanges` and collect the user questions
    (the user side of each exchange). Pair with `thread_id` and `summary`.
-3. Build a single LLM request (`UseCase::Analysis`):
+3. Build a single LLM request (`UseCase::Summarize`):
    - System/prompt instructs: given the user's description and a numbered list
      of threads (id + summary + that thread's user questions), return a JSON
      array of only the relevant threads, ordered most-relevant first, as
