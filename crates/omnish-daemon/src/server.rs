@@ -2302,6 +2302,48 @@ async fn run_agent_loop(
                     iteration,
                     state.cm.thread_id
                 );
+
+                // Guard against an empty visible answer. This happens when the
+                // model returns thinking but no text - most commonly when the
+                // API truncates the response during the thinking phase
+                // (stop_reason == MaxTokens, finish_reason "length"), leaving
+                // only a Thinking block. Persisting such a turn would store an
+                // assistant message whose only content is the thinking block;
+                // for OpenAI-compat backends (DeepSeek) that serializes to
+                // `content: null`, which the API rejects, permanently bricking
+                // the thread. Degrade to a sendable `<event>` marker instead.
+                if text.trim().is_empty() {
+                    let (marker, notice) = if response.stop_reason == StopReason::MaxTokens {
+                        (
+                            "<event>response truncated (max tokens)</event>",
+                            "The response was truncated (output token limit reached). Send another message to continue.",
+                        )
+                    } else {
+                        (
+                            "<event>empty response</event>",
+                            "The AI returned an empty response. Send another message to continue.",
+                        )
+                    };
+                    tracing::warn!(
+                        "Chat LLM returned empty text (stop_reason={:?}, has_thinking={}, thread={}); persisting placeholder",
+                        response.stop_reason,
+                        response.content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. })),
+                        state.cm.thread_id
+                    );
+                    state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage::new(
+                        serde_json::json!({ "role": "assistant", "content": marker }),
+                        omnish_llm::backend::CacheHint::None,
+                    ));
+                    persist_unsaved(&mut state, conv_mgr, &[]);
+                    update_thread_usage(conv_mgr, &state.cm.thread_id, &state.last_response_usage, &state.cumulative_usage, &state.last_model);
+                    let _ = tx.send(Message::ChatResponse(ChatResponse {
+                        request_id: state.cm.request_id.clone(),
+                        thread_id: state.cm.thread_id.clone(),
+                        content: notice.to_string(),
+                    })).await;
+                    return;
+                }
+
                 // Push final assistant response preserving original block order
                 let has_thinking = response.content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. }));
                 let assistant_msg = if has_thinking {

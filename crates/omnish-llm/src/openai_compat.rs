@@ -241,8 +241,16 @@ fn convert_extra_messages(extra: &[serde_json::Value]) -> Vec<serde_json::Value>
                     m.insert("role".into(), serde_json::json!("assistant"));
                     if !text_parts.is_empty() {
                         m.insert("content".into(), serde_json::json!(text_parts.join("\n")));
-                    } else {
+                    } else if !tool_calls.is_empty() {
+                        // Legal: assistant content may be null when tool_calls
+                        // carry the turn.
                         m.insert("content".into(), serde_json::Value::Null);
+                    } else {
+                        // No text AND no tool_calls (e.g. a thinking-only turn
+                        // truncated by MaxTokens). `content: null`/empty is
+                        // rejected by DeepSeek and bricks the thread, so emit a
+                        // non-empty placeholder to keep the message sendable.
+                        m.insert("content".into(), serde_json::json!("<event>empty response</event>"));
                     }
                     if !thinking_parts.is_empty() {
                         m.insert("reasoning_content".into(), serde_json::json!(thinking_parts.join("\n")));
@@ -658,6 +666,49 @@ mod tests {
 
         // Plain assistant message passes through
         assert_eq!(converted[3]["role"], "assistant");
+    }
+
+    #[test]
+    fn test_convert_thinking_only_assistant_not_null_content() {
+        // A thinking-only assistant turn (e.g. MaxTokens truncated the response
+        // during the thinking phase) must NOT serialize to `content: null`,
+        // which DeepSeek rejects and which permanently bricks the thread.
+        let extra = vec![
+            serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "Let me reason about this..."}
+                ]
+            }),
+        ];
+        let converted = convert_extra_messages(&extra);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "assistant");
+        // content is a non-empty string placeholder, never null.
+        assert!(converted[0]["content"].is_string());
+        assert!(!converted[0]["content"].as_str().unwrap().is_empty());
+        assert!(!converted[0].as_object().unwrap().contains_key("tool_calls"));
+        // Thinking is still echoed as reasoning_content for round-tripping.
+        assert_eq!(converted[0]["reasoning_content"], "Let me reason about this...");
+    }
+
+    #[test]
+    fn test_convert_thinking_plus_tool_use_keeps_null_content() {
+        // When tool_calls carry the turn, `content: null` is legal and should
+        // be preserved (no text was produced alongside the tool call).
+        let extra = vec![
+            serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "I should list files."},
+                    {"type": "tool_use", "id": "call_1", "name": "command_query", "input": {}}
+                ]
+            }),
+        ];
+        let converted = convert_extra_messages(&extra);
+        assert_eq!(converted.len(), 1);
+        assert!(converted[0]["content"].is_null());
+        assert!(converted[0]["tool_calls"].is_array());
     }
 
     #[test]
