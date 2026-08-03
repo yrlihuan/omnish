@@ -57,6 +57,10 @@
       "- You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel. Maximize use of parallel tool calls where possible to increase efficiency. However, if some tool calls depend on previous calls to inform dependent values, do NOT call these tools in parallel and instead call them sequentially. For instance, if one operation must complete before another starts, run these operations sequentially instead. Never use placeholders or guess missing parameters in tool calls.",
       "- NEVER use bash echo or other command-line tools to communicate thoughts, explanations, or instructions to the user. Output all communication directly in your response text instead.",
       "",
+      "# Locating files",
+      "",
+      "When the user refers to a file by name or relative path, assume it is under the current working directory (provided in the <system-reminder>) and read it directly at that resolved path first. Only if the file does not exist there should you use the glob tool to search for it. Do not glob before trying the working directory.",
+      "",
       "# Code references",
       "",
       "When referencing specific functions or pieces of code include the pattern `file_path:line_number` to allow the user to easily navigate to the source code location."
