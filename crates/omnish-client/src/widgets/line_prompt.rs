@@ -18,22 +18,6 @@ fn utf8_len(lead: u8) -> usize {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::utf8_len;
-
-    #[test]
-    fn test_utf8_len() {
-        assert_eq!(utf8_len(b'a'), 1); // ASCII
-        // Multi-byte lead bytes (e.g. Chinese "查" = e6 9f a5).
-        assert_eq!(utf8_len(0xe6), 3);
-        assert_eq!(utf8_len(0xc3), 2); // 2-byte (e.g. "à")
-        assert_eq!(utf8_len(0xf0), 4); // 4-byte (e.g. emoji)
-        // Continuation byte alone: consume one to make progress.
-        assert_eq!(utf8_len(0x9f), 1);
-    }
-}
-
 fn redraw(title: &str, editor: &LineEditor) {
     let mut out = String::from("\r\x1b[K");
     out.push_str(title);
@@ -124,5 +108,21 @@ pub fn prompt_line(title: &str) -> Option<String> {
         }
         pending.drain(..i);
         redraw(title, &editor);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::utf8_len;
+
+    #[test]
+    fn test_utf8_len() {
+        assert_eq!(utf8_len(b'a'), 1); // ASCII
+        // Multi-byte lead bytes (e.g. Chinese "查" = e6 9f a5).
+        assert_eq!(utf8_len(0xe6), 3);
+        assert_eq!(utf8_len(0xc3), 2); // 2-byte (e.g. "à")
+        assert_eq!(utf8_len(0xf0), 4); // 4-byte (e.g. emoji)
+        // Continuation byte alone: consume one to make progress.
+        assert_eq!(utf8_len(0x9f), 1);
     }
 }
