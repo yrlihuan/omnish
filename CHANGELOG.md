@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.8.18 (2026-08-03)
+
+### Features
+- **client,daemon**: `/resume ?` semantic thread search (#651). Semantic search over saved threads routed through the Summarize use case; client-facing strings are localized (i18n) and a stalled LLM call can no longer freeze the picker.
+- **shell**: Load the login profile chain when omnish runs as a login shell, for both bash and zsh (#649)
+- **chat**: `Ctrl-W` deletes the word before the cursor (#653)
+- **client**: Funnel stdout through a single lock-guarded writer (#644)
+
+### Fixes
+- **chat,llm**: Avoid bricking threads with empty / thinking-only assistant turns. When the API truncates a response during the thinking phase (MaxTokens), the empty turn is now persisted as a sendable `<event>` marker instead of a `content: null` message that DeepSeek rejects. The OpenAI-compat serializer also emits a non-empty placeholder (only keeping `content: null` when tool_calls carry the turn), so already-affected threads become usable again without editing history.
+- **completion**: Keep only the first line of LLM candidates (#654); strip trailing newline from candidates (#652)
+- **plugin**: Decode non-UTF-8 files in the read/edit tools (#650)
+- **sandbox**: Canonicalize writable paths so bwrap binds the real dirs (#648)
+
+### Prompts
+- **chat**: Prefer reading files under CWD before falling back to glob (#655)
+
+### Style
+- **client**: Fix clippy `items-after-test-module` in line_prompt.rs
+
 ## v0.8.17 (2026-06-22)
 
 ### Features

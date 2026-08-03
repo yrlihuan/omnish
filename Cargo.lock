@@ -1101,7 +1101,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-client"
-version = "0.8.17"
+version = "0.8.18"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1135,7 +1135,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-common"
-version = "0.8.17"
+version = "0.8.18"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1156,7 +1156,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-context"
-version = "0.8.17"
+version = "0.8.18"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1166,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-daemon"
-version = "0.8.17"
+version = "0.8.18"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1199,7 +1199,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-llm"
-version = "0.8.17"
+version = "0.8.18"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1216,7 +1216,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-plugin"
-version = "0.8.17"
+version = "0.8.18"
 dependencies = [
  "chardetng",
  "dirs",
@@ -1236,7 +1236,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-protocol"
-version = "0.8.17"
+version = "0.8.18"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1247,7 +1247,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-pty"
-version = "0.8.17"
+version = "0.8.18"
 dependencies = [
  "anyhow",
  "libc",
@@ -1256,7 +1256,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-store"
-version = "0.8.17"
+version = "0.8.18"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1268,7 +1268,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-tracker"
-version = "0.8.17"
+version = "0.8.18"
 dependencies = [
  "omnish-store",
  "regex",
@@ -1277,7 +1277,7 @@ dependencies = [
 
 [[package]]
 name = "omnish-transport"
-version = "0.8.17"
+version = "0.8.18"
 dependencies = [
  "anyhow",
  "nix",
