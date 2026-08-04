@@ -530,6 +530,31 @@ impl RpcClient {
         Ok(())
     }
 
+    /// Non-blocking fire-and-forget send. Never awaits network I/O or blocks on
+    /// backpressure: enqueues into the write queue via `try_send` and returns
+    /// `Err` immediately if the connection is down, the inner lock is contended,
+    /// or the write queue is full. Used on hot paths (per-keystroke telemetry)
+    /// that must never stall the caller on a wedged connection (issue #656).
+    pub fn try_send(&self, msg: Message) -> Result<()> {
+        let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let frame = Frame {
+            request_id,
+            payload: msg,
+        };
+        let inner = self
+            .inner
+            .try_lock()
+            .map_err(|_| anyhow::anyhow!("inner busy"))?;
+        if !inner.connected.load(Ordering::SeqCst) {
+            return Err(anyhow::anyhow!("not connected"));
+        }
+        inner
+            .tx
+            .try_send(WriteRequest { frame, reply_tx: ReplyTx::None })
+            .map_err(|e| anyhow::anyhow!("write queue: {e}"))?;
+        Ok(())
+    }
+
     /// Send a message and receive multiple responses (for streaming).
     pub async fn call_stream(&self, msg: Message) -> Result<mpsc::Receiver<Message>> {
         let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -606,9 +631,16 @@ impl RpcClient {
                     continue;
                 }
             };
-            // Server-initiated push messages use request_id 0
+            // Server-initiated push messages use request_id 0.
+            // Use a non-blocking try_send: if the push consumer (dispatcher /
+            // main loop) is slow, blocking here would stop the read loop from
+            // reading responses, which combined with a stalled writer deadlocks
+            // both client and daemon (issue #656). Drop the push under extreme
+            // backpressure instead of wedging the connection.
             if frame.request_id == 0 {
-                let _ = push_tx.send(frame.payload).await;
+                if let Err(mpsc::error::TrySendError::Full(_)) = push_tx.try_send(frame.payload) {
+                    tracing::warn!("push channel full, dropping server push");
+                }
                 continue;
             }
             // Dispatch under lock, but for Stream sends we clone the sender

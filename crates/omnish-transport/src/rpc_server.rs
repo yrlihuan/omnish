@@ -344,7 +344,7 @@ fn spawn_connection<R, W, F>(
 
         // Register push channel for this connection
         let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
-        let mut push_rx = if let Some(ref registry) = push_registry {
+        let push_rx = if let Some(ref registry) = push_registry {
             let (push_tx, push_rx) = mpsc::channel::<Message>(32);
             registry.lock().await.insert(conn_id, push_tx.clone());
             // Send initial push messages (e.g. current client config) to newly connected client
@@ -358,6 +358,27 @@ fn spawn_connection<R, W, F>(
 
         // Delayed disconnect: a oneshot that fires after TestDisconnect delay
         let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(1);
+
+        // Push writer runs on a dedicated task. Writing pushes inline in the
+        // read select! would let a slow client (whose receive buffer is full)
+        // block the write and thereby stop the read loop from being polled -
+        // the daemon then stops reading the client, which wedges the
+        // client->daemon direction and deadlocks both sides (issue #656).
+        // Draining pushes off-loop keeps the read loop live regardless of how
+        // slow the client is. On write failure, signal disconnect so the
+        // connection tears down and the client reconnects.
+        if let Some(mut push_rx) = push_rx {
+            let writer_push = writer.clone();
+            let push_disc_tx = disconnect_tx.clone();
+            tokio::spawn(async move {
+                while let Some(msg) = push_rx.recv().await {
+                    if write_reply(&writer_push, 0, msg).await.is_err() {
+                        let _ = push_disc_tx.send(()).await;
+                        break;
+                    }
+                }
+            });
+        }
 
         // Normal message loop with push support
         loop {
@@ -428,21 +449,6 @@ fn spawn_connection<R, W, F>(
                             let _ = write_reply(&writer, request_id, Message::Ack).await;
                         }
                     });
-                }
-                push_msg = async {
-                    match push_rx.as_mut() {
-                        Some(rx) => rx.recv().await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    if let Some(msg) = push_msg {
-                        if let Err(e) = write_reply(&writer, 0, msg).await {
-                            tracing::warn!("conn#{}: push_write failed: {}", conn_id, e);
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
                 }
                 _ = disconnect_rx.recv() => {
                     tracing::info!("TestDisconnect: closing connection now");

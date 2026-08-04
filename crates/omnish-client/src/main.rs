@@ -120,6 +120,23 @@ async fn send_or_buffer(rpc: &RpcClient, msg: Message, buffer: &MessageBuffer) {
     }
 }
 
+/// Non-blocking variant of `send_or_buffer` for the main I/O loop. Must NEVER
+/// await network I/O: the loop also pumps stdin -> PTY, so blocking here on a
+/// wedged daemon connection stalls stdin reads until the kernel tty input buffer
+/// overflows and silently drops the user's keystrokes (issue #656). Enqueues via
+/// `try_send`, falls back to the retry buffer via `try_lock`, and drops the
+/// (telemetry) message under extreme backpressure rather than blocking.
+fn report_or_buffer(rpc: &RpcClient, msg: Message, buffer: &MessageBuffer) {
+    if rpc.try_send(msg.clone()).is_err() && should_buffer(&msg) {
+        if let Ok(mut buf) = buffer.try_lock() {
+            if buf.len() >= MAX_BUFFER_SIZE {
+                buf.pop_front();
+            }
+            buf.push_back(msg);
+        }
+    }
+}
+
 fn timestamp_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1067,10 +1084,23 @@ async fn main() -> Result<()> {
                         .and_then(|h| h.into_string().ok())
                         .unwrap_or_default();
                     event_log::push(format!("update_check: v={} connected={}", ver, rpc.is_connected().await));
-                    let check_result = rpc.call(Message::UpdateCheck {
-                        os: os.clone(), arch: arch.clone(), current_version: ver,
-                        hostname: hostname.clone(),
-                    }).await;
+                    // Bound the call: this runs inline in the main I/O loop, and
+                    // `call` has no timeout of its own, so a stuck daemon would
+                    // otherwise freeze stdin handling until the connection errors
+                    // out (issue #656).
+                    let check_result = match tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        rpc.call(Message::UpdateCheck {
+                            os: os.clone(), arch: arch.clone(), current_version: ver,
+                            hostname: hostname.clone(),
+                        }),
+                    ).await {
+                        Ok(r) => r,
+                        Err(_) => {
+                            event_log::push("update_check: timeout");
+                            Err(anyhow::anyhow!("update check timed out"))
+                        }
+                    };
                     match &check_result {
                         Ok(Message::UpdateInfo { latest_version, checksum: remote_checksum, available: true }) => {
                             // Check if local cache already has this version with matching checksum
@@ -1376,7 +1406,7 @@ async fn main() -> Result<()> {
                                         timestamp_ms: timestamp_ms(),
                                         data: bytes,
                                     });
-                                    send_or_buffer(rpc, msg, &pending_buffer).await;
+                                    report_or_buffer(rpc, msg, &pending_buffer);
                                 }
                             }
                         }
@@ -1478,7 +1508,7 @@ async fn main() -> Result<()> {
                                         timestamp_ms: timestamp_ms(),
                                         data: bytes,
                                     });
-                                    send_or_buffer(rpc, msg, &pending_buffer).await;
+                                    report_or_buffer(rpc, msg, &pending_buffer);
                                 }
                             }
                         }
@@ -1578,7 +1608,7 @@ async fn main() -> Result<()> {
                                 timestamp_ms: timestamp_ms(),
                                 data: display_data.to_vec(),
                             });
-                            send_or_buffer(rpc, msg, &pending_buffer).await;
+                            report_or_buffer(rpc, msg, &pending_buffer);
                             throttle.record_sent(n);
                         }
                     }
@@ -1739,7 +1769,7 @@ async fn main() -> Result<()> {
                                 session_id: session_id.clone(),
                                 record: record.clone(),
                             });
-                            send_or_buffer(rpc, msg, &pending_buffer).await;
+                            report_or_buffer(rpc, msg, &pending_buffer);
                         }
                     }
                     if !completed.is_empty() {
