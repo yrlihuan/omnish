@@ -1824,14 +1824,27 @@ impl ChatSession {
                                             }
                                             None => {
                                                 if tool_calls.is_empty() {
-                                                    // No tool calls pending - real disconnect
+                                                    // Stream ended with no tool calls pending. This is
+                                                    // NOT necessarily a disconnect: the daemon also drops
+                                                    // the stream (no final ChatResponse) when the turn was
+                                                    // superseded by a newer message or an error was
+                                                    // swallowed. Only call it a connection loss if the
+                                                    // transport is actually down (issue #658).
                                                     self.erase_thinking();
                                                     self.mark_running_tools_error();
                                                     self.tool_section_start = None;
                                                     self.tool_section_hist_idx = None;
-                                                    write_stdout(&display::render_error(
-                                                        "Daemon connection lost",
+                                                    let connected = rpc.is_connected().await;
+                                                    crate::event_log::push(format!(
+                                                        "chat stream ended without response (connected={}, got_first_output={})",
+                                                        connected, got_first_output
                                                     ));
+                                                    let err_msg = if connected {
+                                                        "Response interrupted - send another message to continue"
+                                                    } else {
+                                                        "Daemon connection lost"
+                                                    };
+                                                    write_stdout(&display::render_error(err_msg));
                                                     got_response = true;
                                                 }
                                                 // else: normal stream end after tool calls forwarded

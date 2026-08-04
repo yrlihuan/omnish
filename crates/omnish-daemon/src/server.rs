@@ -2384,6 +2384,23 @@ async fn run_agent_loop(
                         "LLM connection error (retry {}/2, thread={}): {} - retrying in {}s",
                         state.llm_retries, state.cm.thread_id, err_str, backoff.as_secs()
                     );
+                    // Surface the retry so the client shows progress instead of a
+                    // silent spinner during the backoff sleep (issue #658).
+                    let _ = tx.send(Message::ChatToolStatus(ChatToolStatus {
+                        request_id: state.cm.request_id.clone(),
+                        thread_id: state.cm.thread_id.clone(),
+                        tool_name: String::new(),
+                        status: format!(
+                            "LLM connection error, retrying ({}/2) in {}s...",
+                            state.llm_retries, backoff.as_secs()
+                        ),
+                        tool_call_id: None,
+                        status_icon: None,
+                        display_name: None,
+                        param_desc: None,
+                        result_compact: None,
+                        result_full: None,
+                    })).await;
                     tokio::time::sleep(backoff).await;
                     continue;
                 }
@@ -2397,16 +2414,20 @@ async fn run_agent_loop(
                     return;
                 }
 
-                // User-visible message: include truncated error string
-                let display_err: &str = if err_str.len() > 200 {
-                    &err_str[..err_str.floor_char_boundary(200)]
+                // User-visible message: surface the precise backend error. The
+                // backend error string already carries HTTP status + error type +
+                // API message, so keep enough of it to be actionable rather than
+                // collapsing it into a vague "interrupted" (issue #658). The
+                // persisted history marker below stays short to avoid context bloat.
+                let display_err: &str = if err_str.len() > 500 {
+                    &err_str[..err_str.floor_char_boundary(500)]
                 } else {
                     &err_str
                 };
                 let user_msg = if is_connection {
-                    format!("Connection to the AI service was lost: {}. Your progress has been saved - you can continue by sending another message.", display_err)
+                    format!("[!] LLM connection error: {}\n\nYour progress has been saved - send another message to continue.", display_err)
                 } else {
-                    format!("AI service returned an error: {}. Your progress has been saved - you can continue by sending another message.", display_err)
+                    format!("[!] LLM error: {}\n\nYour progress has been saved - send another message to continue.", display_err)
                 };
 
                 // Persist a short event marker (like the cancel paths) so the
