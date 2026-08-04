@@ -2,6 +2,7 @@
 //! Spawns a fresh process per tool call: writes JSON to stdin, reads JSON from stdout.
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
 /// Executes client-side tools by spawning short-lived plugin processes.
@@ -144,6 +145,23 @@ impl ClientPluginManager {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+        // Detach the tool subprocess from omnish's controlling terminal via
+        // setsid(). Tools communicate over piped stdin/stdout and never need a
+        // tty, but without this a command they run (e.g. `sudo`) can open
+        // /dev/tty directly, hijack the user's real terminal to prompt for a
+        // password, disable echo / change termios, and - if interrupted before
+        // it restores the terminal - leave omnish's raw-mode input broken and
+        // racing the subprocess for keystrokes (issue #656). With no controlling
+        // terminal, /dev/tty open fails and such tools error out cleanly instead.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
