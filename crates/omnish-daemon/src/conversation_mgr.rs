@@ -49,6 +49,13 @@ pub struct ThreadMeta {
     /// ChatToolCall.sandboxed=false for this thread, bypassing permit_rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_disabled: Option<bool>,
+    /// One-shot `<event>...</event>` marker queued by an out-of-band state
+    /// change (e.g. `/thread sandbox on|off`). Prepended to the next user
+    /// message sent to the LLM, then cleared, so the model learns the change
+    /// happened. Last-write-wins if several changes occur before the next
+    /// message. See issue #659.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_event: Option<String>,
 }
 
 impl ThreadMeta {
@@ -422,6 +429,12 @@ impl ConversationManager {
     pub fn set_sandbox_disabled(&self, thread_id: &str, disabled: bool) {
         self.update_meta(thread_id, |m| {
             m.sandbox_disabled = if disabled { Some(true) } else { None };
+            // Queue a marker so the next user message tells the LLM the sandbox
+            // state changed (issue #659). Last-write-wins on repeated toggles.
+            m.pending_event = Some(format!(
+                "<event>sandbox {}</event>",
+                if disabled { "off" } else { "on" }
+            ));
         });
     }
 
@@ -1016,6 +1029,30 @@ mod tests {
 
         mgr.set_sandbox_disabled(&tid, false);
         assert_eq!(mgr.load_meta(&tid).sandbox_disabled, None);
+    }
+
+    #[test]
+    fn test_set_sandbox_disabled_queues_pending_event() {
+        // Issue #659: toggling sandbox queues a one-shot marker for the next
+        // user message, with last-write-wins on repeated toggles.
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+
+        let tid = mgr.create_thread(ThreadMeta::default());
+        assert_eq!(mgr.load_meta(&tid).pending_event, None);
+
+        mgr.set_sandbox_disabled(&tid, true);
+        assert_eq!(
+            mgr.load_meta(&tid).pending_event.as_deref(),
+            Some("<event>sandbox off</event>")
+        );
+
+        // Toggle back before the marker is consumed: last write wins.
+        mgr.set_sandbox_disabled(&tid, false);
+        assert_eq!(
+            mgr.load_meta(&tid).pending_event.as_deref(),
+            Some("<event>sandbox on</event>")
+        );
     }
 
     #[test]

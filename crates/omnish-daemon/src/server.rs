@@ -1517,7 +1517,17 @@ async fn handle_chat_message(
         }
     }
     meta.system_reminder = Some(reminder.clone());
+    // Consume any one-shot event marker queued by an out-of-band change (e.g.
+    // /thread sandbox on|off) and clear it in the same save (issue #659).
+    let pending_event = meta.pending_event.take();
     conv_mgr.save_meta(&cm.thread_id, &meta);
+
+    // Effective user query: prepend the pending event marker (if any) so the
+    // LLM sees the state change inline before the user's text.
+    let query: String = match pending_event {
+        Some(ev) => format!("{}\n\n{}", ev, cm.query),
+        None => cm.query.clone(),
+    };
 
     let project_instructions = cm.project_instructions.clone();
 
@@ -1568,13 +1578,13 @@ async fn handle_chat_message(
     );
     if merge_into_tail {
         if let Some(last) = extra_messages.last_mut() {
-            omnish_daemon::conversation_mgr::merge_user_query_into_tail(last, &cm.query);
+            omnish_daemon::conversation_mgr::merge_user_query_into_tail(last, &query);
         }
         conv_mgr.replace_messages(&cm.thread_id, &extra_messages);
         history_dirty = false; // replace_messages covered both cleanups + merge
     } else {
         // Tail is assistant (or empty) - append a fresh user message.
-        let user_msg = serde_json::json!({"role": "user", "content": cm.query});
+        let user_msg = serde_json::json!({"role": "user", "content": query});
         extra_messages.push(user_msg.clone());
         if history_dirty {
             conv_mgr.replace_messages(&cm.thread_id, &extra_messages);
