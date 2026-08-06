@@ -80,6 +80,12 @@ impl UpdateCache {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if let Some(version) = omnish_common::update::extract_version(&name, os, arch) {
+                    // Skip corrupt/incomplete packages (e.g. a zero-byte file left
+                    // by an interrupted copy). This keeps a bad package invisible to
+                    // dedup and install, so the next cycle re-copies a good source.
+                    if !omnish_common::update::is_valid_package(&entry.path()) {
+                        continue;
+                    }
                     if let Some(pv) = prefer_version {
                         if omnish_common::update::compare_versions(&version, pv) == std::cmp::Ordering::Equal {
                             preferred = Some((version.clone(), entry.path()));
@@ -216,6 +222,17 @@ impl UpdateCache {
         std::fs::create_dir_all(&platform_dir)?;
         let tmp_path = platform_dir.join(format!(".tmp-{}", filename));
         std::fs::copy(&source_path, &tmp_path)?;
+        // The source may be a partially-written file (e.g. mid-scp). Validate the
+        // copy before publishing it, otherwise a corrupt package gets cached and
+        // every later cycle fails to install it.
+        if !omnish_common::update::is_valid_package(&tmp_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            tracing::warn!(
+                "skipped incomplete update package {} (source likely still being copied)",
+                source_path.display()
+            );
+            return Ok(false);
+        }
         let dest = platform_dir.join(&filename);
         std::fs::rename(&tmp_path, &dest)?;
         tracing::info!("cached update package: {}", dest.display());
@@ -357,6 +374,10 @@ impl UpdateCache {
                 }
                 let bytes = resp.bytes().await?;
                 tokio::fs::write(&tmp_path, &bytes).await?;
+                // Reject truncated/corrupt downloads before publishing.
+                if !omnish_common::update::is_valid_package(&tmp_path) {
+                    anyhow::bail!("downloaded package failed integrity check");
+                }
                 // Remove old packages
                 if let Ok(old_entries) = std::fs::read_dir(&platform_dir) {
                     for old in old_entries.flatten() {
@@ -385,6 +406,16 @@ impl UpdateCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Write a minimal but valid gzip file so it passes `is_valid_package`.
+    fn write_valid_package(path: &Path) {
+        use flate2::{write::GzEncoder, Compression};
+        use std::io::Write;
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(b"omnish update package").unwrap();
+        let bytes = enc.finish().unwrap();
+        std::fs::write(path, &bytes).unwrap();
+    }
 
     #[test]
     fn extract_version_valid() {
@@ -432,12 +463,66 @@ mod tests {
         // Create a fake cached package before constructing cache (scan runs in new())
         let platform_dir = dir.path().join("updates/linux-x86_64");
         std::fs::create_dir_all(&platform_dir).unwrap();
-        std::fs::write(platform_dir.join("omnish-0.5.0-linux-x86_64.tar.gz"), b"fake").unwrap();
+        write_valid_package(&platform_dir.join("omnish-0.5.0-linux-x86_64.tar.gz"));
 
         let cache = UpdateCache::new(dir.path());
         assert_eq!(cache.check_update("linux", "x86_64", "0.4.0"), Some("0.5.0".to_string()));
         assert_eq!(cache.check_update("linux", "x86_64", "0.5.0"), None);
         assert_eq!(cache.check_update("linux", "x86_64", "0.6.0"), None);
+    }
+
+    #[test]
+    fn corrupt_cached_package_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let platform_dir = dir.path().join("updates/linux-x86_64");
+        std::fs::create_dir_all(&platform_dir).unwrap();
+        // A zero-byte package left by an interrupted copy must not be advertised
+        // or picked for install.
+        std::fs::write(platform_dir.join("omnish-0.9.0-linux-x86_64.tar.gz"), b"").unwrap();
+
+        let cache = UpdateCache::new(dir.path());
+        assert_eq!(cache.cached_package("linux", "x86_64"), None);
+        assert_eq!(cache.check_update("linux", "x86_64", "0.5.0"), None);
+    }
+
+    #[test]
+    fn local_dir_skips_incomplete_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = UpdateCache::new(dir.path());
+
+        // Simulate an in-progress scp: the file has its final name but no content.
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(source.path().join("omnish-0.9.0-linux-x86_64.tar.gz"), b"").unwrap();
+        assert!(!cache.download_from_local_dir(source.path(), "linux", "x86_64").unwrap());
+        assert_eq!(cache.cached_package("linux", "x86_64"), None);
+
+        // Once the copy completes, the same version is cached and recovers.
+        write_valid_package(&source.path().join("omnish-0.9.0-linux-x86_64.tar.gz"));
+        assert!(cache.download_from_local_dir(source.path(), "linux", "x86_64").unwrap());
+        assert_eq!(
+            cache.cached_package("linux", "x86_64").map(|(v, _)| v),
+            Some("0.9.0".to_string())
+        );
+    }
+
+    #[test]
+    fn local_dir_recovers_from_corrupt_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let platform_dir = dir.path().join("updates/linux-x86_64");
+        std::fs::create_dir_all(&platform_dir).unwrap();
+        // A previously cached corrupt package with the highest version number.
+        std::fs::write(platform_dir.join("omnish-0.9.0-linux-x86_64.tar.gz"), b"").unwrap();
+        let cache = UpdateCache::new(dir.path());
+
+        // Source now has the complete package for the same version: it must be
+        // re-copied rather than treated as already up to date.
+        let source = tempfile::tempdir().unwrap();
+        write_valid_package(&source.path().join("omnish-0.9.0-linux-x86_64.tar.gz"));
+        assert!(cache.download_from_local_dir(source.path(), "linux", "x86_64").unwrap());
+        assert_eq!(
+            cache.cached_package("linux", "x86_64").map(|(v, _)| v),
+            Some("0.9.0".to_string())
+        );
     }
 
     #[test]

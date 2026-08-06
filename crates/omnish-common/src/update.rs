@@ -20,6 +20,29 @@ pub fn checksum(path: &Path) -> anyhow::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// Verify that `path` is a complete, valid gzip stream.
+///
+/// Fully decodes the gzip data, which validates the trailing CRC-32 and
+/// ISIZE fields. This catches zero-byte and truncated files, e.g. a package
+/// that was picked up mid-`scp` before the copy finished.
+pub fn is_valid_package(path: &Path) -> bool {
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut decoder = GzDecoder::new(file);
+    let mut buf = [0u8; 65536];
+    let mut any = false;
+    loop {
+        match decoder.read(&mut buf) {
+            Ok(0) => return any, // reached clean EOF with decoded content
+            Ok(_) => any = true,
+            Err(_) => return false,
+        }
+    }
+}
+
 /// Find the latest cached package for a platform under `~/.omnish/updates/{os}-{arch}/`.
 /// Returns `(version, path)` if found.
 pub fn local_cached_package(os: &str, arch: &str) -> Option<(String, PathBuf)> {
@@ -225,6 +248,34 @@ mod tests {
     fn test_normalize_version() {
         assert_eq!(normalize_version("0.8.4-1-g1234abc"), "0.8.4.1");
         assert_eq!(normalize_version("0.8.4"), "0.8.4");
+    }
+
+    #[test]
+    fn test_is_valid_package() {
+        use flate2::{write::GzEncoder, Compression};
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+
+        // Valid gzip
+        let good = dir.path().join("good.tar.gz");
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(b"hello omnish").unwrap();
+        std::fs::write(&good, enc.finish().unwrap()).unwrap();
+        assert!(is_valid_package(&good));
+
+        // Zero-byte file (interrupted copy)
+        let empty = dir.path().join("empty.tar.gz");
+        std::fs::write(&empty, b"").unwrap();
+        assert!(!is_valid_package(&empty));
+
+        // Truncated gzip (partial copy)
+        let full = std::fs::read(&good).unwrap();
+        let truncated = dir.path().join("truncated.tar.gz");
+        std::fs::write(&truncated, &full[..full.len() / 2]).unwrap();
+        assert!(!is_valid_package(&truncated));
+
+        // Missing file
+        assert!(!is_valid_package(&dir.path().join("nope.tar.gz")));
     }
 
     #[test]
