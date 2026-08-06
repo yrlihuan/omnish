@@ -96,6 +96,11 @@ struct AgentLoopState {
     iteration: usize,
     cm: ChatMessage,
     start: std::time::Instant,
+    /// Last time this loop made progress: refreshed when it is (re)parked to wait
+    /// for client-side tools and when each tool result arrives. The stale-loop
+    /// sweep measures idle time from here (not `start`), so a turn whose tools run
+    /// for a long time but keep returning results is never reclaimed mid-flight.
+    last_active: std::time::Instant,
     command_query_tool: omnish_daemon::tools::command_query::CommandQueryTool,
     /// The resolved backend for this agent loop (preserves per-thread model override).
     effective_backend: Arc<dyn LlmBackend>,
@@ -113,6 +118,45 @@ struct AgentLoopState {
     /// loop is stale and must drop its in-flight work without writing to
     /// disk or sending response messages.
     generation: u64,
+}
+
+/// Base idle window for a parked agent loop: reclaim its in-memory state only
+/// after this long with no progress. Covers loops truly abandoned by a client
+/// that vanished mid-tool. Measured from `AgentLoopState::last_active`.
+const PARKED_LOOP_BASE_IDLE: std::time::Duration = std::time::Duration::from_secs(1800);
+
+/// Expected max wall-clock for a single dispatched client tool, derived from the
+/// tool's own `timeout` parameter so a legitimately long tool run is not reaped
+/// before it can return. Returns ZERO for tools that declare no timeout.
+fn tool_expected_duration(name: &str, input: &serde_json::Value) -> std::time::Duration {
+    use std::time::Duration;
+    match name {
+        // bash: `timeout` is in milliseconds (default 5m, hard max 15m).
+        "bash" => {
+            let ms = input.get("timeout").and_then(|v| v.as_u64()).unwrap_or(300_000).min(900_000);
+            Duration::from_millis(ms)
+        }
+        // grep: `timeout` is in seconds (default 60s, clamped to 300s).
+        "grep" => {
+            let secs = input.get("timeout").and_then(|v| v.as_u64()).unwrap_or(60).min(300);
+            Duration::from_secs(secs)
+        }
+        _ => Duration::ZERO,
+    }
+}
+
+/// Idle deadline for a parked loop: the base window, extended to cover the
+/// longest-running pending client tool (plus a margin) so a tool that declares a
+/// timeout beyond the base window still gets to finish before the sweep reclaims
+/// the loop.
+fn parked_loop_idle_deadline(pending: &[omnish_llm::tool::ToolCall]) -> std::time::Duration {
+    let margin = std::time::Duration::from_secs(60);
+    let max_tool = pending
+        .iter()
+        .map(|tc| tool_expected_duration(&tc.name, &tc.input))
+        .max()
+        .unwrap_or_default();
+    PARKED_LOOP_BASE_IDLE.max(max_tool + margin)
 }
 
 /// Tracks which session is actively using each thread.
@@ -543,7 +587,11 @@ impl DaemonServer {
         let mut server = RpcServer::bind(addr).await?;
         tracing::info!("omnishd listening on {}", addr);
 
-        // Periodically sweep stale pending agent loop entries
+        // Periodically reclaim parked agent-loop state that has gone idle (client
+        // vanished mid-tool). Idle is measured from `last_active` (refreshed on
+        // park and on each tool result), and the deadline auto-extends to cover a
+        // pending tool's declared timeout, so a legitimately long-running task is
+        // never reaped while it is still making progress.
         let pending_cleanup = self.pending_agent_loops.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -551,8 +599,13 @@ impl DaemonServer {
                 interval.tick().await;
                 let mut map = pending_cleanup.lock().await;
                 map.retain(|req_id, state| {
-                    if state.start.elapsed() > std::time::Duration::from_secs(1800) {
-                        tracing::warn!("Cleaning up expired agent loop state: {}", req_id);
+                    let deadline = parked_loop_idle_deadline(&state.pending_tool_calls);
+                    let idle = state.last_active.elapsed();
+                    if idle > deadline {
+                        tracing::warn!(
+                            "Reclaiming idle agent loop state: {} (idle {:?} > deadline {:?})",
+                            req_id, idle, deadline
+                        );
                         false
                     } else {
                         true
@@ -1636,6 +1689,7 @@ async fn handle_chat_message(
         iteration: 0,
         cm,
         start: std::time::Instant::now(),
+        last_active: std::time::Instant::now(),
         command_query_tool,
         effective_backend,
         llm_retries: 0,
@@ -1680,6 +1734,11 @@ async fn handle_tool_result(
         let _ = tx.send(Message::Ack).await;
         return;
     }
+
+    // Progress: a tool result arrived, so this loop is not abandoned. Refresh the
+    // idle clock the stale-loop sweep uses (covers slow batches where results
+    // trickle in one at a time).
+    state.last_active = std::time::Instant::now();
 
     // Add the received client-side tool result
     let tool_call_id = tr.tool_call_id.clone();
@@ -2270,6 +2329,10 @@ async fn run_agent_loop(
                         state.pending_tool_calls = tool_calls.iter().map(|tc| (*tc).clone()).collect();
                         state.completed_results = tool_results;
                         state.iteration = iteration;
+                        // Dispatching work: reset the idle clock so the sweep only
+                        // reclaims this loop if the client goes silent past the
+                        // (tool-timeout-aware) deadline.
+                        state.last_active = std::time::Instant::now();
                         let request_id = state.cm.request_id.clone();
                         pending_loops.lock().await.insert(request_id, state);
                         return; // tx dropped → Ack sent by spawn_connection
@@ -4079,6 +4142,45 @@ mod tests {
     use std::sync::Arc;
     use std::time::Instant;
     use tokio::time::{sleep, Duration};
+
+    fn tool_call(name: &str, input: serde_json::Value) -> omnish_llm::tool::ToolCall {
+        omnish_llm::tool::ToolCall { id: "id".into(), name: name.into(), input, extra: Default::default() }
+    }
+
+    #[test]
+    fn test_tool_expected_duration() {
+        use std::time::Duration;
+        // bash timeout is milliseconds; default 5m, hard-capped at 15m.
+        assert_eq!(tool_expected_duration("bash", &serde_json::json!({})), Duration::from_secs(300));
+        assert_eq!(tool_expected_duration("bash", &serde_json::json!({"timeout": 600000})), Duration::from_secs(600));
+        assert_eq!(tool_expected_duration("bash", &serde_json::json!({"timeout": 9_999_999})), Duration::from_secs(900));
+        // grep timeout is seconds; default 60s, clamped to 300s.
+        assert_eq!(tool_expected_duration("grep", &serde_json::json!({})), Duration::from_secs(60));
+        assert_eq!(tool_expected_duration("grep", &serde_json::json!({"timeout": 9999})), Duration::from_secs(300));
+        // tools without a timeout param contribute nothing.
+        assert_eq!(tool_expected_duration("read", &serde_json::json!({})), Duration::ZERO);
+    }
+
+    #[test]
+    fn test_parked_loop_idle_deadline() {
+        // No pending tools (or short ones): stays at the base window.
+        assert_eq!(parked_loop_idle_deadline(&[]), PARKED_LOOP_BASE_IDLE);
+        assert_eq!(
+            parked_loop_idle_deadline(&[tool_call("bash", serde_json::json!({"timeout": 600000}))]),
+            PARKED_LOOP_BASE_IDLE,
+        );
+        // bash caps at 900s; 900s + 60s margin = 960s < 1800s base, so still base.
+        // (No current tool can declare a timeout beyond the base window, so the
+        // auto-extension is future-proofing rather than active behavior today.)
+        let capped_bash = tool_call("bash", serde_json::json!({"timeout": 9_999_999}));
+        assert_eq!(parked_loop_idle_deadline(std::slice::from_ref(&capped_bash)), PARKED_LOOP_BASE_IDLE);
+        // The deadline is the max across all pending tools.
+        let mixed = vec![
+            tool_call("read", serde_json::json!({})),
+            tool_call("grep", serde_json::json!({"timeout": 300})),
+        ];
+        assert_eq!(parked_loop_idle_deadline(&mixed), PARKED_LOOP_BASE_IDLE);
+    }
 
     #[test]
     fn test_parse_omnish_debug_args() {
