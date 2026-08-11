@@ -2233,3 +2233,15 @@ daemon_addr = "~/.omnish/omnish.sock"
 
 1. **wrap 情况下的光标列还原** (commit 606d28a):
    - 当 ghost text 跨越行边界时，erase 后需要返回到原光标列，而非简单回退到行首
+
+### 2026-08-11 - chat 输入 CJK 换行光标列偏移修复（#667）
+
+**背景:** chat 输入重绘把线性显示宽度用 `cursor_display / cols`、`% cols` 换算成视觉行列。这假设每行被字符严丝合缝填满，对 ASCII 成立；但双宽 CJK 字符在行尾只剩 1 列时放不下，会被终端整体挤到下一行、上一行末尾留 1 列空隙。该空隙未计入线性宽度，导致换行后光标列少 1（出现在"位置+1"而非"位置+2"）。
+
+**主要变更:**
+
+1. **逐字符换行模拟 `wrap_advance`** (`chat_session.rs`):
+   - 新增纯函数 `wrap_advance(glyph_widths, cols) -> (rows, col)`：遇到 `col + w > cols` 先换行再放，正好填满则滚到下一行；对纯 ASCII 与原 `/cols`、`%cols` 结果一致（#283 回归通过）
+   - 重绘循环改为收集每行 per-glyph 宽度 `line_glyphs`（prefix=两个 1 列），光标定位与内容结束行均改用 `wrap_advance`；行间换行的 `+1` 计数不变，仅行内换算变为 CJK 感知
+   - 用 vt100 实测确认宽字符行尾换行行为（`> 中中中a中` 在 cols=10 光标落在 row=1 col=2）
+   - 新增 5 个单测覆盖：ASCII 线性等价、CJK straddle 留隙、正好填满滚行、CJK 不跨界拆分、空/窄边界

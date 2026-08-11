@@ -16,6 +16,33 @@ use crate::{client_plugin, command, display, ghost_complete, markdown, screen_ca
 use crate::display::{BOLD, BRIGHT_WHITE, CYAN, DIM, GRAY, GREEN, NEWLINE, RED, RESET, YELLOW};
 use widgets::scroll_view::ScrollView;
 
+/// Lay out a sequence of per-glyph display widths on a `cols`-wide terminal with
+/// autowrap, returning the visual `(rows_advanced, col)` position where the next
+/// glyph would be placed.
+///
+/// Unlike a plain `width / cols`, `width % cols`, this models the terminal rule
+/// that a glyph wider than the columns remaining on the current row is pushed
+/// whole to the next row (leaving a trailing gap), and that a row filled exactly
+/// rolls to the next row. This matters for double-width CJK glyphs at the right
+/// margin: the linear form undercounts the column by the gap width (issue #667).
+fn wrap_advance(glyph_widths: &[usize], cols: usize) -> (usize, usize) {
+    let cols = cols.max(1);
+    let mut row = 0usize;
+    let mut col = 0usize;
+    for &w in glyph_widths {
+        if col + w > cols {
+            row += 1;
+            col = 0;
+        }
+        col += w;
+        if col >= cols {
+            row += 1;
+            col = 0;
+        }
+    }
+    (row, col)
+}
+
 #[derive(Debug, Clone)]
 pub enum ScrollEntry {
     UserInput(String),
@@ -3945,13 +3972,15 @@ impl ChatSession {
             let cols = super::get_terminal_size().unwrap_or((24, 80)).1 as usize;
             let cols = cols.max(1);
 
-            let mut display_widths = Vec::with_capacity(line_count);
+            // Per-line glyph display widths (prefix = two 1-col cells), fed to
+            // wrap_advance for CJK-aware visual cursor positioning (issue #667).
+            let mut line_glyphs: Vec<Vec<usize>> = Vec::with_capacity(line_count);
             for i in 0..line_count {
                 let line = editor.line(i);
                 let pfx = if i == 0 { format!("{CYAN}> {RESET}") } else { "  ".to_string() };
                 let mut s = String::new();
                 s.push_str(&pfx);
-                let mut dw = 2usize;
+                let mut glyphs: Vec<usize> = vec![1, 1];
 
                 let has_fffc = line.contains(&'\u{FFFC}');
                 if has_fffc {
@@ -3962,18 +3991,18 @@ impl ChatSession {
                                     "[pasted text #{} +{} lines]",
                                     block.index, block.line_count
                                 );
-                                dw += marker.len();
+                                glyphs.extend(std::iter::repeat_n(1, marker.len()));
                                 s.push_str(&format!("{DIM}{}{RESET}", marker));
                             }
                             fffc_idx += 1;
                         } else {
-                            dw += UnicodeWidthChar::width(ch).unwrap_or(1);
+                            glyphs.push(UnicodeWidthChar::width(ch).unwrap_or(1));
                             s.push(ch);
                         }
                     }
                 } else {
                     for &ch in line {
-                        dw += UnicodeWidthChar::width(ch).unwrap_or(1);
+                        glyphs.push(UnicodeWidthChar::width(ch).unwrap_or(1));
                     }
                     let line_str: String = line.iter().collect();
                     s.push_str(&line_str);
@@ -3982,7 +4011,7 @@ impl ChatSession {
                 let cursor_on_fffc = line.contains(&'\u{FFFC}');
                 if i == line_count - 1 && has_ghost && !ghost.is_empty() && !cursor_on_fffc {
                     for ch in ghost.chars() {
-                        dw += UnicodeWidthChar::width(ch).unwrap_or(1);
+                        glyphs.push(UnicodeWidthChar::width(ch).unwrap_or(1));
                     }
                     s.push_str(&format!("{DIM}{}{RESET}", ghost));
                 }
@@ -3994,49 +4023,52 @@ impl ChatSession {
                     out.push_str(&s);
                     out.push_str(&format!("\x1b[K{NEWLINE}"));
                 }
-                display_widths.push(dw);
+                line_glyphs.push(glyphs);
             }
 
-            // Cursor positioning
-            let mut cursor_display = 2usize;
+            // Cursor positioning. Map linear glyph widths to visual (row, col)
+            // via wrap_advance so double-width CJK glyphs pushed to the next row
+            // at the right margin (leaving a trailing gap) are accounted for; a
+            // plain width%cols undercounts the column by the gap (issue #667).
             let cursor_line = editor.line(cursor_row);
-            let mut local_fffc = 0usize;
             let fffc_before_cursor_row: usize = (0..cursor_row)
                 .map(|r| editor.line(r).iter().filter(|&&c| c == '\u{FFFC}').count())
                 .sum();
+            let mut cursor_glyphs: Vec<usize> = vec![1, 1]; // 2-col prefix
+            let mut local_fffc = 0usize;
             for &ch in &cursor_line[..cursor_col] {
                 if ch == '\u{FFFC}' {
                     let block_idx = fffc_before_cursor_row + local_fffc;
                     if let Some(block) = blocks.get(block_idx) {
-                        cursor_display += format!(
+                        let marker = format!(
                             "[pasted text #{} +{} lines]",
                             block.index, block.line_count
-                        )
-                        .len();
+                        );
+                        cursor_glyphs.extend(std::iter::repeat_n(1, marker.len()));
                     }
                     local_fffc += 1;
                 } else {
-                    cursor_display += UnicodeWidthChar::width(ch).unwrap_or(1);
+                    cursor_glyphs.push(UnicodeWidthChar::width(ch).unwrap_or(1));
                 }
             }
 
             let cursor_after_visual_row: usize = {
                 let mut r = 0;
-                for w in display_widths.iter().take(line_count.saturating_sub(1)) {
-                    r += w / cols + 1;
+                for g in line_glyphs.iter().take(line_count.saturating_sub(1)) {
+                    r += wrap_advance(g, cols).0 + 1;
                 }
-                r += display_widths[line_count - 1] / cols;
+                r += wrap_advance(&line_glyphs[line_count - 1], cols).0;
                 r
             };
+            let (cursor_line_rows, target_visual_col) = wrap_advance(&cursor_glyphs, cols);
             let target_visual_row: usize = {
                 let mut r = 0;
-                for w in display_widths.iter().take(cursor_row) {
-                    r += w / cols + 1;
+                for g in line_glyphs.iter().take(cursor_row) {
+                    r += wrap_advance(g, cols).0 + 1;
                 }
-                r += cursor_display / cols;
+                r += cursor_line_rows;
                 r
             };
-            let target_visual_col = cursor_display % cols;
 
             let rows_up = cursor_after_visual_row.saturating_sub(target_visual_row);
             if rows_up > 0 {
@@ -4759,6 +4791,59 @@ fn save_to_history(history: &mut VecDeque<String>, command: &str, capacity: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Build glyph widths for "> " prefix + a string, CJK chars counted as 2.
+    fn glyphs_of(s: &str) -> Vec<usize> {
+        use unicode_width::UnicodeWidthChar;
+        let mut g = vec![1usize, 1]; // "> " prefix
+        for ch in s.chars() {
+            g.push(UnicodeWidthChar::width(ch).unwrap_or(1));
+        }
+        g
+    }
+
+    #[test]
+    fn wrap_advance_ascii_matches_linear() {
+        // 24 chars + "> " prefix = 26 wide on a 20-col terminal (issue #283).
+        let g = glyphs_of("abcdefghijklmnopqrstuvwx");
+        assert_eq!(wrap_advance(&g, 20), (1, 6)); // 26/20=1 row, 26%20=6 col
+    }
+
+    #[test]
+    fn wrap_advance_cjk_straddle_leaves_gap() {
+        // "> " + 3 CJK (6) + 1 ascii (1) fills col 9 on a 10-col terminal,
+        // leaving 1 free column; the next CJK cannot fit and wraps whole to the
+        // next row, so the cursor after it is at col 2, not col 1 (issue #667).
+        // Verified against vt100: cursor ends at row=1 col=2.
+        let g = glyphs_of("中中中a中");
+        assert_eq!(wrap_advance(&g, 10), (1, 2));
+        // The buggy linear form would have given 11 % 10 = 1.
+        let linear: usize = g.iter().sum();
+        assert_eq!(linear % 10, 1);
+    }
+
+    #[test]
+    fn wrap_advance_exact_fill_rolls_to_next_row() {
+        // Exactly filling the row rolls the insertion point to the next row,
+        // matching the old width/cols, width%cols behavior for ASCII.
+        let g = vec![1usize; 10];
+        assert_eq!(wrap_advance(&g, 10), (1, 0));
+    }
+
+    #[test]
+    fn wrap_advance_cjk_cannot_split_across_boundary() {
+        // On a 5-col terminal: prefix(2) + CJK(2) -> col 4, next CJK wraps
+        // (4+2>5) to row 1 col 2.
+        let g = glyphs_of("中中");
+        assert_eq!(wrap_advance(&g, 5), (1, 2));
+    }
+
+    #[test]
+    fn wrap_advance_empty_and_narrow() {
+        assert_eq!(wrap_advance(&[], 10), (0, 0));
+        // cols clamped to >=1; a 2-wide glyph on a 1-col terminal still advances.
+        assert_eq!(wrap_advance(&[2], 0), (2, 0));
+    }
 
     #[test]
     fn pick_pending_title_matches_current_thread() {
