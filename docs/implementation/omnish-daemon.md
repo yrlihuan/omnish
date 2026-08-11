@@ -2298,3 +2298,13 @@ async fn main() -> anyhow::Result<()> {
    - 之前 `"conversations stats"` 精确匹配，非空 tail 退回通用 `"conversations"` 分支，导致 `/thread stats N` 渲染 `/thread list N` 输出
    - 改为先匹配 `"conversations stats[ <args>]"`，解析可选 limit（默认 10），应用到 `format_thread_stats` 的多线程回退路径；active-thread 路径不变
    - 新增 `test_thread_command.sh` 覆盖三种显示变体
+
+### 2026-08-11 - 插件安装支持 zip 格式（#663）
+
+**主要变更:**
+
+1. **plugin_install 按魔术字节分派归档格式** (`plugin_install.rs`):
+   - 新增 `extract_archive` 入口，按首字节分派：`1f 8b` -> `extract_tar_gz`，`50 4b`（"PK"）-> 新增 `extract_zip`，其余报 `unrecognized archive format`
+   - `extract_zip` 用 `zip` crate 解压，`enclosed_name()` 防路径穿越（拒绝绝对路径与 `..`），unix 下按 `unix_mode()` 恢复文件权限
+   - 因按魔术字节而非扩展名判定，URL/本地路径无需特定后缀即可识别；校验/合并逻辑复用不变
+   - 新增依赖 `zip = { version = "2", default-features = false, features = ["deflate"] }`

@@ -186,7 +186,7 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **system-reminder**：环境上下文附加到系统提示词（非用户消息），ThreadMeta 记录上次 system-reminder 用于变更检测
 - **智能体循环（Agent Loop）**：多轮工具调用循环，DaemonTool 直接执行+ClientTool 暂停/恢复转发，persist_unsaved() 增量持久化（早退路径消毒孤立 tool_use），超时与断开时保存进度，thinking 标签处理
 - **聊天消息流程**：ChatStart 创建/恢复线程→ChatMessage→工具转发→ChatResponse→ChatInterrupt 中断处理
-- **配置管理**：ConfigSchema 基于 config_schema.toml 的 TUI 配置菜单构建器，即时保存，api_key 自动转换为 api_key_cmd，支持动态占位符和客户端侧占位符展开，后端编辑/删除，沙箱规则增删改，从 URL 或本地 tar.gz 安装插件
+- **配置管理**：ConfigSchema 基于 config_schema.toml 的 TUI 配置菜单构建器，即时保存，api_key 自动转换为 api_key_cmd，支持动态占位符和客户端侧占位符展开，后端编辑/删除，沙箱规则增删改，从 URL 或本地 tar.gz/zip 安装插件
 - **UpdateCache 与客户端更新**：更新包缓存管理器（多平台包缓存、版本比较、传输锁），UpdateCheck 版本检查，UpdateRequest 流式包分发
 - **SandboxRules**：沙箱许可规则模块，白名单规则
 - **FileWatcher 与 ConfigWatcher**：共享文件监视基础设施，ConfigWatcher 分节发布/订阅机制，支持 LLM 后端热重载

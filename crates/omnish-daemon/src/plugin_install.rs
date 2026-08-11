@@ -1,4 +1,5 @@
 //! Issue #589: install a plugin from a URL or local tar.gz archive.
+//! Issue #663: also accept zip archives.
 //!
 //! Triggered from the config menu `plugins → Install plugin`. The daemon
 //! downloads the archive (http/https) or reads a local path, validates
@@ -6,7 +7,8 @@
 //! a `tool.json`, and merges the contents into
 //! `{omnish_dir}/plugins/<name>/`. Files present in the destination but
 //! absent from the archive are preserved (e.g. `tool.override.json` a user
-//! hand-edited).
+//! hand-edited). The archive format (gzipped tar or zip) is detected from
+//! the leading magic bytes, so it works regardless of the URL extension.
 
 use omnish_protocol::message::{Message, NoticeLevel};
 use omnish_transport::rpc_server::PushRegistry;
@@ -51,7 +53,7 @@ async fn install_plugin_inner(url: &str, omnish_dir: &Path) -> anyhow::Result<St
     let tmp = tempfile::tempdir()?;
     let extract_root = tmp.path().to_path_buf();
     let bytes_for_extract = bytes.clone();
-    tokio::task::spawn_blocking(move || extract_tar_gz(&bytes_for_extract, &extract_root))
+    tokio::task::spawn_blocking(move || extract_archive(&bytes_for_extract, &extract_root))
         .await??;
 
     let name = validate_structure(tmp.path())?;
@@ -82,6 +84,45 @@ async fn fetch_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
         }
         Ok(tokio::fs::read(path).await?)
     }
+}
+
+/// Dispatch to the right extractor based on the archive's magic bytes:
+/// `1f 8b` for gzip, `50 4b` ("PK") for zip. Anything else is rejected.
+fn extract_archive(bytes: &[u8], to: &Path) -> anyhow::Result<()> {
+    match bytes {
+        [0x1f, 0x8b, ..] => extract_tar_gz(bytes, to),
+        [0x50, 0x4b, ..] => extract_zip(bytes, to),
+        _ => anyhow::bail!("unrecognized archive format (expected tar.gz or zip)"),
+    }
+}
+
+/// Unpack a zip archive into `to`. Uses `enclosed_name` to reject entries
+/// with absolute paths or `..` components so we can't escape the root.
+fn extract_zip(bytes: &[u8], to: &Path) -> anyhow::Result<()> {
+    let reader = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(reader)?;
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let rel = file
+            .enclosed_name()
+            .ok_or_else(|| anyhow::anyhow!("archive contains unsafe path: {}", file.name()))?;
+        let out_path = to.join(&rel);
+        if file.is_dir() {
+            std::fs::create_dir_all(&out_path)?;
+            continue;
+        }
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut out = std::fs::File::create(&out_path)?;
+        std::io::copy(&mut file, &mut out)?;
+        #[cfg(unix)]
+        if let Some(mode) = file.unix_mode() {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(mode))?;
+        }
+    }
+    Ok(())
 }
 
 /// Unpack a gzipped tar into `to`. Rejects entries with absolute paths or
@@ -217,6 +258,74 @@ mod tests {
             tar.finish().unwrap();
         }
         gz.finish().unwrap()
+    }
+
+    fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated)
+                .unix_permissions(0o644);
+            for (path, data) in entries {
+                zw.start_file(*path, opts).unwrap();
+                zw.write_all(data).unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        buf
+    }
+
+    #[test]
+    fn extract_zip_unpacks_valid_archive() {
+        let bytes = make_zip(&[
+            ("my_plugin/tool.json", b"{}"),
+            ("my_plugin/run.sh", b"#!/bin/sh\n"),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        extract_zip(&bytes, tmp.path()).unwrap();
+        assert!(tmp.path().join("my_plugin/tool.json").is_file());
+        assert!(tmp.path().join("my_plugin/run.sh").is_file());
+    }
+
+    #[test]
+    fn extract_archive_dispatches_on_magic_bytes() {
+        let gz = make_tar_gz(&[("p/tool.json", b"{}")]);
+        let zp = make_zip(&[("p/tool.json", b"{}")]);
+        let tmp1 = tempfile::tempdir().unwrap();
+        let tmp2 = tempfile::tempdir().unwrap();
+        extract_archive(&gz, tmp1.path()).unwrap();
+        extract_archive(&zp, tmp2.path()).unwrap();
+        assert!(tmp1.path().join("p/tool.json").is_file());
+        assert!(tmp2.path().join("p/tool.json").is_file());
+    }
+
+    #[test]
+    fn extract_archive_rejects_unknown_format() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = extract_archive(b"not an archive", tmp.path()).unwrap_err().to_string();
+        assert!(err.contains("unrecognized archive format"), "err: {}", err);
+    }
+
+    #[test]
+    fn install_plugin_end_to_end_via_local_zip() {
+        let archive_bytes = make_zip(&[
+            ("zplug/tool.json", b"{\"name\":\"zplug\"}"),
+            ("zplug/run.sh", b"#!/bin/sh\necho hi\n"),
+        ]);
+        let archive_file = tempfile::NamedTempFile::new().unwrap();
+        archive_file.as_file().write_all(&archive_bytes).unwrap();
+        let archive_path = archive_file.path().to_path_buf();
+
+        let omnish = tempfile::tempdir().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let name = rt.block_on(install_plugin_inner(
+            archive_path.to_str().unwrap(),
+            omnish.path(),
+        )).unwrap();
+        assert_eq!(name, "zplug");
+        assert!(omnish.path().join("plugins/zplug/tool.json").is_file());
+        assert!(omnish.path().join("plugins/zplug/run.sh").is_file());
     }
 
     #[test]
