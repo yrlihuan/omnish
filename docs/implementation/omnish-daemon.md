@@ -2308,3 +2308,22 @@ async fn main() -> anyhow::Result<()> {
    - `extract_zip` 用 `zip` crate 解压，`enclosed_name()` 防路径穿越（拒绝绝对路径与 `..`），unix 下按 `unix_mode()` 恢复文件权限
    - 因按魔术字节而非扩展名判定，URL/本地路径无需特定后缀即可识别；校验/合并逻辑复用不变
    - 新增依赖 `zip = { version = "2", default-features = false, features = ["deflate"] }`
+
+### 2026-08-11 - 空响应不再丢弃 thinking（#662）
+
+**背景:** deepseek-v4-flash（走 Anthropic 兼容端点）偶发返回只有 thinking、无 text block 的 end_turn 轮次。agent loop 的空文本守卫（`server.rs`）此前用 `<event>empty response</event>` 字符串**整段覆盖**该轮，把模型的 thinking 推理丢掉，thread log 里只剩 marker。（完全空的 end_turn 在 `anthropic.rs` 会返回 `Err`，走错误分支，不产生该 marker。）
+
+**主要变更:**
+
+1. **保留 thinking，marker 作为 text 输出** (`server.rs`):
+   - 抽出纯函数 `build_empty_response_message(content, marker)`：若响应含 thinking block 则持久化 `[thinking..., text=marker]`，否则退回裸 marker 字符串
+   - tool_use block 有意排除（存了没有后续 tool_result 会 brick 线程）
+   - 用户侧仍展示原有 notice；thinking 现被记录进 thread log 可回看
+   - 新增 3 个单测覆盖：保留 thinking、丢弃 tool_use、无 thinking 退回裸 marker
+
+2. **工具执行门改为按 tool_use block 存在性判定(加 MaxTokens 护栏)** (`server.rs`):
+   - 抽出 `should_execute_tools(response)`：`!tool_calls().is_empty() && stop_reason != MaxTokens`,替代原来的 `stop_reason == ToolUse`
+   - 修复后端把 tool-calling 轮次的 stop_reason 错标成 end_turn 时,工具调用被丢弃/存成孤立块的隐患(某些 OpenAI/Anthropic 兼容代理会错标)
+   - MaxTokens 护栏:截断响应可能以残缺 tool_use(input JSON 不全)结尾,仍走 final 路径当截断处理,不执行半成品调用
+   - 顺带删除 `stop_reason==ToolUse && tool_calls 为空` 时的死 `break`(该退化态现走 final 路径,不再误报"max tool call limit")
+   - 新增 4 个单测覆盖:正常 tool_use、错标 end_turn、MaxTokens 截断、无 tool_calls

@@ -1496,6 +1496,43 @@ fn content_block_to_json(block: &ContentBlock) -> serde_json::Value {
     }
 }
 
+/// Whether the agent loop should execute this response's tool calls and
+/// continue, rather than treating the response as a final turn.
+///
+/// True when the response carries tool_use blocks, EXCEPT when it was truncated
+/// by the output token limit (MaxTokens): such a response may end on an
+/// incomplete tool_use (partial input JSON), so we treat it as truncation and
+/// fall through to the final path instead of acting on a half-formed call.
+///
+/// Using block presence rather than `stop_reason == ToolUse` also covers
+/// backends that mislabel a tool-calling turn's stop_reason as end_turn
+/// (some OpenAI/Anthropic-compatible proxies do this); without this the tool
+/// calls would be silently dropped or persisted as orphans.
+fn should_execute_tools(response: &omnish_llm::backend::LlmResponse) -> bool {
+    !response.tool_calls().is_empty() && response.stop_reason != StopReason::MaxTokens
+}
+
+/// Build the assistant message persisted when a turn produced no visible text
+/// (empty / thinking-only response). Preserves any thinking blocks so the
+/// model's reasoning is recorded rather than lost, and appends `marker` as the
+/// text output (keeping the content non-null and sendable). When there is no
+/// thinking, stores the bare marker string. tool_use blocks are intentionally
+/// excluded: a stored tool_use without a matching tool_result would brick the
+/// thread.
+fn build_empty_response_message(content: &[ContentBlock], marker: &str) -> serde_json::Value {
+    let mut blocks: Vec<serde_json::Value> = content
+        .iter()
+        .filter(|b| matches!(b, ContentBlock::Thinking { .. }))
+        .map(content_block_to_json)
+        .collect();
+    if blocks.is_empty() {
+        serde_json::json!({ "role": "assistant", "content": marker })
+    } else {
+        blocks.push(serde_json::json!({ "type": "text", "text": marker }));
+        serde_json::json!({ "role": "assistant", "content": blocks })
+    }
+}
+
 async fn build_chat_setup(mgr: &SessionManager, tool_registry: &omnish_daemon::tool_registry::ToolRegistry) -> ChatSetup {
     let (commands, stream_reader) = mgr.get_all_commands_with_reader().await;
     let command_query_tool = omnish_daemon::tools::command_query::CommandQueryTool::new(
@@ -2063,11 +2100,8 @@ async fn run_agent_loop(
                 }
                 state.last_model = backend.name().to_string();
 
-                if response.stop_reason == StopReason::ToolUse {
+                if should_execute_tools(&response) {
                     let tool_calls = response.tool_calls();
-                    if tool_calls.is_empty() {
-                        break;
-                    }
 
                     // Build assistant message preserving original block order
                     // (thinking, text, tool_use - order matters for DeepSeek-compatible APIs)
@@ -2397,14 +2431,18 @@ async fn run_agent_loop(
                             "The AI returned an empty response. Send another message to continue.",
                         )
                     };
+                    let has_thinking = response.content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. }));
                     tracing::warn!(
                         "Chat LLM returned empty text (stop_reason={:?}, has_thinking={}, thread={}); persisting placeholder",
                         response.stop_reason,
-                        response.content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. })),
+                        has_thinking,
                         state.cm.thread_id
                     );
+                    // Preserve the model's thinking (see build_empty_response_message)
+                    // so the reasoning is recorded rather than overwritten by the marker.
+                    let assistant_msg = build_empty_response_message(&response.content, marker);
                     state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage::new(
-                        serde_json::json!({ "role": "assistant", "content": marker }),
+                        assistant_msg,
                         omnish_llm::backend::CacheHint::None,
                     ));
                     persist_unsaved(&mut state, conv_mgr, &[]);
@@ -4360,6 +4398,102 @@ mod tests {
         assert_eq!(blocks[0]["text"], "S");
         assert_eq!(blocks[1]["text"], "R");
         assert_eq!(blocks[2]["text"], "q");
+    }
+
+    fn resp(content: Vec<ContentBlock>, stop_reason: StopReason) -> LlmResponse {
+        LlmResponse { content, stop_reason, model: "m".to_string(), usage: None }
+    }
+
+    fn tool_use_block(id: &str) -> ContentBlock {
+        ContentBlock::ToolUse(omnish_llm::tool::ToolCall {
+            id: id.to_string(),
+            name: "read".to_string(),
+            input: serde_json::json!({}),
+            extra: Default::default(),
+        })
+    }
+
+    #[test]
+    fn test_should_execute_tools_normal_tool_use() {
+        let r = resp(vec![tool_use_block("a")], StopReason::ToolUse);
+        assert!(should_execute_tools(&r));
+    }
+
+    #[test]
+    fn test_should_execute_tools_mislabeled_end_turn() {
+        // Tool calls present but stop_reason wrongly reported as end_turn:
+        // still execute (the fix for dropped/orphaned tool calls).
+        let r = resp(
+            vec![ContentBlock::Text("ok".to_string()), tool_use_block("a")],
+            StopReason::EndTurn,
+        );
+        assert!(should_execute_tools(&r));
+    }
+
+    #[test]
+    fn test_should_execute_tools_max_tokens_is_truncation() {
+        // Truncated response may end on an incomplete tool_use; treat as
+        // truncation, do NOT execute.
+        let r = resp(vec![tool_use_block("a")], StopReason::MaxTokens);
+        assert!(!should_execute_tools(&r));
+    }
+
+    #[test]
+    fn test_should_execute_tools_no_tool_calls() {
+        let r = resp(vec![ContentBlock::Text("done".to_string())], StopReason::EndTurn);
+        assert!(!should_execute_tools(&r));
+        // Degenerate: stop_reason ToolUse but no tool blocks -> not executed
+        // (falls through to the final path instead of the old dead `break`).
+        let r2 = resp(vec![ContentBlock::Text("x".to_string())], StopReason::ToolUse);
+        assert!(!should_execute_tools(&r2));
+    }
+
+    #[test]
+    fn test_build_empty_response_message_preserves_thinking() {
+        // A thinking-only turn: the reasoning must be recorded, with the marker
+        // appended as the visible text output.
+        let content = vec![ContentBlock::Thinking {
+            thinking: "reasoned about the cleanup".to_string(),
+            signature: Some("sig-1".to_string()),
+        }];
+        let msg = build_empty_response_message(&content, "<event>empty response</event>");
+        assert_eq!(msg["role"], "assistant");
+        let blocks = msg["content"].as_array().expect("content should be an array");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "thinking");
+        assert_eq!(blocks[0]["thinking"], "reasoned about the cleanup");
+        assert_eq!(blocks[0]["signature"], "sig-1");
+        assert_eq!(blocks[1]["type"], "text");
+        assert_eq!(blocks[1]["text"], "<event>empty response</event>");
+    }
+
+    #[test]
+    fn test_build_empty_response_message_drops_tool_use() {
+        // tool_use blocks must not be persisted here (no matching tool_result
+        // would follow), but thinking is still preserved.
+        let content = vec![
+            ContentBlock::Thinking { thinking: "t".to_string(), signature: None },
+            ContentBlock::ToolUse(omnish_llm::tool::ToolCall {
+                id: "id1".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({}),
+                extra: Default::default(),
+            }),
+        ];
+        let msg = build_empty_response_message(&content, "<event>empty response</event>");
+        let blocks = msg["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks.iter().all(|b| b["type"] != "tool_use"));
+        assert_eq!(blocks[0]["type"], "thinking");
+        assert_eq!(blocks[1]["type"], "text");
+    }
+
+    #[test]
+    fn test_build_empty_response_message_no_thinking_is_bare_marker() {
+        // No thinking: fall back to the bare marker string (existing behavior).
+        let msg = build_empty_response_message(&[], "<event>empty response</event>");
+        assert_eq!(msg["role"], "assistant");
+        assert_eq!(msg["content"], "<event>empty response</event>");
     }
 
     #[test]
