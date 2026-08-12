@@ -2234,25 +2234,6 @@ daemon_addr = "~/.omnish/omnish.sock"
 1. **wrap 情况下的光标列还原** (commit 606d28a):
    - 当 ghost text 跨越行边界时，erase 后需要返回到原光标列，而非简单回退到行首
 
-### 2026-08-11 - chat 输入 CJK 换行光标列偏移修复（#667）
+### 2026-08-11 - chat 输入 CJK 换行光标定位（#667）
 
-**背景:** chat 输入重绘把线性显示宽度用 `cursor_display / cols`、`% cols` 换算成视觉行列。这假设每行被字符严丝合缝填满，对 ASCII 成立；但双宽 CJK 字符在行尾只剩 1 列时放不下，会被终端整体挤到下一行、上一行末尾留 1 列空隙。该空隙未计入线性宽度，导致换行后光标列少 1（出现在"位置+1"而非"位置+2"）。
-
-**主要变更:**
-
-1. **逐字符换行模拟 `wrap_advance`** (`chat_session.rs`):
-   - 新增纯函数 `wrap_advance(glyph_widths, cols) -> (rows, col)`：遇到 `col + w > cols` 先换行再放，正好填满则滚到下一行；对纯 ASCII 与原 `/cols`、`%cols` 结果一致（#283 回归通过）
-   - 重绘循环改为收集每行 per-glyph 宽度 `line_glyphs`（prefix=两个 1 列），光标定位与内容结束行均改用 `wrap_advance`；行间换行的 `+1` 计数不变，仅行内换算变为 CJK 感知
-   - 用 vt100 实测确认宽字符行尾换行行为（`> 中中中a中` 在 cols=10 光标落在 row=1 col=2）
-   - 新增单测覆盖：ASCII 线性等价、CJK straddle 留隙、CJK 不跨界拆分、空/窄边界
-
-**后续修正（同 issue）：deferred wrap，正好填满不进位**
-- 首版 `wrap_advance` 在 `col == cols`（正好填满行）时进位到下一行，但终端是 **deferred wrap**：正好填满时光标停在 `(row, cols)`，只有下一个字符写入才真正换行。导致输入内容正好落在行尾时 `cursor_after_visual_row` 多算 1 行，下一次重绘 `\x1b[nA` 上移过头、覆盖输入块上方的显示行（用户报的 regression）
-- 修正：`wrap_advance` 去掉 `col >= cols` 的进位分支,只在 `col + w > cols` 时换行；结果与 vt100 物理光标在所有探测样本一致（`20*"a"`@20→(0,20)、`"> 中中中中"`@10→(0,10)、`"a中中中"`@4→(1,4)、`"> 中中中a中"`@10→(1,2)）
-- 单测同步:`wrap_advance_exact_fill_is_deferred`(正好填满停在 (0,cols))、`wrap_advance_content_ending_at_margin_matches_physical`（行尾结束匹配物理光标）
-
-**再一处（同 issue）：正好填满时光标 advance 到下一行**
-- deferred wrap 修正后带来的副作用：输入正好填满一行时,光标停在最后一个字符上(pending wrap),不会自动跳到下一行开头,与用户预期不符
-- 解耦两个量:`cursor_after_visual_row`(上移计算用,必须是物理位置,保持 deferred)与**显示光标位置**;当光标正好落在行尾(col==cols)且位于内容末尾(无 ghost)时,写一个空格触发 pending wrap 让光标 advance 到 (row+1, 0),再 `\r\x1b[K` 抹掉该空格。空格触发的 wrap 在屏幕底部会正确滚屏,与多敲一个字符行为一致,故不会重新引入覆盖上方行的问题
-- 重构:把光标定位逻辑抽成纯函数 `position_cursor(line_glyphs, cursor_glyphs, cursor_row, cols, ghost_shown) -> (转义序列, term_cursor_row)`,便于用 vt100 直接测真实逻辑(无重复实现)
-- 新增 3 个单测(vt100 驱动真实 `position_cursor`):正好填满 advance 到下一行、未满走常规路径、CJK 输入逐字增长不覆盖上方显示行(回归)
+- `chat_session.rs` 新增 `wrap_advance`（按 deferred-wrap 逐字符模拟换行，CJK 感知）与纯函数 `position_cursor`（重绘时的光标定位）；光标落在行尾（`col == cols`）时渲染到下一行开头。单测由 vt100 驱动验证。
