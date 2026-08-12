@@ -58,10 +58,11 @@ fn wrap_advance(glyph_widths: &[usize], cols: usize) -> (usize, usize) {
 /// after writing) uses the deferred-wrap model so the up-movement never climbs
 /// past the input block (issue #667).
 ///
-/// When the cursor lands exactly on the right margin (`col == cols`) the
-/// terminal would render it on the last cell of the row (pending wrap), which is
-/// wrong: the logical cursor belongs at the START of the next row. We move it
-/// there:
+/// When the glyph the cursor sits on won't fit in the columns left on its row
+/// (`col + cursor_next_width > cols`, which includes the exact-margin `col ==
+/// cols` case) that glyph wraps to the next row, so the terminal would otherwise
+/// render the cursor in the trailing gap / on the last cell. We move it to the
+/// START of the next row instead:
 /// - if that next row already holds wrapped content (cursor is mid-text), just
 ///   position onto it;
 /// - if it is the end of content (nothing on the next row yet), force the
@@ -72,6 +73,7 @@ fn position_cursor(
     cursor_glyphs: &[usize],
     cursor_row: usize,
     cols: usize,
+    cursor_next_width: usize,
 ) -> (String, usize) {
     let cols = cols.max(1);
     let line_count = line_glyphs.len();
@@ -93,8 +95,9 @@ fn position_cursor(
     };
 
     let mut out = String::new();
-    if target_visual_col == cols {
-        // Cursor on the right margin -> render it at the start of the next row.
+    if target_visual_col + cursor_next_width > cols {
+        // The glyph at the cursor wraps -> render the cursor at the start of the
+        // next row (on that glyph), not in the gap left on this row.
         let desired_row = target_visual_row + 1;
         if desired_row <= cursor_after_visual_row {
             // Wrapped content already occupies that row; move onto it.
@@ -4130,8 +4133,19 @@ impl ChatSession {
                 }
             }
 
+            // Width of the glyph the cursor sits on (the next one to display).
+            // If it can't fit in the columns left on the cursor's row it wraps,
+            // and the cursor must render at the start of the next row rather than
+            // in the trailing gap. FFFC paste markers are ASCII (width 1); at the
+            // end of the line there's no following glyph, so 1 (only an exactly
+            // full row then advances).
+            let cursor_next_width = cursor_line
+                .get(cursor_col)
+                .map(|&ch| if ch == '\u{FFFC}' { 1 } else { UnicodeWidthChar::width(ch).unwrap_or(1) })
+                .unwrap_or(1);
+
             let (pos_seq, new_term_cursor_row) =
-                position_cursor(&line_glyphs, &cursor_glyphs, cursor_row, cols);
+                position_cursor(&line_glyphs, &cursor_glyphs, cursor_row, cols, cursor_next_width);
             out.push_str(&pos_seq);
 
             term_cursor_row.set(new_term_cursor_row);
@@ -4868,7 +4882,7 @@ mod tests {
         out.push_str(&format!("> {}", content));
         out.push_str("\x1b[J");
         let g = glyphs_of(content);
-        let (seq, new_tcr) = position_cursor(&[g.clone()], &g, 0, cols);
+        let (seq, new_tcr) = position_cursor(&[g.clone()], &g, 0, cols, 1);
         out.push_str(&seq);
         p.process(out.as_bytes());
         new_tcr
@@ -4876,10 +4890,11 @@ mod tests {
 
     #[test]
     fn position_cursor_advances_on_exact_fill() {
-        // "> " + 5 CJK = 12 cols exactly fills a 12-col row.
+        // "> " + 5 CJK = 12 cols exactly fills a 12-col row. Cursor at the end
+        // (next width 1) still advances.
         let g = glyphs_of("中中中中中");
         assert_eq!(wrap_advance(&g, 12), (0, 12)); // sanity: exact fill (deferred)
-        let (seq, tcr) = position_cursor(&[g.clone()], &g, 0, 12);
+        let (seq, tcr) = position_cursor(&[g.clone()], &g, 0, 12, 1);
         assert_eq!(tcr, 1, "cursor should advance to the next visual row");
         assert!(seq.starts_with(' '), "forces the pending wrap with a space");
 
@@ -4900,8 +4915,7 @@ mod tests {
         // (row 1, col 0), NOT parked on the last cell of row 0.
         let full = glyphs_of("中中中中中中");
         let cursor = glyphs_of("中中中中中"); // 5 CJK before the cursor
-        assert_eq!(wrap_advance(&cursor, 12), (0, 12)); // cursor on the margin
-        let (seq, tcr) = position_cursor(&[full.clone()], &cursor, 0, 12);
+        let (seq, tcr) = position_cursor(&[full.clone()], &cursor, 0, 12, 2);
         assert_eq!(tcr, 1, "cursor is on the wrapped row");
         assert!(!seq.starts_with(' '), "no forced wrap: content already wrapped");
 
@@ -4914,9 +4928,29 @@ mod tests {
     }
 
     #[test]
+    fn position_cursor_before_wrapping_cjk_with_one_col_gap() {
+        // "> abcdefg" fills col 9 on a 10-col terminal, leaving 1 free column;
+        // the CJK at the cursor (width 2) can't fit and wraps to row 1. The
+        // cursor sits on it -> render at (1, 0), not in the row-0 gap.
+        let full = glyphs_of("abcdefg中");
+        let cursor = glyphs_of("abcdefg"); // "> abcdefg" = 9 cols
+        assert_eq!(wrap_advance(&cursor, 10), (0, 9)); // 1 column left
+        let (seq, tcr) = position_cursor(&[full.clone()], &cursor, 0, 10, 2);
+        assert_eq!(tcr, 1);
+        assert!(!seq.starts_with(' '), "no forced wrap: the CJK already wrapped");
+
+        let mut p = vt100::Parser::new(6, 10, 0);
+        p.process(b"\r> abcdefg");
+        p.process("中".as_bytes());
+        p.process(b"\x1b[J");
+        p.process(seq.as_bytes());
+        assert_eq!(p.screen().cursor_position(), (1, 0));
+    }
+
+    #[test]
     fn position_cursor_normal_when_not_full() {
         let g = glyphs_of("ab"); // "> ab" = 4 cols on a 12-col row
-        let (seq, tcr) = position_cursor(&[g.clone()], &g, 0, 12);
+        let (seq, tcr) = position_cursor(&[g.clone()], &g, 0, 12, 1);
         assert_eq!(tcr, 0);
         assert!(!seq.starts_with(' '), "no forced wrap when the row isn't full");
     }
