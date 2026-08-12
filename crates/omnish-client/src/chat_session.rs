@@ -47,6 +47,70 @@ fn wrap_advance(glyph_widths: &[usize], cols: usize) -> (usize, usize) {
     (row, col)
 }
 
+/// Compute the cursor-repositioning escape sequence to append after the editor
+/// content has been written, plus the resulting `term_cursor_row` (the cursor's
+/// visual row relative to the top of the input block).
+///
+/// `line_glyphs` are the per-glyph display widths of each logical line (prefix
+/// included); `cursor_glyphs` are those of the cursor's line up to the cursor.
+///
+/// `cursor_after_visual_row` (where the terminal physically left the cursor
+/// after writing) uses the deferred-wrap model so the up-movement never climbs
+/// past the input block (issue #667). The displayed cursor, however, is advanced
+/// to the next row when it lands exactly on the right margin at the end of the
+/// content: there the physical cursor is parked on the last cell with a pending
+/// wrap, and we force that wrap with a space (which also scrolls correctly at
+/// the screen bottom, exactly like typing one more glyph) so the user sees where
+/// the next glyph will go.
+fn position_cursor(
+    line_glyphs: &[Vec<usize>],
+    cursor_glyphs: &[usize],
+    cursor_row: usize,
+    cols: usize,
+    ghost_shown: bool,
+) -> (String, usize) {
+    let cols = cols.max(1);
+    let line_count = line_glyphs.len();
+    let cursor_after_visual_row: usize = {
+        let mut r = 0;
+        for g in line_glyphs.iter().take(line_count.saturating_sub(1)) {
+            r += wrap_advance(g, cols).0 + 1;
+        }
+        r += wrap_advance(&line_glyphs[line_count - 1], cols).0;
+        r
+    };
+    let (cursor_line_rows, target_visual_col) = wrap_advance(cursor_glyphs, cols);
+    let target_visual_row: usize = {
+        let mut r = 0;
+        for g in line_glyphs.iter().take(cursor_row) {
+            r += wrap_advance(g, cols).0 + 1;
+        }
+        r + cursor_line_rows
+    };
+
+    let mut out = String::new();
+    if target_visual_col == cols
+        && target_visual_row == cursor_after_visual_row
+        && !ghost_shown
+    {
+        // Cursor exactly at the right margin at the end of content (deferred wrap
+        // pending). Force the wrap so it advances to the next row; \r + \x1b[K
+        // removes the stray space we typed to trigger it.
+        out.push_str(" \r\x1b[K");
+        (out, target_visual_row + 1)
+    } else {
+        let rows_up = cursor_after_visual_row.saturating_sub(target_visual_row);
+        if rows_up > 0 {
+            out.push_str(&format!("\x1b[{}A", rows_up));
+        }
+        out.push('\r');
+        if target_visual_col > 0 {
+            out.push_str(&format!("\x1b[{}C", target_visual_col));
+        }
+        (out, target_visual_row)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ScrollEntry {
     UserInput(String),
@@ -4056,34 +4120,12 @@ impl ChatSession {
                 }
             }
 
-            let cursor_after_visual_row: usize = {
-                let mut r = 0;
-                for g in line_glyphs.iter().take(line_count.saturating_sub(1)) {
-                    r += wrap_advance(g, cols).0 + 1;
-                }
-                r += wrap_advance(&line_glyphs[line_count - 1], cols).0;
-                r
-            };
-            let (cursor_line_rows, target_visual_col) = wrap_advance(&cursor_glyphs, cols);
-            let target_visual_row: usize = {
-                let mut r = 0;
-                for g in line_glyphs.iter().take(cursor_row) {
-                    r += wrap_advance(g, cols).0 + 1;
-                }
-                r += cursor_line_rows;
-                r
-            };
+            let ghost_shown = has_ghost && !ghost.is_empty();
+            let (pos_seq, new_term_cursor_row) =
+                position_cursor(&line_glyphs, &cursor_glyphs, cursor_row, cols, ghost_shown);
+            out.push_str(&pos_seq);
 
-            let rows_up = cursor_after_visual_row.saturating_sub(target_visual_row);
-            if rows_up > 0 {
-                out.push_str(&format!("\x1b[{}A", rows_up));
-            }
-            out.push('\r');
-            if target_visual_col > 0 {
-                out.push_str(&format!("\x1b[{}C", target_visual_col));
-            }
-
-            term_cursor_row.set(target_visual_row);
+            term_cursor_row.set(new_term_cursor_row);
             write_stdout(&out);
         };
 
@@ -4804,6 +4846,70 @@ mod tests {
             g.push(UnicodeWidthChar::width(ch).unwrap_or(1));
         }
         g
+    }
+
+    // Simulate one redraw of a single-line input (cursor at end) into `p`,
+    // using the real position_cursor. Returns the new term_cursor_row.
+    fn redraw_once(p: &mut vt100::Parser, content: &str, cols: usize, tcr: usize) -> usize {
+        let mut out = String::new();
+        if tcr > 0 {
+            out.push_str(&format!("\x1b[{}A", tcr));
+        }
+        out.push('\r');
+        out.push_str(&format!("> {}", content));
+        out.push_str("\x1b[J");
+        let g = glyphs_of(content);
+        let (seq, new_tcr) = position_cursor(&[g.clone()], &g, 0, cols, false);
+        out.push_str(&seq);
+        p.process(out.as_bytes());
+        new_tcr
+    }
+
+    #[test]
+    fn position_cursor_advances_on_exact_fill() {
+        // "> " + 5 CJK = 12 cols exactly fills a 12-col row.
+        let g = glyphs_of("中中中中中");
+        assert_eq!(wrap_advance(&g, 12), (0, 12)); // sanity: exact fill (deferred)
+        let (seq, tcr) = position_cursor(&[g.clone()], &g, 0, 12, false);
+        assert_eq!(tcr, 1, "cursor should advance to the next visual row");
+        assert!(seq.starts_with(' '), "forces the pending wrap with a space");
+
+        // Drive through vt100: cursor ends physically at row 1, col 0.
+        let mut p = vt100::Parser::new(6, 12, 0);
+        p.process(b"\r> ");
+        p.process("中中中中中".as_bytes());
+        p.process(b"\x1b[J");
+        p.process(seq.as_bytes());
+        assert_eq!(p.screen().cursor_position(), (1, 0));
+    }
+
+    #[test]
+    fn position_cursor_normal_when_not_full() {
+        let g = glyphs_of("ab"); // "> ab" = 4 cols on a 12-col row
+        let (seq, tcr) = position_cursor(&[g.clone()], &g, 0, 12, false);
+        assert_eq!(tcr, 0);
+        assert!(!seq.starts_with(' '), "no forced wrap when the row isn't full");
+    }
+
+    #[test]
+    fn input_growth_never_overwrites_lines_above() {
+        // Regression: as CJK input grows through the wrap boundary (including the
+        // exact-fill point), the display lines above the input must survive.
+        let cols = 12usize;
+        let mut p = vt100::Parser::new(8, cols as u16, 0);
+        p.process(b"previous1\r\nprevious2\r\n");
+        assert_eq!(p.screen().cursor_position().0, 2, "input starts at row 2");
+
+        let mut tcr = 0usize;
+        let mut content = String::new();
+        for ch in "中中中中中中中".chars() {
+            content.push(ch);
+            tcr = redraw_once(&mut p, &content, cols, tcr);
+        }
+        let row0: String = p.screen().rows(0, cols as u16).next().unwrap();
+        let row1: String = p.screen().rows(0, cols as u16).nth(1).unwrap();
+        assert_eq!(row0.trim_end(), "previous1", "row0 clobbered: {:?}", row0);
+        assert_eq!(row1.trim_end(), "previous2", "row1 clobbered: {:?}", row1);
     }
 
     #[test]
