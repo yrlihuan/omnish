@@ -2244,4 +2244,9 @@ daemon_addr = "~/.omnish/omnish.sock"
    - 新增纯函数 `wrap_advance(glyph_widths, cols) -> (rows, col)`：遇到 `col + w > cols` 先换行再放，正好填满则滚到下一行；对纯 ASCII 与原 `/cols`、`%cols` 结果一致（#283 回归通过）
    - 重绘循环改为收集每行 per-glyph 宽度 `line_glyphs`（prefix=两个 1 列），光标定位与内容结束行均改用 `wrap_advance`；行间换行的 `+1` 计数不变，仅行内换算变为 CJK 感知
    - 用 vt100 实测确认宽字符行尾换行行为（`> 中中中a中` 在 cols=10 光标落在 row=1 col=2）
-   - 新增 5 个单测覆盖：ASCII 线性等价、CJK straddle 留隙、正好填满滚行、CJK 不跨界拆分、空/窄边界
+   - 新增单测覆盖：ASCII 线性等价、CJK straddle 留隙、CJK 不跨界拆分、空/窄边界
+
+**后续修正（同 issue）：deferred wrap，正好填满不进位**
+- 首版 `wrap_advance` 在 `col == cols`（正好填满行）时进位到下一行，但终端是 **deferred wrap**：正好填满时光标停在 `(row, cols)`，只有下一个字符写入才真正换行。导致输入内容正好落在行尾时 `cursor_after_visual_row` 多算 1 行，下一次重绘 `\x1b[nA` 上移过头、覆盖输入块上方的显示行（用户报的 regression）
+- 修正：`wrap_advance` 去掉 `col >= cols` 的进位分支,只在 `col + w > cols` 时换行；结果与 vt100 物理光标在所有探测样本一致（`20*"a"`@20→(0,20)、`"> 中中中中"`@10→(0,10)、`"a中中中"`@4→(1,4)、`"> 中中中a中"`@10→(1,2)）
+- 单测同步:`wrap_advance_exact_fill_is_deferred`(正好填满停在 (0,cols))、`wrap_advance_content_ending_at_margin_matches_physical`（行尾结束匹配物理光标）

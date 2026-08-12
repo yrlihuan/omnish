@@ -17,14 +17,22 @@ use crate::display::{BOLD, BRIGHT_WHITE, CYAN, DIM, GRAY, GREEN, NEWLINE, RED, R
 use widgets::scroll_view::ScrollView;
 
 /// Lay out a sequence of per-glyph display widths on a `cols`-wide terminal with
-/// autowrap, returning the visual `(rows_advanced, col)` position where the next
-/// glyph would be placed.
+/// autowrap, returning the terminal's physical cursor `(row, col)` after writing
+/// them.
 ///
-/// Unlike a plain `width / cols`, `width % cols`, this models the terminal rule
-/// that a glyph wider than the columns remaining on the current row is pushed
-/// whole to the next row (leaving a trailing gap), and that a row filled exactly
-/// rolls to the next row. This matters for double-width CJK glyphs at the right
-/// margin: the linear form undercounts the column by the gap width (issue #667).
+/// Models the terminal's *deferred wrap* (DEC autowrap) behavior:
+/// - a glyph wider than the columns remaining on the current row is pushed whole
+///   to the next row (leaving a trailing gap) - this is what a plain
+///   `width / cols`, `width % cols` gets wrong for double-width CJK glyphs at the
+///   right margin, undercounting the column by the gap width (issue #667);
+/// - a row filled *exactly* does NOT advance the row: the cursor stays at
+///   `(row, cols)` with a pending wrap that only triggers when the next glyph is
+///   written. Rolling to the next row here would overcount the cursor's visual
+///   row and, on the following redraw, move the cursor up past the input block
+///   into the lines above it (regression after the first #667 fix).
+///
+/// Verified against vt100: `20*"a"`@20 -> (0,20); `"> 中中中中"`@10 -> (0,10);
+/// `"a中中中"`@4 -> (1,4); `"> 中中中a中"`@10 -> (1,2).
 fn wrap_advance(glyph_widths: &[usize], cols: usize) -> (usize, usize) {
     let cols = cols.max(1);
     let mut row = 0usize;
@@ -35,10 +43,6 @@ fn wrap_advance(glyph_widths: &[usize], cols: usize) -> (usize, usize) {
             col = 0;
         }
         col += w;
-        if col >= cols {
-            row += 1;
-            col = 0;
-        }
     }
     (row, col)
 }
@@ -4823,11 +4827,25 @@ mod tests {
     }
 
     #[test]
-    fn wrap_advance_exact_fill_rolls_to_next_row() {
-        // Exactly filling the row rolls the insertion point to the next row,
-        // matching the old width/cols, width%cols behavior for ASCII.
-        let g = vec![1usize; 10];
-        assert_eq!(wrap_advance(&g, 10), (1, 0));
+    fn wrap_advance_exact_fill_is_deferred() {
+        // Exactly filling the row does NOT advance it (deferred wrap): the
+        // cursor stays at (0, cols). Rolling to (1, 0) here caused the redraw to
+        // move up past the input block and overwrite the lines above it.
+        // Verified against vt100: 20*"a"@20 -> (0,20).
+        assert_eq!(wrap_advance(&vec![1usize; 10], 10), (0, 10));
+        // "> 中中中中" = 2 + 8 = 10 exactly fills a 10-col row -> (0, 10).
+        assert_eq!(wrap_advance(&glyphs_of("中中中中"), 10), (0, 10));
+    }
+
+    #[test]
+    fn wrap_advance_content_ending_at_margin_matches_physical() {
+        // "a中中中" on 4 cols: a(0) 中(1-2) [gap col3] wraps 中 to row1(0-1),
+        // 中(2-3) exactly fills row1 -> physical (1, 4), NOT (2, 0).
+        // (No "> " prefix here; matches the vt100 probe.)
+        let g: Vec<usize> = "a中中中".chars()
+            .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1))
+            .collect();
+        assert_eq!(wrap_advance(&g, 4), (1, 4));
     }
 
     #[test]
@@ -4841,8 +4859,8 @@ mod tests {
     #[test]
     fn wrap_advance_empty_and_narrow() {
         assert_eq!(wrap_advance(&[], 10), (0, 0));
-        // cols clamped to >=1; a 2-wide glyph on a 1-col terminal still advances.
-        assert_eq!(wrap_advance(&[2], 0), (2, 0));
+        // cols clamped to >=1; two 1-wide glyphs on a 1-col terminal wrap once.
+        assert_eq!(wrap_advance(&[1, 1], 0), (1, 1));
     }
 
     #[test]
