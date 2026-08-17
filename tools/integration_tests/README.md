@@ -83,6 +83,26 @@ tools/integration_tests/test_chat_history.sh -w -t 1  # Wait for confirmation, t
 - Test 3: ✓ PASS - Down arrow navigates forward through history
 - Test 4: ✓ PASS - Down arrow past most recent clears input
 
+### `verify_issue_665.sh`
+
+**Purpose:** Tests issue #665: "chat模式下，支持在LLM思考和tool执行过程中按ctrl+o"
+
+**What it tests (the two ways control returns from the browser):**
+1. **Test 1:** Ctrl+O opens the browser mid-turn; after exiting (`q`) while the turn is **still in progress** (observed with the tool spinner `⠏ Bash(sleep ...)`), keyboard input is **blocked** - typed keys are swallowed by the background stdin watcher and never reach the editor; Ctrl-C then cancels back to the prompt.
+2. **Test 2:** Ctrl+O opens the browser; the browser is held open while the turn **completes** in the background (its output buffers); exiting (`q`) **renders the new result** and a follow-up message is answered normally (chat interactive again).
+
+**Requirements:**
+- `tmux` installed
+- release `omnish` client built (`cargo build --release`)
+- a running `omnish-daemon` (real LLM backend; tests issue live chat turns)
+
+**Usage:**
+```bash
+tools/integration_tests/verify_issue_665.sh          # Run all tests
+tools/integration_tests/verify_issue_665.sh -t 1     # Only the thinking-phase test
+tools/integration_tests/verify_issue_665.sh -t 2     # Only the tool-execution test
+```
+
 ## Adding New Integration Tests
 
 When adding new integration tests:

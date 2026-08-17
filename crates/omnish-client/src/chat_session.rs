@@ -1795,14 +1795,12 @@ impl ChatSession {
                 project_instructions,
             });
 
-            // Ctrl-C cancellation
+            // Background stdin watcher: Ctrl-C cancels the turn, Ctrl-O browses
+            // scroll history. On Ctrl-O the watcher exits (releasing stdin); the
+            // select loops below run the blocking browser and respawn it.
             let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
-            let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-            tokio::task::spawn_blocking(move || {
-                if wait_for_ctrl_c(stop_rx) {
-                    let _ = cancel_tx.send(true);
-                }
-            });
+            let (browse_tx, mut browse_rx) = tokio::sync::watch::channel(0u64);
+            let mut stop_tx = spawn_stdin_watcher(cancel_tx.clone(), browse_tx.clone());
 
             let rpc_result = rpc.call_stream(chat_msg);
             let mut interrupted = false;
@@ -1837,6 +1835,10 @@ impl ChatSession {
                             interrupted = true;
                             stream_result = None;
                             break;
+                        }
+                        _ = browse_rx.changed() => {
+                            self.browse_history();
+                            stop_tx = spawn_stdin_watcher(cancel_tx.clone(), browse_tx.clone());
                         }
                         _ = spinner_interval.tick(), if self.thinking_visible => {
                             self.spinner_frame = self.spinner_frame.wrapping_add(1);
@@ -1965,6 +1967,10 @@ impl ChatSession {
                                         self.spinner_frame = self.spinner_frame.wrapping_add(1);
                                         self.redraw_tool_section();
                                         self.redraw_thinking();
+                                    }
+                                    _ = browse_rx.changed() => {
+                                        self.browse_history();
+                                        stop_tx = spawn_stdin_watcher(cancel_tx.clone(), browse_tx.clone());
                                     }
                                     _ = wait_cancel(&mut crx) => {
                                         interrupted = true;
@@ -2098,6 +2104,10 @@ impl ChatSession {
                                         self.spinner_frame = self.spinner_frame.wrapping_add(1);
                                         self.redraw_tool_section();
                                         self.redraw_thinking();
+                                    }
+                                    _ = browse_rx.changed() => {
+                                        self.browse_history();
+                                        stop_tx = spawn_stdin_watcher(cancel_tx.clone(), browse_tx.clone());
                                     }
                                     _ = wait_cancel(&mut crx2) => {
                                         interrupted = true;
@@ -2718,7 +2728,7 @@ impl ChatSession {
         let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
         let (stop_tx, stop_rx) = std::sync::mpsc::channel();
         tokio::task::spawn_blocking(move || {
-            if wait_for_ctrl_c(stop_rx) {
+            if matches!(wait_for_ctrl_c(stop_rx, false), StdinSignal::CtrlC) {
                 let _ = cancel_tx.send(true);
             }
         });
@@ -4804,7 +4814,41 @@ async fn watch_true(rx: &mut tokio::sync::watch::Receiver<bool>) {
     }
 }
 
-fn wait_for_ctrl_c(stop: std::sync::mpsc::Receiver<()>) -> bool {
+/// Outcome of the background stdin watcher that runs while a chat turn awaits
+/// the daemon.
+enum StdinSignal {
+    /// Ctrl-C: the user wants to interrupt the turn.
+    CtrlC,
+    /// Ctrl-O: the user wants to browse scroll history. The watcher stops
+    /// reading stdin so the caller can run the blocking browser.
+    Browse,
+    /// The watcher was told to stop, hit a read error, or lost its sender.
+    Stopped,
+}
+
+/// Spawn the background stdin watcher for a chat turn. It owns stdin while the
+/// async loop awaits the daemon: Ctrl-C requests cancellation, Ctrl-O requests
+/// browsing scroll history. On Ctrl-O it returns (releasing stdin) so the
+/// caller can run the blocking browser and then respawn the watcher; the
+/// returned `stop_tx` stops it once the turn ends.
+fn spawn_stdin_watcher(
+    cancel_tx: tokio::sync::watch::Sender<bool>,
+    browse_tx: tokio::sync::watch::Sender<u64>,
+) -> std::sync::mpsc::Sender<()> {
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+    tokio::task::spawn_blocking(move || match wait_for_ctrl_c(stop_rx, true) {
+        StdinSignal::CtrlC => {
+            let _ = cancel_tx.send(true);
+        }
+        StdinSignal::Browse => {
+            browse_tx.send_modify(|n| *n = n.wrapping_add(1));
+        }
+        StdinSignal::Stopped => {}
+    });
+    stop_tx
+}
+
+fn wait_for_ctrl_c(stop: std::sync::mpsc::Receiver<()>, watch_browse: bool) -> StdinSignal {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc::TryRecvError;
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -4821,8 +4865,8 @@ fn wait_for_ctrl_c(stop: std::sync::mpsc::Receiver<()>) -> bool {
         // this task alive and silently consuming every non-Ctrl-C byte from
         // stdin.
         match stop.try_recv() {
-            Ok(_) => { exit_reason = "stop"; break false; }
-            Err(TryRecvError::Disconnected) => { exit_reason = "disconnect"; break false; }
+            Ok(_) => { exit_reason = "stop"; break StdinSignal::Stopped; }
+            Err(TryRecvError::Disconnected) => { exit_reason = "disconnect"; break StdinSignal::Stopped; }
             Err(TryRecvError::Empty) => {}
         }
         let mut pfd = libc::pollfd {
@@ -4835,9 +4879,10 @@ fn wait_for_ctrl_c(stop: std::sync::mpsc::Receiver<()>) -> bool {
             continue;
         }
         match nix::unistd::read(stdin_fd, &mut byte) {
-            Ok(1) if byte[0] == 0x03 => { exit_reason = "ctrl-c"; break true; }
+            Ok(1) if byte[0] == 0x03 => { exit_reason = "ctrl-c"; break StdinSignal::CtrlC; }
+            Ok(1) if watch_browse && byte[0] == 0x0f => { exit_reason = "ctrl-o"; break StdinSignal::Browse; }
             Ok(1) => { eaten += 1; }
-            _ => { exit_reason = "read-err"; break false; }
+            _ => { exit_reason = "read-err"; break StdinSignal::Stopped; }
         }
     };
     crate::event_log::push(format!(
