@@ -4927,7 +4927,7 @@ mod tests {
         out.push_str(&format!("> {}", content));
         out.push_str("\x1b[J");
         let g = glyphs_of(content);
-        let (seq, new_tcr) = position_cursor(&[g.clone()], &g, 0, cols, 1);
+        let (seq, new_tcr) = position_cursor(std::slice::from_ref(&g), &g, 0, cols, 1);
         out.push_str(&seq);
         p.process(out.as_bytes());
         new_tcr
@@ -4939,7 +4939,7 @@ mod tests {
         // (next width 1) still advances.
         let g = glyphs_of("中中中中中");
         assert_eq!(wrap_advance(&g, 12), (0, 12)); // sanity: exact fill (deferred)
-        let (seq, tcr) = position_cursor(&[g.clone()], &g, 0, 12, 1);
+        let (seq, tcr) = position_cursor(std::slice::from_ref(&g), &g, 0, 12, 1);
         assert_eq!(tcr, 1, "cursor should advance to the next visual row");
         assert!(seq.starts_with(' '), "forces the pending wrap with a space");
 
@@ -4960,7 +4960,7 @@ mod tests {
         // (row 1, col 0), NOT parked on the last cell of row 0.
         let full = glyphs_of("中中中中中中");
         let cursor = glyphs_of("中中中中中"); // 5 CJK before the cursor
-        let (seq, tcr) = position_cursor(&[full.clone()], &cursor, 0, 12, 2);
+        let (seq, tcr) = position_cursor(std::slice::from_ref(&full), &cursor, 0, 12, 2);
         assert_eq!(tcr, 1, "cursor is on the wrapped row");
         assert!(!seq.starts_with(' '), "no forced wrap: content already wrapped");
 
@@ -4980,7 +4980,7 @@ mod tests {
         let full = glyphs_of("abcdefg中");
         let cursor = glyphs_of("abcdefg"); // "> abcdefg" = 9 cols
         assert_eq!(wrap_advance(&cursor, 10), (0, 9)); // 1 column left
-        let (seq, tcr) = position_cursor(&[full.clone()], &cursor, 0, 10, 2);
+        let (seq, tcr) = position_cursor(std::slice::from_ref(&full), &cursor, 0, 10, 2);
         assert_eq!(tcr, 1);
         assert!(!seq.starts_with(' '), "no forced wrap: the CJK already wrapped");
 
@@ -4995,7 +4995,7 @@ mod tests {
     #[test]
     fn position_cursor_normal_when_not_full() {
         let g = glyphs_of("ab"); // "> ab" = 4 cols on a 12-col row
-        let (seq, tcr) = position_cursor(&[g.clone()], &g, 0, 12, 1);
+        let (seq, tcr) = position_cursor(std::slice::from_ref(&g), &g, 0, 12, 1);
         assert_eq!(tcr, 0);
         assert!(!seq.starts_with(' '), "no forced wrap when the row isn't full");
     }
@@ -5047,7 +5047,7 @@ mod tests {
         // cursor stays at (0, cols). Rolling to (1, 0) here caused the redraw to
         // move up past the input block and overwrite the lines above it.
         // Verified against vt100: 20*"a"@20 -> (0,20).
-        assert_eq!(wrap_advance(&vec![1usize; 10], 10), (0, 10));
+        assert_eq!(wrap_advance(&[1usize; 10], 10), (0, 10));
         // "> 中中中中" = 2 + 8 = 10 exactly fills a 10-col row -> (0, 10).
         assert_eq!(wrap_advance(&glyphs_of("中中中中"), 10), (0, 10));
     }
