@@ -36,6 +36,16 @@ pub struct ScrollView {
     mode: ViewMode,
     /// Maximum display width per line.
     max_cols: usize,
+    /// Start line index of each source entry in `lines` (for Ctrl-E anchoring).
+    entry_starts: Vec<usize>,
+    /// The inactive line set (swapped in on Ctrl-E toggle).
+    alt_lines: Vec<String>,
+    /// Per-entry start line indices for `alt_lines`.
+    alt_entry_starts: Vec<usize>,
+    /// Whether the detailed set is currently active (vs compact).
+    detailed: bool,
+    /// Whether Ctrl-E toggling is available (two line sets were provided).
+    toggleable: bool,
 }
 
 impl ScrollView {
@@ -48,7 +58,55 @@ impl ScrollView {
             rendered_lines: 0,
             mode: ViewMode::Compact,
             max_cols,
+            entry_starts: Vec::new(),
+            alt_lines: Vec::new(),
+            alt_entry_starts: Vec::new(),
+            detailed: false,
+            toggleable: false,
         }
+    }
+
+    /// Provide two switchable line sets - a compact view (active by default)
+    /// and a detailed view - each with per-entry start-line offsets. Ctrl-E in
+    /// browse mode swaps between them while keeping the entry at the top of the
+    /// viewport anchored. Replaces any lines added via `push_line`.
+    pub fn set_toggle_content(
+        &mut self,
+        compact_lines: Vec<String>,
+        compact_starts: Vec<usize>,
+        detailed_lines: Vec<String>,
+        detailed_starts: Vec<usize>,
+    ) {
+        self.lines = compact_lines;
+        self.entry_starts = compact_starts;
+        self.alt_lines = detailed_lines;
+        self.alt_entry_starts = detailed_starts;
+        self.detailed = false;
+        self.toggleable = true;
+    }
+
+    /// Index of the entry containing `line` (largest start <= line).
+    fn entry_at_line(&self, line: usize) -> usize {
+        match self.entry_starts.binary_search(&line) {
+            Ok(i) => i,
+            Err(0) => 0,
+            Err(i) => i - 1,
+        }
+    }
+
+    /// Toggle between the compact and detailed line sets, keeping the entry at
+    /// the top of the viewport anchored across the switch. Returns ANSI redraw.
+    fn toggle_detail(&mut self) -> String {
+        if !self.toggleable || self.mode != ViewMode::Expanded {
+            return String::new();
+        }
+        let entry = self.entry_at_line(self.scroll_offset);
+        std::mem::swap(&mut self.lines, &mut self.alt_lines);
+        std::mem::swap(&mut self.entry_starts, &mut self.alt_entry_starts);
+        self.detailed = !self.detailed;
+        let anchored = self.entry_starts.get(entry).copied().unwrap_or(0);
+        self.scroll_offset = anchored.min(self.max_scroll_offset());
+        self.render_expanded()
     }
 
     #[allow(dead_code)]
@@ -64,6 +122,7 @@ impl ScrollView {
     /// Add a line to the buffer.  In compact mode, returns ANSI to redraw the
     /// tail.  In expanded mode, the line is buffered but no redraw happens
     /// (the user controls scrolling).
+    #[allow(dead_code)]
     pub fn push_line(&mut self, line: &str) -> String {
         self.lines.push(line.to_string());
         if self.mode == ViewMode::Compact {
@@ -186,6 +245,12 @@ impl ScrollView {
                     let seq = self.scroll_up(self.expanded_height);
                     crate::term_out::write_stdout(seq.as_bytes());
                 }
+                0x05 => { // Ctrl-E: toggle compact/detailed tool history
+                    let seq = self.toggle_detail();
+                    if !seq.is_empty() {
+                        crate::term_out::write_stdout(seq.as_bytes());
+                    }
+                }
                 b'q' | b'Q' | 0x03 | 0x0f => break, // q, Ctrl-C, Ctrl-O
                 _ => {}
             }
@@ -285,7 +350,15 @@ impl ScrollView {
         }
 
         // Hint line
-        let hint = "\u{2191}\u{2193}/j/k scroll  ctrl+b/+f page-up/down  ctrl+o/esc quit";
+        let hint = if self.toggleable {
+            if self.detailed {
+                "\u{2191}\u{2193}/j/k scroll  ctrl+b/+f page  ctrl+e compact  ctrl+o/esc quit"
+            } else {
+                "\u{2191}\u{2193}/j/k scroll  ctrl+b/+f page  ctrl+e detail  ctrl+o/esc quit"
+            }
+        } else {
+            "\u{2191}\u{2193}/j/k scroll  ctrl+b/+f page-up/down  ctrl+o/esc quit"
+        };
         let hint_visual_rows = {
             let w = crate::display::display_width(hint);
             if w == 0 || cols == 0 { 1 } else { w.div_ceil(cols) }
@@ -796,5 +869,61 @@ mod tests {
         let all = parser.screen().contents();
         assert!(!all.contains("ccc"), "wrapped line should be erased: {all}");
         assert!(!all.contains("short"), "should be erased: {all}");
+    }
+
+    #[test]
+    fn test_entry_at_line() {
+        let mut sv = ScrollView::new(3, 5, 80);
+        // 3 entries starting at lines 0, 1, 4
+        sv.set_toggle_content(
+            vec!["a".into(), "b".into(), "c".into()],
+            vec![0, 1, 2],
+            vec!["a".into(), "b0".into(), "b1".into(), "b2".into(), "c".into()],
+            vec![0, 1, 4],
+        );
+        // Active (compact) starts = [0, 1, 2]
+        assert_eq!(sv.entry_at_line(0), 0);
+        assert_eq!(sv.entry_at_line(1), 1);
+        assert_eq!(sv.entry_at_line(2), 2);
+        assert_eq!(sv.entry_at_line(99), 2); // past end clamps to last entry
+    }
+
+    #[test]
+    fn test_ctrl_e_toggle_keeps_entry_anchored() {
+        // compact: 3 one-line entries; detailed: middle entry is 3 lines tall.
+        let mut sv = ScrollView::new(3, 1, 80);
+        sv.set_toggle_content(
+            vec!["c0".into(), "c1".into(), "c2".into()],
+            vec![0, 1, 2],
+            vec!["d0".into(), "d1a".into(), "d1b".into(), "d1c".into(), "d2".into()],
+            vec![0, 1, 4],
+        );
+        sv.enter_browse(); // expanded, scrolled to bottom
+
+        // Anchor the viewport top on the middle entry (index 1).
+        sv.scroll_offset = 1;
+        assert_eq!(sv.entry_at_line(sv.scroll_offset), 1);
+        assert!(!sv.detailed);
+
+        // Ctrl-E -> detailed. Same entry (1) must stay at the top, now at the
+        // detailed line offset (1), not the old raw line index.
+        sv.toggle_detail();
+        assert!(sv.detailed);
+        assert_eq!(sv.entry_at_line(sv.scroll_offset), 1);
+
+        // Ctrl-E again -> back to compact, still anchored on entry 1.
+        sv.toggle_detail();
+        assert!(!sv.detailed);
+        assert_eq!(sv.entry_at_line(sv.scroll_offset), 1);
+        assert_eq!(sv.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_toggle_detail_noop_without_content() {
+        // No set_toggle_content -> Ctrl-E does nothing (returns empty).
+        let mut sv = ScrollView::new(3, 5, 80);
+        sv.enter_browse();
+        assert_eq!(sv.toggle_detail(), "");
+        assert!(!sv.detailed);
     }
 }

@@ -1397,74 +1397,100 @@ impl ChatSession {
         self.scroll_history.push(entry);
     }
 
-    fn browse_history(&self) {
-        if self.scroll_history.is_empty() {
-            return;
-        }
-        let (rows, cols) = super::get_terminal_size().unwrap_or((24, 80));
-        let lines: Vec<String> = self.scroll_history.iter().flat_map(|entry| {
-            match entry {
-                ScrollEntry::UserInput(text) => {
-                    text.lines().enumerate().map(|(i, line)| {
-                        if i == 0 {
-                            format!("{CYAN}> {RESET}{}", line)
-                        } else {
-                            format!("  {}", line)
-                        }
-                    }).collect::<Vec<_>>()
-                }
-                ScrollEntry::ToolStatus(cts) => {
-                    let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
-                    let param_desc = cts.param_desc.as_deref().unwrap_or("");
-                    let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Success);
+    /// Render a single scroll-history entry to display lines. `detailed`
+    /// selects the full tool result (Ctrl-E view); otherwise the compact
+    /// result is used, matching the inline chat rendering.
+    fn render_browse_entry(&self, entry: &ScrollEntry, detailed: bool, cols: usize) -> Vec<String> {
+        match entry {
+            ScrollEntry::UserInput(text) => {
+                text.lines().enumerate().map(|(i, line)| {
+                    if i == 0 {
+                        format!("{CYAN}> {RESET}{}", line)
+                    } else {
+                        format!("  {}", line)
+                    }
+                }).collect::<Vec<_>>()
+            }
+            ScrollEntry::ToolStatus(cts) => {
+                let display_name = cts.display_name.as_deref().unwrap_or(&cts.tool_name);
+                let param_desc = cts.param_desc.as_deref().unwrap_or("");
+                let icon = cts.status_icon.as_ref().unwrap_or(&StatusIcon::Success);
+                if detailed {
                     let mut lines = vec![display::render_tool_header_full(icon, display_name, param_desc)];
                     if let Some(ref full) = cts.result_full {
                         lines.extend(display::render_tool_output(full, self.extended_unicode));
                     }
                     lines
-                }
-                ScrollEntry::LlmText(text) => {
-                    let mut out = vec![String::new()];
-                    for (i, line) in text.split('\n').enumerate() {
-                        if i == 0 {
-                            out.push(format!("{BRIGHT_WHITE}●{RESET} {}", line));
-                        } else {
-                            out.push(format!("  {}", line));
-                        }
+                } else {
+                    let mut lines = vec![display::render_tool_header_with_spinner(icon, display_name, param_desc, cols, None)];
+                    if let Some(ref compact) = cts.result_compact {
+                        lines.extend(display::render_tool_output_with_cols(compact, cols, self.extended_unicode));
                     }
-                    out
-                }
-                ScrollEntry::Response(content) => {
-                    let rendered = super::markdown::render(content);
-                    let mut out = vec![String::new()]; // empty line before response
-                    for (i, line) in rendered.split(NEWLINE).enumerate() {
-                        if i == 0 {
-                            out.push(format!("{BRIGHT_WHITE}●{RESET} {}", line));
-                        } else {
-                            out.push(format!("  {}", line));
-                        }
-                    }
-                    out
-                }
-                ScrollEntry::Separator => {
-                    vec![display::render_separator_plain(cols)]
-                }
-                ScrollEntry::SystemMessage(msg) => {
-                    vec![format!("{}{}{}", crate::display::DIM, msg, crate::display::RESET)]
+                    lines
                 }
             }
-        }).collect();
+            ScrollEntry::LlmText(text) => {
+                let mut out = vec![String::new()];
+                for (i, line) in text.split('\n').enumerate() {
+                    if i == 0 {
+                        out.push(format!("{BRIGHT_WHITE}●{RESET} {}", line));
+                    } else {
+                        out.push(format!("  {}", line));
+                    }
+                }
+                out
+            }
+            ScrollEntry::Response(content) => {
+                let rendered = super::markdown::render(content);
+                let mut out = vec![String::new()]; // empty line before response
+                for (i, line) in rendered.split(NEWLINE).enumerate() {
+                    if i == 0 {
+                        out.push(format!("{BRIGHT_WHITE}●{RESET} {}", line));
+                    } else {
+                        out.push(format!("  {}", line));
+                    }
+                }
+                out
+            }
+            ScrollEntry::Separator => {
+                vec![display::render_separator_plain(cols as u16)]
+            }
+            ScrollEntry::SystemMessage(msg) => {
+                vec![format!("{}{}{}", crate::display::DIM, msg, crate::display::RESET)]
+            }
+        }
+    }
 
-        if lines.is_empty() {
+    /// Build the browse line buffer for a given verbosity, plus the start line
+    /// index of each source entry (used to keep the viewport anchored on the
+    /// same entry when toggling compact/detailed with Ctrl-E).
+    fn build_browse_lines(&self, detailed: bool, cols: usize) -> (Vec<String>, Vec<usize>) {
+        let mut lines = Vec::new();
+        let mut starts = Vec::with_capacity(self.scroll_history.len());
+        for entry in &self.scroll_history {
+            starts.push(lines.len());
+            lines.extend(self.render_browse_entry(entry, detailed, cols));
+        }
+        (lines, starts)
+    }
+
+    fn browse_history(&self) {
+        if self.scroll_history.is_empty() {
+            return;
+        }
+        let (rows, cols) = super::get_terminal_size().unwrap_or((24, 80));
+        let cols = cols as usize;
+        let (compact_lines, compact_starts) = self.build_browse_lines(false, cols);
+        let (detailed_lines, detailed_starts) = self.build_browse_lines(true, cols);
+
+        if compact_lines.is_empty() {
             return;
         }
 
         let compact_h = (rows as usize / 3).max(3);
         let expanded_h = (rows as usize).saturating_sub(3);
-        let mut sv = ScrollView::new(compact_h, expanded_h, cols as usize);
-        for line in &lines {
-            sv.push_line(line);
-        }
+        let mut sv = ScrollView::new(compact_h, expanded_h, cols);
+        sv.set_toggle_content(compact_lines, compact_starts, detailed_lines, detailed_starts);
         sv.run_browse();
     }
 

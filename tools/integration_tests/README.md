@@ -103,6 +103,23 @@ tools/integration_tests/verify_issue_665.sh -t 1     # Only the thinking-phase t
 tools/integration_tests/verify_issue_665.sh -t 2     # Only the tool-execution test
 ```
 
+### `verify_issue_669.sh`
+
+**Purpose:** Tests issue #669: a Ctrl+E toggle inside the Ctrl+O history browser that switches tool-call history between the default compact view and a detailed view.
+
+**What it tests:**
+1. **Test 1:** After a tool-call turn, Ctrl+O opens the browser in **compact** mode (hint offers `ctrl+e detail`); Ctrl+E switches to **detailed** (hint offers `ctrl+e compact`, full tool output shown); Ctrl+E again returns to compact; `q` exits back to the chat prompt. (Viewport anchoring across the toggle is covered by unit tests in `scroll_view.rs`.)
+
+**Requirements:**
+- `tmux` installed
+- release `omnish` client built (`cargo build --release`)
+- a running `omnish-daemon` (real LLM backend; issues a live tool-call turn)
+
+**Usage:**
+```bash
+tools/integration_tests/verify_issue_669.sh
+```
+
 ## Adding New Integration Tests
 
 When adding new integration tests:
