@@ -587,30 +587,60 @@ impl DaemonServer {
         let mut server = RpcServer::bind(addr).await?;
         tracing::info!("omnishd listening on {}", addr);
 
-        // Periodically reclaim parked agent-loop state that has gone idle (client
-        // vanished mid-tool). Idle is measured from `last_active` (refreshed on
-        // park and on each tool result), and the deadline auto-extends to cover a
-        // pending tool's declared timeout, so a legitimately long-running task is
-        // never reaped while it is still making progress.
+        // Periodically reclaim parked agent-loop state whose owning client is
+        // gone. A loop is reclaimed only when its session has NO live transport
+        // connection AND has been idle past the deadline: while the client is
+        // still connected it presumably keeps executing the parked tools, no
+        // matter how long they legitimately run, so it is never reaped (#670).
+        // Idle is measured from `last_active` (refreshed on park and on each
+        // tool result); the deadline auto-extends to cover a pending tool's
+        // declared timeout, still bounding a vanished client's state.
         let pending_cleanup = self.pending_agent_loops.clone();
+        let sweep_sessions = self.session_mgr.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
                 interval.tick().await;
-                let mut map = pending_cleanup.lock().await;
-                map.retain(|req_id, state| {
-                    let deadline = parked_loop_idle_deadline(&state.pending_tool_calls);
-                    let idle = state.last_active.elapsed();
-                    if idle > deadline {
-                        tracing::warn!(
-                            "Reclaiming idle agent loop state: {} (idle {:?} > deadline {:?})",
-                            req_id, idle, deadline
-                        );
-                        false
-                    } else {
-                        true
+                // Snapshot candidates under the lock, then evaluate connectivity
+                // without holding it (retain can't await).
+                let candidates: Vec<(String, String, std::time::Duration, std::time::Duration)> = {
+                    let map = pending_cleanup.lock().await;
+                    map.iter()
+                        .map(|(req_id, state)| (
+                            req_id.clone(),
+                            state.cm.session_id.clone(),
+                            state.last_active.elapsed(),
+                            parked_loop_idle_deadline(&state.pending_tool_calls),
+                        ))
+                        .collect()
+                };
+                let mut to_reclaim = Vec::new();
+                for (req_id, session_id, idle, deadline) in candidates {
+                    if idle <= deadline {
+                        continue;
                     }
-                });
+                    if sweep_sessions.is_session_connected(&session_id).await {
+                        // Client still connected: keep the loop (issue #670).
+                        continue;
+                    }
+                    to_reclaim.push((req_id, idle, deadline));
+                }
+                if !to_reclaim.is_empty() {
+                    let mut map = pending_cleanup.lock().await;
+                    for (req_id, idle, deadline) in to_reclaim {
+                        // Re-check under the lock in case the loop was resumed or
+                        // re-parked (fresh last_active) since the snapshot.
+                        if let Some(state) = map.get(&req_id) {
+                            if state.last_active.elapsed() > parked_loop_idle_deadline(&state.pending_tool_calls) {
+                                tracing::warn!(
+                                    "Reclaiming idle agent loop state: {} (session gone, idle {:?} > deadline {:?})",
+                                    req_id, idle, deadline
+                                );
+                                map.remove(&req_id);
+                            }
+                        }
+                    }
+                }
             }
         });
 

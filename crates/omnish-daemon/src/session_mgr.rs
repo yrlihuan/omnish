@@ -863,6 +863,21 @@ impl SessionManager {
         }
     }
 
+    /// Whether the session currently holds a live transport connection.
+    /// `current_conn == Some(_)` means a client is actively connected; `None`
+    /// means it disconnected (possibly in the grace window) or never bound.
+    /// Returns `false` for an unknown session_id.
+    pub async fn is_session_connected(&self, session_id: &str) -> bool {
+        let session = {
+            let sessions = self.sessions.read().await;
+            sessions.get(session_id).cloned()
+        };
+        match session {
+            Some(session) => session.current_conn.lock().await.is_some(),
+            None => false,
+        }
+    }
+
     /// Get session debug information including metadata, commands count, last active time, and last update timestamp
     pub async fn get_session_debug_info(&self, session_id: &str) -> Result<(SessionMeta, usize, Duration, Option<u64>)> {
         let session = {
@@ -2929,6 +2944,29 @@ mod tests {
         assert_eq!(removed, 1);
         assert!(mgr.list_clients().await.is_empty(),
             "forget must remove the row even while the session is still in sessions map");
+    }
+
+    /// is_session_connected reflects the live-connection state used by the
+    /// parked-loop sweep to avoid reclaiming loops of still-connected clients (#670).
+    #[tokio::test]
+    async fn test_is_session_connected_tracks_conn() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+
+        // Unknown session: not connected.
+        assert!(!mgr.is_session_connected("nope").await);
+
+        // Bound to a live conn: connected.
+        mgr.register("s1", None, HashMap::new(), Some(42)).await.unwrap();
+        assert!(mgr.is_session_connected("s1").await);
+
+        // Conn dropped (grace): no longer connected.
+        mgr.mark_conn_disconnected(42).await;
+        assert!(!mgr.is_session_connected("s1").await);
+
+        // Reconnect on a new conn: connected again.
+        mgr.register("s1", None, HashMap::new(), Some(43)).await.unwrap();
+        assert!(mgr.is_session_connected("s1").await);
     }
 
     /// Reconnect within grace cancels the pending end.
