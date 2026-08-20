@@ -113,8 +113,9 @@ impl ToolFormatter for ReadFormatter {
 
 pub struct EditFormatter;
 
-/// Compute edit summary line from actual changed lines (excluding common prefix/suffix).
-pub fn edit_summary(old: &str, new: &str) -> String {
+/// Count changed lines between `old` and `new` for a single replacement,
+/// excluding the common prefix/suffix. Returns `(removed, added)`.
+pub fn edit_line_counts(old: &str, new: &str) -> (usize, usize) {
     let old_lines: Vec<&str> = if old.is_empty() {
         vec![]
     } else {
@@ -146,6 +147,11 @@ pub fn edit_summary(old: &str, new: &str) -> String {
     let removed = old_lines.len() - common_prefix - common_suffix;
     let added = new_lines.len() - common_prefix - common_suffix;
 
+    (removed, added)
+}
+
+/// Format a (removed, added) line-count pair into a human summary.
+pub fn format_edit_summary(removed: usize, added: usize) -> String {
     match (removed, added) {
         (0, n) => format!("Added {} line{}", n, if n == 1 { "" } else { "s" }),
         (n, 0) => format!("Removed {} line{}", n, if n == 1 { "" } else { "s" }),
@@ -158,6 +164,12 @@ pub fn edit_summary(old: &str, new: &str) -> String {
             if o == 1 { "" } else { "s" }
         ),
     }
+}
+
+/// Compute edit summary line from actual changed lines (excluding common prefix/suffix).
+pub fn edit_summary(old: &str, new: &str) -> String {
+    let (removed, added) = edit_line_counts(old, new);
+    format_edit_summary(removed, added)
 }
 
 /// Parse occurrence count from "Replaced N occurrences in ..." output.
@@ -287,13 +299,19 @@ impl ToolFormatter for EditFormatter {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            let summary = edit_summary(old, new);
+            let (removed, added) = edit_line_counts(old, new);
             let mut diff = format_numbered_diff(&input.output);
 
-            // For replace_all with multiple occurrences, append note
+            // The rendered diff only shows the first place. For replace_all with
+            // multiple occurrences the same change is applied in every place, so
+            // the bare per-occurrence "Added 1 line" understated the real scope
+            // (issue #671). Report the per-place delta plus how many places were
+            // touched, and append a note about the extra (unrendered) places.
+            let mut summary = format_edit_summary(removed, added);
             if replace_all {
                 if let Some(count) = parse_replace_count(&input.output) {
                     if count > 1 {
+                        summary = format!("{} in {} places", summary, count);
                         diff.push(format!(
                             "\x1b[2m... and {} more place{}\x1b[0m",
                             count - 1,
@@ -523,10 +541,30 @@ mod tests {
             false,
         );
         let out = EditFormatter.format(&input);
-        assert_eq!(out.result_full[0], "Edited 1 line");
+        // Per-place delta ("Edited 1 line") plus the place count (issue #671).
+        assert_eq!(out.result_full[0], "Edited 1 line in 3 places");
         // Last line: "... and 2 more places"
         let last = out.result_full.last().unwrap();
         assert!(last.contains("2 more places"), "got: {}", last);
+    }
+
+    /// Issue #671: replace_all that adds a line in each of many places must not
+    /// report a bare "Added 1 line" - it must surface the number of places.
+    #[test]
+    fn edit_formatter_replace_all_added_lines_scaled() {
+        // Each occurrence turns 1 line into 2 (adds 1 line); 11 occurrences.
+        let output =
+            "Replaced 11 occurrences in /tmp/t.txt\n---\n35:-orig\n35:+orig\n36:+added\n37:  after";
+        let input = make_input(
+            "edit",
+            json!({"file_path": "/tmp/t.txt", "old_string": "orig", "new_string": "orig\nadded", "replace_all": true}),
+            output,
+            false,
+        );
+        let out = EditFormatter.format(&input);
+        assert_eq!(out.result_full[0], "Added 1 line in 11 places");
+        let last = out.result_full.last().unwrap();
+        assert!(last.contains("10 more places"), "got: {}", last);
     }
 
     #[test]
@@ -621,7 +659,7 @@ mod tests {
             false,
         );
         let out = EditFormatter.format(&input);
-        assert_eq!(out.result_full[0], "Edited 1 line");
+        assert_eq!(out.result_full[0], "Edited 1 line in 5 places");
         // Old full line (red)
         assert!(out.result_full[1].contains("-the world or nothing"));
         // New full line (green)
