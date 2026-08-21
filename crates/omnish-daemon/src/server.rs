@@ -193,12 +193,36 @@ async fn try_claim_thread(active_threads: &ActiveThreads, thread_id: &str, sessi
 
 /// Update last_active timestamp for a thread (called on ChatMessage).
 /// Also flushes pending_meta (deferred save from ChatStart) on first touch.
-async fn touch_thread(active_threads: &ActiveThreads, thread_id: &str, conv_mgr: &ConversationManager) {
-    if let Some(claim) = active_threads.lock().await.get_mut(thread_id) {
-        claim.last_active = std::time::Instant::now();
-        if let Some(meta) = claim.pending_meta.take() {
-            conv_mgr.save_meta(thread_id, &meta);
+async fn touch_thread(
+    active_threads: &ActiveThreads,
+    thread_id: &str,
+    conv_mgr: &ConversationManager,
+    session_mgr: &SessionManager,
+) {
+    let (pending, session_id) = {
+        let mut threads = active_threads.lock().await;
+        match threads.get_mut(thread_id) {
+            Some(claim) => {
+                claim.last_active = std::time::Instant::now();
+                (claim.pending_meta.take(), claim.session_id.clone())
+            }
+            None => return,
         }
+    };
+    if let Some(pending) = pending {
+        // Record where the resumed conversation actually continues, using the
+        // session's CURRENT host/cwd rather than the snapshot captured at
+        // ChatStart. A resume that cd'd back to the thread's original directory
+        // (CdToOld) or stayed put has already pushed the resolved cwd via
+        // SessionUpdate before the first message, so this avoids overwriting the
+        // thread's real cwd with the transient resume-time cwd (issue #672).
+        // update_meta reloads from disk, preserving unrelated fields.
+        let live_cwd = session_mgr.get_session_attr(&session_id, "shell_cwd").await;
+        let live_host = session_mgr.get_session_attr(&session_id, "hostname").await;
+        conv_mgr.update_meta(thread_id, |m| {
+            m.host = live_host.or(pending.host);
+            m.cwd = live_cwd.or(pending.cwd);
+        });
     }
 }
 
@@ -952,7 +976,7 @@ async fn handle_message(
             let _ = tx.send(Message::Ack).await;
         }
         Message::ChatMessage(cm) => {
-            touch_thread(&ctx.active_threads, &cm.thread_id, &ctx.conv_mgr).await;
+            touch_thread(&ctx.active_threads, &cm.thread_id, &ctx.conv_mgr, &ctx.session_mgr).await;
             let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let req_id = cm.request_id.clone();
             ctx.cancel_flags.lock().await.insert(req_id.clone(), flag.clone());
@@ -960,7 +984,7 @@ async fn handle_message(
             ctx.cancel_flags.lock().await.remove(&req_id);
         }
         Message::ChatToolResult(tr) => {
-            touch_thread(&ctx.active_threads, &tr.thread_id, &ctx.conv_mgr).await;
+            touch_thread(&ctx.active_threads, &tr.thread_id, &ctx.conv_mgr, &ctx.session_mgr).await;
             handle_tool_result(tr, ctx, tx).await;
         }
         Message::ChatInterrupt(ci) => {
@@ -4817,5 +4841,57 @@ mod tests {
             "Requests for different sessions appear to be sequential: took {:?}, expected <150ms",
             total_duration
         );
+    }
+
+    /// Regression for #672: resuming a thread and choosing "cd to the thread's
+    /// original directory" must NOT overwrite the thread's stored cwd with the
+    /// transient resume-time cwd. touch_thread records the session's CURRENT
+    /// cwd (updated by the post-resume SessionUpdate) at flush time.
+    #[tokio::test]
+    async fn test_touch_thread_records_live_cwd_not_resume_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let conv_mgr = ConversationManager::new(dir.path().join("threads"));
+        // Thread was created in /dir2.
+        let tid = conv_mgr.create_thread(ThreadMeta {
+            host: Some("h1".into()),
+            cwd: Some("/dir2".into()),
+            ..Default::default()
+        });
+
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+        // Resume happens from /dir1.
+        let mut attrs = HashMap::new();
+        attrs.insert("hostname".to_string(), "h1".to_string());
+        attrs.insert("shell_cwd".to_string(), "/dir1".to_string());
+        mgr.register("s1", None, attrs, None).await.unwrap();
+
+        // build_resumed_chat_ready stashes the resume-time cwd (/dir1) as pending_meta.
+        let active: ActiveThreads = Arc::new(Mutex::new(HashMap::new()));
+        active.lock().await.insert(
+            tid.clone(),
+            ThreadClaim {
+                session_id: "s1".to_string(),
+                last_active: std::time::Instant::now(),
+                pending_meta: Some(ThreadMeta {
+                    host: Some("h1".into()),
+                    cwd: Some("/dir1".into()),
+                    ..Default::default()
+                }),
+            },
+        );
+
+        // User chose CdToOld -> client cd'd back to /dir2 and pushed a
+        // SessionUpdate, so the session's live cwd is now /dir2 before the
+        // first message.
+        let mut upd = HashMap::new();
+        upd.insert("shell_cwd".to_string(), "/dir2".to_string());
+        mgr.update_attrs("s1", 1, upd).await.unwrap();
+
+        touch_thread(&active, &tid, &conv_mgr, &mgr).await;
+
+        // The thread's cwd must stay /dir2, not become the resume-time /dir1.
+        assert_eq!(conv_mgr.load_meta(&tid).cwd.as_deref(), Some("/dir2"));
+        // pending_meta consumed on flush.
+        assert!(active.lock().await.get(&tid).unwrap().pending_meta.is_none());
     }
 }
