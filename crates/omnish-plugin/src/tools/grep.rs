@@ -5,33 +5,58 @@ use grep::searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkConte
 use ignore::types::TypesBuilder;
 use ignore::WalkBuilder;
 use omnish_llm::tool::ToolResult;
+use std::borrow::Cow;
+
+/// Hard ceiling on the returned content size, independent of the optional
+/// `head_limit`. A broad pattern over a tree with large log files can otherwise
+/// match tens of MB of lines, which would then be stored verbatim in the chat
+/// thread and blow the LLM context. Mirrors the caps on the bash/read tools.
+const MAX_OUTPUT_BYTES: usize = 50_000;
+/// Maximum characters kept per matched/context line before truncation.
+const MAX_LINE_CHARS: usize = 2000;
+
+/// Truncate a single output line to `MAX_LINE_CHARS` characters.
+fn truncate_line(line: &str) -> Cow<'_, str> {
+    if line.chars().count() <= MAX_LINE_CHARS {
+        Cow::Borrowed(line)
+    } else {
+        let head: String = line.chars().take(MAX_LINE_CHARS).collect();
+        Cow::Owned(format!("{head}... (line truncated)"))
+    }
+}
 
 /// A Sink implementation that collects both matching and context lines.
+/// Stops feeding once `output_bytes` reaches `MAX_OUTPUT_BYTES` so a
+/// pathological file cannot balloon memory before the outer byte cap applies.
 struct ContentSink<'a> {
     rel_path: &'a str,
     show_line_numbers: bool,
     output_lines: &'a mut Vec<String>,
+    output_bytes: &'a mut usize,
+}
+
+impl ContentSink<'_> {
+    /// Format and store one line; returns whether the search should continue
+    /// (false once the byte budget is exhausted).
+    fn collect(&mut self, line_num: Option<u64>, raw: &[u8]) -> bool {
+        let line = String::from_utf8_lossy(raw);
+        let line = line.trim_end_matches('\n').trim_end_matches('\r');
+        let line = truncate_line(line);
+        let formatted = match (self.show_line_numbers, line_num) {
+            (true, Some(n)) => format!("{}:{}:{}", self.rel_path, n, line),
+            _ => format!("{}:{}", self.rel_path, line),
+        };
+        *self.output_bytes += formatted.len() + 1; // +1 for the joining newline
+        self.output_lines.push(formatted);
+        *self.output_bytes < MAX_OUTPUT_BYTES
+    }
 }
 
 impl Sink for ContentSink<'_> {
     type Error = std::io::Error;
 
     fn matched(&mut self, _searcher: &Searcher, mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
-        let line = String::from_utf8_lossy(mat.bytes());
-        let line = line.trim_end_matches('\n').trim_end_matches('\r');
-        if self.show_line_numbers {
-            if let Some(line_num) = mat.line_number() {
-                self.output_lines
-                    .push(format!("{}:{}:{}", self.rel_path, line_num, line));
-            } else {
-                self.output_lines
-                    .push(format!("{}:{}", self.rel_path, line));
-            }
-        } else {
-            self.output_lines
-                .push(format!("{}:{}", self.rel_path, line));
-        }
-        Ok(true)
+        Ok(self.collect(mat.line_number(), mat.bytes()))
     }
 
     fn context(
@@ -39,21 +64,7 @@ impl Sink for ContentSink<'_> {
         _searcher: &Searcher,
         ctx: &SinkContext<'_>,
     ) -> Result<bool, Self::Error> {
-        let line = String::from_utf8_lossy(ctx.bytes());
-        let line = line.trim_end_matches('\n').trim_end_matches('\r');
-        if self.show_line_numbers {
-            if let Some(line_num) = ctx.line_number() {
-                self.output_lines
-                    .push(format!("{}:{}:{}", self.rel_path, line_num, line));
-            } else {
-                self.output_lines
-                    .push(format!("{}:{}", self.rel_path, line));
-            }
-        } else {
-            self.output_lines
-                .push(format!("{}:{}", self.rel_path, line));
-        }
-        Ok(true)
+        Ok(self.collect(ctx.line_number(), ctx.bytes()))
     }
 }
 
@@ -197,12 +208,21 @@ impl GrepTool {
 
         // Search through files using grep-searcher
         let mut output_lines: Vec<String> = Vec::new();
+        let mut output_bytes: usize = 0;
+        let mut output_truncated = false;
         let mut files_scanned: usize = 0;
         let mut timed_out = false;
 
         for file_path in walk_iter {
             if std::time::Instant::now() >= deadline {
                 timed_out = true;
+                break;
+            }
+            // Stop once the byte budget is exhausted (content mode can produce
+            // huge output from big log files). The final cap below trims the
+            // last file's overflow.
+            if output_bytes >= MAX_OUTPUT_BYTES {
+                output_truncated = true;
                 break;
             }
             files_scanned += 1;
@@ -252,6 +272,7 @@ impl GrepTool {
                         rel_path: &rel_path,
                         show_line_numbers,
                         output_lines: &mut output_lines,
+                        output_bytes: &mut output_bytes,
                     };
                     let _ = searcher.search_path(&matcher, &file_path, &mut sink);
                 }
@@ -290,7 +311,20 @@ impl GrepTool {
         let selected = &output_lines[start..end];
         let mut result = selected.join("\n");
 
-        if end < total {
+        // Hard byte cap: a backstop for any mode / a large head_limit, and it
+        // trims the overflow from the last file collected before the loop broke.
+        if result.len() > MAX_OUTPUT_BYTES {
+            let cut = result.floor_char_boundary(MAX_OUTPUT_BYTES);
+            result.truncate(cut);
+            output_truncated = true;
+        }
+
+        if output_truncated {
+            result.push_str(&format!(
+                "\n... (output truncated at {} bytes; narrow the pattern or set head_limit/glob/path)",
+                MAX_OUTPUT_BYTES
+            ));
+        } else if end < total {
             result.push_str(&format!(
                 "\n... ({} more lines, {} total)",
                 total - end,
@@ -637,5 +671,52 @@ mod tests {
             "timeout": 99999
         }));
         assert!(!result_high.is_error);
+    }
+
+    /// Regression: a broad content-mode search over big files must not return
+    /// unbounded output; it is capped at MAX_OUTPUT_BYTES with a note.
+    #[test]
+    fn test_grep_content_output_capped() {
+        let tmp = tempfile::tempdir().unwrap();
+        // ~2MB of matching lines across a couple of files.
+        for name in ["big1.log", "big2.log"] {
+            let mut f = fs::File::create(tmp.path().join(name)).unwrap();
+            for i in 0..20_000 {
+                writeln!(f, "line {i}: litellm connection error occurred here").unwrap();
+            }
+        }
+        let tool = GrepTool::new();
+        let result = tool.execute(&serde_json::json!({
+            "pattern": "litellm",
+            "path": tmp.path().to_str().unwrap(),
+            "output_mode": "content"
+        }));
+        assert!(!result.is_error);
+        // Content stays within the cap (+ a small allowance for the trailing note).
+        assert!(
+            result.content.len() <= MAX_OUTPUT_BYTES + 200,
+            "content not capped: {} bytes",
+            result.content.len()
+        );
+        assert!(result.content.contains("output truncated"));
+    }
+
+    /// A single pathological long line is truncated to MAX_LINE_CHARS.
+    #[test]
+    fn test_grep_long_line_truncated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut f = fs::File::create(tmp.path().join("min.js")).unwrap();
+        // One very long matching line.
+        writeln!(f, "needle{}", "x".repeat(10_000)).unwrap();
+        let tool = GrepTool::new();
+        let result = tool.execute(&serde_json::json!({
+            "pattern": "needle",
+            "path": tmp.path().to_str().unwrap(),
+            "output_mode": "content"
+        }));
+        assert!(!result.is_error);
+        assert!(result.content.contains("line truncated"));
+        // The stored line must be far shorter than the 10k-char original.
+        assert!(result.content.len() < 4_000, "long line not truncated: {} bytes", result.content.len());
     }
 }
