@@ -34,6 +34,17 @@ pub struct ShellInputTracker {
     in_isearch: bool,
 }
 
+/// Snapshot of tracker state for the `/debug client` dump.
+pub struct DebugInfo {
+    pub input: String,
+    pub sequence_id: u64,
+    pub at_prompt: bool,
+    pub pending_rl_report: bool,
+    pub esc_state: u8,
+    pub in_isearch: bool,
+    pub cursor_at_end: bool,
+}
+
 impl ShellInputTracker {
     pub fn new() -> Self {
         Self {
@@ -171,14 +182,16 @@ impl ShellInputTracker {
     }
 
     /// Get detailed debug information about current input state.
-    pub fn get_debug_info(&self) -> (String, u64, bool, bool, u8) {
-        (
-            self.input.clone(),
-            self.sequence_id,
-            self.at_prompt,
-            self.pending_rl_report,
-            self.esc_state,
-        )
+    pub fn get_debug_info(&self) -> DebugInfo {
+        DebugInfo {
+            input: self.input.clone(),
+            sequence_id: self.sequence_id,
+            at_prompt: self.at_prompt,
+            pending_rl_report: self.pending_rl_report,
+            esc_state: self.esc_state,
+            in_isearch: self.in_isearch,
+            cursor_at_end: self.cursor_at_end,
+        }
     }
 
     /// Replace the tracked input with the real readline content reported by bash.

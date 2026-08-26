@@ -1218,7 +1218,7 @@ async fn main() -> Result<()> {
                             None, &daemon_conn, &mut chat_history, &mut last_thread_id,
                             &session_id, &shell, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
-                            &onboarded, locked, &config, Arc::clone(&sandbox_state),
+                            &onboarded, locked, completion_enabled, &config, Arc::clone(&sandbox_state),
                             Arc::clone(&screen_capture), &pending_titles,
                         ).await;
                         // Drain stale completion responses accumulated during chat
@@ -1425,7 +1425,7 @@ async fn main() -> Result<()> {
                             initial, &daemon_conn, &mut chat_history, &mut last_thread_id,
                             &session_id, &shell, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
-                            &onboarded, locked, &config, Arc::clone(&sandbox_state),
+                            &onboarded, locked, completion_enabled, &config, Arc::clone(&sandbox_state),
                             Arc::clone(&screen_capture), &pending_titles,
                         ).await;
                         // Drain stale completion responses accumulated during chat
@@ -1451,7 +1451,7 @@ async fn main() -> Result<()> {
                             Some(resume_cmd), &daemon_conn, &mut chat_history, &mut last_thread_id,
                             &session_id, &shell, &proxy, &shell_input, &interceptor, &shell_completer,
                             &osc133_detector, &last_readline_content, &col_tracker,
-                            &onboarded, locked, &config, Arc::clone(&sandbox_state),
+                            &onboarded, locked, completion_enabled, &config, Arc::clone(&sandbox_state),
                             Arc::clone(&screen_capture), &pending_titles,
                         ).await;
                         // Drain stale completion responses accumulated during chat
@@ -2891,6 +2891,7 @@ async fn enter_chat_mode(
     col_tracker: &CursorTracker,
     onboarded: &AtomicBool,
     locked: bool,
+    completion_enabled: bool,
     config: &omnish_common::config::ClientConfig,
     sandbox_state: Arc<RwLock<ClientSandboxConfig>>,
     screen_capture: screen_capture::SharedScreenCapture,
@@ -2905,7 +2906,7 @@ async fn enter_chat_mode(
         let dbg_fn = || debug_client_state(
             shell_input, interceptor, shell_completer,
             daemon_conn, osc133_detector, last_readline_content,
-            shell_pid, col_tracker, locked,
+            shell_pid, col_tracker, locked, completion_enabled,
         );
         let action;
         let pending_cd;
@@ -2978,6 +2979,7 @@ fn debug_client_state(
     shell_pid: u32,
     col_tracker: &CursorTracker,
     locked: bool,
+    completion_enabled: bool,
 ) -> String {
     let mut output = String::new();
 
@@ -3000,10 +3002,15 @@ fn debug_client_state(
 
     // Shell Input Tracker state
     output.push_str("Shell Input Tracker:\n");
-    let (input, seq, at_prompt, pending_rl, esc_state) = shell_input.get_debug_info();
-    output.push_str(&format!("  at_prompt: {}\n", at_prompt));
+    let dbg = shell_input.get_debug_info();
+    let input = dbg.input;
+    let esc_state = dbg.esc_state;
+    let pending_rl = dbg.pending_rl_report;
+    output.push_str(&format!("  at_prompt: {}\n", dbg.at_prompt));
     output.push_str(&format!("  input: \"{}\"\n", input));
-    output.push_str(&format!("  sequence_id: {}\n", seq));
+    output.push_str(&format!("  sequence_id: {}\n", dbg.sequence_id));
+    output.push_str(&format!("  in_isearch: {}\n", dbg.in_isearch));
+    output.push_str(&format!("  cursor_at_end: {}\n", dbg.cursor_at_end));
     output.push_str(&format!("  pending_rl_report: {}\n", pending_rl));
     output.push_str(&format!("  esc_state: {}\n", esc_state));
 
@@ -3043,6 +3050,7 @@ fn debug_client_state(
 
     // Shell Completer state
     output.push_str("Shell Completer:\n");
+    output.push_str(&format!("  completion_enabled: {}\n", completion_enabled));
     let (active_count, sent_seq, pending_seq, active_ids) = shell_completer.get_debug_state();
     output.push_str(&format!("  active_requests: {}\n", active_count));
     output.push_str(&format!("  sent_seq: {:?}\n", sent_seq));
@@ -3051,6 +3059,17 @@ fn debug_client_state(
     output.push_str(&format!("  should_request: {}\n",
         shell_completer.should_request(shell_input.sequence_id(), shell_input.input())));
     output.push_str(&format!("  ghost: {:?}\n", shell_completer.ghost()));
+    // Consolidated view of every condition that gates a completion request
+    // (see main.rs request gate). If completion is silently dead, the first
+    // false here is why.
+    output.push_str(&format!(
+        "  request_gate: completion_enabled={} at_prompt={} !in_chat={} !in_isearch={} cursor_at_end={}\n",
+        completion_enabled,
+        dbg.at_prompt,
+        !interceptor.is_in_chat(),
+        !dbg.in_isearch,
+        dbg.cursor_at_end,
+    ));
     output.push('\n');
 
     // Daemon connection state
@@ -3069,6 +3088,19 @@ fn debug_client_state(
     // OSC 133 detector state - we don't have a mode_active method, so skip it
     output.push_str("OSC 133 Detector:\n");
     output.push_str("  status: active (detecting OSC 133 sequences)\n");
+    output.push('\n');
+
+    // Recent event log - helps explain how the tracker reached its current
+    // state (e.g. a `ctrl+r (isearch mode)` with no following prompt).
+    output.push_str("Recent Events (newest last):\n");
+    let events = event_log::recent(20);
+    if events.is_empty() {
+        output.push_str("  (none)\n");
+    } else {
+        for ev in events {
+            output.push_str(&format!("  {}\n", ev));
+        }
+    }
     output
 }
 
