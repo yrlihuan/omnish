@@ -75,7 +75,10 @@ test_1() {
     send_keys "/debug client" 0.3
     send_enter 2
 
-    local content=$(capture_pane -30)
+    # The /debug client dump grew a "Recent Events" section (up to 20 lines)
+    # plus completion-gate fields, so it now spans ~60 lines; capture a wide
+    # enough window to include "Version:"/"at_prompt:" near the top.
+    local content=$(capture_pane -100)
     show_capture "/debug client output" "$content" 15
 
     # Should contain version and client state info
