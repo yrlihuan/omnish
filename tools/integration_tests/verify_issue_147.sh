@@ -42,7 +42,10 @@ test_1() {
     send_keys "/debug client" 0.3
     send_enter 3
 
-    local content=$(capture_pane -30)
+    # The /debug client dump grew a "Recent Events" section (up to 20 lines)
+    # plus completion-gate fields, so "Shell:\n  cwd:" now sits well above the
+    # bottom; capture a wide enough window to include it.
+    local content=$(capture_pane -100)
     show_capture "After /debug client" "$content" 15
 
     # Extract shell_cwd value
