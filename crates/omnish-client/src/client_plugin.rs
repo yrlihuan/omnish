@@ -159,6 +159,23 @@ impl ClientPluginManager {
                 if libc::setsid() == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
+                // Make a chat-run command the OOM killer's first victim so a
+                // runaway allocation kills the command, not the omnish client or
+                // the interactive shell that share its cgroup - the kernel OOM
+                // killer otherwise reaps them as collateral and the tmux window
+                // dies. Raising oom_score_adj is always permitted for an
+                // unprivileged process, and children (e.g. the bash tool's
+                // `bash -c`) inherit it. Best-effort and Linux-only: a missing
+                // /proc (e.g. macOS) or write error is ignored.
+                let fd = libc::open(
+                    c"/proc/self/oom_score_adj".as_ptr(),
+                    libc::O_WRONLY,
+                );
+                if fd >= 0 {
+                    let val = b"1000\n";
+                    let _ = libc::write(fd, val.as_ptr() as *const libc::c_void, val.len());
+                    libc::close(fd);
+                }
                 Ok(())
             });
         }
