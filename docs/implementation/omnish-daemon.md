@@ -203,12 +203,14 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
   - `last_model`: `Option<String>` - 产生 `usage_last`/`usage_total` 的模型名称（用于检测模型切换）
   - `sandbox_disabled`: `bool`（`#[serde(default)]`）- 线程级沙箱覆盖。为 `true` 时 `ChatToolCall.sandboxed` 强制置 `false`，对应 `/thread sandbox on|off` 命令。通过 `set_sandbox_disabled()` 修改并持久化；`ChatReady.sandbox_disabled` 同步回客户端以支持 resume 路径显示警告
   - `title_override`: `Option<String>` - 用户通过 `/thread rename <name>` 设置的标题覆盖（优先级高于 `title_word`），`effective_title_label()` 返回有效标签；空参数清除恢复自动命名
+  - `pending_event`: `Option<String>` - 带外状态变化排队的一次性 `<event>` 标记，在下一条用户消息前拼接后清除，使 LLM 得知变化。`ThreadMeta::queue_event()` 将新标记换行追加到已有标记之后，并先删除与 `event` 完全相同的旧行，使重复切换保持有界且最新状态始终在末尾（sandbox off -> on -> off 得到 `on\noff`）：sandbox 切换（#659）与 resume 时主机切换（#679）共用；`handle_chat_message` 通过 `meta.pending_event.take()` 消费
 - **线程用量结构体**（`ThreadUsage`）：存储 token 用量的四维度计数：
   - `input_tokens`: 输入 token 数
   - `output_tokens`: 输出 token 数
   - `cache_read_input_tokens`: 缓存读取的输入 token 数
   - `cache_creation_input_tokens`: 缓存创建的输入 token 数
-- **元数据延迟写入**：`ThreadMeta`（host/cwd）在 `ChatStart` 时**不立即写入磁盘**，而是推迟到第一条 `ChatMessage` 到达时才保存。这样可以防止用户取消 `/resume` 选择（即中断 ChatStart 流程）时错误覆盖线程已有的 host/cwd 记录
+- **元数据延迟写入**：`ChatStart` 时把会话当前的 host/cwd 存入 `ThreadClaim.pending_meta`（专用结构 `PendingMeta { host, cwd }`，故意收窄以免新增字段被静默丢弃），**不立即写入磁盘**；推迟到第一条 `ChatMessage` 的 `touch_thread` 才落盘。这样可以防止用户取消 `/resume` 选择（即中断 ChatStart 流程）时错误覆盖线程已有的 host/cwd 记录。flush 时用会话**实时** host/cwd（`session_mgr` probe）优先、resume 快照兜底，既避免覆盖 CdToOld 后的真实 cwd（#672），也让 host 切换检测与实际写入值使用同一来源（#679）；probe/snapshot 的空 host 会被过滤，两者都不可用时保留线程原 host，绝不写入 `Some("")`
+- **主机切换 `<event>`（#679）**：`touch_thread` 落盘前比较线程原 host 与新 host（都 trim 且非空），不同则 `queue_event` 排入 `<event>host changed from X to Y</event>`，下一条用户消息时由 `handle_chat_message` 告知 LLM 环境已换机
 - **线程恢复 UX 增强**：
   - **host/cwd 不匹配提示**：恢复对话时若检测到当前主机或工作目录与线程记录不符，向用户提问是否继续（而非静默继续）
   - **锁感知选择器**：`/resume` 选择界面中，已被其他会话锁定的线程会显示锁定信息，用户仍可选择但会收到提示
@@ -621,6 +623,8 @@ Platform: linux
 
 OS Version: Linux 6.8.0-86-generic
 
+HOSTNAME: workstation
+
 Today's date: 2026-03-15
 </system-reminder>
 ```
@@ -632,6 +636,7 @@ Today's date: 2026-03-15
 - 工作目录（优先使用会话探测的实时 `shell_cwd`，回退到最后命令记录的 cwd）
 - Git 仓库检测
 - 平台和操作系统版本（**来自客户端会话属性** `platform`/`os_version`，而非守护进程自身环境；客户端通过 `SessionUpdate` 上报探测结果）
+- 主机名（优先客户端会话属性 `hostname`，回退守护进程自身 `gethostname()`；每轮告知模型当前主机，即使一次性 `<event>` 被 `/compact` 摘要掉也不会丢失主机上下文，#679）
 - 最近命令列表（可通过 `include_commands` 参数控制；聊天模式下不包含最近命令--仅在补全上下文中包含）
 
 ## 工具使用与智能体循环

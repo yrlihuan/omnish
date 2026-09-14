@@ -124,10 +124,23 @@ impl CommandQueryTool {
             .unwrap_or_else(|_| "unknown".to_string());
         let os_version = session_attrs.get("os_version").unwrap_or(&default_os_version);
 
+        // Hostname: prefer the client-reported value (a thread may continue on a
+        // different machine), fall back to the daemon host's own hostname.
+        let default_hostname = nix::unistd::gethostname()
+            .ok()
+            .and_then(|h| h.into_string().ok())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "(unknown)".to_string());
+        let hostname = session_attrs
+            .get("hostname")
+            .map(String::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&default_hostname);
+
         if !include_commands {
             return format!(
-                "<system-reminder>\nWORKING DIR: {}\n\nIs directory a git repo: {}\n\nPlatform: {}\n\nOS Version: {}\n\nToday's date: {}\n</system-reminder>",
-                cwd, is_git_repo_str, platform, os_version, today
+                "<system-reminder>\nWORKING DIR: {}\n\nIs directory a git repo: {}\n\nPlatform: {}\n\nOS Version: {}\n\nHOSTNAME: {}\n\nToday's date: {}\n</system-reminder>",
+                cwd, is_git_repo_str, platform, os_version, hostname, today
             );
         }
 
@@ -154,8 +167,8 @@ impl CommandQueryTool {
         };
 
         format!(
-            "<system-reminder>\nWORKING DIR: {}\n\nIs directory a git repo: {}\n\nPlatform: {}\n\nOS Version: {}\n\nToday's date: {}\n\nLAST {} COMMANDS:\n{}\n</system-reminder>",
-            cwd, is_git_repo_str, platform, os_version, today, count, cmds
+            "<system-reminder>\nWORKING DIR: {}\n\nIs directory a git repo: {}\n\nPlatform: {}\n\nOS Version: {}\n\nHOSTNAME: {}\n\nToday's date: {}\n\nLAST {} COMMANDS:\n{}\n</system-reminder>",
+            cwd, is_git_repo_str, platform, os_version, hostname, today, count, cmds
         )
     }
 
@@ -536,9 +549,21 @@ mod tests {
         let mut attrs = std::collections::HashMap::new();
         attrs.insert("platform".to_string(), "macos".to_string());
         attrs.insert("os_version".to_string(), "23.1.0".to_string());
+        attrs.insert("hostname".to_string(), "workstation".to_string());
         let reminder = tool.build_system_reminder("s1", 5, &attrs, true);
         assert!(reminder.contains("Platform: macos"), "reminder: {}", reminder);
         assert!(reminder.contains("OS Version: 23.1.0"), "reminder: {}", reminder);
+        assert!(reminder.contains("HOSTNAME: workstation"), "reminder: {}", reminder);
+    }
+
+    #[test]
+    fn test_reminder_hostname_falls_back_to_daemon_host() {
+        // No client-reported hostname: fall back to the daemon's own hostname
+        // rather than emitting an empty HOSTNAME line.
+        let tool = make_tool(vec![]);
+        let reminder = tool.build_system_reminder("s1", 5, &make_attrs(None), true);
+        assert!(reminder.contains("HOSTNAME: "), "reminder: {}", reminder);
+        assert!(!reminder.contains("HOSTNAME: \n"), "reminder: {}", reminder);
     }
 
     #[test]
@@ -557,6 +582,7 @@ mod tests {
         assert!(reminder.contains("WORKING DIR:"));
         assert!(reminder.contains("Today's date:"));
         assert!(reminder.contains("Platform:"));
+        assert!(reminder.contains("HOSTNAME:"));
     }
 
     #[test]

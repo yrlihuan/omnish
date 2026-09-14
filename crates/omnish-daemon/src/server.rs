@@ -1,5 +1,5 @@
 use anyhow::Result;
-use omnish_daemon::conversation_mgr::{ConversationManager, ThreadMeta};
+use omnish_daemon::conversation_mgr::{host_change_event, ConversationManager, ThreadMeta};
 use omnish_daemon::plugin::{PluginManager, PluginType};
 use omnish_daemon::session_mgr::SessionManager;
 use omnish_daemon::task_mgr::TaskManager;
@@ -159,13 +159,22 @@ fn parked_loop_idle_deadline(pending: &[omnish_llm::tool::ToolCall]) -> std::tim
     PARKED_LOOP_BASE_IDLE.max(max_tool + margin)
 }
 
+/// The host/cwd snapshot captured at ChatStart, deferred until the first
+/// ChatMessage so that cancelling the resume doesn't overwrite the thread's
+/// stored host/cwd. Deliberately narrow (not a full `ThreadMeta`) so adding a
+/// field here is a compile error rather than a silently dropped update.
+struct PendingMeta {
+    host: Option<String>,
+    cwd: Option<String>,
+}
+
 /// Tracks which session is actively using each thread.
 struct ThreadClaim {
     session_id: String,
     last_active: std::time::Instant,
     /// Meta to save when the first ChatMessage arrives (deferred from ChatStart
     /// so that cancelling the resume doesn't overwrite the thread's stored host/cwd).
-    pending_meta: Option<ThreadMeta>,
+    pending_meta: Option<PendingMeta>,
 }
 
 type ActiveThreads = Arc<Mutex<HashMap<String, ThreadClaim>>>;
@@ -218,10 +227,35 @@ async fn touch_thread(
         // thread's real cwd with the transient resume-time cwd (issue #672).
         // update_meta reloads from disk, preserving unrelated fields.
         let live_cwd = session_mgr.get_session_attr(&session_id, "shell_cwd").await;
-        let live_host = session_mgr.get_session_attr(&session_id, "hostname").await;
+        // Never persist a blank host: an empty probe would otherwise overwrite a
+        // real host with Some("") and permanently defeat change detection.
+        let live_host = session_mgr
+            .get_session_attr(&session_id, "hostname")
+            .await
+            .filter(|s| !s.trim().is_empty());
         conv_mgr.update_meta(thread_id, |m| {
-            m.host = live_host.or(pending.host);
+            // Compare the host we are about to overwrite against the value we
+            // will actually persist (live probe first, resume snapshot as
+            // fallback), then queue a one-shot `<event>` so the next message
+            // tells the LLM the thread moved hosts (issue #679). Doing this here,
+            // on the same value that is written, avoids missing the switch when
+            // the hostname probe lands after ChatStart.
+            let old_host = m.host.take();
             m.cwd = live_cwd.or(pending.cwd);
+            let new_host =
+                live_host.or_else(|| pending.host.filter(|s| !s.trim().is_empty()));
+            match new_host {
+                Some(new_host) => {
+                    if let Some(event) =
+                        host_change_event(old_host.as_deref(), Some(new_host.as_str()))
+                    {
+                        m.queue_event(&event);
+                    }
+                    m.host = Some(new_host);
+                }
+                // No usable probe/snapshot: keep the stored host, never clear it.
+                None => m.host = old_host,
+            }
         });
     }
 }
@@ -1084,8 +1118,10 @@ fn empty_chat_ready(
 }
 
 /// Build a successful ChatReady for a resumed thread.  Caller must have
-/// already claimed the thread and loaded its raw messages.  Persists the
-/// session's current host/cwd as pending_meta on the claim.
+/// already claimed the thread and loaded its raw messages.  Stashes the
+/// session's current host/cwd as pending_meta on the claim; `touch_thread`
+/// flushes it on the first ChatMessage and, if the host differs, queues the
+/// one-shot `<event>host changed ...</event>` marker there (issue #679).
 async fn build_resumed_chat_ready(
     tid: &str,
     request_id: String,
@@ -1096,13 +1132,11 @@ async fn build_resumed_chat_ready(
     llm: &Arc<MultiBackend>,
 ) -> Message {
     let old_meta = ctx.conv_mgr.load_meta(tid);
-    let merged_meta = ThreadMeta {
-        host: session_meta.host.clone(),
-        cwd: session_meta.cwd.clone(),
-        ..old_meta.clone()
-    };
     if let Some(claim) = ctx.active_threads.lock().await.get_mut(tid) {
-        claim.pending_meta = Some(merged_meta);
+        claim.pending_meta = Some(PendingMeta {
+            host: session_meta.host.clone(),
+            cwd: session_meta.cwd.clone(),
+        });
     }
     let history_vals = reconstruct_history(raw_msgs, &ctx.tool_registry, &ctx.formatter_mgr).await;
     let history: Vec<String> = history_vals.iter()
@@ -4872,10 +4906,9 @@ mod tests {
             ThreadClaim {
                 session_id: "s1".to_string(),
                 last_active: std::time::Instant::now(),
-                pending_meta: Some(ThreadMeta {
+                pending_meta: Some(PendingMeta {
                     host: Some("h1".into()),
                     cwd: Some("/dir1".into()),
-                    ..Default::default()
                 }),
             },
         );
@@ -4893,5 +4926,154 @@ mod tests {
         assert_eq!(conv_mgr.load_meta(&tid).cwd.as_deref(), Some("/dir2"));
         // pending_meta consumed on flush.
         assert!(active.lock().await.get(&tid).unwrap().pending_meta.is_none());
+    }
+
+    /// Issue #679 wiring: touch_thread must queue a `<event>host changed ...`
+    /// marker when the flushed host differs from the thread's stored host. This
+    /// also covers the review's "probe lands late" case: the ChatStart snapshot
+    /// host is None, but the live probe reports the new host at flush time.
+    #[tokio::test]
+    async fn test_touch_thread_queues_host_change_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let conv_mgr = ConversationManager::new(dir.path().join("threads"));
+        let tid = conv_mgr.create_thread(ThreadMeta {
+            host: Some("old".into()),
+            cwd: Some("/p".into()),
+            ..Default::default()
+        });
+
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+        // ChatStart snapshot had no hostname (probe lagged), live probe now says "new".
+        let mut attrs = HashMap::new();
+        attrs.insert("hostname".to_string(), "new".to_string());
+        attrs.insert("shell_cwd".to_string(), "/p".to_string());
+        mgr.register("s1", None, attrs, None).await.unwrap();
+
+        let active: ActiveThreads = Arc::new(Mutex::new(HashMap::new()));
+        active.lock().await.insert(
+            tid.clone(),
+            ThreadClaim {
+                session_id: "s1".to_string(),
+                last_active: std::time::Instant::now(),
+                pending_meta: Some(PendingMeta {
+                    host: None,
+                    cwd: Some("/p".into()),
+                }),
+            },
+        );
+
+        touch_thread(&active, &tid, &conv_mgr, &mgr).await;
+
+        let meta = conv_mgr.load_meta(&tid);
+        assert_eq!(meta.host.as_deref(), Some("new"));
+        assert_eq!(
+            meta.pending_event.as_deref(),
+            Some("<event>host changed from old to new</event>")
+        );
+    }
+
+    /// Issue #679: a same-host resume must not queue a host marker.
+    #[tokio::test]
+    async fn test_touch_thread_same_host_queues_no_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let conv_mgr = ConversationManager::new(dir.path().join("threads"));
+        let tid = conv_mgr.create_thread(ThreadMeta {
+            host: Some("h1".into()),
+            cwd: Some("/p".into()),
+            ..Default::default()
+        });
+
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+        let mut attrs = HashMap::new();
+        attrs.insert("hostname".to_string(), "h1".to_string());
+        attrs.insert("shell_cwd".to_string(), "/p".to_string());
+        mgr.register("s1", None, attrs, None).await.unwrap();
+
+        let active: ActiveThreads = Arc::new(Mutex::new(HashMap::new()));
+        active.lock().await.insert(
+            tid.clone(),
+            ThreadClaim {
+                session_id: "s1".to_string(),
+                last_active: std::time::Instant::now(),
+                pending_meta: Some(PendingMeta {
+                    host: Some("h1".into()),
+                    cwd: Some("/p".into()),
+                }),
+            },
+        );
+
+        touch_thread(&active, &tid, &conv_mgr, &mgr).await;
+        assert_eq!(conv_mgr.load_meta(&tid).pending_event, None);
+    }
+
+    /// Issue #679 review: a blank hostname probe must not overwrite a real host
+    /// with `Some("")` (which would permanently defeat change detection). The
+    /// resume snapshot is used instead, and still yields the change marker.
+    #[tokio::test]
+    async fn test_touch_thread_blank_live_host_falls_back_to_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let conv_mgr = ConversationManager::new(dir.path().join("threads"));
+        let tid = conv_mgr.create_thread(ThreadMeta {
+            host: Some("old".into()),
+            ..Default::default()
+        });
+
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+        let mut attrs = HashMap::new();
+        attrs.insert("hostname".to_string(), String::new());
+        mgr.register("s1", None, attrs, None).await.unwrap();
+
+        let active: ActiveThreads = Arc::new(Mutex::new(HashMap::new()));
+        active.lock().await.insert(
+            tid.clone(),
+            ThreadClaim {
+                session_id: "s1".to_string(),
+                last_active: std::time::Instant::now(),
+                pending_meta: Some(PendingMeta {
+                    host: Some("new".into()),
+                    cwd: None,
+                }),
+            },
+        );
+
+        touch_thread(&active, &tid, &conv_mgr, &mgr).await;
+        let meta = conv_mgr.load_meta(&tid);
+        assert_eq!(meta.host.as_deref(), Some("new"));
+        assert_eq!(
+            meta.pending_event.as_deref(),
+            Some("<event>host changed from old to new</event>")
+        );
+    }
+
+    /// Issue #679 review: when neither the probe nor the snapshot has a usable
+    /// host, keep the stored host rather than clearing it to `None`/`Some("")`.
+    #[tokio::test]
+    async fn test_touch_thread_no_usable_host_keeps_stored_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let conv_mgr = ConversationManager::new(dir.path().join("threads"));
+        let tid = conv_mgr.create_thread(ThreadMeta {
+            host: Some("old".into()),
+            ..Default::default()
+        });
+
+        let mgr = SessionManager::new(dir.path().to_path_buf(), Default::default());
+        let mut attrs = HashMap::new();
+        attrs.insert("hostname".to_string(), "  ".to_string());
+        mgr.register("s1", None, attrs, None).await.unwrap();
+
+        let active: ActiveThreads = Arc::new(Mutex::new(HashMap::new()));
+        active.lock().await.insert(
+            tid.clone(),
+            ThreadClaim {
+                session_id: "s1".to_string(),
+                last_active: std::time::Instant::now(),
+                pending_meta: Some(PendingMeta { host: None, cwd: None }),
+            },
+        );
+
+        touch_thread(&active, &tid, &conv_mgr, &mgr).await;
+        let meta = conv_mgr.load_meta(&tid);
+        assert_eq!(meta.host.as_deref(), Some("old"));
+        assert_eq!(meta.pending_event, None);
     }
 }

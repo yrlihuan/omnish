@@ -49,11 +49,12 @@ pub struct ThreadMeta {
     /// ChatToolCall.sandboxed=false for this thread, bypassing permit_rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_disabled: Option<bool>,
-    /// One-shot `<event>...</event>` marker queued by an out-of-band state
-    /// change (e.g. `/thread sandbox on|off`). Prepended to the next user
-    /// message sent to the LLM, then cleared, so the model learns the change
-    /// happened. Last-write-wins if several changes occur before the next
-    /// message. See issue #659.
+    /// One-shot `<event>...</event>` marker(s) queued by an out-of-band state
+    /// change (e.g. `/thread sandbox on|off`, host switch on resume).
+    /// Prepended to the next user message sent to the LLM, then cleared, so the
+    /// model learns the change happened. Several changes before the next
+    /// message are newline-joined (see `queue_event`) rather than clobbering
+    /// each other. See issues #659 and #679.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_event: Option<String>,
 }
@@ -64,6 +65,46 @@ impl ThreadMeta {
     pub fn effective_title_label(&self) -> Option<String> {
         self.title_override.clone().or_else(|| self.title_word.clone())
     }
+
+    /// Append a one-shot `<event>` marker for the next user message, preserving
+    /// any marker already pending (newline-separated) so independent state
+    /// changes (e.g. a host switch followed by a sandbox toggle) all reach the
+    /// LLM. A pre-existing line equal to `event` is removed before appending so
+    /// repeated toggles stay bounded and the most recent state is always last
+    /// (e.g. sandbox off -> on -> off yields "on" then "off", not a stale
+    /// "off" from the first toggle). Empty input is ignored.
+    pub fn queue_event(&mut self, event: &str) {
+        if event.is_empty() {
+            return;
+        }
+        let existing = self.pending_event.take().unwrap_or_default();
+        let mut next = existing
+            .split('\n')
+            .filter(|line| !line.is_empty() && *line != event)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !next.is_empty() {
+            next.push('\n');
+        }
+        next.push_str(event);
+        self.pending_event = Some(next);
+    }
+}
+
+/// Build a one-shot `<event>host changed ...</event>` marker when a thread's
+/// stored host differs from the live host it is now running on (issue #679).
+/// Returns `None` when either host is unknown/empty or they match, so legacy
+/// threads and same-host resumes stay silent.
+pub fn host_change_event(old_host: Option<&str>, new_host: Option<&str>) -> Option<String> {
+    let old = old_host.map(str::trim).filter(|s| !s.is_empty())?;
+    let new = new_host.map(str::trim).filter(|s| !s.is_empty())?;
+    if old == new {
+        return None;
+    }
+    Some(format!(
+        "<event>host changed from {} to {}</event>",
+        old, new
+    ))
 }
 
 pub struct ConversationManager {
@@ -430,8 +471,9 @@ impl ConversationManager {
         self.update_meta(thread_id, |m| {
             m.sandbox_disabled = if disabled { Some(true) } else { None };
             // Queue a marker so the next user message tells the LLM the sandbox
-            // state changed (issue #659). Last-write-wins on repeated toggles.
-            m.pending_event = Some(format!(
+            // state changed (issue #659). Merged with any other pending event
+            // (e.g. a host switch queued on resume) rather than clobbering it.
+            m.queue_event(&format!(
                 "<event>sandbox {}</event>",
                 if disabled { "off" } else { "on" }
             ));
@@ -1034,7 +1076,8 @@ mod tests {
     #[test]
     fn test_set_sandbox_disabled_queues_pending_event() {
         // Issue #659: toggling sandbox queues a one-shot marker for the next
-        // user message, with last-write-wins on repeated toggles.
+        // user message. Repeated toggles are newline-joined (issue #679 review)
+        // rather than last-write-wins, so an interleaved host event survives.
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConversationManager::new(dir.path().to_path_buf());
 
@@ -1047,11 +1090,76 @@ mod tests {
             Some("<event>sandbox off</event>")
         );
 
-        // Toggle back before the marker is consumed: last write wins.
+        // Toggle back before the marker is consumed: both markers are kept.
         mgr.set_sandbox_disabled(&tid, false);
         assert_eq!(
             mgr.load_meta(&tid).pending_event.as_deref(),
-            Some("<event>sandbox on</event>")
+            Some("<event>sandbox off</event>\n<event>sandbox on</event>")
+        );
+    }
+
+    #[test]
+    fn test_host_change_event() {
+        // Issue #679: resuming a thread on a different host queues a marker.
+        assert_eq!(
+            host_change_event(Some("a"), Some("b")).as_deref(),
+            Some("<event>host changed from a to b</event>")
+        );
+        // Same host, unknown, or empty sides stay silent (no malformed marker).
+        assert_eq!(host_change_event(Some("a"), Some("a")), None);
+        assert_eq!(host_change_event(None, Some("b")), None);
+        assert_eq!(host_change_event(Some("a"), None), None);
+        assert_eq!(host_change_event(Some("a"), Some("  ")), None);
+        assert_eq!(host_change_event(Some(""), Some("b")), None);
+        assert_eq!(host_change_event(None, None), None);
+    }
+
+    #[test]
+    fn test_queue_event_merges_and_dedups() {
+        let mut meta = ThreadMeta::default();
+        // Empty input is a no-op.
+        meta.queue_event("");
+        assert_eq!(meta.pending_event, None);
+
+        meta.queue_event("<event>host changed from a to b</event>");
+        meta.queue_event("<event>sandbox off</event>");
+        let merged = "<event>host changed from a to b</event>\n<event>sandbox off</event>";
+        assert_eq!(meta.pending_event.as_deref(), Some(merged));
+
+        // Re-queueing an identical marker does not accumulate duplicates.
+        meta.queue_event("<event>sandbox off</event>");
+        assert_eq!(meta.pending_event.as_deref(), Some(merged));
+    }
+
+    #[test]
+    fn test_queue_event_moves_repeat_to_end() {
+        // Issue #679 review: the most recent state must be last. off -> on -> off
+        // must not leave the stale first "off" line as the duplicate that wins.
+        let mut meta = ThreadMeta::default();
+        meta.queue_event("<event>sandbox off</event>");
+        meta.queue_event("<event>sandbox on</event>");
+        meta.queue_event("<event>sandbox off</event>");
+        assert_eq!(
+            meta.pending_event.as_deref(),
+            Some("<event>sandbox on</event>\n<event>sandbox off</event>")
+        );
+    }
+
+    #[test]
+    fn test_sandbox_toggle_preserves_pending_host_event() {
+        // Issue #679 review: a host marker queued on resume must survive a
+        // later `/thread sandbox off` (the reverse order used to clobber it).
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let tid = mgr.create_thread(ThreadMeta::default());
+
+        mgr.update_meta(&tid, |m| {
+            m.queue_event("<event>host changed from a to b</event>");
+        });
+        mgr.set_sandbox_disabled(&tid, true);
+        assert_eq!(
+            mgr.load_meta(&tid).pending_event.as_deref(),
+            Some("<event>host changed from a to b</event>\n<event>sandbox off</event>")
         );
     }
 
