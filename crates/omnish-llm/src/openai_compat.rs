@@ -327,7 +327,11 @@ impl LlmBackend for OpenAiCompatBackend {
             // Multi-turn / agent loop: extract content, then convert Anthropic→OpenAI format.
             let raw: Vec<serde_json::Value> = req.extra_messages
                 .iter()
-                .map(|m| m.content.clone())
+                .map(|m| {
+                    let mut content = m.content.clone();
+                    crate::backend::strip_internal_fields(&mut content);
+                    content
+                })
                 .collect();
             convert_extra_messages(&raw)
         };

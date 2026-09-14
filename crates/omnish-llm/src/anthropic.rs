@@ -146,7 +146,14 @@ fn build_request_body(req: &LlmRequest, model: &str) -> serde_json::Value {
             vec![serde_json::json!({"role": "user", "content": user_content})]
         }
     } else {
-        req.extra_messages.iter().map(|m| m.content.clone()).collect()
+        req.extra_messages
+            .iter()
+            .map(|m| {
+                let mut content = m.content.clone();
+                crate::backend::strip_internal_fields(&mut content);
+                content
+            })
+            .collect()
     };
 
     // Apply per-message cache hints (after budget enforcement).

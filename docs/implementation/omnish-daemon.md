@@ -862,6 +862,13 @@ Assistant: {{final response}}
 
 **用途:** 用于存储完整的 LLM 交互（包括 tool_use 和 tool_result 消息）
 
+**消息时间戳（#680）:** 追加时为每条缺少 `_ts` 的消息写入 epoch 毫秒时间戳；已有 `_ts` 会保留。`replace_messages()` 刻意**不**补写时间戳（重写通常混有历史消息，统一打当前时间会让历史消息泄漏进按时间窗过滤的摘要）。合并到尾部（`merge_user_query_into_tail`）时**不**改消息级 `_ts`，而是给新增的 query / interrupt marker **块**单独写入 `now`（原文本块继承消息级 `_ts`），窗口过滤（`extract_text_in_window`）按块判定，因此旧文本留在原日期、新 query 归属当天。`_ts` 仅用于存储与窗口过滤，在 LLM backend 边界统一剥离（含 content 块，见 omnish-llm `strip_internal_fields`）。已知限制：assistant/tool 消息在落盘时才打时间，跨午夜的一轮（23:58 提问、00:03 回答）回答会算到次日，两天的摘要各拿半轮；接受该行为，未在 `AgentLoopState` 记录轮次开始时间。
+
+##### `ConversationManager::collect_recent_conversations_md(since)`
+收集 `since` 之后有更新的线程，格式化为 markdown。每个线程为 `## Thread: {title}` 段，含 User/Assistant 文本（过滤 tool_use/tool_result）。
+
+**窗口过滤（#680）:** 线程级用文件 mtime 预筛，消息级只保留 `_ts >= since` 的条目，因此长期线程只贡献本时间窗内的轮次，而不会把数天前的完整历史带进当天的 hourly/daily 摘要；无 `_ts` 的旧消息视为窗口外。
+
 ##### `ConversationManager::load_raw_messages()`
 加载线程所有原始 JSON 消息（用于 LLM 上下文）。
 
@@ -1145,6 +1152,10 @@ period = "2 weeks"  # 保留期 select，可选 1 day/2 days/1 week/2 weeks/1 mo
 - LLM 响应经 `strip_thinking_block()` 去除 `<thinking>` 标签（#527）
 - **i18n**：提示词为英文基底，通过 `template::append_language_instruction()` 根据 `daemon_config.client.language` 注入语言指令（支持 en/zh/zh-tw/ja/ko/fr/es/ar）；Markdown 标题、表头等生成内容也按语言本地化
 - **提示词聚焦（#523）**：prompt 以项目与目标进展为主线，而非逐条罗列命令/对话
+- **对话按时间窗过滤（#680）**：收集对话时通过消息 `_ts` 仅保留回看窗口内的轮次（长期线程不再带入完整历史），因此聚合出的 daily notes 只包含当天的对话
+- **回看窗口按实际触发时间（#680 review）**：窗口起点由 `hourly_summary::run_window_start(schedule, now)` 用 croner（与调度器同库，`Cron::new(..).with_seconds_required().parse()`，本地时区）计算：`last_fire_at_or_before(now)` 取本次触发，再取其上一次触发作为窗口起点，因此 `8,12,20`、`*/5`、周内 `1-5`、`9-17` 等不均匀 schedule 都能精确覆盖上次运行以来的区间（不再用固定间隔推导）。找不到触发（约 32 天内无）时回退 4 小时。调度用本地时区 `Job::new_async_tz(.., Local, ..)`，与 `daily_notes` 对齐
+- **午夜截断**：窗口起点会 clamp 到目标文件所属日期的本地 00:00（00:xx 那次写前一天 `24.md`，故取前一天），保证单日 hourly 不跨天。若 schedule 没有 00:xx 触发（如 `8,12,20`），当天最后一段（20-24 点）不会进入任何 daily note，任务创建时 `tracing::warn!` 提示
+- **`/context hourly` 预览**：用 `preview_window_start(schedule, now)`，起点为最近一次触发，展示下一次运行将覆盖区间的已过去部分
 - **午夜特殊处理**：在 00:xx 执行时，保存为前一天的 `24.md`（而非 `00.md`），使得在 00:10 运行的 daily_notes 任务可以包含这最后一份摘要
 
 **相关配置:**
@@ -1161,6 +1172,7 @@ max_line_width = 128    # 每行最大字符数
 **功能:** 生成过去24小时的工作总结，保存到 `~/.omnish/notes/YYYY-MM-DD.md`
 **特点:**
 - 完全依赖小时摘要（不再收集原始命令和对话数据）
+- 小时摘要已按消息 `_ts` 过滤对话时间窗（#680），因此日报中的对话天然限定为当天进行的对话
 - 使用 `SharedLlmBackend`（通过 `llm_holder.read().unwrap().get_backend(UseCase::Analysis)` 获取后端）
 - 若当天无小时摘要或无可用 LLM 后端，自动跳过
 - LLM 响应经 `strip_thinking_block()` 去除 `<thinking>` 标签（#527）

@@ -201,3 +201,14 @@ pub fn inject_task_defaults(tasks: &mut omnish_common::config::TasksConfig) {
         entry.set_defaults(defaults);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_cron_adds_seconds() {
+        assert_eq!(normalize_cron("0 */4 * * *"), "0 0 */4 * * *");
+        assert_eq!(normalize_cron("0 0 */4 * * *"), "0 0 */4 * * *");
+    }
+}

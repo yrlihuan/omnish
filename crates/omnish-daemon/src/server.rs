@@ -1734,13 +1734,10 @@ async fn handle_chat_message(
         history_dirty = true;
     }
 
-    // Strip internal metadata fields that must not be sent to the LLM API
-    for msg in &mut extra_messages {
-        if let Some(obj) = msg.as_object_mut() {
-            obj.remove("_usage");
-            obj.remove("_model");
-        }
-    }
+    // Internal metadata fields (leading underscore, e.g. `_ts`, `_usage`,
+    // `_model`) are preserved in storage and stripped at the LLM backend
+    // boundary (`omnish_llm::backend::strip_internal_fields`), so individual
+    // call sites do not each have to know the current internal field set.
 
     // Forward-path merge: Anthropic forbids two consecutive user-role
     // messages, so any user-role tail must absorb the new query rather than
@@ -1756,13 +1753,26 @@ async fn handle_chat_message(
     );
     if merge_into_tail {
         if let Some(last) = extra_messages.last_mut() {
-            omnish_daemon::conversation_mgr::merge_user_query_into_tail(last, &query);
+            // The appended query/marker blocks get `now` at the block level while
+            // older text already in the tail keeps its own timestamp, so the new
+            // turn lands in the current day without pulling the old text with it
+            // (issue #680 review).
+            omnish_daemon::conversation_mgr::merge_user_query_into_tail(
+                last,
+                &query,
+                ConversationManager::now_ms(),
+            );
         }
         conv_mgr.replace_messages(&cm.thread_id, &extra_messages);
         history_dirty = false; // replace_messages covered both cleanups + merge
     } else {
-        // Tail is assistant (or empty) - append a fresh user message.
-        let user_msg = serde_json::json!({"role": "user", "content": query});
+        // Tail is assistant (or empty) - append a fresh user message. Stamp it
+        // explicitly because replace_messages (history_dirty path) won't.
+        let mut user_msg = serde_json::json!({"role": "user", "content": query});
+        ConversationManager::stamp_message_timestamp(
+            &mut user_msg,
+            ConversationManager::now_ms(),
+        );
         extra_messages.push(user_msg.clone());
         if history_dirty {
             conv_mgr.replace_messages(&cm.thread_id, &extra_messages);
@@ -3013,7 +3023,20 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
 
     // Handle /context <scenario> for showing context for different scenarios
     if let Some(scenario) = sub.strip_prefix("context ") {
-        return cmd_display(handle_context_scenario(scenario, req, mgr, llm_backend, conv_mgr).await);
+        // Mirror the scheduled job's cron-derived window so the preview matches
+        // what the next run will summarize.
+        let hourly_since = {
+            let cfg = ctx.opts.daemon_config.read().unwrap();
+            let schedule = cfg
+                .tasks
+                .get("hourly_summary")
+                .map(|c| omnish_daemon::task_mgr::normalize_cron(&c.get_string("schedule", "")))
+                .unwrap_or_default();
+            omnish_daemon::hourly_summary::preview_window_start(&schedule, chrono::Local::now())
+        };
+        return cmd_display(
+            handle_context_scenario(scenario, req, mgr, llm_backend, conv_mgr, hourly_since).await,
+        );
     }
     // Handle /resume [n] for resuming a specific conversation (by index)
     if let Some(idx_str) = sub.strip_prefix("resume ") {
@@ -3799,7 +3822,8 @@ fn format_relative_time(time: std::time::SystemTime) -> String {
 }
 
 /// Handle /context <scenario> to show context for different use cases.
-async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionManager, llm_backend: &Arc<MultiBackend>, conv_mgr: &Arc<ConversationManager>) -> String {
+/// `hourly_since` is the cron-derived window start for the hourly preview.
+async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionManager, llm_backend: &Arc<MultiBackend>, conv_mgr: &Arc<ConversationManager>, hourly_since: chrono::DateTime<chrono::Local>) -> String {
     match scenario {
         "chat" | "analysis" => {
             // Return system-reminder (terminal context) when not in a specific chat thread
@@ -3828,18 +3852,14 @@ async fn handle_context_scenario(scenario: &str, req: &Request, mgr: &SessionMan
             }
         }
         "hourly-notes" | "hourly" => {
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            let since_ms = now_ms.saturating_sub(4 * 3600 * 1000);
+            let since_ms = hourly_since.timestamp_millis().max(0) as u64;
             let commands = mgr.collect_recent_commands(since_ms).await;
-            let window_ago = std::time::SystemTime::now()
-                .checked_sub(std::time::Duration::from_secs(4 * 3600))
-                .unwrap_or(std::time::UNIX_EPOCH);
-            let conversations_md = conv_mgr.collect_recent_conversations_md(window_ago);
+            let conversations_md = conv_mgr.collect_recent_conversations_md(hourly_since.into());
             if commands.is_empty() && conversations_md.is_empty() {
-                return "No commands or conversations in the past 4 hours".to_string();
+                return format!(
+                    "No commands or conversations since {}",
+                    hourly_since.format("%Y-%m-%d %H:%M")
+                );
             }
             let (ctx, _table_md) = omnish_daemon::hourly_summary::build_hourly_context(&commands, &conversations_md);
             ctx

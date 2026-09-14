@@ -60,6 +60,7 @@ LLM后端接口，定义所有LLM后端必须实现的方法：
 - `CacheHint::Long`：`ephemeral` 且 `ttl: "1h"`
 - `CachedText { text, cache }`：可缓存文本，用于 `LlmRequest.system_prompt`
 - `TaggedMessage { content, cache, cache_pos }`：带缓存提示的消息，`content` 为 Anthropic 格式 JSON（内部规范），用于 `LlmRequest.extra_messages`。`cache_pos: Option<usize>` 指定该消息中哪一个 content block 接收 `cache_control` 断点（`None` 表示最后一个），用于补全请求在多段 content block（`stable_prefix` / `remainder` / `query`）上把断点固定在 `stable_prefix`
+- `strip_internal_fields(msg)`：backend 边界统一剥离消息对象及其数组 `content` 各块中以 `_` 开头的内部字段（`_ts`、`_usage`、`_model` 等），Anthropic 的 `build_request_body` 与 OpenAI-compat 的 `convert_extra_messages` 入口均调用。存储保留这些字段供 daemon 记账（如消息/块时间戳），剥离集中在 backend，避免各调用点各自维护内部字段集合（#680）
 
 #### `LlmRequest`
 LLM请求结构体，包含发送给LLM的完整请求信息：

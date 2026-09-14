@@ -53,6 +53,28 @@ impl TaggedMessage {
     }
 }
 
+/// Remove internal metadata keys (any leading-underscore field, e.g. `_ts`,
+/// `_usage`, `_model`) from a stored message before it is serialized to a
+/// provider API. Applies to the message object and to each block of an array
+/// `content` (a merged user turn carries per-block `_ts`).
+///
+/// Storage keeps these fields for daemon-side bookkeeping; stripping here at
+/// the backend boundary keeps individual backends from having to know the
+/// current set of internal fields.
+pub fn strip_internal_fields(msg: &mut serde_json::Value) {
+    let Some(obj) = msg.as_object_mut() else {
+        return;
+    };
+    obj.retain(|key, _| !key.starts_with('_'));
+    if let Some(serde_json::Value::Array(blocks)) = obj.get_mut("content") {
+        for block in blocks {
+            if let Some(block) = block.as_object_mut() {
+                block.retain(|key, _| !key.starts_with('_'));
+            }
+        }
+    }
+}
+
 /// Use case for LLM requests - determines which model to use
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum UseCase {
@@ -196,4 +218,51 @@ impl LlmBackend for UnavailableBackend {
     }
     fn name(&self) -> &str { "unavailable" }
     fn model_name(&self) -> &str { "unavailable" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_internal_fields_removes_leading_underscore() {
+        let mut msg = serde_json::json!({
+            "role": "user",
+            "content": "hi",
+            "_ts": 123,
+            "_usage": {"input_tokens": 1},
+            "_model": "m",
+            "keep": true,
+        });
+        strip_internal_fields(&mut msg);
+        assert_eq!(msg["role"], "user");
+        assert_eq!(msg["content"], "hi");
+        assert_eq!(msg["keep"], true);
+        assert!(msg.get("_ts").is_none());
+        assert!(msg.get("_usage").is_none());
+        assert!(msg.get("_model").is_none());
+    }
+
+    #[test]
+    fn test_strip_internal_fields_recurses_into_content_blocks() {
+        let mut msg = serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "old", "_ts": 1},
+                {"type": "tool_result", "tool_use_id": "t", "content": "x", "_ts": 2},
+            ],
+        });
+        strip_internal_fields(&mut msg);
+        assert!(msg["content"][0].get("_ts").is_none());
+        assert_eq!(msg["content"][0]["text"], "old");
+        assert!(msg["content"][1].get("_ts").is_none());
+        assert_eq!(msg["content"][1]["type"], "tool_result");
+    }
+
+    #[test]
+    fn test_strip_internal_fields_ignores_non_objects() {
+        let mut s = serde_json::json!("plain");
+        strip_internal_fields(&mut s);
+        assert_eq!(s, "plain");
+    }
 }

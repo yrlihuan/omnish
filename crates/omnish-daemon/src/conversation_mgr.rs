@@ -252,15 +252,23 @@ fn is_user_tool_result_only(msg: &serde_json::Value) -> bool {
 ///   interrupt marker text block, append the marker text block first.
 /// - Always append `query` as a final text block.
 ///
+/// `now_ms` timestamps the appended blocks (query and interrupt marker) at the
+/// block level, so the new turn is attributed to the current time while any
+/// older text already in `tail` keeps its own timestamp (issue #680 review).
+/// The message-level `_ts` is left untouched.
+///
 /// Caller is responsible for persisting the change.
-pub fn merge_user_query_into_tail(tail: &mut serde_json::Value, query: &str) {
+pub fn merge_user_query_into_tail(tail: &mut serde_json::Value, query: &str, now_ms: u64) {
     debug_assert!(is_user_message(tail));
     // Promote string content to array form so we can append blocks uniformly.
     if let Some(s) = tail["content"].as_str() {
         let s = s.to_string();
-        tail["content"] = serde_json::json!([
-            { "type": "text", "text": s }
-        ]);
+        let existing_ts = tail.get("_ts").cloned();
+        let mut first = serde_json::json!({ "type": "text", "text": s });
+        if let Some(ts) = existing_ts {
+            first["_ts"] = ts;
+        }
+        tail["content"] = serde_json::Value::Array(vec![first]);
     }
     let arr = match tail["content"].as_array_mut() {
         Some(a) => a,
@@ -275,11 +283,13 @@ pub fn merge_user_query_into_tail(tail: &mut serde_json::Value, query: &str) {
         arr.push(serde_json::json!({
             "type": "text",
             "text": format!("{}\n", INTERRUPT_MARKER),
+            "_ts": now_ms,
         }));
     }
     arr.push(serde_json::json!({
         "type": "text",
         "text": query,
+        "_ts": now_ms,
     }));
 }
 
@@ -585,19 +595,64 @@ impl ConversationManager {
         removed
     }
 
+    /// Current epoch time in milliseconds. Used to timestamp stored messages so
+    /// summaries can restrict conversations to a time window (issue #680).
+    pub fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    /// Force a standalone message's `_ts` to `ts_ms`. Used for a freshly
+    /// appended user message (which `replace_messages` would not stamp).
+    ///
+    /// Do NOT call this on a tail that `merge_user_query_into_tail` will reuse:
+    /// the tail may already hold text from an earlier turn, and re-dating the
+    /// whole message would pull that older text into the current window. That
+    /// path stamps the appended query/marker blocks instead (issue #680 review).
+    pub fn stamp_message_timestamp(msg: &mut serde_json::Value, ts_ms: u64) {
+        if let Some(obj) = msg.as_object_mut() {
+            obj.insert("_ts".to_string(), serde_json::json!(ts_ms));
+        }
+    }
+
+    /// Stamp `_ts` (epoch ms) onto every message that lacks one, in place, so
+    /// `collect_recent_conversations_md` can filter by time. Existing stamps are
+    /// preserved across rewrites (compact, merge, sanitize).
+    ///
+    /// Known limitation (issue #680 review): assistant/tool messages are only
+    /// stamped when they are persisted by `persist_unsaved`, i.e. at the end of
+    /// the agent turn, not when the turn started. A turn spanning midnight
+    /// (question 23:58, answer 00:03) therefore dates the answer to the next
+    /// day, so the two days' summaries each see half the exchange. Accepted:
+    /// the alternative (recording the turn start in `AgentLoopState`) is not
+    /// worth the plumbing for this edge case.
+    fn stamp_missing_timestamps(msgs: &mut [serde_json::Value]) {
+        let ts = Self::now_ms();
+        for msg in msgs.iter_mut() {
+            if let Some(obj) = msg.as_object_mut() {
+                obj.entry("_ts").or_insert_with(|| serde_json::json!(ts));
+            }
+        }
+    }
+
     /// Append raw JSON messages. Writes to both memory and disk (append-only).
     pub fn append_messages(&self, thread_id: &str, messages: &[serde_json::Value]) {
+        let mut stamped = messages.to_vec();
+        Self::stamp_missing_timestamps(&mut stamped);
+
         self.threads.lock().unwrap()
             .entry(thread_id.to_string())
             .or_default()
-            .extend(messages.iter().cloned());
+            .extend(stamped.iter().cloned());
 
         use std::io::Write;
         let path = self.threads_dir.join(format!("{}.jsonl", thread_id));
         if let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true).append(true).open(&path)
         {
-            for msg in messages {
+            for msg in &stamped {
                 writeln!(file, "{}", serde_json::to_string(msg).unwrap()).ok();
             }
         }
@@ -629,6 +684,11 @@ impl ConversationManager {
     }
 
     /// Replace the in-memory cache and rewrite the JSONL file for a thread.
+    ///
+    /// Unlike `append_messages`, this does NOT stamp missing timestamps: the
+    /// list usually comes from already-stored history plus a caller-stamped new
+    /// turn, and blanket-stamping would date legacy messages as "now" and leak
+    /// them into windowed summaries (issue #680).
     pub fn replace_messages(&self, thread_id: &str, msgs: &[serde_json::Value]) {
         let mut threads = self.threads.lock().unwrap();
         threads.insert(thread_id.to_string(), msgs.to_vec());
@@ -718,6 +778,34 @@ impl ConversationManager {
         msg["role"].as_str() == Some("user") && msg["content"].is_string()
     }
 
+    /// Extract only the text that falls inside a time window. A text block's own
+    /// `_ts` wins; otherwise the message-level `_ts` applies. For string content
+    /// the message-level `_ts` decides. Used by windowed summaries so a merged
+    /// turn contributes each part to the right day (issue #680 review).
+    fn extract_text_in_window(msg: &serde_json::Value, cutoff_ms: u64) -> String {
+        let msg_ts = msg.get("_ts").and_then(|v| v.as_u64()).unwrap_or(0);
+        match &msg["content"] {
+            serde_json::Value::String(s) => {
+                if msg_ts >= cutoff_ms { s.clone() } else { String::new() }
+            }
+            serde_json::Value::Array(arr) => arr
+                .iter()
+                .filter_map(|b| {
+                    if b["type"].as_str() != Some("text") {
+                        return None;
+                    }
+                    let ts = b.get("_ts").and_then(|v| v.as_u64()).unwrap_or(msg_ts);
+                    if ts < cutoff_ms {
+                        return None;
+                    }
+                    b["text"].as_str().map(|s| s.to_string())
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        }
+    }
+
     /// Extract display text from a message, stripping <system-reminder> blocks.
     fn extract_text(msg: &serde_json::Value) -> String {
         match &msg["content"] {
@@ -746,7 +834,18 @@ impl ConversationManager {
     /// Collect conversations from threads modified since `since`, formatted as markdown.
     /// Each thread becomes a `## Thread: {title}` section with User/Assistant exchanges.
     /// Filters out tool_use/tool_result blocks, keeping only text content.
+    ///
+    /// Only text stamped `_ts >= since` is included, so a long-running thread
+    /// contributes just the turns from this window instead of its whole history
+    /// (issue #680). For merged user turns the filter is per text block, so the
+    /// new query goes to the current day while older text in the same message
+    /// stays in its own day. Messages/blocks without a `_ts` predate this
+    /// tracking and are treated as out of window.
     pub fn collect_recent_conversations_md(&self, since: std::time::SystemTime) -> String {
+        let cutoff_ms = since
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         let conversations = self.list_conversations();
         let mut result = String::new();
 
@@ -763,10 +862,10 @@ impl ConversationManager {
                 continue;
             }
 
-            let mut thread_md = format!("## Thread: {}\n\n", title);
+            let mut body = String::new();
             for msg in &messages {
                 let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
-                let text = Self::extract_text(msg);
+                let text = Self::extract_text_in_window(msg, cutoff_ms);
                 if text.is_empty() {
                     continue;
                 }
@@ -775,10 +874,12 @@ impl ConversationManager {
                     "assistant" => "Assistant",
                     _ => continue,
                 };
-                thread_md.push_str(&format!("{}: {}\n\n", label, text));
+                body.push_str(&format!("{}: {}\n\n", label, text));
             }
 
-            result.push_str(&thread_md);
+            if !body.is_empty() {
+                result.push_str(&format!("## Thread: {}\n\n{}", title, body));
+            }
         }
 
         result
@@ -846,6 +947,105 @@ mod tests {
         assert_eq!(msgs[2]["content"], "how are you?");
         assert_eq!(msgs[3]["role"], "assistant");
         assert_eq!(msgs[3]["content"], "I'm fine");
+    }
+
+    #[test]
+    fn test_append_messages_stamps_timestamp() {
+        // Issue #680: new messages carry a `_ts` so summaries can window them.
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+
+        mgr.append_messages(&id, &[user_msg("hi"), assistant_msg("hello")]);
+        let msgs = mgr.load_raw_messages(&id);
+        assert!(msgs[0].get("_ts").and_then(|v| v.as_u64()).is_some());
+        assert!(msgs[1].get("_ts").and_then(|v| v.as_u64()).is_some());
+    }
+
+    #[test]
+    fn test_collect_recent_conversations_filters_by_message_ts() {
+        // A long-running thread must contribute only the turns inside the
+        // window, not its whole history (issue #680).
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+
+        let old_ms = ConversationManager::now_ms() - 48 * 3600 * 1000;
+        let mut old_user = user_msg("old question");
+        ConversationManager::stamp_message_timestamp(&mut old_user, old_ms);
+        let mut old_assistant = assistant_msg("old answer");
+        ConversationManager::stamp_message_timestamp(&mut old_assistant, old_ms);
+        mgr.append_messages(&id, &[old_user, old_assistant]);
+
+        // New turn, stamped "now" by append_messages.
+        mgr.append_messages(&id, &[user_msg("new question"), assistant_msg("new answer")]);
+
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let md = mgr.collect_recent_conversations_md(since);
+        assert!(md.contains("new question"), "md: {}", md);
+        assert!(md.contains("new answer"), "md: {}", md);
+        assert!(!md.contains("old question"), "md: {}", md);
+        assert!(!md.contains("old answer"), "md: {}", md);
+    }
+
+    #[test]
+    fn test_merged_turn_windows_per_block() {
+        // Issue #680 review: a query merged into an old user tail is attributed
+        // to the current window, while the older text stays in its own day.
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+
+        let old_ms = ConversationManager::now_ms() - 48 * 3600 * 1000;
+        let now_ms = ConversationManager::now_ms();
+        let mut tail = user_msg("old question");
+        ConversationManager::stamp_message_timestamp(&mut tail, old_ms);
+        merge_user_query_into_tail(&mut tail, "new question", now_ms);
+        mgr.replace_messages(&id, &[tail]);
+
+        let recent = mgr.collect_recent_conversations_md(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(3600),
+        );
+        assert!(recent.contains("new question"), "recent: {}", recent);
+        assert!(!recent.contains("old question"), "recent: {}", recent);
+
+        let all = mgr.collect_recent_conversations_md(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(72 * 3600),
+        );
+        assert!(all.contains("new question"), "all: {}", all);
+        assert!(all.contains("old question"), "all: {}", all);
+    }
+
+    #[test]
+    fn test_collect_recent_skips_undated_legacy_messages() {
+        // Legacy messages without `_ts` cannot be dated; they must not leak
+        // into a windowed summary. replace_messages does not stamp them.
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+
+        mgr.replace_messages(&id, &[user_msg("legacy"), assistant_msg("old")]);
+        assert!(mgr.load_raw_messages(&id)[0].get("_ts").is_none());
+
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let md = mgr.collect_recent_conversations_md(since);
+        assert!(!md.contains("legacy"), "md: {}", md);
+        assert!(!md.contains("old"), "md: {}", md);
+    }
+
+    #[test]
+    fn test_replace_messages_preserves_existing_ts() {
+        // Rewrites (compact/merge/sanitize) must not re-date stored messages.
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+
+        let ts = ConversationManager::now_ms() - 48 * 3600 * 1000;
+        let mut m = user_msg("keep");
+        ConversationManager::stamp_message_timestamp(&mut m, ts);
+        mgr.replace_messages(&id, &[m]);
+
+        assert_eq!(mgr.load_raw_messages(&id)[0]["_ts"].as_u64(), Some(ts));
     }
 
     #[test]
@@ -1422,13 +1622,16 @@ mod tests {
     fn test_merge_user_query_into_tail_tool_result_only() {
         // Fresh interrupt snapshot: tool_result + marker + new query.
         let mut tail = tool_result_only_msg("t1", "user interrupted", true);
-        merge_user_query_into_tail(&mut tail, "继续");
+        merge_user_query_into_tail(&mut tail, "继续", 111);
         let arr = tail["content"].as_array().unwrap();
         assert_eq!(arr.len(), 3);
         assert_eq!(arr[0]["type"], "tool_result");
         assert_eq!(arr[1]["type"], "text");
         assert_eq!(arr[1]["text"], format!("{}\n", INTERRUPT_MARKER));
         assert_eq!(arr[2]["text"], "继续");
+        // Appended blocks carry the current timestamp.
+        assert_eq!(arr[1]["_ts"], 111);
+        assert_eq!(arr[2]["_ts"], 111);
     }
 
     #[test]
@@ -1443,10 +1646,11 @@ mod tests {
                 {"type": "text", "text": "继续"},
             ]
         });
-        merge_user_query_into_tail(&mut tail, "再继续");
+        merge_user_query_into_tail(&mut tail, "再继续", 222);
         let arr = tail["content"].as_array().unwrap();
         assert_eq!(arr.len(), 4);
         assert_eq!(arr[3]["text"], "再继续");
+        assert_eq!(arr[3]["_ts"], 222);
         // Only one marker in the array
         let marker_count = arr.iter()
             .filter(|b| b["type"].as_str() == Some("text")
@@ -1461,11 +1665,12 @@ mod tests {
         // the string to an array and append the new query (no marker since
         // there's no tool_result to mark).
         let mut tail = user_msg("first");
-        merge_user_query_into_tail(&mut tail, "second");
+        merge_user_query_into_tail(&mut tail, "second", 333);
         let arr = tail["content"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["text"], "first");
         assert_eq!(arr[1]["text"], "second");
+        assert_eq!(arr[1]["_ts"], 333);
         // No interrupt marker injected when there's no tool_result context
         let marker_count = arr.iter()
             .filter(|b| b["type"].as_str() == Some("text")
