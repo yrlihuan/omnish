@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.9.0 (2026-09-14)
+
+### Features
+- **chat,daemon**: Notify the LLM when a resumed thread switches hosts (#679). A one-shot `<event>host changed from X to Y</event>` marker is queued in `ThreadMeta.pending_event` at flush time, on the same value that is persisted, so a late hostname probe is not missed. `ThreadMeta::queue_event` newline-appends markers and removes an identical prior line so the latest state stays last, and `HOSTNAME` joins the per-turn system-reminder so the model knows its host even after `/compact`.
+- **chat**: Inject an `<event>` marker on the next turn after a `/thread sandbox on|off` toggle, so the model learns the sandbox state changed (#659)
+- **chat**: `Ctrl-O` browses scroll history while a turn is in flight (thinking or tool execution), not just at the input prompt (#665)
+- **chat**: `Ctrl-E` toggles compact/detailed tool results inside the `Ctrl-O` browser, re-anchoring the viewport so the message at the top stays put across the switch (#669)
+- **plugin**: Install plugins from zip archives, dispatched by magic bytes rather than file extension (#663)
+- **debug**: Surface the completion gates (`in_isearch`, `cursor_at_end`, runtime `completion_enabled`) and the last 20 event-log entries in the `/debug client` dump
+
+### Fixes
+- **transport,client**: Break the bidirectional flow-control deadlock that silently swallowed keystrokes (#656). Blocking writes inline with the read/pump loops on both sides could wedge a cycle that only ever pended, so the connection never flipped to disconnected and never recovered. Per-keystroke telemetry now goes through a non-blocking `report_or_buffer()`, `RpcClient::try_send()` replaces blocking push dispatch, and the daemon drains server-initiated pushes on a dedicated task.
+- **client**: Detach tool subprocesses from the controlling terminal via `setsid()`, so an interactive command (e.g. the bash tool invoking `sudo`) can no longer grab /dev/tty, disable echo and race omnish for keystrokes (#656)
+- **client**: Raise `oom_score_adj` to 1000 on tool subprocesses so the kernel OOM killer reaps a runaway chat command instead of the client and shell that share its cgroup
+- **chat,daemon**: Show accurate LLM errors instead of a spurious "Daemon connection lost" when a stream ends without a final response (#658). The backend's HTTP status, error type and API message are surfaced, and connection-error retry backoff is reported as "retrying (n/2) in Xs..." instead of a silent spinner.
+- **daemon**: Measure parked agent-loop staleness by idle time rather than turn age, and auto-extend the deadline to cover a pending tool's declared timeout, so a turn whose client-side tools run past 30 minutes is no longer killed mid-flight (#660)
+- **chat**: Never reclaim a parked agent loop while the owning session still holds a live transport connection (#670)
+- **update**: Validate package integrity (full gzip decode including the trailing CRC/ISIZE) before caching, so a zero-byte or truncated mid-copy package can no longer win dedup and wedge auto-update permanently (#657)
+- **chat**: Preserve thinking blocks on empty responses, and execute tool calls even when a backend mislabels a tool-calling turn's `stop_reason` as `end_turn`, while still treating MaxTokens as truncation (#662)
+- **chat**: Correct input cursor rendering for wrapped and double-width (CJK) text (#667). New `wrap_advance` walks per-glyph widths instead of assuming rows pack perfectly, `position_cursor` follows the terminal's deferred-wrap model so a redraw never climbs past the input block, and the cursor renders on a wrapped wide char rather than the narrow gap preceding it. Verified against vt100.
+- **chat**: Record the session's live cwd on thread resume instead of the stale ChatStart snapshot, so answering "cd to the thread's directory" no longer overwrites the thread's stored cwd (#672)
+- **edit**: Report the place count in a `replace_all` summary, e.g. "Added 1 line in 11 places" (#671)
+- **grep**: Cap tool output at 50 KB with a 2000-char per-line limit, applied as a byte budget during the search rather than after, so a broad content-mode grep can no longer produce a 96 MB tool_result that bloats the thread file and blows the LLM context
+- **bash-tool**: Drain stdout and stderr on separate threads while waiting, so a command writing more than the ~64 KiB pipe buffer no longer blocks on write and appears to hang until the timeout
+
+### Tests
+- **integration**: Widen the `/debug client` capture window from 30 to 100 lines in `test_basic` case 1 and `verify_issue_147` case 1, after the dump grew a "Recent Events" section (#674)
+
+### Style
+- **chat**: Fix clippy 1.94 lints in chat_session tests (`cloned_ref_to_slice_refs`, `useless_vec`)
+
+### Docs
+- **claude**: Commit directly on master, no feature branches
+
 ## v0.8.18 (2026-08-03)
 
 ### Features
