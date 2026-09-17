@@ -724,6 +724,7 @@ Today's date: 2026-03-15
   - DaemonTool 执行期间每个工具完成后也检查取消标志
 - 若循环已暂停等待客户端工具结果，守护进程从 `pending_agent_loops` 中取出暂停态
 - 已完成的工具结果正常存储，未完成的标记为 `"user interrupted"` 错误
+- **中断耗时（#682）**：`interrupt marker` 会带上从"开始执行"到中断的耗时，如 `[Request interrupted by user for tool use after 1m20s]`。起始点由 `AgentLoopState` 记录：等待 LLM 时取本次 `backend.complete` 开始时间（`llm_call_started`），等待工具结果时取最早未完成工具的开始时间（`tool_started`，多个取最早），都未知则回退到 loop 开始时间。标记同时写入未完成 `tool_result` 的内容和合并消息的 text block；`is_interrupt_marker()` 按前缀匹配，因此带/不带耗时的标记都能被 `merge_user_query_into_tail` 去重、被 `reconstruct_history` 跳过
 - 所有消息（包括部分结果）持久化到对话线程
 - **`ChatInterrupt` 用量记录**：暂停态被取出时，调用 `update_thread_usage()` 将已累积的用量保存到 `ThreadMeta`，确保中断的对话用量不丢失
 

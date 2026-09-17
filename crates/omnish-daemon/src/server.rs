@@ -118,6 +118,37 @@ struct AgentLoopState {
     /// loop is stale and must drop its in-flight work without writing to
     /// disk or sending response messages.
     generation: u64,
+    /// Instant the current LLM call was sent. Used to report how long execution
+    /// ran before a user interrupt while waiting on the LLM (issue #682).
+    llm_call_started: Option<std::time::Instant>,
+    /// Start time of each tool dispatched in this loop, keyed by tool_call_id.
+    /// Used to report the earliest unfinished tool's runtime on interrupt.
+    tool_started: HashMap<String, std::time::Instant>,
+}
+
+impl AgentLoopState {
+    /// How long execution ran before an interrupt, per issue #682: the earliest
+    /// start among `unfinished_ids` (tools still awaiting a result), else the
+    /// current LLM call, else the loop start.
+    fn interrupt_elapsed<'a>(&self, unfinished_ids: impl Iterator<Item = &'a str>) -> std::time::Duration {
+        interrupt_start(&self.tool_started, unfinished_ids, self.llm_call_started, self.start)
+            .elapsed()
+    }
+}
+
+/// Resolve the instant execution "started" for interrupt reporting: the earliest
+/// unfinished tool, else the current LLM call, else the loop start.
+fn interrupt_start<'a>(
+    tool_started: &HashMap<String, std::time::Instant>,
+    unfinished_ids: impl Iterator<Item = &'a str>,
+    llm_call_started: Option<std::time::Instant>,
+    loop_start: std::time::Instant,
+) -> std::time::Instant {
+    unfinished_ids
+        .filter_map(|id| tool_started.get(id).copied())
+        .min()
+        .or(llm_call_started)
+        .unwrap_or(loop_start)
 }
 
 /// Base idle window for a parked agent loop: reclaim its in-memory state only
@@ -1284,16 +1315,33 @@ async fn handle_chat_interrupt(ci: ChatInterrupt, ctx: &HandlerCtx, tx: mpsc::Se
             }))
             .collect();
 
+        // Report how long execution ran: earliest still-running tool, else the
+        // LLM call (issue #682).
+        let elapsed = state.interrupt_elapsed(
+            state
+                .pending_tool_calls
+                .iter()
+                .filter(|tc| !completed_ids.contains(&tc.id))
+                .map(|tc| tc.id.as_str()),
+        );
+        let marker = omnish_daemon::conversation_mgr::interrupt_event_message(Some(elapsed));
+
         for tc in &state.pending_tool_calls {
             if !completed_ids.contains(&tc.id) {
                 result_content.push(serde_json::json!({
                     "type": "tool_result",
                     "tool_use_id": tc.id,
-                    "content": omnish_daemon::conversation_mgr::INTERRUPT_MARKER,
+                    "content": marker,
                     "is_error": true,
                 }));
             }
         }
+        // Persist the interrupt as a text block too, so the next merge sees the
+        // marker (with its elapsed suffix) instead of re-adding a bare one.
+        result_content.push(serde_json::json!({
+            "type": "text",
+            "text": format!("{}\n", marker),
+        }));
 
         persist_unsaved(&mut state, &ctx.conv_mgr, &[
             serde_json::json!({"role": "user", "content": result_content}),
@@ -1832,6 +1880,8 @@ async fn handle_chat_message(
         last_response_usage: Default::default(),
         last_model: String::new(),
         generation,
+        llm_call_started: None,
+        tool_started: HashMap::new(),
     };
 
     run_agent_loop(state, ctx, tx, cancel_flag).await;
@@ -2019,14 +2069,23 @@ async fn persist_unsaved_sanitized(
             .filter_map(|b| b.get("id").and_then(|id| id.as_str()).map(String::from))
             .collect();
 
-        let result_content: Vec<serde_json::Value> = tool_ids.iter().map(|id| {
+        // These tools never got dispatched, so the elapsed falls back to the LLM
+        // call that produced them (issue #682).
+        let elapsed = state.interrupt_elapsed(tool_ids.iter().map(|id| id.as_str()));
+        let marker = omnish_daemon::conversation_mgr::interrupt_event_message(Some(elapsed));
+
+        let mut result_content: Vec<serde_json::Value> = tool_ids.iter().map(|id| {
             serde_json::json!({
                 "type": "tool_result",
                 "tool_use_id": id,
-                "content": omnish_daemon::conversation_mgr::INTERRUPT_MARKER,
+                "content": marker,
                 "is_error": true,
             })
         }).collect();
+        result_content.push(serde_json::json!({
+            "type": "text",
+            "text": format!("{}\n", marker),
+        }));
 
         state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage::new(
             serde_json::json!({
@@ -2180,6 +2239,9 @@ async fn run_agent_loop(
         // and last-N markers must roll forward without accumulating beyond budget.
         mark_chat_message_hints(&mut state.llm_req.extra_messages);
 
+        // Record when this LLM call started so an interrupt while waiting on it
+        // can report the elapsed time (issue #682).
+        state.llm_call_started = Some(std::time::Instant::now());
         match backend.complete(&state.llm_req).await {
             Ok(response) => {
                 state.llm_retries = 0;
@@ -2248,6 +2310,9 @@ async fn run_agent_loop(
                             cancelled = true;
                             break;
                         }
+                        // Record the tool's start for interrupt elapsed reporting
+                        // (issue #682).
+                        state.tool_started.insert(tc.id.clone(), std::time::Instant::now());
                         let display_name = tool_registry.display_name(&tc.name).to_string();
                         let param_desc = tool_registry.status_text(&tc.name, &tc.input);
 
@@ -2430,16 +2495,27 @@ async fn run_agent_loop(
                                 "is_error": r.is_error,
                             }))
                             .collect();
+                        let elapsed = state.interrupt_elapsed(
+                            tool_calls
+                                .iter()
+                                .filter(|tc| !completed_ids.contains(tc.id.as_str()))
+                                .map(|tc| tc.id.as_str()),
+                        );
+                        let marker = omnish_daemon::conversation_mgr::interrupt_event_message(Some(elapsed));
                         for tc in &tool_calls {
                             if !completed_ids.contains(tc.id.as_str()) {
                                 result_content.push(serde_json::json!({
                                     "type": "tool_result",
                                     "tool_use_id": tc.id,
-                                    "content": omnish_daemon::conversation_mgr::INTERRUPT_MARKER,
+                                    "content": marker,
                                     "is_error": true,
                                 }));
                             }
                         }
+                        result_content.push(serde_json::json!({
+                            "type": "text",
+                            "text": format!("{}\n", marker),
+                        }));
                         state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage::new(
                             serde_json::json!({
                                 "role": "user",
@@ -2875,10 +2951,10 @@ async fn reconstruct_history(
                                 }
                             }
                             Some("text") => {
-                                // Skip the interrupt marker; render the rest as user input.
+                                // Skip the interrupt marker (with or without the
+                                // elapsed suffix); render the rest as user input.
                                 let text = block["text"].as_str().unwrap_or("");
-                                let trimmed = text.trim_end_matches('\n');
-                                if trimmed == omnish_daemon::conversation_mgr::INTERRUPT_MARKER
+                                if omnish_daemon::conversation_mgr::is_interrupt_marker(text)
                                     || text.is_empty()
                                 {
                                     continue;
@@ -5095,5 +5171,35 @@ mod tests {
         let meta = conv_mgr.load_meta(&tid);
         assert_eq!(meta.host.as_deref(), Some("old"));
         assert_eq!(meta.pending_event, None);
+    }
+
+    /// Issue #682: interrupt elapsed uses the earliest unfinished tool, falls
+    /// back to the LLM call, then to the loop start.
+    #[test]
+    fn test_interrupt_start_resolution() {
+        let loop_start = std::time::Instant::now();
+        let llm_start = loop_start + std::time::Duration::from_millis(10);
+        let earlier_tool = loop_start + std::time::Duration::from_millis(20);
+        let later_tool = loop_start + std::time::Duration::from_millis(30);
+
+        let mut started = HashMap::new();
+        started.insert("a".to_string(), later_tool);
+        started.insert("b".to_string(), earlier_tool);
+
+        // Earliest unfinished tool wins regardless of iteration order.
+        assert_eq!(
+            interrupt_start(&started, ["a", "b"].into_iter(), Some(llm_start), loop_start),
+            earlier_tool
+        );
+        // No started unfinished tool -> LLM call.
+        assert_eq!(
+            interrupt_start(&started, ["missing"].into_iter(), Some(llm_start), loop_start),
+            llm_start
+        );
+        // Nothing known -> loop start.
+        assert_eq!(
+            interrupt_start(&started, ["missing"].into_iter(), None, loop_start),
+            loop_start
+        );
     }
 }

@@ -222,6 +222,36 @@ pub fn sanitize_orphaned_tool_use(msgs: &mut Vec<serde_json::Value>) -> bool {
 /// structural signal about interrupted tool use.
 pub const INTERRUPT_MARKER: &str = "[Request interrupted by user for tool use]";
 
+/// Prefix shared by every interrupt marker; the elapsed-time suffix (issue
+/// #682) follows it, so matching must be prefix-based rather than exact.
+const INTERRUPT_MARKER_PREFIX: &str = "[Request interrupted by user for tool use";
+
+/// Build the interrupt marker, optionally reporting how long execution ran
+/// before the user interrupted (issue #682).
+pub fn interrupt_event_message(elapsed: Option<std::time::Duration>) -> String {
+    match elapsed {
+        Some(d) => format!("{} after {}]", INTERRUPT_MARKER_PREFIX, format_elapsed(d)),
+        None => INTERRUPT_MARKER.to_string(),
+    }
+}
+
+/// True when `text` is an interrupt marker, with or without an elapsed suffix.
+pub fn is_interrupt_marker(text: &str) -> bool {
+    text.trim_end_matches('\n').starts_with(INTERRUPT_MARKER_PREFIX)
+}
+
+/// Compact duration rendering: `45s`, `1m20s`, `1h05m`.
+fn format_elapsed(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs >= 3600 {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs >= 60 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}s", secs)
+    }
+}
+
 /// True when the message's role is `user`. Anthropic forbids two consecutive
 /// messages with the same role, so any tail that is already user-role forces
 /// the next chat turn to merge rather than append.
@@ -277,7 +307,7 @@ pub fn merge_user_query_into_tail(tail: &mut serde_json::Value, query: &str, now
     let has_tool_result = arr.iter().any(|b| b["type"].as_str() == Some("tool_result"));
     let already_has_marker = arr.iter().any(|b| {
         b["type"].as_str() == Some("text")
-            && b["text"].as_str().is_some_and(|t| t.trim_end_matches('\n') == INTERRUPT_MARKER)
+            && b["text"].as_str().is_some_and(is_interrupt_marker)
     });
     if has_tool_result && !already_has_marker {
         arr.push(serde_json::json!({
@@ -1616,6 +1646,53 @@ mod tests {
         assert!(is_user_message(&user_msg("hi")));
         assert!(is_user_message(&tool_result_msg()));
         assert!(!is_user_message(&assistant_msg("x")));
+    }
+
+    #[test]
+    fn test_interrupt_event_message_and_is_marker() {
+        assert_eq!(interrupt_event_message(None), INTERRUPT_MARKER);
+        assert_eq!(
+            interrupt_event_message(Some(std::time::Duration::from_secs(45))),
+            "[Request interrupted by user for tool use after 45s]"
+        );
+        assert_eq!(
+            interrupt_event_message(Some(std::time::Duration::from_secs(80))),
+            "[Request interrupted by user for tool use after 1m20s]"
+        );
+        assert_eq!(
+            interrupt_event_message(Some(std::time::Duration::from_secs(3900))),
+            "[Request interrupted by user for tool use after 1h05m]"
+        );
+        assert!(is_interrupt_marker(INTERRUPT_MARKER));
+        assert!(is_interrupt_marker(
+            "[Request interrupted by user for tool use after 1m20s]\n"
+        ));
+        assert!(!is_interrupt_marker("hello"));
+    }
+
+    #[test]
+    fn test_merge_does_not_duplicate_duration_marker() {
+        // An interrupt with an elapsed suffix is already present: merge must
+        // recognize it (prefix match) and only append the new query.
+        let marker = interrupt_event_message(Some(std::time::Duration::from_secs(80)));
+        let mut tail = serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "x", "is_error": true},
+                {"type": "text", "text": format!("{}\n", marker)},
+            ]
+        });
+        merge_user_query_into_tail(&mut tail, "next", 1);
+        let arr = tail["content"].as_array().unwrap();
+        let markers = arr
+            .iter()
+            .filter(|b| {
+                b["type"].as_str() == Some("text")
+                    && b["text"].as_str().is_some_and(is_interrupt_marker)
+            })
+            .count();
+        assert_eq!(markers, 1);
+        assert_eq!(arr.last().unwrap()["text"], "next");
     }
 
     #[test]
