@@ -3624,12 +3624,22 @@ async fn handle_conversations_search(
         valid.insert(tid.clone());
     }
 
+    let context = format!("<threads>\n{}</threads>", threads_block);
     let query = format!(
         "{}\n\nThe user is looking for: {}",
         omnish_llm::template::RESUME_SEARCH_PROMPT, description
     );
+    // Statistic: size of the request handed to the LLM. With no system prompt
+    // and no extra messages, that is context + query.
+    tracing::info!(
+        "resume search: {} thread(s), LLM request {} bytes (context {} + query {})",
+        conversations.len(),
+        context.len() + query.len(),
+        context.len(),
+        query.len()
+    );
     let req = LlmRequest {
-        context: format!("<threads>\n{}</threads>", threads_block),
+        context,
         query: Some(query),
         trigger: TriggerType::Manual,
         session_ids: vec![],
