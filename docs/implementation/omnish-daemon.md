@@ -187,7 +187,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - **不持久化 `<system-reminder>` 标签**：system-reminder 已移至系统提示词中，用户消息以纯查询文本存储
 - 支持按文件修改时间排序列出所有对话
 - 支持按索引（0-based）选取线程
-- 支持删除线程（同时移除内存缓存和磁盘文件）
+- 支持软删除线程（tombstone，保留磁盘文件以便恢复与检索，见 `delete_thread()` / `restore_thread()` / `purge_thread()`）
 - **工具使用感知**：能够区分用户输入消息和工具结果消息（content 为字符串 vs 数组）
 - **全量对话历史**：`get_all_exchanges()` 提取线程中所有用户-助手交换对，用于 `/resume` 显示完整历史
 - **线程元数据**（`ThreadMeta`）：每个线程有对应的 `.meta.json` sidecar 文件，包含：
@@ -838,13 +838,34 @@ Assistant: {{final response}}
 
 **返回:** `Option<String>`
 
-##### `ConversationManager::delete_thread()`
-删除线程，同时从内存和磁盘移除。
+##### `ConversationManager::delete_thread()` (#684)
+**软删除**线程：从内存 map 移除，并在 meta 上打 `deleted_at` 时间戳（epoch ms），**保留** JSONL、meta 与 precompact 快照。
+
+**为什么"从内存移除"就等于隐藏**：`list_conversations()` / `get_thread_by_index()` / `load_raw_messages()` / `thread_exists()` / `list_thread_ids()` / `collect_recent_conversations_md()` 全部只读内存 map，所以线程一旦不在内存里，列表、resume、daily notes 等路径自动都看不到它，无需逐个加过滤。
+
+**两个需要显式加护栏的地方**（它们绕过内存 map 直接扫目录）：
+- `ConversationManager::new()` 启动加载：读 sidecar meta，`is_deleted()` 为真则跳过（日志会报跳过数量）
+- `get_latest_thread()`：扫目录取最新 jsonl，需跳过带 tombstone 的线程
+
+**附带收益**：meta 不再被删除，从根上消除了"僵尸 meta"竞态：删除后迟到的 `update_meta()`（进行中那一轮的 usage 写入、后台 `thread_summary` 任务）不会再用 `ThreadMeta::default()` 重建出 host/cwd 为 null 的 meta 文件。
 
 **参数:**
 - `thread_id`: `&str` - 要删除的线程 ID
 
-**返回:** `bool`（线程是否存在并已删除）
+**返回:** `bool`（线程此前是否存活并已被打上 tombstone；对已删除线程返回 false）
+
+##### `ConversationManager::restore_thread()` (#684)
+撤销软删除：清除 `deleted_at`，把 JSONL 重新加载进内存（复用与启动同一套 `load_thread_file()` 规范化逻辑，保证 sanitize / legacy marker 合并一致）。线程不存在或本就未删除时返回 `false`。
+
+##### `ConversationManager::list_deleted_conversations()` (#684)
+列出软删除线程，按删除时间倒序，返回 `(thread_id, deleted_at_ms, exchange_count, last_question)`。
+
+tombstone 线程刻意不在内存中，因此该函数**按需从磁盘读取**，这是低频显式操作（`/thread deleted`），现读可接受。
+
+##### `ConversationManager::purge_thread()` (#684)
+硬删除：真正移除 JSONL、meta 与 precompact 快照。与 `delete_thread()` 不同，它**不要求线程存活**，因此可以清理已 tombstone 的线程（这类线程不在内存 map 里，`delete_thread()` 碰不到）。
+
+目前未接入自动清理任务（thread 数据总量有限，暂不做 purge 保留期）。
 
 ##### `ConversationManager::compact_thread()` (#641)
 压缩线程历史中体积庞大的 `tool_result` 块，缩减 LLM 上下文。
@@ -853,7 +874,7 @@ Assistant: {{final response}}
 - 销毁式重写前先快照当前 JSONL 到 `precompact/{tid}.{unix_ts}.jsonl`；快照失败则中止重写
 - 调用 `compact_messages()`（`compaction` 模块的纯函数）就地处理：仅压缩超过 `MIN_LINES`（30 行）的 `tool_result` 文本，截断为 head + 标记 + tail；标记同时作为幂等标志（含标记的文本不再二次压缩）；最近 `PROTECTED_ROUNDS` 轮（从尾部数的真实用户输入）的工具结果永不压缩
 - 返回 `CompactStats`（压缩块数、前/后字符数），`blocks == 0` 表示无改动；返回 `Ok(None)` 表示无可压缩内容
-- `delete_thread()` 同时清理该线程的 precompact 快照
+- 软删除保留 precompact 快照（恢复后历史才完整）；`purge_thread()` 才会清理它们
 
 ##### `ConversationManager::append_messages()`
 追加原始 JSON 消息到线程。双写到内存缓存和磁盘 JSONL 文件。

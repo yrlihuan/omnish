@@ -3133,7 +3133,9 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
             None => cmd_display("No conversations yet. Start a chat with :"),
         };
     }
-    // Handle /conversations del <thread_id> - delete a conversation by thread ID
+    // Handle /conversations del <thread_id> - soft-delete by thread ID (#684).
+    // The conversation is tombstoned, not erased: it can be listed with
+    // `conversations deleted` and brought back with `conversations restore`.
     if let Some(tid) = sub.strip_prefix("conversations del ") {
         let tid = tid.trim();
         if conv_mgr.delete_thread(tid) {
@@ -3144,6 +3146,49 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
         } else {
             return cmd_display("Conversation not found");
         }
+    }
+    // Handle /conversations restore <thread_id> - undo a soft delete (#684).
+    if let Some(arg) = sub.strip_prefix("conversations restore ") {
+        let arg = arg.trim();
+        if arg.is_empty() {
+            return cmd_display("Usage: /thread restore <n>");
+        }
+        // Accept a full id or an unambiguous prefix (the deleted list shows a
+        // short id, and users paste that).
+        let matches: Vec<String> = conv_mgr
+            .list_deleted_conversations()
+            .into_iter()
+            .map(|(tid, _, _, _)| tid)
+            .filter(|tid| tid.starts_with(arg))
+            .collect();
+        return match matches.len() {
+            0 => cmd_display("No deleted conversation matches that id"),
+            1 => {
+                let tid = &matches[0];
+                if conv_mgr.restore_thread(tid) {
+                    serde_json::json!({
+                        "display": format!(
+                            "Restored conversation {}",
+                            &tid[..8.min(tid.len())]
+                        ),
+                        "restored_thread_id": tid,
+                    })
+                } else {
+                    cmd_display("Failed to restore conversation")
+                }
+            }
+            n => cmd_display(format!("Ambiguous id: {} deleted conversations match", n)),
+        };
+    }
+    // Handle /conversations deleted [N] - list soft-deleted conversations (#684).
+    if sub == "conversations deleted" || sub.starts_with("conversations deleted ") {
+        let limit = sub
+            .strip_prefix("conversations deleted")
+            .map(|a| a.trim())
+            .filter(|a| !a.is_empty())
+            .and_then(|a| a.parse::<usize>().ok())
+            .unwrap_or(20);
+        return format_deleted_conversations_json(conv_mgr, limit);
     }
     // Handle /model - list available backends with selected flag
     if sub == "models" || sub.starts_with("models ") {
@@ -3539,6 +3584,56 @@ async fn format_conversations_json(
         "display": output,
         "thread_ids": thread_ids,
         "locked_threads": locked_threads,
+    })
+}
+
+/// Format soft-deleted conversations for `/thread deleted` (issue #684).
+/// Mirrors `format_conversations_json`'s shape so the client can reuse the
+/// same display/thread_ids handling.
+fn format_deleted_conversations_json(
+    conv_mgr: &Arc<ConversationManager>,
+    limit: usize,
+) -> serde_json::Value {
+    let all = conv_mgr.list_deleted_conversations();
+    if all.is_empty() {
+        return cmd_display("No deleted conversations.");
+    }
+    let total = all.len();
+    let shown: Vec<_> = all.into_iter().take(limit).collect();
+
+    let mut output = String::from("Deleted conversations:\n");
+    let mut thread_ids = Vec::new();
+    for (i, (thread_id, deleted_at, exchange_count, last_question)) in
+        shown.into_iter().enumerate()
+    {
+        let when = std::time::UNIX_EPOCH + std::time::Duration::from_millis(deleted_at);
+        let single_line = last_question.replace('\n', " ");
+        let question: String = if single_line.chars().count() > 40 {
+            format!("{}...", single_line.chars().take(37).collect::<String>())
+        } else {
+            single_line
+        };
+        output.push_str(&format!(
+            "  [{}] {} | deleted {} | {} turns | {}\n",
+            i + 1,
+            &thread_id[..8.min(thread_id.len())],
+            format_relative_time(when),
+            exchange_count,
+            question,
+        ));
+        thread_ids.push(thread_id);
+    }
+    if total > thread_ids.len() {
+        output.push_str(&format!(
+            "  ({} total, showing {}. Use /thread deleted N to see more)\n",
+            total,
+            thread_ids.len()
+        ));
+    }
+    output.push_str("  Restore with: /thread restore <id>\n");
+    serde_json::json!({
+        "display": output,
+        "thread_ids": thread_ids,
     })
 }
 
@@ -5188,6 +5283,39 @@ mod tests {
         let meta = conv_mgr.load_meta(&tid);
         assert_eq!(meta.host.as_deref(), Some("old"));
         assert_eq!(meta.pending_event, None);
+    }
+
+    /// Issue #684: `/thread deleted` lists tombstoned threads with ids the
+    /// restore command can resolve, and says so when there are none.
+    #[tokio::test]
+    async fn test_format_deleted_conversations() {
+        let dir = tempfile::tempdir().unwrap();
+        let conv_mgr = Arc::new(ConversationManager::new(dir.path().join("threads")));
+
+        // Nothing deleted yet.
+        let out = format_deleted_conversations_json(&conv_mgr, 20);
+        assert!(out.get("thread_ids").is_none());
+        assert!(out["display"].as_str().unwrap().contains("No deleted conversations"));
+
+        let tid = conv_mgr.create_thread(ThreadMeta::default());
+        conv_mgr.append_messages(
+            &tid,
+            &[serde_json::json!({"role": "user", "content": "how do I grep?"})],
+        );
+        assert!(conv_mgr.delete_thread(&tid));
+
+        let out = format_deleted_conversations_json(&conv_mgr, 20);
+        let ids: Vec<&str> = out["thread_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec![tid.as_str()]);
+        let display = out["display"].as_str().unwrap();
+        assert!(display.contains(&tid[..8]), "short id shown: {display}");
+        assert!(display.contains("how do I grep?"), "last question: {display}");
+        assert!(display.contains("/thread restore"), "hint shown: {display}");
     }
 
     /// Issue #683: a network drop can flip macOS `gethostname()` between `X`

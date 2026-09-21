@@ -57,6 +57,12 @@ pub struct ThreadMeta {
     /// each other. See issues #659 and #679.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_event: Option<String>,
+    /// Soft-delete tombstone (epoch ms). `/thread del` sets this instead of
+    /// removing the JSONL, so a deleted conversation can still be listed and
+    /// restored. Tombstoned threads are skipped at load, which keeps them out
+    /// of memory and therefore out of every listing/resume path (issue #684).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<u64>,
 }
 
 impl ThreadMeta {
@@ -64,6 +70,11 @@ impl ThreadMeta {
     /// title_word. Returns `None` when neither is set.
     pub fn effective_title_label(&self) -> Option<String> {
         self.title_override.clone().or_else(|| self.title_word.clone())
+    }
+
+    /// True when the thread has been soft-deleted (issue #684).
+    pub fn is_deleted(&self) -> bool {
+        self.deleted_at.is_some()
     }
 
     /// Append a one-shot `<event>` marker for the next user message, preserving
@@ -108,6 +119,16 @@ pub fn host_change_event(old_host: Option<&str>, new_host: Option<&str>) -> Opti
         "<event>host changed from {} to {}</event>",
         old, new
     ))
+}
+
+/// Read a thread's sidecar meta without a `ConversationManager`, so the
+/// startup scan can check the soft-delete tombstone before loading (#684).
+fn read_meta_at(threads_dir: &std::path::Path, thread_id: &str) -> ThreadMeta {
+    let path = threads_dir.join(format!("{}.meta.json", thread_id));
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 pub struct ConversationManager {
@@ -424,8 +445,11 @@ impl ConversationManager {
     pub fn new(threads_dir: PathBuf) -> Self {
         std::fs::create_dir_all(&threads_dir).ok();
 
-        // Load all existing threads from disk
+        // Load all existing threads from disk, skipping soft-deleted ones so
+        // they stay out of memory and thus out of every listing/resume path
+        // (issue #684). Their files are kept for listing and restore.
         let mut threads = HashMap::new();
+        let mut skipped_deleted = 0usize;
         if let Ok(entries) = std::fs::read_dir(&threads_dir) {
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
@@ -436,37 +460,22 @@ impl ConversationManager {
                     Some(s) => s.to_string_lossy().to_string(),
                     None => continue,
                 };
-                let content = match std::fs::read_to_string(&path) {
-                    Ok(c) => c,
-                    Err(_) => continue,
+                if read_meta_at(&threads_dir, &thread_id).is_deleted() {
+                    skipped_deleted += 1;
+                    continue;
+                }
+                let msgs = match Self::load_thread_file(&threads_dir, &thread_id) {
+                    Some(m) => m,
+                    None => continue,
                 };
-                let mut msgs: Vec<serde_json::Value> = content
-                    .lines()
-                    .filter(|l| !l.is_empty())
-                    .filter_map(|l| serde_json::from_str(l).ok())
-                    .collect();
-                let mut dirty = false;
-                if sanitize_orphaned_tool_use(&mut msgs) {
-                    tracing::warn!(
-                        "Sanitized orphaned tool_use blocks in thread {} at startup",
-                        thread_id
-                    );
-                    dirty = true;
-                }
-                if merge_interrupt_markers(&mut msgs) {
-                    tracing::warn!(
-                        "Merged legacy interrupt markers in thread {} at startup",
-                        thread_id
-                    );
-                    dirty = true;
-                }
-                if dirty {
-                    Self::rewrite_thread_file(&threads_dir, &thread_id, &msgs);
-                }
                 threads.insert(thread_id, msgs);
             }
         }
-        tracing::info!("Loaded {} conversation threads from disk", threads.len());
+        tracing::info!(
+            "Loaded {} conversation threads from disk ({} soft-deleted skipped)",
+            threads.len(),
+            skipped_deleted
+        );
 
         Self {
             threads_dir,
@@ -533,11 +542,7 @@ impl ConversationManager {
 
     /// Load thread metadata from the sidecar `.meta.json` file.
     pub fn load_meta(&self, thread_id: &str) -> ThreadMeta {
-        let path = self.threads_dir.join(format!("{}.meta.json", thread_id));
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        read_meta_at(&self.threads_dir, thread_id)
     }
 
     /// Get the most recent thread by file modification time, or None.
@@ -550,8 +555,14 @@ impl ConversationManager {
         entries.sort_by_key(|e| {
             std::cmp::Reverse(e.metadata().ok().and_then(|m| m.modified().ok()))
         });
-        entries.first().map(|e| {
-            e.path().file_stem().unwrap().to_string_lossy().to_string()
+        // This scans the directory rather than the in-memory map, so it must
+        // skip soft-deleted threads explicitly (issue #684).
+        entries.into_iter().find_map(|e| {
+            let tid = e.path().file_stem()?.to_string_lossy().to_string();
+            if read_meta_at(&self.threads_dir, &tid).is_deleted() {
+                return None;
+            }
+            Some(tid)
         })
     }
 
@@ -605,27 +616,108 @@ impl ConversationManager {
         conversations.into_iter().nth(index).map(|(thread_id, _, _, _)| thread_id)
     }
 
-    /// Delete a thread by ID. Removes from both memory and disk (including metadata).
-    /// Returns true if the thread existed and was deleted.
+    /// Soft-delete a thread by ID (issue #684): drop it from memory and stamp
+    /// `deleted_at` on its meta, keeping the JSONL, meta and any precompact
+    /// snapshots on disk. Dropping it from memory is what hides it, since every
+    /// listing/resume path reads the in-memory map. Returns true if the thread
+    /// was live and is now tombstoned.
+    ///
+    /// Keeping the meta also closes the "zombie meta" race: a late `update_meta`
+    /// (in-flight usage write, background summary task) can no longer resurrect
+    /// a meta file with null host/cwd for a thread that no longer exists.
     pub fn delete_thread(&self, thread_id: &str) -> bool {
         let removed = self.threads.lock().unwrap().remove(thread_id).is_some();
         if removed {
-            let path = self.threads_dir.join(format!("{}.jsonl", thread_id));
-            std::fs::remove_file(&path).ok();
-            let meta_path = self.threads_dir.join(format!("{}.meta.json", thread_id));
-            std::fs::remove_file(&meta_path).ok();
-            // Remove precompact snapshots belonging to this thread
-            let snap_dir = self.threads_dir.join("precompact");
-            if let Ok(rd) = std::fs::read_dir(&snap_dir) {
-                let prefix = format!("{}.", thread_id);
-                for entry in rd.filter_map(|e| e.ok()) {
-                    if entry.file_name().to_string_lossy().starts_with(&prefix) {
-                        std::fs::remove_file(entry.path()).ok();
-                    }
+            let now = Self::now_ms();
+            self.update_meta(thread_id, |m| m.deleted_at = Some(now));
+        }
+        removed
+    }
+
+    /// Permanently remove a thread's files. Unlike `delete_thread` this does not
+    /// require the thread to be live, so an already-tombstoned thread can be
+    /// purged. Returns true if anything was removed.
+    pub fn purge_thread(&self, thread_id: &str) -> bool {
+        self.threads.lock().unwrap().remove(thread_id);
+        let path = self.threads_dir.join(format!("{}.jsonl", thread_id));
+        let meta_path = self.threads_dir.join(format!("{}.meta.json", thread_id));
+        let removed = std::fs::remove_file(&path).is_ok() | std::fs::remove_file(&meta_path).is_ok();
+        // Remove precompact snapshots belonging to this thread
+        let snap_dir = self.threads_dir.join("precompact");
+        if let Ok(rd) = std::fs::read_dir(&snap_dir) {
+            let prefix = format!("{}.", thread_id);
+            for entry in rd.filter_map(|e| e.ok()) {
+                if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                    std::fs::remove_file(entry.path()).ok();
                 }
             }
         }
         removed
+    }
+
+    /// Restore a soft-deleted thread: clear the tombstone and load its messages
+    /// back into memory so it reappears in listings and can be resumed.
+    /// Returns false when the thread is unknown or was not deleted.
+    pub fn restore_thread(&self, thread_id: &str) -> bool {
+        if !read_meta_at(&self.threads_dir, thread_id).is_deleted() {
+            return false;
+        }
+        let msgs = match Self::load_thread_file(&self.threads_dir, thread_id) {
+            Some(m) => m,
+            None => return false,
+        };
+        self.update_meta(thread_id, |m| m.deleted_at = None);
+        self.threads
+            .lock()
+            .unwrap()
+            .insert(thread_id.to_string(), msgs);
+        true
+    }
+
+    /// List soft-deleted threads, newest deletion first, as
+    /// `(thread_id, deleted_at_ms, exchange_count, last_question)`.
+    ///
+    /// Tombstoned threads are deliberately not in memory, so this reads them
+    /// from disk on demand. That is fine for an explicit, low-frequency command.
+    pub fn list_deleted_conversations(&self) -> Vec<(String, u64, u32, String)> {
+        let mut out = Vec::new();
+        let entries = match std::fs::read_dir(&self.threads_dir) {
+            Ok(e) => e,
+            Err(_) => return out,
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "jsonl") {
+                continue;
+            }
+            let thread_id = match path.file_stem() {
+                Some(s) => s.to_string_lossy().to_string(),
+                None => continue,
+            };
+            let deleted_at = match read_meta_at(&self.threads_dir, &thread_id).deleted_at {
+                Some(t) => t,
+                None => continue,
+            };
+            let msgs: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+                .ok()
+                .map(|c| {
+                    c.lines()
+                        .filter(|l| !l.is_empty())
+                        .filter_map(|l| serde_json::from_str(l).ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let exchange_count = msgs.iter().filter(|m| Self::is_user_input(m)).count() as u32;
+            let last_question = msgs
+                .iter()
+                .rev()
+                .find(|m| Self::is_user_input(m))
+                .map(Self::extract_text)
+                .unwrap_or_default();
+            out.push((thread_id, deleted_at, exchange_count, last_question));
+        }
+        out.sort_by_key(|c| std::cmp::Reverse(c.1));
+        out
     }
 
     /// Current epoch time in milliseconds. Used to timestamp stored messages so
@@ -689,6 +781,35 @@ impl ConversationManager {
                 writeln!(file, "{}", serde_json::to_string(msg).unwrap()).ok();
             }
         }
+    }
+
+    /// Read a thread's JSONL from disk, repairing legacy/interrupted structure
+    /// in place. Returns `None` when the file cannot be read. Shared by startup
+    /// loading and restore so both apply identical normalization.
+    fn load_thread_file(
+        threads_dir: &std::path::Path,
+        thread_id: &str,
+    ) -> Option<Vec<serde_json::Value>> {
+        let path = threads_dir.join(format!("{}.jsonl", thread_id));
+        let content = std::fs::read_to_string(&path).ok()?;
+        let mut msgs: Vec<serde_json::Value> = content
+            .lines()
+            .filter(|l| !l.is_empty())
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        let mut dirty = false;
+        if sanitize_orphaned_tool_use(&mut msgs) {
+            tracing::warn!("Sanitized orphaned tool_use blocks in thread {}", thread_id);
+            dirty = true;
+        }
+        if merge_interrupt_markers(&mut msgs) {
+            tracing::warn!("Merged legacy interrupt markers in thread {}", thread_id);
+            dirty = true;
+        }
+        if dirty {
+            Self::rewrite_thread_file(threads_dir, thread_id, &msgs);
+        }
+        Some(msgs)
     }
 
     /// Rewrite a thread's JSONL file from the given messages.
@@ -1206,18 +1327,91 @@ mod tests {
         mgr.append_messages(&id1, &[user_msg("msg1")]);
         mgr.append_messages(&id2, &[user_msg("msg2")]);
 
-        // Delete first thread
+        // Delete first thread (soft delete, issue #684)
         assert!(mgr.delete_thread(&id1));
-        // Memory: load returns empty
+        // Memory: dropped, so every listing/resume path stops seeing it
         assert!(mgr.load_raw_messages(&id1).is_empty());
-        // Disk: file is removed
+        assert!(!mgr.thread_exists(&id1));
+        assert!(!mgr.list_conversations().iter().any(|(t, ..)| *t == id1));
+        // Disk: the JSONL is kept and the meta carries the tombstone
         let path1 = dir.path().join(format!("{}.jsonl", id1));
-        assert!(!path1.exists());
+        assert!(path1.exists(), "soft delete must keep the conversation file");
+        assert!(mgr.load_meta(&id1).is_deleted());
         // Second thread still exists
         assert_eq!(mgr.load_raw_messages(&id2).len(), 1);
 
-        // Deleting non-existent thread returns false
+        // Deleting an already-deleted thread returns false
         assert!(!mgr.delete_thread(&id1));
+    }
+
+    /// Issue #684: a soft-deleted thread can be listed and brought back.
+    #[test]
+    fn test_restore_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+        mgr.append_messages(&id, &[user_msg("hello")]);
+        assert!(mgr.delete_thread(&id));
+
+        // Listed as deleted, with its content still readable from disk.
+        let deleted = mgr.list_deleted_conversations();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].0, id);
+        assert_eq!(deleted[0].2, 1, "exchange count read from disk");
+
+        // Restore brings it back into memory and clears the tombstone.
+        assert!(mgr.restore_thread(&id));
+        assert!(!mgr.load_meta(&id).is_deleted());
+        assert_eq!(mgr.load_raw_messages(&id).len(), 1);
+        assert!(mgr.thread_exists(&id));
+        assert!(mgr.list_deleted_conversations().is_empty());
+
+        // Restoring a live thread is a no-op.
+        assert!(!mgr.restore_thread(&id));
+    }
+
+    /// Issue #684: tombstoned threads must not be loaded on restart, and must
+    /// stay invisible to listing and "resume latest".
+    #[test]
+    fn test_deleted_thread_skipped_on_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let (kept, gone) = {
+            let mgr = ConversationManager::new(dir.path().to_path_buf());
+            let kept = mgr.create_thread(ThreadMeta::default());
+            let gone = mgr.create_thread(ThreadMeta::default());
+            mgr.append_messages(&kept, &[user_msg("keep")]);
+            mgr.append_messages(&gone, &[user_msg("drop")]);
+            assert!(mgr.delete_thread(&gone));
+            (kept, gone)
+        };
+
+        // Fresh manager = daemon restart.
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        assert!(mgr.thread_exists(&kept));
+        assert!(!mgr.thread_exists(&gone), "tombstoned thread must not load");
+        assert!(!mgr.list_conversations().iter().any(|(t, ..)| *t == gone));
+        // get_latest_thread scans the directory, so it needs its own guard.
+        assert_eq!(mgr.get_latest_thread().as_deref(), Some(kept.as_str()));
+        // Still restorable after the restart.
+        assert!(mgr.restore_thread(&gone));
+        assert!(mgr.thread_exists(&gone));
+    }
+
+    /// Issue #684: purge is the hard delete, and works on a tombstoned thread
+    /// (which `delete_thread` alone will not touch, since it is not in memory).
+    #[test]
+    fn test_purge_thread_removes_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+        mgr.append_messages(&id, &[user_msg("x")]);
+        assert!(mgr.delete_thread(&id));
+
+        assert!(mgr.purge_thread(&id));
+        assert!(!dir.path().join(format!("{}.jsonl", id)).exists());
+        assert!(!dir.path().join(format!("{}.meta.json", id)).exists());
+        assert!(mgr.list_deleted_conversations().is_empty());
+        assert!(!mgr.restore_thread(&id));
     }
 
     #[test]
@@ -1287,7 +1481,16 @@ mod tests {
         let meta_path = dir.path().join(format!("{}.meta.json", id));
         assert!(meta_path.exists());
 
+        // Soft delete keeps the meta (that is where the tombstone lives, and
+        // keeping it is what prevents a late update_meta from resurrecting a
+        // null host/cwd zombie). Purge is what removes it. Issue #684.
         mgr.delete_thread(&id);
+        assert!(meta_path.exists());
+        let meta = mgr.load_meta(&id);
+        assert!(meta.is_deleted());
+        assert_eq!(meta.host.as_deref(), Some("host"), "fields survive delete");
+
+        mgr.purge_thread(&id);
         assert!(!meta_path.exists());
     }
 
@@ -1976,7 +2179,11 @@ mod tests {
         mgr.compact_thread(&id).unwrap().expect("should compact");
         assert_eq!(snapshot_files(dir.path(), &id).len(), 1);
 
+        // Soft delete keeps snapshots so a restore is complete (#684).
         assert!(mgr.delete_thread(&id));
+        assert_eq!(snapshot_files(dir.path(), &id).len(), 1);
+        // Purge is the hard delete and removes them.
+        assert!(mgr.purge_thread(&id));
         assert!(snapshot_files(dir.path(), &id).is_empty());
     }
 

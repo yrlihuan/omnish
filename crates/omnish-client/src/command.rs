@@ -343,6 +343,16 @@ const COMMANDS: &[CommandEntry] = &[
         help: "Delete a conversation thread",
     },
     CommandEntry {
+        path: "/thread deleted",
+        kind: CommandKind::Daemon("conversations deleted"),
+        help: "List deleted threads (default 20, /thread deleted N for more)",
+    },
+    CommandEntry {
+        path: "/thread restore",
+        kind: CommandKind::Daemon("conversations restore"),
+        help: "Restore a deleted thread by id (see /thread deleted)",
+    },
+    CommandEntry {
         path: "/tasks",
         kind: CommandKind::Daemon("tasks"),
         help: "List or manage scheduled tasks",
