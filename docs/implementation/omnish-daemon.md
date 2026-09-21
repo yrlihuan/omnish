@@ -219,6 +219,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - **per-thread generation token**：`ConversationManager` 维护一个 `Mutex<HashMap<thread_id, u64>>`，每次 `handle_chat_message` 入口自增；`AgentLoopState` 在启动时捕获当前值。`is_superseded(cm)` 在每次磁盘写入与客户端发送点检查，若 token 已过期则静默返回，避免中断+新消息引发并发 agent loop 时旧 loop 注入与新 loop 的合成 tool_result 重复的 tool_use_id
 - **`merge_user_query_into_tail`**：当新 `ChatMessage` 到达且尾部为 user-role 时，将 query 合并到同一条 user 消息（支持 tool_result-only / tool_result+marker+text / 纯 text 三种尾部形状），避免两条连续 user 角色违反 Anthropic 契约；`merge_interrupt_markers` 启动时 sweep 历史文件统一格式
 - **conversations 子命令 token**：`conversations` 协议命令支持 `all` / `current_host` / 数字 limit 组合 token；`current_host` 时按线程 `host` 字段过滤，由 `/resume` 默认调用
+- **主机名归一化比较（#683）**：macOS `gethostname()` 会在 `X` 与 `X.local` 之间跳变（取决于 mDNS / `scutil HostName` 状态），网络断开重连正是触发跳变的时机；重连时 `rebind_existing` 会用新探测值整体替换会话 attrs，若 `current_host` 过滤做精确字符串比较，就会一条对话都匹配不上，`/resume` 返回 "No conversations yet"（客户端显示为"无可用对话"）。因此所有主机名比较统一走 `omnish_common::host::hosts_match()`（去掉 `.local` 后缀 + 忽略 ASCII 大小写）：`format_conversations_json()` 的 `current_host` 过滤、`host_change_event()` 的切换检测、以及客户端 `check_resume_mismatch()` 都使用同一实现，避免同一台机器被当成两台
 
 ### `EventDetector`
 事件检测器，用于检测自动触发条件，包含：

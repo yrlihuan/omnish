@@ -3450,7 +3450,14 @@ async fn format_conversations_json(
         all_conversations
             .into_iter()
             .filter(|(tid, _, _, _)| {
-                conv_mgr.load_meta(tid).host.as_deref() == Some(host.as_str())
+                // Compare normalized: macOS gethostname() flips between `X` and
+                // `X.local` across a network drop/reconnect, and an exact match
+                // then hid every conversation from /resume (issue #683).
+                conv_mgr
+                    .load_meta(tid)
+                    .host
+                    .as_deref()
+                    .is_some_and(|h| omnish_common::host::hosts_match(h, host))
             })
             .collect()
     } else {
@@ -5181,6 +5188,48 @@ mod tests {
         let meta = conv_mgr.load_meta(&tid);
         assert_eq!(meta.host.as_deref(), Some("old"));
         assert_eq!(meta.pending_event, None);
+    }
+
+    /// Issue #683: a network drop can flip macOS `gethostname()` between `X`
+    /// and `X.local`. The `/resume` current-host filter must still match, or
+    /// every conversation disappears ("no conversations to resume").
+    #[tokio::test]
+    async fn test_conversations_current_host_filter_matches_dotlocal() {
+        let dir = tempfile::tempdir().unwrap();
+        let conv_mgr = Arc::new(ConversationManager::new(dir.path().join("threads")));
+
+        let mac = conv_mgr.create_thread(ThreadMeta {
+            host: Some("MBProM4HF-2.local".into()),
+            ..Default::default()
+        });
+        let other = conv_mgr.create_thread(ThreadMeta {
+            host: Some("titan".into()),
+            ..Default::default()
+        });
+        let active: ActiveThreads = Arc::new(Mutex::new(HashMap::new()));
+
+        let ids = |v: &serde_json::Value| -> Vec<String> {
+            v.get("thread_ids")
+                .and_then(|t| t.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default()
+        };
+
+        // Session reports the bare name after the flip; the `.local` thread
+        // must still be listed (this returned "No conversations yet" before).
+        let out =
+            format_conversations_json(&conv_mgr, &active, None, Some("MBProM4HF-2".into())).await;
+        assert_eq!(ids(&out), vec![mac.clone()]);
+
+        // And the other direction (thread bare, session `.local`) also matches.
+        let out =
+            format_conversations_json(&conv_mgr, &active, None, Some("titan.local".into())).await;
+        assert_eq!(ids(&out), vec![other.clone()]);
+
+        // A genuinely different host still filters everything out.
+        let out =
+            format_conversations_json(&conv_mgr, &active, None, Some("falcon".into())).await;
+        assert!(ids(&out).is_empty(), "unrelated host must not match");
     }
 
     /// Issue #682: interrupt elapsed uses the earliest unfinished tool, falls

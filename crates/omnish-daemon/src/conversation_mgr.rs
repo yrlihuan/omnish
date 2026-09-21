@@ -98,7 +98,10 @@ impl ThreadMeta {
 pub fn host_change_event(old_host: Option<&str>, new_host: Option<&str>) -> Option<String> {
     let old = old_host.map(str::trim).filter(|s| !s.is_empty())?;
     let new = new_host.map(str::trim).filter(|s| !s.is_empty())?;
-    if old == new {
+    // Normalized compare: macOS gethostname() flips between `X` and `X.local`
+    // across a network drop, but that is the same machine, so it must not be
+    // reported to the LLM as a host switch (issue #683).
+    if omnish_common::host::hosts_match(old, new) {
         return None;
     }
     Some(format!(
@@ -1342,6 +1345,13 @@ mod tests {
         assert_eq!(host_change_event(Some("a"), Some("  ")), None);
         assert_eq!(host_change_event(Some(""), Some("b")), None);
         assert_eq!(host_change_event(None, None), None);
+        // Issue #683: the macOS `.local` flip is the same machine, so it must
+        // not be reported as a host switch.
+        assert_eq!(host_change_event(Some("mac"), Some("mac.local")), None);
+        assert_eq!(host_change_event(Some("mac.local"), Some("mac")), None);
+        assert_eq!(host_change_event(Some("mac.LOCAL"), Some("MAC")), None);
+        // A genuinely different machine still reports.
+        assert!(host_change_event(Some("mac.local"), Some("titan")).is_some());
     }
 
     #[test]
