@@ -411,42 +411,55 @@ wait_for_prompt() {
     sleep "${1:-0.5}"
 }
 
+# is_idle_chat_prompt <content>
+#   True when the last non-empty line is an *empty* chat prompt ("> " with
+#   nothing after it), i.e. the turn finished and input is idle.
+#
+#   is_chat_prompt is deliberately loose (it allows text after "> ") so it also
+#   matches the user's just-echoed input line. This one does not, which is what
+#   makes it usable as a turn-completion signal.
+#
+#   capture_pane runs without -e, so the content carries no ANSI escapes.
+is_idle_chat_prompt() {
+    local last
+    last=$(last_nonempty_line "$1")
+    echo "$last" | grep -qE '^[[:space:]]*>[[:space:]]*$'
+}
+
 # wait_for_chat_response [timeout=180]
-#   Poll until the LLM response is complete or timeout.
-#   Returns 0 on success, 1 on timeout.
+#   Poll until the chat turn is complete, or timeout. Returns 0 / 1.
 #
-#   Correctness note: is_chat_prompt cannot distinguish the user's
-#   just-echoed input line "> <text>" from a new empty "> " prompt - both
-#   render as cyan "> " + content after ANSI stripping. Naively checking
-#   is_chat_prompt on the first poll causes a false-positive return before
-#   the LLM has even started responding (the race is widest on the first
-#   chat message, where show_thinking() is preceded by a synchronous
-#   ChatStart RPC roundtrip - see chat_session.rs).
+#   Do NOT gate this on having personally witnessed the "Thinking" spinner.
+#   That was the previous approach, and it is unsound: the spinner is shown
+#   only while the LLM call is in flight, so with a fast backend the entire
+#   turn can finish inside the caller's own post-Enter sleep. The first poll
+#   then sees no spinner, never sets "seen", and the wait hangs for the full
+#   timeout even though the response is already on screen.
 #
-#   To avoid the race, require the Thinking spinner to have both appeared
-#   AND been cleared before accepting the prompt. The spinner is shown
-#   synchronously around every LLM call and erased only when the response
-#   is complete, so it's a reliable lifecycle marker.
-#
-#   Poll at 0.25s throughout: the Thinking window after a fast LLM
-#   tool-result response can be sub-second, so wider intervals risk
-#   stepping over the appear/clear transition entirely.
+#   Wait for the input line to return to an *empty* prompt instead: that state
+#   is reached only after the turn completes, and unlike the spinner it is
+#   stable rather than transient, so no poll can step over it.
 wait_for_chat_response() {
     local timeout="${1:-180}"
     local deadline=$(($(date +%s) + timeout))
     echo -e "  Waiting up to ${timeout}s for LLM response..."
-    local thinking_seen=false
+    local idle_polls=0
     while (( $(date +%s) < deadline )); do
         local content
         content=$(capture_pane -10)
-        local has_thinking=false
         if echo "$content" | grep -q 'Thinking'; then
-            has_thinking=true
-            thinking_seen=true
-        fi
-        if $thinking_seen && ! $has_thinking && is_chat_prompt "$content"; then
-            sleep 1  # brief pause for visual observation
-            return 0
+            idle_polls=0
+        elif is_idle_chat_prompt "$content"; then
+            # Require two consecutive idle samples so a momentary empty prompt
+            # (e.g. between the echoed message and the Thinking indicator) is
+            # not mistaken for a finished turn.
+            idle_polls=$((idle_polls + 1))
+            if (( idle_polls >= 2 )); then
+                sleep 1  # brief pause for visual observation
+                return 0
+            fi
+        else
+            idle_polls=0
         fi
         sleep 0.25
     done
