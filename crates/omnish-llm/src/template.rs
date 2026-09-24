@@ -95,7 +95,16 @@ pub const RESUME_SEARCH_PROMPT: &str =
      The user wants to resume one and describes what they are looking for. \
      Identify which threads are relevant to that description. \
      Reply ONLY with a JSON array of the relevant threads, most relevant first: \
-     [{\"thread_id\": \"<id>\", \"reason\": \"<short reason, under 10 words>\"}]. \
+     [{\"thread_id\": \"<id>\", \"score\": <number 0.0-1.0>, \
+     \"reason\": \"<short reason, under 10 words>\"}]. \
+     Score each thread on this absolute scale, judging it on its own and NOT \
+     relative to the other threads in this list: \
+     1.0 = squarely about what the user described; \
+     0.7 = substantially discusses it; \
+     0.4 = touches on it briefly; \
+     0.2 = only a passing or tangential mention. \
+     The same thread must get the same score no matter which other threads \
+     appear alongside it. \
      Include only genuinely relevant threads; return [] if none match. \
      Do not output anything except the JSON array.";
 

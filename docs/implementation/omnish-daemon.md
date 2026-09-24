@@ -2011,6 +2011,19 @@ async fn main() -> anyhow::Result<()> {
 - `chat.json`: 聊天系统提示词片段数组
 - `chat.override.json`: 用户自定义聊天提示词覆盖
 
+## LLM 调用池（`llm_pool`，#685）
+
+守护进程所有 LLM 请求统一经 `llm_pool` 发出，不再直接调用 `backend.complete()`。
+
+- **动机**：像 `/resume ?` 这种会扇出的功能（把大线程集拆成多个请求），若不加约束会同时打出任意多个请求，既容易触发服务商限流，成本也随语料规模线性增长。
+- **上限**：`MAX_CONCURRENT_LLM_CALLS = 16`，由进程级信号量实现，因此并发上限是**守护进程的属性**而非某个功能的属性；调用方只描述要发什么，不决定能同时跑几个。
+- **API**：
+  - `complete(backend, req)` - `backend.complete()` 的直接替代，保持调用方原有的错误处理与超时策略，只增加排队
+  - `complete_one(backend, req, timeout)` - 带超时，返回 `LlmOutcome`（`Ok` / `Failed` / `TimedOut`）
+  - `complete_all(backend, requests, timeout)` - 批量并发，**按请求顺序**返回结果，便于把结果与请求对应
+- **超时与排队分离**：permit 在超时计时**之前**获取，因此 `timeout` 只约束调用本身，不会把排队时间算到请求头上。
+- **已接入的调用点**：chat 智能体循环、补全、`handle_llm_request`、工具结果摘要、KV cache 预热、thread_summary、hourly_summary、daily_notes、`/resume ?` 搜索。
+
 ## 并发与锁设计
 
 ### RwLock 分层
@@ -2065,6 +2078,8 @@ async fn main() -> anyhow::Result<()> {
 - `__cmd:session` - 显示当前会话调试信息
 - `__cmd:daemon` - 显示守护进程版本号及当前定时任务列表（等同于 `/debug daemon`）
 - `__cmd:conversations` / `__cmd:conversations N` - 列出聊天对话，默认仅返回 20 条最近线程并在截断时给出总数提示，支持 `__cmd:conversations N` 显式请求更多；含 `thread_ids` 数组，按修改时间降序排列，显示相对时间（如 "12s ago"、"1h ago"）、交换次数、最后问题
+- `__cmd:conversations search <description>` - `/resume ?` 的 LLM 语义搜索：把所有线程的 id、标题（`ThreadMeta.summary`）与用户提问（每条最多 3 行、每行 200 字符）送给 LLM 判断相关性，返回 LLM 排序的匹配线程。请求超过 `RESUME_SEARCH_MAX_REQUEST_CHARS`（50k 字符）时拆成多个 `<threads>` 请求（`build_search_chunks`）。该上限是**软限制**：整条线程不拆分，累加到超出预算才开新块，因此单条线程始终完整出现在同一个请求里（单条线程本身超预算时，该块允许溢出，由后端 `max_content_chars` 兜底）。不拆线程是为了让每个请求都基于完整视图打分，否则同一线程会被两个请求各按半份内容打分，合并时无从判断该信任哪个，经 `llm_pool` **并发**调用 LLM（全局上限 16），合并去重后按 LLM 返回的**相关性分数**全局排序；用户描述先截断到 500 字符（`RESUME_SEARCH_MAX_DESCRIPTION_CHARS`，它会被复制进每个请求）；每个请求独立 45s 超时，日志记录线程数、请求数与每请求字符/字节数（#685）
+- **跨块相关性排序（#685）**：拆分后每个请求只看得到自己那批线程，若直接按请求顺序拼接，结果实际是「按新旧分桶、桶内才按相关性」，而非全局相关性。因此 prompt 要求为每条返回 `score`（0.0-1.0）并明确**按绝对刻度、独立于同批其它线程**打分（给出 1.0/0.7/0.4/0.2 锚点），合并后按分数**稳定排序**：分数相同时保留原顺序（块顺序即时间倒序，块内为 LLM 自身排序）。`score` 缺失或无法解析时回落到 `RESUME_SEARCH_DEFAULT_SCORE`（0.5，居中，既不置顶也不沉底）；该字段用 `serde_json::Value` 接收再强制转换，容忍模型把数字写成字符串（严格类型会导致整个数组解析失败、该块的匹配全部丢失）
 - `__cmd:resume` - 恢复最近的对话（等同于 `__cmd:resume 1`），返回结构化历史（`history` 数组含 `user_input`、`llm_text`、`tool_status`、`response`、`separator` 类型条目）及 `thread_id`
 - `__cmd:resume N` - 按索引恢复指定对话（1-based），返回结构化历史及 `thread_id`
 - `__cmd:resume_tid <thread_id>` - 按线程 ID 恢复对话（跨删除操作稳定），返回结构化历史

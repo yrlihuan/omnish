@@ -619,7 +619,7 @@ async fn summarize_tool_result(
         tools: vec![],
         extra_messages: vec![],
     };
-    match backend.complete(&req).await {
+    match omnish_daemon::llm_pool::complete(backend, &req).await {
         Ok(resp) => {
             let text: String = resp.content.iter().filter_map(|b| {
                 if let omnish_llm::backend::ContentBlock::Text(t) = b { Some(t.as_str()) } else { None }
@@ -2242,7 +2242,7 @@ async fn run_agent_loop(
         // Record when this LLM call started so an interrupt while waiting on it
         // can report the elapsed time (issue #682).
         state.llm_call_started = Some(std::time::Instant::now());
-        match backend.complete(&state.llm_req).await {
+        match omnish_daemon::llm_pool::complete(backend.as_ref(), &state.llm_req).await {
             Ok(response) => {
                 state.llm_retries = 0;
                 // Track last response and accumulate totals across iterations
@@ -2800,7 +2800,7 @@ async fn try_warmup_kv_cache(
         extra_messages,
     };
 
-    match backend.complete(&req).await {
+    match omnish_daemon::llm_pool::complete(backend.as_ref(), &req).await {
         Ok(_) => tracing::debug!("KV cache warmup completed for session {}", session_id),
         Err(e) => tracing::debug!("KV cache warmup failed for session {}: {}", session_id, e),
     }
@@ -3659,13 +3659,86 @@ fn truncate_question(q: &str) -> String {
     lines.join("\n  ")
 }
 
+/// Soft cap on the character count of a single `/resume ?` search request.
+/// Larger thread sets are split into several requests and queried
+/// concurrently (issue #685).
+const RESUME_SEARCH_MAX_REQUEST_CHARS: usize = 50_000;
+
+/// Cap on the search description the user types after `/resume ?`. The text is
+/// repeated in every chunked request, so an unbounded paste would shrink the
+/// budget left for thread content (and in the extreme drive the chunk count up).
+const RESUME_SEARCH_MAX_DESCRIPTION_CHARS: usize = 500;
+
+/// Truncate to at most `max` characters, marking that content was dropped.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max).collect();
+    format!("{head}... (truncated)")
+}
+
+/// Split threads into request bodies, keeping every thread whole (issue #685).
+///
+/// `budget` is a **soft** limit: threads are appended to the current body until
+/// adding the next one would exceed it, at which point a new body starts. A
+/// thread is never split, so every request sees a thread's complete question
+/// list. That matters because each request scores independently: a thread split
+/// across two requests would be judged twice from partial views, and the merge
+/// would have to guess which partial score to trust.
+///
+/// The cost of never splitting is that a single thread larger than `budget`
+/// gets a body of its own that exceeds it (the backend's `max_content_chars`
+/// is the backstop there).
+fn build_search_chunks(threads: &[(String, Vec<String>)], budget: usize) -> Vec<String> {
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for (header, questions) in threads {
+        let mut block = String::with_capacity(
+            header.len() + questions.iter().map(|q| q.len()).sum::<usize>() + 1,
+        );
+        block.push_str(header);
+        for q in questions {
+            block.push_str(q);
+        }
+        // Blank line between threads, matching the unsplit prompt layout.
+        block.push('\n');
+
+        if !current.is_empty() && current.chars().count() + block.chars().count() > budget {
+            chunks.push(std::mem::take(&mut current));
+        }
+        current.push_str(&block);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
 /// Parse the LLM's `/resume ?` search reply into `(thread_id, reason)` pairs.
 /// Keeps the LLM's order, drops unknown thread_ids and duplicates. Any
 /// malformed output yields an empty result (treated as "no match").
+/// Relevance used when a reply omits `score` or gives an unparsable one.
+/// Mid-scale so a missing score neither jumps to the top nor sinks below real
+/// matches; ties fall back to the surrounding order (recency).
+const RESUME_SEARCH_DEFAULT_SCORE: f32 = 0.5;
+
+/// Coerce the LLM's `score` field to `[0,1]`. Accepts a number or a numeric
+/// string: models sometimes quote it, and a strict type here would fail the
+/// whole array and silently drop every match in that chunk.
+fn parse_relevance_score(v: &serde_json::Value) -> f32 {
+    v.as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+        .filter(|f| f.is_finite())
+        .map(|f| f as f32)
+        .unwrap_or(RESUME_SEARCH_DEFAULT_SCORE)
+        .clamp(0.0, 1.0)
+}
+
 fn parse_resume_search(
     content: &str,
     valid: &std::collections::HashSet<String>,
-) -> Vec<(String, String)> {
+) -> Vec<(String, String, f32)> {
     let Some(json_str) = extract_first_json_array(content.trim()) else {
         return Vec::new();
     };
@@ -3675,6 +3748,8 @@ fn parse_resume_search(
         thread_id: String,
         #[serde(default)]
         reason: String,
+        #[serde(default)]
+        score: serde_json::Value,
     }
 
     let Ok(raw) = serde_json::from_str::<Vec<Raw>>(json_str) else {
@@ -3684,7 +3759,10 @@ fn parse_resume_search(
     let mut seen = std::collections::HashSet::new();
     raw.into_iter()
         .filter(|r| valid.contains(&r.thread_id) && seen.insert(r.thread_id.clone()))
-        .map(|r| (r.thread_id, r.reason))
+        .map(|r| {
+            let score = parse_relevance_score(&r.score);
+            (r.thread_id, r.reason, score)
+        })
         .collect()
 }
 
@@ -3700,19 +3778,24 @@ async fn handle_conversations_search(
     if description.is_empty() {
         return cmd_display("Please provide a description to search for.");
     }
+    // Bound the user's description: it is repeated verbatim in every chunked
+    // request, so a pasted blob would both inflate each request and shrink the
+    // per-request budget for actual thread content.
+    let description = &truncate_chars(description, RESUME_SEARCH_MAX_DESCRIPTION_CHARS);
 
     let conversations = conv_mgr.list_conversations();
     if conversations.is_empty() {
         return cmd_status("No conversations yet. Start a chat with :", "no_conversations");
     }
 
-    // Build the thread block: each thread's id, title, and the user's questions.
-    let mut threads_block = String::new();
+    // Build per-thread blocks: each thread's id, title, and the user's questions.
+    let mut thread_entries: Vec<(String, Vec<String>)> = Vec::new();
     let mut valid: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (tid, _modified, _count, _last_q) in &conversations {
         let meta = conv_mgr.load_meta(tid);
         let title = meta.summary.as_deref().unwrap_or("untitled");
-        threads_block.push_str(&format!("[{}] {}\n", tid, title));
+        let header = format!("[{}] {}\n", tid, title);
+        let mut questions: Vec<String> = Vec::new();
         for (user_q, _assistant) in conv_mgr.get_all_exchanges(tid) {
             let q = user_q.trim();
             if q.is_empty() {
@@ -3720,60 +3803,107 @@ async fn handle_conversations_search(
             }
             // Keep questions readable but bound pasted blobs: at most 3 lines
             // (each capped), rest elided with "...".
-            threads_block.push_str(&format!("  Q: {}\n", truncate_question(q)));
+            questions.push(format!("  Q: {}\n", truncate_question(q)));
         }
-        threads_block.push('\n');
+        thread_entries.push((header, questions));
         valid.insert(tid.clone());
     }
 
-    let context = format!("<threads>\n{}</threads>", threads_block);
     let query = format!(
         "{}\n\nThe user is looking for: {}",
         omnish_llm::template::RESUME_SEARCH_PROMPT, description
     );
-    // Statistic: size of the request handed to the LLM. With no system prompt
-    // and no extra messages, that is context + query.
+    // Split oversized thread sets into several requests (issue #685). The
+    // budget covers the thread bodies; wrapper + query are subtracted so a
+    // request's total stays within the cap.
+    let wrapper_chars = "<threads>\n".chars().count() + "\n</threads>".chars().count();
+    let budget = RESUME_SEARCH_MAX_REQUEST_CHARS
+        .saturating_sub(wrapper_chars + query.chars().count())
+        .max(1);
+    let bodies = build_search_chunks(&thread_entries, budget);
+    let total_requests = bodies.len();
     tracing::info!(
-        "resume search: {} thread(s), LLM request {} bytes (context {} + query {})",
-        conversations.len(),
-        context.len() + query.len(),
-        context.len(),
-        query.len()
+        "resume search: {} thread(s) in {} request(s), cap {} chars/request",
+        thread_entries.len(),
+        total_requests,
+        RESUME_SEARCH_MAX_REQUEST_CHARS
     );
-    let req = LlmRequest {
-        context,
-        query: Some(query),
-        trigger: TriggerType::Manual,
-        session_ids: vec![],
-        use_case: UseCase::Summarize,
-        max_content_chars: llm_backend.get_max_content_chars(UseCase::Summarize),
-        system_prompt: None,
-        enable_thinking: Some(false),
-        tools: vec![],
-        extra_messages: vec![],
-    };
 
-    // Bound the LLM call: the remote can stall, and reqwest has no request
-    // timeout, so a hung connection would otherwise block forever. The timeout
-    // aborts the in-flight request when it fires.
-    let matched = match tokio::time::timeout(
+    // Hand the chunks to the daemon-wide LLM pool: it bounds how many requests
+    // are in flight at once (see llm_pool::MAX_CONCURRENT_LLM_CALLS) and returns
+    // outcomes in request order.
+    let max_content_chars = llm_backend.get_max_content_chars(UseCase::Summarize);
+    let requests: Vec<LlmRequest> = bodies
+        .into_iter()
+        .enumerate()
+        .map(|(idx, body)| {
+            let context = format!("<threads>\n{}</threads>", body);
+            tracing::info!(
+                "resume search: request {}/{}: {} chars, {} bytes",
+                idx + 1,
+                total_requests,
+                context.chars().count() + query.chars().count(),
+                context.len() + query.len()
+            );
+            LlmRequest {
+                context,
+                query: Some(query.clone()),
+                trigger: TriggerType::Manual,
+                session_ids: vec![],
+                use_case: UseCase::Summarize,
+                max_content_chars,
+                system_prompt: None,
+                enable_thinking: Some(false),
+                tools: vec![],
+                extra_messages: vec![],
+            }
+        })
+        .collect();
+
+    let outcomes = omnish_daemon::llm_pool::complete_all(
+        llm_backend,
+        requests,
         std::time::Duration::from_secs(45),
-        llm_backend.complete(&req),
     )
-    .await
-    {
-        Ok(Ok(resp)) => parse_resume_search(&resp.text(), &valid),
-        Ok(Err(e)) => {
-            tracing::warn!("resume search LLM failed: {}", e);
-            Vec::new()
+    .await;
+
+    // Reassemble in request order (chunks follow the newest-first thread order)
+    // and drop cross-chunk duplicates.
+    let mut any_timeout = false;
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut matched: Vec<(String, String, f32)> = Vec::new();
+    for (idx, outcome) in outcomes.iter().enumerate() {
+        match outcome {
+            omnish_daemon::llm_pool::LlmOutcome::Ok(resp) => {
+                for (tid, reason, score) in parse_resume_search(&resp.text(), &valid) {
+                    if seen.insert(tid.clone()) {
+                        matched.push((tid, reason, score));
+                    }
+                }
+            }
+            omnish_daemon::llm_pool::LlmOutcome::Failed(e) => {
+                tracing::warn!("resume search request {} failed: {}", idx + 1, e);
+            }
+            omnish_daemon::llm_pool::LlmOutcome::TimedOut => {
+                any_timeout = true;
+                tracing::warn!("resume search request {} timed out after 45s", idx + 1);
+            }
         }
-        Err(_) => {
-            tracing::warn!("resume search LLM timed out after 45s");
-            return cmd_status("Conversation search timed out. Please try again.", "timeout");
-        }
-    };
+    }
+
+    // Each chunk ranks only the threads it saw, so concatenating them would
+    // order results by chunk (i.e. by recency) rather than by relevance. The
+    // prompt asks for an absolute 0-1 score judged independently of the other
+    // threads in the chunk, which makes scores comparable across requests;
+    // sort on it to restore a global ranking. The sort is stable, so equal
+    // scores keep the previous order (chunk order = newest first, and the
+    // LLM's own ranking within a chunk).
+    matched.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
     if matched.is_empty() {
+        if any_timeout {
+            return cmd_status("Conversation search timed out. Please try again.", "timeout");
+        }
         return cmd_status("No matching conversation found.", "no_match");
     }
 
@@ -3795,7 +3925,7 @@ async fn handle_conversations_search(
     let mut output = String::from("Matching conversations:\n");
     let mut thread_ids = Vec::new();
     let mut locked_threads = Vec::new();
-    for (i, (tid, reason)) in matched.iter().enumerate() {
+    for (i, (tid, reason, _score)) in matched.iter().enumerate() {
         let meta = conv_mgr.load_meta(tid);
         let (modified, turns) = conversations
             .iter()
@@ -4159,7 +4289,7 @@ async fn handle_llm_request(
     };
 
     let start = std::time::Instant::now();
-    let result = backend.complete(&llm_req).await;
+    let result = omnish_daemon::llm_pool::complete(backend.as_ref(), &llm_req).await;
     let duration = start.elapsed();
 
     match &result {
@@ -4279,7 +4409,7 @@ async fn handle_completion_request(
     );
 
     let start = std::time::Instant::now();
-    let result = backend.complete(&llm_req).await;
+    let result = omnish_daemon::llm_pool::complete(backend.as_ref(), &llm_req).await;
     let duration = start.elapsed();
 
     // Format duration: use %.3f when > 1s, otherwise show as milliseconds
@@ -4830,23 +4960,172 @@ mod tests {
         let content = r#"prose [{"thread_id":"t2","reason":"deploy pipeline"},{"thread_id":"t1","reason":"docker build"},{"thread_id":"nope","reason":"x"}]"#;
         let result = parse_resume_search(content, &valid);
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0], ("t2".to_string(), "deploy pipeline".to_string()));
-        assert_eq!(result[1], ("t1".to_string(), "docker build".to_string()));
+        assert_eq!(result[0].0, "t2");
+        assert_eq!(result[0].1, "deploy pipeline");
+        assert_eq!(result[1].0, "t1");
+        assert_eq!(result[1].1, "docker build");
 
         // Duplicate thread_id kept once (first occurrence).
         let dup = r#"[{"thread_id":"t1","reason":"a"},{"thread_id":"t1","reason":"b"}]"#;
         let result = parse_resume_search(dup, &valid);
-        assert_eq!(result, vec![("t1".to_string(), "a".to_string())]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "t1");
+        assert_eq!(result[0].1, "a");
 
         // Missing reason defaults to empty.
         let no_reason = r#"[{"thread_id":"t3"}]"#;
         let result = parse_resume_search(no_reason, &valid);
-        assert_eq!(result, vec![("t3".to_string(), String::new())]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "t3");
+        assert_eq!(result[0].1, "");
 
         // Empty array and malformed output -> no matches.
         assert!(parse_resume_search("[]", &valid).is_empty());
         assert!(parse_resume_search("not json", &valid).is_empty());
         assert!(parse_resume_search(r#"{"thread_id":"t1"}"#, &valid).is_empty());
+    }
+
+    /// The relevance score is what restores a global ranking once a search is
+    /// split into several independent requests (issue #685).
+    #[test]
+    fn test_parse_resume_search_scores() {
+        let valid: std::collections::HashSet<String> =
+            ["t1", "t2", "t3", "t4", "t5"].iter().map(|s| s.to_string()).collect();
+
+        let content = r#"[
+            {"thread_id":"t1","score":0.9,"reason":"a"},
+            {"thread_id":"t2","score":"0.4","reason":"quoted number"},
+            {"thread_id":"t3","reason":"no score"},
+            {"thread_id":"t4","score":7,"reason":"out of range"},
+            {"thread_id":"t5","score":"abc","reason":"garbage"}
+        ]"#;
+        let result = parse_resume_search(content, &valid);
+        assert_eq!(result.len(), 5, "one bad score must not drop the whole array");
+
+        let score = |tid: &str| result.iter().find(|r| r.0 == tid).unwrap().2;
+        assert!((score("t1") - 0.9).abs() < 1e-6);
+        // A quoted number is still a number: a strict type here would have
+        // failed the array and silently lost every match in the chunk.
+        assert!((score("t2") - 0.4).abs() < 1e-6);
+        // Missing / unparsable fall back to mid-scale, not to 0 or 1.
+        assert!((score("t3") - RESUME_SEARCH_DEFAULT_SCORE).abs() < 1e-6);
+        assert!((score("t5") - RESUME_SEARCH_DEFAULT_SCORE).abs() < 1e-6);
+        // Out of range is clamped.
+        assert!((score("t4") - 1.0).abs() < 1e-6);
+    }
+
+    /// Merging chunk results must order by score, not by which chunk replied
+    /// first, and must keep the earlier order when scores tie (issue #685).
+    #[test]
+    fn test_merged_matches_sort_by_score_stably() {
+        // As produced by the merge loop: chunk 0 first, then chunk 1.
+        let mut matched: Vec<(String, String, f32)> = vec![
+            ("newest-weak".into(), "chunk0".into(), 0.3),
+            ("newest-tie-a".into(), "chunk0".into(), 0.6),
+            ("older-strong".into(), "chunk1".into(), 0.95),
+            ("older-tie-b".into(), "chunk1".into(), 0.6),
+        ];
+        matched.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+
+        let order: Vec<&str> = matched.iter().map(|m| m.0.as_str()).collect();
+        // The strong match from a later chunk now outranks the weak newest one.
+        assert_eq!(
+            order,
+            vec!["older-strong", "newest-tie-a", "older-tie-b", "newest-weak"]
+        );
+    }
+
+    /// Issue #685: the user's search description is capped so it cannot
+    /// inflate every chunked request (and shrink the budget for thread text).
+    #[test]
+    fn test_truncate_chars_caps_description() {
+        assert_eq!(truncate_chars("short", 500), "short");
+        // Exactly at the cap is left alone.
+        let exact = "x".repeat(RESUME_SEARCH_MAX_DESCRIPTION_CHARS);
+        assert_eq!(truncate_chars(&exact, RESUME_SEARCH_MAX_DESCRIPTION_CHARS), exact);
+
+        let long = "y".repeat(5_000);
+        let cut = truncate_chars(&long, RESUME_SEARCH_MAX_DESCRIPTION_CHARS);
+        assert!(cut.starts_with(&"y".repeat(RESUME_SEARCH_MAX_DESCRIPTION_CHARS)));
+        assert!(cut.ends_with("... (truncated)"), "got {cut}");
+        // Bounded regardless of input size.
+        assert!(cut.chars().count() < RESUME_SEARCH_MAX_DESCRIPTION_CHARS + 32);
+
+        // Multi-byte input is cut on char boundaries, not bytes.
+        let cjk = "\u{4e2d}".repeat(1_000);
+        let cut = truncate_chars(&cjk, 10);
+        assert!(cut.starts_with(&"\u{4e2d}".repeat(10)));
+        assert_eq!(cut.chars().filter(|c| *c == '\u{4e2d}').count(), 10);
+    }
+
+    /// Issue #685: oversized searches are split into several requests, but a
+    /// thread is never split across them: each request must see a thread's
+    /// complete question list so it can score it from a full view.
+    #[test]
+    fn test_build_search_chunks_keeps_threads_whole() {
+        let threads: Vec<(String, Vec<String>)> = (0..6)
+            .map(|i| {
+                (
+                    format!("[t{}] title\n", i),
+                    vec![format!("  Q: aaa{}\n", i), format!("  Q: bbb{}\n", i)],
+                )
+            })
+            .collect();
+        // Each thread block is ~11 + 2*10 + 1 chars, so a 60-char budget forces
+        // a split but still fits more than one thread per chunk.
+        let chunks = build_search_chunks(&threads, 60);
+        assert!(chunks.len() >= 2, "expected a split, got {:?}", chunks);
+
+        // Every thread appears exactly once, header and both questions together
+        // in the same chunk.
+        for i in 0..6 {
+            let header = format!("[t{}] title", i);
+            let owners: Vec<&String> = chunks.iter().filter(|c| c.contains(&header)).collect();
+            assert_eq!(owners.len(), 1, "thread t{} spans {} chunks", i, owners.len());
+            let owner = owners[0];
+            assert!(owner.contains(&format!("  Q: aaa{}", i)), "t{} lost a question", i);
+            assert!(owner.contains(&format!("  Q: bbb{}", i)), "t{} lost a question", i);
+        }
+    }
+
+    /// The budget is soft: a single thread bigger than it is not split, it just
+    /// gets a body of its own (issue #685).
+    #[test]
+    fn test_build_search_chunks_soft_limit_on_huge_thread() {
+        let huge: Vec<String> = (0..50).map(|i| format!("  Q: long question {}\n", i)).collect();
+        let threads = vec![
+            ("[small] a\n".to_string(), vec!["  Q: x\n".to_string()]),
+            ("[huge] b\n".to_string(), huge.clone()),
+            ("[after] c\n".to_string(), vec!["  Q: y\n".to_string()]),
+        ];
+        let chunks = build_search_chunks(&threads, 50);
+
+        let huge_chunks: Vec<&String> = chunks.iter().filter(|c| c.contains("[huge] b")).collect();
+        assert_eq!(huge_chunks.len(), 1, "oversized thread must not be split");
+        // All of its questions stayed together, even though that exceeds budget.
+        for i in 0..50 {
+            assert!(
+                huge_chunks[0].contains(&format!("  Q: long question {}\n", i)),
+                "missing question {}",
+                i
+            );
+        }
+        assert!(huge_chunks[0].chars().count() > 50, "expected soft overflow");
+        // Neighbours are unaffected and still present exactly once.
+        assert_eq!(chunks.iter().filter(|c| c.contains("[small] a")).count(), 1);
+        assert_eq!(chunks.iter().filter(|c| c.contains("[after] c")).count(), 1);
+    }
+
+    #[test]
+    fn test_build_search_chunks_single_when_fits() {
+        let threads = vec![(
+            "[t1] a\n".to_string(),
+            vec!["  Q: x\n".to_string()],
+        )];
+        let chunks = build_search_chunks(&threads, 1000);
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].contains("[t1] a"));
+        assert!(chunks[0].contains("  Q: x"));
     }
 
     #[test]

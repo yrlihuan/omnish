@@ -138,7 +138,7 @@ async fn generate_thread_summaries(
                 extra_messages: vec![],
             };
 
-            match backend.complete(&req).await {
+            match crate::llm_pool::complete(backend, &req).await {
                 Ok(resp) => {
                     let summary = crate::strip_thinking_block(&resp.text()).trim().to_string();
                     if !summary.is_empty() {
@@ -185,7 +185,7 @@ async fn generate_thread_summaries(
                 extra_messages: vec![],
             };
 
-            match backend.complete(&req).await {
+            match crate::llm_pool::complete(backend, &req).await {
                 Ok(resp) => {
                     let raw = crate::strip_thinking_block(&resp.text());
                     let word = normalize_title_word(raw.trim());

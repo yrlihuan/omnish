@@ -25,6 +25,7 @@ pub mod disconnect_sweep;
 pub mod file_watcher;
 pub mod formatter_mgr;
 pub mod house_keeping;
+pub mod llm_pool;
 pub mod hourly_summary;
 pub mod plugin;
 pub mod plugin_bundle;

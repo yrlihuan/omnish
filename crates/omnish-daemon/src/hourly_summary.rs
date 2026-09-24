@@ -304,7 +304,7 @@ async fn generate_hourly_summary(
             tools: vec![],
             extra_messages: vec![],
         };
-        match backend.complete(&req).await {
+        match crate::llm_pool::complete(backend, &req).await {
             Ok(resp) => Some(crate::strip_thinking_block(&resp.text())),
             Err(e) => {
                 tracing::warn!("periodic summary: LLM summary failed, skipping: {}", e);
