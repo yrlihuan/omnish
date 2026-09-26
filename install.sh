@@ -966,7 +966,9 @@ if [[ "$LISTEN_CHOICE" == "2" ]] && [[ -n "${LISTEN_ADDR:-}" ]] && [[ -z "${OLD_
 
         info "Deploying to ${target}..."
 
-        local SSH_OPTS="-o BatchMode=yes"
+        # accept-new trusts an unknown host key on first contact; with
+        # BatchMode the default "ask" would just fail on a new machine.
+        local SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=accept-new"
 
         # Create directories and remove old binaries (running binaries can't be overwritten)
         ssh -n $SSH_OPTS "$target" "mkdir -p ${remote_home}/bin ${remote_home}/tls && rm -f ${remote_home}/bin/omnish ${remote_home}/bin/omnish-plugin" \

@@ -35,7 +35,11 @@ CLIENTS=("$@")
 # in the config, ssh refuses an explicit command-line command with
 # "Cannot execute command-line and remote command." BatchMode forbids
 # interactive auth so a missing key fails fast instead of hanging.
-SSH_OPTS=(-o BatchMode=yes -o RemoteCommand=none -o RequestTTY=no)
+# StrictHostKeyChecking=accept-new trusts an unknown host key on first contact
+# (BatchMode would otherwise turn the default "ask" prompt into a hard
+# "Host key verification failed", so deploying to a brand new machine always
+# failed); a *changed* key still aborts.
+SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o RemoteCommand=none -o RequestTTY=no)
 
 DAEMON_ADDR_RAW="${OMNISH_DAEMON_ADDR:-}"
 DAEMON_KIND="none"   # none | unix | tcp
