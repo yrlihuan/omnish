@@ -890,10 +890,16 @@ tombstone 线程刻意不在内存中，因此该函数**按需从磁盘读取**
 
 **流程（`server.rs::full_compact_thread`）:**
 1. `snapshot_for_compact()` 在同一把锁下取活动窗口和消息总数；`has_content_to_compact()` 为假（空窗口或只有上一条摘要）时返回 "nothing to compact"
-2. `build_transcript()` 把窗口渲染成纯文本 transcript（用户/助手文本、工具调用与结果按上限截断、丢弃 thinking），超出预算（backend `max_content_chars`，默认 300k 字符）时从最旧处丢弃，但始终保留开头的上一条摘要，保证多次压缩时内容不丢。用纯文本而不是原始消息，是为了避开角色交替、tool 定义、thinking 回传等协议约束
-3. 用线程的聊天模型（`meta.model` 覆盖或默认 Chat 后端）调用 `COMPACT_PROMPT`（omnish-llm template，可用 `/template compact` 查看），关闭 thinking，附加语言指令
-4. `append_compact_summary(tid, expected_len, msg)`：若期间线程消息数变化则拒绝（摘要会把新消息藏出上下文），否则追加
-5. 与 mini 相同的保护：有挂起的 client tool 循环时拒绝，执行前 `bump_generation`
+2. **主路径：复用 KV cache 的重放请求**（`build_compact_turn_request`，做法同 Claude Code 的 /compact）。请求与上一次聊天轮次逐字节一致，只在末尾多一条指令，因此 Anthropic / DeepSeek 等按前缀匹配的缓存可以命中：
+   - 同一模型（线程的 `meta.model` 覆盖或默认 Chat 后端）、同一 tools 列表（`build_chat_setup`）、`enable_thinking: true`（Anthropic 上切换 thinking 会让 messages 层缓存失效）
+   - system prompt 由 `compose_chat_system_prompt()` 拼接（聊天路径共用），reminder 和项目指令取自 `ThreadMeta.system_reminder` / `ThreadMeta.project_instructions`，即上一轮实际发送的内容，不重新生成（reminder 含日期，跨天重建会导致前缀失效）。`project_instructions` 由聊天路径在每轮保存；旧线程没有记录时 reminder 现场重建，可能命中不了
+   - messages：活动窗口的副本，做与聊天相同的清理（`sanitize_orphaned_tool_use` / `merge_interrupt_markers`），`append_compact_instruction()` 追加 `COMPACT_TURN_PROMPT`（尾部是 user 时按聊天路径合并进去），cache 断点沿用 `mark_chat_message_hints`
+   - 必须带 tools 才能保持前缀一致，所以提示词明确要求不要调用工具；响应含 tool_use 或无文本（`compact_summary_from_response`）视为失败
+3. **回退路径：transcript 请求**（`build_compact_transcript_request`）。主路径任何失败（如线程已贴近上下文窗口上限、模型调用了工具）都会回退。`build_transcript()` 把窗口渲染成纯文本（用户/助手文本、工具调用与结果按上限截断、丢弃 thinking），超出预算（backend `max_content_chars`，默认 300k 字符）时从最旧处丢弃，但始终保留开头的上一条摘要。无 system prompt、无 tools、关闭 thinking，与聊天请求不共享前缀，但因截断了工具 I/O 体积更小
+4. 两条路径都附加语言指令；提示词见 omnish-llm template 的 `COMPACT_TURN_PROMPT` / `COMPACT_PROMPT`（共用 `compact_requirements!` 小节要求），可用 `/template compact` 查看
+5. `append_compact_summary(tid, expected_len, msg)`：若期间线程消息数变化则拒绝（摘要会把新消息藏出上下文），否则追加
+6. 命令输出（`format_full_compact`）：上下文字符数变化、摘要调用的输入 token 与其中缓存命中数（口径同 `/thread stats`：input + cache read + cache write），走回退路径时附上原因
+7. 与 mini 相同的保护：有挂起的 client tool 循环时拒绝，执行前 `bump_generation`
 
 ##### `ConversationManager::append_messages()`
 追加原始 JSON 消息到线程。双写到内存缓存和磁盘 JSONL 文件。

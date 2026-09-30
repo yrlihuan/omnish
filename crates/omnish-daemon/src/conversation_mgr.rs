@@ -45,6 +45,12 @@ pub struct ThreadMeta {
     /// Last system-reminder content (for change detection).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_reminder: Option<String>,
+    /// Project instructions (CWD CLAUDE.md) sent with the last chat turn.
+    /// Together with `system_reminder` this lets a full `/compact` replay the
+    /// exact system prompt of that turn and hit the provider's prefix cache
+    /// (issue #687).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_instructions: Option<String>,
     /// Per-thread sandbox override. When Some(true), daemon forces
     /// ChatToolCall.sandboxed=false for this thread, bypassing permit_rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]

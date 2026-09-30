@@ -77,23 +77,45 @@ pub const THREAD_SUMMARY_PROMPT: &str =
      Generate a short title (no more than 10 words) that summarizes the topic of this conversation. \
      Output only the title itself, without quotes or prefixes.";
 
-/// Full context compaction prompt (issue #687). The conversation arrives as a
-/// plain-text transcript in `<conversation>`; the result replaces all of it as
-/// the only prior context of the thread, so it must be self-sufficient.
-pub const COMPACT_PROMPT: &str =
+/// Summary requirements shared by both full-compaction prompts (issue #687).
+macro_rules! compact_requirements {
+    () => {
+        "If the conversation starts with a previous summary, merge it into yours; do not drop its content. \
+         Cover, using these section headings:\n\
+         1. User goals: every request and intent the user expressed, including later changes of mind.\n\
+         2. Key facts: important technical details, decisions and constraints discovered.\n\
+         3. Files, commands and paths: exact file paths, commands run, and relevant code snippets or \
+         config values (verbatim when short).\n\
+         4. Errors and fixes: problems hit and how they were resolved, including user feedback.\n\
+         5. Current state: what was being worked on right before this summary.\n\
+         6. Pending work: open tasks and the next step, if any.\n\
+         Omit sections that have nothing to report. Output only the summary."
+    };
+}
+
+/// Full compaction instruction appended as the final user message of a
+/// request that otherwise replays the chat turn verbatim (same system prompt,
+/// tools and history), so the provider's prefix cache is reused. Tools must
+/// stay in that request to keep the prefix identical, hence the explicit
+/// "do not call tools".
+pub const COMPACT_TURN_PROMPT: &str = concat!(
+    "Stop working on the task. Do NOT call any tools. Instead, reply with a summary of the \
+     conversation so far. The conversation above will be discarded and replaced by your summary, \
+     which becomes the ONLY context you have when the conversation continues, so write a detailed \
+     summary that lets you pick up seamlessly. ",
+    compact_requirements!()
+);
+
+/// Fallback full compaction prompt: the conversation arrives as a plain-text
+/// transcript in `<conversation>` (used when the replayed request fails, e.g.
+/// the thread is too close to the context window).
+pub const COMPACT_PROMPT: &str = concat!(
     "Below is a <conversation> between a user and an AI assistant working in the user's terminal. \
      It will be discarded and replaced by your summary, which becomes the ONLY context the assistant \
      has when the conversation continues. Write a detailed summary that lets the assistant pick up \
-     seamlessly. Cover, using these section headings:\n\
-     1. User goals: every request and intent the user expressed, including later changes of mind.\n\
-     2. Key facts: important technical details, decisions and constraints discovered.\n\
-     3. Files, commands and paths: exact file paths, commands run, and relevant code snippets or \
-     config values (verbatim when short).\n\
-     4. Errors and fixes: problems hit and how they were resolved, including user feedback.\n\
-     5. Current state: what was being worked on right before this summary.\n\
-     6. Pending work: open tasks and the next step, if any.\n\
-     If the conversation starts with a previous summary, merge it into yours; do not drop its content. \
-     Omit sections that have nothing to report. Output only the summary.";
+     seamlessly. ",
+    compact_requirements!()
+);
 
 /// Prepended to the stored compaction summary so the chat model knows what the
 /// message is when the conversation continues.
@@ -163,8 +185,10 @@ pub fn template_by_name(name: &str) -> Option<String> {
         "daily-notes" => Some(DAILY_NOTES_PROMPT.to_string()),
         "hourly-notes" => Some(HOURLY_NOTES_PROMPT.to_string()),
         "compact" => Some(format!(
-            "[context]\n<conversation>\n{{transcript}}\n</conversation>\n\n[query]\n{}\n\n[stored summary message]\n{}\n\n{{summary}}",
-            COMPACT_PROMPT, COMPACT_SUMMARY_HEADER
+            "[primary: replay of the chat request (same system prompt, tools, history) + final user message]\n{}\n\n\
+             [fallback: transcript request]\n[context]\n<conversation>\n{{transcript}}\n</conversation>\n\n[query]\n{}\n\n\
+             [stored summary message]\n{}\n\n{{summary}}",
+            COMPACT_TURN_PROMPT, COMPACT_PROMPT, COMPACT_SUMMARY_HEADER
         )),
         _ => None,
     }

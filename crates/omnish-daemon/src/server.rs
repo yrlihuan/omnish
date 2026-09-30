@@ -1669,6 +1669,16 @@ fn build_empty_response_message(content: &[ContentBlock], marker: &str) -> serde
     }
 }
 
+/// Chat system prompt: base prompt + system-reminder + optional project
+/// instructions. Shared by the chat turn and full `/compact`, whose request
+/// must reproduce the turn's prefix byte for byte to hit the prompt cache.
+fn compose_chat_system_prompt(base: &str, reminder: &str, project_instructions: Option<&str>) -> String {
+    match project_instructions {
+        Some(pi) => format!("{}\n\n{}\n\n{}", base, reminder, pi),
+        None => format!("{}\n\n{}", base, reminder),
+    }
+}
+
 async fn build_chat_setup(mgr: &SessionManager, tool_registry: &omnish_daemon::tool_registry::ToolRegistry) -> ChatSetup {
     let (commands, stream_reader) = mgr.get_all_commands_with_reader().await;
     let command_query_tool = omnish_daemon::tools::command_query::CommandQueryTool::new(
@@ -1743,6 +1753,7 @@ async fn handle_chat_message(
         }
     }
     meta.system_reminder = Some(reminder.clone());
+    meta.project_instructions = cm.project_instructions.clone();
     // Consume any one-shot event marker queued by an out-of-band change (e.g.
     // /thread sandbox on|off) and clear it in the same save (issue #659).
     let pending_event = meta.pending_event.take();
@@ -1755,12 +1766,8 @@ async fn handle_chat_message(
         None => cm.query.clone(),
     };
 
-    let project_instructions = cm.project_instructions.clone();
-
-    let full_system_prompt = match project_instructions {
-        Some(ref pi) => format!("{}\n\n{}\n\n{}", system_prompt, reminder, pi),
-        None => format!("{}\n\n{}", system_prompt, reminder),
-    };
+    let full_system_prompt =
+        compose_chat_system_prompt(&system_prompt, &reminder, cm.project_instructions.as_deref());
 
     // Load prior conversation history as raw JSON
     let mut extra_messages = conv_mgr.load_raw_messages(&cm.thread_id);
@@ -2893,16 +2900,118 @@ fn shrink_pct(before: usize, after: usize) -> f64 {
     }
 }
 
+/// Result of a full compaction, for the command output.
+struct FullCompactOutcome {
+    /// Live context size before/after, in serialized chars.
+    chars_before: usize,
+    chars_after: usize,
+    /// Usage of the summarization call (cache hit tokens show whether the
+    /// replayed prefix was served from the provider cache).
+    usage: Option<omnish_llm::backend::Usage>,
+    /// Set when the cache-friendly replay failed and the transcript path was
+    /// used instead; holds the reason.
+    fallback: Option<String>,
+}
+
+/// Build the cache-friendly compaction request: the chat turn replayed
+/// verbatim (same system prompt, tools, thinking mode, history and cache
+/// breakpoint scheme) with the compaction instruction as the final user
+/// message. Only that last message differs from the previous chat request,
+/// so providers with prefix caching (Anthropic, DeepSeek) serve the rest
+/// from cache. This mirrors how Claude Code produces its /compact summary.
+fn build_compact_turn_request(
+    window: &[serde_json::Value],
+    system_prompt: String,
+    tools: Vec<omnish_llm::tool::ToolDef>,
+    instruction: &str,
+    session_id: &str,
+    max_content_chars: Option<usize>,
+) -> LlmRequest {
+    // Same cleanups the chat path applies before sending (on a copy; the
+    // stored history is left alone).
+    let mut msgs = window.to_vec();
+    omnish_daemon::conversation_mgr::sanitize_orphaned_tool_use(&mut msgs);
+    omnish_daemon::conversation_mgr::merge_interrupt_markers(&mut msgs);
+    omnish_daemon::compact::append_compact_instruction(&mut msgs, instruction, ConversationManager::now_ms());
+    let mut extra_messages: Vec<omnish_llm::backend::TaggedMessage> = msgs
+        .into_iter()
+        .map(|content| omnish_llm::backend::TaggedMessage::new(content, omnish_llm::backend::CacheHint::None))
+        .collect();
+    mark_chat_message_hints(&mut extra_messages);
+    LlmRequest {
+        context: String::new(),
+        query: None,
+        trigger: TriggerType::Manual,
+        session_ids: vec![session_id.to_string()],
+        use_case: UseCase::Chat,
+        max_content_chars,
+        system_prompt: Some(omnish_llm::backend::CachedText {
+            text: system_prompt,
+            cache: omnish_llm::backend::CacheHint::Long,
+        }),
+        // Must match the chat turn: toggling thinking invalidates the cached
+        // message prefix on Anthropic.
+        enable_thinking: Some(true),
+        tools,
+        extra_messages,
+    }
+}
+
+/// Build the fallback compaction request: the live window rendered as a
+/// plain-text transcript. Shares no prefix with the chat request (no cache
+/// reuse) but is smaller, since tool I/O is clipped.
+fn build_compact_transcript_request(
+    window: &[serde_json::Value],
+    budget: usize,
+    language: &str,
+    max_content_chars: Option<usize>,
+) -> LlmRequest {
+    let transcript = omnish_daemon::compact::build_transcript(window, budget);
+    LlmRequest {
+        context: format!("<conversation>\n{}\n</conversation>", transcript),
+        query: Some(omnish_llm::template::append_language_instruction(
+            omnish_llm::template::COMPACT_PROMPT,
+            language,
+        )),
+        trigger: TriggerType::Manual,
+        session_ids: vec![],
+        use_case: UseCase::Chat,
+        max_content_chars,
+        system_prompt: None,
+        enable_thinking: Some(false),
+        tools: vec![],
+        extra_messages: vec![],
+    }
+}
+
+/// Extract the summary text from a compaction response. A tool call means the
+/// model ignored the instruction (tools are offered only to keep the prefix
+/// identical), so it counts as a failure rather than a partial summary.
+fn compact_summary_from_response(resp: &omnish_llm::backend::LlmResponse) -> Result<String, String> {
+    if !resp.tool_calls().is_empty() {
+        return Err("model called a tool instead of summarizing".to_string());
+    }
+    let summary = omnish_daemon::strip_thinking_block(&resp.text()).trim().to_string();
+    if summary.is_empty() {
+        return Err("LLM returned an empty summary".to_string());
+    }
+    Ok(summary)
+}
+
 /// Full context compaction (issue #687): summarize the live window with the
 /// thread's chat model and append the summary as a `_compact` user message.
 /// Nothing is deleted; `load_raw_messages` starts from the new message.
-/// Returns the live context size before/after in chars, or None when there
-/// is nothing to compact.
+///
+/// First tries the cache-friendly replay of the chat request
+/// (`build_compact_turn_request`); on any failure (e.g. the thread is too
+/// close to the context window, or the model calls a tool) falls back to the
+/// transcript request. Returns None when there is nothing to compact.
 async fn full_compact_thread(
     tid: &str,
+    session_id: &str,
     ctx: &HandlerCtx,
     llm: &Arc<MultiBackend>,
-) -> Result<Option<(usize, usize)>, String> {
+) -> Result<Option<FullCompactOutcome>, String> {
     use omnish_daemon::compact;
     let conv_mgr = &ctx.conv_mgr;
     let (window, total) = conv_mgr
@@ -2916,43 +3025,87 @@ async fn full_compact_thread(
     let backend: Arc<dyn LlmBackend> = meta.model.as_ref()
         .and_then(|name| llm.get_backend_by_name(name))
         .unwrap_or_else(|| llm.get_backend(UseCase::Chat));
-    let budget = backend.max_content_chars().unwrap_or(COMPACT_TRANSCRIPT_MAX_CHARS);
-    let transcript = compact::build_transcript(&window, budget);
+    let max_content_chars = backend.max_content_chars();
     let language = ctx.opts.daemon_config.read().unwrap().client.language.clone();
-    let req = LlmRequest {
-        context: format!("<conversation>\n{}\n</conversation>", transcript),
-        query: Some(omnish_llm::template::append_language_instruction(
-            omnish_llm::template::COMPACT_PROMPT,
-            &language,
-        )),
-        trigger: TriggerType::Manual,
-        session_ids: vec![],
-        use_case: UseCase::Chat,
-        max_content_chars: backend.max_content_chars(),
-        system_prompt: None,
-        enable_thinking: Some(false),
-        tools: vec![],
-        extra_messages: vec![],
+
+    // Primary: replay the last chat turn's prefix. The reminder and project
+    // instructions come from the thread meta (what that turn actually sent),
+    // not rebuilt, so e.g. a date change does not break the prefix. Threads
+    // last chatted before this was recorded rebuild the reminder instead.
+    let ChatSetup { command_query_tool, tools, system_prompt } =
+        build_chat_setup(&ctx.session_mgr, &ctx.tool_registry).await;
+    let reminder = match meta.system_reminder.clone() {
+        Some(r) => r,
+        None => {
+            let attrs = ctx.session_mgr.get_session_attrs(session_id).await;
+            command_query_tool.build_system_reminder(session_id, 5, &attrs, false)
+        }
     };
-    tracing::info!(
-        "Full compaction of thread {}: {} messages, transcript {} chars",
-        tid, window.len(), transcript.chars().count()
+    let turn_req = build_compact_turn_request(
+        &window,
+        compose_chat_system_prompt(&system_prompt, &reminder, meta.project_instructions.as_deref()),
+        tools,
+        &omnish_llm::template::append_language_instruction(
+            omnish_llm::template::COMPACT_TURN_PROMPT,
+            &language,
+        ),
+        session_id,
+        max_content_chars,
     );
-    let resp = omnish_daemon::llm_pool::complete(backend.as_ref(), &req)
-        .await
-        .map_err(|e| format!("LLM request failed: {}", e))?;
-    let summary = omnish_daemon::strip_thinking_block(&resp.text()).trim().to_string();
-    if summary.is_empty() {
-        return Err("LLM returned an empty summary".to_string());
-    }
+    tracing::info!("Full compaction of thread {}: replaying {} messages", tid, window.len());
+    let primary = match omnish_daemon::llm_pool::complete(backend.as_ref(), &turn_req).await {
+        Ok(resp) => compact_summary_from_response(&resp).map(|s| (s, resp.usage)),
+        Err(e) => Err(format!("LLM request failed: {}", e)),
+    };
+
+    let (summary, usage, fallback) = match primary {
+        Ok((summary, usage)) => (summary, usage, None),
+        Err(reason) => {
+            tracing::warn!(
+                "Full compaction of thread {}: replay failed ({}), falling back to transcript",
+                tid, reason
+            );
+            let budget = max_content_chars.unwrap_or(COMPACT_TRANSCRIPT_MAX_CHARS);
+            let req = build_compact_transcript_request(&window, budget, &language, max_content_chars);
+            let resp = omnish_daemon::llm_pool::complete(backend.as_ref(), &req)
+                .await
+                .map_err(|e| format!("LLM request failed: {}", e))?;
+            (compact_summary_from_response(&resp)?, resp.usage, Some(reason))
+        }
+    };
 
     let text = format!("{}\n\n{}", omnish_llm::template::COMPACT_SUMMARY_HEADER, summary);
     let msg = compact::make_compact_message(&text, ConversationManager::now_ms());
-    let before = compact::messages_chars(&window);
-    let after = compact::messages_chars(std::slice::from_ref(&msg));
+    let chars_before = compact::messages_chars(&window);
+    let chars_after = compact::messages_chars(std::slice::from_ref(&msg));
     conv_mgr.append_compact_summary(tid, total, msg)?;
-    tracing::info!("Compacted thread {}: context {} -> {} chars", tid, before, after);
-    Ok(Some((before, after)))
+    tracing::info!(
+        "Compacted thread {}: context {} -> {} chars, usage {:?}, fallback {:?}",
+        tid, chars_before, chars_after, usage, fallback
+    );
+    Ok(Some(FullCompactOutcome { chars_before, chars_after, usage, fallback }))
+}
+
+/// Command output for a full compaction.
+fn format_full_compact(o: &FullCompactOutcome) -> String {
+    let mut out = format!(
+        "context compacted into a summary\ncontext: {} -> {} chars (-{:.0}%)",
+        format_count(o.chars_before as u64),
+        format_count(o.chars_after as u64),
+        shrink_pct(o.chars_before, o.chars_after)
+    );
+    if let Some(u) = &o.usage {
+        let input = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens;
+        out.push_str(&format!(
+            "\nLLM input: {} tokens ({} cached)",
+            format_count(input),
+            format_count(u.cache_read_input_tokens)
+        ));
+    }
+    if let Some(reason) = &o.fallback {
+        out.push_str(&format!("\n(summarized from transcript: {})", reason));
+    }
+    out
 }
 
 fn cmd_display(s: impl Into<String>) -> serde_json::Value {
@@ -3352,13 +3505,8 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
         // so it discards its work instead of appending to the rewritten file.
         bump_generation(&ctx.thread_generations, tid).await;
         if full {
-            return match full_compact_thread(tid, ctx, llm_backend).await {
-                Ok(Some((before, after))) => cmd_display(format!(
-                    "context compacted into a summary\ncontext: {} -> {} chars (-{:.0}%)",
-                    format_count(before as u64),
-                    format_count(after as u64),
-                    shrink_pct(before, after)
-                )),
+            return match full_compact_thread(tid, &req.session_id, ctx, llm_backend).await {
+                Ok(Some(outcome)) => cmd_display(format_full_compact(&outcome)),
                 Ok(None) => cmd_display("nothing to compact"),
                 Err(e) => cmd_display(format!("Error: {}", e)),
             };
@@ -5794,5 +5942,119 @@ mod tests {
         assert_eq!(pairs[0], ("user_input", "/compact"));
         assert_eq!(pairs[1], ("llm_text", "THE SUMMARY"));
         assert_eq!(pairs[2], ("user_input", "next q"));
+    }
+
+    fn compact_test_response(content: Vec<ContentBlock>) -> omnish_llm::backend::LlmResponse {
+        omnish_llm::backend::LlmResponse {
+            content,
+            stop_reason: StopReason::EndTurn,
+            model: "m".to_string(),
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn test_compact_turn_request_replays_chat_prefix() {
+        use omnish_llm::backend::CacheHint;
+        let window = vec![
+            serde_json::json!({"role": "user", "content": "q1"}),
+            serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "a1"}]}),
+            serde_json::json!({"role": "user", "content": "q2"}),
+            serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "a2"}]}),
+        ];
+        let tool = omnish_llm::tool::ToolDef {
+            name: "bash".to_string(),
+            description: "run".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            cache: CacheHint::None,
+        };
+        let req = build_compact_turn_request(&window, "SYS".to_string(), vec![tool], "INS", "sess", Some(9));
+
+        // Same system prompt / tools / thinking mode as the chat turn.
+        let sys = req.system_prompt.as_ref().unwrap();
+        assert_eq!(sys.text, "SYS");
+        assert_eq!(sys.cache, CacheHint::Long);
+        assert_eq!(req.tools.len(), 1);
+        assert_eq!(req.tools[0].name, "bash");
+        assert_eq!(req.enable_thinking, Some(true));
+        assert_eq!(req.max_content_chars, Some(9));
+        assert!(req.context.is_empty() && req.query.is_none());
+
+        // History unchanged, instruction appended as the only new message.
+        let msgs: Vec<&serde_json::Value> = req.extra_messages.iter().map(|m| &m.content).collect();
+        assert_eq!(msgs.len(), 5);
+        for (i, m) in window.iter().enumerate() {
+            assert_eq!(msgs[i], m);
+        }
+        assert_eq!(msgs[4], &serde_json::json!({"role": "user", "content": "INS"}));
+
+        // Chat breakpoint scheme: last two messages.
+        let hints: Vec<CacheHint> = req.extra_messages.iter().map(|m| m.cache).collect();
+        assert_eq!(hints, vec![CacheHint::None, CacheHint::None, CacheHint::None, CacheHint::Long, CacheHint::Long]);
+    }
+
+    #[test]
+    fn test_compact_transcript_request_has_no_tools_or_system() {
+        let window = vec![serde_json::json!({"role": "user", "content": "hello"})];
+        let req = build_compact_transcript_request(&window, 1000, "en", None);
+        assert!(req.tools.is_empty());
+        assert!(req.system_prompt.is_none());
+        assert!(req.extra_messages.is_empty());
+        assert_eq!(req.enable_thinking, Some(false));
+        assert!(req.context.contains("<conversation>\nUser: hello\n</conversation>"));
+        assert!(req.query.unwrap().starts_with("Below is a <conversation>"));
+    }
+
+    #[test]
+    fn test_compact_summary_from_response() {
+        let ok = compact_test_response(vec![
+            ContentBlock::Thinking { thinking: "hmm".to_string(), signature: None },
+            ContentBlock::Text("  THE SUMMARY \n".to_string()),
+        ]);
+        assert_eq!(compact_summary_from_response(&ok).unwrap(), "THE SUMMARY");
+
+        let tool = compact_test_response(vec![
+            ContentBlock::Text("let me check".to_string()),
+            ContentBlock::ToolUse(omnish_llm::tool::ToolCall {
+                id: "t".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({}),
+                extra: Default::default(),
+            }),
+        ]);
+        assert!(compact_summary_from_response(&tool).unwrap_err().contains("tool"));
+
+        let empty = compact_test_response(vec![ContentBlock::Text("   ".to_string())]);
+        assert!(compact_summary_from_response(&empty).is_err());
+    }
+
+    #[test]
+    fn test_format_full_compact() {
+        let o = FullCompactOutcome {
+            chars_before: 10_000,
+            chars_after: 1_000,
+            usage: Some(omnish_llm::backend::Usage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_input_tokens: 900,
+                cache_creation_input_tokens: 0,
+            }),
+            fallback: None,
+        };
+        let text = format_full_compact(&o);
+        assert!(text.contains("(-90%)"));
+        assert!(text.contains("LLM input: 1.0K tokens (900 cached)"), "{}", text);
+        assert!(!text.contains("transcript"));
+
+        let fb = FullCompactOutcome { usage: None, fallback: Some("boom".to_string()), ..o };
+        let text = format_full_compact(&fb);
+        assert!(!text.contains("LLM input"));
+        assert!(text.contains("(summarized from transcript: boom)"));
+    }
+
+    #[test]
+    fn test_compose_chat_system_prompt() {
+        assert_eq!(compose_chat_system_prompt("B", "R", None), "B\n\nR");
+        assert_eq!(compose_chat_system_prompt("B", "R", Some("P")), "B\n\nR\n\nP");
     }
 }

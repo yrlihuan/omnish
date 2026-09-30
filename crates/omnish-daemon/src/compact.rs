@@ -223,6 +223,20 @@ pub fn make_compact_message(text: &str, now_ms: u64) -> serde_json::Value {
     })
 }
 
+/// Append the compaction instruction to a copy of the live window the same
+/// way the chat path appends a query: merged into a user-role tail (Anthropic
+/// forbids two consecutive user messages), otherwise as a new user message.
+/// Only the last message differs from the previous chat request, so the rest
+/// of the prefix can be served from the provider's cache.
+pub fn append_compact_instruction(msgs: &mut Vec<serde_json::Value>, instruction: &str, now_ms: u64) {
+    match msgs.last_mut() {
+        Some(tail) if crate::conversation_mgr::is_user_message(tail) => {
+            crate::conversation_mgr::merge_user_query_into_tail(tail, instruction, now_ms);
+        }
+        _ => msgs.push(serde_json::json!({ "role": "user", "content": instruction })),
+    }
+}
+
 /// Serialized char count of a message list (same measure as mini stats).
 pub fn messages_chars(msgs: &[serde_json::Value]) -> usize {
     total_chars(msgs)
@@ -602,5 +616,25 @@ mod tests {
         assert!(t.contains("earlier entries omitted"));
         assert!(t.contains("question 49"), "newest entries survive");
         assert!(!t.contains("first question"), "oldest non-summary entries dropped");
+    }
+
+    #[test]
+    fn instruction_appended_after_assistant_tail() {
+        let mut msgs = vec![user_text("q"), assistant_text("a")];
+        append_compact_instruction(&mut msgs, "SUMMARIZE", 1);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[2], serde_json::json!({"role": "user", "content": "SUMMARIZE"}));
+        assert_eq!(msgs[..2], [user_text("q"), assistant_text("a")]);
+    }
+
+    #[test]
+    fn instruction_merged_into_user_tail() {
+        // Interrupt snapshot: tool_result-only user tail.
+        let mut msgs = vec![user_text("q"), assistant_tool_use("t1"), user_tool_result_str("t1", "out")];
+        append_compact_instruction(&mut msgs, "SUMMARIZE", 1);
+        assert_eq!(msgs.len(), 3, "no second consecutive user message");
+        let blocks = msgs[2]["content"].as_array().unwrap();
+        assert_eq!(blocks.last().unwrap()["text"], "SUMMARIZE");
+        assert_eq!(blocks[0]["type"], "tool_result");
     }
 }
