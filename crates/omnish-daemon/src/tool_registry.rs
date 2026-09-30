@@ -170,11 +170,14 @@ impl ToolRegistry {
         guard.get(tool_name).cloned()
     }
 
-    /// Collect all tool definitions with description overrides applied.
+    /// Collect all tool definitions with description overrides applied,
+    /// sorted by name. The order must be deterministic: tools lead the LLM
+    /// request prefix, and HashMap iteration order changes with every daemon
+    /// restart, which used to invalidate every thread's prompt cache.
     pub fn all_defs(&self) -> Vec<ToolDef> {
         let descs = self.descriptions.read().unwrap();
         let defs = self.defs.read().unwrap();
-        defs
+        let mut out: Vec<ToolDef> = defs
             .values()
             .map(|def| {
                 let mut d = def.clone();
@@ -183,7 +186,9 @@ impl ToolRegistry {
                 }
                 d
             })
-            .collect()
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
     }
 
     /// Update runtime overrides (descriptions and params).
@@ -406,5 +411,22 @@ mod tests {
         let bash_def = defs.iter().find(|d| d.name == "bash").unwrap();
         assert_eq!(bash_def.description, "Original description");
         assert!(reg.override_params("bash").is_none());
+    }
+
+    #[test]
+    fn all_defs_sorted_by_name() {
+        let reg = ToolRegistry::new();
+        for name in ["write", "bash", "read", "edit", "glob", "grep", "web_fetch", "omnish_get_output"] {
+            reg.register_def(ToolDef {
+                name: name.to_string(),
+                description: String::new(),
+                input_schema: serde_json::json!({"type": "object"}),
+                cache: omnish_llm::backend::CacheHint::None,
+            });
+        }
+        let names: Vec<String> = reg.all_defs().into_iter().map(|d| d.name).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
     }
 }
