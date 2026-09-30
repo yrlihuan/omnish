@@ -32,6 +32,7 @@
   "error.no_active_thread": "Sin hilo activo",
   "error.failed_rename_thread": "Error al renombrar el hilo",
   "error.compact_failed": "Error al compactar",
+  "error.compact_timed_out": "Tiempo de compactación agotado",
   "error.failed_receive_response_main": "Error al recibir la respuesta",
   "error.daemon_not_connected": "Demonio no conectado",
 
@@ -141,10 +142,13 @@
   "command.help.thread_rename": "Renombrar hilo actual (vacío para limpiar)",
   "command.help.resume": "Reanudar un hilo de conversación anterior",
   "command.help.model": "Cambiar de modelo LLM",
-  "command.help.compact": "Compactar resultados de herramientas voluminosos del hilo actual",
+  "command.help.compact": "Resumir la conversación en un contexto nuevo",
+  "command.help.compact_mini": "Compactar resultados de herramientas voluminosos del hilo actual",
   "chat.resume_search_prompt": "Describe la conversación que buscas:",
   "chat.resume_searching": "Buscando conversaciones... (Ctrl-C para cancelar)",
   "chat.search_cancelled": "Búsqueda cancelada.",
+  "chat.compacting": "Compactando el contexto... (Ctrl-C para dejar de esperar)",
+  "chat.compact_cancelled": "Se dejó de esperar. La compactación puede terminar en segundo plano.",
   "error.resume_search_timed_out": "La búsqueda de conversaciones expiró. Inténtalo de nuevo.",
   "chat.no_matching_conversation": "No se encontró ninguna conversación coincidente."
 }

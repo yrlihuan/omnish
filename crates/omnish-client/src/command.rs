@@ -220,6 +220,7 @@ fn help_command(_args: &str) -> String {
     output.push_str(&format!("  /resume - {}\n", crate::i18n::t("command.help.resume")));
     output.push_str(&format!("  /model [name] - {}\n", crate::i18n::t("command.help.model")));
     output.push_str(&format!("  /compact - {}\n", crate::i18n::t("command.help.compact")));
+    output.push_str(&format!("    /compact mini - {}\n", crate::i18n::t("command.help.compact_mini")));
     output
 }
 
@@ -380,6 +381,7 @@ pub const CHAT_ONLY_COMMANDS: &[&str] = &[
     "/resume ?",
     "/model",
     "/compact",
+    "/compact mini",
     "/thread sandbox",
     "/thread sandbox on",
     "/thread sandbox off",

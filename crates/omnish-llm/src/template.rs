@@ -77,6 +77,30 @@ pub const THREAD_SUMMARY_PROMPT: &str =
      Generate a short title (no more than 10 words) that summarizes the topic of this conversation. \
      Output only the title itself, without quotes or prefixes.";
 
+/// Full context compaction prompt (issue #687). The conversation arrives as a
+/// plain-text transcript in `<conversation>`; the result replaces all of it as
+/// the only prior context of the thread, so it must be self-sufficient.
+pub const COMPACT_PROMPT: &str =
+    "Below is a <conversation> between a user and an AI assistant working in the user's terminal. \
+     It will be discarded and replaced by your summary, which becomes the ONLY context the assistant \
+     has when the conversation continues. Write a detailed summary that lets the assistant pick up \
+     seamlessly. Cover, using these section headings:\n\
+     1. User goals: every request and intent the user expressed, including later changes of mind.\n\
+     2. Key facts: important technical details, decisions and constraints discovered.\n\
+     3. Files, commands and paths: exact file paths, commands run, and relevant code snippets or \
+     config values (verbatim when short).\n\
+     4. Errors and fixes: problems hit and how they were resolved, including user feedback.\n\
+     5. Current state: what was being worked on right before this summary.\n\
+     6. Pending work: open tasks and the next step, if any.\n\
+     If the conversation starts with a previous summary, merge it into yours; do not drop its content. \
+     Omit sections that have nothing to report. Output only the summary.";
+
+/// Prepended to the stored compaction summary so the chat model knows what the
+/// message is when the conversation continues.
+pub const COMPACT_SUMMARY_HEADER: &str =
+    "This conversation was compacted to save context. The summary below covers everything before \
+     this point; continue from it.";
+
 /// The thread-title-word LLM prompt - derives a single short English word from
 /// an existing thread summary. Used as the tmux window label during chat mode.
 /// Output MUST be English; the caller does not append a language instruction.
@@ -124,7 +148,7 @@ pub fn append_language_instruction(prompt: &str, language: &str) -> String {
 }
 
 /// Known template names for `/template <name>`.
-pub const TEMPLATE_NAMES: &[&str] = &["chat", "chat-system", "auto-complete", "daily-notes", "hourly-notes"];
+pub const TEMPLATE_NAMES: &[&str] = &["chat", "chat-system", "auto-complete", "daily-notes", "hourly-notes", "compact"];
 
 /// Return a named template with placeholders for inspection.
 /// Returns `None` if the name is unknown.
@@ -138,6 +162,10 @@ pub fn template_by_name(name: &str) -> Option<String> {
         }
         "daily-notes" => Some(DAILY_NOTES_PROMPT.to_string()),
         "hourly-notes" => Some(HOURLY_NOTES_PROMPT.to_string()),
+        "compact" => Some(format!(
+            "[context]\n<conversation>\n{{transcript}}\n</conversation>\n\n[query]\n{}\n\n[stored summary message]\n{}\n\n{{summary}}",
+            COMPACT_PROMPT, COMPACT_SUMMARY_HEADER
+        )),
         _ => None,
     }
 }

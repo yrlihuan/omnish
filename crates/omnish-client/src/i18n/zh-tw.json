@@ -32,6 +32,7 @@
   "error.no_active_thread": "沒有作用中的執行緒",
   "error.failed_rename_thread": "重新命名執行緒失敗",
   "error.compact_failed": "壓縮失敗",
+  "error.compact_timed_out": "壓縮逾時",
   "error.failed_receive_response_main": "接收回應失敗",
   "error.daemon_not_connected": "守護程序未連線",
 
@@ -141,10 +142,13 @@
   "command.help.thread_rename": "重新命名目前執行緒（參數為空時清除）",
   "command.help.resume": "恢復之前的對話執行緒",
   "command.help.model": "切換 LLM 模型",
-  "command.help.compact": "壓縮當前線程中的大體積工具結果",
+  "command.help.compact": "把對話總結成摘要，以全新的上下文繼續",
+  "command.help.compact_mini": "壓縮當前線程中的大體積工具結果",
   "chat.resume_search_prompt": "描述想要尋找的對話：",
   "chat.resume_searching": "正在搜尋對話...(Ctrl-C 取消)",
   "chat.search_cancelled": "已取消搜尋。",
+  "chat.compacting": "正在壓縮上下文...(Ctrl-C 停止等待)",
+  "chat.compact_cancelled": "已停止等待，壓縮可能仍會在背景完成。",
   "error.resume_search_timed_out": "對話搜尋逾時，請重試。",
   "chat.no_matching_conversation": "找不到符合的對話。"
 }

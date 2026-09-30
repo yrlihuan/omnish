@@ -32,6 +32,7 @@
   "error.no_active_thread": "활성 스레드가 없습니다",
   "error.failed_rename_thread": "스레드 이름 변경 실패",
   "error.compact_failed": "압축 실패",
+  "error.compact_timed_out": "압축 시간 초과",
   "error.failed_receive_response_main": "응답 수신 실패",
   "error.daemon_not_connected": "데몬 미연결",
 
@@ -141,10 +142,13 @@
   "command.help.thread_rename": "현재 스레드 이름 변경 (비우면 해제)",
   "command.help.resume": "이전 대화 스레드 재개",
   "command.help.model": "LLM 모델 전환",
-  "command.help.compact": "현재 스레드의 큰 도구 결과 압축",
+  "command.help.compact": "대화를 요약하여 새 컨텍스트로 계속",
+  "command.help.compact_mini": "현재 스레드의 큰 도구 결과 압축",
   "chat.resume_search_prompt": "찾을 대화를 설명하세요:",
   "chat.resume_searching": "대화 검색 중...(Ctrl-C 취소)",
   "chat.search_cancelled": "검색을 취소했습니다.",
+  "chat.compacting": "컨텍스트 압축 중...(Ctrl-C 대기 중지)",
+  "chat.compact_cancelled": "대기를 중지했습니다. 압축은 백그라운드에서 완료될 수 있습니다.",
   "error.resume_search_timed_out": "대화 검색 시간이 초과되었습니다. 다시 시도하세요.",
   "chat.no_matching_conversation": "일치하는 대화를 찾을 수 없습니다."
 }

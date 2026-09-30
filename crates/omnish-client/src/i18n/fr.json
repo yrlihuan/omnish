@@ -32,6 +32,7 @@
   "error.no_active_thread": "Aucun fil actif",
   "error.failed_rename_thread": "Échec du renommage du fil",
   "error.compact_failed": "Échec du compactage",
+  "error.compact_timed_out": "Délai de compactage dépassé",
   "error.failed_receive_response_main": "Échec de réception de la réponse",
   "error.daemon_not_connected": "Démon non connecté",
 
@@ -141,10 +142,13 @@
   "command.help.thread_rename": "Renommer le fil courant (vide pour effacer)",
   "command.help.resume": "Reprendre un fil de conversation précédent",
   "command.help.model": "Changer de modèle LLM",
-  "command.help.compact": "Compacter les gros résultats d'outils du fil actuel",
+  "command.help.compact": "Résumer la conversation dans un nouveau contexte",
+  "command.help.compact_mini": "Compacter les gros résultats d'outils du fil actuel",
   "chat.resume_search_prompt": "Décrivez la conversation à trouver :",
   "chat.resume_searching": "Recherche des conversations... (Ctrl-C pour annuler)",
   "chat.search_cancelled": "Recherche annulée.",
+  "chat.compacting": "Compactage du contexte... (Ctrl-C pour arrêter d'attendre)",
+  "chat.compact_cancelled": "Attente interrompue. Le compactage peut encore se terminer en arrière-plan.",
   "error.resume_search_timed_out": "La recherche de conversation a expiré. Veuillez réessayer.",
   "chat.no_matching_conversation": "Aucune conversation correspondante trouvée."
 }

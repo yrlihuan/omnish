@@ -1618,9 +1618,10 @@ impl ChatSession {
                 continue;
             }
 
-            // /compact - truncate bulky tool results in current thread
-            if trimmed == "/compact" {
-                self.handle_compact(session_id, rpc).await;
+            // /compact - summarize the thread into a fresh context (issue #687)
+            // /compact mini - truncate bulky tool results in current thread
+            if trimmed == "/compact" || trimmed == "/compact mini" {
+                self.handle_compact(trimmed == "/compact", session_id, rpc).await;
                 continue;
             }
 
@@ -2543,7 +2544,8 @@ impl ChatSession {
         }
     }
 
-    async fn handle_compact(&mut self, session_id: &str, rpc: &RpcClient) {
+    /// `full` = `/compact` (LLM summary, issue #687); otherwise `/compact mini`.
+    async fn handle_compact(&mut self, full: bool, session_id: &str, rpc: &RpcClient) {
         let tid = match self.current_thread_id.as_deref() {
             Some(t) if !t.is_empty() => t.to_string(),
             _ => {
@@ -2555,13 +2557,51 @@ impl ChatSession {
         };
 
         let rid = Uuid::new_v4().to_string()[..8].to_string();
+        let query = if full {
+            format!("__cmd:compact full:{}", tid)
+        } else {
+            format!("__cmd:compact:{}", tid)
+        };
         let request = Message::Request(Request {
             request_id: rid.clone(),
             session_id: session_id.to_string(),
-            query: format!("__cmd:compact:{}", tid),
+            query,
             scope: RequestScope::AllSessions,
         });
-        match rpc.call(request).await {
+        let call_result = if full {
+            // Full compaction runs an LLM call; race it against Ctrl-C and a
+            // timeout so the UI never freezes (same as `/resume ?`).
+            write_stdout(&format!("{}\r\n", crate::i18n::t("chat.compacting")));
+            let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+            let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+            tokio::task::spawn_blocking(move || {
+                if matches!(wait_for_ctrl_c(stop_rx, false), StdinSignal::CtrlC) {
+                    let _ = cancel_tx.send(true);
+                }
+            });
+            let raced = tokio::time::timeout(std::time::Duration::from_secs(180), async {
+                tokio::select! {
+                    r = rpc.call(request) => Some(r),
+                    _ = watch_true(&mut cancel_rx) => None,
+                }
+            })
+            .await;
+            let _ = stop_tx.send(()); // stop the Ctrl-C watcher
+            match raced {
+                Err(_) => {
+                    write_stdout(&display::render_error(crate::i18n::t("error.compact_timed_out")));
+                    return;
+                }
+                Ok(None) => {
+                    write_stdout(&display::render_response(crate::i18n::t("chat.compact_cancelled")));
+                    return;
+                }
+                Ok(Some(r)) => r,
+            }
+        } else {
+            rpc.call(request).await
+        };
+        match call_result {
             Ok(Message::Response(resp)) if resp.request_id == rid => {
                 let display_text = if let Some(json) = super::parse_cmd_response(&resp.content) {
                     super::cmd_display_str(&json)

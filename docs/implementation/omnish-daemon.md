@@ -867,14 +867,33 @@ tombstone 线程刻意不在内存中，因此该函数**按需从磁盘读取**
 
 目前未接入自动清理任务（thread 数据总量有限，暂不做 purge 保留期）。
 
-##### `ConversationManager::compact_thread()` (#641)
+##### `ConversationManager::compact_thread()` (#641, `/compact mini`)
 压缩线程历史中体积庞大的 `tool_result` 块，缩减 LLM 上下文。
 
 **行为:**
+- 只处理活动窗口（最后一条完整压缩摘要之后的消息，见下文 #687），边界之前的旧 log 原样保留
 - 销毁式重写前先快照当前 JSONL 到 `precompact/{tid}.{unix_ts}.jsonl`；快照失败则中止重写
 - 调用 `compact_messages()`（`compaction` 模块的纯函数）就地处理：仅压缩超过 `MIN_LINES`（30 行）的 `tool_result` 文本，截断为 head + 标记 + tail；标记同时作为幂等标志（含标记的文本不再二次压缩）；最近 `PROTECTED_ROUNDS` 轮（从尾部数的真实用户输入）的工具结果永不压缩
 - 返回 `CompactStats`（压缩块数、前/后字符数），`blocks == 0` 表示无改动；返回 `Ok(None)` 表示无可压缩内容
 - 软删除保留 precompact 快照（恢复后历史才完整）；`purge_thread()` 才会清理它们
+
+##### 完整上下文压缩 (#687, `/compact`)
+用 LLM 把活动窗口总结成一条摘要消息，之后的上下文从这条消息开始构建。**只追加、不删除**，旧 log 完整保留在同一个 JSONL 里，因此不需要 precompact 快照。
+
+**存储格式:** 追加一条 user 消息 `{"role":"user","content":[{"type":"text","text":"<header>\n\n<summary>"}],"_compact":true}`。`_compact` 沿用下划线内部字段约定，在 LLM backend 边界被 `strip_internal_fields` 剥离。content[0] 是摘要本身；由于它是 user 角色的尾部消息，下一条用户查询会经 `merge_user_query_into_tail` 以文本块形式合并进来（不能追加合成的 assistant 确认消息：无 thinking 块的 assistant 会被 DeepSeek 拒绝，见 05f38ae）。
+
+**边界规则（`compact` 模块纯函数）:**
+- `compact_boundary(msgs)`：最后一条 `_compact` 消息的下标，没有则为 0
+- `load_raw_messages()` 返回 `msgs[boundary..]`（活动窗口）；`replace_messages()` 只替换活动窗口，保留边界之前的前缀，所以聊天路径 load -> 修改 -> replace 的往返不会丢失旧 log
+- `is_user_input()`：`_compact` 消息只有在合并了用户查询后才算一轮；`extract_text()` / `extract_text_in_window()` 跳过摘要块，因此轮数统计、`/resume` 列表、thread 标题、daily/hourly 摘要都看不到摘要文本
+- `reconstruct_history()` 把摘要块渲染成 `/compact` 输入 + 摘要文本；`/context chat` 以 `[Compact summary]` 显示摘要
+
+**流程（`server.rs::full_compact_thread`）:**
+1. `snapshot_for_compact()` 在同一把锁下取活动窗口和消息总数；`has_content_to_compact()` 为假（空窗口或只有上一条摘要）时返回 "nothing to compact"
+2. `build_transcript()` 把窗口渲染成纯文本 transcript（用户/助手文本、工具调用与结果按上限截断、丢弃 thinking），超出预算（backend `max_content_chars`，默认 300k 字符）时从最旧处丢弃，但始终保留开头的上一条摘要，保证多次压缩时内容不丢。用纯文本而不是原始消息，是为了避开角色交替、tool 定义、thinking 回传等协议约束
+3. 用线程的聊天模型（`meta.model` 覆盖或默认 Chat 后端）调用 `COMPACT_PROMPT`（omnish-llm template，可用 `/template compact` 查看），关闭 thinking，附加语言指令
+4. `append_compact_summary(tid, expected_len, msg)`：若期间线程消息数变化则拒绝（摘要会把新消息藏出上下文），否则追加
+5. 与 mini 相同的保护：有挂起的 client tool 循环时拒绝，执行前 `bump_generation`
 
 ##### `ConversationManager::append_messages()`
 追加原始 JSON 消息到线程。双写到内存缓存和磁盘 JSONL 文件。
@@ -893,7 +912,7 @@ tombstone 线程刻意不在内存中，因此该函数**按需从磁盘读取**
 **窗口过滤（#680）:** 线程级用文件 mtime 预筛，消息级只保留 `_ts >= since` 的条目，因此长期线程只贡献本时间窗内的轮次，而不会把数天前的完整历史带进当天的 hourly/daily 摘要；无 `_ts` 的旧消息视为窗口外。
 
 ##### `ConversationManager::load_raw_messages()`
-加载线程所有原始 JSON 消息（用于 LLM 上下文）。
+加载线程活动窗口的原始 JSON 消息（用于 LLM 上下文）：从最后一条完整压缩摘要（#687）开始，未压缩过则为全部消息。
 
 **参数:**
 - `thread_id`: `&str` - 线程 ID
@@ -2090,7 +2109,8 @@ async fn main() -> anyhow::Result<()> {
 - `__cmd:tasks [disable <name>]` - 查看或管理定时任务
 - `__cmd:debug commands [N]` - 显示最近 N 条（默认 30）shell 命令历史（完整格式，含参数）
 - `__cmd:debug command <seq>` - 显示指定序号命令的完整详情和输出（通过 `CommandQueryTool::get_command_detail(seq)` 获取）
-- `__cmd:compact` (#641) - 压缩当前线程对话历史中体积庞大的 `tool_result` 块（`ConversationManager::compact_thread`），返回压缩前后**整体**消息字符数及缩减百分比（`format_count` 统一格式化），而非仅被改动的块；无活跃线程或无可压缩内容时给出相应提示
+- `__cmd:compact full:<tid>` (#687) - 完整上下文压缩（`full_compact_thread`），返回活动窗口压缩前后字符数及缩减百分比
+- `__cmd:compact:<tid>` (#641) - mini 压缩：压缩当前线程对话历史中体积庞大的 `tool_result` 块（`ConversationManager::compact_thread`），返回压缩前后**整体**消息字符数及缩减百分比（`format_count` 统一格式化），而非仅被改动的块；无活跃线程或无可压缩内容时给出相应提示。该载荷格式早于 #687，保持 mini 语义，旧客户端行为不变
 
 这些命令由客户端的`/`命令转发，通过`handle_builtin_command()`函数处理。
 

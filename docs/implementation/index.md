@@ -154,7 +154,7 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **粘贴支持**：括号粘贴模式、快速粘贴检测、多行折叠显示
 - **客户端插件系统**：ClientPluginManager 通过子进程执行工具，统一多后端沙箱（bwrap/landlock/seatbelt）、运行时可用性检测、`/test lock on/off` 命令、JSON 协议；execute_tool 返回 `(content, is_error, needs_summarization)` 三元组
 - **自更新系统**：`/update` 透明自重启（execvp 恢复 PTY/session）、mtime 自动检测、协议级 UpdateCheck 轮询+后台下载+缓存机制
-- **多轮聊天模式**：ChatSession 驱动的多轮对话循环，线程懒创建、双前缀快速恢复、线程绑定与多会话保护、空闲自动关闭、ChatLayout 统一渲染、Ctrl-C 中断、聊天历史持久化、`/thread` 命令族（stats/sandbox/list/rename）、`/model [name]` 直接切换、`/compact` 压缩上下文、随消息发送 CWD 的 CLAUDE.md 项目指令
+- **多轮聊天模式**：ChatSession 驱动的多轮对话循环，线程懒创建、双前缀快速恢复、线程绑定与多会话保护、空闲自动关闭、ChatLayout 统一渲染、Ctrl-C 中断、聊天历史持久化、`/thread` 命令族（stats/sandbox/list/rename）、`/model [name]` 直接切换、`/compact` 完整压缩上下文（LLM 摘要，旧 log 保留）与 `/compact mini` 截断大 tool result、随消息发送 CWD 的 CLAUDE.md 项目指令
 - **插件包同步**：与守护进程同步本地 `plugins/` 目录，保留用户本地编辑的文件
 - **Probe 系统**：可插拔数据收集器，静态 Probe 和动态 Probe，平台信息来自客户端上报
 - **主事件循环**：poll I/O 多路复用，stdin/PTY master 监控，DSR 过滤，前缀匹配计时，OSC 133 命令跟踪
@@ -176,7 +176,7 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **AgentLoopState**：智能体循环状态，含 saved_up_to 增量持久化索引、用量追踪、cancel_flag 守护进程侧取消、per-thread generation token
 - **SessionManager**：会话生命周期管理（注册、结束、驱逐），I/O 数据流写入（stream.bin writer lazy open / 空闲关闭以释放 fd），命令记录存储，补全上下文构建（弹性窗口+KV cache 预热），补全采样，后台 JSONL 写入线程
 - **ClientsHistory**：持久化客户端连接历史，供 deploy 菜单使用
-- **ConversationManager**：多轮聊天线程管理（创建、存储、加载、删除、compact_thread 压缩历史），JSONL 文件+内存双写，per-thread project_instructions 缓存，线程元数据（含用量统计、system_reminder 变更检测、sandbox_disabled per-thread 沙箱覆盖、title_override 用户重命名）
+- **ConversationManager**：多轮聊天线程管理（创建、存储、加载、删除、compact_thread mini 压缩、完整压缩摘要追加与 `_compact` 边界加载），JSONL 文件+内存双写，per-thread project_instructions 缓存，线程元数据（含用量统计、system_reminder 变更检测、sandbox_disabled per-thread 沙箱覆盖、title_override 用户重命名）
 - **PluginManager**：元数据驱动的插件系统，从 tool.json 加载工具定义，DaemonTool/ClientTool 双类型分发，tool.override.json 描述覆盖与热重载（inotify/轮询），内嵌资源自动安装；插件目录变更时自动激活/卸载工具
 - **PluginBundler 与 PluginBundleTask**：守护进程侧插件包打包，作为定时任务定期重建，供客户端镜像同步
 - **ToolRegistry**：统一工具元数据注册表，启动时填充后以 Arc 共享只读，支持运行时描述覆盖和热重载原子更新

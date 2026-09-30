@@ -2878,6 +2878,83 @@ async fn resolve_chat_context(req: &Request, mgr: &SessionManager, max_context_c
 
 
 /// Helper to create a command response with only a display string.
+/// Transcript cap for a full compaction when the backend sets no
+/// `max_content_chars`. The live window already fits the chat model (it is
+/// sent in full every turn) and the transcript clips tool I/O, so this only
+/// guards pathological threads.
+const COMPACT_TRANSCRIPT_MAX_CHARS: usize = 300_000;
+
+/// Percentage by which `after` shrank relative to `before`.
+fn shrink_pct(before: usize, after: usize) -> f64 {
+    if before > 0 {
+        (1.0 - after as f64 / before as f64) * 100.0
+    } else {
+        0.0
+    }
+}
+
+/// Full context compaction (issue #687): summarize the live window with the
+/// thread's chat model and append the summary as a `_compact` user message.
+/// Nothing is deleted; `load_raw_messages` starts from the new message.
+/// Returns the live context size before/after in chars, or None when there
+/// is nothing to compact.
+async fn full_compact_thread(
+    tid: &str,
+    ctx: &HandlerCtx,
+    llm: &Arc<MultiBackend>,
+) -> Result<Option<(usize, usize)>, String> {
+    use omnish_daemon::compact;
+    let conv_mgr = &ctx.conv_mgr;
+    let (window, total) = conv_mgr
+        .snapshot_for_compact(tid)
+        .ok_or_else(|| "thread not found".to_string())?;
+    if !compact::has_content_to_compact(&window) {
+        return Ok(None);
+    }
+
+    let meta = conv_mgr.load_meta(tid);
+    let backend: Arc<dyn LlmBackend> = meta.model.as_ref()
+        .and_then(|name| llm.get_backend_by_name(name))
+        .unwrap_or_else(|| llm.get_backend(UseCase::Chat));
+    let budget = backend.max_content_chars().unwrap_or(COMPACT_TRANSCRIPT_MAX_CHARS);
+    let transcript = compact::build_transcript(&window, budget);
+    let language = ctx.opts.daemon_config.read().unwrap().client.language.clone();
+    let req = LlmRequest {
+        context: format!("<conversation>\n{}\n</conversation>", transcript),
+        query: Some(omnish_llm::template::append_language_instruction(
+            omnish_llm::template::COMPACT_PROMPT,
+            &language,
+        )),
+        trigger: TriggerType::Manual,
+        session_ids: vec![],
+        use_case: UseCase::Chat,
+        max_content_chars: backend.max_content_chars(),
+        system_prompt: None,
+        enable_thinking: Some(false),
+        tools: vec![],
+        extra_messages: vec![],
+    };
+    tracing::info!(
+        "Full compaction of thread {}: {} messages, transcript {} chars",
+        tid, window.len(), transcript.chars().count()
+    );
+    let resp = omnish_daemon::llm_pool::complete(backend.as_ref(), &req)
+        .await
+        .map_err(|e| format!("LLM request failed: {}", e))?;
+    let summary = omnish_daemon::strip_thinking_block(&resp.text()).trim().to_string();
+    if summary.is_empty() {
+        return Err("LLM returned an empty summary".to_string());
+    }
+
+    let text = format!("{}\n\n{}", omnish_llm::template::COMPACT_SUMMARY_HEADER, summary);
+    let msg = compact::make_compact_message(&text, ConversationManager::now_ms());
+    let before = compact::messages_chars(&window);
+    let after = compact::messages_chars(std::slice::from_ref(&msg));
+    conv_mgr.append_compact_summary(tid, total, msg)?;
+    tracing::info!("Compacted thread {}: context {} -> {} chars", tid, before, after);
+    Ok(Some((before, after)))
+}
+
 fn cmd_display(s: impl Into<String>) -> serde_json::Value {
     serde_json::json!({ "display": s.into() })
 }
@@ -2920,7 +2997,20 @@ async fn reconstruct_history(
                 } else if let Some(arr) = msg["content"].as_array() {
                     // Mixed array: may contain tool_result blocks (interrupt
                     // snapshot) plus text blocks for the merged user query.
-                    for block in arr {
+                    for (idx, block) in arr.iter().enumerate() {
+                        // Full-compaction summary (issue #687): show it as the
+                        // /compact command and its result.
+                        if omnish_daemon::compact::is_compact_summary_block(msg, idx) {
+                            entries.push(serde_json::json!({
+                                "type": "user_input",
+                                "text": "/compact",
+                            }));
+                            entries.push(serde_json::json!({
+                                "type": "llm_text",
+                                "text": block["text"].as_str().unwrap_or(""),
+                            }));
+                            continue;
+                        }
                         match block["type"].as_str() {
                             Some("tool_result") => {
                                 let tool_use_id = block["tool_use_id"].as_str().unwrap_or("").to_string();
@@ -3080,6 +3170,12 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
             output.push_str("(empty conversation)\n\n");
         } else {
             for msg in &msgs {
+                // extract_text hides the summary block; show it here.
+                if omnish_daemon::compact::is_compact_message(msg) {
+                    if let Some(summary) = msg["content"][0]["text"].as_str() {
+                        output.push_str(&format!("[Compact summary] {}\n\n", summary));
+                    }
+                }
                 let role = msg["role"].as_str().unwrap_or("unknown");
                 let label = if role == "user" { "User" } else { "Assistant" };
                 let text = ConversationManager::extract_text_public(msg);
@@ -3229,9 +3325,15 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
             omnish_llm::template::TEMPLATE_NAMES.join("|")
         ));
     }
-    // Handle /compact - truncate bulky tool_result blocks in a thread (issue #641).
-    // Payload form: `compact:<tid>`.
-    if let Some(tid) = sub.strip_prefix("compact:") {
+    // Handle /compact (full, issue #687) and /compact mini (truncate bulky
+    // tool_result blocks, issue #641). Payload forms: `compact full:<tid>` and
+    // `compact:<tid>`; the latter predates #687 and stays the mini form so
+    // older clients keep their behavior.
+    let compact_req = sub
+        .strip_prefix("compact full:")
+        .map(|tid| (tid, true))
+        .or_else(|| sub.strip_prefix("compact:").map(|tid| (tid, false)));
+    if let Some((tid, full)) = compact_req {
         if tid.is_empty() {
             return cmd_display("Error: missing thread_id");
         }
@@ -3249,21 +3351,26 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
         // Invalidate any in-flight agent loop (e.g. awaiting an LLM response)
         // so it discards its work instead of appending to the rewritten file.
         bump_generation(&ctx.thread_generations, tid).await;
+        if full {
+            return match full_compact_thread(tid, ctx, llm_backend).await {
+                Ok(Some((before, after))) => cmd_display(format!(
+                    "context compacted into a summary\ncontext: {} -> {} chars (-{:.0}%)",
+                    format_count(before as u64),
+                    format_count(after as u64),
+                    shrink_pct(before, after)
+                )),
+                Ok(None) => cmd_display("nothing to compact"),
+                Err(e) => cmd_display(format!("Error: {}", e)),
+            };
+        }
         return match conv_mgr.compact_thread(tid) {
-            Ok(Some(stats)) => {
-                let pct = if stats.total_before > 0 {
-                    (1.0 - stats.total_after as f64 / stats.total_before as f64) * 100.0
-                } else {
-                    0.0
-                };
-                cmd_display(format!(
-                    "compacted {} tool result(s)\ncontext: {} -> {} chars (-{:.0}%)",
-                    stats.blocks,
-                    format_count(stats.total_before as u64),
-                    format_count(stats.total_after as u64),
-                    pct
-                ))
-            }
+            Ok(Some(stats)) => cmd_display(format!(
+                "compacted {} tool result(s)\ncontext: {} -> {} chars (-{:.0}%)",
+                stats.blocks,
+                format_count(stats.total_before as u64),
+                format_count(stats.total_after as u64),
+                shrink_pct(stats.total_before, stats.total_after)
+            )),
             Ok(None) => cmd_display("nothing to compact"),
             Err(e) => cmd_display(format!("Error: {}", e)),
         };
@@ -5667,5 +5774,25 @@ mod tests {
             interrupt_start(&started, ["missing"].into_iter(), None, loop_start),
             loop_start
         );
+    }
+
+    #[tokio::test]
+    async fn test_reconstruct_history_renders_compact_summary() {
+        let registry = omnish_daemon::tool_registry::ToolRegistry::new();
+        let formatter = omnish_daemon::formatter_mgr::FormatterManager::new();
+        let mut summary = omnish_daemon::compact::make_compact_message("THE SUMMARY", 1);
+        summary["content"].as_array_mut().unwrap().push(serde_json::json!({"type": "text", "text": "next q"}));
+        let msgs = vec![
+            summary,
+            serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "answer"}]}),
+        ];
+        let h = reconstruct_history(&msgs, &registry, &formatter).await;
+        let pairs: Vec<(&str, &str)> = h
+            .iter()
+            .map(|e| (e["type"].as_str().unwrap(), e["text"].as_str().unwrap_or("")))
+            .collect();
+        assert_eq!(pairs[0], ("user_input", "/compact"));
+        assert_eq!(pairs[1], ("llm_text", "THE SUMMARY"));
+        assert_eq!(pairs[2], ("user_input", "next q"));
     }
 }

@@ -32,6 +32,7 @@
   "error.no_active_thread": "لا يوجد خيط نشط",
   "error.failed_rename_thread": "فشل في إعادة تسمية الخيط",
   "error.compact_failed": "فشل الضغط",
+  "error.compact_timed_out": "انتهت مهلة الضغط",
   "error.failed_receive_response_main": "فشل في استقبال الاستجابة",
   "error.daemon_not_connected": "الخادم غير متصل",
 
@@ -141,10 +142,13 @@
   "command.help.thread_rename": "إعادة تسمية الخيط الحالي (فارغ للمسح)",
   "command.help.resume": "استئناف خيط محادثة سابق",
   "command.help.model": "تبديل نموذج LLM",
-  "command.help.compact": "ضغط نتائج الأدوات الكبيرة في المحادثة الحالية",
+  "command.help.compact": "تلخيص المحادثة والمتابعة بسياق جديد",
+  "command.help.compact_mini": "ضغط نتائج الأدوات الكبيرة في المحادثة الحالية",
   "chat.resume_search_prompt": "صف المحادثة التي تبحث عنها:",
   "chat.resume_searching": "جارٍ البحث في المحادثات... (Ctrl-C للإلغاء)",
   "chat.search_cancelled": "تم إلغاء البحث.",
+  "chat.compacting": "جارٍ ضغط السياق... (Ctrl-C لإيقاف الانتظار)",
+  "chat.compact_cancelled": "تم إيقاف الانتظار. قد يكتمل الضغط في الخلفية.",
   "error.resume_search_timed_out": "انتهت مهلة البحث في المحادثة. يرجى المحاولة مرة أخرى.",
   "chat.no_matching_conversation": "لم يتم العثور على محادثة مطابقة."
 }

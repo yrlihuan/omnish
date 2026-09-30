@@ -32,6 +32,7 @@
   "error.no_active_thread": "No active thread",
   "error.failed_rename_thread": "Failed to rename thread",
   "error.compact_failed": "Compact failed",
+  "error.compact_timed_out": "Compact timed out",
   "error.failed_receive_response_main": "Failed to receive response",
   "error.daemon_not_connected": "Daemon not connected",
 
@@ -141,10 +142,13 @@
   "command.help.thread_rename": "Rename current thread (empty to clear override)",
   "command.help.resume": "Resume a previous conversation thread",
   "command.help.model": "Switch LLM model",
-  "command.help.compact": "Compact bulky tool results in current thread",
+  "command.help.compact": "Summarize the conversation into a fresh context",
+  "command.help.compact_mini": "Compact bulky tool results in current thread",
   "chat.resume_search_prompt": "Describe the conversation to find:",
   "chat.resume_searching": "Searching conversations... (Ctrl-C to cancel)",
   "chat.search_cancelled": "Search cancelled.",
+  "chat.compacting": "Compacting context... (Ctrl-C to stop waiting)",
+  "chat.compact_cancelled": "Stopped waiting. Compaction may still finish in the background.",
   "error.resume_search_timed_out": "Conversation search timed out. Please try again.",
   "chat.no_matching_conversation": "No matching conversation found."
 }

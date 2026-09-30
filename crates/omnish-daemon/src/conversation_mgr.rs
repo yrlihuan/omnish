@@ -827,17 +827,23 @@ impl ConversationManager {
         }
     }
 
-    /// Load all messages as raw JSON for LLM context.
+    /// Load the live window of a thread as raw JSON for LLM context: every
+    /// message from the last full-compaction summary onward (issue #687), or
+    /// the whole thread when it was never fully compacted. Older messages stay
+    /// on disk and in memory but are no longer part of the context.
     pub fn load_raw_messages(&self, thread_id: &str) -> Vec<serde_json::Value> {
         let threads = self.threads.lock().unwrap();
         let msgs = match threads.get(thread_id) {
             Some(m) => m,
             None => return Vec::new(),
         };
-        msgs.clone()
+        msgs[crate::compact::compact_boundary(msgs)..].to_vec()
     }
 
-    /// Replace the in-memory cache and rewrite the JSONL file for a thread.
+    /// Replace the live window of a thread (see `load_raw_messages`) and
+    /// rewrite its JSONL file. Messages before the last compaction summary are
+    /// kept as-is, so callers can round-trip `load_raw_messages` output without
+    /// dropping compacted history.
     ///
     /// Unlike `append_messages`, this does NOT stamp missing timestamps: the
     /// list usually comes from already-stored history plus a caller-stamped new
@@ -845,11 +851,53 @@ impl ConversationManager {
     /// them into windowed summaries (issue #680).
     pub fn replace_messages(&self, thread_id: &str, msgs: &[serde_json::Value]) {
         let mut threads = self.threads.lock().unwrap();
-        threads.insert(thread_id.to_string(), msgs.to_vec());
-        Self::rewrite_thread_file(&self.threads_dir, thread_id, msgs);
+        let mut all = match threads.get(thread_id) {
+            Some(old) => old[..crate::compact::compact_boundary(old)].to_vec(),
+            None => Vec::new(),
+        };
+        all.extend_from_slice(msgs);
+        Self::rewrite_thread_file(&self.threads_dir, thread_id, &all);
+        threads.insert(thread_id.to_string(), all);
     }
 
-    /// Compact bulky tool_result blocks in a thread (issue #641).
+    /// Live window plus the total message count, taken under one lock. The
+    /// count is the guard token for `append_compact_summary`.
+    pub fn snapshot_for_compact(&self, thread_id: &str) -> Option<(Vec<serde_json::Value>, usize)> {
+        let threads = self.threads.lock().unwrap();
+        let msgs = threads.get(thread_id)?;
+        Some((msgs[crate::compact::compact_boundary(msgs)..].to_vec(), msgs.len()))
+    }
+
+    /// Append a full-compaction summary message (issue #687), unless the thread
+    /// grew since `snapshot_for_compact` returned `expected_len`: the summary
+    /// would then silently hide the newer messages from the context.
+    pub fn append_compact_summary(
+        &self,
+        thread_id: &str,
+        expected_len: usize,
+        msg: serde_json::Value,
+    ) -> Result<(), String> {
+        let mut threads = self.threads.lock().unwrap();
+        let msgs = threads
+            .get_mut(thread_id)
+            .ok_or_else(|| "thread not found".to_string())?;
+        if msgs.len() != expected_len {
+            return Err("thread changed during compaction, try again".to_string());
+        }
+        use std::io::Write;
+        let path = self.threads_dir.join(format!("{}.jsonl", thread_id));
+        let mut file = std::fs::OpenOptions::new()
+            .create(true).append(true).open(&path)
+            .map_err(|e| format!("open thread file failed: {}", e))?;
+        writeln!(file, "{}", serde_json::to_string(&msg).unwrap())
+            .map_err(|e| format!("write thread file failed: {}", e))?;
+        msgs.push(msg);
+        Ok(())
+    }
+
+    /// Compact bulky tool_result blocks in a thread (issue #641, `/compact mini`).
+    /// Only the live window is touched; history before the last full
+    /// compaction summary is left verbatim.
     ///
     /// Snapshots the current JSONL to `precompact/{tid}.{unix_ts}.jsonl`
     /// before the destructive rewrite; a failed snapshot aborts the rewrite.
@@ -864,7 +912,8 @@ impl ConversationManager {
             .ok_or_else(|| "thread not found".to_string())?;
 
         let mut candidate = msgs.clone();
-        let stats = crate::compact::compact_messages(&mut candidate);
+        let boundary = crate::compact::compact_boundary(&candidate);
+        let stats = crate::compact::compact_messages(&mut candidate[boundary..]);
         if stats.blocks == 0 {
             return Ok(None);
         }
@@ -928,7 +977,11 @@ impl ConversationManager {
     }
 
     /// Check if a message is a user input message (content is a string, not tool_result array).
+    /// A full-compaction summary counts only once a user query was merged into it.
     fn is_user_input(msg: &serde_json::Value) -> bool {
+        if crate::compact::is_compact_message(msg) {
+            return crate::compact::compact_has_query(msg);
+        }
         msg["role"].as_str() == Some("user") && msg["content"].is_string()
     }
 
@@ -944,8 +997,11 @@ impl ConversationManager {
             }
             serde_json::Value::Array(arr) => arr
                 .iter()
-                .filter_map(|b| {
-                    if b["type"].as_str() != Some("text") {
+                .enumerate()
+                .filter_map(|(idx, b)| {
+                    if b["type"].as_str() != Some("text")
+                        || crate::compact::is_compact_summary_block(msg, idx)
+                    {
                         return None;
                     }
                     let ts = b.get("_ts").and_then(|v| v.as_u64()).unwrap_or(msg_ts);
@@ -961,13 +1017,18 @@ impl ConversationManager {
     }
 
     /// Extract display text from a message, stripping <system-reminder> blocks.
+    /// The summary block of a full-compaction message is skipped, leaving only
+    /// any user query merged into it.
     fn extract_text(msg: &serde_json::Value) -> String {
         match &msg["content"] {
             serde_json::Value::String(s) => s.clone(),
             serde_json::Value::Array(arr) => {
                 arr.iter()
-                    .filter_map(|b| {
-                        if b["type"].as_str() == Some("text") {
+                    .enumerate()
+                    .filter_map(|(idx, b)| {
+                        if b["type"].as_str() == Some("text")
+                            && !crate::compact::is_compact_summary_block(msg, idx)
+                        {
                             b["text"].as_str().map(|s| s.to_string())
                         } else {
                             None
@@ -2201,5 +2262,127 @@ mod tests {
         let mgr2 = ConversationManager::new(dir.path().to_path_buf());
         let ids = mgr2.list_thread_ids();
         assert_eq!(ids, vec![id]);
+    }
+
+    // --- full compaction (issue #687) ---
+
+    fn disk_messages(dir: &std::path::Path, id: &str) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(dir.join(format!("{}.jsonl", id)))
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    /// Append a full-compaction summary the way the daemon command does.
+    fn full_compact(mgr: &ConversationManager, id: &str, summary: &str) {
+        let (_, total) = mgr.snapshot_for_compact(id).unwrap();
+        let msg = crate::compact::make_compact_message(summary, ConversationManager::now_ms());
+        mgr.append_compact_summary(id, total, msg).unwrap();
+    }
+
+    #[test]
+    fn test_full_compact_keeps_log_and_windows_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+        mgr.append_messages(&id, &[user_msg("q1"), assistant_msg("a1"), user_msg("q2"), assistant_msg("a2")]);
+
+        let (window, total) = mgr.snapshot_for_compact(&id).unwrap();
+        assert_eq!((window.len(), total), (4, 4));
+        full_compact(&mgr, &id, "SUMMARY TEXT");
+
+        // Context starts at the summary; the old log is still on disk.
+        let live = mgr.load_raw_messages(&id);
+        assert_eq!(live.len(), 1);
+        assert!(crate::compact::is_compact_message(&live[0]));
+        let disk = disk_messages(dir.path(), &id);
+        assert_eq!(disk.len(), 5);
+        assert_eq!(disk[0]["content"], "q1");
+
+        // Survives a daemon restart.
+        let mgr2 = ConversationManager::new(dir.path().to_path_buf());
+        assert_eq!(mgr2.load_raw_messages(&id), live);
+    }
+
+    #[test]
+    fn test_full_compact_rejects_when_thread_grew() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+        mgr.append_messages(&id, &[user_msg("q1"), assistant_msg("a1")]);
+        let (_, total) = mgr.snapshot_for_compact(&id).unwrap();
+        mgr.append_messages(&id, &[user_msg("q2")]);
+
+        let msg = crate::compact::make_compact_message("S", 1);
+        assert!(mgr.append_compact_summary(&id, total, msg).is_err());
+        assert_eq!(mgr.load_raw_messages(&id).len(), 3);
+        assert_eq!(disk_messages(dir.path(), &id).len(), 3);
+    }
+
+    #[test]
+    fn test_replace_messages_keeps_pre_compact_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+        mgr.append_messages(&id, &[user_msg("q1"), assistant_msg("a1")]);
+        full_compact(&mgr, &id, "S");
+
+        // Chat path: merge the next query into the summary tail, rewrite.
+        let mut window = mgr.load_raw_messages(&id);
+        merge_user_query_into_tail(window.last_mut().unwrap(), "q2", 5);
+        mgr.replace_messages(&id, &window);
+        mgr.append_messages(&id, &[assistant_msg("a2")]);
+
+        let disk = disk_messages(dir.path(), &id);
+        assert_eq!(disk.len(), 4, "q1, a1, summary+q2, a2");
+        assert_eq!(disk[0]["content"], "q1");
+        assert!(crate::compact::is_compact_message(&disk[2]));
+        assert_eq!(mgr.load_raw_messages(&id).len(), 2);
+    }
+
+    #[test]
+    fn test_rounds_and_text_hide_compact_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+        mgr.append_messages(&id, &[user_msg("q1"), assistant_msg("a1")]);
+        full_compact(&mgr, &id, "SUMMARY TEXT");
+        assert_eq!(mgr.count_rounds(&id), 1, "a bare summary is not a round");
+
+        let mut window = mgr.load_raw_messages(&id);
+        merge_user_query_into_tail(window.last_mut().unwrap(), "q2", ConversationManager::now_ms());
+        mgr.replace_messages(&id, &window);
+        mgr.append_messages(&id, &[assistant_msg("a2")]);
+
+        assert_eq!(mgr.count_rounds(&id), 2);
+        let exchanges = mgr.get_all_exchanges(&id);
+        assert_eq!(exchanges.last().unwrap(), &("q2".to_string(), "a2".to_string()));
+        let (_, _, count, last_q) = mgr.list_conversations().into_iter().next().unwrap();
+        assert_eq!((count, last_q.as_str()), (2, "q2"));
+        let md = mgr.collect_recent_conversations_md(std::time::UNIX_EPOCH);
+        assert!(md.contains("q2"));
+        assert!(!md.contains("SUMMARY TEXT"));
+    }
+
+    #[test]
+    fn test_mini_compact_leaves_pre_compact_history_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+        for r in 0..3 {
+            mgr.append_messages(&id, &big_tool_round(&format!("old_{}", r)));
+        }
+        let before_boundary = disk_messages(dir.path(), &id);
+        full_compact(&mgr, &id, "S");
+        for r in 0..3 {
+            mgr.append_messages(&id, &big_tool_round(&format!("new_{}", r)));
+        }
+
+        let stats = mgr.compact_thread(&id).unwrap().expect("should compact");
+        assert_eq!(stats.blocks, 1, "only the first live round is outside the protected window");
+        let disk = disk_messages(dir.path(), &id);
+        assert_eq!(&disk[..before_boundary.len()], &before_boundary[..]);
     }
 }
