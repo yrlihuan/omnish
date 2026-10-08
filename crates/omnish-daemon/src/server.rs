@@ -3152,16 +3152,19 @@ async fn reconstruct_history(
                     // snapshot) plus text blocks for the merged user query.
                     for (idx, block) in arr.iter().enumerate() {
                         // Full-compaction summary (issue #687): show it as the
-                        // /compact command and its result.
+                        // /compact command and its result. A `response` entry
+                        // (not `llm_text`) so the client renders the summary's
+                        // markdown like any final assistant reply.
                         if omnish_daemon::compact::is_compact_summary_block(msg, idx) {
                             entries.push(serde_json::json!({
                                 "type": "user_input",
                                 "text": "/compact",
                             }));
                             entries.push(serde_json::json!({
-                                "type": "llm_text",
+                                "type": "response",
                                 "text": block["text"].as_str().unwrap_or(""),
                             }));
+                            entries.push(serde_json::json!({"type": "separator"}));
                             continue;
                         }
                         match block["type"].as_str() {
@@ -5940,8 +5943,9 @@ mod tests {
             .map(|e| (e["type"].as_str().unwrap(), e["text"].as_str().unwrap_or("")))
             .collect();
         assert_eq!(pairs[0], ("user_input", "/compact"));
-        assert_eq!(pairs[1], ("llm_text", "THE SUMMARY"));
-        assert_eq!(pairs[2], ("user_input", "next q"));
+        assert_eq!(pairs[1], ("response", "THE SUMMARY"));
+        assert_eq!(pairs[2], ("separator", ""));
+        assert_eq!(pairs[3], ("user_input", "next q"));
     }
 
     fn compact_test_response(content: Vec<ContentBlock>) -> omnish_llm::backend::LlmResponse {

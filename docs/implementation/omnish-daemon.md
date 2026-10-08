@@ -886,7 +886,7 @@ tombstone 线程刻意不在内存中，因此该函数**按需从磁盘读取**
 - `compact_boundary(msgs)`：最后一条 `_compact` 消息的下标，没有则为 0
 - `load_raw_messages()` 返回 `msgs[boundary..]`（活动窗口）；`replace_messages()` 只替换活动窗口，保留边界之前的前缀，所以聊天路径 load -> 修改 -> replace 的往返不会丢失旧 log
 - `is_user_input()`：`_compact` 消息只有在合并了用户查询后才算一轮；`extract_text()` / `extract_text_in_window()` 跳过摘要块，因此轮数统计、`/resume` 列表、thread 标题、daily/hourly 摘要都看不到摘要文本
-- `reconstruct_history()` 把摘要块渲染成 `/compact` 输入 + 摘要文本；`/context chat` 以 `[Compact summary]` 显示摘要
+- `reconstruct_history()` 把摘要块渲染成 `/compact` 输入 + `response` 条目（客户端按 markdown 渲染，与普通最终回复一致）+ 分隔线；`/context chat` 以 `[Compact summary]` 显示摘要
 
 **流程（`server.rs::full_compact_thread`）:**
 1. `snapshot_for_compact()` 在同一把锁下取活动窗口和消息总数；`has_content_to_compact()` 为假（空窗口或只有上一条摘要）时返回 "nothing to compact"
