@@ -1846,6 +1846,12 @@ async fn handle_chat_message(
     // merge / cleanup paths).
     let saved_up_to = extra_messages.len();
 
+    // Non-destructive /compact mini: truncate old bulky tool results in the
+    // request copy only. Everything above is already persisted and the agent
+    // loop only appends messages past `saved_up_to`, so this view never
+    // reaches storage.
+    conv_mgr.apply_mini_compact_view(&cm.thread_id, &mut extra_messages);
+
     // Wrap raw JSON messages in TaggedMessage carriers (cache hints set in Task 6).
     let extra_messages: Vec<omnish_llm::backend::TaggedMessage> = extra_messages
         .into_iter()
@@ -3014,12 +3020,15 @@ async fn full_compact_thread(
 ) -> Result<Option<FullCompactOutcome>, String> {
     use omnish_daemon::compact;
     let conv_mgr = &ctx.conv_mgr;
-    let (window, total) = conv_mgr
+    let (mut window, total) = conv_mgr
         .snapshot_for_compact(tid)
         .ok_or_else(|| "thread not found".to_string())?;
     if !compact::has_content_to_compact(&window) {
         return Ok(None);
     }
+    // Same view the chat request sends (recorded /compact mini applied), so
+    // the replay matches the cached prefix.
+    conv_mgr.apply_mini_compact_view(tid, &mut window);
 
     let meta = conv_mgr.load_meta(tid);
     let backend: Arc<dyn LlmBackend> = meta.model.as_ref()

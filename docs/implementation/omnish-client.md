@@ -1166,7 +1166,7 @@ Config > LLM                          ← 面包屑（带层级指示）
 
 **上下文压缩命令:**
 - `/compact` (#687) - 完整上下文压缩：守护进程用 LLM 把对话总结成摘要，之后从摘要开始构建上下文，旧 log 保留；转发到 `__cmd:compact full:<tid>`。因为要等一次 LLM 调用，先显示 `chat.compacting` 提示，并与 Ctrl-C 和 180 秒超时竞争（与 `/resume ?` 相同），Ctrl-C 只是停止等待，压缩可能仍在后台完成
-- `/compact mini` (#641) - 请求守护进程压缩当前线程的对话历史（折叠 tool_result 等），转发到守护进程命令 `__cmd:compact:<tid>`；返回整体上下文缩减量；失败消息走 i18n 本地化
+- `/compact mini` (#641) - 请求守护进程截断发给 LLM 的历史中体积庞大的 tool_result（非破坏式，存储保留原文），转发到守护进程命令 `__cmd:compact:<tid>`；返回整体上下文缩减量；失败消息走 i18n 本地化
 
 **模型选择命令:**
 - `/model` - 显示所有已配置LLM backend的picker选择器（commit 2a2e8d0），选中后切换当前线程使用的模型

@@ -51,6 +51,12 @@ pub struct ThreadMeta {
     /// (issue #687).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_instructions: Option<String>,
+    /// Non-destructive `/compact mini` boundary: absolute message index (in
+    /// the whole thread) below which bulky tool_results are truncated when an
+    /// LLM request is built. Storage keeps the originals; see
+    /// `ConversationManager::apply_mini_compact_view`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mini_compact_upto: Option<usize>,
     /// Per-thread sandbox override. When Some(true), daemon forces
     /// ChatToolCall.sandboxed=false for this thread, bypassing permit_rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -901,49 +907,68 @@ impl ConversationManager {
         Ok(())
     }
 
-    /// Compact bulky tool_result blocks in a thread (issue #641, `/compact mini`).
-    /// Only the live window is touched; history before the last full
-    /// compaction summary is left verbatim.
+    /// `/compact mini` (issue #641), non-destructive: records the boundary
+    /// below which bulky tool_results are truncated in LLM requests
+    /// (`ThreadMeta::mini_compact_upto`), leaving the stored messages intact.
+    /// The boundary is the start of the protected window (last
+    /// `PROTECTED_ROUNDS` rounds) of the live window, and only ever moves
+    /// forward. Stats compare the request view before and after.
+    /// Returns Ok(None) when the new boundary would truncate nothing more.
     ///
-    /// Snapshots the current JSONL to `precompact/{tid}.{unix_ts}.jsonl`
-    /// before the destructive rewrite; a failed snapshot aborts the rewrite.
-    /// Returns Ok(None) when there is nothing to compact.
+    /// The boundary is an absolute index into an append-only list; the rare
+    /// history cleanups that drop a message (`sanitize_orphaned_tool_use`,
+    /// legacy `merge_interrupt_markers`) can shift it by a message or two,
+    /// which only changes which old tool result is truncated.
     pub fn compact_thread(
         &self,
         thread_id: &str,
     ) -> Result<Option<crate::compact::CompactStats>, String> {
-        let mut threads = self.threads.lock().unwrap();
-        let msgs = threads
-            .get_mut(thread_id)
-            .ok_or_else(|| "thread not found".to_string())?;
+        let (window, start) = {
+            let threads = self.threads.lock().unwrap();
+            let msgs = threads
+                .get(thread_id)
+                .ok_or_else(|| "thread not found".to_string())?;
+            let start = crate::compact::compact_boundary(msgs);
+            (msgs[start..].to_vec(), start)
+        };
+        let old_upto = self.load_meta(thread_id).mini_compact_upto;
+        let new_upto = old_upto
+            .unwrap_or(0)
+            .max(start + crate::compact::protect_boundary(&window));
 
-        let mut candidate = msgs.clone();
-        let boundary = crate::compact::compact_boundary(&candidate);
-        let stats = crate::compact::compact_messages(&mut candidate[boundary..]);
+        let mut before = window;
+        crate::compact::apply_mini_compact(&mut before, start, old_upto);
+        let mut after = before.clone();
+        // Blocks already truncated under `old_upto` carry the marker and are
+        // skipped, so this counts only the newly covered ones.
+        let mut stats = crate::compact::apply_mini_compact(&mut after, start, Some(new_upto));
         if stats.blocks == 0 {
             return Ok(None);
         }
+        stats.total_before = crate::compact::messages_chars(&before);
+        stats.total_after = crate::compact::messages_chars(&after);
 
-        let snap_dir = self.threads_dir.join("precompact");
-        std::fs::create_dir_all(&snap_dir)
-            .map_err(|e| format!("snapshot dir failed: {}", e))?;
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let src = self.threads_dir.join(format!("{}.jsonl", thread_id));
-        // Same-second collisions are harmless: a second compaction finds nothing new and skips.
-        let snap = snap_dir.join(format!("{}.{}.jsonl", thread_id, ts));
-        std::fs::copy(&src, &snap).map_err(|e| format!("snapshot failed: {}", e))?;
-
-        *msgs = candidate;
-        Self::rewrite_thread_file(&self.threads_dir, thread_id, msgs);
+        self.update_meta(thread_id, |m| m.mini_compact_upto = Some(new_upto));
         tracing::info!(
-            "Compacted thread {}: {} blocks, {} -> {} chars (snapshot: {})",
-            thread_id, stats.blocks, stats.chars_before, stats.chars_after,
-            snap.display()
+            "Mini-compacted thread {}: boundary {:?} -> {}, {} blocks, {} -> {} chars",
+            thread_id, old_upto, new_upto, stats.blocks, stats.chars_before, stats.chars_after
         );
         Ok(Some(stats))
+    }
+
+    /// Apply the thread's recorded mini compaction to `window`, a copy of its
+    /// live window (`load_raw_messages`), for building an LLM request. Never
+    /// persist the result: storage must keep the original tool output.
+    pub fn apply_mini_compact_view(&self, thread_id: &str, window: &mut [serde_json::Value]) {
+        let start = {
+            let threads = self.threads.lock().unwrap();
+            match threads.get(thread_id) {
+                Some(msgs) => crate::compact::compact_boundary(msgs),
+                None => return,
+            }
+        };
+        let upto = self.load_meta(thread_id).mini_compact_upto;
+        crate::compact::apply_mini_compact(window, start, upto);
     }
 
     /// Get all user-assistant exchanges in a thread, ordered chronologically.
@@ -2182,7 +2207,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compact_thread_writes_snapshot_and_rewrites() {
+    fn test_mini_compact_is_non_destructive() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConversationManager::new(dir.path().to_path_buf());
         let id = mgr.create_thread(ThreadMeta::default());
@@ -2191,28 +2216,50 @@ mod tests {
             mgr.append_messages(&id, &big_tool_round(&format!("tu_{}", r)));
         }
         let original = mgr.load_raw_messages(&id);
+        let original_disk = disk_messages(dir.path(), &id);
 
         let stats = mgr.compact_thread(&id).unwrap().expect("should compact");
         assert_eq!(stats.blocks, 1);
+        assert!(stats.total_after < stats.total_before);
+        assert_eq!(mgr.load_meta(&id).mini_compact_upto, Some(4));
 
-        // In-memory and on-disk both rewritten
-        let after = mgr.load_raw_messages(&id);
-        assert_ne!(original, after);
-        let compacted_text = after[2]["content"][0]["content"].as_str().unwrap();
-        assert!(compacted_text.contains(crate::compact::COMPACT_MARKER));
+        // Storage untouched, in memory and on disk; no snapshot needed.
+        assert_eq!(mgr.load_raw_messages(&id), original);
+        assert_eq!(disk_messages(dir.path(), &id), original_disk);
+        assert!(snapshot_files(dir.path(), &id).is_empty());
+
+        // The request view truncates round 0 only, also after a restart.
+        let mut view = mgr.load_raw_messages(&id);
+        mgr.apply_mini_compact_view(&id, &mut view);
+        let text = view[2]["content"][0]["content"].as_str().unwrap();
+        assert!(text.contains(crate::compact::COMPACT_MARKER));
+        assert_eq!(view[4..], original[4..]);
         let mgr2 = ConversationManager::new(dir.path().to_path_buf());
-        assert_eq!(mgr2.load_raw_messages(&id), after);
+        let mut view2 = mgr2.load_raw_messages(&id);
+        mgr2.apply_mini_compact_view(&id, &mut view2);
+        assert_eq!(view2, view);
+    }
 
-        // Snapshot exists and contains the original messages
-        let snaps = snapshot_files(dir.path(), &id);
-        assert_eq!(snaps.len(), 1);
-        let snap_content = std::fs::read_to_string(&snaps[0]).unwrap();
-        let snap_msgs: Vec<serde_json::Value> = snap_content
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect();
-        assert_eq!(snap_msgs, original);
+    #[test]
+    fn test_mini_compact_boundary_only_moves_forward() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+        for r in 0..3 {
+            mgr.append_messages(&id, &big_tool_round(&format!("a_{}", r)));
+        }
+        mgr.compact_thread(&id).unwrap().expect("should compact");
+        // Nothing new outside the protected window.
+        assert!(mgr.compact_thread(&id).unwrap().is_none());
+        assert_eq!(mgr.load_meta(&id).mini_compact_upto, Some(4));
+
+        // Two more rounds push rounds 1 and 2 out of the protected window.
+        for r in 0..2 {
+            mgr.append_messages(&id, &big_tool_round(&format!("b_{}", r)));
+        }
+        let stats = mgr.compact_thread(&id).unwrap().expect("should compact");
+        assert_eq!(stats.blocks, 2, "round 0 was already covered");
+        assert_eq!(mgr.load_meta(&id).mini_compact_upto, Some(12));
     }
 
     #[test]
@@ -2237,13 +2284,14 @@ mod tests {
 
     #[test]
     fn test_delete_thread_removes_snapshots() {
+        // Legacy snapshots from the old destructive mini compaction.
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConversationManager::new(dir.path().to_path_buf());
         let id = mgr.create_thread(ThreadMeta::default());
-        for r in 0..3 {
-            mgr.append_messages(&id, &big_tool_round(&format!("tu_{}", r)));
-        }
-        mgr.compact_thread(&id).unwrap().expect("should compact");
+        mgr.append_messages(&id, &[user_msg("hi"), assistant_msg("hello")]);
+        let snap_dir = dir.path().join("precompact");
+        std::fs::create_dir_all(&snap_dir).unwrap();
+        std::fs::write(snap_dir.join(format!("{}.1700000000.jsonl", id)), "{}\n").unwrap();
         assert_eq!(snapshot_files(dir.path(), &id).len(), 1);
 
         // Soft delete keeps snapshots so a restore is complete (#684).
@@ -2259,10 +2307,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mgr = ConversationManager::new(dir.path().to_path_buf());
         let id = mgr.create_thread(ThreadMeta::default());
-        for r in 0..3 {
-            mgr.append_messages(&id, &big_tool_round(&format!("tu_{}", r)));
-        }
-        mgr.compact_thread(&id).unwrap().expect("should compact");
+        mgr.append_messages(&id, &[user_msg("hi"), assistant_msg("hello")]);
+        let snap_dir = dir.path().join("precompact");
+        std::fs::create_dir_all(&snap_dir).unwrap();
+        std::fs::write(snap_dir.join(format!("{}.1700000000.jsonl", id)), "{}\n").unwrap();
 
         // Reload from disk: only the real thread must be discovered
         let mgr2 = ConversationManager::new(dir.path().to_path_buf());
@@ -2380,15 +2428,22 @@ mod tests {
         for r in 0..3 {
             mgr.append_messages(&id, &big_tool_round(&format!("old_{}", r)));
         }
-        let before_boundary = disk_messages(dir.path(), &id);
         full_compact(&mgr, &id, "S");
         for r in 0..3 {
             mgr.append_messages(&id, &big_tool_round(&format!("new_{}", r)));
         }
+        let disk_before = disk_messages(dir.path(), &id);
 
         let stats = mgr.compact_thread(&id).unwrap().expect("should compact");
         assert_eq!(stats.blocks, 1, "only the first live round is outside the protected window");
-        let disk = disk_messages(dir.path(), &id);
-        assert_eq!(&disk[..before_boundary.len()], &before_boundary[..]);
+        // Boundary: 12 old + summary + first live round (4).
+        assert_eq!(mgr.load_meta(&id).mini_compact_upto, Some(17));
+        assert_eq!(disk_messages(dir.path(), &id), disk_before);
+
+        let mut view = mgr.load_raw_messages(&id);
+        mgr.apply_mini_compact_view(&id, &mut view);
+        // view[0] is the summary; view[3] the first live round's tool_result.
+        let text = view[3]["content"][0]["content"].as_str().unwrap();
+        assert!(text.contains(crate::compact::COMPACT_MARKER));
     }
 }

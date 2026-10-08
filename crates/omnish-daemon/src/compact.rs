@@ -2,8 +2,11 @@
 //! persistence live in ConversationManager.
 //!
 //! Two flavors:
-//! - mini (`/compact mini`, issue #641): truncate bulky tool_result blocks in
-//!   place, see `compact_messages`.
+//! - mini (`/compact mini`, issue #641): truncate bulky tool_result blocks.
+//!   Non-destructive: the command only records a boundary
+//!   (`ThreadMeta::mini_compact_upto`) and the truncation is re-applied to a
+//!   copy of the history whenever an LLM request is built, see
+//!   `apply_mini_compact`. `compact_messages` is the in-place form.
 //! - full (`/compact`, issue #687): an LLM summary of the live context is
 //!   appended as a user message tagged `_compact`. Nothing is deleted; the LLM
 //!   context is rebuilt from the last such message onward, see
@@ -66,7 +69,7 @@ fn is_real_user_input(msg: &serde_json::Value) -> bool {
 /// Index of the first message in the protected window: everything from the
 /// PROTECTED_ROUNDS-th real user input (counted from the tail) onward.
 /// Returns 0 when the thread has fewer rounds than the window.
-fn protect_boundary(msgs: &[serde_json::Value]) -> usize {
+pub fn protect_boundary(msgs: &[serde_json::Value]) -> usize {
     let mut rounds = 0;
     for (i, m) in msgs.iter().enumerate().rev() {
         if is_real_user_input(m) {
@@ -137,15 +140,9 @@ fn compact_tool_result(block: &mut serde_json::Value, stats: &mut CompactStats) 
     }
 }
 
-/// Compact bulky tool_result blocks in-place. Returns stats; `blocks == 0`
-/// means nothing changed.
-pub fn compact_messages(msgs: &mut [serde_json::Value]) -> CompactStats {
-    let mut stats = CompactStats {
-        total_before: total_chars(msgs),
-        ..Default::default()
-    };
-    let boundary = protect_boundary(msgs);
-    for msg in &mut msgs[..boundary] {
+/// Truncate every bulky tool_result in `msgs` (no protected window).
+fn truncate_tool_results(msgs: &mut [serde_json::Value], stats: &mut CompactStats) {
+    for msg in msgs {
         if msg["role"].as_str() != Some("user") {
             continue;
         }
@@ -154,11 +151,44 @@ pub fn compact_messages(msgs: &mut [serde_json::Value]) -> CompactStats {
         };
         for block in blocks {
             if block["type"].as_str() == Some("tool_result") {
-                compact_tool_result(block, &mut stats);
+                compact_tool_result(block, stats);
             }
         }
     }
+}
+
+/// Compact bulky tool_result blocks in-place, outside the protected window.
+/// Returns stats; `blocks == 0` means nothing changed.
+pub fn compact_messages(msgs: &mut [serde_json::Value]) -> CompactStats {
+    let mut stats = CompactStats {
+        total_before: total_chars(msgs),
+        ..Default::default()
+    };
+    let boundary = protect_boundary(msgs);
+    truncate_tool_results(&mut msgs[..boundary], &mut stats);
     stats.total_after = total_chars(msgs);
+    stats
+}
+
+/// Apply a recorded mini compaction to a copy of the live window: truncate
+/// bulky tool_results in every message whose absolute index (position in the
+/// whole thread) is below `upto`. `window_start` is the absolute index of
+/// `window[0]`. Deterministic, so the same history always yields the same
+/// request prefix and the prompt cache keeps hitting between turns.
+pub fn apply_mini_compact(
+    window: &mut [serde_json::Value],
+    window_start: usize,
+    upto: Option<usize>,
+) -> CompactStats {
+    let mut stats = CompactStats {
+        total_before: total_chars(window),
+        ..Default::default()
+    };
+    if let Some(upto) = upto {
+        let end = upto.saturating_sub(window_start).min(window.len());
+        truncate_tool_results(&mut window[..end], &mut stats);
+    }
+    stats.total_after = total_chars(window);
     stats
 }
 
@@ -636,5 +666,41 @@ mod tests {
         let blocks = msgs[2]["content"].as_array().unwrap();
         assert_eq!(blocks.last().unwrap()["text"], "SUMMARIZE");
         assert_eq!(blocks[0]["type"], "tool_result");
+    }
+
+    // --- non-destructive mini compaction ---
+
+    #[test]
+    fn apply_mini_compact_respects_absolute_boundary() {
+        // 3 rounds of 4 messages; window starts at absolute index 100.
+        let mut window = build_thread(3, true);
+        let original = window.clone();
+
+        // No boundary recorded: nothing changes.
+        let stats = apply_mini_compact(&mut window, 100, None);
+        assert_eq!(stats.blocks, 0);
+        assert_eq!(window, original);
+
+        // Boundary below the window: nothing changes either.
+        assert_eq!(apply_mini_compact(&mut window, 100, Some(50)).blocks, 0);
+
+        // Boundary covering round 0 only (absolute 100..104).
+        let stats = apply_mini_compact(&mut window, 100, Some(104));
+        assert_eq!(stats.blocks, 1);
+        assert!(result_text(&window[2]).contains(COMPACT_MARKER));
+        assert_eq!(window[4..], original[4..]);
+
+        // Boundary past the end is clamped.
+        let mut all = original.clone();
+        assert_eq!(apply_mini_compact(&mut all, 100, Some(10_000)).blocks, 3);
+    }
+
+    #[test]
+    fn apply_mini_compact_is_deterministic() {
+        let mut a = build_thread(3, false);
+        let mut b = a.clone();
+        apply_mini_compact(&mut a, 0, Some(8));
+        apply_mini_compact(&mut b, 0, Some(8));
+        assert_eq!(a, b);
     }
 }
