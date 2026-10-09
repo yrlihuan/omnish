@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.9.1 (2026-10-09)
+
+### Features
+- **chat**: Full `/compact` summarizes the thread into a fresh context (#687). The LLM summary is appended as a user message tagged `_compact`; nothing is deleted, the old log stays in the thread JSONL, and the context is rebuilt from the last summary onward. The summary request replays the last chat turn byte for byte (same model, tools, thinking mode, system prompt and history) with the instruction as the final user message, so prefix caching serves the rest, and falls back to a clipped plain-text transcript when the replay fails (e.g. the thread is near the context window). The command reports the input tokens and how many were cached. The previous tool-result truncation moves to `/compact mini`; the old `compact:<tid>` payload keeps its mini meaning so older clients are unaffected.
+- **chat**: `/compact mini` is non-destructive. It only records a boundary (`ThreadMeta::mini_compact_upto`) and the truncation is applied to a copy of the history when an LLM request is built, so storage always keeps the original tool output and no precompact snapshot is written. It now also drops thinking blocks of old rounds (before the last 2 rounds), which were 64% of a 100-round DeepSeek thread: measured on DeepSeek's Anthropic-compatible endpoint, history without old-round thinking is accepted with tools on, cutting input from 105,322 to 72,014 tokens on a 5-round sample.
+- **thread**: Soft-delete conversations so they can be listed and restored (#684). `/thread del` tombstones the thread (`deleted_at` on its meta) and keeps every file; `purge_thread()` is the hard delete.
+- **resume-search**: Chunk large `/resume ?` searches into requests of at most 50k chars with globally comparable 0.0-1.0 scores, and pool all daemon LLM calls (#685)
+- **notes**: Keep daily-note conversations within the same day (#680). Messages and merged blocks carry a `_ts`, conversation collection is windowed by it, and the hourly window follows the actual cron schedule.
+- **chat**: Report elapsed time in the user-interrupt marker, e.g. `[Request interrupted by user for tool use after 1m20s]` (#682)
+
+### Fixes
+- **tools**: Sort tool definitions by name. `ToolRegistry::all_defs()` iterated a HashMap whose order changes with every daemon restart, and tools lead the request prefix, so every restart invalidated the prompt cache of every thread.
+- **compact**: Render the compact summary as markdown on `/resume` instead of raw text (#687)
+- **resume**: Normalize hostnames so a macOS `.local` flip after a network drop no longer hides all conversations from `/resume` or reports a spurious host change to the LLM (#683)
+- **deploy**: Accept new host keys (`StrictHostKeyChecking=accept-new`) so the first `client -> deploy` to a fresh machine no longer fails host key verification under `BatchMode` (#686)
+
+### Chores
+- **resume-search**: Log the built LLM request size for every `/resume ?` search (#651 follow-up)
+
+### Tests
+- **integration**: Stop gating `wait_for_chat_response` on seeing the spinner; wait for an idle empty prompt instead, so a turn that finishes inside the caller's post-Enter sleep is no longer a 180s timeout
+
 ## v0.9.0 (2026-09-14)
 
 ### Features
