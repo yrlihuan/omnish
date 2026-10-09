@@ -143,7 +143,7 @@
   "command.help.resume": "以前の会話スレッドを再開",
   "command.help.model": "LLM モデルを切替",
   "command.help.compact": "会話を要約し、新しいコンテキストで続行",
-  "command.help.compact_mini": "現在のスレッドの大きなツール結果を圧縮",
+  "command.help.compact_mini": "大きなツール結果と古いラウンドの思考をコンテキストから削減（履歴は保持）",
   "chat.resume_search_prompt": "探したい会話を説明してください：",
   "chat.resume_searching": "会話を検索中...(Ctrl-C でキャンセル)",
   "chat.search_cancelled": "検索をキャンセルしました。",

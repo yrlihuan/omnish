@@ -908,7 +908,8 @@ impl ConversationManager {
     }
 
     /// `/compact mini` (issue #641), non-destructive: records the boundary
-    /// below which bulky tool_results are truncated in LLM requests
+    /// below which bulky tool_results are truncated and thinking blocks are
+    /// dropped in LLM requests
     /// (`ThreadMeta::mini_compact_upto`), leaving the stored messages intact.
     /// The boundary is the start of the protected window (last
     /// `PROTECTED_ROUNDS` rounds) of the live window, and only ever moves
@@ -939,10 +940,11 @@ impl ConversationManager {
         let mut before = window;
         crate::compact::apply_mini_compact(&mut before, start, old_upto);
         let mut after = before.clone();
-        // Blocks already truncated under `old_upto` carry the marker and are
-        // skipped, so this counts only the newly covered ones.
+        // Work already applied under `old_upto` (marked tool results, dropped
+        // thinking) is not found again, so this counts only the newly covered
+        // messages.
         let mut stats = crate::compact::apply_mini_compact(&mut after, start, Some(new_upto));
-        if stats.blocks == 0 {
+        if stats.is_noop() {
             return Ok(None);
         }
         stats.total_before = crate::compact::messages_chars(&before);
@@ -950,8 +952,9 @@ impl ConversationManager {
 
         self.update_meta(thread_id, |m| m.mini_compact_upto = Some(new_upto));
         tracing::info!(
-            "Mini-compacted thread {}: boundary {:?} -> {}, {} blocks, {} -> {} chars",
-            thread_id, old_upto, new_upto, stats.blocks, stats.chars_before, stats.chars_after
+            "Mini-compacted thread {}: boundary {:?} -> {}, {} tool results ({} -> {} chars), {} thinking blocks ({} chars)",
+            thread_id, old_upto, new_upto, stats.blocks, stats.chars_before, stats.chars_after,
+            stats.thinking_blocks, stats.thinking_chars
         );
         Ok(Some(stats))
     }
@@ -2445,5 +2448,31 @@ mod tests {
         // view[0] is the summary; view[3] the first live round's tool_result.
         let text = view[3]["content"][0]["content"].as_str().unwrap();
         assert!(text.contains(crate::compact::COMPACT_MARKER));
+    }
+
+    #[test]
+    fn test_mini_compact_drops_old_thinking_in_view_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = ConversationManager::new(dir.path().to_path_buf());
+        let id = mgr.create_thread(ThreadMeta::default());
+        for r in 0..3 {
+            mgr.append_messages(&id, &[
+                user_msg(&format!("q{}", r)),
+                serde_json::json!({"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": format!("THOUGHT {}", r), "signature": "s"},
+                    {"type": "text", "text": format!("a{}", r)}
+                ]}),
+            ]);
+        }
+        let disk_before = disk_messages(dir.path(), &id);
+        let stats = mgr.compact_thread(&id).unwrap().expect("should compact");
+        assert_eq!((stats.blocks, stats.thinking_blocks), (0, 1), "round 0 only; 2 rounds protected");
+        assert!(mgr.compact_thread(&id).unwrap().is_none(), "re-run is a no-op");
+        assert_eq!(disk_messages(dir.path(), &id), disk_before);
+
+        let mut view = mgr.load_raw_messages(&id);
+        mgr.apply_mini_compact_view(&id, &mut view);
+        assert_eq!(view[1]["content"], serde_json::json!([{"type": "text", "text": "a0"}]));
+        assert_eq!(view[3]["content"][0]["thinking"], "THOUGHT 1");
     }
 }

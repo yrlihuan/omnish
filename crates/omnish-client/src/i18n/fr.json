@@ -143,7 +143,7 @@
   "command.help.resume": "Reprendre un fil de conversation précédent",
   "command.help.model": "Changer de modèle LLM",
   "command.help.compact": "Résumer la conversation dans un nouveau contexte",
-  "command.help.compact_mini": "Compacter les gros résultats d'outils du fil actuel",
+  "command.help.compact_mini": "Alléger le contexte des gros résultats d'outils et des réflexions des anciens tours (historique conservé)",
   "chat.resume_search_prompt": "Décrivez la conversation à trouver :",
   "chat.resume_searching": "Recherche des conversations... (Ctrl-C pour annuler)",
   "chat.search_cancelled": "Recherche annulée.",

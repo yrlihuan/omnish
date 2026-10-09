@@ -143,7 +143,7 @@
   "command.help.resume": "Reanudar un hilo de conversación anterior",
   "command.help.model": "Cambiar de modelo LLM",
   "command.help.compact": "Resumir la conversación en un contexto nuevo",
-  "command.help.compact_mini": "Compactar resultados de herramientas voluminosos del hilo actual",
+  "command.help.compact_mini": "Recortar del contexto los resultados de herramientas voluminosos y el razonamiento de rondas antiguas (se conserva el historial)",
   "chat.resume_search_prompt": "Describe la conversación que buscas:",
   "chat.resume_searching": "Buscando conversaciones... (Ctrl-C para cancelar)",
   "chat.search_cancelled": "Búsqueda cancelada.",

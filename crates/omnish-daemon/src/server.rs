@@ -3525,8 +3525,10 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
         }
         return match conv_mgr.compact_thread(tid) {
             Ok(Some(stats)) => cmd_display(format!(
-                "compacted {} tool result(s)\ncontext: {} -> {} chars (-{:.0}%)",
+                "compacted {} tool result(s), dropped {} old thinking block(s) ({} chars)\ncontext: {} -> {} chars (-{:.0}%)",
                 stats.blocks,
+                stats.thinking_blocks,
+                format_count(stats.thinking_chars as u64),
                 format_count(stats.total_before as u64),
                 format_count(stats.total_after as u64),
                 shrink_pct(stats.total_before, stats.total_after)

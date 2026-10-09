@@ -2,8 +2,8 @@
 //! persistence live in ConversationManager.
 //!
 //! Two flavors:
-//! - mini (`/compact mini`, issue #641): truncate bulky tool_result blocks.
-//!   Non-destructive: the command only records a boundary
+//! - mini (`/compact mini`, issue #641): truncate bulky tool_result blocks
+//!   and drop thinking blocks of old rounds. Non-destructive: the command only records a boundary
 //!   (`ThreadMeta::mini_compact_upto`) and the truncation is re-applied to a
 //!   copy of the history whenever an LLM request is built, see
 //!   `apply_mini_compact`. `compact_messages` is the in-place form.
@@ -37,6 +37,17 @@ pub struct CompactStats {
     pub total_before: usize,
     /// Total chars of the whole message list after compaction.
     pub total_after: usize,
+    /// Number of old-round thinking blocks dropped (mini view only).
+    pub thinking_blocks: usize,
+    /// Total thinking text chars of those blocks.
+    pub thinking_chars: usize,
+}
+
+impl CompactStats {
+    /// True when the compaction changed nothing.
+    pub fn is_noop(&self) -> bool {
+        self.blocks == 0 && self.thinking_blocks == 0
+    }
 }
 
 /// Total serialized char count across all messages. Consistent before/after
@@ -170,9 +181,47 @@ pub fn compact_messages(msgs: &mut [serde_json::Value]) -> CompactStats {
     stats
 }
 
+/// Drop thinking blocks from assistant messages. With tools enabled DeepSeek
+/// asks for all previous reasoning to be passed back, but measured on its
+/// Anthropic-compatible endpoint it accepts history without old-round
+/// thinking, and an emptied block costs the same as a dropped one. Anthropic
+/// documents omitting previous-turn thinking as allowed, whereas editing a
+/// signed block is not. A message holding only thinking keeps one emptied
+/// block so it does not become empty.
+fn drop_thinking(msgs: &mut [serde_json::Value], stats: &mut CompactStats) {
+    for msg in msgs {
+        if msg["role"].as_str() != Some("assistant") {
+            continue;
+        }
+        let Some(blocks) = msg["content"].as_array_mut() else {
+            continue;
+        };
+        let is_thinking = |b: &serde_json::Value| b["type"].as_str() == Some("thinking");
+        if !blocks.iter().any(is_thinking) {
+            continue;
+        }
+        // Already reduced to the single emptied block: idempotent re-runs
+        // must not count it again.
+        if blocks.len() == 1 && blocks[0]["thinking"].as_str() == Some("") {
+            continue;
+        }
+        for b in blocks.iter().filter(|b| is_thinking(b)) {
+            stats.thinking_blocks += 1;
+            stats.thinking_chars += b["thinking"].as_str().map_or(0, |t| t.chars().count());
+        }
+        if blocks.iter().all(is_thinking) {
+            let mut kept = blocks[0].clone();
+            kept["thinking"] = serde_json::Value::String(String::new());
+            *blocks = vec![kept];
+        } else {
+            blocks.retain(|b| !is_thinking(b));
+        }
+    }
+}
+
 /// Apply a recorded mini compaction to a copy of the live window: truncate
-/// bulky tool_results in every message whose absolute index (position in the
-/// whole thread) is below `upto`. `window_start` is the absolute index of
+/// bulky tool_results and drop thinking blocks in every message whose
+/// absolute index (position in the whole thread) is below `upto`. `window_start` is the absolute index of
 /// `window[0]`. Deterministic, so the same history always yields the same
 /// request prefix and the prompt cache keeps hitting between turns.
 pub fn apply_mini_compact(
@@ -187,6 +236,7 @@ pub fn apply_mini_compact(
     if let Some(upto) = upto {
         let end = upto.saturating_sub(window_start).min(window.len());
         truncate_tool_results(&mut window[..end], &mut stats);
+        drop_thinking(&mut window[..end], &mut stats);
     }
     stats.total_after = total_chars(window);
     stats
@@ -702,5 +752,62 @@ mod tests {
         apply_mini_compact(&mut a, 0, Some(8));
         apply_mini_compact(&mut b, 0, Some(8));
         assert_eq!(a, b);
+    }
+
+    fn assistant_thinking_tool_use(id: &str, thought: &str) -> serde_json::Value {
+        serde_json::json!({"role": "assistant", "content": [
+            {"type": "thinking", "thinking": thought, "signature": "sig"},
+            {"type": "tool_use", "id": id, "name": "bash", "input": {}}
+        ]})
+    }
+
+    #[test]
+    fn apply_mini_compact_drops_old_thinking_only() {
+        let mut window = vec![
+            user_text("q0"),
+            assistant_thinking_tool_use("t0", "OLD THOUGHT"),
+            user_tool_result_str("t0", "out"),
+            serde_json::json!({"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "ONLY", "signature": "s"}
+            ]}),
+            user_text("q1"),
+            assistant_thinking_tool_use("t1", "NEW THOUGHT"),
+        ];
+        let stats = apply_mini_compact(&mut window, 0, Some(4));
+        assert_eq!(stats.thinking_blocks, 2);
+        assert_eq!(stats.thinking_chars, "OLD THOUGHT".len() + "ONLY".len());
+        assert!(!stats.is_noop());
+
+        // Dropped next to other blocks; the tool_use survives.
+        assert_eq!(window[1]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(window[1]["content"][0]["type"], "tool_use");
+        // A thinking-only message keeps one emptied block.
+        assert_eq!(window[3]["content"], serde_json::json!([{"type": "thinking", "thinking": "", "signature": "s"}]));
+        // Past the boundary: untouched.
+        assert_eq!(window[5]["content"][0]["thinking"], "NEW THOUGHT");
+    }
+
+    #[test]
+    fn apply_mini_compact_is_idempotent() {
+        let mut window = vec![
+            user_text("q0"),
+            assistant_thinking_tool_use("t0", "T"),
+            user_tool_result_str("t0", &many_lines(50)),
+            serde_json::json!({"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "ONLY", "signature": "s"}
+            ]}),
+            user_text("q1"),
+        ];
+        assert!(!apply_mini_compact(&mut window, 0, Some(4)).is_noop());
+        let once = window.clone();
+        assert!(apply_mini_compact(&mut window, 0, Some(4)).is_noop());
+        assert_eq!(window, once);
+    }
+
+    #[test]
+    fn apply_mini_compact_noop_without_boundary() {
+        let mut window = vec![user_text("q"), assistant_thinking_tool_use("t", "T")];
+        assert!(apply_mini_compact(&mut window, 0, None).is_noop());
+        assert_eq!(window[1]["content"][0]["thinking"], "T");
     }
 }

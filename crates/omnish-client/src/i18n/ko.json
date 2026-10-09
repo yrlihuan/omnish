@@ -143,7 +143,7 @@
   "command.help.resume": "이전 대화 스레드 재개",
   "command.help.model": "LLM 모델 전환",
   "command.help.compact": "대화를 요약하여 새 컨텍스트로 계속",
-  "command.help.compact_mini": "현재 스레드의 큰 도구 결과 압축",
+  "command.help.compact_mini": "컨텍스트에서 큰 도구 결과와 이전 라운드의 사고 과정을 줄임(기록은 유지)",
   "chat.resume_search_prompt": "찾을 대화를 설명하세요:",
   "chat.resume_searching": "대화 검색 중...(Ctrl-C 취소)",
   "chat.search_cancelled": "검색을 취소했습니다.",

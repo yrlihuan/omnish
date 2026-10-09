@@ -868,13 +868,14 @@ tombstone 线程刻意不在内存中，因此该函数**按需从磁盘读取**
 目前未接入自动清理任务（thread 数据总量有限，暂不做 purge 保留期）。
 
 ##### `ConversationManager::compact_thread()` (#641, `/compact mini`)
-截断线程历史中体积庞大的 `tool_result` 块，缩减 LLM 上下文。**非破坏式**：存储（内存与 JSONL）始终保留原文，截断只作用于发给 LLM 的请求副本。
+截断线程历史中体积庞大的 `tool_result` 块，并删除旧轮次的 thinking 块，缩减 LLM 上下文。**非破坏式**：存储（内存与 JSONL）始终保留原文，处理只作用于发给 LLM 的请求副本。
 
 **行为:**
 - 命令只记录一个边界 `ThreadMeta::mini_compact_upto`（整个线程中的绝对消息下标）：取活动窗口（最后一条完整压缩摘要之后，见下文 #687）中受保护窗口的起点，即最近 `PROTECTED_ROUNDS` 轮（从尾部数的真实用户输入）之前的位置；边界只前移不后退，经 `update_meta` 原子写入
 - `apply_mini_compact_view(tid, &mut window)`：组装 LLM 请求时，对活动窗口副本中绝对下标小于边界的消息调用 `compact::apply_mini_compact()`。规则同前：仅截断超过 `MIN_LINES`（30 行）的 `tool_result` 文本，保留 head + 标记 + tail；标记同时作为幂等标志。截断是确定性的，边界不变时每轮请求前缀完全相同，不影响 prompt cache；再次执行 mini 使边界前移时会有一次未命中
 - 调用点：聊天路径在持久化（`replace_messages` / `append_messages`）**之后**、包装成 `TaggedMessage` 之前应用，agent loop 只追加 `saved_up_to` 之后的新消息，所以截断视图不会写回存储；完整压缩的重放请求和 transcript 回退也用同一视图，保证与聊天请求前缀一致。`/resume` 历史显示读原文
-- 返回 `CompactStats`：新覆盖的块数、这些块截断前后字符数，以及请求视图整体前后字符数；返回 `Ok(None)` 表示新边界不会再截断任何内容
+- **旧轮次 thinking**：边界之前 assistant 消息里的 thinking 块整块删除（`drop_thinking`）。轮次 = 从一条真实用户输入（带文字的 user 消息，含中断后合并的提问和合并了提问的 compact 摘要）到下一条真实用户输入之前；当前轮次和受保护的最近 `PROTECTED_ROUNDS` 轮永不处理，所以碰不到协议对当前 tool-use 循环必须原样回传 thinking 的要求。依据：DeepSeek 文档要求带 tools 时回传所有历史 reasoning，但在其 Anthropic 兼容接口上实测（前 3 轮 30 个 thinking 块），清空文本与整块删除都被接受，输入 token 完全相同（105,322 -> 72,014），服务端把空 thinking 块视同不存在；Anthropic 文档允许省略之前轮次的 thinking，而改动带签名的块不被允许，因此选整块删除。只含 thinking 的消息保留一个清空文本的块，避免消息为空；再次应用时识别这种块，保持幂等
+- 返回 `CompactStats`：新覆盖的 tool_result 块数及其截断前后字符数、删除的 thinking 块数及字符数，以及请求视图整体前后字符数（`is_noop()` 判断无改动）；返回 `Ok(None)` 表示新边界不会再改变任何内容
 - 已知限制：边界是只追加列表中的绝对下标，少数会删除消息的历史清理（`sanitize_orphaned_tool_use`、旧格式 `merge_interrupt_markers`）可能让它偏移一两条，只影响哪条旧工具结果被截断
 - 旧版本（销毁式）留下的 `precompact/{tid}.{unix_ts}.jsonl` 快照仍保留；软删除保留它们，`purge_thread()` 才会清理
 

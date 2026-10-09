@@ -143,7 +143,7 @@
   "command.help.resume": "恢复之前的对话线程",
   "command.help.model": "切换 LLM 模型",
   "command.help.compact": "把对话总结成摘要，以全新的上下文继续",
-  "command.help.compact_mini": "压缩当前线程中的大体积工具结果",
+  "command.help.compact_mini": "从上下文中精简大体积工具结果和旧轮次的思考过程（历史记录保留）",
   "chat.resume_search_prompt": "描述想要查找的对话：",
   "chat.resume_searching": "正在搜索对话...(Ctrl-C 取消)",
   "chat.search_cancelled": "已取消搜索。",

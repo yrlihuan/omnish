@@ -143,7 +143,7 @@
   "command.help.resume": "استئناف خيط محادثة سابق",
   "command.help.model": "تبديل نموذج LLM",
   "command.help.compact": "تلخيص المحادثة والمتابعة بسياق جديد",
-  "command.help.compact_mini": "ضغط نتائج الأدوات الكبيرة في المحادثة الحالية",
+  "command.help.compact_mini": "تقليص نتائج الأدوات الكبيرة وتفكير الجولات القديمة من السياق (مع الاحتفاظ بالسجل)",
   "chat.resume_search_prompt": "صف المحادثة التي تبحث عنها:",
   "chat.resume_searching": "جارٍ البحث في المحادثات... (Ctrl-C للإلغاء)",
   "chat.search_cancelled": "تم إلغاء البحث.",
