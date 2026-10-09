@@ -206,6 +206,14 @@ fn pick_pending_title(pending: &crate::PendingTitles, current: Option<&str>) -> 
 ///
 /// Rules: trim whitespace, strip ASCII control chars (including DEL and the
 /// C1 range `\u{80}..=\u{9F}`), then truncate to 32 Unicode scalars.
+/// The working directory chat tools run in. A resume that chose the thread's
+/// directory records it as `pending_cd`, but the shell only `cd`s there when
+/// chat mode exits, so until then its live cwd still points at the old
+/// directory and must not win (#688).
+fn effective_cwd(pending_cd: Option<&str>, live: Option<String>) -> Option<String> {
+    pending_cd.map(String::from).or(live)
+}
+
 fn normalize_thread_name(raw: &str) -> String {
     let cleaned: String = raw
         .trim()
@@ -1245,6 +1253,12 @@ impl ChatSession {
         self.pending_cd.as_deref()
     }
 
+    /// Current working directory for tools and the daemon's `shell_cwd`:
+    /// the resume-chosen directory if any, else the shell's live cwd.
+    fn current_cwd(&self, proxy: &PtyProxy) -> Option<String> {
+        effective_cwd(self.pending_cd.as_deref(), super::get_shell_cwd(proxy.child_pid() as u32))
+    }
+
     fn thinking_line(&self) -> String {
         let ch = crate::display::spinner_char(self.spinner_frame);
         format!(
@@ -2011,7 +2025,7 @@ impl ChatSession {
                             }
 
                             // Phase 2+3: Execute tools in parallel, send results as they complete
-                            let shell_cwd = super::get_shell_cwd(proxy.child_pid() as u32);
+                            let shell_cwd = self.current_cwd(proxy);
                             let total = tool_calls.len();
                             let mut join_set = tokio::task::JoinSet::new();
                             for (idx, tc) in tool_calls.iter().enumerate() {
@@ -2154,8 +2168,9 @@ impl ChatSession {
 
                             // Sync shell_cwd after tools execute - tools like glob/read may
                             // change cwd via picker interaction, and we need the updated cwd
-                            // for the next round of tool calls.
-                            if let Some(cwd) = super::get_shell_cwd(proxy.child_pid() as u32) {
+                            // for the next round of tool calls. A pending resume cd still
+                            // wins, or this would revert the daemon to the old directory.
+                            if let Some(cwd) = self.current_cwd(proxy) {
                                 self.shell_cwd = Some(cwd.clone());
                                 let mut attrs = std::collections::HashMap::new();
                                 attrs.insert("shell_cwd".to_string(), cwd);
@@ -4964,6 +4979,24 @@ fn save_to_history(history: &mut VecDeque<String>, command: &str, capacity: usiz
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn effective_cwd_prefers_pending_cd_from_resume() {
+        // Resume chose the thread's directory: the shell only cds there when
+        // chat mode exits, so its live cwd still lags behind (#688).
+        assert_eq!(
+            super::effective_cwd(Some("/work/thread"), Some("/home/u".to_string())),
+            Some("/work/thread".to_string())
+        );
+        // Also when the live cwd cannot be read.
+        assert_eq!(super::effective_cwd(Some("/work/thread"), None), Some("/work/thread".to_string()));
+    }
+
+    #[test]
+    fn effective_cwd_falls_back_to_live_cwd() {
+        assert_eq!(super::effective_cwd(None, Some("/home/u".to_string())), Some("/home/u".to_string()));
+        assert_eq!(super::effective_cwd(None, None), None);
+    }
+
     use super::*;
 
     // Build glyph widths for "> " prefix + a string, CJK chars counted as 2.

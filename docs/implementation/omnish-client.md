@@ -1777,7 +1777,7 @@ daemon_addr = "~/.omnish/omnish.sock"
 - 实时跟踪命令执行时的当前工作目录
 - 优先使用OSC 133序列中的cwd信息，回退到会话创建时的cwd
 - 在context输出中显示命令执行的完整路径
-- 工具执行时通过 `get_shell_cwd()` 获取shell当前CWD，注入到工具输入
+- 工具执行时通过 `ChatSession::current_cwd()` 获取CWD，注入到工具输入；工具执行后用同一个值同步 `shell_cwd` 到守护进程。恢复线程时若选择切回线程目录，真正的 `cd` 要等退出聊天模式才执行（`pending_cd`），此前 shell 的实际 CWD 仍是旧目录，所以 `pending_cd` 优先，否则取 `get_shell_cwd()`（#688）
 
 **可靠命令记录:**
 - 使用`$BASH_COMMAND`通过OSC 133;B payload发送命令文本
