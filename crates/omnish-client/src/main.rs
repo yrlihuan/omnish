@@ -108,10 +108,9 @@ fn send_ignored_summary(
     send_completion_summary(rpc, shell_completer, session_id, false, cwd);
 }
 
-/// Send a message to the daemon, buffering it if the send fails and
-/// the message type is eligible for retry.
-async fn send_or_buffer(rpc: &RpcClient, msg: Message, buffer: &MessageBuffer) {
-    if rpc.send(msg.clone()).await.is_err() && should_buffer(&msg) {
+/// Queue `msg` for replay after reconnect (bounded; oldest dropped first).
+async fn buffer_for_replay(msg: Message, buffer: &MessageBuffer) {
+    if should_buffer(&msg) {
         let mut buf = buffer.lock().await;
         if buf.len() >= MAX_BUFFER_SIZE {
             buf.pop_front();
@@ -120,7 +119,32 @@ async fn send_or_buffer(rpc: &RpcClient, msg: Message, buffer: &MessageBuffer) {
     }
 }
 
-/// Non-blocking variant of `send_or_buffer` for the main I/O loop. Must NEVER
+/// How long a heartbeat waits for the daemon's Ack before declaring the
+/// connection dead.
+const HEARTBEAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Send a heartbeat (`SessionUpdate`) and wait for the daemon's Ack. A path
+/// that silently drops packets, e.g. after a route switch, produces no socket
+/// error until TCP gives up retransmitting many minutes later, and until then
+/// every call hangs (issue #689). A missing Ack within `timeout` is the timely
+/// signal: force the connection down so the transport reconnects. The update
+/// is buffered for replay whenever it was not acknowledged.
+async fn heartbeat(rpc: &RpcClient, msg: Message, buffer: &MessageBuffer, timeout: std::time::Duration) {
+    match tokio::time::timeout(timeout, rpc.call(msg.clone())).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(_)) => buffer_for_replay(msg, buffer).await,
+        Err(_) => {
+            event_log::push(format!(
+                "heartbeat: no Ack within {}s, forcing reconnect",
+                timeout.as_secs()
+            ));
+            rpc.force_disconnect().await;
+            buffer_for_replay(msg, buffer).await;
+        }
+    }
+}
+
+/// Fire-and-forget report from the main I/O loop, buffered on failure. Must NEVER
 /// await network I/O: the loop also pumps stdin -> PTY, so blocking here on a
 /// wedged daemon connection stalls stdin reads until the kernel tty input buffer
 /// overflows and silently drops the user's keystrokes (issue #656). Enqueues via
@@ -836,12 +860,14 @@ async fn main() -> Result<()> {
 
             let mut last_attrs: HashMap<String, String> = HashMap::new();
 
-            // Progressive polling intervals: 1, 2, 4, 8, 15, 30, then 60 seconds
-            let intervals: &[u64] = &[1, 2, 4, 8, 15, 30, 60];
+            // Progressive polling intervals: 1, 2, 4, 8, 15, then 30 seconds.
+            // Capped at 30s because each poll is also the connection heartbeat
+            // (issue #689): a dead path is detected within cap + HEARTBEAT_TIMEOUT.
+            let intervals: &[u64] = &[1, 2, 4, 8, 15, 30];
             let mut interval_idx: usize = 0;
 
             loop {
-                let current_interval = intervals.get(interval_idx).unwrap_or(&60);
+                let current_interval = intervals.get(interval_idx).unwrap_or(&30);
 
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(*current_interval)) => {
@@ -873,11 +899,11 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                // Always send a SessionUpdate, even when nothing changed.
-                // The empty payload doubles as a heartbeat: it exercises the
-                // TCP write path so kernel retransmit eventually surfaces
-                // broken sockets that would otherwise stay half-open
-                // indefinitely on an idle terminal. Daemon-side cost is
+                // Always send a SessionUpdate, even when nothing changed: it
+                // doubles as the connection heartbeat. The daemon acks every
+                // SessionUpdate, so waiting for that Ack detects a connection
+                // whose path silently died, which the socket itself would not
+                // report for many minutes (issue #689). Daemon-side cost is
                 // ~zero - update_attrs has an empty-attrs fast path that
                 // skips disk I/O.
                 let msg = Message::SessionUpdate(SessionUpdate {
@@ -885,7 +911,7 @@ async fn main() -> Result<()> {
                     timestamp_ms: timestamp_ms(),
                     attrs: changed,
                 });
-                send_or_buffer(&rpc_poll, msg, &poll_buffer).await;
+                heartbeat(&rpc_poll, msg, &poll_buffer, HEARTBEAT_TIMEOUT).await;
 
                 last_attrs = current;
 
@@ -3460,6 +3486,58 @@ pub(crate) async fn handle_slash_command(
 
 #[cfg(test)]
 mod tests {
+    fn heartbeat_msg() -> omnish_protocol::message::Message {
+        omnish_protocol::message::Message::SessionUpdate(omnish_protocol::message::SessionUpdate {
+            session_id: "s".into(),
+            timestamp_ms: 0,
+            attrs: std::collections::HashMap::new(),
+        })
+    }
+
+    /// Accepts connections and reads them, but never replies: a path that
+    /// silently drops traffic (issue #689).
+    async fn silent_server(path: &std::path::Path) {
+        let listener = tokio::net::UnixListener::bind(path).unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                let (s, _) = listener.accept().await.unwrap();
+                held.push(s);
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn heartbeat_timeout_forces_disconnect_and_buffers() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("hb.sock");
+        silent_server(&sock).await;
+        let rpc = omnish_transport::rpc_client::RpcClient::connect_unix(sock.to_str().unwrap())
+            .await
+            .unwrap();
+        let buffer: super::MessageBuffer = Default::default();
+
+        let t0 = std::time::Instant::now();
+        super::heartbeat(&rpc, heartbeat_msg(), &buffer, std::time::Duration::from_millis(200)).await;
+        assert!(t0.elapsed() < std::time::Duration::from_secs(2));
+        assert!(!rpc.is_connected().await, "missing Ack must tear the connection down");
+        assert_eq!(buffer.lock().await.len(), 1, "update kept for replay after reconnect");
+    }
+
+    #[tokio::test]
+    async fn heartbeat_when_disconnected_just_buffers() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("hb2.sock");
+        silent_server(&sock).await;
+        let rpc = omnish_transport::rpc_client::RpcClient::connect_unix(sock.to_str().unwrap())
+            .await
+            .unwrap();
+        rpc.force_disconnect().await;
+        let buffer: super::MessageBuffer = Default::default();
+        super::heartbeat(&rpc, heartbeat_msg(), &buffer, std::time::Duration::from_secs(5)).await;
+        assert_eq!(buffer.lock().await.len(), 1);
+    }
+
     use super::*;
 
     #[test]

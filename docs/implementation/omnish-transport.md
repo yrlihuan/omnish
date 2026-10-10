@@ -170,7 +170,7 @@ pub struct Frame {
 **使用场景：**
 - `SessionEnd` - 会话结束通知
 - `CompletionSummary` - 补全采样数据上报
-- `send_or_buffer()` 中的非关键消息
+- 客户端退出时的非关键消息（按键遥测等热路径改用 `try_send()`）
 - 任何只需单向通知、不需要响应的消息
 
 ### `RpcClient::try_send()`
@@ -180,6 +180,16 @@ pub struct Frame {
 **返回:** `Result<()>`
 **行为:** 绝不等待网络 I/O 或背压：用 `try_lock` 取内部锁、用 `try_send` 放入写队列；连接已断开、内部锁被占用或写队列已满时立即返回 `Err`
 **用途:** 热路径上必须永不阻塞调用者的消息，主要是客户端主循环每次按键上报的 `IoData` / `CommandComplete`（经客户端 `report_or_buffer()` 调用，失败时退回缓冲，极端背压下丢弃遥测）。阻塞发送会让主循环停止读取 stdin，内核 tty 输入缓冲溢出后按键被静默丢弃
+
+### `RpcClient::force_disconnect()`
+主动拆掉当前连接，效果等同对端关闭（#689）。
+
+**行为:**
+- 标记 `connected = false`
+- 通过 `Inner.shutdown`（`tokio::sync::Notify`，`notify_one` 会保存许可，读循环处于两次读取之间也能收到）唤醒读循环；读循环读帧时与它 `select!`，收到后走正常退出路径：清空挂起的回复（挂起的 `call()` 立即返回错误）并发出断开信号，启用重连的客户端随即进入退避重连
+- abort 写任务：它可能正阻塞在死 socket 已满的发送缓冲上，不 abort 会泄漏到内核放弃为止
+
+**用途:** 调用方已有证据表明连接已死、而操作系统还没察觉时使用，例如客户端心跳等不到 Ack（静默丢包的路径要好几分钟才会产生 socket 错误）
 
 ### `RpcClient::call_stream()`
 发送消息到服务器并接收多个响应（用于流式传输）。
@@ -618,6 +628,19 @@ omnish-transport在认证握手阶段进行协议版本兼容性检查，使用 
 - 客户端主循环的按键遥测改用非阻塞的 `report_or_buffer()`（基于新增的 `RpcClient::try_send()`），主循环永不阻塞
 - 客户端 `read_loop` 用 `try_send` 分发服务器推送，通道满时丢弃推送而非阻塞
 - 服务器把推送写出移到每连接独立的任务，并在推送写入失败时发出断开信号
+
+### 网络路径静默断开后长时间无法发现（已修复，#689）
+
+**现象:** 路由切换（如 Tailscale 路径改走 VM）后，客户端按 `:` 进入聊天卡死，连 Ctrl-C 都无效，好几分钟后才自行恢复。
+
+**问题根因:** 旧路径静默丢包、不回 RST/FIN，socket 要等 TCP 重传放弃才报错。传输层没有任何存活检测（无心跳超时、无 TCP keepalive、无读超时），所以这期间 `connected` 一直为 true，不会重连，所有 `call()` 既不返回也不报错。客户端进入聊天时第一步就是一个没有超时的 `call()`，而此时还没有代码读取 stdin。守护进程日志显示 10 个会话的重连分散在 6 分钟内，各自等到重传超时才发现，守护进程也从未记录旧连接断开。
+
+**修复方案:**
+- 新增 `RpcClient::force_disconnect()`，读循环读帧时与 shutdown 通知 `select!`
+- 客户端轮询任务的 `SessionUpdate` 改为带 10 秒超时的心跳 `call()`，超时即 `force_disconnect()`；轮询间隔上限从 60 秒降到 30 秒
+- 进入聊天时的 cwd 同步 `call()` 限时 3 秒
+
+**测试:** 用可"黑洞"的 TCP 代理（停止转发但保持 socket 打开）复现：未修复时挂起的 `call()` 不返回、`is_connected()` 保持 true；`force_disconnect()` 后挂起调用 1 秒内失败，路径恢复后自动重连
 
 ## 测试覆盖
 模块包含全面的测试用例：

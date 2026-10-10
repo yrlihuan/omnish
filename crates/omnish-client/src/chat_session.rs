@@ -192,6 +192,9 @@ pub struct ChatSession {
     pending_titles: crate::PendingTitles,
 }
 
+/// Upper bound on the cwd sync done when entering chat mode (issue #689).
+const CHAT_ENTRY_SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 fn write_stdout(s: &str) {
     crate::term_out::write_str(s);
 }
@@ -1533,8 +1536,10 @@ impl ChatSession {
             });
             // Use call() (not send()) to wait for Ack - the daemon spawns each
             // message as a separate tokio task, so fire-and-forget send() can race
-            // with the subsequent ChatMessage.
-            let _ = rpc.call(msg).await;
+            // with the subsequent ChatMessage. Bounded: nothing reads stdin yet,
+            // so on a connection whose path silently died an unbounded wait froze
+            // chat entry with no way out, not even Ctrl-C (issue #689).
+            let _ = tokio::time::timeout(CHAT_ENTRY_SYNC_TIMEOUT, rpc.call(msg)).await;
         }
 
         let is_resumed = initial_msg.as_ref()

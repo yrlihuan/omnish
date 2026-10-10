@@ -53,7 +53,7 @@ RPC 传输层，处理 Unix socket 和 TCP 连接，提供客户端与守护进�
 
 - **重要数据结构**：`TransportAddr` 地址枚举、`RpcClient` 客户端结构（连接管理、请求 ID、ReplyTx 单响应/流响应模式、push_rx 推送接收）、`RpcServer` 服务器结构、`PushRegistry`/`OnPushConnect` 推送机制、TLS 支持、`Frame` 消息帧
 - **地址解析 parse_addr()**：解析地址字符串为 TransportAddr，支持 Unix socket 路径、TCP 地址、显式协议前缀等多种格式
-- **客户端连接 API**：connect/connect_unix/connect_tcp 显式协议连接、connect_with_reconnect 自动重连、call 单响应请求、send fire-and-forget、try_send 非阻塞发送（热路径遥测）、call_stream 多响应流式接收
+- **客户端连接 API**：connect/connect_unix/connect_tcp 显式协议连接、connect_with_reconnect 自动重连、force_disconnect 主动拆连接触发重连、call 单响应请求、send fire-and-forget、try_send 非阻塞发送（热路径遥测）、call_stream 多响应流式接收
 - **服务器 API**：bind/bind_unix/bind_tcp 地址绑定与监听、serve 连接处理（支持认证令牌、TLS、PushRegistry 推送和 OnPushConnect 回调）
 - **客户端内部机制**：读写分离、原子请求 ID、指数退避重连（支持 PermanentFailure 阈值终止）、ReplyTx 响应分发
 - **服务器内部机制**：每连接独立异步任务、边接收边写入的流式转发、推送由独立任务写出（避免双向流控死锁）、EMFILE/ENFILE fd 耗尽诊断
@@ -159,9 +159,9 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **插件包同步**：与守护进程同步本地 `plugins/` 目录，保留用户本地编辑的文件
 - **Probe 系统**：可插拔数据收集器，静态 Probe 和动态 Probe，平台信息来自客户端上报
 - **主事件循环**：poll I/O 多路复用，stdin/PTY master 监控，DSR 过滤，前缀匹配计时，OSC 133 命令跟踪
-- **Polling 机制**：渐进式间隔（1-60s）后台探测任务，差异更新 SessionUpdate，tmux/screen 窗口标题自动更新
+- **Polling 机制**：渐进式间隔（1-30s）后台探测任务，兼作连接心跳，差异更新 SessionUpdate，tmux/screen 窗口标题自动更新
 - **事件日志**：全局环形缓冲区（200 条），记录 OSC 转换/补全/聊天/更新/连接/延迟等事件
-- **守护进程通信**：connect_daemon 连接/认证/协议版本检查，send_or_buffer 失败缓冲（10000 条上限）
+- **守护进程通信**：connect_daemon 连接/认证/协议版本检查，失败消息缓冲重放（10000 条上限）、SessionUpdate 兼作心跳（10 秒等不到 Ack 即强制重连）
 - **显示函数**：纯函数 ANSI 输出，分隔线/提示符/输入回显/响应渲染/幽灵文本/CJK 感知截断
 - **命令分发**：统一命令注册表，Local/Daemon 命令类型，重定向/管道解析
 - **Agent 工具调用循环**：自动工具调用/并行执行/结果反馈，ChatToolCall/ChatToolStatus/ChatToolResult 协议，redraw_tool_section 原地更新状态

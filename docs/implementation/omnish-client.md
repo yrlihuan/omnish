@@ -1006,7 +1006,8 @@ Config > LLM                          ← 面包屑（带层级指示）
 
 **进入聊天模式时立即更新 CWD (commit 61c1dc4, #354):**
 - `ChatSession::run()` 开始时立即发送 `SessionUpdate`，包含从 `/proc/pid/cwd` 读取的最新 shell cwd
-- 消除轮询延迟（最长60秒退避）导致的守护进程 cwd 陈旧问题，确保聊天上下文中 cwd 信息准确
+- 消除轮询延迟（最长30秒退避）导致的守护进程 cwd 陈旧问题，确保聊天上下文中 cwd 信息准确
+- 用 `call()` 等 Ack（避免与随后的 ChatMessage 竞争），但限时 `CHAT_ENTRY_SYNC_TIMEOUT = 3s`：此时还没有任何代码读取 stdin，连接静默断掉时无限期等待会让按 `:` 进入聊天直接卡死、连 Ctrl-C 都无效（#689）
 
 **Markdown渲染:**
 - LLM响应通过 `markdown::render()` 渲染为ANSI样式（issue #272）
@@ -1322,17 +1323,25 @@ Probe 集合容器，管理多个 Probe 实例。
    - 记录输入延迟事件（超过50ms时，issue #106）
    - 检测bash无readline支持并警告（issue #226）
 
-### `send_or_buffer()`
-发送消息到守护进程，失败时缓冲可重试的消息。
-
-**参数:**
-- `rpc: &RpcClient` - RPC客户端
-- `msg: Message` - 要发送的消息
-- `buffer: &MessageBuffer` - 消息缓冲区
+### `buffer_for_replay()`
+把消息放入重连后重放的缓冲区。
 
 **逻辑:**
-- 如果发送失败且消息类型可缓冲（`IoData`、`CommandComplete` 或 `SessionUpdate`），则加入缓冲区
+- 仅缓冲可重试的消息类型（`IoData`、`CommandComplete` 或 `SessionUpdate`）
 - 缓冲区有大小限制（`MAX_BUFFER_SIZE = 10_000`），满时丢弃最旧消息
+- 由 `report_or_buffer()`（主循环的非阻塞上报）和 `heartbeat()` 在发送失败时调用
+
+### `heartbeat()`
+发送一条 `SessionUpdate` 作为连接心跳，并等待守护进程的 Ack（#689）。
+
+**参数:** `rpc: &RpcClient`, `msg: Message`, `buffer: &MessageBuffer`, `timeout: Duration`（轮询任务传 `HEARTBEAT_TIMEOUT = 10s`）
+
+**逻辑:**
+- 收到 Ack：连接正常
+- `call()` 立即出错（未连接、连接已断）：缓冲该消息等重连后重放
+- 超时未收到 Ack：认定连接已死，调用 `RpcClient::force_disconnect()` 拆掉连接触发重连，并缓冲该消息
+
+**原因:** 路由切换等场景下网络路径会静默丢包（不回 RST/FIN），socket 要等 TCP 重传放弃（好几分钟）才报错，这期间 `connected` 一直为 true、所有 `call()` 都挂起。守护进程对每条 `SessionUpdate` 都回 Ack，所以等不到 Ack 是唯一及时的信号，无需改协议
 
 ### SessionUpdate 消息
 
@@ -1348,7 +1357,7 @@ Probe 集合容器，管理多个 Probe 实例。
 **特性:**
 - 差异更新：仅发送变化的字段，减少网络流量
 - 可缓冲消息：发送失败时自动加入重试缓冲区
-- 由轮询任务异步生成和发送
+- 由轮询任务异步生成和发送，并兼作连接心跳（见 `heartbeat()`）
 
 ### Polling 机制
 
@@ -1357,15 +1366,15 @@ Probe 集合容器，管理多个 Probe 实例。
 **工作机制:**
 1. **启动时机**: 与守护进程建立连接后自动启动
 2. **探测间隔**: 使用渐进式间隔策略
-   - 默认间隔序列: 1, 2, 4, 8, 15, 30, 60 秒
-   - 最后维持 60 秒间隔
+   - 默认间隔序列: 1, 2, 4, 8, 15, 30 秒
+   - 最后维持 30 秒间隔（上限从 60 秒降到 30 秒：每次轮询也是连接心跳，死连接最晚在 30s + `HEARTBEAT_TIMEOUT` 内被发现，#689）
    - 命令开始时（OSC 133 CommandStart 事件）重置为 1 秒间隔
 3. **数据来源**: 使用 `default_polling_probes` 收集以下内容
    - `HostnameProbe` - 主机名（定期轮询，可能在集群环境中变化）
    - `ShellCwdProbe(pid)` - 读取 `/proc/{pid}/cwd` 获取 shell 进程当前工作目录
    - `ChildProcessProbe(pid)` - 获取 shell 的最新子进程信息
 4. **差异更新**: 维护上一次探测结果的副本，仅当数值发生变化时才更新
-5. **消息发送**: 通过 `SessionUpdate` 消息将变化的数据发送到守护进程
+5. **消息发送**: 通过 `SessionUpdate` 消息将变化的数据发送到守护进程；每次轮询都发送（无变化时 attrs 为空），并经 `heartbeat()` 等待 Ack
    - `SessionUpdate` 包含: `session_id`, `timestamp_ms`, `attrs` (HashMap)
    - `attrs` 仅包含已变化的字段，减少网络传输
 

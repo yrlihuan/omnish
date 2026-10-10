@@ -40,7 +40,9 @@ struct WriteRequest {
 struct Inner {
     tx: mpsc::Sender<WriteRequest>,
     connected: Arc<AtomicBool>,
-    _write_task: JoinHandle<()>,
+    /// Wakes the read loop so it tears the connection down (`force_disconnect`).
+    shutdown: Arc<tokio::sync::Notify>,
+    write_task: JoinHandle<()>,
     _read_task: JoinHandle<()>,
     _push_tx: mpsc::Sender<Message>,
 }
@@ -171,10 +173,11 @@ impl RpcClient {
         let (tx, rx) = mpsc::channel::<WriteRequest>(256);
 
         let connected = Arc::new(AtomicBool::new(true));
+        let shutdown = Arc::new(tokio::sync::Notify::new());
 
         let write_connected = connected.clone();
         let write_pending = pending.clone();
-        let _write_task =
+        let write_task =
             tokio::spawn(Self::write_loop(rx, writer, write_pending, write_connected));
 
         let read_connected = connected.clone();
@@ -185,12 +188,14 @@ impl RpcClient {
             read_connected,
             disconnect_tx,
             push_tx.clone(),
+            shutdown.clone(),
         ));
 
         Inner {
             tx,
             connected,
-            _write_task,
+            shutdown,
+            write_task,
             _read_task,
             _push_tx: push_tx,
         }
@@ -297,7 +302,8 @@ impl RpcClient {
                 let inner = Inner {
                     tx,
                     connected,
-                    _write_task: tokio::spawn(async {}), // dummy task
+                    shutdown: Arc::new(tokio::sync::Notify::new()),
+                    write_task: tokio::spawn(async {}), // dummy task
                     _read_task: tokio::spawn(async {}),  // dummy task
                     _push_tx: push_tx,
                 };
@@ -466,6 +472,23 @@ impl RpcClient {
         }
     }
 
+    /// Tear the current connection down as if the peer had closed it: pending
+    /// calls fail immediately and a reconnecting client starts its usual
+    /// backoff reconnect. For when the caller has evidence the connection is
+    /// dead but the OS has not noticed, e.g. a heartbeat timeout on a path
+    /// that silently drops packets (issue #689), which TCP can take many
+    /// minutes to report.
+    pub async fn force_disconnect(&self) {
+        let inner = self.inner.lock().await;
+        inner.connected.store(false, Ordering::SeqCst);
+        // notify_one stores a permit, so the read loop sees it even if it is
+        // between two reads right now.
+        inner.shutdown.notify_one();
+        // The writer may be blocked on the dead socket's full send buffer;
+        // abort it rather than leak it until the kernel gives up.
+        inner.write_task.abort();
+    }
+
     pub async fn is_connected(&self) -> bool {
         self.inner.lock().await.connected.load(Ordering::SeqCst)
     }
@@ -617,13 +640,26 @@ impl RpcClient {
         connected: Arc<AtomicBool>,
         disconnect_tx: Option<oneshot::Sender<()>>,
         push_tx: mpsc::Sender<Message>,
+        shutdown: Arc<tokio::sync::Notify>,
     ) {
-        while let Ok(l) = reader.read_u32().await {
-            let len = l as usize;
-            let mut buf = vec![0u8; len];
-            if reader.read_exact(&mut buf).await.is_err() {
-                break;
-            }
+        loop {
+            // A frame read on a silently dead path (no RST/FIN) never completes,
+            // so it also races `shutdown`, which `force_disconnect` signals. The
+            // half-read frame is discarded together with the connection.
+            let read_frame = async {
+                let len = reader.read_u32().await? as usize;
+                let mut buf = vec![0u8; len];
+                reader.read_exact(&mut buf).await?;
+                Ok::<_, std::io::Error>(buf)
+            };
+            let buf = tokio::select! {
+                r = read_frame => match r {
+                    Ok(buf) => buf,
+                    Err(_) => break,
+                },
+                _ = shutdown.notified() => break,
+            };
+            let len = buf.len();
             let frame = match Frame::from_bytes(&buf) {
                 Ok(f) => f,
                 Err(e) => {
@@ -1145,5 +1181,116 @@ mod tests {
         assert!(matches!(resp, Message::Ack));
 
         server.await.unwrap();
+    }
+
+    /// TCP proxy that forwards both directions until `blackhole` is set, then
+    /// stops forwarding while keeping both sockets open: the peer sees no
+    /// RST/FIN, like a network path that silently died (issue #689).
+    async fn spawn_blackhole_proxy(
+        upstream: std::net::SocketAddr,
+        blackhole: Arc<std::sync::atomic::AtomicBool>,
+    ) -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (client, _) = listener.accept().await.unwrap();
+                let server = tokio::net::TcpStream::connect(upstream).await.unwrap();
+                let (cr, cw) = client.into_split();
+                let (sr, sw) = server.into_split();
+                for (mut r, mut w) in [
+                    (Box::new(cr) as Box<dyn tokio::io::AsyncRead + Unpin + Send>, Box::new(sw) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>),
+                    (Box::new(sr), Box::new(cw)),
+                ] {
+                    let bh = blackhole.clone();
+                    tokio::spawn(async move {
+                        let mut buf = vec![0u8; 8192];
+                        loop {
+                            let n = match r.read(&mut buf).await { Ok(0) | Err(_) => return, Ok(n) => n };
+                            if bh.load(Ordering::SeqCst) {
+                                // Swallow and hold the socket open forever.
+                                std::future::pending::<()>().await;
+                            }
+                            if w.write_all(&buf[..n]).await.is_err() { return; }
+                        }
+                    });
+                }
+            }
+        });
+        addr
+    }
+
+    /// Upstream server answering every frame with Ack.
+    async fn spawn_ack_server() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    while let Ok(frame) = read_frame(&mut stream).await {
+                        let reply = Frame { request_id: frame.request_id, payload: Message::Ack };
+                        if write_frame(&mut stream, &reply).await.is_err() { return; }
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    fn heartbeat_msg() -> Message {
+        Message::SessionEnd(omnish_protocol::message::SessionEnd {
+            session_id: "s".into(), timestamp_ms: 0, exit_code: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn test_blackholed_connection_is_not_detected_on_its_own() {
+        // Documents the transport gap behind issue #689: a path that silently
+        // dies yields no error, so `call` hangs and `connected` stays true.
+        let blackhole = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let proxy = spawn_blackhole_proxy(spawn_ack_server().await, blackhole.clone()).await;
+        let client = RpcClient::connect_with_reconnect(
+            &proxy.to_string(), None, |_c| Box::pin(async { Ok(()) }),
+        ).await.unwrap();
+        assert!(matches!(client.call(heartbeat_msg()).await.unwrap(), Message::Ack));
+
+        blackhole.store(true, Ordering::SeqCst);
+        let r = tokio::time::timeout(std::time::Duration::from_millis(500), client.call(heartbeat_msg())).await;
+        assert!(r.is_err(), "call must still be pending");
+        assert!(client.is_connected().await);
+    }
+
+    #[tokio::test]
+    async fn test_force_disconnect_fails_pending_calls_and_reconnects() {
+        let blackhole = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let proxy = spawn_blackhole_proxy(spawn_ack_server().await, blackhole.clone()).await;
+        let client = RpcClient::connect_with_reconnect(
+            &proxy.to_string(), None, |_c| Box::pin(async { Ok(()) }),
+        ).await.unwrap();
+        assert!(matches!(client.call(heartbeat_msg()).await.unwrap(), Message::Ack));
+
+        blackhole.store(true, Ordering::SeqCst);
+        let c2 = client.clone();
+        let pending = tokio::spawn(async move { c2.call(heartbeat_msg()).await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        client.force_disconnect().await;
+        let r = tokio::time::timeout(std::time::Duration::from_secs(1), pending)
+            .await
+            .expect("pending call must fail promptly after force_disconnect")
+            .unwrap();
+        assert!(r.is_err());
+        assert!(!client.is_connected().await);
+
+        // Path recovers: the reconnect loop (first retry after 1s) picks it up.
+        blackhole.store(false, Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !client.is_connected().await {
+            assert!(std::time::Instant::now() < deadline, "did not reconnect");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(matches!(client.call(heartbeat_msg()).await.unwrap(), Message::Ack));
     }
 }
