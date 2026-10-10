@@ -385,9 +385,15 @@ Langfuse可观测性配置结构体：
 - `DAILY_NOTES_PROMPT` - 每日工作总结的LLM提示（英文基底），以项目/目标为主线汇总各时段 `<hourly_summaries>`，通过 `append_language_instruction()` 注入目标语言
 - `HOURLY_NOTES_PROMPT` - 定期总结的LLM提示模板（英文基底），聚焦当前项目与目标进展，用"N小时"占位（实际间隔由配置决定），使用XML标签 `<commands>`、`<conversations>` 包裹上下文（issue #96），通过 `append_language_instruction()` 注入目标语言
 - `THREAD_SUMMARY_PROMPT` - 线程标题生成提示（英文基底），输出 ≤20 字标题；由 `append_language_instruction()` 决定输出语言
+- `THREAD_TITLE_WORD_PROMPT` - 从线程摘要派生一个小写英文单词，用作聊天模式下的 tmux 窗口标签；输出必须是英文，调用方不追加语言指令
+- `RESUME_SEARCH_PROMPT` - `/resume ?` 语义搜索提示（英文基底）。调用方在 context 中提供 `<threads>`（每个线程的 id、标题、用户提问），并把用户描述附在指令后。要求只输出 JSON 数组 `[{"thread_id", "score", "reason"}]`，`score` 为 0.0-1.0 的**绝对**评分（1.0 正中主题 / 0.7 实质讨论 / 0.4 简要涉及 / 0.2 顺带一提），明确要求不与同一请求中的其他线程相对比较，同一线程无论与哪些线程同批都应得同分，使分块后的多个请求结果可以合并全局排序（#685）
+- `COMPACT_TURN_PROMPT` - 完整 `/compact` 的主路径指令（#687）：作为最后一条 user 消息追加在原样重放的聊天请求之后（system prompt、tools、历史与聊天一致，以命中前缀缓存）。因为请求必须带 tools 才能保持前缀一致，指令开头明确要求停止任务、不要调用任何工具，只输出摘要
+- `COMPACT_PROMPT` - 完整 `/compact` 的回退路径指令：对话以纯文本 transcript 放在 `<conversation>` 中（重放请求失败时使用，如线程已接近上下文窗口）
+- `compact_requirements!` - 两个 compact 提示共用的摘要要求宏（`concat!` 拼接）：合并开头的上一条摘要、按 6 个小节（用户目标 / 关键事实 / 文件命令路径 / 错误与修复 / 当前状态 / 待办）组织、省略无内容的小节、只输出摘要。两个提示都由调用方追加 `append_language_instruction()`
+- `COMPACT_SUMMARY_HEADER` - 存储摘要消息时加在 LLM 摘要前的英文说明，让后续聊天模型知道这条消息是压缩摘要、应从它继续
 - `CHAT_PROMPT_JSON` - 编译内嵌的chat提示词JSON（来自`assets/chat.json`），通过`include_str!`编译到二进制
 - `CHAT_OVERRIDE_EXAMPLE` - `chat.override.json`示例文件内容（来自`assets/chat.override.json.example`）
-- `TEMPLATE_NAMES` - 已知模板名列表：`["chat", "chat-system", "auto-complete", "daily-notes", "hourly-notes"]`
+- `TEMPLATE_NAMES` - 已知模板名列表：`["chat", "chat-system", "auto-complete", "daily-notes", "hourly-notes", "compact"]`
 
 ### `append_language_instruction(prompt, language)`
 在提示词末尾追加语言指令。支持 `en`/`zh`/`zh-tw`/`ja`/`ko`/`fr`/`es`/`ar`，无匹配时回退英文。统一用于 daemon 端定时任务（daily/hourly/thread summary），保证 prompt 主体为英文基底、输出语言由 `daemon_config.client.language` 决定。
@@ -401,6 +407,7 @@ Langfuse可观测性配置结构体：
 - `auto-complete`: 使用 `build_simple_completion_content()` 渲染两种变体（空输入/有输入）
 - `chat-system`: 使用 `PromptManager::default_chat().build()` 返回完整chat系统提示词
 - `chat`: 由daemon处理，返回提示信息让用户使用 `/template chat` daemon请求（可显示实际工具定义）
+- `compact`: 依次展示主路径（重放聊天请求 + `COMPACT_TURN_PROMPT`）、回退路径（`<conversation>{transcript}</conversation>` + `COMPACT_PROMPT`）以及存储的摘要消息格式（`COMPACT_SUMMARY_HEADER` + `{summary}`）
 
 ## 使用示例
 
@@ -875,3 +882,18 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
    - 两端共享时间戳前缀以便排序与配对，Anthropic 与 OpenAI-compat 后端都在解析响应后调用 `log_response`
    - 滚动保留上限从 30 提升至 60（约 30 对）；移除 `diagnose_missing_text_content` 一次性诊断（被完整响应日志替代）
    - 文件名变化对外部按旧 `{ts}.json` 形态 grep 的脚本不向后兼容
+
+### 2026-10-09 - 完整 /compact 提示词、/resume ? 绝对评分（#685, #687）
+
+**主要变更:**
+
+1. **`/resume ?` 绝对评分** (commit 7915dc9, #685):
+   - `RESUME_SEARCH_PROMPT` 的输出从 `[{thread_id, reason}]` 改为 `[{thread_id, score, reason}]`，`score` 按带锚点的 0.0-1.0 绝对刻度评分，并明确要求不与同批其他线程相对比较
+   - 原因：daemon 将大量线程分块成多个请求，每个请求只能对自己看到的线程排序；绝对评分让各请求的结果可以合并后按 score 全局排序，而不是按分块（即按时间）排列
+
+2. **完整 /compact 提示词** (commit b3af451, d56fc9d, #687):
+   - 新增 `COMPACT_PROMPT`（transcript 形式）与 `COMPACT_SUMMARY_HEADER`，`TEMPLATE_NAMES` 增加 `compact`
+   - 新增 `COMPACT_TURN_PROMPT`：daemon 先原样重放上一轮聊天请求并在末尾追加该指令以复用前缀缓存（与 Claude Code 的做法一致），失败时才回退到 `COMPACT_PROMPT`
+   - 两个提示的摘要要求抽成 `compact_requirements!` 宏共用，避免两份文本漂移
+
+**相关 issue:** #685, #687

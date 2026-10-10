@@ -380,6 +380,14 @@ permit_rules = ["command starts_with glab", "command starts_with docker"]
 **参数:** `dir: &Path`, `os: &str`, `arch: &str`, `keep: usize`
 **行为:** 按版本降序排列，删除超出 `keep` 数量的旧包
 
+### `is_valid_package()`
+校验更新包是否为完整有效的 gzip 流（#657）。
+
+**参数:** `path: &Path`
+**返回:** `bool`
+**行为:** 完整解码 gzip 数据，从而校验尾部的 CRC-32 与 ISIZE 字段；零字节、被截断（例如 `scp` 拷贝到一半就被拾取）或不存在的文件都返回 `false`
+**用途:** 守护进程 `UpdateCache` 在扫描本地缓存时跳过损坏的包，并在把源包复制到缓存后、发布前校验临时文件。否则一个版本号最高的损坏包会让去重认为已是最新、安装又反复解压失败，自动更新被永久卡住
+
 ### `extract_version()` / `normalize_version()` / `compare_versions()`
 版本字符串工具函数：
 - `extract_version`: 从包文件名（如 `omnish-0.8.4-linux-x86_64.tar.gz`）提取版本号
@@ -448,6 +456,23 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 **用途:** 客户端连接时加载共享令牌
 **错误:** 文件不存在或为空时返回错误
 
+## host 模块
+
+客户端与守护进程共享的主机名比较（#683）。macOS 的 `gethostname()` 会因为是否启用 mDNS / `scutil HostName` 返回 `X` 或 `X.local`，而且在断网重连后可能来回切换；直接比较原始字符串会把同一台机器当成两台。所有主机名比较都必须经过这里。
+
+### `normalize_host()`
+**参数:** `h: &str`
+**返回:** `&str` - 去除首尾空白，并去掉末尾的 `.local`（不区分大小写，按字符边界切分）
+
+### `hosts_match()`
+**参数:** `a: &str`, `b: &str`
+**返回:** `bool` - 两个主机名经 `normalize_host()` 后按 ASCII 不区分大小写比较是否相同
+
+**调用方:**
+- 守护进程 `/resume` 列表的当前主机过滤（此前 `.local` 切换后会显示 "no conversations"）
+- 守护进程 `host_change_event()`：`.local` 切换视为同一台机器，不再向 LLM 报告主机变化（#679）
+- 客户端 `check_resume_mismatch()`：替换原先私有的重复实现
+
 ## 依赖关系
 - `serde`: 序列化/反序列化配置结构
 - `toml`: TOML配置文件解析
@@ -458,7 +483,7 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 - `hex`: 令牌hex编码
 - `serde_json`: `ConfigMap` 值类型支持（任务和插件配置）
 - `sha2`: SHA-256校验和计算（用于 `update` 模块）
-- `flate2`: gzip解压（用于 `update` 模块）
+- `flate2`: gzip解压与完整性校验（用于 `update` 模块）
 - `tar`: tar归档解压（用于 `update` 模块）
 - `tracing`: 日志记录（用于 `update` 模块）
 
@@ -494,3 +519,5 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 - **2026-04-09b**: `SandboxConfig` 新增 `backend` 字段（`"bwrap"` | `"landlock"` | `"macos"`），支持多后端沙箱选择，Linux 默认 `"bwrap"`，macOS 默认 `"macos"`。
 - **2026-04-23**: 新增 `plugin_bundle` 模块。`Bundle` 结构 + `build_bundle(plugins_dir)` 函数生成确定性 gzip tar（文件权限/mtime 归一化），守护进程与客户端复用同一打包逻辑（共享通过 omnish-common 而非各自实现）；客户端实时计算本地 checksum，使同主机部署不再触发自我变更同步。dotfile 在任意层级一律跳过（保留 `tool.override.json` 等本地编辑）。
 - **2026-04-09**: 配置架构重构--`proxy`/`no_proxy` 从顶层字段迁移到 `ProxyConfig` 结构（`[proxy]` 表），自定义反序列化支持旧版字符串格式向后兼容；`completion_enabled` 从 `ClientConfig` 迁移到 `ShellConfig`；新增 `extended_unicode` 配置项；`ConfigMap` 封装内部结构，新增 `defaults` 层和 `set_defaults()`/`get()`/`contains_key()`/`iter()` 方法；新增 `ClientSection` 结构支持守护进程到客户端的配置推送；`load_daemon_config()` 新增 `sanitize_toml()` 容错（处理重复表头和重复键）和 `normalize()` 旧格式迁移；新增 `string_or_bool` serde helper。
+- **2026-08-06**: `update` 模块新增 `is_valid_package()`，完整解码 gzip 以校验 CRC-32/ISIZE，供守护进程更新缓存跳过或拒绝零字节、截断的包，避免损坏包赢得去重后让自动更新永久卡住（#657）。
+- **2026-09-21**: 新增 `host` 模块（`normalize_host()` / `hosts_match()`），去掉 `.local` 后缀并按 ASCII 不区分大小写比较主机名；守护进程 `/resume` 当前主机过滤、`host_change_event()` 与客户端 `check_resume_mismatch()` 统一改用它，修复 macOS 断网重连后 `.local` 切换导致 `/resume` 看不到任何会话的问题（#683）。

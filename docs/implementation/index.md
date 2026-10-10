@@ -20,7 +20,8 @@
 - **load_client_config() / load_daemon_config()**：从配置文件或环境变量加载客户端/守护进程配置
 - **config_edit 模块**：格式保留地原地更新 TOML 键值，支持嵌套键值、数组增删改、表删除
 - **sandbox_rule 模块**：共享沙箱豁免规则工具函数（规则解析、匹配评估）
-- **update 模块**：SHA-256 校验和、本地更新包缓存、版本字符串提取与 semver 比较、解压更新包并运行安装器
+- **update 模块**：SHA-256 校验和、更新包完整性校验（完整解码 gzip）、本地更新包缓存、版本字符串提取与 semver 比较、解压更新包并运行安装器
+- **host 模块**：主机名规范化与比较（去掉 macOS `.local` 后缀、不区分大小写），客户端与守护进程的所有主机名比较统一经过它
 - **auth 模块**：认证令牌的路径获取、生成与加载，文件权限 0600
 - **plugin_bundle 模块**：插件包打包器，用于客户端镜像同步守护进程的 `~/.omnish/plugins/`
 - **配置加载优先级**：三级加载--环境变量指定路径 > 默认路径 > 内置默认值
@@ -52,10 +53,10 @@ RPC 传输层，处理 Unix socket 和 TCP 连接，提供客户端与守护进�
 
 - **重要数据结构**：`TransportAddr` 地址枚举、`RpcClient` 客户端结构（连接管理、请求 ID、ReplyTx 单响应/流响应模式、push_rx 推送接收）、`RpcServer` 服务器结构、`PushRegistry`/`OnPushConnect` 推送机制、TLS 支持、`Frame` 消息帧
 - **地址解析 parse_addr()**：解析地址字符串为 TransportAddr，支持 Unix socket 路径、TCP 地址、显式协议前缀等多种格式
-- **客户端连接 API**：connect/connect_unix/connect_tcp 显式协议连接、connect_with_reconnect 自动重连、call 单响应请求、send fire-and-forget、call_stream 多响应流式接收
+- **客户端连接 API**：connect/connect_unix/connect_tcp 显式协议连接、connect_with_reconnect 自动重连、call 单响应请求、send fire-and-forget、try_send 非阻塞发送（热路径遥测）、call_stream 多响应流式接收
 - **服务器 API**：bind/bind_unix/bind_tcp 地址绑定与监听、serve 连接处理（支持认证令牌、TLS、PushRegistry 推送和 OnPushConnect 回调）
 - **客户端内部机制**：读写分离、原子请求 ID、指数退避重连（支持 PermanentFailure 阈值终止）、ReplyTx 响应分发
-- **服务器内部机制**：每连接独立异步任务、边接收边写入的流式转发、EMFILE/ENFILE fd 耗尽诊断
+- **服务器内部机制**：每连接独立异步任务、边接收边写入的流式转发、推送由独立任务写出（避免双向流控死锁）、EMFILE/ENFILE fd 耗尽诊断
 - **消息传输协议**：帧格式 `[u32长度][序列化数据]`、request_id 请求-响应匹配、多消息流式传输（Ack 结束标记）
 - **多消息流式传输机制**：ReplyTx 枚举区分 Once/Stream 模式、mpsc 通道容量 128、背压机制
 - **协议版本校验**：Auth 消息携带 protocol_version、versions_compatible() 兼容范围检查、帧反序列化失败时优雅跳过
@@ -122,7 +123,7 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **LangfuseBackend（可观测性）**：装饰器模式包装任意后端，异步发送 trace/generation 事件到 Langfuse
 - **请求/响应日志（message_log）**：成对记录 Chat 类型请求与响应的 JSON payload
 - **工厂函数**：根据配置创建后端实例；per-backend use_proxy 控制代理；effective_max_content_chars 推导
-- **提示模板（template）**：build_user_content 构建用户提示，`build_completion_parts` 构建补全提示，定期总结和线程摘要提示模板（支持多语言指令）
+- **提示模板（template）**：build_user_content 构建用户提示，`build_completion_parts` 构建补全提示，定期总结、线程摘要、`/resume ?` 搜索（绝对评分）与完整 `/compact`（重放请求指令与 transcript 回退）提示模板（支持多语言指令）
 - **配置结构**：后端配置（类型/模型/API 密钥命令/base_url/use_proxy/context_window），Langfuse 配置，全局 proxy/no_proxy
 
 ## omnish-tracker
