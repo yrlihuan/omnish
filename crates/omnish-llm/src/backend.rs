@@ -241,6 +241,11 @@ pub trait LlmBackend: Send + Sync {
     fn supports_vision(&self) -> bool {
         true
     }
+    /// Context window of the model in tokens, from the backend config. Drives
+    /// auto compaction of chat threads (issue #691); None disables it.
+    fn context_window(&self) -> Option<usize> {
+        None
+    }
     /// Model name of this backend.
     fn model_name(&self) -> &str;
 }

@@ -9,7 +9,7 @@
 - **ShellConfig**：Shell 行为配置，含命令/前缀/拦截间隔/ghost-text 超时/开发者模式/补全开关/extended_unicode/language
 - **ProxyConfig**：代理配置（http_proxy/no_proxy），支持旧版字符串格式向后兼容反序列化
 - **ClientSection**：守护进程端客户端配置，通过 ConfigClient 消息推送到客户端
-- **LlmConfig / LlmBackendConfig / LangfuseConfig**：LLM 后端选择、模型参数、API 密钥获取方式及 Langfuse 可观测性集成；均派生 PartialEq 用于热重载差异检测；LlmBackendConfig 含 per-backend use_proxy、context_window 和 supports_vision
+- **LlmConfig / LlmBackendConfig / LangfuseConfig**：LLM 后端选择、模型参数、API 密钥获取方式及 Langfuse 可观测性集成；均派生 PartialEq 用于热重载差异检测；LlmBackendConfig 含 per-backend use_proxy、context_window 和 supports_vision；LlmConfig 含 auto_compact_percent 自动压缩阈值
 - **ContextConfig / CompletionContextConfig**：补全上下文构建参数，含详细命令数、历史命令数、输出截断行数、弹性窗口范围
 - **ConfigMap**：动态键值配置，维护 values + defaults 双层查询，序列化输出合并视图
 - **TasksConfig**：类型别名 `HashMap<String, ConfigMap>`，每个任务以名称为键，默认值通过 set_defaults() 注入
@@ -121,6 +121,7 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **AnthropicBackend**：Anthropic Messages API 后端，支持多轮对话、思考模式（签名保留）、工具调用、提示缓存（最多 4 个 cache_control 断点，带预算强制执行与最后 N 标记保留策略）、自动重试
 - **OpenAI-compat 后端**：兼容 OpenAI Chat Completions API，支持多轮对话、工具调用、思考块捕获、工具结果图片转 `image_url`
 - **图片输入**：`supports_vision()` 能力开关，不支持看图的后端经 `omit_images()` 把图片替换为占位文字
+- **上下文窗口**：`context_window()` 暴露后端配置的窗口大小，供守护进程判断自动压缩
 - **MultiBackend（多后端路由）**：根据 UseCase 路由请求；SharedLlmBackend 类型别名支持热重载；from_single() 便于测试
 - **LangfuseBackend（可观测性）**：装饰器模式包装任意后端，异步发送 trace/generation 事件到 Langfuse
 - **请求/响应日志（message_log）**：成对记录 Chat 类型请求与响应的 JSON payload
@@ -180,6 +181,7 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **SessionManager**：会话生命周期管理（注册、结束、驱逐），I/O 数据流写入（stream.bin writer lazy open / 空闲关闭以释放 fd），命令记录存储，补全上下文构建（弹性窗口+KV cache 预热），补全采样，后台 JSONL 写入线程
 - **ClientsHistory**：持久化客户端连接历史，供 deploy 菜单使用
 - **ConversationManager**：多轮聊天线程管理（创建、存储、加载、删除、compact_thread mini 压缩、完整压缩摘要追加与 `_compact` 边界加载），JSONL 文件+内存双写，per-thread project_instructions 缓存，线程元数据（含用量统计、system_reminder 变更检测、sandbox_disabled per-thread 沙箱覆盖、title_override 用户重命名）
+- **自动压缩**：上下文达到后端 `context_window` 的 `auto_compact_percent`（默认 90%）时，在轮前或 agent loop 两次 LLM 调用之间自动完整压缩，用量按上次调用的 token 数加新增消息估算
 - **PluginManager**：元数据驱动的插件系统，从 tool.json 加载工具定义，DaemonTool/ClientTool 双类型分发，tool.override.json 描述覆盖与热重载（inotify/轮询），内嵌资源自动安装；插件目录变更时自动激活/卸载工具
 - **PluginBundler 与 PluginBundleTask**：守护进程侧插件包打包，作为定时任务定期重建，供客户端镜像同步
 - **ToolRegistry**：统一工具元数据注册表，启动时填充后以 Arc 共享只读，支持运行时描述覆盖和热重载原子更新

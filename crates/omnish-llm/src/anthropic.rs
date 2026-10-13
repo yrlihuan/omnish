@@ -24,6 +24,8 @@ pub struct AnthropicBackend {
     pub max_content_chars: Option<usize>,
     /// From the backend config (`supports_vision`, default true).
     pub supports_vision: bool,
+    /// From the backend config (`context_window`, tokens).
+    pub context_window: Option<usize>,
 }
 
 impl AnthropicBackend {
@@ -469,6 +471,10 @@ impl LlmBackend for AnthropicBackend {
     fn supports_vision(&self) -> bool {
         self.supports_vision
     }
+
+    fn context_window(&self) -> Option<usize> {
+        self.context_window
+    }
 }
 
 #[cfg(test)]
@@ -689,6 +695,7 @@ mod tests {
             client: reqwest::Client::new(),
             max_content_chars: None,
             supports_vision,
+            context_window: None,
         }
     }
 

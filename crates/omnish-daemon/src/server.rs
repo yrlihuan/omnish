@@ -124,6 +124,9 @@ struct AgentLoopState {
     /// Start time of each tool dispatched in this loop, keyed by tool_call_id.
     /// Used to report the earliest unfinished tool's runtime on interrupt.
     tool_started: HashMap<String, std::time::Instant>,
+    /// Set when an auto compaction in this loop failed, so it is not retried
+    /// before every remaining LLM call (issue #691).
+    auto_compact_failed: bool,
 }
 
 impl AgentLoopState {
@@ -1730,6 +1733,10 @@ async fn handle_chat_message(
 
     let max_context_chars = effective_backend.max_content_chars();
 
+    // Compact first when the thread is near the context window (issue #691).
+    // Must run before the meta below is rewritten for this turn.
+    auto_compact_before_turn(&cm, ctx, &effective_backend, &tx).await;
+
     let ChatSetup { command_query_tool, tools, system_prompt } =
         build_chat_setup(mgr, tool_registry).await;
 
@@ -1890,6 +1897,7 @@ async fn handle_chat_message(
         generation,
         llm_call_started: None,
         tool_started: HashMap::new(),
+        auto_compact_failed: false,
     };
 
     run_agent_loop(state, ctx, tx, cancel_flag).await;
@@ -2212,6 +2220,62 @@ async fn is_superseded(state: &AgentLoopState, ctx: &HandlerCtx) -> bool {
     }
 }
 
+/// Auto compaction between the LLM calls of an agent turn (issue #691).
+/// Checked only once this loop has a response: its reported usage covers the
+/// request up to that response, and the tool results appended since are
+/// estimated. On compaction the unsaved messages are persisted first, the
+/// summary replays this loop's own system prompt and tools, and the request
+/// restarts from the new window (the summary, which asks the model to resume
+/// the task). Returns true when the thread was compacted.
+async fn auto_compact_mid_turn(
+    state: &mut AgentLoopState,
+    ctx: &HandlerCtx,
+    tx: &mpsc::Sender<Message>,
+) -> bool {
+    if state.auto_compact_failed {
+        return false;
+    }
+    let u = &state.last_response_usage;
+    let Some(last_usage) = usage_tokens(u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens, u.output_tokens) else {
+        return false;
+    };
+    let percent = auto_compact_percent(ctx);
+    let Some(context_window) = state.effective_backend.context_window().filter(|_| percent > 0) else {
+        return false;
+    };
+    let refs: Vec<&serde_json::Value> = state.llm_req.extra_messages.iter().map(|m| &m.content).collect();
+    let used = omnish_daemon::compact::estimate_context_tokens(Some(last_usage), &refs);
+    let messages = omnish_daemon::compact::estimate_context_tokens(None, &refs);
+    if !omnish_daemon::compact::auto_compact_due(used, messages, Some(context_window), percent) {
+        return false;
+    }
+    // Never write for a loop a newer message has superseded.
+    if is_superseded(state, ctx).await {
+        return false;
+    }
+    persist_unsaved(state, &ctx.conv_mgr, &[]);
+    let replay = CompactReplay {
+        system_prompt: state.llm_req.system_prompt.as_ref().map(|p| p.text.clone()).unwrap_or_default(),
+        tools: state.llm_req.tools.clone(),
+    };
+    let backend = state.effective_backend.clone();
+    let tid = state.cm.thread_id.clone();
+    if !run_auto_compact(&state.cm, ctx, &backend, used, context_window, CompactTrigger::AutoMidTurn, Some(replay), tx).await {
+        state.auto_compact_failed = true;
+        return false;
+    }
+    let mut window = ctx.conv_mgr.load_raw_messages(&tid);
+    ctx.conv_mgr.apply_mini_compact_view(&tid, &mut window);
+    state.saved_up_to = window.len();
+    state.llm_req.extra_messages = window
+        .into_iter()
+        .map(|content| omnish_llm::backend::TaggedMessage::new(content, omnish_llm::backend::CacheHint::None))
+        .collect();
+    // The reported usage measured the replaced context.
+    state.last_response_usage = Default::default();
+    true
+}
+
 /// Core agent loop: calls LLM, executes tools, pauses on client-side tools.
 /// Used by both `handle_chat_message` (initial) and `handle_tool_result` (resumption).
 /// Messages are sent incrementally through `tx` as they're produced (streaming).
@@ -2227,7 +2291,7 @@ async fn run_agent_loop(
     let formatter_mgr = &ctx.formatter_mgr;
     let pending_loops = &ctx.pending_loops;
     let opts = &ctx.opts;
-    let backend = &state.effective_backend;
+    let backend = state.effective_backend.clone();
 
     let max_iterations = 100;
 
@@ -2242,6 +2306,11 @@ async fn run_agent_loop(
         if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
             tracing::info!("Agent loop cancelled by user at iteration {} (thread={})", iteration, state.cm.thread_id);
             persist_unsaved_sanitized(&mut state, ctx).await;
+            return;
+        }
+
+        // Compact when tool results pushed the context near the window.
+        if auto_compact_mid_turn(&mut state, ctx, &tx).await && is_superseded(&state, ctx).await {
             return;
         }
 
@@ -3077,6 +3146,34 @@ fn compact_summary_from_response(resp: &omnish_llm::backend::LlmResponse) -> Res
     Ok(summary)
 }
 
+/// What triggered a full compaction.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum CompactTrigger {
+    /// The `/compact` command.
+    Command,
+    /// Auto compaction before a new user message is added (issue #691).
+    AutoBeforeTurn,
+    /// Auto compaction between LLM calls of an agent turn (issue #691): the
+    /// summary must tell the model to resume the task on its own.
+    AutoMidTurn,
+}
+
+/// System prompt and tools a compaction replays, for the cache-friendly
+/// request. The agent loop passes what its own request carries; otherwise
+/// they are rebuilt from the thread meta.
+struct CompactReplay {
+    system_prompt: String,
+    tools: Vec<omnish_llm::tool::ToolDef>,
+}
+
+/// Backend a thread chats with: its per-thread model override, else the chat
+/// use case's backend.
+fn thread_backend(llm: &MultiBackend, conv_mgr: &ConversationManager, tid: &str) -> Arc<dyn LlmBackend> {
+    conv_mgr.load_meta(tid).model.as_ref()
+        .and_then(|name| llm.get_backend_by_name(name))
+        .unwrap_or_else(|| llm.get_backend(UseCase::Chat))
+}
+
 /// Full context compaction (issue #687): summarize the live window with the
 /// thread's chat model and append the summary as a `_compact` user message.
 /// Nothing is deleted; `load_raw_messages` starts from the new message.
@@ -3089,7 +3186,9 @@ async fn full_compact_thread(
     tid: &str,
     session_id: &str,
     ctx: &HandlerCtx,
-    llm: &Arc<MultiBackend>,
+    backend: &Arc<dyn LlmBackend>,
+    trigger: CompactTrigger,
+    replay: Option<CompactReplay>,
 ) -> Result<Option<FullCompactOutcome>, String> {
     use omnish_daemon::compact;
     let conv_mgr = &ctx.conv_mgr;
@@ -3103,10 +3202,7 @@ async fn full_compact_thread(
     // the replay matches the cached prefix.
     conv_mgr.apply_mini_compact_view(tid, &mut window);
 
-    let meta = conv_mgr.load_meta(tid);
-    let backend: Arc<dyn LlmBackend> = meta.model.as_ref()
-        .and_then(|name| llm.get_backend_by_name(name))
-        .unwrap_or_else(|| llm.get_backend(UseCase::Chat));
+    let mut meta = conv_mgr.load_meta(tid);
     let max_content_chars = backend.max_content_chars();
     let language = ctx.opts.daemon_config.read().unwrap().client.language.clone();
 
@@ -3114,18 +3210,27 @@ async fn full_compact_thread(
     // instructions come from the thread meta (what that turn actually sent),
     // not rebuilt, so e.g. a date change does not break the prefix. Threads
     // last chatted before this was recorded rebuild the reminder instead.
-    let ChatSetup { command_query_tool, tools, system_prompt } =
-        build_chat_setup(&ctx.session_mgr, &ctx.tool_registry).await;
-    let reminder = match meta.system_reminder.clone() {
+    let CompactReplay { system_prompt, tools } = match replay {
         Some(r) => r,
         None => {
-            let attrs = ctx.session_mgr.get_session_attrs(session_id).await;
-            command_query_tool.build_system_reminder(session_id, 5, &attrs, false)
+            let ChatSetup { command_query_tool, tools, system_prompt } =
+                build_chat_setup(&ctx.session_mgr, &ctx.tool_registry).await;
+            let reminder = match meta.system_reminder.clone() {
+                Some(r) => r,
+                None => {
+                    let attrs = ctx.session_mgr.get_session_attrs(session_id).await;
+                    command_query_tool.build_system_reminder(session_id, 5, &attrs, false)
+                }
+            };
+            CompactReplay {
+                system_prompt: compose_chat_system_prompt(&system_prompt, &reminder, meta.project_instructions.as_deref()),
+                tools,
+            }
         }
     };
     let turn_req = build_compact_turn_request(
         &window,
-        compose_chat_system_prompt(&system_prompt, &reminder, meta.project_instructions.as_deref()),
+        system_prompt,
         tools,
         &omnish_llm::template::append_language_instruction(
             omnish_llm::template::COMPACT_TURN_PROMPT,
@@ -3134,7 +3239,7 @@ async fn full_compact_thread(
         session_id,
         max_content_chars,
     );
-    tracing::info!("Full compaction of thread {}: replaying {} messages", tid, window.len());
+    tracing::info!("Full compaction ({:?}) of thread {}: replaying {} messages", trigger, tid, window.len());
     let primary = match omnish_daemon::llm_pool::complete(backend.as_ref(), &turn_req).await {
         Ok(resp) => compact_summary_from_response(&resp).map(|s| (s, resp.usage)),
         Err(e) => Err(format!("LLM request failed: {}", e)),
@@ -3156,16 +3261,133 @@ async fn full_compact_thread(
         }
     };
 
-    let text = format!("{}\n\n{}", omnish_llm::template::COMPACT_SUMMARY_HEADER, summary);
-    let msg = compact::make_compact_message(&text, ConversationManager::now_ms());
+    let mut text = format!("{}\n\n{}", omnish_llm::template::COMPACT_SUMMARY_HEADER, summary);
+    if trigger == CompactTrigger::AutoMidTurn {
+        text.push_str("\n\n");
+        text.push_str(omnish_llm::template::COMPACT_CONTINUE_HINT);
+    }
+    let mut msg = compact::make_compact_message(&text, ConversationManager::now_ms());
+    if trigger != CompactTrigger::Command {
+        msg[compact::COMPACT_AUTO_FIELD] = serde_json::json!(true);
+    }
     let chars_before = compact::messages_chars(&window);
     let chars_after = compact::messages_chars(std::slice::from_ref(&msg));
     conv_mgr.append_compact_summary(tid, total, msg)?;
+    // The last call's usage measured the context that was just replaced; drop
+    // it so auto compaction estimates the new window instead of re-firing.
+    meta = conv_mgr.load_meta(tid);
+    meta.usage_last = None;
+    conv_mgr.save_meta(tid, &meta);
     tracing::info!(
         "Compacted thread {}: context {} -> {} chars, usage {:?}, fallback {:?}",
         tid, chars_before, chars_after, usage, fallback
     );
     Ok(Some(FullCompactOutcome { chars_before, chars_after, usage, fallback }))
+}
+
+/// Total tokens of an LLM call (input, cached and output), the size of the
+/// context it leaves behind. None when the provider reported nothing.
+fn usage_tokens(input: u64, cache_read: u64, cache_creation: u64, output: u64) -> Option<u64> {
+    Some(input + cache_read + cache_creation + output).filter(|&n| n > 0)
+}
+
+/// Auto compaction threshold from the daemon config (issue #691).
+fn auto_compact_percent(ctx: &HandlerCtx) -> u32 {
+    ctx.opts.daemon_config.read().unwrap().llm.auto_compact_percent
+}
+
+/// Stream a one-line progress note into the chat turn (rendered like LLM
+/// intermediate text).
+async fn send_chat_note(tx: &mpsc::Sender<Message>, cm: &ChatMessage, text: String) {
+    let _ = tx.send(Message::ChatToolStatus(ChatToolStatus {
+        request_id: cm.request_id.clone(),
+        thread_id: cm.thread_id.clone(),
+        tool_name: String::new(),
+        status: text,
+        tool_call_id: None,
+        status_icon: None,
+        display_name: None,
+        param_desc: None,
+        result_compact: None,
+        result_full: None,
+    })).await;
+}
+
+/// Run an auto compaction (issue #691) whose threshold check already passed,
+/// reporting progress on `tx`. Failures are logged and reported; the caller
+/// carries on with the uncompacted context. Returns true when compacted.
+#[allow(clippy::too_many_arguments)]
+async fn run_auto_compact(
+    cm: &ChatMessage,
+    ctx: &HandlerCtx,
+    backend: &Arc<dyn LlmBackend>,
+    used: u64,
+    context_window: usize,
+    trigger: CompactTrigger,
+    replay: Option<CompactReplay>,
+    tx: &mpsc::Sender<Message>,
+) -> bool {
+    let pct = used * 100 / context_window.max(1) as u64;
+    tracing::info!(
+        "Auto compaction ({:?}) of thread {}: ~{} of {} tokens ({}%)",
+        trigger, cm.thread_id, used, context_window, pct
+    );
+    send_chat_note(tx, cm, format!(
+        "Context at {}% of {} tokens, compacting...",
+        pct, format_count(context_window as u64)
+    )).await;
+    match full_compact_thread(&cm.thread_id, &cm.session_id, ctx, backend, trigger, replay).await {
+        Ok(Some(o)) => {
+            send_chat_note(tx, cm, format!(
+                "Context compacted: {} -> {} chars (-{:.0}%)",
+                format_count(o.chars_before as u64),
+                format_count(o.chars_after as u64),
+                shrink_pct(o.chars_before, o.chars_after)
+            )).await;
+            true
+        }
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!("Auto compaction of thread {} failed: {}", cm.thread_id, e);
+            send_chat_note(tx, cm, format!("Auto compaction failed: {}", e)).await;
+            false
+        }
+    }
+}
+
+/// Auto compaction before a user message is added to the thread (issue
+/// #691). The estimate is the last call's reported usage plus the messages
+/// after it and the new query. Runs before the chat turn rewrites the thread
+/// meta, so the replay uses the system prompt of the turn that filled the
+/// cache. The query is then merged into the summary message as usual.
+async fn auto_compact_before_turn(
+    cm: &ChatMessage,
+    ctx: &HandlerCtx,
+    backend: &Arc<dyn LlmBackend>,
+    tx: &mpsc::Sender<Message>,
+) {
+    let percent = auto_compact_percent(ctx);
+    let Some(context_window) = backend.context_window().filter(|_| percent > 0) else {
+        return;
+    };
+    // A loop parked on client tools owns the thread tail; leave it alone (the
+    // /compact command refuses in the same case).
+    if ctx.pending_loops.lock().await.values().any(|s| s.cm.thread_id == cm.thread_id) {
+        return;
+    }
+    let conv_mgr = &ctx.conv_mgr;
+    let window = conv_mgr.load_raw_messages(&cm.thread_id);
+    let last_usage = conv_mgr.load_meta(&cm.thread_id).usage_last.and_then(|u| {
+        usage_tokens(u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens, u.output_tokens)
+    });
+    let refs: Vec<&serde_json::Value> = window.iter().collect();
+    let query_tokens = cm.query.len().div_ceil(4) as u64;
+    let used = omnish_daemon::compact::estimate_context_tokens(last_usage, &refs) + query_tokens;
+    let messages = omnish_daemon::compact::estimate_context_tokens(None, &refs);
+    if !omnish_daemon::compact::auto_compact_due(used, messages, Some(context_window), percent) {
+        return;
+    }
+    run_auto_compact(cm, ctx, backend, used, context_window, CompactTrigger::AutoBeforeTurn, None, tx).await;
 }
 
 /// Command output for a full compaction.
@@ -3238,9 +3460,14 @@ async fn reconstruct_history(
                         // (not `llm_text`) so the client renders the summary's
                         // markdown like any final assistant reply.
                         if omnish_daemon::compact::is_compact_summary_block(msg, idx) {
+                            let label = if omnish_daemon::compact::is_auto_compact_message(msg) {
+                                "/compact (auto)"
+                            } else {
+                                "/compact"
+                            };
                             entries.push(serde_json::json!({
                                 "type": "user_input",
-                                "text": "/compact",
+                                "text": label,
                             }));
                             entries.push(serde_json::json!({
                                 "type": "response",
@@ -3590,7 +3817,8 @@ async fn handle_builtin_command(req: &Request, ctx: &HandlerCtx, llm_backend: &A
         // so it discards its work instead of appending to the rewritten file.
         bump_generation(&ctx.thread_generations, tid).await;
         if full {
-            return match full_compact_thread(tid, &req.session_id, ctx, llm_backend).await {
+            let backend = thread_backend(llm_backend, conv_mgr, tid);
+            return match full_compact_thread(tid, &req.session_id, ctx, &backend, CompactTrigger::Command, None).await {
                 Ok(Some(outcome)) => cmd_display(format_full_compact(&outcome)),
                 Ok(None) => cmd_display("nothing to compact"),
                 Err(e) => cmd_display(format!("Error: {}", e)),
@@ -6030,6 +6258,18 @@ mod tests {
         assert_eq!(pairs[1], ("response", "THE SUMMARY"));
         assert_eq!(pairs[2], ("separator", ""));
         assert_eq!(pairs[3], ("user_input", "next q"));
+
+        // An auto compaction (issue #691) is labeled as such.
+        let mut auto = omnish_daemon::compact::make_compact_message("S", 1);
+        auto[omnish_daemon::compact::COMPACT_AUTO_FIELD] = serde_json::json!(true);
+        let h = reconstruct_history(&[auto], &registry, &formatter).await;
+        assert_eq!(h[0]["text"], "/compact (auto)");
+    }
+
+    #[test]
+    fn test_usage_tokens() {
+        assert_eq!(usage_tokens(10, 20, 30, 40), Some(100));
+        assert_eq!(usage_tokens(0, 0, 0, 0), None);
     }
 
     fn compact_test_response(content: Vec<ContentBlock>) -> omnish_llm::backend::LlmResponse {

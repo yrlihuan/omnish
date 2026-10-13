@@ -20,6 +20,8 @@ pub struct OpenAiCompatBackend {
     pub max_content_chars: Option<usize>,
     /// From the backend config (`supports_vision`, default true).
     pub supports_vision: bool,
+    /// From the backend config (`context_window`, tokens).
+    pub context_window: Option<usize>,
 }
 
 /// Messages for a multi-turn request: internal fields stripped, images
@@ -604,6 +606,10 @@ impl LlmBackend for OpenAiCompatBackend {
 
     fn supports_vision(&self) -> bool {
         self.supports_vision
+    }
+
+    fn context_window(&self) -> Option<usize> {
+        self.context_window
     }
 }
 

@@ -123,6 +123,13 @@ pub const COMPACT_SUMMARY_HEADER: &str =
     "This conversation was compacted to save context. The summary below covers everything before \
      this point; continue from it.";
 
+/// Appended to the summary when auto compaction (issue #691) ran in the middle
+/// of an agent turn: the summary is then the whole request, so the model must
+/// resume the task on its own instead of waiting for a new user message.
+pub const COMPACT_CONTINUE_HINT: &str =
+    "The compaction happened in the middle of your work on the user's latest request. Continue \
+     that work from where it left off, without asking the user to repeat anything.";
+
 /// The thread-title-word LLM prompt - derives a single short English word from
 /// an existing thread summary. Used as the tmux window label during chat mode.
 /// Output MUST be English; the caller does not append a language instruction.
@@ -187,8 +194,9 @@ pub fn template_by_name(name: &str) -> Option<String> {
         "compact" => Some(format!(
             "[primary: replay of the chat request (same system prompt, tools, history) + final user message]\n{}\n\n\
              [fallback: transcript request]\n[context]\n<conversation>\n{{transcript}}\n</conversation>\n\n[query]\n{}\n\n\
-             [stored summary message]\n{}\n\n{{summary}}",
-            COMPACT_TURN_PROMPT, COMPACT_PROMPT, COMPACT_SUMMARY_HEADER
+             [stored summary message]\n{}\n\n{{summary}}\n\n\
+             [appended when auto compaction ran mid-turn]\n{}",
+            COMPACT_TURN_PROMPT, COMPACT_PROMPT, COMPACT_SUMMARY_HEADER, COMPACT_CONTINUE_HINT
         )),
         _ => None,
     }

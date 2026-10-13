@@ -112,6 +112,10 @@ impl LlmBackend for LangfuseBackend {
         self.inner.supports_vision()
     }
 
+    fn context_window(&self) -> Option<usize> {
+        self.inner.context_window()
+    }
+
     fn model_name(&self) -> &str {
         self.inner.model_name()
     }

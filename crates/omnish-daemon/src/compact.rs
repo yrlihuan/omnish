@@ -10,7 +10,8 @@
 //! - full (`/compact`, issue #687): an LLM summary of the live context is
 //!   appended as a user message tagged `_compact`. Nothing is deleted; the LLM
 //!   context is rebuilt from the last such message onward, see
-//!   `compact_boundary`.
+//!   `compact_boundary`. Also triggered automatically when the context nears
+//!   the model's window (issue #691), see `estimate_context_tokens`.
 
 /// Recent rounds (real user inputs counted from the tail) whose tool results
 /// are never compacted.
@@ -251,6 +252,10 @@ pub fn apply_mini_compact(
 /// chat path merged into it (it is a user-role tail until answered).
 pub const COMPACT_FIELD: &str = "_compact";
 
+/// Message-level internal field set (with `_compact`) on a summary produced
+/// by auto compaction (issue #691) rather than the `/compact` command.
+pub const COMPACT_AUTO_FIELD: &str = "_compact_auto";
+
 /// Per-block caps when rendering the transcript sent to the summarizer.
 const TRANSCRIPT_TEXT_MAX: usize = 8000;
 const TRANSCRIPT_TOOL_INPUT_MAX: usize = 800;
@@ -259,6 +264,11 @@ const TRANSCRIPT_TOOL_RESULT_MAX: usize = 2000;
 /// True when `msg` is a full-compaction summary message.
 pub fn is_compact_message(msg: &serde_json::Value) -> bool {
     msg[COMPACT_FIELD].as_bool() == Some(true)
+}
+
+/// True when `msg` is a summary written by auto compaction.
+pub fn is_auto_compact_message(msg: &serde_json::Value) -> bool {
+    is_compact_message(msg) && msg[COMPACT_AUTO_FIELD].as_bool() == Some(true)
 }
 
 /// True when content block `idx` of `msg` is the compaction summary itself
@@ -314,6 +324,76 @@ pub fn append_compact_instruction(msgs: &mut Vec<serde_json::Value>, instruction
             crate::conversation_mgr::merge_user_query_into_tail(tail, instruction, now_ms);
         }
         _ => msgs.push(serde_json::json!({ "role": "user", "content": instruction })),
+    }
+}
+
+/// Token estimate for an image block. Providers bill an image by its pixel
+/// count (Anthropic: about w*h/750, capped near 1600 after their resize), not
+/// by its base64 size, so images are counted at this flat rate.
+pub const IMAGE_TOKEN_ESTIMATE: usize = 1600;
+
+/// Rough token count of one stored message: UTF-8 bytes of its strings / 4
+/// (about 1 token per English word piece, 0.75 per CJK char), images at
+/// [`IMAGE_TOKEN_ESTIMATE`]. Internal `_` fields are skipped.
+pub fn estimate_message_tokens(msg: &serde_json::Value) -> usize {
+    fn bytes(v: &serde_json::Value, images: &mut usize) -> usize {
+        match v {
+            serde_json::Value::String(s) => s.len(),
+            serde_json::Value::Array(a) => a.iter().map(|x| bytes(x, images)).sum(),
+            serde_json::Value::Object(o) => {
+                if o.get("type").and_then(|t| t.as_str()) == Some("image") {
+                    *images += 1;
+                    return 0;
+                }
+                o.iter()
+                    .filter(|(k, _)| !k.starts_with('_'))
+                    .map(|(_, x)| bytes(x, images))
+                    .sum()
+            }
+            _ => 0,
+        }
+    }
+    let mut images = 0;
+    let n = bytes(msg, &mut images);
+    n.div_ceil(4) + images * IMAGE_TOKEN_ESTIMATE
+}
+
+/// Estimated context size in tokens of a chat request built from `msgs`, for
+/// auto compaction (issue #691). `last_usage` is the total tokens (input,
+/// cached and output) the provider reported for the most recent LLM call on
+/// this context; it already covers everything up to and including the last
+/// assistant message, so only the messages after it are estimated. Without
+/// it the whole list is estimated.
+pub fn estimate_context_tokens(last_usage: Option<u64>, msgs: &[&serde_json::Value]) -> u64 {
+    let tail = match last_usage {
+        Some(_) => {
+            let last_assistant = msgs
+                .iter()
+                .rposition(|m| m["role"].as_str() == Some("assistant"));
+            match last_assistant {
+                Some(i) => &msgs[i + 1..],
+                None => msgs,
+            }
+        }
+        None => msgs,
+    };
+    let estimated: usize = tail.iter().map(|m| estimate_message_tokens(m)).sum();
+    last_usage.unwrap_or(0) + estimated as u64
+}
+
+/// True when auto compaction should run: `used` tokens reach `percent`% of
+/// `context_window`, and the messages themselves (`messages`, estimated
+/// tokens of the live window) are at least half of that threshold. The rest
+/// of `used` is the system prompt and tools, which a summary cannot shrink;
+/// without the second check a context dominated by them would be compacted
+/// before every LLM call. A zero percent or an unknown window disables it.
+pub fn auto_compact_due(used: u64, messages: u64, context_window: Option<usize>, percent: u32) -> bool {
+    match context_window {
+        Some(cw) if cw > 0 && percent > 0 => {
+            let threshold = cw as u64 * percent as u64;
+            used * 100 >= threshold && messages * 200 >= threshold
+        }
+        _ => false,
     }
 }
 
@@ -634,6 +714,64 @@ mod tests {
         assert!(!is_compact_summary_block(&m, 1));
         assert!(!is_compact_message(&user_text("x")));
         assert!(!is_compact_summary_block(&user_text("x"), 0));
+    }
+
+    #[test]
+    fn auto_compact_marker() {
+        let mut m = compact_msg("s");
+        assert!(!is_auto_compact_message(&m));
+        m[COMPACT_AUTO_FIELD] = serde_json::json!(true);
+        assert!(is_auto_compact_message(&m));
+        let mut plain = user_text("x");
+        plain[COMPACT_AUTO_FIELD] = serde_json::json!(true);
+        assert!(!is_auto_compact_message(&plain), "needs the _compact flag too");
+    }
+
+    #[test]
+    fn estimate_message_tokens_counts_text_and_images() {
+        // 400 ASCII bytes of text -> 100 tokens, plus the short "user"/"text" strings.
+        let m = user_text(&"a".repeat(400));
+        let t = estimate_message_tokens(&m);
+        assert!((100..110).contains(&t), "got {t}");
+        // Internal fields are ignored.
+        let mut stamped = m.clone();
+        stamped["_note"] = serde_json::json!("x".repeat(4000));
+        assert_eq!(estimate_message_tokens(&stamped), t);
+        // A large base64 payload counts as one image, not by its size.
+        let img = serde_json::json!({"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": "t", "content": [
+                {"type": "text", "text": "Image"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                    "data": "A".repeat(1_000_000)}}
+            ]}]});
+        let t = estimate_message_tokens(&img);
+        assert!((IMAGE_TOKEN_ESTIMATE..IMAGE_TOKEN_ESTIMATE + 20).contains(&t), "got {t}");
+    }
+
+    #[test]
+    fn estimate_context_tokens_uses_usage_up_to_last_assistant() {
+        let q1 = user_text(&"a".repeat(4000));
+        let a1 = assistant_text("answer");
+        let q2 = user_text(&"b".repeat(400));
+        let msgs = [&q1, &a1, &q2];
+        let tail = estimate_message_tokens(&q2) as u64;
+        assert_eq!(estimate_context_tokens(Some(5000), &msgs), 5000 + tail);
+        let all: u64 = msgs.iter().map(|m| estimate_message_tokens(m) as u64).sum();
+        assert_eq!(estimate_context_tokens(None, &msgs), all);
+        // No assistant yet: everything is new.
+        assert_eq!(estimate_context_tokens(Some(10), &[&q2]), 10 + tail);
+    }
+
+    #[test]
+    fn auto_compact_due_threshold() {
+        assert!(!auto_compact_due(89_999, 80_000, Some(100_000), 90));
+        assert!(auto_compact_due(90_000, 80_000, Some(100_000), 90));
+        assert!(!auto_compact_due(1_000_000, 80_000, Some(100_000), 0), "0 disables");
+        assert!(!auto_compact_due(1_000_000, 80_000, None, 90), "no window disables");
+        assert!(!auto_compact_due(1_000_000, 80_000, Some(0), 90));
+        // Messages must be at least half the threshold (45K of 90K).
+        assert!(auto_compact_due(95_000, 45_000, Some(100_000), 90));
+        assert!(!auto_compact_due(95_000, 44_999, Some(100_000), 90), "prompt-dominated context");
     }
 
     #[test]

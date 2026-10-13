@@ -910,7 +910,7 @@ tombstone 线程刻意不在内存中，因此该函数**按需从磁盘读取**
 - `compact_boundary(msgs)`：最后一条 `_compact` 消息的下标，没有则为 0
 - `load_raw_messages()` 返回 `msgs[boundary..]`（活动窗口）；`replace_messages()` 只替换活动窗口，保留边界之前的前缀，所以聊天路径 load -> 修改 -> replace 的往返不会丢失旧 log
 - `is_user_input()`：`_compact` 消息只有在合并了用户查询后才算一轮；`extract_text()` / `extract_text_in_window()` 跳过摘要块，因此轮数统计、`/resume` 列表、thread 标题、daily/hourly 摘要都看不到摘要文本
-- `reconstruct_history()` 把摘要块渲染成 `/compact` 输入 + `response` 条目（客户端按 markdown 渲染，与普通最终回复一致）+ 分隔线；`/context chat` 以 `[Compact summary]` 显示摘要
+- `reconstruct_history()` 把摘要块渲染成 `/compact` 输入（自动压缩为 `/compact (auto)`） + `response` 条目（客户端按 markdown 渲染，与普通最终回复一致）+ 分隔线；`/context chat` 以 `[Compact summary]` 显示摘要
 
 **流程（`server.rs::full_compact_thread`）:**
 1. `snapshot_for_compact()` 在同一把锁下取活动窗口和消息总数；`has_content_to_compact()` 为假（空窗口或只有上一条摘要）时返回 "nothing to compact"
@@ -924,6 +924,30 @@ tombstone 线程刻意不在内存中，因此该函数**按需从磁盘读取**
 5. `append_compact_summary(tid, expected_len, msg)`：若期间线程消息数变化则拒绝（摘要会把新消息藏出上下文），否则追加
 6. 命令输出（`format_full_compact`）：上下文字符数变化、摘要调用的输入 token 与其中缓存命中数（口径同 `/thread stats`：input + cache read + cache write），走回退路径时附上原因
 7. 与 mini 相同的保护：有挂起的 client tool 循环时拒绝，执行前 `bump_generation`
+8. 摘要追加后清空 `ThreadMeta::usage_last`：它度量的是刚被替换的上下文，留着会让自动压缩按旧用量再次触发
+
+`full_compact_thread(tid, session_id, ctx, backend, trigger, replay)` 由 `/compact` 命令和自动压缩共用。`CompactTrigger` 区分 `Command` / `AutoBeforeTurn` / `AutoMidTurn`；`replay`（`CompactReplay`：system prompt + tools）为 None 时按上文从 thread meta 重建，agent loop 则直接传入自身请求里的值。命令路径的后端由 `thread_backend()` 解析（线程的 model 覆盖，否则 chat use case）。
+
+##### 自动压缩 (#691)
+上下文接近模型窗口时自动做一次完整压缩，阈值为 `[llm] auto_compact_percent`（默认 90，0 关闭，热加载生效），窗口取线程所用后端的 `context_window()`，未配置则不自动压缩。
+
+**用量估算（`compact` 模块纯函数）:**
+- `estimate_context_tokens(last_usage, msgs)`：上一次 LLM 调用报告的总 token（input + cache read + cache write + output，见 `usage_tokens()`）已覆盖到最后一条 assistant 消息为止，只对其后的消息做估算；没有用量时估算全部消息
+- `estimate_message_tokens()`：字符串的 UTF-8 字节数 / 4（英文约等于 token 数，中文约 0.75 token/字），跳过 `_` 内部字段；图片块按 `IMAGE_TOKEN_ESTIMATE`（1600）计，不按 base64 长度计
+- `auto_compact_due(used, messages, context_window, percent)`：`used` 达到阈值，且消息本身（全部消息的估算值）至少占阈值的一半。其余部分是摘要无法缩小的 system prompt 和 tools，没有第二个条件时，以它们为主的上下文会在每次 LLM 调用前都被压缩
+
+**触发点 1：轮前（`auto_compact_before_turn`）。** `handle_chat_message` 解析出后端后、为本轮改写 thread meta 之前执行，因此重放请求用的是填充缓存的那一轮的 system prompt。估算 = meta 中的 `usage_last` + 其后的消息 + 新问题。有挂起的 client tool 循环时跳过。压缩后照常载入窗口，用户问题按现有逻辑合并进 `_compact` 摘要消息。
+
+**触发点 2：轮中（`auto_compact_mid_turn`）。** agent loop 每次调用 LLM 前检查，仅当本循环已有响应（`last_response_usage` 非零）时生效，估算 = 该用量 + 其后追加的工具结果。走到这里时上一次响应的所有 tool call 都已执行完、结果已追加，所以不存在未执行的调用。触发后：
+1. `persist_unsaved` 先落盘未保存的消息（被新消息取代的循环不写）
+2. 以 `AutoMidTurn` 压缩，摘要后追加 `COMPACT_CONTINUE_HINT`，重放请求直接用循环自身的 system prompt 与 tools
+3. 用新窗口（套用 mini 视图）重建 `extra_messages`，更新 `saved_up_to`，清零 `last_response_usage`，继续循环；压缩后若循环已被取代则直接返回
+4. 失败时设置 `auto_compact_failed`，本循环不再尝试
+
+**通用行为:**
+- `run_auto_compact` 通过 `send_chat_note()`（`tool_name` 为空的 `ChatToolStatus`，客户端按 LLM 中间文本显示）先发 `Context at N% of X tokens, compacting...`，完成后发 `Context compacted: A -> B chars (-P%)`，失败时发 `Auto compaction failed: <原因>` 并按未压缩的上下文继续
+- 自动压缩的摘要消息额外带 `_compact_auto: true`（`COMPACT_AUTO_FIELD`，`is_auto_compact_message()`），`reconstruct_history()` 显示为 `/compact (auto)`
+- 协议与客户端均无改动
 
 ##### `ConversationManager::append_messages()`
 追加原始 JSON 消息到线程。双写到内存缓存和磁盘 JSONL 文件。
@@ -2432,3 +2456,14 @@ async fn main() -> anyhow::Result<()> {
    - MaxTokens 护栏:截断响应可能以残缺 tool_use(input JSON 不全)结尾,仍走 final 路径当截断处理,不执行半成品调用
    - 顺带删除 `stop_reason==ToolUse && tool_calls 为空` 时的死 `break`(该退化态现走 final 路径,不再误报"max tool call limit")
    - 新增 4 个单测覆盖:正常 tool_use、错标 end_turn、MaxTokens 截断、无 tool_calls
+
+### 2026-10-13 - 自动压缩（#691）
+
+**主要变更:**
+
+1. **自动压缩**：上下文达到后端 `context_window` 的 `auto_compact_percent`（默认 90%）时，在用户新消息加入前（轮前）或 agent loop 两次 LLM 调用之间（轮中）自动做完整压缩，进度以聊天中间文本提示
+2. **用量估算**：上一次调用报告的 token 总数 + 其后消息的估算（字节数 / 4，图片固定 1600）；消息本身不足阈值一半时不压缩，避免 system prompt 主导的上下文被反复压缩
+3. **`full_compact_thread` 重构**：增加 `CompactTrigger` 与可选 `CompactReplay` 参数，命令与自动压缩共用；压缩后清空 `usage_last`
+4. **轮中续做**：轮中压缩的摘要追加 `COMPACT_CONTINUE_HINT`，请求从新窗口重建后继续循环
+5. **显示**：自动压缩的摘要带 `_compact_auto`，`/resume` 显示为 `/compact (auto)`
+6. 新增集成测试 `test_auto_compact.sh`（临时把阈值调到 1%，覆盖轮前、轮中与 `/resume`）

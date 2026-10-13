@@ -45,6 +45,7 @@ LLM后端接口，定义所有LLM后端必须实现的方法：
 - `model_name()`: 返回模型名称（必须实现的方法）
 - `max_content_chars()`: 返回该后端模型的上下文最大字符数（可选，默认None）
 - `supports_vision()`: 模型是否接受图片输入（默认 true，由后端配置 `supports_vision` 决定，#690）
+- `context_window()`: 模型上下文窗口 token 数（默认 None，由后端配置 `context_window` 决定），守护进程据此判断是否自动压缩聊天线程（#691）
 
 > 注：`max_content_chars_for_use_case()`、`list_backends()`、`chat_default_name()`、`get_backend_by_name()` 已从trait中移除，其中后三者已下沉为`MultiBackend`的固有方法。
 
@@ -396,6 +397,7 @@ Langfuse可观测性配置结构体：
 - `COMPACT_PROMPT` - 完整 `/compact` 的回退路径指令：对话以纯文本 transcript 放在 `<conversation>` 中（重放请求失败时使用，如线程已接近上下文窗口）
 - `compact_requirements!` - 两个 compact 提示共用的摘要要求宏（`concat!` 拼接）：合并开头的上一条摘要、按 6 个小节（用户目标 / 关键事实 / 文件命令路径 / 错误与修复 / 当前状态 / 待办）组织、省略无内容的小节、只输出摘要。两个提示都由调用方追加 `append_language_instruction()`
 - `COMPACT_SUMMARY_HEADER` - 存储摘要消息时加在 LLM 摘要前的英文说明，让后续聊天模型知道这条消息是压缩摘要、应从它继续
+- `COMPACT_CONTINUE_HINT` - 自动压缩发生在 agent 轮次中途时追加在摘要之后（#691）：此时摘要就是整个请求，要求模型直接接着完成用户最近的请求，不要等用户再发消息
 - `CHAT_PROMPT_JSON` - 编译内嵌的chat提示词JSON（来自`assets/chat.json`），通过`include_str!`编译到二进制
 - `CHAT_OVERRIDE_EXAMPLE` - `chat.override.json`示例文件内容（来自`assets/chat.override.json.example`）
 - `TEMPLATE_NAMES` - 已知模板名列表：`["chat", "chat-system", "auto-complete", "daily-notes", "hourly-notes", "compact"]`
@@ -412,7 +414,7 @@ Langfuse可观测性配置结构体：
 - `auto-complete`: 使用 `build_simple_completion_content()` 渲染两种变体（空输入/有输入）
 - `chat-system`: 使用 `PromptManager::default_chat().build()` 返回完整chat系统提示词
 - `chat`: 由daemon处理，返回提示信息让用户使用 `/template chat` daemon请求（可显示实际工具定义）
-- `compact`: 依次展示主路径（重放聊天请求 + `COMPACT_TURN_PROMPT`）、回退路径（`<conversation>{transcript}</conversation>` + `COMPACT_PROMPT`）以及存储的摘要消息格式（`COMPACT_SUMMARY_HEADER` + `{summary}`）
+- `compact`: 依次展示主路径（重放聊天请求 + `COMPACT_TURN_PROMPT`）、回退路径（`<conversation>{transcript}</conversation>` + `COMPACT_PROMPT`）以及存储的摘要消息格式（`COMPACT_SUMMARY_HEADER` + `{summary}`，轮中自动压缩再追加 `COMPACT_CONTINUE_HINT`）
 
 ## 使用示例
 
@@ -913,3 +915,12 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
 4. **OpenAI-compat**：图片转为紧随 `tool` 消息的 user 消息中的 `image_url` 部件；数组形式的 tool_result 文本不再丢失
 
 **相关 issue:** #690
+
+### 2026-10-13 - 自动压缩支持（#691）
+
+**主要变更:**
+
+1. **`context_window()`**：`LlmBackend` 新增该方法（默认 None），Anthropic 与 OpenAI-compat 后端返回配置的 `context_window`，Langfuse 包装委托内部后端
+2. **`COMPACT_CONTINUE_HINT`**：轮中自动压缩时追加在摘要后的续做提示，`/template compact` 一并展示
+
+**相关 issue:** #691

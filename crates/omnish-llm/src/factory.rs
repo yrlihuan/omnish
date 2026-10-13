@@ -90,6 +90,7 @@ pub fn create_backend(
                 client,
                 max_content_chars,
                 supports_vision: config.supports_vision.unwrap_or(true),
+                context_window: config.context_window,
             }))
         }
         "openai" | "openai-compat" => {
@@ -106,6 +107,7 @@ pub fn create_backend(
                 client,
                 max_content_chars,
                 supports_vision: config.supports_vision.unwrap_or(true),
+                context_window: config.context_window,
             }))
         }
         other => Err(anyhow!("unknown backend type: {}", other)),
@@ -415,6 +417,25 @@ mod tests {
 
         let backend = create_backend("test", &config, None, None).unwrap();
         assert_eq!(backend.name(), "test");
+        assert_eq!(backend.context_window(), None);
+    }
+
+    #[test]
+    fn test_context_window_reaches_backend() {
+        for backend_type in ["anthropic", "openai-compat"] {
+            let config = LlmBackendConfig {
+                backend_type: backend_type.to_string(),
+                model: "m".to_string(),
+                api_key_cmd: Some("echo sk-test-key".to_string()),
+                base_url: Some("https://example.com/v1".to_string()),
+                use_proxy: false,
+                context_window: Some(200_000),
+                max_content_chars: None,
+                supports_vision: None,
+            };
+            let backend = create_backend("test", &config, None, None).unwrap();
+            assert_eq!(backend.context_window(), Some(200_000), "{backend_type}");
+        }
     }
 
     #[test]

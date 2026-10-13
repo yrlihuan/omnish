@@ -57,6 +57,7 @@ LLM配置结构（派生`PartialEq`，用于热重载配置差异检测），包
 - `backends`: LLM后端配置映射表（`HashMap<String, LlmBackendConfig>`）
 - `use_cases`: UseCase到后端名的映射（`HashMap<String, String>`）
 - `langfuse`: Langfuse可观测性集成配置（`Option<LangfuseConfig>`，可选）
+- `auto_compact_percent`: 聊天线程自动压缩阈值（`u32`，默认 90，#691）。上下文达到所用后端 `context_window` 的该百分比时，在下一次 LLM 调用前自动做一次完整 `/compact`；0 关闭，未配置 `context_window` 的后端不会自动压缩。接受整数或字符串
 
 注意：`auto_trigger`（`AutoTriggerConfig`）字段已从 `LlmConfig` 中移除。
 
@@ -315,6 +316,7 @@ listen_addr = "/tmp/omnish.sock"
 
 [llm]
 default = "claude"
+# auto_compact_percent = 90    # 上下文达到 context_window 的该比例时自动压缩，0 关闭
 
 [llm.backends.claude]
 backend_type = "anthropic"
@@ -542,3 +544,4 @@ Image: /tmp/shot.png (1568x980, png, 412 KB)   (说明文字，可为空)
 - **2026-08-06**: `update` 模块新增 `is_valid_package()`，完整解码 gzip 以校验 CRC-32/ISIZE，供守护进程更新缓存跳过或拒绝零字节、截断的包，避免损坏包赢得去重后让自动更新永久卡住（#657）。
 - **2026-09-21**: 新增 `host` 模块（`normalize_host()` / `hosts_match()`），去掉 `.local` 后缀并按 ASCII 不区分大小写比较主机名；守护进程 `/resume` 当前主机过滤、`host_change_event()` 与客户端 `check_resume_mismatch()` 统一改用它，修复 macOS 断网重连后 `.local` 切换导致 `/resume` 看不到任何会话的问题（#683）。
 - **2026-10-13**: 新增 `tool_image` 模块（工具结果携带图片的标记格式：`media_type_of()` / `encode()` / `parse()`）；`LlmBackendConfig` 新增 `supports_vision`（#690）。
+- **2026-10-13b**: `LlmConfig` 新增 `auto_compact_percent`（默认 90，0 关闭），聊天线程上下文接近后端 `context_window` 时自动压缩（#691）。
