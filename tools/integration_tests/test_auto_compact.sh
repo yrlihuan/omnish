@@ -50,6 +50,9 @@ set_auto_compact_percent() {
     local n="$1"
     local log
     log="$(daemon_log)"
+    if grep -qE "^auto_compact_percent = $n\$" "$DAEMON_TOML"; then
+        return 0  # unchanged: the daemon sees no change and logs no reload
+    fi
     local before
     before=$(grep -c 'config section changed: Llm' "$log" 2>/dev/null || echo 0)
     python3 - "$DAEMON_TOML" "$n" <<'PY'

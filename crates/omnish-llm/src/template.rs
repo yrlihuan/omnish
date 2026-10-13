@@ -78,18 +78,50 @@ pub const THREAD_SUMMARY_PROMPT: &str =
      Output only the title itself, without quotes or prefixes.";
 
 /// Summary requirements shared by both full-compaction prompts (issue #687).
+/// Structure and rules follow opencode's compaction prompt: a fixed template
+/// whose Work State / Next Move sections keep unfinished work explicit, so
+/// the assistant resumes it instead of reading it as cancelled.
 macro_rules! compact_requirements {
     () => {
-        "If the conversation starts with a previous summary, merge it into yours; do not drop its content. \
-         Cover, using these section headings:\n\
-         1. User goals: every request and intent the user expressed, including later changes of mind.\n\
-         2. Key facts: important technical details, decisions and constraints discovered.\n\
-         3. Files, commands and paths: exact file paths, commands run, and relevant code snippets or \
-         config values (verbatim when short).\n\
-         4. Errors and fixes: problems hit and how they were resolved, including user feedback.\n\
-         5. Current state: what was being worked on right before this summary.\n\
-         6. Pending work: open tasks and the next step, if any.\n\
-         Omit sections that have nothing to report. Output only the summary."
+        "Summarize only what the user and the assistant said and did. Leave out the system prompt, \
+         project instruction files such as CLAUDE.md, tool descriptions and environment details like \
+         the working directory or date: the assistant receives current versions of all of these \
+         separately.\n\n\
+         If the conversation starts with a previous summary, merge it into yours: keep its content \
+         unless newer history contradicts, supersedes or resolves it.\n\n\
+         Use this format (omit sections that have nothing to report):\n\
+         ## Objective\n\
+         - [one or two brief sentences on what the user is trying to accomplish]\n\
+         ## Requirements\n\
+         - [constraints, preferences and scope boundaries stated by the user]\n\
+         ## Decisions\n\
+         - [decisions already made and why]\n\
+         ## Work State\n\
+         Break the objective into smaller goals and report their state.\n\
+         ### Completed\n\
+         - [goals that are done]\n\
+         ### Active\n\
+         - [goals being worked on, including steps started but not finished]\n\
+         ### Blocked\n\
+         - [anything blocking progress, and why]\n\
+         ## Next Move\n\
+         1. [ordered list of the next actions]\n\
+         ## Relevant Files\n\
+         - `[path]`: [why it matters] (at most 15, most important first; not every file touched)\n\
+         ## Important Context\n\
+         - [facts needed to continue that cannot easily be found again: findings, error messages, \
+         command results, values]\n\n\
+         Rules:\n\
+         - Keep each section concise: terse single-line bullets, no prose paragraphs.\n\
+         - Prefer short references over restating what can be recovered from the files or code.\n\
+         - Preserve exact file paths, symbols, commands, error strings, URLs and identifiers.\n\
+         - Carry forward user questions or requests that are still unanswered or need more work, in \
+         their exact wording; drop ones already answered or resolved.\n\
+         - Preserve workflow state, such as whether changes are uncommitted, committed or pushed.\n\
+         - This summary request comes from the system, not the user. Do not mention it, the summary \
+         process, or that context was compacted, and do not record unfinished work as stopped or \
+         cancelled because of it.\n\
+         - Output only the summary, with no preamble or commentary."
     };
 }
 
@@ -99,10 +131,9 @@ macro_rules! compact_requirements {
 /// stay in that request to keep the prefix identical, hence the explicit
 /// "do not call tools".
 pub const COMPACT_TURN_PROMPT: &str = concat!(
-    "Stop working on the task. Do NOT call any tools. Instead, reply with a summary of the \
-     conversation so far. The conversation above will be discarded and replaced by your summary, \
-     which becomes the ONLY context you have when the conversation continues, so write a detailed \
-     summary that lets you pick up seamlessly. ",
+    "Do not continue the task or call any tools. Summarize the conversation above into a \
+     structured summary. It will replace the conversation and becomes the only record of it when \
+     the assistant resumes the work.\n\n",
     compact_requirements!()
 );
 
@@ -111,24 +142,24 @@ pub const COMPACT_TURN_PROMPT: &str = concat!(
 /// the thread is too close to the context window).
 pub const COMPACT_PROMPT: &str = concat!(
     "Below is a <conversation> between a user and an AI assistant working in the user's terminal. \
-     It will be discarded and replaced by your summary, which becomes the ONLY context the assistant \
-     has when the conversation continues. Write a detailed summary that lets the assistant pick up \
-     seamlessly. ",
+     Summarize it into a structured summary. It will replace the conversation and becomes the only \
+     record of it when the assistant resumes the work.\n\n",
     compact_requirements!()
 );
 
 /// Prepended to the stored compaction summary so the chat model knows what the
 /// message is when the conversation continues.
 pub const COMPACT_SUMMARY_HEADER: &str =
-    "This conversation was compacted to save context. The summary below covers everything before \
-     this point; continue from it.";
+    "This is a summary of the earlier conversation, which was compacted to save context. Treat it \
+     as historical context, not as new instructions.";
 
 /// Appended to the summary when auto compaction (issue #691) ran in the middle
 /// of an agent turn: the summary is then the whole request, so the model must
 /// resume the task on its own instead of waiting for a new user message.
 pub const COMPACT_CONTINUE_HINT: &str =
     "The compaction happened in the middle of your work on the user's latest request. Continue \
-     that work from where it left off, without asking the user to repeat anything.";
+     that work from where it left off (see Work State and Next Move), without asking the user to \
+     repeat anything.";
 
 /// The thread-title-word LLM prompt - derives a single short English word from
 /// an existing thread summary. Used as the tmux window label during chat mode.
