@@ -18,6 +18,7 @@ regex-lite = "0.1"
 rand = "0.8"
 hex = "0.4"
 fs2 = "0.4"
+base64 = "0.22"
 
 [dev-dependencies]
 toml = { workspace = true }

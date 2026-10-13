@@ -22,6 +22,24 @@ pub struct AnthropicBackend {
     pub base_url: String,
     pub client: reqwest::Client,
     pub max_content_chars: Option<usize>,
+    /// From the backend config (`supports_vision`, default true).
+    pub supports_vision: bool,
+}
+
+impl AnthropicBackend {
+    /// Request body for `req`; images are replaced by text when this backend
+    /// is configured without vision (issue #690).
+    fn request_body(&self, req: &LlmRequest) -> serde_json::Value {
+        let mut body = build_request_body(req, &self.model);
+        if !self.supports_vision {
+            if let Some(messages) = body["messages"].as_array_mut() {
+                for m in messages {
+                    crate::backend::omit_images(m);
+                }
+            }
+        }
+        body
+    }
 }
 
 /// Strip thinking tags from LLM response content.
@@ -248,7 +266,7 @@ impl LlmBackend for AnthropicBackend {
     async fn complete(&self, req: &LlmRequest) -> Result<LlmResponse> {
         let client = &self.client;
 
-        let body = build_request_body(req, &self.model);
+        let body = self.request_body(req);
         let log_tag = crate::message_log::log_request(&body, req.use_case);
 
         // Retry loop for connection errors, 429 (rate limit) and 529 (overloaded)
@@ -446,6 +464,10 @@ impl LlmBackend for AnthropicBackend {
 
     fn max_content_chars(&self) -> Option<usize> {
         self.max_content_chars
+    }
+
+    fn supports_vision(&self) -> bool {
+        self.supports_vision
     }
 }
 
@@ -656,5 +678,45 @@ mod tests {
         assert!(!has_cache(2), "msg 2 should be dropped");
         assert!(has_cache(3), "msg 3 should be kept");
         assert!(has_cache(4), "msg 4 should be kept");
+    }
+
+    fn backend(supports_vision: bool) -> super::AnthropicBackend {
+        super::AnthropicBackend {
+            config_name: "t".into(),
+            model: "m".into(),
+            api_key: "k".into(),
+            base_url: "http://localhost".into(),
+            client: reqwest::Client::new(),
+            max_content_chars: None,
+            supports_vision,
+        }
+    }
+
+    fn image_req() -> LlmRequest {
+        let mut req = empty_req();
+        req.extra_messages = vec![
+            crate::backend::TaggedMessage::new(serde_json::json!({"role": "user", "content": "look"}), CacheHint::None),
+            crate::backend::TaggedMessage::new(serde_json::json!({"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "read_image", "input": {}}
+            ]}), CacheHint::None),
+            crate::backend::TaggedMessage::new(serde_json::json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "Image: a"}, {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}]}
+            ]}), CacheHint::None),
+        ];
+        req
+    }
+
+    #[test]
+    fn request_body_keeps_images_inside_tool_result() {
+        let body = backend(true).request_body(&image_req());
+        assert_eq!(body["messages"][2]["content"][0]["content"][1]["type"], "image");
+    }
+
+    #[test]
+    fn request_body_omits_images_without_vision() {
+        let body = backend(false).request_body(&image_req());
+        let block = &body["messages"][2]["content"][0]["content"][1];
+        assert_eq!(block["type"], "text");
+        assert_eq!(block["text"], crate::backend::IMAGE_OMITTED_TEXT);
     }
 }

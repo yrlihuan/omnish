@@ -9,7 +9,7 @@
 - **ShellConfig**：Shell 行为配置，含命令/前缀/拦截间隔/ghost-text 超时/开发者模式/补全开关/extended_unicode/language
 - **ProxyConfig**：代理配置（http_proxy/no_proxy），支持旧版字符串格式向后兼容反序列化
 - **ClientSection**：守护进程端客户端配置，通过 ConfigClient 消息推送到客户端
-- **LlmConfig / LlmBackendConfig / LangfuseConfig**：LLM 后端选择、模型参数、API 密钥获取方式及 Langfuse 可观测性集成；均派生 PartialEq 用于热重载差异检测；LlmBackendConfig 含 per-backend use_proxy 和 context_window
+- **LlmConfig / LlmBackendConfig / LangfuseConfig**：LLM 后端选择、模型参数、API 密钥获取方式及 Langfuse 可观测性集成；均派生 PartialEq 用于热重载差异检测；LlmBackendConfig 含 per-backend use_proxy、context_window 和 supports_vision
 - **ContextConfig / CompletionContextConfig**：补全上下文构建参数，含详细命令数、历史命令数、输出截断行数、弹性窗口范围
 - **ConfigMap**：动态键值配置，维护 values + defaults 双层查询，序列化输出合并视图
 - **TasksConfig**：类型别名 `HashMap<String, ConfigMap>`，每个任务以名称为键，默认值通过 set_defaults() 注入
@@ -21,6 +21,7 @@
 - **config_edit 模块**：格式保留地原地更新 TOML 键值，支持嵌套键值、数组增删改、表删除
 - **sandbox_rule 模块**：共享沙箱豁免规则工具函数（规则解析、匹配评估）
 - **update 模块**：SHA-256 校验和、更新包完整性校验（完整解码 gzip）、本地更新包缓存、版本字符串提取与 semver 比较、解压更新包并运行安装器
+- **tool_image 模块**：工具结果携带图片的标记格式（编码/严格解析/按魔数识别 png/jpeg/gif/webp），插件与守护进程共用
 - **host 模块**：主机名规范化与比较（去掉 macOS `.local` 后缀、不区分大小写），客户端与守护进程的所有主机名比较统一经过它
 - **auth 模块**：认证令牌的路径获取、生成与加载，文件权限 0600
 - **plugin_bundle 模块**：插件包打包器，用于客户端镜像同步守护进程的 `~/.omnish/plugins/`
@@ -118,7 +119,8 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **PromptManager（系统提示词管理）**：可组合的具名片段管理器，支持从 JSON 加载、同名覆盖合并；用户可通过 chat.override.json 和 tool.override.json 覆盖
 - **模型预设（presets）**：编译时嵌入的提供商元数据 JSON，供配置菜单和安装脚本使用
 - **AnthropicBackend**：Anthropic Messages API 后端，支持多轮对话、思考模式（签名保留）、工具调用、提示缓存（最多 4 个 cache_control 断点，带预算强制执行与最后 N 标记保留策略）、自动重试
-- **OpenAI-compat 后端**：兼容 OpenAI Chat Completions API，支持多轮对话、工具调用、思考块捕获
+- **OpenAI-compat 后端**：兼容 OpenAI Chat Completions API，支持多轮对话、工具调用、思考块捕获、工具结果图片转 `image_url`
+- **图片输入**：`supports_vision()` 能力开关，不支持看图的后端经 `omit_images()` 把图片替换为占位文字
 - **MultiBackend（多后端路由）**：根据 UseCase 路由请求；SharedLlmBackend 类型别名支持热重载；from_single() 便于测试
 - **LangfuseBackend（可观测性）**：装饰器模式包装任意后端，异步发送 trace/generation 事件到 Langfuse
 - **请求/响应日志（message_log）**：成对记录 Chat 类型请求与响应的 JSON payload
@@ -181,7 +183,8 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **PluginManager**：元数据驱动的插件系统，从 tool.json 加载工具定义，DaemonTool/ClientTool 双类型分发，tool.override.json 描述覆盖与热重载（inotify/轮询），内嵌资源自动安装；插件目录变更时自动激活/卸载工具
 - **PluginBundler 与 PluginBundleTask**：守护进程侧插件包打包，作为定时任务定期重建，供客户端镜像同步
 - **ToolRegistry**：统一工具元数据注册表，启动时填充后以 Arc 共享只读，支持运行时描述覆盖和热重载原子更新
-- **插件系统与内置工具**：元数据+子进程分离架构，内置工具由客户端 omnish-plugin 执行，CommandQueryTool 在守护进程内执行，Landlock 沙箱，PROMPT.MD 支持
+- **插件系统与内置工具**：元数据+子进程分离架构，内置工具由客户端 omnish-plugin 执行（含查看图片的 `read_image`），CommandQueryTool 在守护进程内执行，Landlock 沙箱，PROMPT.MD 支持
+- **工具结果图片**：声明 `result_images` 的工具可按 tool_image 格式返回图片，`tool_result_json()` 存为 Anthropic 格式的文本+图片块，显示与 `/resume` 只展示说明行
 - **FormatterManager**：工具结果格式化注册表，内置格式化器+ 外部格式化器子进程
 - **PromptManager**：可组合系统提示词片段管理，基础 chat.json + 用户 chat.override.json 覆盖/追加合并
 - **system-reminder**：环境上下文附加到系统提示词（非用户消息），ThreadMeta 记录上次 system-reminder 用于变更检测

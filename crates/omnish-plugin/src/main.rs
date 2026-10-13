@@ -3,6 +3,7 @@ use omnish_plugin::tools::edit::EditTool;
 use omnish_plugin::tools::glob::GlobTool;
 use omnish_plugin::tools::grep::GrepTool;
 use omnish_plugin::tools::read::ReadTool;
+use omnish_plugin::tools::read_image::ReadImageTool;
 use omnish_plugin::tools::write::WriteTool;
 use std::io::{BufRead, Write};
 
@@ -48,6 +49,7 @@ fn main() {
     let result = match req.name.as_str() {
         "bash" => BashTool::new().execute(&req.input),
         "read" => ReadTool::new().execute(&req.input),
+        "read_image" => ReadImageTool::new().execute(&req.input),
         "edit" => EditTool::new().execute(&req.input),
         "glob" => GlobTool::new().execute(&req.input),
         "grep" => GrepTool::new().execute(&req.input),

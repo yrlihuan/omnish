@@ -142,6 +142,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - `formatter_binary`: `Option<String>` - 外部格式化器二进制路径（来自 `tool.json` 的 `formatter_binary` 字段）
 - `sandboxed`: `bool` - 是否启用沙箱
 - `summarization_prompt`: `Option<String>` - LLM 摘要化提示词模板（设置后工具结果可通过 LLM 进行后处理摘要）
+- `result_images`: `bool` - 工具结果可能携带一张图片（`tool.json` 中 `"result_images": true`，默认 false，#690）。只有声明了的工具，其结果才会被解析为图片
 
 ### `ToolRegistry`
 统一工具元数据注册表（定义在 `crates/omnish-daemon/src/tool_registry.rs`），在守护进程启动时由 `PluginManager::register_all()` 和 `CommandQueryTool::register()` 填充，此后以 `Arc` 共享只读使用。所有字段均使用 `RwLock` 以支持运行时插件热重载。
@@ -162,6 +163,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
 - `all_defs()` - 返回所有工具定义（应用运行时描述覆盖后）
 - `update_overrides(descriptions, override_params)` - 热重载时原子更新运行时覆盖
 - `summarization_prompt(tool_name)` - 返回工具的 LLM 摘要化提示词模板
+- `result_images(tool_name)` - 工具是否声明了 `result_images`
 
 **ToolMeta 结构：**
 - `name`: `String` - 工具名
@@ -400,6 +402,15 @@ permit_rules = [
 读取文件内容，返回带行号的文本。
 - 输入参数：`file_path`（必需，绝对路径）、`offset`（起始行号）、`limit`（行数，默认 2000）
 - 超长行自动截断（2000 字符）
+- 沙箱：启用
+
+#### read_image 工具（#690）
+查看图片文件，让模型真正"看到"图片内容。
+- 输入参数：`file_path`（必需，绝对路径）
+- 按文件头魔数识别 png / jpeg / gif / webp，其他文件返回错误并提示改用 `read`；超过 50 MB 的文件直接拒绝
+- 尺寸处理：长边 ≤ 1568px 且文件 ≤ 3.75MB（base64 后 ≤ 5MB）时原样发送；否则用 `image` 库解码（只启用这 4 种格式，设置解码内存上限）并缩放到长边 1568px，有透明通道编码为 PNG，否则（或 PNG 仍超限）编码为 JPEG 并按 85/70/55/40 逐级降低质量；动图 GIF 取第一帧
+- 输出：按 `omnish_common::tool_image` 的标记格式返回图片和说明行，例如 `Image: /tmp/shot.png (1568x980, resized from 3136x1960, jpeg, 412 KB)`
+- `tool.json` 中声明 `"result_images": true`；`read` 的描述里加了一句"图片文件请用 read_image"
 - 沙箱：启用
 
 #### edit 工具
@@ -866,6 +877,17 @@ tombstone 线程刻意不在内存中，因此该函数**按需从磁盘读取**
 硬删除：真正移除 JSONL、meta 与 precompact 快照。与 `delete_thread()` 不同，它**不要求线程存活**，因此可以清理已 tombstone 的线程（这类线程不在内存 map 里，`delete_thread()` 碰不到）。
 
 目前未接入自动清理任务（thread 数据总量有限，暂不做 purge 保留期）。
+
+##### 工具结果中的图片 (#690)
+工具（如 `read_image`）通过 `omnish_common::tool_image` 的标记格式在 `content` 中返回图片，协议和客户端都不需要改。
+
+- **解析范围**：`parse_tool_image()` 只对 `ToolRegistry::result_images()` 为 true 的工具、且结果不是错误时解析；声明了但解析失败的结果按普通文本存储并记 warn 日志
+- **存储**：`tool_result_json(r, tool_name, registry)` 统一构造存储用的 tool_result 块，图片结果的 `content` 为 Anthropic 格式的 `[{text: 说明}, {image: base64}]`，其余仍是字符串。正常完成、中断持久化、agent loop 取消、daemon 工具完成这 4 处都改用它，工具名经 `call_name()` 从对应的 tool call 查出
+- **显示与摘要**：`handle_tool_result` 与 daemon 工具的实时状态都只把说明行（`image_description()`）交给格式化器，界面不会出现 base64；图片结果跳过 `needs_summarization` 的 LLM 摘要
+- **历史**：`reconstruct_history()` 通过 `tool_result_text()` 读取 tool_result 内容，数组形式取其文字块拼接（图片显示为说明行）
+- **发送**：图片块在后端层处理（见 omnish-llm：`supports_vision` 为 false 时替换为占位文字；Anthropic 原样发送；OpenAI-compat 转为 `image_url`）
+- **压缩**：`/compact mini` 不处理图片；完整压缩的 transcript 只取文字块，图片以说明行的形式保留"看过这张图"的信息，重放请求会带上图片
+- **兼容**：工具定义由 daemon 内嵌提供，旧 daemon 不会向模型提供 `read_image`；新 daemon 配旧客户端时，旧插件返回 `Unknown tool: read_image` 错误
 
 ##### `ConversationManager::compact_thread()` (#641, `/compact mini`)
 截断线程历史中体积庞大的 `tool_result` 块，并删除旧轮次的 thinking 块，缩减 LLM 上下文。**非破坏式**：存储（内存与 JSONL）始终保留原文，处理只作用于发给 LLM 的请求副本。
@@ -1966,7 +1988,7 @@ async fn main() -> anyhow::Result<()> {
 - `omnish-store`: 会话和命令存储、补全采样存储
 - `omnish-context`: 上下文构建
 - `omnish-llm`: LLM后端集成、PromptManager、工具定义
-- `omnish-plugin`: 工具实现（bash/read/edit/write/glob/grep）、Landlock 沙箱
+- `omnish-plugin`: 工具实现（bash/read/read_image/edit/write/glob/grep）、Landlock 沙箱
 
 ### 外部依赖
 - `tokio`: 异步运行时

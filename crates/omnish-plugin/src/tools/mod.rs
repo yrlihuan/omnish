@@ -3,6 +3,7 @@ pub mod edit;
 pub mod glob;
 pub mod grep;
 pub mod read;
+pub mod read_image;
 pub mod write;
 
 /// Decode raw file bytes into a UTF-8 `String`.

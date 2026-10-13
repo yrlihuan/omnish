@@ -108,6 +108,10 @@ impl LlmBackend for LangfuseBackend {
         self.inner.max_content_chars()
     }
 
+    fn supports_vision(&self) -> bool {
+        self.inner.supports_vision()
+    }
+
     fn model_name(&self) -> &str {
         self.inner.model_name()
     }

@@ -44,6 +44,7 @@ LLM后端接口，定义所有LLM后端必须实现的方法：
 - `name()`: 返回后端名称标识符
 - `model_name()`: 返回模型名称（必须实现的方法）
 - `max_content_chars()`: 返回该后端模型的上下文最大字符数（可选，默认None）
+- `supports_vision()`: 模型是否接受图片输入（默认 true，由后端配置 `supports_vision` 决定，#690）
 
 > 注：`max_content_chars_for_use_case()`、`list_backends()`、`chat_default_name()`、`get_backend_by_name()` 已从trait中移除，其中后三者已下沉为`MultiBackend`的固有方法。
 
@@ -60,6 +61,7 @@ LLM后端接口，定义所有LLM后端必须实现的方法：
 - `CacheHint::Long`：`ephemeral` 且 `ttl: "1h"`
 - `CachedText { text, cache }`：可缓存文本，用于 `LlmRequest.system_prompt`
 - `TaggedMessage { content, cache, cache_pos }`：带缓存提示的消息，`content` 为 Anthropic 格式 JSON（内部规范），用于 `LlmRequest.extra_messages`。`cache_pos: Option<usize>` 指定该消息中哪一个 content block 接收 `cache_control` 断点（`None` 表示最后一个），用于补全请求在多段 content block（`stable_prefix` / `remainder` / `query`）上把断点固定在 `stable_prefix`
+- `IMAGE_OMITTED_TEXT` / `omit_images(msg)`（#690）：把消息中所有图片块（包括 tool_result 数组内的）替换成文字 `[Image omitted: the current model does not accept image input]`，保留原块上的 `cache_control`，返回替换数量。不支持看图的后端在发请求前调用；放在后端层而不是 daemon 的请求视图里，是因为 agent loop 同一轮内会把带图片的 tool_result 直接追加到请求里，只有后端层能覆盖所有路径
 - `strip_internal_fields(msg)`：backend 边界统一剥离消息对象及其数组 `content` 各块中以 `_` 开头的内部字段（`_ts`、`_usage`、`_model` 等），Anthropic 的 `build_request_body` 与 OpenAI-compat 的 `convert_extra_messages` 入口均调用。存储保留这些字段供 daemon 记账（如消息/块时间戳），剥离集中在 backend，避免各调用点各自维护内部字段集合（#680）
 
 #### `LlmRequest`
@@ -180,6 +182,7 @@ Anthropic API后端实现：
 - 实现`LlmBackend` trait
 - `config_name`字段：存储配置中的后端名称（如"anthropic"），`name()`方法返回此名称而非硬编码字符串，用于线程级模型跟踪
 - `max_content_chars`字段：存储该后端的上下文最大字符数（`Option<usize>`），由工厂函数通过`effective_max_content_chars()`计算后传入
+- `supports_vision`字段：来自后端配置（缺省 true）。`request_body()` 在 `build_request_body()` 之后，若不支持看图则对每条消息调用 `omit_images()`；支持时 tool_result 内的图片块原样发送（DeepSeek 的 Anthropic 兼容接口实测：图片放在 tool_result 内模型能正确识别，放在 tool_result 之后虽被接受但模型并未真正看到图片，#690）
 - `model_name()`：返回模型名称（`&self.model`）
 - 使用Anthropic Messages API (v1/messages，API版本2024-04-04）
 - 支持`base_url`配置（默认api.anthropic.com），可用于代理或自托管
@@ -208,6 +211,7 @@ OpenAI兼容API后端实现：
 - 支持OpenAI、Azure OpenAI、本地兼容API（如vLLM）；配置中 `"openai"` 可作为 `"openai-compat"` 的别名
 - 实现`LlmBackend` trait
 - `max_content_chars`字段：存储该后端的上下文最大字符数（`Option<usize>`），由工厂函数通过`effective_max_content_chars()`计算后传入
+- `supports_vision`字段：来自后端配置（缺省 true）。多轮消息由 `multi_turn_messages(req, supports_vision)` 准备：剥离内部字段、不支持看图时 `omit_images()`，再 `convert_extra_messages()`
 - `model_name()`：返回模型名称（`&self.model`）
 - 使用OpenAI兼容的Chat Completions API
 - `base_url` 尾部斜杠自动剥离：初始化时去除末尾 `/`，防止拼接路径时产生双斜杠导致 404
@@ -217,6 +221,7 @@ OpenAI兼容API后端实现：
 - 工具调用支持：通过`tools`字段提供工具定义，解析响应中的`tool_calls`
 - `parse_message_content_blocks(message, enable_thinking)`：解析 `choices[0].message`，content 字段容忍 string/array/null 三种形状（array 拼接 text 部分），thinking 启用时优先取 `reasoning_content` 字段作为 Thinking 块（DeepSeek），回退到 inline `<think>` 标签扫描（Qwen 等）；未知 message 字段一次性 warn 日志（200 字符值预览）
 - `convert_extra_messages()` 辅助函数将 Anthropic 格式的 extra_messages（含 `tool_use`/`tool_result`/`thinking` 内容块）转换为 OpenAI 格式（`tool_calls`/`tool` role/`reasoning_content`），同时保留 `ToolCall.extra` 中的供应商特定扩展字段
+- 图片（#690）：Chat Completions 的 `tool` 消息只能是文本，所以 tool_result 数组里的文字块拼接后作为 `tool` 消息内容，图片块转成 `image_url`（`data:<media_type>;base64,...`）放进紧随其后的一条 user 消息，前面加一句 `Image returned by tool call <id>:`；同一条存储消息里合并进来的用户文字追加在图片之后。没有图片时 user 文字仍合并为单个字符串。此前数组形式的 tool_result 内容（如截断后的结果）会被转成空字符串，现在按文字块拼接
 - 错误诊断增强：非 OpenAI 标准格式的错误响应（无 `error.message` 字段）和 JSON 解码失败时，错误信息包含完整响应体内容，便于调试非标准 API 实现
 - 连接错误自动重试：`.send()`遇到连接错误（`is_connect()`/`is_request()`）时最多重试3次，指数退避（5s起步，最大60s）
 - 429自动重试：最多3次重试，指数退避，支持解析`retry-after`响应头
@@ -897,3 +902,14 @@ base_url = "https://cloud.langfuse.com"  # 可选，默认cloud.langfuse.com
    - 两个提示的摘要要求抽成 `compact_requirements!` 宏共用，避免两份文本漂移
 
 **相关 issue:** #685, #687
+
+### 2026-10-13 - 图片输入支持（#690）
+
+**主要变更:**
+
+1. **`supports_vision` 能力开关**：`LlmBackend` 新增 `supports_vision()`（默认 true），Anthropic 与 OpenAI-compat 后端由配置 `supports_vision` 决定，Langfuse 包装委托内部后端
+2. **`omit_images()`**：不支持看图的后端在发请求前把图片块替换为 `IMAGE_OMITTED_TEXT`，放在后端层以覆盖 agent loop 同一轮内追加的工具结果
+3. **Anthropic**：tool_result 内的图片块原样发送（DeepSeek 实测可用）
+4. **OpenAI-compat**：图片转为紧随 `tool` 消息的 user 消息中的 `image_url` 部件；数组形式的 tool_result 文本不再丢失
+
+**相关 issue:** #690

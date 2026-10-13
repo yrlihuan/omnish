@@ -75,6 +75,39 @@ pub fn strip_internal_fields(msg: &mut serde_json::Value) {
     }
 }
 
+/// Text that replaces an image for a backend without vision (issue #690).
+pub const IMAGE_OMITTED_TEXT: &str = "[Image omitted: the current model does not accept image input]";
+
+/// Replace every image block of a message, including those inside tool_result
+/// content, with [`IMAGE_OMITTED_TEXT`]. A `cache_control` marker on a
+/// replaced block is kept. Returns how many images were replaced.
+pub fn omit_images(msg: &mut serde_json::Value) -> usize {
+    fn replace(block: &mut serde_json::Value) -> bool {
+        if block["type"].as_str() != Some("image") {
+            return false;
+        }
+        let mut text = serde_json::json!({"type": "text", "text": IMAGE_OMITTED_TEXT});
+        if let Some(cc) = block.get("cache_control") {
+            text["cache_control"] = cc.clone();
+        }
+        *block = text;
+        true
+    }
+    let mut replaced = 0;
+    if let Some(blocks) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
+        for block in blocks.iter_mut() {
+            if replace(block) {
+                replaced += 1;
+            } else if block["type"].as_str() == Some("tool_result") {
+                if let Some(inner) = block.get_mut("content").and_then(|c| c.as_array_mut()) {
+                    replaced += inner.iter_mut().filter_map(|b| replace(b).then_some(())).count();
+                }
+            }
+        }
+    }
+    replaced
+}
+
 /// Use case for LLM requests - determines which model to use
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum UseCase {
@@ -203,6 +236,11 @@ pub trait LlmBackend: Send + Sync {
     fn max_content_chars(&self) -> Option<usize> {
         None
     }
+    /// Whether the model accepts image input. When false the backend replaces
+    /// images with [`IMAGE_OMITTED_TEXT`] before sending (issue #690).
+    fn supports_vision(&self) -> bool {
+        true
+    }
     /// Model name of this backend.
     fn model_name(&self) -> &str;
 }
@@ -264,5 +302,27 @@ mod tests {
         let mut s = serde_json::json!("plain");
         strip_internal_fields(&mut s);
         assert_eq!(s, "plain");
+    }
+
+    #[test]
+    fn omit_images_replaces_every_image_block() {
+        let mut m = serde_json::json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": [
+                {"type": "text", "text": "Image: a"}, {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+            ]},
+            {"type": "tool_result", "tool_use_id": "t2", "content": "plain"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+            {"type": "text", "text": "q"}
+        ]});
+        assert_eq!(omit_images(&mut m), 2);
+        let placeholder = serde_json::json!({"type": "text", "text": IMAGE_OMITTED_TEXT});
+        assert_eq!(m["content"][0]["content"][0]["text"], "Image: a");
+        assert_eq!(m["content"][0]["content"][1], placeholder);
+        assert_eq!(m["content"][1]["content"], "plain");
+        assert_eq!(m["content"][2], placeholder);
+        assert_eq!(m["content"][3]["text"], "q");
+
+        let mut s = serde_json::json!({"role": "assistant", "content": "x"});
+        assert_eq!(omit_images(&mut s), 0);
     }
 }

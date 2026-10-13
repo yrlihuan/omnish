@@ -19,6 +19,8 @@ pub struct ToolMeta {
     /// LLM summarization prompt template. When a tool result has `needs_summarization`,
     /// this template is used to call the LLM for post-processing.
     pub summarization_prompt: Option<String>,
+    /// The tool may return an image (`omnish_common::tool_image`, issue #690).
+    pub result_images: bool,
 }
 
 /// Unified registry for tool metadata, definitions, and runtime overrides.
@@ -150,6 +152,15 @@ impl ToolRegistry {
             .and_then(|m| m.plugin_name.clone())
     }
 
+    /// True when the tool declares `result_images` in its tool.json.
+    pub fn result_images(&self, tool_name: &str) -> bool {
+        self.tools
+            .read()
+            .unwrap()
+            .get(tool_name)
+            .is_some_and(|m| m.result_images)
+    }
+
     /// Return the summarization prompt template for a tool, if configured.
     pub fn summarization_prompt(&self, tool_name: &str) -> Option<String> {
         self.tools
@@ -238,6 +249,7 @@ mod tests {
             plugin_type: None,
             plugin_name: None,
             summarization_prompt: None,
+            result_images: false,
         }
     }
 

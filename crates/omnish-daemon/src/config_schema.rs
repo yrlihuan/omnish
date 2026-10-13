@@ -1010,6 +1010,7 @@ mod tests {
             use_proxy: false,
             context_window: None,
             max_content_chars: None,
+            supports_vision: None,
         });
         config.llm.backends.insert("openai".to_string(), omnish_common::config::LlmBackendConfig {
             backend_type: "openai-compat".to_string(),
@@ -1019,6 +1020,7 @@ mod tests {
             use_proxy: false,
             context_window: None,
             max_content_chars: None,
+            supports_vision: None,
         });
         let val = toml::Value::try_from(&config).unwrap();
         let options = resolve_options(&val, "llm.backends");
@@ -1069,6 +1071,7 @@ mod tests {
             use_proxy: false,
             context_window: None,
             max_content_chars: None,
+            supports_vision: None,
         });
         let (items, handlers) = build_config_items(&config, &[], &[]);
         assert!(items.iter().any(|i| i.path == "llm.backends.claude.backend_type"));

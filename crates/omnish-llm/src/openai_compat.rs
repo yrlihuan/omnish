@@ -18,6 +18,43 @@ pub struct OpenAiCompatBackend {
     pub base_url: String,
     pub client: reqwest::Client,
     pub max_content_chars: Option<usize>,
+    /// From the backend config (`supports_vision`, default true).
+    pub supports_vision: bool,
+}
+
+/// Messages for a multi-turn request: internal fields stripped, images
+/// replaced by text when the backend has no vision (issue #690), then
+/// converted from the stored Anthropic format.
+fn multi_turn_messages(req: &LlmRequest, supports_vision: bool) -> Vec<serde_json::Value> {
+    let raw: Vec<serde_json::Value> = req
+        .extra_messages
+        .iter()
+        .map(|m| {
+            let mut content = m.content.clone();
+            crate::backend::strip_internal_fields(&mut content);
+            if !supports_vision {
+                crate::backend::omit_images(&mut content);
+            }
+            content
+        })
+        .collect();
+    convert_extra_messages(&raw)
+}
+
+/// OpenAI `image_url` part for an Anthropic base64 image block.
+fn image_url_part(block: &serde_json::Value) -> Option<serde_json::Value> {
+    let source = &block["source"];
+    if source["type"].as_str() != Some("base64") {
+        return None;
+    }
+    Some(serde_json::json!({
+        "type": "image_url",
+        "image_url": {"url": format!(
+            "data:{};base64,{}",
+            source["media_type"].as_str()?,
+            source["data"].as_str()?
+        )},
+    }))
 }
 
 /// Top-level fields we know how to interpret in `choices[0].message`. Any key
@@ -272,16 +309,45 @@ fn convert_extra_messages(extra: &[serde_json::Value]) -> Vec<serde_json::Value>
                     // OpenAI-compatible servers that don't accept a content
                     // array still see the content (and those that do aren't
                     // harmed by the single string).
+                    //
+                    // Images (issue #690): Chat Completions tool messages are
+                    // text-only, so a tool_result's images move into a user
+                    // message after the tool messages as `image_url` parts,
+                    // labelled with the tool call they came from.
                     let mut text_parts: Vec<String> = Vec::new();
+                    let mut image_parts: Vec<serde_json::Value> = Vec::new();
                     for block in content_arr {
                         match block["type"].as_str() {
                             Some("tool_result") => {
+                                let text = match &block["content"] {
+                                    serde_json::Value::Array(inner) => {
+                                        let images: Vec<serde_json::Value> =
+                                            inner.iter().filter_map(image_url_part).collect();
+                                        if !images.is_empty() {
+                                            image_parts.push(serde_json::json!({
+                                                "type": "text",
+                                                "text": format!(
+                                                    "Image returned by tool call {}:",
+                                                    block["tool_use_id"].as_str().unwrap_or("")
+                                                ),
+                                            }));
+                                            image_parts.extend(images);
+                                        }
+                                        inner
+                                            .iter()
+                                            .filter_map(|b| b["text"].as_str())
+                                            .collect::<Vec<_>>()
+                                            .join("\n")
+                                    }
+                                    other => other.as_str().unwrap_or("").to_string(),
+                                };
                                 out.push(serde_json::json!({
                                     "role": "tool",
                                     "tool_call_id": block["tool_use_id"],
-                                    "content": block["content"].as_str().unwrap_or(""),
+                                    "content": text,
                                 }));
                             }
+                            Some("image") => image_parts.extend(image_url_part(block)),
                             Some("text") => {
                                 if let Some(t) = block["text"].as_str() {
                                     if !t.is_empty() {
@@ -292,7 +358,12 @@ fn convert_extra_messages(extra: &[serde_json::Value]) -> Vec<serde_json::Value>
                             _ => {}
                         }
                     }
-                    if !text_parts.is_empty() {
+                    if !image_parts.is_empty() {
+                        image_parts.extend(
+                            text_parts.iter().map(|t| serde_json::json!({"type": "text", "text": t})),
+                        );
+                        out.push(serde_json::json!({"role": "user", "content": image_parts}));
+                    } else if !text_parts.is_empty() {
                         out.push(serde_json::json!({
                             "role": "user",
                             "content": text_parts.join("\n\n"),
@@ -325,15 +396,7 @@ impl LlmBackend for OpenAiCompatBackend {
             vec![serde_json::json!({"role": "user", "content": user_content})]
         } else {
             // Multi-turn / agent loop: extract content, then convert Anthropic→OpenAI format.
-            let raw: Vec<serde_json::Value> = req.extra_messages
-                .iter()
-                .map(|m| {
-                    let mut content = m.content.clone();
-                    crate::backend::strip_internal_fields(&mut content);
-                    content
-                })
-                .collect();
-            convert_extra_messages(&raw)
+            multi_turn_messages(req, self.supports_vision)
         };
 
         // Prepend system message if provided
@@ -537,6 +600,10 @@ impl LlmBackend for OpenAiCompatBackend {
 
     fn max_content_chars(&self) -> Option<usize> {
         self.max_content_chars
+    }
+
+    fn supports_vision(&self) -> bool {
+        self.supports_vision
     }
 }
 
@@ -893,5 +960,59 @@ mod tests {
         assert_eq!(converted[0]["tool_call_id"], "call_1");
         assert_eq!(converted[1]["role"], "user");
         assert_eq!(converted[1]["content"], "thanks, now summarize");
+    }
+
+    #[test]
+    fn test_convert_image_tool_result() {
+        let extra = vec![serde_json::json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "Image: a"}, {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}]}
+        ]})];
+        let converted = convert_extra_messages(&extra);
+        assert_eq!(converted.len(), 2);
+        assert_eq!(converted[0], serde_json::json!({"role": "tool", "tool_call_id": "t1", "content": "Image: a"}));
+        assert_eq!(converted[1], serde_json::json!({"role": "user", "content": [
+            {"type": "text", "text": "Image returned by tool call t1:"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        ]}));
+    }
+
+    #[test]
+    fn test_convert_image_tool_result_with_merged_user_text() {
+        let extra = vec![serde_json::json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "Image: a"}, {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}]},
+            {"type": "text", "text": "next question"}
+        ]})];
+        let converted = convert_extra_messages(&extra);
+        assert_eq!(converted.len(), 2);
+        let parts = converted[1]["content"].as_array().unwrap();
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[2], serde_json::json!({"type": "text", "text": "next question"}));
+    }
+
+    #[test]
+    fn test_convert_array_tool_result_text_is_kept() {
+        // Array-form text content (e.g. truncated results) used to become "".
+        let extra = vec![serde_json::json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "line 1"}, {"type": "text", "text": "line 2"}]}
+        ]})];
+        let converted = convert_extra_messages(&extra);
+        assert_eq!(converted, vec![serde_json::json!({"role": "tool", "tool_call_id": "t1", "content": "line 1\nline 2"})]);
+    }
+
+    #[test]
+    fn test_multi_turn_messages_omits_images_without_vision() {
+        let mut req = crate::backend::LlmRequest {
+            context: String::new(), query: None, trigger: crate::backend::TriggerType::Manual,
+            session_ids: vec![], use_case: crate::backend::UseCase::Chat, max_content_chars: None,
+            system_prompt: None, enable_thinking: None, tools: vec![], extra_messages: vec![],
+        };
+        req.extra_messages = vec![crate::backend::TaggedMessage::new(serde_json::json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "Image: a"}, {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}]}
+        ]}), crate::backend::CacheHint::None)];
+        let with = multi_turn_messages(&req, true);
+        assert_eq!(with.len(), 2, "tool + image user message");
+        let without = multi_turn_messages(&req, false);
+        assert_eq!(without.len(), 1, "no image user message");
+        assert_eq!(without[0]["content"], format!("Image: a\n{}", crate::backend::IMAGE_OMITTED_TEXT));
     }
 }

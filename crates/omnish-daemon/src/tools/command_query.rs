@@ -330,6 +330,7 @@ impl CommandQueryTool {
             plugin_type: None,
             plugin_name: None,
             summarization_prompt: None,
+            result_images: false,
         });
 
         registry.register(ToolMeta {
@@ -341,6 +342,7 @@ impl CommandQueryTool {
             plugin_type: None,
             plugin_name: None,
             summarization_prompt: None,
+            result_images: false,
         });
 
         registry.register_def(omnish_llm::tool::ToolDef {

@@ -1307,12 +1307,7 @@ async fn handle_chat_interrupt(ci: ChatInterrupt, ctx: &HandlerCtx, tx: mpsc::Se
         let mut result_content: Vec<serde_json::Value> = state
             .completed_results
             .iter()
-            .map(|r| serde_json::json!({
-                "type": "tool_result",
-                "tool_use_id": r.tool_use_id,
-                "content": r.content,
-                "is_error": r.is_error,
-            }))
+            .map(|r| tool_result_json(r, call_name(&state.pending_tool_calls, &r.tool_use_id), &ctx.tool_registry))
             .collect();
 
         // Report how long execution ran: earliest still-running tool, else the
@@ -1942,8 +1937,15 @@ async fn handle_tool_result(
     let tool_call_id = tr.tool_call_id.clone();
     let mut content = tr.content;
 
-    // LLM summarization for client-side tool results
-    if tr.needs_summarization && !tr.is_error {
+    let tool_name = call_name(&state.pending_tool_calls, &tool_call_id).map(String::from);
+    let image_desc = if tr.is_error {
+        None
+    } else {
+        image_description(&content, tool_name.as_deref(), tool_registry)
+    };
+
+    // LLM summarization for client-side tool results (never for images)
+    if tr.needs_summarization && !tr.is_error && image_desc.is_none() {
         if let Some(tc) = state.pending_tool_calls.iter().find(|tc| tc.id == tool_call_id) {
             if let Some(prompt_template) = tool_registry.summarization_prompt(&tc.name) {
                 let user_prompt = tc.input.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
@@ -1967,10 +1969,12 @@ async fn handle_tool_result(
         if let Some(tc) = state.pending_tool_calls.iter().find(|tc| tc.id == tool_call_id) {
             let formatter_name = tool_registry.formatter_name(&tc.name);
             let display_name = tool_registry.display_name(&tc.name).to_string();
+            // An image result shows its description, never the base64.
+            let output = image_desc.clone().unwrap_or_else(|| result.content.clone());
             let fmt_out = formatter_mgr.format(&formatter_name, &omnish_plugin::formatter::FormatInput {
                 tool_name: tc.name.clone(),
                 params: tc.input.clone(),
-                output: result.content.clone(),
+                output,
                 is_error: result.is_error,
             }).await;
             let status_icon = if result.is_error { StatusIcon::Error } else { StatusIcon::Success };
@@ -2009,14 +2013,7 @@ async fn handle_tool_result(
     let result_content: Vec<serde_json::Value> = state
         .completed_results
         .iter()
-        .map(|r| {
-            serde_json::json!({
-                "type": "tool_result",
-                "tool_use_id": r.tool_use_id,
-                "content": r.content,
-                "is_error": r.is_error,
-            })
-        })
+        .map(|r| tool_result_json(r, call_name(&state.pending_tool_calls, &r.tool_use_id), tool_registry))
         .collect();
     state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage::new(
         serde_json::json!({
@@ -2459,10 +2456,17 @@ async fn run_agent_loop(
                             // Post-execution: send update ChatToolStatus with formatted results immediately
                             let post_display = tool_registry.display_name(&tc.name).to_string();
                             let post_fmt_name = tool_registry.formatter_name(&tc.name);
+                            // An image result shows its description, never the base64.
+                            let post_output = if result.is_error {
+                                None
+                            } else {
+                                image_description(&result.content, Some(&tc.name), tool_registry)
+                            }
+                            .unwrap_or_else(|| result.content.clone());
                             let post_out = formatter_mgr.format(&post_fmt_name, &omnish_plugin::formatter::FormatInput {
                                 tool_name: tc.name.clone(),
                                 params: tc.input.clone(),
-                                output: result.content.clone(),
+                                output: post_output,
                                 is_error: result.is_error,
                             }).await;
                             let post_icon = if result.is_error { StatusIcon::Error } else { StatusIcon::Success };
@@ -2501,12 +2505,7 @@ async fn run_agent_loop(
                             .collect();
                         let mut result_content: Vec<serde_json::Value> = tool_results
                             .iter()
-                            .map(|r| serde_json::json!({
-                                "type": "tool_result",
-                                "tool_use_id": r.tool_use_id,
-                                "content": r.content,
-                                "is_error": r.is_error,
-                            }))
+                            .map(|r| tool_result_json(r, call_name(tool_calls.iter().copied(), &r.tool_use_id), tool_registry))
                             .collect();
                         let elapsed = state.interrupt_elapsed(
                             tool_calls
@@ -2562,14 +2561,7 @@ async fn run_agent_loop(
                     // All tools were daemon-side - build tool_result and continue
                     let result_content: Vec<serde_json::Value> = tool_results
                         .iter()
-                        .map(|r| {
-                            serde_json::json!({
-                                "type": "tool_result",
-                                "tool_use_id": r.tool_use_id,
-                                "content": r.content,
-                                "is_error": r.is_error,
-                            })
-                        })
+                        .map(|r| tool_result_json(r, call_name(tool_calls.iter().copied(), &r.tool_use_id), tool_registry))
                         .collect();
                     state.llm_req.extra_messages.push(omnish_llm::backend::TaggedMessage::new(
                         serde_json::json!({
@@ -2891,6 +2883,87 @@ async fn resolve_chat_context(req: &Request, mgr: &SessionManager, max_context_c
 
 
 /// Helper to create a command response with only a display string.
+/// Parse a tool result as an image (issue #690), only for tools that declare
+/// `result_images` in their tool.json and only for successful results, so no
+/// other tool's text can ever be taken for an image.
+fn parse_tool_image(
+    content: &str,
+    tool_name: Option<&str>,
+    registry: &omnish_daemon::tool_registry::ToolRegistry,
+) -> Option<omnish_common::tool_image::ToolImage> {
+    if !tool_name.is_some_and(|n| registry.result_images(n)) {
+        return None;
+    }
+    let img = omnish_common::tool_image::parse(content);
+    if img.is_none() {
+        tracing::warn!(
+            "tool {} declares result_images but returned no valid image; storing as text",
+            tool_name.unwrap_or("?")
+        );
+    }
+    img
+}
+
+/// The description text of an image tool result, used instead of the raw
+/// content for display and summarization decisions.
+fn image_description(
+    content: &str,
+    tool_name: Option<&str>,
+    registry: &omnish_daemon::tool_registry::ToolRegistry,
+) -> Option<String> {
+    parse_tool_image(content, tool_name, registry).map(|img| img.description)
+}
+
+/// Build the stored `tool_result` block for a tool result. An image result
+/// gets Anthropic-format content `[description text, image]`; everything else
+/// keeps its plain string content.
+fn tool_result_json(
+    r: &omnish_llm::tool::ToolResult,
+    tool_name: Option<&str>,
+    registry: &omnish_daemon::tool_registry::ToolRegistry,
+) -> serde_json::Value {
+    let image = if r.is_error { None } else { parse_tool_image(&r.content, tool_name, registry) };
+    let content = match image {
+        Some(img) => serde_json::json!([
+            {"type": "text", "text": img.description},
+            {"type": "image", "source": {
+                "type": "base64",
+                "media_type": img.media_type,
+                "data": img.data_base64,
+            }},
+        ]),
+        None => serde_json::Value::String(r.content.clone()),
+    };
+    serde_json::json!({
+        "type": "tool_result",
+        "tool_use_id": r.tool_use_id,
+        "content": content,
+        "is_error": r.is_error,
+    })
+}
+
+/// Text of a stored tool_result's content: the string itself, or the joined
+/// text blocks of an array (an image result shows its description).
+fn tool_result_text(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// Name of the tool call with `id`.
+fn call_name<'a>(
+    calls: impl IntoIterator<Item = &'a omnish_llm::tool::ToolCall>,
+    id: &str,
+) -> Option<&'a str> {
+    calls.into_iter().find(|tc| tc.id == id).map(|tc| tc.name.as_str())
+}
+
 /// Transcript cap for a full compaction when the backend sets no
 /// `max_content_chars`. The live window already fits the chat model (it is
 /// sent in full every turn) and the transcript clips tool I/O, so this only
@@ -3179,7 +3252,7 @@ async fn reconstruct_history(
                         match block["type"].as_str() {
                             Some("tool_result") => {
                                 let tool_use_id = block["tool_use_id"].as_str().unwrap_or("").to_string();
-                                let output = block["content"].as_str().unwrap_or("").to_string();
+                                let output = tool_result_text(&block["content"]);
                                 let is_error = block["is_error"].as_bool().unwrap_or(false);
 
                                 if let Some((tool_name, input)) = pending_tools.remove(&tool_use_id) {
@@ -6071,5 +6144,80 @@ mod tests {
     fn test_compose_chat_system_prompt() {
         assert_eq!(compose_chat_system_prompt("B", "R", None), "B\n\nR");
         assert_eq!(compose_chat_system_prompt("B", "R", Some("P")), "B\n\nR\n\nP");
+    }
+
+    fn image_registry() -> omnish_daemon::tool_registry::ToolRegistry {
+        let reg = omnish_daemon::tool_registry::ToolRegistry::new();
+        for (name, images) in [("read_image", true), ("read", false)] {
+            reg.register(omnish_daemon::tool_registry::ToolMeta {
+                name: name.to_string(),
+                display_name: name.to_string(),
+                formatter: "default".to_string(),
+                status_template: String::new(),
+                custom_status: None,
+                plugin_type: None,
+                plugin_name: None,
+                summarization_prompt: None,
+                result_images: images,
+            });
+        }
+        reg
+    }
+
+    fn tool_result(content: &str, is_error: bool) -> omnish_llm::tool::ToolResult {
+        omnish_llm::tool::ToolResult { tool_use_id: "t1".into(), content: content.into(), is_error }
+    }
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\nrest";
+
+    #[test]
+    fn test_tool_result_json_image() {
+        let reg = image_registry();
+        let content = omnish_common::tool_image::encode("image/png", PNG, "Image: /tmp/a.png (1x1, png, 1 KB)");
+        let v = tool_result_json(&tool_result(&content, false), Some("read_image"), &reg);
+        assert_eq!(v["type"], "tool_result");
+        assert_eq!(v["tool_use_id"], "t1");
+        assert_eq!(v["is_error"], false);
+        let blocks = v["content"].as_array().expect("array content");
+        assert_eq!(blocks[0], serde_json::json!({"type": "text", "text": "Image: /tmp/a.png (1x1, png, 1 KB)"}));
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["source"]["type"], "base64");
+        assert_eq!(blocks[1]["source"]["media_type"], "image/png");
+        assert!(blocks[1]["source"]["data"].as_str().unwrap().len() > 4);
+        assert_eq!(image_description(&content, Some("read_image"), &reg).as_deref(), Some("Image: /tmp/a.png (1x1, png, 1 KB)"));
+    }
+
+    #[test]
+    fn test_tool_result_json_stays_text_otherwise() {
+        let reg = image_registry();
+        let content = omnish_common::tool_image::encode("image/png", PNG, "d");
+        // Tool without the flag: never parsed.
+        assert_eq!(tool_result_json(&tool_result(&content, false), Some("read"), &reg)["content"], content.as_str());
+        // Unknown tool.
+        assert_eq!(tool_result_json(&tool_result(&content, false), None, &reg)["content"], content.as_str());
+        // Errors stay text.
+        assert_eq!(tool_result_json(&tool_result(&content, true), Some("read_image"), &reg)["content"], content.as_str());
+        // Not an image block.
+        assert_eq!(tool_result_json(&tool_result("Error: nope", false), Some("read_image"), &reg)["content"], "Error: nope");
+        assert!(image_description("plain", Some("read_image"), &reg).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_reconstruct_history_shows_image_description() {
+        let reg = image_registry();
+        let formatter = omnish_daemon::formatter_mgr::FormatterManager::new();
+        let content = omnish_common::tool_image::encode("image/png", PNG, "Image: /tmp/a.png (1x1, png, 1 KB)");
+        let r = tool_result(&content, false);
+        let msgs = vec![
+            serde_json::json!({"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "read_image", "input": {"file_path": "/tmp/a.png"}}
+            ]}),
+            serde_json::json!({"role": "user", "content": [tool_result_json(&r, Some("read_image"), &reg)]}),
+        ];
+        let h = reconstruct_history(&msgs, &reg, &formatter).await;
+        let status = h.iter().find(|e| e["type"] == "tool_status").expect("tool status entry");
+        let full = serde_json::to_string(&status["result_full"]).unwrap();
+        assert!(full.contains("Image: /tmp/a.png (1x1, png, 1 KB)"), "{}", full);
+        assert!(!full.contains("base64") && !full.contains("iVBOR"));
     }
 }

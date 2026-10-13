@@ -109,17 +109,17 @@ Documented as part of the plugin interface next to the plugin JSON response.
 
   Stored as-is in the thread JSONL (about 100 to 500 KB per image).
 
-### 5. Daemon: request view
+### 5. Images for a backend without vision
 
-Applied to the request copy only, at the same places as the `/compact mini`
-view (chat request, full `/compact` replay and transcript fallback):
+Applied in the backends at request time (implementation note: the agent loop
+appends a tool_result with an image to the request and calls the LLM again in
+the same turn without passing any daemon-side view, so only the backend layer
+covers every path):
 
 - Backend without vision: each image block becomes the text
   `[Image omitted: the current model does not accept image input]`.
-- Messages below the mini boundary (`ThreadMeta::mini_compact_upto`): image
-  blocks become `[Image omitted by /compact mini]`, alongside the existing
-  tool-result truncation and old-thinking drop. `/compact mini` stats report
-  dropped images.
+- `/compact mini` leaves images unchanged: its view still only truncates bulky
+  text tool results and drops old-round thinking.
 
 Deterministic, so the prompt cache keeps hitting between turns.
 
@@ -197,11 +197,11 @@ request view (vision / mini boundary) -> backend conversion -> model sees image.
 
 ## Open items
 
-1. Experiment before implementing section 7: send a small image inside a
-   tool_result to DeepSeek's Anthropic-compatible endpoint; pass-through if
-   accepted, fallback layout otherwise.
-2. Dropping images below the mini boundary (section 5) was proposed together
-   with the rest of the design and is included here; confirm in spec review.
+1. Resolved by experiment: DeepSeek's Anthropic-compatible endpoint accepts
+   both layouts, but only the image inside tool_result reaches the model (a
+   red 64x64 PNG was answered "Red"; with the fallback layout "Orange").
+   Section 7 uses pass-through; the fallback layout is not implemented.
+2. Resolved in review: `/compact mini` does not touch images.
 
 ## Scope / YAGNI
 

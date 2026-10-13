@@ -89,6 +89,7 @@ pub fn create_backend(
                 base_url,
                 client,
                 max_content_chars,
+                supports_vision: config.supports_vision.unwrap_or(true),
             }))
         }
         "openai" | "openai-compat" => {
@@ -104,6 +105,7 @@ pub fn create_backend(
                 base_url,
                 client,
                 max_content_chars,
+                supports_vision: config.supports_vision.unwrap_or(true),
             }))
         }
         other => Err(anyhow!("unknown backend type: {}", other)),
@@ -379,6 +381,7 @@ mod tests {
             use_proxy: false,
             context_window: None,
             max_content_chars: None,
+            supports_vision: None,
         });
         // A correctly wrapped one initializes fine.
         llm.backends.insert("ok".to_string(), LlmBackendConfig {
@@ -389,6 +392,7 @@ mod tests {
             use_proxy: false,
             context_window: None,
             max_content_chars: None,
+            supports_vision: None,
         });
 
         let failures = check_backends(&llm, None, None);
@@ -406,6 +410,7 @@ mod tests {
             use_proxy: false,
             context_window: None,
             max_content_chars: None,
+            supports_vision: None,
         };
 
         let backend = create_backend("test", &config, None, None).unwrap();
@@ -422,6 +427,7 @@ mod tests {
             use_proxy: false,
             context_window: None,
             max_content_chars: None,
+            supports_vision: None,
         };
 
         let backend = create_backend("test", &config, None, None).unwrap();
@@ -438,6 +444,7 @@ mod tests {
             use_proxy: false,
             context_window: None,
             max_content_chars: None,
+            supports_vision: None,
         };
 
         let result = create_backend("test", &config, None, None);
@@ -456,6 +463,7 @@ mod tests {
             use_proxy: false,
             context_window: None,
             max_content_chars: None,
+            supports_vision: None,
         };
 
         let result = create_backend("test", &config, None, None);

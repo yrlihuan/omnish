@@ -732,6 +732,11 @@ pub struct LlmBackendConfig {
     /// If not set, derived from context_window * 1.5.
     #[serde(default, deserialize_with = "string_or_int::option::deserialize")]
     pub max_content_chars: Option<usize>,
+    /// Whether the model accepts image input (issue #690). Absent = true.
+    /// When false, images (e.g. from `read_image`) are replaced by a short
+    /// placeholder sentence in requests to this backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_vision: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------

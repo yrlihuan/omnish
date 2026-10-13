@@ -157,6 +157,7 @@ LLM后端具体配置（派生`PartialEq`，用于热重载配置差异检测）
 - `use_proxy`: 是否使用全局代理访问该后端（`bool`，默认：`false`）
 - `context_window`: 上下文窗口大小，以token为单位（`Option<usize>`，模型相关）；当 `max_content_chars` 未设置时，默认取 `context_window * 1.5`
 - `max_content_chars`: 模型上下文最大字符数（`Option<usize>`）。高级覆盖项，若未设置则由 `context_window * 1.5` 推导
+- `supports_vision`: 模型是否接受图片输入（`Option<bool>`，缺省视为 true，#690）。设为 false 时，发往该后端的请求中图片会被替换为一句占位说明
 
 所有字段均带有 `#[serde(default)]`，因此在 TOML 配置文件中可以只写需要覆盖的字段，省略的字段将使用默认值。
 
@@ -322,6 +323,7 @@ api_key_cmd = "pass show api/anthropic"
 # use_proxy = false
 context_window = 200000
 # max_content_chars = 300000  # 高级覆盖项，若未设置则由 context_window * 1.5 推导
+# supports_vision = false      # 模型不接受图片输入时设置（默认 true）
 
 [llm.langfuse]
 public_key = "pk-lf-..."
@@ -473,6 +475,23 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 - 守护进程 `host_change_event()`：`.local` 切换视为同一台机器，不再向 LLM 报告主机变化（#679）
 - 客户端 `check_resume_mismatch()`：替换原先私有的重复实现
 
+## tool_image 模块
+
+插件与守护进程之间"工具结果携带图片"的约定（#690）。在 `tool.json` 中声明 `"result_images": true` 的工具，可以把整个 `content` 写成：
+
+```text
+<omnish-image media_type="image/png">
+iVBORw0KGgo...            (标准 base64，单行)
+</omnish-image>
+Image: /tmp/shot.png (1568x980, png, 412 KB)   (说明文字，可为空)
+```
+
+守护进程会把它转成发给 LLM 的图片块。插件（编码）与守护进程（解析）共用本模块，格式只在这里定义。
+
+- `media_type_of(bytes) -> Option<&str>`：按文件头魔数识别 png / jpeg / gif / webp（Anthropic 与 DeepSeek 都支持的格式）
+- `encode(media_type, bytes, description) -> String`：生成上述内容
+- `parse(content) -> Option<ToolImage { media_type, data_base64, description }>`：严格解析，要求内容以该标签开头、媒体类型受支持、base64 能解码、解码后的文件头确实是该格式、并有结束标签，否则返回 `None`，普通文本不可能被误判为图片
+
 ## 依赖关系
 - `serde`: 序列化/反序列化配置结构
 - `toml`: TOML配置文件解析
@@ -483,6 +502,7 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 - `hex`: 令牌hex编码
 - `serde_json`: `ConfigMap` 值类型支持（任务和插件配置）
 - `sha2`: SHA-256校验和计算（用于 `update` 模块）
+- `base64`: 图片编解码（用于 `tool_image` 模块）
 - `flate2`: gzip解压与完整性校验（用于 `update` 模块）
 - `tar`: tar归档解压（用于 `update` 模块）
 - `tracing`: 日志记录（用于 `update` 模块）
@@ -521,3 +541,4 @@ omnish-common 包含认证令牌管理工具函数，用于客户端和守护进
 - **2026-04-09**: 配置架构重构--`proxy`/`no_proxy` 从顶层字段迁移到 `ProxyConfig` 结构（`[proxy]` 表），自定义反序列化支持旧版字符串格式向后兼容；`completion_enabled` 从 `ClientConfig` 迁移到 `ShellConfig`；新增 `extended_unicode` 配置项；`ConfigMap` 封装内部结构，新增 `defaults` 层和 `set_defaults()`/`get()`/`contains_key()`/`iter()` 方法；新增 `ClientSection` 结构支持守护进程到客户端的配置推送；`load_daemon_config()` 新增 `sanitize_toml()` 容错（处理重复表头和重复键）和 `normalize()` 旧格式迁移；新增 `string_or_bool` serde helper。
 - **2026-08-06**: `update` 模块新增 `is_valid_package()`，完整解码 gzip 以校验 CRC-32/ISIZE，供守护进程更新缓存跳过或拒绝零字节、截断的包，避免损坏包赢得去重后让自动更新永久卡住（#657）。
 - **2026-09-21**: 新增 `host` 模块（`normalize_host()` / `hosts_match()`），去掉 `.local` 后缀并按 ASCII 不区分大小写比较主机名；守护进程 `/resume` 当前主机过滤、`host_change_event()` 与客户端 `check_resume_mismatch()` 统一改用它，修复 macOS 断网重连后 `.local` 切换导致 `/resume` 看不到任何会话的问题（#683）。
+- **2026-10-13**: 新增 `tool_image` 模块（工具结果携带图片的标记格式：`media_type_of()` / `encode()` / `parse()`）；`LlmBackendConfig` 新增 `supports_vision`（#690）。

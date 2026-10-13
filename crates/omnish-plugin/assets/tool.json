@@ -180,6 +180,7 @@
         "- Any lines longer than 2000 characters will be truncated",
         "- Results are returned using cat -n format, with line numbers starting at 1",
         "- This tool can only read files, not directories. To read a directory, use an ls command via the Bash tool.",
+        "- For image files (png, jpeg, gif, webp) use the read_image tool instead; this tool would return their bytes as unreadable text.",
         "- You can call multiple tools in a single response. It is always better to speculatively read multiple potentially useful files in parallel.",
         "- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents."
       ],
@@ -205,6 +206,33 @@
       "sandboxed": true,
       "display_name": "Read",
       "formatter": "read"
+    },
+    {
+      "name": "read_image",
+      "description": [
+        "Views an image file from the local filesystem so you can see its contents (screenshots, diagrams, photos, charts).",
+        "",
+        "Usage:",
+        "- The file_path parameter must be an absolute path, not a relative path",
+        "- Supported formats: png, jpeg, gif, webp (detected from the file contents). Use the read tool for text files.",
+        "- Large images are downscaled to at most 1568 pixels on the longest edge; animated GIFs show their first frame.",
+        "- One image per call. You can call multiple tools in a single response to view several images."
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "The absolute path to the image file"
+          }
+        },
+        "required": ["file_path"]
+      },
+      "status_template": "查看图片: {file_path}",
+      "sandboxed": true,
+      "display_name": "ReadImage",
+      "formatter": "default",
+      "result_images": true
     },
     {
       "name": "edit",

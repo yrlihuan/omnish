@@ -43,6 +43,7 @@ struct ToolEntry {
     display_name: String,
     formatter: String,
     summarization_prompt: Option<String>,
+    result_images: bool,
 }
 
 /// A plugin loaded from a tool.json file.
@@ -114,6 +115,11 @@ struct ToolJsonEntry {
     #[serde(default)]
     #[allow(dead_code)]
     summarization_prompt: Option<String>,
+    /// The tool may return one image as its content, encoded per
+    /// `omnish_common::tool_image` (issue #690). Only such tools' results are
+    /// ever parsed for images.
+    #[serde(default)]
+    result_images: bool,
 }
 
 /// Description can be a plain string or an array of lines for readability.
@@ -261,6 +267,7 @@ impl PluginManager {
                         display_name,
                         formatter,
                         summarization_prompt: te.summarization_prompt,
+                    result_images: te.result_images,
                     });
                 }
                 tracing::info!("Loaded builtin plugin with {} tools", tools.len());
@@ -357,6 +364,7 @@ impl PluginManager {
                     display_name,
                     formatter,
                     summarization_prompt: te.summarization_prompt,
+                result_images: te.result_images,
                 });
             }
 
@@ -596,6 +604,7 @@ impl PluginManager {
                     plugin_type: Some(plugin_type),
                     plugin_name: Some(name.clone()),
                     summarization_prompt: te.summarization_prompt.clone(),
+                result_images: te.result_images,
                 });
                 let def = ToolDef {
                     name: te.name,
@@ -610,6 +619,7 @@ impl PluginManager {
                     display_name,
                     formatter,
                     summarization_prompt: te.summarization_prompt,
+                result_images: te.result_images,
                 });
             }
 
@@ -727,6 +737,7 @@ impl PluginManager {
                     plugin_type: Some(plugin.plugin_type),
                     plugin_name: Some(plugin.dir_name.clone()),
                     summarization_prompt: te.summarization_prompt.clone(),
+                result_images: te.result_images,
                 });
                 registry.register_def(te.def.clone());
             }
@@ -797,7 +808,7 @@ mod tests {
     }
 
     /// Number of tools embedded in BUILTIN_TOOL_JSON.
-    const BUILTIN_COUNT: usize = 6;
+    const BUILTIN_COUNT: usize = 7;
 
     /// Helper: register all tools from a PluginManager and return the count of defs.
     fn count_registered_defs(mgr: &PluginManager) -> usize {
@@ -813,6 +824,27 @@ mod tests {
         let reg = ToolRegistry::new();
         mgr.register_all(&reg);
         reg.all_defs().into_iter().find(|t| t.name == name).unwrap().description
+    }
+
+    #[test]
+    fn test_result_images_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tool_json(tmp.path(), "shots", r#"{
+            "plugin_type": "client_tool",
+            "tools": [{
+                "name": "screenshot",
+                "description": "d",
+                "input_schema": {"type": "object"},
+                "result_images": true
+            }]
+        }"#);
+        let mgr = PluginManager::load(tmp.path(), &HashMap::new());
+        let reg = crate::tool_registry::ToolRegistry::new();
+        mgr.register_all(&reg);
+        assert!(reg.result_images("read_image"), "builtin read_image declares it");
+        assert!(!reg.result_images("read"));
+        assert!(reg.result_images("screenshot"), "external plugins can declare it");
+        assert!(!reg.result_images("no_such_tool"));
     }
 
     #[test]
