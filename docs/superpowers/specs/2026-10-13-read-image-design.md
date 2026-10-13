@@ -51,8 +51,9 @@ Input: `{"file_path": "<absolute path>"}`.
      original bytes unchanged.
    - Otherwise decode with the `image` crate (only the png/jpeg/gif/webp
      features, decoder limits set against decompression bombs), resize so the
-     long edge is 1568 px, and encode as PNG when the image has an alpha
-     channel, else JPEG quality 85. If still over 3.75 MB, retry JPEG at quality
+     long edge is 1568 px, and encode as PNG when the source is PNG
+     (screenshots: lossless keeps text sharp) or has an alpha channel, else
+     JPEG quality 85. If still over 3.75 MB, retry JPEG at quality
      70, 55, 40 (alpha flattened onto white). Animated GIFs use the first frame.
 4. Output `content` (one image per call):
 

@@ -92,8 +92,10 @@ fn encode_jpeg(rgb: &RgbImage, quality: u8) -> Result<Vec<u8>, String> {
 }
 
 /// Keep the original bytes when they already fit, else downscale to
-/// `MAX_EDGE` and re-encode: PNG when the image has alpha, otherwise (or when
-/// the PNG is still too big) JPEG at decreasing quality.
+/// `MAX_EDGE` and re-encode: PNG when the source was PNG (typically a
+/// screenshot, where lossless keeps text sharp and often compresses better
+/// than JPEG) or has alpha; otherwise, or when the PNG is still too big, JPEG
+/// at decreasing quality.
 fn prepare(bytes: Vec<u8>, media_type: &'static str) -> Result<Prepared, String> {
     let (width, height) = reader(&bytes)?.into_dimensions().map_err(|e| e.to_string())?;
     if width.max(height) <= MAX_EDGE && bytes.len() <= MAX_IMAGE_BYTES {
@@ -112,7 +114,7 @@ fn prepare(bytes: Vec<u8>, media_type: &'static str) -> Result<Prepared, String>
         bytes, media_type, width: w, height: h, resized_from,
     };
 
-    if img.color().has_alpha() {
+    if media_type == "image/png" || img.color().has_alpha() {
         let png = encode_png(&img)?;
         if png.len() <= MAX_IMAGE_BYTES {
             return Ok(done(png, "image/png"));
@@ -241,20 +243,45 @@ mod tests {
         assert_eq!(parsed.media_type, "image/gif");
     }
 
+    fn decode_output(r: &omnish_llm::tool::ToolResult) -> (omnish_common::tool_image::ToolImage, image::DynamicImage) {
+        assert!(!r.is_error, "{}", r.content);
+        let parsed = omnish_common::tool_image::parse(&r.content).unwrap();
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(&parsed.data_base64).unwrap();
+        let img = image::load_from_memory(&bytes).unwrap();
+        (parsed, img)
+    }
+
     #[test]
-    fn large_opaque_image_is_resized_to_jpeg() {
+    fn large_png_is_resized_and_stays_png() {
+        // Screenshots are usually PNG; keep them lossless so text stays sharp.
         let dir = tempfile::tempdir().unwrap();
         let img = image::DynamicImage::ImageRgb8(RgbImage::from_pixel(3000, 2000, Rgb([10, 200, 10])));
         let path = save(&img, dir.path(), "big.png", ImageFormat::Png);
-        let r = run(&path);
-        assert!(!r.is_error, "{}", r.content);
-        let parsed = omnish_common::tool_image::parse(&r.content).unwrap();
-        assert_eq!(parsed.media_type, "image/jpeg");
-        assert!(parsed.description.contains("(1568x1045, resized from 3000x2000, jpeg, "), "{}", parsed.description);
-        use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD.decode(&parsed.data_base64).unwrap();
-        let out = image::load_from_memory(&bytes).unwrap();
+        let (parsed, out) = decode_output(&run(&path));
+        assert_eq!(parsed.media_type, "image/png");
+        assert!(parsed.description.contains("(1568x1045, resized from 3000x2000, png, "), "{}", parsed.description);
         assert_eq!((out.width(), out.height()), (1568, 1045));
+    }
+
+    #[test]
+    fn large_jpeg_is_resized_and_stays_jpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let img = image::DynamicImage::ImageRgb8(RgbImage::from_pixel(3000, 2000, Rgb([10, 200, 10])));
+        let path = save(&img, dir.path(), "big.jpg", ImageFormat::Jpeg);
+        let (parsed, out) = decode_output(&run(&path));
+        assert_eq!(parsed.media_type, "image/jpeg");
+        assert_eq!((out.width(), out.height()), (1568, 1045));
+    }
+
+    #[test]
+    fn png_too_large_even_resized_falls_back_to_jpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let rgb = image::DynamicImage::ImageRgba8(noise_rgba(1568, 1568)).to_rgb8();
+        let path = save(&image::DynamicImage::ImageRgb8(rgb), dir.path(), "noise_rgb.png", ImageFormat::Png);
+        assert!(std::fs::metadata(&path).unwrap().len() as usize > MAX_IMAGE_BYTES);
+        let (parsed, _) = decode_output(&run(&path));
+        assert_eq!(parsed.media_type, "image/jpeg");
     }
 
     #[test]
