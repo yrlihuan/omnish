@@ -669,10 +669,13 @@ pub struct LlmConfig {
     /// Optional Langfuse observability integration
     #[serde(default)]
     pub langfuse: Option<LangfuseConfig>,
+    /// Auto compaction switch (issue #691, default on).
+    #[serde(default = "default_true", deserialize_with = "string_or_bool::deserialize")]
+    pub auto_compact: bool,
     /// Auto compaction threshold (issue #691): when a chat thread's context
     /// reaches this percentage of the backend's `context_window`, it is
-    /// compacted like `/compact` before the next LLM call. 0 disables it;
-    /// backends without `context_window` are never auto compacted.
+    /// compacted like `/compact` before the next LLM call. Backends without
+    /// `context_window` are never auto compacted. `/config` accepts 80-95.
     #[serde(
         default = "default_auto_compact_percent",
         deserialize_with = "string_or_int::deserialize"
@@ -691,6 +694,7 @@ impl Default for LlmConfig {
             backends: HashMap::new(),
             use_cases: HashMap::new(),
             langfuse: None,
+            auto_compact: true,
             auto_compact_percent: default_auto_compact_percent(),
         }
     }
@@ -873,9 +877,10 @@ mod tests {
     #[test]
     fn test_auto_compact_percent() {
         let config: DaemonConfig = toml::from_str("[llm]\n").unwrap();
+        assert!(config.llm.auto_compact);
         assert_eq!(config.llm.auto_compact_percent, 90);
-        let config: DaemonConfig = toml::from_str("[llm]\nauto_compact_percent = 0\n").unwrap();
-        assert_eq!(config.llm.auto_compact_percent, 0);
+        let config: DaemonConfig = toml::from_str("[llm]\nauto_compact = false\n").unwrap();
+        assert!(!config.llm.auto_compact);
         let config: DaemonConfig = toml::from_str("[llm]\nauto_compact_percent = \"80\"\n").unwrap();
         assert_eq!(config.llm.auto_compact_percent, 80);
     }

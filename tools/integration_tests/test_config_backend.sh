@@ -5,6 +5,8 @@
 # Tests:
 #   1. Add + Delete LLM backend: add via /config Add backend form, verify in
 #      daemon.toml and menu, then open edit form, press Delete, verify removed.
+#   2. LLM > Auto compact (#692): set the threshold, reject one outside
+#      80-95, and switch auto compaction off.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -13,6 +15,7 @@ show_usage() {
     cat <<EOF
 Test cases:
   1. Add + Delete LLM backend via /config
+  2. Auto compact threshold and switch via /config
 EOF
 }
 
@@ -181,7 +184,7 @@ test_1() {
 
     # No auto-edit in this form (Provider has presets → has_prefilled=true).
     # Form: Provider(0) Name(1) Backend type(2) Model(3) API key(4)
-    #        Base URL(5) Use proxy(6) Context window(7) Done(8)
+    #        Base URL(5) Use proxy(6) Context window(7) Accept images(8) Done(9)
 
     # Provider (Select, cursor here): open picker, pick first preset (non-custom).
     # Preset fills Name/Backend type/Model/etc. so we only need to change Name.
@@ -254,9 +257,10 @@ test_1() {
     fi
 
     # Edit form fields (cursor starts at Backend type):
-    #   Backend type → Model → API key command → Base URL → Use proxy → Context window → Delete
-    # Navigate Down × 6 to reach Delete button
-    for i in $(seq 1 6); do
+    #   Backend type → Model → API key command → Base URL → Use proxy → Context window
+    #   → Accept images → Delete
+    # Navigate Down × 7 to reach Delete button
+    for i in $(seq 1 7); do
         send_special Down 0.3
     done
 
@@ -302,5 +306,94 @@ test_1() {
     return 0
 }
 
+# Wait until daemon.toml has a line matching <regex>, up to <timeout> seconds.
+wait_for_toml_line() {
+    local regex="$1"
+    local timeout="${2:-10}"
+    local deadline=$(($(date +%s) + timeout))
+    while (( $(date +%s) < deadline )); do
+        grep -qE "$regex" "$DAEMON_TOML" 2>/dev/null && return 0
+        sleep 0.2
+    done
+    return 1
+}
+
+# Replace the value of the TextInput under the cursor with <text>.
+replace_text_value() {
+    send_enter 0.5
+    for _ in $(seq 1 10); do send_special BSpace 0.15; done
+    send_keys "$1" 0.3
+    commit_text_edit 0.5
+}
+
+# ── Test 2: Auto compact submenu (#692) ────────────────────────────────
+test_2() {
+    echo -e "\n${YELLOW}=== Test 2: Auto compact threshold and switch via /config ===${NC}"
+    local backup
+    backup="$(mktemp /tmp/omnish-test-daemon-toml.XXXXXX)"
+    cp "$DAEMON_TOML" "$backup"
+
+    restart_client
+    wait_for_client
+    open_config
+    # Config top: General, LLM, ... ; LLM submenu: Use Cases, Backends, Auto compact
+    send_special Down 0.3
+    send_enter 0.5
+    send_special Down 0.3
+    send_special Down 0.3
+    send_enter 0.5
+
+    local content
+    content=$(capture_pane -25)
+    show_capture "Auto compact submenu" "$content" 10
+    if ! echo "$content" | grep -q "Threshold (%)"; then
+        assert_fail "Not inside the Auto compact submenu"
+        dump_failure_context
+        cp "$backup" "$DAEMON_TOML"; rm -f "$backup"
+        return 1
+    fi
+
+    # Enabled(0) Threshold(1)
+    send_special Down 0.3
+    replace_text_value 85
+    if ! wait_for_toml_line '^auto_compact_percent = 85$'; then
+        show_capture "daemon.toml" "$(grep -n auto_compact "$DAEMON_TOML")" 5
+        assert_fail "Threshold 85 not written to daemon.toml"
+        cp "$backup" "$DAEMON_TOML"; rm -f "$backup"
+        return 1
+    fi
+    assert_pass "Threshold 85 written as an integer"
+
+    replace_text_value 70
+    sleep 1
+    content=$(capture_pane -30)
+    if ! echo "$content" | grep -q "80 to 95"; then
+        show_capture "After invalid threshold" "$content" 15
+        assert_fail "No range error for threshold 70"
+        cp "$backup" "$DAEMON_TOML"; rm -f "$backup"
+        return 1
+    fi
+    if ! grep -qE '^auto_compact_percent = 85$' "$DAEMON_TOML"; then
+        assert_fail "Invalid threshold changed daemon.toml"
+        cp "$backup" "$DAEMON_TOML"; rm -f "$backup"
+        return 1
+    fi
+    assert_pass "Threshold 70 rejected, daemon.toml unchanged"
+
+    send_special Up 0.3
+    send_enter 0.5
+    if wait_for_toml_line '^auto_compact = false$'; then
+        assert_pass "Auto compaction switched off"
+    else
+        assert_fail "auto_compact = false not written"
+        cp "$backup" "$DAEMON_TOML"; rm -f "$backup"
+        return 1
+    fi
+
+    send_special Escape 0.3; send_special Escape 0.3; send_special Escape 0.3
+    cp "$backup" "$DAEMON_TOML"; rm -f "$backup"
+    return 0
+}
+
 echo -e "${YELLOW}LLM backend config management integration tests${NC}"
-run_tests 1
+run_tests 2

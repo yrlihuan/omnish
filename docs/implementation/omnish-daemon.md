@@ -929,7 +929,7 @@ tombstone 线程刻意不在内存中，因此该函数**按需从磁盘读取**
 `full_compact_thread(tid, session_id, ctx, backend, trigger, replay)` 由 `/compact` 命令和自动压缩共用。`CompactTrigger` 区分 `Command` / `AutoBeforeTurn` / `AutoMidTurn`；`replay`（`CompactReplay`：system prompt + tools）为 None 时按上文从 thread meta 重建，agent loop 则直接传入自身请求里的值。命令路径的后端由 `thread_backend()` 解析（线程的 model 覆盖，否则 chat use case）。
 
 ##### 自动压缩 (#691)
-上下文接近模型窗口时自动做一次完整压缩，阈值为 `[llm] auto_compact_percent`（默认 90，0 关闭，热加载生效），窗口取线程所用后端的 `context_window()`，未配置则不自动压缩。
+上下文接近模型窗口时自动做一次完整压缩，开关为 `[llm] auto_compact`（默认 true），阈值为 `[llm] auto_compact_percent`（默认 90，`/config` 中限定 80-95；手改 daemon.toml 不受此限，0 同样表示关闭），均热加载生效（`auto_compact_percent()` 在开关关闭时返回 0），窗口取线程所用后端的 `context_window()`，未配置则不自动压缩。
 
 **用量估算（`compact` 模块纯函数）:**
 - `estimate_context_tokens(last_usage, msgs)`：上一次 LLM 调用报告的总 token（input + cache read + cache write + output，见 `usage_tokens()`）已覆盖到最后一条 assistant 消息为止，只对其后的消息做估算；没有用量时估算全部消息
@@ -1050,13 +1050,16 @@ tombstone 线程刻意不在内存中，因此该函数**按需从磁盘读取**
 - `options` - （select 类型）静态选项列表
 - `handler` - （submenu 类型）Rust 处理函数名，用于分组变更的批量处理（如 `"add_backend"`）
 - `source` - （dynamic 类型）标识在此位置展开哪类动态内容，已知值：`"plugins"`
+- `default` - `toml_key` 缺失时显示的值；handler 表单内的 toggle 也以它为初始值（未设置则为关），例如新增后端表单的 "Accept images" 默认开
+- `int_range` - （text 类型）`[min, max]`：值必须是该范围内的整数（允许首尾空白），写入为 TOML 整数而非字符串；不合法时 `apply_config_changes` 返回 `<label>: must be an integer from <min> to <max>`，不写入，客户端显示 "Failed to save" 并回滚（#692）
 
 **当前模式覆盖的配置项：**
 - 代理设置：`proxy`（HTTP 代理）、`no_proxy`
 - LLM use case 路由：`completion`、`analysis`、`chat` 后端选择（选项从已配置后端动态生成；支持点分隔的后端名如 `provider.model`）
 - 新增 LLM 后端：`add_backend` 子菜单，首项为 Provider 预设选择器（选项从 `omnish_llm::presets::chat_providers()` 动态生成，"custom" 置顶），选中预设后通过 `ConfigItem.prefills` 自动填充 name、backend_type、model、base_url、context_window；提交时 `provider` 字段被跳过不写入 TOML，纯 `api_key` 输入自动转换为 `api_key_cmd = "echo {key}"`
-- 动态项：已存在的后端自动生成编辑条目（`llm.backends.<name>.backend_type/model/api_key_cmd/base_url/use_proxy/context_window`）和 Delete 按钮（`llm.backends.<name>._delete`），后端按名称排序以确保 UI 顺序一致。每个后端注册为 `edit_backend` handler 子菜单
-- 每个后端新增 `use_proxy`（Toggle 类型）和 `context_window`（TextInput 类型）配置项
+- LLM > Auto compact 子菜单（#692）：`Enabled`（toggle，`llm.auto_compact`，默认 true）与 `Threshold (%)`（text，`llm.auto_compact_percent`，默认 90，`int_range = [80, 95]`）
+- 动态项：已存在的后端自动生成编辑条目（`llm.backends.<name>.backend_type/model/api_key_cmd/base_url/use_proxy/context_window/supports_vision`，`supports_vision` 显示为 "Accept images" toggle，未配置时为开）和 Delete 按钮（`llm.backends.<name>._delete`），后端按名称排序以确保 UI 顺序一致。每个后端注册为 `edit_backend` handler 子菜单
+- 每个后端新增 `use_proxy`（Toggle 类型）和 `context_window`（TextInput 类型）配置项；`supports_vision`（"Accept images"，Toggle）在编辑与新增表单中均可设置，`handle_edit_backend` / `handle_add_backend` 写为布尔值（#692）。新增表单只提交改动过的项，保持默认开时不写入，即缺省 true
 - **插件配置项**（`build_plugin_items()` 函数，由 `dynamic` kind + `source = "plugins"` 触发）：遍历 `PluginManager::config_meta()` 为每个非 builtin 插件生成：
   - `plugins.<name>.enabled`（Toggle）- 插件启用/禁用开关
   - `plugins.<name>.<param>`（TextInput）- 插件声明的 `config_params` 参数（如 `api_key`）
@@ -2467,3 +2470,12 @@ async fn main() -> anyhow::Result<()> {
 4. **轮中续做**：轮中压缩的摘要追加 `COMPACT_CONTINUE_HINT`，请求从新窗口重建后继续循环
 5. **显示**：自动压缩的摘要带 `_compact_auto`，`/resume` 显示为 `/compact (auto)`
 6. 新增集成测试 `test_auto_compact.sh`（临时把阈值调到 1%，覆盖轮前、轮中与 `/resume`）
+
+### 2026-10-14 - /config 支持自动压缩与看图设置（#692）
+
+**主要变更:**
+
+1. **LLM > Auto compact 子菜单**：`Enabled`（`llm.auto_compact`）与 `Threshold (%)`（`llm.auto_compact_percent`，限定 80-95）
+2. **schema `int_range`**：text 项可声明整数范围，校验后写为 TOML 整数，不合法时报错且不写入
+3. **Accept images**：后端编辑与新增表单增加 `supports_vision` toggle（默认开）；handler 表单内 toggle 改为以 schema `default` 为初始值
+4. 集成测试 `test_config_backend.sh` 新增用例 2（设置阈值、拒绝范围外的值、关闭开关），用例 1 适配编辑表单新增的一项

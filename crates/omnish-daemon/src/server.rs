@@ -3291,9 +3291,11 @@ fn usage_tokens(input: u64, cache_read: u64, cache_creation: u64, output: u64) -
     Some(input + cache_read + cache_creation + output).filter(|&n| n > 0)
 }
 
-/// Auto compaction threshold from the daemon config (issue #691).
+/// Auto compaction threshold from the daemon config (issue #691); 0 when
+/// auto compaction is switched off.
 fn auto_compact_percent(ctx: &HandlerCtx) -> u32 {
-    ctx.opts.daemon_config.read().unwrap().llm.auto_compact_percent
+    let config = ctx.opts.daemon_config.read().unwrap();
+    if config.llm.auto_compact { config.llm.auto_compact_percent } else { 0 }
 }
 
 /// Stream a one-line progress note into the chat turn (rendered like LLM

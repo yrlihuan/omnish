@@ -32,6 +32,8 @@ struct SchemaItem {
     pub default: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
+    #[serde(default)]
+    pub int_range: Option<[i64; 2]>,
 }
 
 fn parse_schema() -> Vec<SchemaItem> {
@@ -221,7 +223,7 @@ pub fn build_config_items(
             }
             "toggle" => {
                 let value = if under_handler {
-                    false
+                    s.default.as_deref().and_then(|v| v.parse().ok()).unwrap_or(false)
                 } else {
                     s.toml_key.as_ref()
                         .and_then(|k| resolve_value(&config_value, k))
@@ -297,6 +299,12 @@ pub fn build_config_items(
             kind: ConfigItemKind::TextInput {
                 value: backend.context_window.map(|v| v.to_string()).unwrap_or_default(),
             },
+            prefills: vec![],
+        });
+        items.push(ConfigItem {
+            path: format!("{}.supports_vision", prefix),
+            label: "Accept images".to_string(),
+            kind: ConfigItemKind::Toggle { value: backend.supports_vision.unwrap_or(true) },
             prefills: vec![],
         });
         items.push(ConfigItem {
@@ -566,9 +574,17 @@ pub fn apply_config_changes(config_path: &Path, changes: &[ConfigChange]) -> any
                 let bool_val: bool = change.value.parse().unwrap_or(false);
                 omnish_common::config_edit::set_toml_value_nested_bool(config_path, toml_key, bool_val)?;
             }
-            _ => {
-                omnish_common::config_edit::set_toml_value_nested(config_path, toml_key, &change.value)?;
-            }
+            _ => match item.and_then(|s| s.int_range) {
+                Some(range) => {
+                    let label = item.map(|s| s.label.as_str()).unwrap_or(&change.path);
+                    let n = parse_int_in_range(&change.value, range)
+                        .map_err(|e| anyhow::anyhow!("{}: {}", label, e))?;
+                    omnish_common::config_edit::set_toml_value_nested_int(config_path, toml_key, n)?;
+                }
+                None => {
+                    omnish_common::config_edit::set_toml_value_nested(config_path, toml_key, &change.value)?;
+                }
+            },
         }
     }
 
@@ -762,6 +778,14 @@ fn handle_edit_global_rule(
     Ok(())
 }
 
+/// Parse a text field declared with `int_range = [min, max]`.
+fn parse_int_in_range(value: &str, [min, max]: [i64; 2]) -> Result<i64, String> {
+    match value.trim().parse::<i64>() {
+        Ok(n) if (min..=max).contains(&n) => Ok(n),
+        _ => Err(format!("must be an integer from {} to {}", min, max)),
+    }
+}
+
 fn handle_edit_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::Result<()> {
     // Detect backend name from any change path: llm.backends.<name>.<field>
     let backend_path = changes.iter()
@@ -799,7 +823,7 @@ fn handle_edit_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow:
             continue;
         }
         let toml_key = &change.path;
-        if field == "use_proxy" {
+        if field == "use_proxy" || field == "supports_vision" {
             let bool_val: bool = change.value.parse().unwrap_or(false);
             omnish_common::config_edit::set_toml_value_nested_bool(config_path, toml_key, bool_val)?;
         } else if field == "api_key_cmd" {
@@ -875,7 +899,7 @@ fn handle_add_backend(config_path: &Path, changes: &[&ConfigChange]) -> anyhow::
             continue;
         }
         let toml_key = format!("llm.backends.{}.{}", quoted_name, field);
-        if field == "use_proxy" {
+        if field == "use_proxy" || field == "supports_vision" {
             let bool_val: bool = change.value.parse().unwrap_or(false);
             omnish_common::config_edit::set_toml_value_nested_bool(config_path, &toml_key, bool_val)?;
         } else if field == "context_window" {
@@ -1045,10 +1069,10 @@ mod tests {
     fn test_build_config_items_returns_handlers() {
         let config = DaemonConfig::default();
         let (_items, handlers) = build_config_items(&config, &[], &[]);
-        // Label-only submenus (llm, shell_completion, sandbox) + dynamic placeholder (plugins)
-        // + handler submenus (add_backend, install_plugin)
+        // Label-only submenus (llm, shell_completion, sandbox, llm.auto_compact) + dynamic
+        // placeholder (plugins) + handler submenus (add_backend, install_plugin)
         // Note: add_global_rule is now generated client-side
-        assert_eq!(handlers.len(), 6);
+        assert_eq!(handlers.len(), 7);
         let llm = handlers.iter().find(|h| h.path == "llm").unwrap();
         assert_eq!(llm.label, "LLM");
         assert_eq!(llm.handler, "");
@@ -1058,6 +1082,91 @@ mod tests {
         let install = handlers.iter().find(|h| h.path == "plugins.__install__").unwrap();
         assert_eq!(install.handler, "install_plugin");
         assert_eq!(install.label, "Install plugin");
+    }
+
+    fn item<'a>(items: &'a [ConfigItem], path: &str) -> &'a ConfigItemKind {
+        &items.iter().find(|i| i.path == path).unwrap_or_else(|| panic!("no item {path}")).kind
+    }
+
+    #[test]
+    fn test_auto_compact_items_show_defaults_and_values() {
+        let config = DaemonConfig::default();
+        let (items, handlers) = build_config_items(&config, &[], &[]);
+        assert!(handlers.iter().any(|h| h.path == "llm.auto_compact" && h.label == "Auto compact"));
+        assert!(matches!(item(&items, "llm.auto_compact.enabled"), ConfigItemKind::Toggle { value: true }));
+        match item(&items, "llm.auto_compact.threshold") {
+            ConfigItemKind::TextInput { value } => assert_eq!(value, "90"),
+            _ => panic!("expected TextInput"),
+        }
+
+        let mut config = DaemonConfig::default();
+        config.llm.auto_compact = false;
+        config.llm.auto_compact_percent = 85;
+        let (items, _) = build_config_items(&config, &[], &[]);
+        assert!(matches!(item(&items, "llm.auto_compact.enabled"), ConfigItemKind::Toggle { value: false }));
+        match item(&items, "llm.auto_compact.threshold") {
+            ConfigItemKind::TextInput { value } => assert_eq!(value, "85"),
+            _ => panic!("expected TextInput"),
+        }
+    }
+
+    #[test]
+    fn test_auto_compact_changes_written_and_validated() {
+        let cfg = tmp_cfg("[llm]\ndefault = \"claude\"\n");
+        let set = |path: &str, value: &str| {
+            apply_config_changes(&cfg, &[ConfigChange { path: path.into(), value: value.into() }])
+        };
+        set("llm.auto_compact.enabled", "false").unwrap();
+        set("llm.auto_compact.threshold", " 85 ").unwrap();
+        let out = std::fs::read_to_string(&cfg).unwrap();
+        assert!(out.contains("auto_compact = false"), "got:\n{}", out);
+        assert!(out.contains("auto_compact_percent = 85"), "written as an integer, got:\n{}", out);
+        let parsed: DaemonConfig = toml::from_str(&out).unwrap();
+        assert!(!parsed.llm.auto_compact);
+        assert_eq!(parsed.llm.auto_compact_percent, 85);
+
+        for bad in ["79", "96", "abc", ""] {
+            let err = set("llm.auto_compact.threshold", bad).err().expect("rejected").to_string();
+            assert!(err.contains("80 to 95"), "{bad}: {err}");
+        }
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), out, "rejected values are not written");
+        set("llm.auto_compact.threshold", "80").unwrap();
+        set("llm.auto_compact.threshold", "95").unwrap();
+    }
+
+    #[test]
+    fn test_supports_vision_items_and_writes() {
+        let mut config = DaemonConfig::default();
+        let mut backend = omnish_common::config::LlmBackendConfig {
+            backend_type: "anthropic".to_string(),
+            model: "m".to_string(),
+            api_key_cmd: None,
+            base_url: None,
+            use_proxy: false,
+            context_window: None,
+            max_content_chars: None,
+            supports_vision: None,
+        };
+        config.llm.backends.insert("a".to_string(), backend.clone());
+        backend.supports_vision = Some(false);
+        config.llm.backends.insert("b".to_string(), backend);
+        let (items, _) = build_config_items(&config, &[], &[]);
+        assert!(matches!(item(&items, "llm.backends.a.supports_vision"), ConfigItemKind::Toggle { value: true }));
+        assert!(matches!(item(&items, "llm.backends.b.supports_vision"), ConfigItemKind::Toggle { value: false }));
+        // The add form starts with images accepted (schema default).
+        assert!(matches!(item(&items, "llm.backends.__new__.supports_vision"), ConfigItemKind::Toggle { value: true }));
+        assert!(matches!(item(&items, "llm.backends.__new__.use_proxy"), ConfigItemKind::Toggle { value: false }));
+
+        let cfg = tmp_cfg("[llm.backends.a]\nbackend_type = \"anthropic\"\nmodel = \"m\"\n");
+        apply_config_changes(&cfg, &[ConfigChange { path: "llm.backends.a.supports_vision".into(), value: "false".into() }]).unwrap();
+        apply_config_changes(&cfg, &[
+            ConfigChange { path: "llm.backends.__new__.name".into(), value: "n".into() },
+            ConfigChange { path: "llm.backends.__new__.model".into(), value: "m".into() },
+            ConfigChange { path: "llm.backends.__new__.supports_vision".into(), value: "false".into() },
+        ]).unwrap();
+        let parsed: DaemonConfig = toml::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(parsed.llm.backends["a"].supports_vision, Some(false));
+        assert_eq!(parsed.llm.backends["n"].supports_vision, Some(false));
     }
 
     #[test]

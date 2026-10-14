@@ -9,7 +9,10 @@
 #   options_from - (select) TOML table whose keys become options at runtime
 #   options      - (select) static option list
 #   handler      - (submenu) Rust function name for grouped change handling
-#   default      - fallback value when toml_key is absent from config
+#   default      - fallback value when toml_key is absent from config (also the
+#                  initial value of a toggle inside a handler form)
+#   int_range    - (text) [min, max]: the value must be an integer in this
+#                  range and is written as a TOML integer
 #   source       - (dynamic) marker identifying which dynamic items to expand
 #                  at this position. Known sources: "plugins"
 
@@ -191,6 +194,33 @@ kind = "toggle"
 path = "llm.backends.__new__.context_window"
 label = "Context window"
 kind = "text"
+
+[[items]]
+path = "llm.backends.__new__.supports_vision"
+label = "Accept images"
+kind = "toggle"
+default = "true"
+
+# ── LLM > Auto compact (issue #691) ───────────────────
+[[items]]
+path = "llm.auto_compact"
+label = "Auto compact"
+kind = "submenu"
+
+[[items]]
+path = "llm.auto_compact.enabled"
+label = "Enabled"
+kind = "toggle"
+toml_key = "llm.auto_compact"
+default = "true"
+
+[[items]]
+path = "llm.auto_compact.threshold"
+label = "Threshold (%)"
+kind = "text"
+toml_key = "llm.auto_compact_percent"
+default = "90"
+int_range = [80, 95]
 
 # ── Tasks ────────────────────────────────────────────
 [[items]]
