@@ -121,6 +121,9 @@ macro_rules! compact_requirements {
          - This summary request comes from the system, not the user. Do not mention it, the summary \
          process, or that context was compacted, and do not record unfinished work as stopped or \
          cancelled because of it.\n\
+         - Steps the assistant had not run yet are pending, not interrupted: list them under Active or \
+         Next Move without saying anyone stopped them. Report an interruption only when the user \
+         actually interrupted earlier in the conversation.\n\
          - Output only the summary, with no preamble or commentary."
     };
 }
@@ -129,9 +132,10 @@ macro_rules! compact_requirements {
 /// request that otherwise replays the chat turn verbatim (same system prompt,
 /// tools and history), so the provider's prefix cache is reused. Tools must
 /// stay in that request to keep the prefix identical, hence the explicit
-/// "do not call tools".
+/// "do not call tools". The daemon wraps it in `<system-compaction>` tags.
 pub const COMPACT_TURN_PROMPT: &str = concat!(
-    "Do not continue the task or call any tools. Summarize the conversation above into a \
+    "This <system-compaction> request was added by the system to save context; it is not from \
+     the user and did not interrupt anything. Do not continue the task or call any tools. Summarize the conversation above into a \
      structured summary. It will replace the conversation and becomes the only record of it when \
      the assistant resumes the work.\n\n",
     compact_requirements!()

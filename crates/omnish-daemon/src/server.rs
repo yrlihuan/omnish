@@ -6314,7 +6314,7 @@ mod tests {
         for (i, m) in window.iter().enumerate() {
             assert_eq!(msgs[i], m);
         }
-        assert_eq!(msgs[4], &serde_json::json!({"role": "user", "content": "INS"}));
+        assert_eq!(msgs[4], &serde_json::json!({"role": "user", "content": "<system-compaction>\nINS\n</system-compaction>"}));
 
         // Chat breakpoint scheme: last two messages.
         let hints: Vec<CacheHint> = req.extra_messages.iter().map(|m| m.cache).collect();
