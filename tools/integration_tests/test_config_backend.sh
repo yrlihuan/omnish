@@ -364,12 +364,13 @@ test_2() {
     fi
     assert_pass "Threshold 85 written as an integer"
 
+    # Out of range: the daemon rejects it and the menu reverts the item.
     replace_text_value 70
     sleep 1
     content=$(capture_pane -30)
-    if ! echo "$content" | grep -q "80 to 95"; then
+    if ! echo "$content" | grep "Threshold (%)" | tail -1 | grep -q '"85"'; then
         show_capture "After invalid threshold" "$content" 15
-        assert_fail "No range error for threshold 70"
+        assert_fail "Threshold 70 was not reverted to 85"
         cp "$backup" "$DAEMON_TOML"; rm -f "$backup"
         return 1
     fi
@@ -378,7 +379,7 @@ test_2() {
         cp "$backup" "$DAEMON_TOML"; rm -f "$backup"
         return 1
     fi
-    assert_pass "Threshold 70 rejected, daemon.toml unchanged"
+    assert_pass "Threshold 70 rejected and reverted, daemon.toml unchanged"
 
     send_special Up 0.3
     send_enter 0.5
