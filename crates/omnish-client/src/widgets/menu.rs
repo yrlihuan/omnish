@@ -12,6 +12,9 @@ use crate::display::{BOLD, BOLD_REVERSE, DIM, GRAY, GREEN, NEWLINE, RED, RESET};
 
 // ── Layout constants ────────────────────────────────────────────────────
 
+/// How often the idle menu checks for a notice pushed by the daemon.
+const NOTICE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Number of non-item lines in the widget: breadcrumb + sep + sep + hint.
 const CHROME_LINES: usize = 4;
 
@@ -639,9 +642,10 @@ pub fn run_menu(
     let mut cursor: usize = first_interactive(items);
     let mut scroll_offset: usize = 0;
 
-    // Notice in place of the title line (issue #693). Drop anything posted
-    // before this menu opened.
-    let _ = menu_notice::take_pending();
+    // Notice in place of the title line (issue #693). The guard drops
+    // anything posted before this menu opened and routes daemon notices
+    // here while the menu is open.
+    let _open_guard = menu_notice::MenuOpenGuard::new();
     let mut notice: Option<Notice> = None;
 
     // Hide cursor
@@ -757,15 +761,24 @@ pub fn run_menu(
             }
         }
 
-        // While a notice is shown, wake up for each animation frame.
-        while let Some(active) = &notice {
-            let timeout = active.next_change_in(std::time::Instant::now());
+        // Wait for input. Wake up for each animation frame of the shown
+        // notice, and every NOTICE_POLL to pick up a notice pushed by the
+        // daemon while no key is pressed.
+        loop {
+            let now = std::time::Instant::now();
+            let frame_in = notice.as_ref().map(|n| n.next_change_in(now));
+            let timeout = frame_in.map_or(NOTICE_POLL, |d| d.min(NOTICE_POLL));
             let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
             let ms = timeout.as_millis().clamp(1, i32::MAX as u128) as i32;
             if unsafe { libc::poll(&mut pfd, 1, ms) } != 0 {
                 break; // input ready (or poll error): read it below
             }
-            repaint_title(&breadcrumb_parts.join(" > "), current_items.len(), scroll_offset, cols, &mut notice);
+            if let Some((level, text)) = menu_notice::take_pending() {
+                notice = Some(Notice::new(level, text));
+                repaint_title(&breadcrumb_parts.join(" > "), current_items.len(), scroll_offset, cols, &mut notice);
+            } else if frame_in.is_some_and(|d| d <= timeout) {
+                repaint_title(&breadcrumb_parts.join(" > "), current_items.len(), scroll_offset, cols, &mut notice);
+            }
         }
 
         let n = match nix::unistd::read(stdin_fd, &mut byte) {

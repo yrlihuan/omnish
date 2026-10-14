@@ -7,6 +7,8 @@
 #      daemon.toml and menu, then open edit form, press Delete, verify removed.
 #   2. LLM > Auto compact (#692): set the threshold, reject one outside
 #      80-95, and switch auto compaction off.
+#   3. Plugin install result pushed by the daemon shows in the /config title
+#      line while the menu is open, and is not shown again after it (#693).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -16,6 +18,7 @@ show_usage() {
 Test cases:
   1. Add + Delete LLM backend via /config
   2. Auto compact threshold and switch via /config
+  3. Plugin install result shown inside /config
 EOF
 }
 
@@ -403,5 +406,53 @@ test_2() {
     return 0
 }
 
+# ── Test 3: daemon notice inside /config (#693) ──────────────────────────
+test_3() {
+    echo -e "\n${YELLOW}=== Test 3: Plugin install result shown inside /config ===${NC}"
+    local missing="/nonexistent/omnish-test-plugin-$$.tar.gz"
+
+    restart_client
+    wait_for_client
+    open_config
+    # Config top: General, LLM, Tasks, Plugins, ... ; Plugins: Install plugin first
+    send_special Down 0.3
+    send_special Down 0.3
+    send_special Down 0.3
+    send_enter 0.5
+    send_enter 0.8          # open the Install plugin form (URL field auto-edits)
+    send_keys "$missing" 0.3
+    commit_text_edit 0.5    # cursor advances to the Install button
+    send_enter 1.5
+
+    local content
+    content=$(capture_pane -30)
+    show_capture "After install" "$content" 12
+    if ! echo "$content" | grep -q "Install plugin failed: local path not found"; then
+        assert_fail "Install failure not shown inside /config"
+        dump_failure_context
+        send_special Escape 0.5; send_special Escape 0.5; send_special Escape 0.5
+        return 1
+    fi
+    if ! echo "$content" | grep -q "Plugins ▸"; then
+        assert_fail "Menu is no longer open while showing the notice"
+        send_special Escape 0.5; send_special Escape 0.5; send_special Escape 0.5
+        return 1
+    fi
+    assert_pass "Install failure shown in the /config title line"
+
+    # Leave /config and chat: the notice must not be shown a second time.
+    sleep 4
+    send_special Escape 0.5
+    send_special Escape 1.0
+    content=$(capture_pane -100)
+    if echo "$content" | grep -q "\[omnish error\] Install plugin failed"; then
+        show_capture "After leaving /config" "$content" 12
+        assert_fail "Install failure shown again after leaving /config"
+        return 1
+    fi
+    assert_pass "Notice not repeated after leaving /config"
+    return 0
+}
+
 echo -e "${YELLOW}LLM backend config management integration tests${NC}"
-run_tests 2
+run_tests 3

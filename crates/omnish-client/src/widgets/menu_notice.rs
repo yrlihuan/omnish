@@ -8,7 +8,14 @@
 // `notify()`; `run_menu` picks them up and drives the animation from its
 // key-read loop. Output printed directly by a callback is overwritten by the
 // next menu redraw, which is why save errors used to go unseen.
+//
+// Daemon `NoticePush` messages (e.g. client deploy or plugin install results)
+// are routed here with `notify_push()` while a menu is open, instead of
+// waiting for the shell loop that only runs after the menu and chat close.
+// A pushed notice the menu could not show before closing is handed back
+// through `take_unshown_pushes()`.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -45,20 +52,91 @@ impl NoticeLevel {
     }
 }
 
-static PENDING: Mutex<Option<(NoticeLevel, String)>> = Mutex::new(None);
+struct Pending {
+    level: NoticeLevel,
+    text: String,
+    /// Came from a daemon push rather than a menu callback.
+    pushed: bool,
+}
+
+static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
+static MENU_OPEN: AtomicBool = AtomicBool::new(false);
+/// Pushed notices posted while a menu was open but never shown by it.
+static UNSHOWN_PUSHES: Mutex<Vec<(NoticeLevel, String)>> = Mutex::new(Vec::new());
+
+fn post(level: NoticeLevel, text: String, pushed: bool) {
+    // Notices are single-line; fold any newlines a message carries.
+    let text = text.replace(['\r', '\n'], " ");
+    let mut pending = PENDING.lock().unwrap();
+    // A newer notice replaces an older one; keep a replaced push so it is
+    // still shown the usual way once the menu closes.
+    if let Some(old) = pending.take() {
+        if old.pushed {
+            UNSHOWN_PUSHES.lock().unwrap().push((old.level, old.text));
+        }
+    }
+    *pending = Some(Pending { level, text, pushed });
+}
 
 /// Show `text` in the title line of the running menu. A newer notice
 /// replaces an older one. Safe to call when no menu is open: `run_menu`
 /// clears stale notices when it starts.
 pub fn notify(level: NoticeLevel, text: impl Into<String>) {
-    // Notices are single-line; fold any newlines a message carries.
-    let text = text.into().replace(['\r', '\n'], " ");
-    *PENDING.lock().unwrap() = Some((level, text));
+    post(level, text.into(), false);
+}
+
+/// Serializes tests that touch the global notice state.
+#[cfg(test)]
+pub static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// True while a menu is open (and will show routed notices).
+pub fn menu_open() -> bool {
+    MENU_OPEN.load(Ordering::SeqCst)
+}
+
+/// Route a daemon notice to the open menu. Returns false (and does
+/// nothing) when no menu is open, so the caller shows it the usual way.
+pub fn notify_push(level: NoticeLevel, text: impl Into<String>) -> bool {
+    if !MENU_OPEN.load(Ordering::SeqCst) {
+        return false;
+    }
+    post(level, text.into(), true);
+    true
+}
+
+/// Pushed notices a menu received but closed before showing (or that a
+/// newer notice replaced). The shell loop shows them as ordinary notices.
+pub fn take_unshown_pushes() -> Vec<(NoticeLevel, String)> {
+    std::mem::take(&mut *UNSHOWN_PUSHES.lock().unwrap())
 }
 
 /// Take the notice posted since the last call, if any.
 pub(super) fn take_pending() -> Option<(NoticeLevel, String)> {
-    PENDING.lock().unwrap().take()
+    PENDING.lock().unwrap().take().map(|p| (p.level, p.text))
+}
+
+/// Marks a menu as open for its lifetime, so daemon notices are routed to
+/// it. On drop, a pushed notice still pending goes to `take_unshown_pushes`.
+pub(super) struct MenuOpenGuard;
+
+impl MenuOpenGuard {
+    pub fn new() -> Self {
+        // Drop anything a previous menu left behind.
+        let _ = take_pending();
+        MENU_OPEN.store(true, Ordering::SeqCst);
+        MenuOpenGuard
+    }
+}
+
+impl Drop for MenuOpenGuard {
+    fn drop(&mut self) {
+        MENU_OPEN.store(false, Ordering::SeqCst);
+        if let Some(p) = PENDING.lock().unwrap().take() {
+            if p.pushed {
+                UNSHOWN_PUSHES.lock().unwrap().push((p.level, p.text));
+            }
+        }
+    }
 }
 
 /// How the terminal can render background colors.
@@ -339,11 +417,36 @@ mod tests {
         assert_eq!(parse_osc11(b"garbage"), None);
     }
 
+    // Global-state behavior in one test, serialized with TEST_LOCK.
     #[test]
-    fn notify_folds_newlines_and_replaces_pending() {
+    fn pending_notices_and_push_routing() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = take_pending();
+        let _ = take_unshown_pushes();
         notify(NoticeLevel::Info, "first");
         notify(NoticeLevel::Error, "line one\nline two");
         assert_eq!(take_pending(), Some((NoticeLevel::Error, "line one line two".into())));
         assert_eq!(take_pending(), None);
+
+        // No menu open: pushes are left to the caller.
+        assert!(!notify_push(NoticeLevel::Info, "deployed"));
+        assert_eq!(take_pending(), None);
+
+        {
+            let _guard = MenuOpenGuard::new();
+            assert!(notify_push(NoticeLevel::Info, "deployed"));
+            assert_eq!(take_pending(), Some((NoticeLevel::Info, "deployed".into())));
+            // A push replaced by a newer notice is not lost.
+            assert!(notify_push(NoticeLevel::Error, "install failed"));
+            notify(NoticeLevel::Error, "Failed to save");
+            // A push still pending when the menu closes is not lost either.
+            assert!(notify_push(NoticeLevel::Info, "late"));
+        }
+        assert!(!notify_push(NoticeLevel::Info, "after close"));
+        assert_eq!(
+            take_unshown_pushes(),
+            vec![(NoticeLevel::Error, "install failed".into()), (NoticeLevel::Info, "late".into())]
+        );
+        assert!(take_unshown_pushes().is_empty());
     }
 }

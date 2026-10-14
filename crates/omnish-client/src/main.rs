@@ -1948,27 +1948,16 @@ async fn main() -> Result<()> {
                     );
                 }
                 Message::NoticePush { level, text, kind } => {
-                    // Tagged notices are only shown on the initiator -
-                    // other clients drop them so daemon-side broadcasts
-                    // of targeted actions (Install plugin, ...) don't
-                    // spam every connected session. Untagged notices
-                    // (deploy, legacy) always display.
-                    let show = match &kind {
-                        Some(k) => pending_notices::consume(k),
-                        None => true,
-                    };
-                    if show {
-                        let prefix = match level {
-                            omnish_protocol::message::NoticeLevel::Info => "[omnish]",
-                            omnish_protocol::message::NoticeLevel::Error => "[omnish error]",
-                        };
-                        notice(&format!("{} {}", prefix, text));
-                    } else {
-                        event_log::push(format!("notice dropped (kind={:?})", kind));
+                    if notice_push_wanted(kind.as_deref()) {
+                        notice(&format_notice_push(level, &text));
                     }
                 }
                 _ => {}
             }
+        }
+        // Daemon notices a /config menu received but closed before showing.
+        for (level, text) in widgets::menu_notice::take_unshown_pushes() {
+            notice(&format_notice_push(menu_level_to_protocol(level), &text));
         }
 
         // Auto-dismiss expired ghost text
@@ -2019,8 +2008,63 @@ pub(crate) type PendingTitles = std::sync::Arc<std::sync::Mutex<std::collections
 /// Handle a pushed message. Returns `Some(msg)` for messages that should be
 /// forwarded to the shell loop's existing handling; returns `None` when the
 /// dispatcher fully handled it (currently: ServerPush).
+/// Tagged notices are only shown on the initiator - other clients drop them
+/// so daemon-side broadcasts of targeted actions (Install plugin, ...) don't
+/// spam every connected session. Untagged notices (deploy, legacy) always
+/// display.
+fn notice_push_wanted(kind: Option<&str>) -> bool {
+    let show = match kind {
+        Some(k) => pending_notices::consume(k),
+        None => true,
+    };
+    if !show {
+        event_log::push(format!("notice dropped (kind={:?})", kind));
+    }
+    show
+}
+
+/// Text of a daemon notice shown by the shell loop.
+fn format_notice_push(level: omnish_protocol::message::NoticeLevel, text: &str) -> String {
+    let prefix = match level {
+        omnish_protocol::message::NoticeLevel::Info => "[omnish]",
+        omnish_protocol::message::NoticeLevel::Error => "[omnish error]",
+    };
+    format!("{} {}", prefix, text)
+}
+
+fn protocol_level_to_menu(level: &omnish_protocol::message::NoticeLevel) -> widgets::menu_notice::NoticeLevel {
+    match level {
+        omnish_protocol::message::NoticeLevel::Info => widgets::menu_notice::NoticeLevel::Info,
+        omnish_protocol::message::NoticeLevel::Error => widgets::menu_notice::NoticeLevel::Error,
+    }
+}
+
+fn menu_level_to_protocol(level: widgets::menu_notice::NoticeLevel) -> omnish_protocol::message::NoticeLevel {
+    match level {
+        widgets::menu_notice::NoticeLevel::Info => omnish_protocol::message::NoticeLevel::Info,
+        widgets::menu_notice::NoticeLevel::Error => omnish_protocol::message::NoticeLevel::Error,
+    }
+}
+
 fn route_push(msg: Message, pending: &PendingTitles) -> Option<Message> {
     match msg {
+        // While a /config menu is open the shell loop is not running, so a
+        // daemon notice (deploy or plugin install result) would only show
+        // after the menu and chat close. Show it in the menu title line
+        // instead (issue #693); otherwise forward it as before.
+        Message::NoticePush { level, text, kind } => {
+            if !widgets::menu_notice::menu_open() {
+                return Some(Message::NoticePush { level, text, kind });
+            }
+            if notice_push_wanted(kind.as_deref())
+                && !widgets::menu_notice::notify_push(protocol_level_to_menu(&level), text.clone())
+            {
+                // The menu closed in between: show it the usual way, already
+                // filtered (kind cleared so it is not consumed twice).
+                return Some(Message::NoticePush { level, text, kind: None });
+            }
+            None
+        }
         Message::ServerPush { kind, payload } => {
             if kind == "thread_title_update" {
                 match serde_json::from_str::<serde_json::Value>(&payload) {
@@ -3557,6 +3601,41 @@ mod tests {
 
         let forwarded = route_push(Message::ConfigClient { changes: vec![] }, &pending);
         assert!(matches!(forwarded, Some(Message::ConfigClient { .. })));
+    }
+
+    /// Issue #693: a daemon notice goes to the open /config menu, otherwise
+    /// to the shell loop as before.
+    #[test]
+    fn route_push_sends_notices_to_open_menu() {
+        use widgets::menu_notice;
+        let _lock = menu_notice::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pending: PendingTitles =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let push = |text: &str| Message::NoticePush {
+            level: omnish_protocol::message::NoticeLevel::Info,
+            text: text.into(),
+            kind: None,
+        };
+
+        let forwarded = route_push(push("deployed"), &pending);
+        assert!(matches!(forwarded, Some(Message::NoticePush { ref text, .. }) if text == "deployed"));
+
+        // The guard is what run_menu holds while the menu is open.
+        let guard = widgets::menu_notice_test_guard();
+        assert!(route_push(push("installed"), &pending).is_none());
+        // A tagged notice nobody expects is dropped, not shown in the menu.
+        let tagged = Message::NoticePush {
+            level: omnish_protocol::message::NoticeLevel::Info,
+            text: "other client".into(),
+            kind: Some("install_plugin_test_unexpected".into()),
+        };
+        assert!(route_push(tagged, &pending).is_none());
+        drop(guard);
+        // The routed notice was never drawn, so it comes back for the shell loop.
+        assert_eq!(
+            menu_notice::take_unshown_pushes(),
+            vec![(menu_notice::NoticeLevel::Info, "installed".into())]
+        );
     }
 
     /// Issue #588: build a minimal plugin bundle and verify that

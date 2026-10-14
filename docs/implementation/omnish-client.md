@@ -625,6 +625,9 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 - **终端背景色**：首个通知时用 OSC 11（`ESC]11;?`）查询一次并缓存（`OnceLock`），等待 200ms，tmux 会代为应答；解析 `rgb:RRRR/GGGG/BBBB`（1 到 4 位十六进制），查不到按黑色处理
 - **接入点**：`/config` 的 `change_callback`（"Failed to save"、"RPC error"）与 `handler_callback`（"Handler error"、部署目标校验、规则操作失败等）全部改用 `notify_error()`；Toggle 保存失败时不再整体重绘（原来用来盖掉回调打印的内容，现在会把旧菜单留在上方），只原地重画该项
 - `/test menu` 的 "Save failure test" 子菜单新增 "Info notice" 开关，保存成功并发出 Info 通知，供集成测试覆盖
+- **daemon 推送的通知**（客户端部署、插件安装结果等 `NoticePush`）：菜单打开期间 shell 主循环不运行，原来要退出 `/config` 和聊天后才看得到。现在推送 dispatcher 的 `route_push()` 在菜单打开时（`menu_open()`，由 `run_menu` 持有的 `MenuOpenGuard` 置位）先做原有的 kind 过滤（`notice_push_wanted()`，只在发起方显示带 kind 的通知），再经 `notify_push()` 交给菜单显示；菜单未打开时照旧转发给主循环，以 `[omnish]` / `[omnish error]` 前缀的普通通知显示
+- 菜单空闲时每 `NOTICE_POLL`（100ms）醒来一次检查待显示通知，不再无限期阻塞在读按键上，推送来时无需按键即可显示
+- 推送通知不丢失：菜单关闭时仍未显示的推送通知，或被更新的通知替换掉的推送通知，进入 `take_unshown_pushes()`，由主循环按普通通知补显示；菜单回调发出的通知（保存失败等）只与菜单相关，菜单关闭后丢弃
 
 #### Handler 子菜单
 
@@ -2267,3 +2270,4 @@ daemon_addr = "~/.omnish/omnish.sock"
 - `render_full()` 增加通知行参数，`repaint_title()` 原地重画标题行；读按键前按动画帧超时 poll
 - `/config` 回调的错误输出改为错误通知；Toggle 保存失败改为原地重画
 - `/test menu` 新增 "Info notice"；集成测试 `test_menu.sh` 用例 13 检查标题行通知与渐隐恢复，`test_config_backend.sh` 用例 2 检查阈值越界的错误通知
+- daemon 推送的 `NoticePush` 在 `/config` 打开时显示在菜单标题行，否则按原方式显示；菜单空闲时 100ms 轮询待显示通知；未显示的推送在菜单关闭后补显示。`test_config_backend.sh` 新增用例 3（安装不存在的本地插件包，失败结果显示在菜单内且退出后不重复）
