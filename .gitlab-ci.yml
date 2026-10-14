@@ -57,6 +57,7 @@ test:
   - bash tools/integration_tests/test_i18n_config.sh
   - bash tools/integration_tests/test_capture.sh
   - bash tools/integration_tests/test_read_image.sh
+  - bash tools/integration_tests/test_auto_compact.sh
 
 .setup_daemon: &setup_daemon
   - cargo build --release
