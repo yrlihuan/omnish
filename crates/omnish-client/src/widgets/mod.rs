@@ -5,6 +5,7 @@ pub mod line_editor;
 pub mod line_prompt;
 pub mod line_status;
 pub mod menu;
+pub mod menu_notice;
 pub mod picker;
 pub mod scroll_view;
 pub mod text_view;

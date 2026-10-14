@@ -3646,6 +3646,10 @@ impl ChatSession {
                         label: "Text option".to_string(),
                         value: "original".to_string(),
                     },
+                    MenuItem::Toggle {
+                        label: "Info notice".to_string(),
+                        value: false,
+                    },
                 ],
                 handler: None,
                 form_mode: false,
@@ -3725,11 +3729,19 @@ impl ChatSession {
             Some(current)
         };
 
-        // Items under "Save failure test" submenu always fail to test revert behavior
+        // Items under "Save failure test" submenu always fail to test revert
+        // behavior and the error notice; "Info notice" saves and shows an
+        // info notice (issue #693).
         let mut change_callback = |change: &MenuChange| -> bool {
-            if change.path.starts_with("Save failure test.") {
-                write_stdout(&format!(
-                    "{RED}Simulated save failure: {} = {}{RESET}{NEWLINE}",
+            if change.path == "Save failure test.Info notice" {
+                crate::widgets::menu_notice::notify(
+                    crate::widgets::menu_notice::NoticeLevel::Info,
+                    format!("Saved: {} = {}", change.path, change.value),
+                );
+                true
+            } else if change.path.starts_with("Save failure test.") {
+                notify_error(format!(
+                    "Simulated save failure: {} = {}",
                     change.path, change.value
                 ));
                 false
@@ -3830,9 +3842,7 @@ impl ChatSession {
                 {
                     let target = find_change_value(&translated_changes, ".target").trim();
                     if target.is_empty() {
-                        write_stdout(&format!(
-                            "{RED}Deploy: target is required (host or user@host){RESET}{NEWLINE}"
-                        ));
+                        notify_error("Deploy: target is required (host or user@host)");
                         return None;
                     }
                     let has_bad_char = target.chars().any(|c| c.is_whitespace()
@@ -3842,8 +3852,8 @@ impl ChatSession {
                         None => true,
                     };
                     if has_bad_char || !parts_ok {
-                        write_stdout(&format!(
-                            "{RED}Deploy: invalid target '{}' (expected host or user@host){RESET}{NEWLINE}",
+                        notify_error(format!(
+                            "Deploy: invalid target '{}' (expected host or user@host)",
                             target
                         ));
                         return None;
@@ -3868,7 +3878,7 @@ impl ChatSession {
                             })
                             .collect();
                         if let Err(msg) = send_config_update(&rt, rpc_ref, config_changes) {
-                            write_stdout(&format!("{RED}{}{RESET}{NEWLINE}", msg));
+                            notify_error(msg);
                             return None;
                         }
                     } else {
@@ -3894,7 +3904,7 @@ impl ChatSession {
                         })
                         .collect();
                     if let Err(msg) = send_config_update(&rt, rpc_ref, config_changes) {
-                        write_stdout(&format!("{RED}{}{RESET}{NEWLINE}", msg));
+                        notify_error(msg);
                         return None;
                     }
                 } else if let Some(rest) = handler_name.strip_prefix("edit_local_rule:") {
@@ -3909,7 +3919,7 @@ impl ChatSession {
                             }
                         }
                         None => {
-                            write_stdout(&format!("{RED}Invalid handler: {}{RESET}{NEWLINE}", handler_name));
+                            notify_error(format!("Invalid handler: {}", handler_name));
                             return None;
                         }
                     }
@@ -3948,12 +3958,11 @@ impl ChatSession {
                     });
                     match update_result {
                         Ok(Message::ConfigUpdateResult { ok: false, error }) => {
-                            write_stdout(&format!("{RED}Handler error: {}{RESET}{NEWLINE}",
-                                error.unwrap_or_default()));
+                            notify_error(format!("Handler error: {}", error.unwrap_or_default()));
                             return None;
                         }
                         Err(e) => {
-                            write_stdout(&format!("{RED}RPC error: {}{RESET}{NEWLINE}", e));
+                            notify_error(format!("RPC error: {}", e));
                             return None;
                         }
                         _ => {}
@@ -4005,12 +4014,11 @@ impl ChatSession {
                 });
                 match update_result {
                     Ok(Message::ConfigUpdateResult { ok: false, error }) => {
-                        write_stdout(&format!("{RED}Failed to save: {}{RESET}{NEWLINE}",
-                            error.unwrap_or_default()));
+                        notify_error(format!("Failed to save: {}", error.unwrap_or_default()));
                         false
                     }
                     Err(e) => {
-                        write_stdout(&format!("{RED}RPC error: {}{RESET}{NEWLINE}", e));
+                        notify_error(format!("RPC error: {}", e));
                         false
                     }
                     _ => true,
@@ -4970,6 +4978,12 @@ fn wait_for_ctrl_c(stop: std::sync::mpsc::Receiver<()>, watch_browse: bool) -> S
         id, exit_reason, eaten
     ));
     result
+}
+
+/// Show an error in the title line of the open `/config` or test menu
+/// (issue #693). Printing it instead would be overwritten by the next redraw.
+fn notify_error(msg: impl Into<String>) {
+    crate::widgets::menu_notice::notify(crate::widgets::menu_notice::NoticeLevel::Error, msg);
 }
 
 fn save_to_history(history: &mut VecDeque<String>, command: &str, capacity: usize) {

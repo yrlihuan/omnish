@@ -15,7 +15,9 @@
 #  10. Form mode: Select confirm, TextInput auto-edit, Enter advances, handler works
 #  11. Arrow keys in text edit: Left/Right move cursor, Up in form doesn't bounce
 #  12. Add backend with default provider via Done button (issue #453)
-#  13. Save failure reverts Toggle/Select/TextInput to previous state
+#  13. Save failure reverts Toggle/Select/TextInput to previous state, the
+#      error shows as a notice in the title line, and an info notice fades
+#      back to the breadcrumb (#693)
 #  14. Preset prefill + ESC exit has no duplicate breadcrumb (#469)
 #  15. Use proxy toggle ON preserved in added backend (#476)
 #  16. Label items render in dim gray and are skipped by cursor navigation
@@ -998,6 +1000,23 @@ test_12() {
     return 0
 }
 
+# menu_title_line <content>
+#   Prints the title line of the last menu drawn in <content>: the line just
+#   above its top separator (the second-to-last ──── line).
+menu_title_line() {
+    local -a lines
+    mapfile -t lines <<< "$1"
+    local -a seps=()
+    local i
+    for ((i = 0; i < ${#lines[@]}; i++)); do
+        [[ "${lines[$i]}" == *────* ]] && seps+=("$i")
+    done
+    (( ${#seps[@]} >= 2 )) || return 1
+    local top=${seps[$(( ${#seps[@]} - 2 ))]}
+    (( top >= 1 )) || return 1
+    echo "${lines[$((top - 1))]}"
+}
+
 # ── Test 13: Save failure reverts item state ─────────────────────────────
 test_13() {
     echo -e "\n${YELLOW}=== Test 13: Save failure reverts Toggle/Select/TextInput ===${NC}"
@@ -1040,9 +1059,9 @@ test_13() {
     content=$(capture_pane -20)
     show_capture "After toggle (should revert)" "$content" 10
 
-    # Should show failure message
-    if ! echo "$content" | grep -qi "simulated save failure"; then
-        assert_fail "No failure message for Toggle"
+    # The failure shows as a notice in the menu title line (#693)
+    if ! menu_title_line "$content" | grep -qi "simulated save failure"; then
+        assert_fail "No failure notice in the title line for Toggle"
         send_special Escape 0.5
         send_special Escape 0.5
         return 1
@@ -1078,9 +1097,9 @@ test_13() {
     content=$(capture_pane -20)
     show_capture "After select change (should revert)" "$content" 10
 
-    # Should show failure message
-    if ! echo "$content" | grep -qi "simulated save failure"; then
-        assert_fail "No failure message for Select"
+    # The failure shows as a notice in the menu title line (#693)
+    if ! menu_title_line "$content" | grep -qi "simulated save failure"; then
+        assert_fail "No failure notice in the title line for Select"
         send_special Escape 0.5
         send_special Escape 0.5
         return 1
@@ -1125,9 +1144,9 @@ test_13() {
     content=$(capture_pane -20)
     show_capture "After text edit (should revert)" "$content" 10
 
-    # Should show failure message
-    if ! echo "$content" | grep -qi "simulated save failure"; then
-        assert_fail "No failure message for TextInput"
+    # The failure shows as a notice in the menu title line (#693)
+    if ! menu_title_line "$content" | grep -qi "simulated save failure"; then
+        assert_fail "No failure notice in the title line for TextInput"
         send_special Escape 0.5
         send_special Escape 0.5
         return 1
@@ -1142,11 +1161,42 @@ test_13() {
     fi
     echo -e "  ${GREEN}TextInput reverted to 'original' after save failure${NC}"
 
+    # ── 4. Info notice, then fade back to the breadcrumb ──
+    send_special Down 0.3
+    send_enter 0.5
+    content=$(capture_pane -20)
+    show_capture "After info toggle" "$content" 10
+    if ! menu_title_line "$content" | grep -q "Saved: Save failure test.Info notice = true"; then
+        assert_fail "No info notice in the title line"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    if ! echo "$content" | grep "Info notice" | grep -q "\[ON\]"; then
+        assert_fail "Info notice toggle did not stay ON"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    # Hold 2.5s + fade 1s, then the breadcrumb comes back.
+    sleep 4
+    content=$(capture_pane -20)
+    local title
+    title=$(menu_title_line "$content")
+    if ! echo "$title" | grep -q "Save failure test" || echo "$title" | grep -q "Saved:"; then
+        show_capture "After fade" "$content" 10
+        assert_fail "Title line did not return to the breadcrumb (got: $title)"
+        send_special Escape 0.5
+        send_special Escape 0.5
+        return 1
+    fi
+    echo -e "  ${GREEN}Info notice faded back to the breadcrumb${NC}"
+
     # Clean up
     send_special Escape 0.5
     send_special Escape 0.5
 
-    assert_pass "Save failure correctly reverts Toggle, Select, and TextInput"
+    assert_pass "Save failure reverts Toggle, Select, and TextInput with notices"
     return 0
 }
 

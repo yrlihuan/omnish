@@ -152,7 +152,7 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **CursorColTracker / DsrDetector 光标跟踪**：终端光标行列位置跟踪，DSR 响应检测用于 InlineNotice 渲染模式选择
 - **AltScreenDetector 全屏检测**：检测 vim/less 等交替屏幕程序切换，抑制通知和拦截
 - **ChatAction / OutputLimit 命令解析**：聊天动作分类（本地命令/LLM 查询/守护进程查询），管道限制支持
-- **Widgets 系统**：交互式 UI 组件集，包含 LineEditor、LineStatus、InlineNotice、ScrollView、ChatLayout、Picker、Menu（含 MenuChangeHandler 即时变更回调、失败自动回滚、Select prefills 预填充、Button）、TextView、Common
+- **Widgets 系统**：交互式 UI 组件集，包含 LineEditor、LineStatus、InlineNotice、ScrollView、ChatLayout、Picker、Menu（含 MenuChangeHandler 即时变更回调、失败自动回滚、标题行通知与渐隐、Select prefills 预填充、Button）、TextView、Common
 - **Markdown 渲染**：pulldown-cmark 解析，标题/粗体/代码块/列表/引用/链接/表格等 ANSI 终端样式输出
 - **屏幕捕获（screen_capture）**：内嵌 vt100 模拟器，供 `/test capture [N]` 获取可见屏幕或最近 N 行
 - **粘贴支持**：括号粘贴模式、快速粘贴检测、多行折叠显示

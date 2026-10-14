@@ -613,6 +613,19 @@ picker 项目文本中的 `[X]` 模式（如 `[Y]es`、`[C]ancel`、`[N]o`）注
 - 进入含预填充 TextInput 值的 form-mode 子菜单时，禁用 auto-edit（`pending_auto_edit = false`）
 - 用户可自由导航修改已填充的字段，而不是被强制进入第一个字段的编辑模式
 
+#### 标题行通知（`widgets/menu_notice.rs`，#693）
+
+回调直接打印到 stdout 的内容会被下一次菜单重绘覆盖，用户看不到保存失败的原因。现在回调通过 `menu_notice::notify(level, text)` 发出通知，菜单把它显示在标题行（面包屑）的位置：
+
+- **发出**：`notify()` 写入一个全局待显示槽位，新通知覆盖旧的，换行折叠为空格；`run_menu` 启动时丢弃残留通知，每轮循环开头用 `take_pending()` 取出
+- **显示**：`render_full()` 新增 `notice: Option<&str>` 参数，有通知时用它代替面包屑行；无需整体重绘时 `repaint_title()` 只原地重画标题行（光标始终停在提示行，上移 `total_lines - 1` 行）。行数不变，其余光标计算不受影响
+- **样式**：`NoticeLevel::Error` 红底、`Info` 蓝底，白色粗体文字，`ESC[K` 用背景色填满整行，文字用 `truncate_cols` 按显示宽度截断
+- **时序**：停留 `HOLD`（2.5 秒），再用 `FADE`（1 秒）分 `FADE_STEPS`（10）帧把背景色线性混合到终端背景色，结束后恢复面包屑。读按键前的 poll 以 `next_change_in()` 为超时推进帧，无通知时仍是阻塞读；进入文本编辑或 Select 子选择器时动画暂停，返回后按实际时间继续
+- **颜色模式**（`color_mode_from`）：`COLORTERM` 含 `truecolor`/`24bit` 用 24 位色平滑渐变；`TERM` 含 `256color` 用 xterm 6x6x6 色立方近似（`rgb_to_256`）；否则 16 色固定底色，不渐变，到时直接恢复
+- **终端背景色**：首个通知时用 OSC 11（`ESC]11;?`）查询一次并缓存（`OnceLock`），等待 200ms，tmux 会代为应答；解析 `rgb:RRRR/GGGG/BBBB`（1 到 4 位十六进制），查不到按黑色处理
+- **接入点**：`/config` 的 `change_callback`（"Failed to save"、"RPC error"）与 `handler_callback`（"Handler error"、部署目标校验、规则操作失败等）全部改用 `notify_error()`；Toggle 保存失败时不再整体重绘（原来用来盖掉回调打印的内容，现在会把旧菜单留在上方），只原地重画该项
+- `/test menu` 的 "Save failure test" 子菜单新增 "Info notice" 开关，保存成功并发出 Info 通知，供集成测试覆盖
+
 #### Handler 子菜单
 
 - Submenu 可设置 `handler: Some("handler_name")`，标记为"处理器子菜单"
@@ -2247,3 +2260,10 @@ daemon_addr = "~/.omnish/omnish.sock"
 ### 2026-08-11 - chat 输入 CJK 换行光标定位（#667）
 
 - `chat_session.rs` 新增 `wrap_advance`（按 deferred-wrap 逐字符模拟换行，CJK 感知）与纯函数 `position_cursor`（重绘时的光标定位）；光标落在行尾（`col == cols`）时渲染到下一行开头。单测由 vt100 驱动验证。
+
+### 2026-10-14 - 菜单标题行通知（#693）
+
+- 新增 `widgets/menu_notice.rs`：`notify()` 发出通知，菜单在标题行显示，停留 2.5 秒后 1 秒渐隐到终端背景色（24 位色 / 256 色 / 16 色三档），终端背景色经 OSC 11 查询
+- `render_full()` 增加通知行参数，`repaint_title()` 原地重画标题行；读按键前按动画帧超时 poll
+- `/config` 回调的错误输出改为错误通知；Toggle 保存失败改为原地重画
+- `/test menu` 新增 "Info notice"；集成测试 `test_menu.sh` 用例 13 检查标题行通知与渐隐恢复，`test_config_backend.sh` 用例 2 检查阈值越界的错误通知

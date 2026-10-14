@@ -7,6 +7,7 @@
 use std::os::unix::io::AsRawFd;
 
 use super::common::{self, MAX_VISIBLE};
+use super::menu_notice::{self, Notice};
 use crate::display::{BOLD, BOLD_REVERSE, DIM, GRAY, GREEN, NEWLINE, RED, RESET};
 
 // ── Layout constants ────────────────────────────────────────────────────
@@ -229,12 +230,32 @@ fn render_hint(remaining_below: usize, item: Option<&MenuItem>) -> String {
     }
 }
 
+/// Breadcrumb title line (with scroll-up indicator).
+fn render_title(breadcrumb: &str, scroll_offset: usize) -> String {
+    if scroll_offset > 0 {
+        format!(
+            "\r{BOLD}{}{RESET} {DIM}(\u{25b2} {} more){RESET}\x1b[K",
+            breadcrumb, scroll_offset
+        )
+    } else {
+        format!("\r{BOLD}{}{RESET}\x1b[K", breadcrumb)
+    }
+}
+
+/// Current title line of an active notice (issue #693), if any.
+fn notice_line(notice: &Option<Notice>, cols: u16) -> Option<String> {
+    notice.as_ref().and_then(|n| n.line(std::time::Instant::now(), cols))
+}
+
+/// Render the whole widget. `notice` replaces the breadcrumb title line
+/// while a notice is shown.
 fn render_full(
     breadcrumb: &str,
     items: &[MenuItem],
     cursor: usize,
     cols: u16,
     scroll_offset: usize,
+    notice: Option<&str>,
 ) -> String {
     let vis = visible_count(items.len());
     let tl = total_lines(items.len());
@@ -246,14 +267,10 @@ fn render_full(
     }
     out.push_str(&format!("\x1b[{}A", tl));
 
-    // Breadcrumb title (with scroll-up indicator)
-    if scroll_offset > 0 {
-        out.push_str(&format!(
-            "\r{BOLD}{}{RESET} {DIM}(\u{25b2} {} more){RESET}\x1b[K",
-            breadcrumb, scroll_offset
-        ));
-    } else {
-        out.push_str(&format!("\r{BOLD}{}{RESET}\x1b[K", breadcrumb));
+    // Breadcrumb title, or the active notice in its place
+    match notice {
+        Some(line) => out.push_str(line),
+        None => out.push_str(&render_title(breadcrumb, scroll_offset)),
     }
     out.push_str(NEWLINE);
 
@@ -622,6 +639,11 @@ pub fn run_menu(
     let mut cursor: usize = first_interactive(items);
     let mut scroll_offset: usize = 0;
 
+    // Notice in place of the title line (issue #693). Drop anything posted
+    // before this menu opened.
+    let _ = menu_notice::take_pending();
+    let mut notice: Option<Notice> = None;
+
     // Hide cursor
     common::write_stdout(b"\x1b[?25l");
 
@@ -629,7 +651,7 @@ pub fn run_menu(
     {
         let current_items = resolve_level(items.as_mut_slice(), &nav_stack);
         let bc = breadcrumb_parts.join(" > ");
-        let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
+        let full = render_full(&bc, current_items, cursor, cols, scroll_offset, notice_line(&notice, cols).as_deref());
         common::write_stdout(full.as_bytes());
     }
 
@@ -676,12 +698,21 @@ pub fn run_menu(
             slice
         };
 
+        // 2b. Pick up a notice posted by a callback. A pending full redraw
+        // below draws it; otherwise repaint the title line in place.
+        if let Some((level, text)) = menu_notice::take_pending() {
+            notice = Some(Notice::new(level, text));
+            if !needs_redraw {
+                repaint_title(&breadcrumb_parts.join(" > "), current_items.len(), scroll_offset, cols, &mut notice);
+            }
+        }
+
         // 3. Redraw if nav changed (push/pop/handler reset).
         if needs_redraw {
             needs_redraw = false;
             last_item_count = current_items.len();
             let bc = breadcrumb_parts.join(" > ");
-            let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
+            let full = render_full(&bc, current_items, cursor, cols, scroll_offset, notice_line(&notice, cols).as_deref());
             common::write_stdout(full.as_bytes());
         }
 
@@ -719,11 +750,22 @@ pub fn run_menu(
                 let bc = breadcrumb_parts.join(" > ");
                 let tl = total_lines(current_items.len());
                 common::write_stdout(format!("\x1b[{}A\r\x1b[J", tl - 1).as_bytes());
-                let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
+                let full = render_full(&bc, current_items, cursor, cols, scroll_offset, notice_line(&notice, cols).as_deref());
                 common::write_stdout(full.as_bytes());
                 last_item_count = current_items.len();
                 continue;
             }
+        }
+
+        // While a notice is shown, wake up for each animation frame.
+        while let Some(active) = &notice {
+            let timeout = active.next_change_in(std::time::Instant::now());
+            let mut pfd = libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 };
+            let ms = timeout.as_millis().clamp(1, i32::MAX as u128) as i32;
+            if unsafe { libc::poll(&mut pfd, 1, ms) } != 0 {
+                break; // input ready (or poll error): read it below
+            }
+            repaint_title(&breadcrumb_parts.join(" > "), current_items.len(), scroll_offset, cols, &mut notice);
         }
 
         let n = match nix::unistd::read(stdin_fd, &mut byte) {
@@ -759,7 +801,7 @@ pub fn run_menu(
                                     if cursor < scroll_offset {
                                         scroll_offset = cursor;
                                         let bc = breadcrumb_parts.join(" > ");
-                                        full_redraw(&bc, current_items, cursor, cols, scroll_offset, vis);
+                                        full_redraw(&bc, current_items, cursor, cols, scroll_offset, vis, notice_line(&notice, cols).as_deref());
                                     } else {
                                         incremental_redraw(current_items, cursor, old_cursor, vis, scroll_offset);
                                     }
@@ -779,7 +821,7 @@ pub fn run_menu(
                                     if cursor >= scroll_offset + vis {
                                         scroll_offset = cursor - vis + 1;
                                         let bc = breadcrumb_parts.join(" > ");
-                                        full_redraw(&bc, current_items, cursor, cols, scroll_offset, vis);
+                                        full_redraw(&bc, current_items, cursor, cols, scroll_offset, vis, notice_line(&notice, cols).as_deref());
                                     } else {
                                         incremental_redraw(current_items, cursor, old_cursor, vis, scroll_offset);
                                     }
@@ -930,13 +972,12 @@ pub fn run_menu(
                             let bc = breadcrumb_parts.join(" > ");
                             let tl = total_lines(current_items.len());
                             common::write_stdout(format!("\x1b[{}A\r\x1b[J", tl - 1).as_bytes());
-                            let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
+                            let full = render_full(&bc, current_items, cursor, cols, scroll_offset, notice_line(&notice, cols).as_deref());
                             common::write_stdout(full.as_bytes());
-                        } else if !accepted && on_change.is_some() {
-                            // Callback rejected and may have printed output - full redraw
-                            needs_redraw = true;
                         } else {
-                            // Normal mode: redraw just the current item
+                            // Normal mode: redraw just the current item (also when
+                            // the callback rejected the change: callbacks report
+                            // errors through menu_notice, not stdout, #693)
                             common::write_stdout(format!("\x1b[{}A", row_from_bottom).as_bytes());
                             let line = render_menu_item(&current_items[cursor], true);
                             common::write_stdout(line.as_bytes());
@@ -1019,7 +1060,7 @@ pub fn run_menu(
                         }
 
                         let bc = breadcrumb_parts.join(" > ");
-                        let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
+                        let full = render_full(&bc, current_items, cursor, cols, scroll_offset, notice_line(&notice, cols).as_deref());
                         common::write_stdout(full.as_bytes());
                     }
                     MenuItem::TextInput { .. } => {
@@ -1056,7 +1097,7 @@ pub fn run_menu(
                         let bc = breadcrumb_parts.join(" > ");
                         let tl = total_lines(current_items.len());
                         common::write_stdout(format!("\x1b[{}A\r\x1b[J", tl - 1).as_bytes());
-                        let full = render_full(&bc, current_items, cursor, cols, scroll_offset);
+                        let full = render_full(&bc, current_items, cursor, cols, scroll_offset, notice_line(&notice, cols).as_deref());
                         common::write_stdout(full.as_bytes());
                     }
                     MenuItem::Label { .. } => {
@@ -1160,6 +1201,7 @@ pub fn run_menu(
 }
 
 /// Full redraw: move up, clear, re-render.
+#[allow(clippy::too_many_arguments)]
 fn full_redraw(
     breadcrumb: &str,
     items: &[MenuItem],
@@ -1167,11 +1209,33 @@ fn full_redraw(
     cols: u16,
     scroll_offset: usize,
     vis: usize,
+    notice: Option<&str>,
 ) {
     let tl = CHROME_LINES + vis;
     common::write_stdout(format!("\x1b[{}A\r\x1b[J", tl - 1).as_bytes());
-    let full = render_full(breadcrumb, items, cursor, cols, scroll_offset);
+    let full = render_full(breadcrumb, items, cursor, cols, scroll_offset, notice);
     common::write_stdout(full.as_bytes());
+}
+
+/// Repaint only the title line with the notice's current frame, or the
+/// breadcrumb once the notice has finished (which also clears `notice`).
+/// The cursor sits on the hint line before and after.
+fn repaint_title(
+    breadcrumb: &str,
+    item_count: usize,
+    scroll_offset: usize,
+    cols: u16,
+    notice: &mut Option<Notice>,
+) {
+    let line = match notice_line(notice, cols) {
+        Some(line) => line,
+        None => {
+            *notice = None;
+            render_title(breadcrumb, scroll_offset)
+        }
+    };
+    let up = total_lines(item_count) - 1;
+    common::write_stdout(format!("\x1b[{}A{}\x1b[{}B", up, line, up).as_bytes());
 }
 
 /// Incremental redraw: update only the old and new cursor lines.
@@ -1387,11 +1451,24 @@ mod tests {
                 submit_label: None,
             },
         ];
-        let output = render_full("Config", &items, 0, 60, 0);
+        let output = render_full("Config", &items, 0, 60, 0, None);
         let text = common::strip_ansi(&output);
         assert!(text.contains("Config"));
         assert!(text.contains("Enabled"));
         assert!(text.contains("LLM"));
+    }
+
+    #[test]
+    fn test_render_full_notice_replaces_title() {
+        let items = vec![MenuItem::Toggle { label: "Enabled".to_string(), value: true }];
+        let output = render_full("Config > LLM", &items, 0, 60, 0, Some("\rNOTICE TEXT\x1b[K"));
+        let text = common::strip_ansi(&output);
+        assert!(text.contains("NOTICE TEXT"));
+        assert!(!text.contains("Config > LLM"), "notice takes the title line");
+        assert!(text.contains("Enabled"));
+        // Same number of lines either way, so cursor math is unchanged.
+        let plain = render_full("Config > LLM", &items, 0, 60, 0, None);
+        assert_eq!(output.matches(NEWLINE).count(), plain.matches(NEWLINE).count());
     }
 
     #[test]

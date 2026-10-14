@@ -364,7 +364,8 @@ test_2() {
     fi
     assert_pass "Threshold 85 written as an integer"
 
-    # Out of range: the daemon rejects it and the menu reverts the item.
+    # Out of range: the daemon rejects it, the menu reverts the item and
+    # shows the reason as a notice in the title line (#693).
     replace_text_value 70
     sleep 1
     content=$(capture_pane -30)
@@ -374,12 +375,18 @@ test_2() {
         cp "$backup" "$DAEMON_TOML"; rm -f "$backup"
         return 1
     fi
+    if ! echo "$content" | grep -q "must be an integer from 80 to 95"; then
+        show_capture "After invalid threshold" "$content" 15
+        assert_fail "No range error notice for threshold 70"
+        cp "$backup" "$DAEMON_TOML"; rm -f "$backup"
+        return 1
+    fi
     if ! grep -qE '^auto_compact_percent = 85$' "$DAEMON_TOML"; then
         assert_fail "Invalid threshold changed daemon.toml"
         cp "$backup" "$DAEMON_TOML"; rm -f "$backup"
         return 1
     fi
-    assert_pass "Threshold 70 rejected and reverted, daemon.toml unchanged"
+    assert_pass "Threshold 70 rejected with a notice and reverted, daemon.toml unchanged"
 
     send_special Up 0.3
     send_enter 0.5
