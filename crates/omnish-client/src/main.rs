@@ -1368,7 +1368,11 @@ async fn main() -> Result<()> {
                                     // to avoid interfering with bash completion list display (issue #23)
                                     // Skip trigger if already pending (e.g. isearch mode from Ctrl+R)
                                     // to avoid "cannot find keymap for command" error (issue #49)
-                                    if osc133_hook_installed && !shell_input.pending_rl_report() {
+                                    // Not after a trailing lone ESC in the same read:
+                                    // readline would merge it with the trigger (#697).
+                                    if osc133_hook_installed && !shell_input.pending_rl_report()
+                                        && shell_input.esc_state_after(&bytes) == 0
+                                    {
                                         event_log::push("readline request (input key)");
                                         proxy.write_all(b"\x1b[13337~")?;
                                     }
@@ -1889,12 +1893,19 @@ async fn main() -> Result<()> {
                 readline_triggered_for_completions = true;
                 readline_trigger_time = Some(std::time::Instant::now());
                 let cur_seq = shell_input.sequence_id();
+                // A lone ESC does not change the input (no new sequence_id),
+                // but readline holds it as a Meta prefix until the next key:
+                // the trigger would arrive as ESC ESC [13337~ and leave
+                // "[13337~" typed on the command line (#697).
+                let in_escape = shell_input.esc_state() != 0;
                 if osc133_hook_installed && shell_input.at_prompt()
-                    && cur_seq == resp_seq
+                    && cur_seq == resp_seq && !in_escape
                 {
                     shell_input.mark_pending_report();
                     event_log::push("readline request (completion)");
                     proxy.write_all(b"\x1b[13337~")?;
+                } else if osc133_hook_installed && shell_input.at_prompt() && in_escape {
+                    event_log::push("readline trigger skipped (inside escape sequence)");
                 } else if osc133_hook_installed && shell_input.at_prompt() {
                     event_log::push(format!(
                         "readline trigger skipped (seq mismatch: cur={} resp={})",

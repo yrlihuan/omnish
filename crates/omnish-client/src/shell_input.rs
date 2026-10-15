@@ -1,3 +1,15 @@
+/// One step of the forwarded-input escape state machine (0=normal, 1=saw
+/// ESC, 2=in CSI params). Returns the next state when `b` belongs to an escape
+/// sequence, or None when it is an ordinary byte (state 0 and not ESC).
+fn esc_step(state: u8, b: u8) -> Option<u8> {
+    match state {
+        1 => Some(if b == b'[' { 2 } else { 0 }),
+        2 => Some(if (0x40..=0x7e).contains(&b) { 0 } else { 2 }),
+        _ if b == 0x1b => Some(1),
+        _ => None,
+    }
+}
+
 /// Tracks the current shell command-line input by observing forwarded bytes
 /// and OSC 133 state transitions.
 ///
@@ -80,25 +92,8 @@ impl ShellInputTracker {
         }
         for &b in bytes {
             // ESC sequence state machine: skip CSI and single-char escapes
-            match self.esc_state {
-                1 => {
-                    if b == b'[' {
-                        self.esc_state = 2;
-                    } else {
-                        self.esc_state = 0;
-                    }
-                    continue;
-                }
-                2 => {
-                    if (0x40..=0x7e).contains(&b) {
-                        self.esc_state = 0;
-                    }
-                    continue;
-                }
-                _ => {}
-            }
-            if b == 0x1b {
-                self.esc_state = 1;
+            if let Some(next) = esc_step(self.esc_state, b) {
+                self.esc_state = next;
                 continue;
             }
             match b {
@@ -174,11 +169,18 @@ impl ShellInputTracker {
         self.pending_rl_report
     }
 
-    /// ESC sequence processing state for debugging.
-    /// Returns: 0=normal, 1=saw ESC, 2=in CSI params
-    #[allow(dead_code)]
+    /// ESC sequence processing state of the forwarded input.
+    /// Returns: 0=normal, 1=saw ESC, 2=in CSI params. Non-zero means the
+    /// shell's readline is in the middle of a key sequence (e.g. a lone ESC
+    /// it holds as a Meta prefix), so nothing may be injected into its input
+    /// now (issue #697).
     pub fn esc_state(&self) -> u8 {
         self.esc_state
+    }
+
+    /// `esc_state()` as it will be once `bytes` are fed, without feeding them.
+    pub fn esc_state_after(&self, bytes: &[u8]) -> u8 {
+        bytes.iter().fold(self.esc_state, |state, &b| esc_step(state, b).unwrap_or(0))
     }
 
     /// Get detailed debug information about current input state.
@@ -347,6 +349,43 @@ mod tests {
         t.feed_forwarded(b"\x1b[13337~");
         assert_eq!(t.input(), "");
         assert!(!t.at_prompt());
+    }
+
+    #[test]
+    fn test_lone_esc_keeps_escape_state_until_next_key() {
+        // Issue #697: a lone ESC changes nothing on the command line, but the
+        // shell's readline holds it as a Meta prefix, so the tracker must
+        // report "inside an escape" until the next byte.
+        let mut t = ShellInputTracker::new();
+        t.feed_forwarded(b"ls");
+        let seq = t.sequence_id();
+        t.feed_forwarded(b"\x1b");
+        assert_eq!(t.esc_state(), 1);
+        assert_eq!(t.sequence_id(), seq, "a lone ESC is not an input change");
+        t.feed_forwarded(b"b"); // M-b completes the sequence
+        assert_eq!(t.esc_state(), 0);
+        assert_eq!(t.input(), "ls", "the Meta key's byte is not typed text");
+
+        t.feed_forwarded(b"\x1b[");
+        assert_eq!(t.esc_state(), 2, "inside CSI params");
+        t.feed_forwarded(b"1;5");
+        assert_eq!(t.esc_state(), 2);
+        t.feed_forwarded(b"C");
+        assert_eq!(t.esc_state(), 0);
+    }
+
+    #[test]
+    fn test_esc_state_after_predicts_without_feeding() {
+        let t = ShellInputTracker::new();
+        assert_eq!(t.esc_state_after(b"\x1b[A"), 0, "complete arrow key");
+        assert_eq!(t.esc_state_after(b"\x1b[A\x1b"), 1, "arrow then a lone ESC");
+        assert_eq!(t.esc_state_after(b"\x1b[1;"), 2);
+        assert_eq!(t.esc_state_after(b"ab"), 0);
+        assert_eq!(t.esc_state(), 0, "state itself unchanged");
+        let mut t = ShellInputTracker::new();
+        t.feed_forwarded(b"\x1b");
+        assert_eq!(t.esc_state_after(b"[B"), 0, "continues from the current state");
+        assert_eq!(t.esc_state_after(b""), 1);
     }
 
     #[test]

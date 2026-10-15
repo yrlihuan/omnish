@@ -137,6 +137,7 @@ Shell完成建议处理器，管理LLM驱动的命令完成。
 - `/update`后防洪：防止 `/update` 执行后因状态重置导致的完成请求洪泛（issue #224）
 - 空输入补全拒绝修复：被拒绝后又恢复为空输入的补全请求不再重复发送（commit 1b3b09f, 644a7f9）
 - Left/Home/End 箭头键清除幽灵文本（#518）：`needs_readline_report()` 扩展识别 Left、Home、End 按键（xterm/VT/SS3 格式），触发 readline 报告以检测光标位置变化并清除过时的幽灵文本
+- 转义序列中不注入 readline 报告触发序列（#697）：补全响应到达或 Up/Down 等按键触发时，若转发给 shell 的输入停在未完成的转义序列中（`ShellInputTracker::esc_state()` / `esc_state_after(bytes)` 非 0，典型是单独的 ESC），跳过写入 `\x1b[13337~`，事件日志记 `readline trigger skipped (inside escape sequence)`。单独的 ESC 不改变输入（`sequence_id` 不变），但 bash readline 在 emacs 模式下把它当作 Meta 前缀一直等到下一个按键，注入的序列会被拼成 `ESC ESC [13337~`，`[13337~` 被插入命令行。跳过后该提示符的补全响应与 "seq mismatch" 情形一样不再展示
 - 严格前缀匹配（#439, commit cbe4fb8）：仅当 `request_input` 为空或建议以 `request_input` 开头时接受；移除 "拼接 `request_input + best.text`" 的弱启发式分支
 - shell-prompt 转储防护：拒绝形如 `titan:~/docker $ python foo.py` 的建议（检测 ` $ ` 或 ` # ` 前为 `:`/`~`/`@`）
 - 重复子串防护：当 `request_input` 长度 >= 10 字符且作为子串在建议中出现多次时拒绝
@@ -2279,3 +2280,9 @@ daemon_addr = "~/.omnish/omnish.sock"
 - 新增 `stdin_watcher` 模块：监听线程 poll stdin 与停止管道，`stop().await` 等线程退出后才返回，替换原 `wait_for_ctrl_c()`（100ms 轮询 + mpsc 停止标志）
 - 修复轮次结束瞬间到达的按键使监听线程卡在 `read()`、吞掉用户下一个按键的问题；聊天轮次、`/compact`、`/resume ?` 三处统一改用 `StdinWatcher`
 - 集成测试 `test_chat_interrupt.sh` 新增用例 3（回复出现即按 Ctrl-C，2 秒后输入，重复 4 轮检查回显完整）
+
+### 2026-10-15 - 单独 ESC 后不注入 readline 报告触发（#697）
+
+- `shell_input`：转义状态机单步提为 `esc_step()`，新增 `esc_state_after(bytes)`；`esc_state()` 不再仅用于调试
+- `main.rs` 两处注入 `\x1b[13337~` 的位置在转义序列中跳过注入，避免单独 ESC 与触发序列拼接后 `[13337~` 被当作命令输入
+- 新增集成测试 `verify_issue_697.sh`（退出聊天后 0.1 秒再按 ESC，回车后检查命令行没有 `[13337~`，6 轮），加入 CI
