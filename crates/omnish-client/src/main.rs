@@ -17,6 +17,7 @@ mod probe;
 mod screen_capture;
 mod shell_hook;
 mod shell_input;
+mod stdin_watcher;
 mod term_out;
 mod throttle;
 mod util;

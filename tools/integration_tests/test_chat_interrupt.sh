@@ -5,6 +5,8 @@
 # Test cases:
 #   1. Late interrupt (during tool execution) → next input echo displayed correctly (#534)
 #   2. Early interrupt (before LLM output) → input restored for re-editing (#536)
+#   3. Ctrl-C right as a turn ends → the first key typed afterwards is not
+#      lost (#696). Repeated, since it is a race with the turn's stdin watcher.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -14,6 +16,7 @@ show_usage() {
 Test cases:
   1. Late interrupt during tool execution, verify next input echo (#534)
   2. Early interrupt before LLM output, verify input restored for editing (#536)
+  3. Ctrl-C right as a turn ends, next input keeps its first character (#696)
 EOF
 }
 
@@ -143,4 +146,49 @@ test_2() {
     return 0
 }
 
-run_tests 2
+# ── Test 3: Ctrl-C at the end of a turn keeps the next key (#696) ──────
+# The turn's stdin watcher used to stay blocked in read() when the input loop
+# took the bytes of a key arriving right at the end of the turn, and then
+# swallowed the next key typed, however much later ("hello world" became
+# "ello world"). Hitting the window needs the key at the very moment the
+# reply is drawn, so poll fast for it and repeat a few rounds.
+test_3() {
+    echo -e "\n${YELLOW}=== Test 3: Ctrl-C at the end of a turn keeps the next key (#696) ===${NC}"
+    local rounds=4 round
+    restart_client
+    wait_for_client
+    enter_chat
+    for round in $(seq 1 $rounds); do
+        local word="DONE$round"
+        send_keys "Use the bash tool to run: sleep 1. Then reply with only the word $word." 0.3
+        send_enter 0.1
+        local seen=false i
+        for i in $(seq 1 3000); do   # up to ~60s
+            if capture_pane -40 | grep -qE "^● $word\b"; then seen=true; break; fi
+            sleep 0.02
+        done
+        if ! $seen; then
+            show_capture "Round $round" "$(capture_pane -40)" 20
+            assert_fail "Round $round: reply '$word' never appeared"
+            return 1
+        fi
+        send_special C-c 2
+        local msg="hello world $round"
+        send_keys "$msg" 0.3
+        send_enter 0.3
+        if ! wait_for_chat_response; then
+            assert_fail "Round $round: no response to '$msg'"
+            return 1
+        fi
+        if ! capture_pane -200 | sed 's/\x1b\[[0-9;]*m//g' | grep -qE "^>?\s*$msg\s*$"; then
+            show_capture "Round $round" "$(capture_pane -40)" 20
+            assert_fail "Round $round: echo of '$msg' lost a character (#696)"
+            return 1
+        fi
+        echo -e "  ${GREEN}Round $round: '$msg' echoed intact${NC}"
+    done
+    send_special Escape 0.5
+    assert_pass "Next input intact after Ctrl-C at turn end ($rounds rounds)"
+}
+
+run_tests 3

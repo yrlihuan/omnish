@@ -1216,8 +1216,10 @@ Config > LLM                          ← 面包屑（带层级指示）
 
 ### Ctrl-C 中断 (issue #123, #241)
 聊天等待LLM响应或工具执行时，用户可按Ctrl-C中断：
-- 使用 `tokio::select!` 竞赛RPC调用和 `wait_for_ctrl_c()` 阻塞任务
-- `wait_for_ctrl_c()` 在 `spawn_blocking` 中运行，使用 `poll` 以100ms超时监控stdin
+- 使用 `tokio::select!` 竞赛RPC调用和 stdin 监听线程（`stdin_watcher` 模块的 `StdinWatcher`）
+- **`StdinWatcher`（#696）**：在 `spawn_blocking` 线程里同时 poll stdin 与一个停止管道，不设超时。Ctrl-C 返回 `CtrlC`，Ctrl-O（`watch_browse` 时）返回 `Browse`，其余字节丢弃（轮次进行中的输入）；停止管道可读或关闭（写端被 drop）时直接返回 `Stopped`，不读 stdin，且停止信号优先于待读输入。`stop().await` 写入停止字节并等待线程退出，结构体另持一份管道读端，线程自行退出后再写也不会 EPIPE
+  - **为什么必须等它退出**：旧实现用 100ms 超时 poll 加 mpsc 停止标志，轮次结束时主线程发出停止后立即进入输入循环读 stdin。若恰有按键在此刻到达，两边都看到 stdin 可读，输入循环先读走字节，监听线程随后的 `read()` 在阻塞的 stdin 上卡住，直到用户下一个按键才返回并把它丢掉（"hello world" 变成 "ello world"）。现在调用方 `stop().await` 后才读 stdin，同一时刻只有一个读者，监听线程只在 poll 报告有数据时读，不会阻塞在 `read()`
+  - 使用点：聊天轮次（`spawn_stdin_watcher`，含 Ctrl-O 浏览后重新启动）、`/compact` 与 `/resume ?` 等待期间的 Ctrl-C 监听（`spawn_ctrl_c_watcher`）；事件日志记录 `stdin_watcher[N]: enter` / `exit reason=... ate=N`
 - 中断后发送 `ChatInterrupt` 消息到守护进程记录中断事件（去重：避免与 ESC/自动取消路径重复发送，commit ce10d81）
 - 支持中断Agent工具调用循环（issue #241），清除状态并显示 "(interrupted)"
 - **早期 Ctrl-C 作为输入取消（#536）**：若 LLM 尚未产生任何输出就被中断，不生成 "User interrupted" 消息，而是将用户输入文本恢复到编辑器供再次编辑。已发出 `ChatInterrupt` 的情况下擦除已回显的用户输入行（含换行）后重置 LineEditor，避免用户输入丢失
@@ -2271,3 +2273,9 @@ daemon_addr = "~/.omnish/omnish.sock"
 - `/config` 回调的错误输出改为错误通知；Toggle 保存失败改为原地重画
 - `/test menu` 新增 "Info notice"；集成测试 `test_menu.sh` 用例 13 检查标题行通知与渐隐恢复，`test_config_backend.sh` 用例 2 检查阈值越界的错误通知
 - daemon 推送的 `NoticePush` 在 `/config` 打开时显示在菜单标题行，否则按原方式显示；菜单空闲时 100ms 轮询待显示通知；未显示的推送在菜单关闭后补显示。`test_config_backend.sh` 新增用例 3（安装不存在的本地插件包，失败结果显示在菜单内且退出后不重复）
+
+### 2026-10-15 - stdin 监听线程停止竞争（#696）
+
+- 新增 `stdin_watcher` 模块：监听线程 poll stdin 与停止管道，`stop().await` 等线程退出后才返回，替换原 `wait_for_ctrl_c()`（100ms 轮询 + mpsc 停止标志）
+- 修复轮次结束瞬间到达的按键使监听线程卡在 `read()`、吞掉用户下一个按键的问题；聊天轮次、`/compact`、`/resume ?` 三处统一改用 `StdinWatcher`
+- 集成测试 `test_chat_interrupt.sh` 新增用例 3（回复出现即按 Ctrl-C，2 秒后输入，重复 4 轮检查回显完整）

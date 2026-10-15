@@ -15,6 +15,7 @@ use omnish_transport::rpc_client::RpcClient;
 use crate::{client_plugin, command, display, ghost_complete, markdown, screen_capture, widgets};
 use crate::display::{BOLD, BRIGHT_WHITE, CYAN, DIM, GRAY, GREEN, NEWLINE, RED, RESET, YELLOW};
 use widgets::scroll_view::ScrollView;
+use crate::stdin_watcher::{StdinSignal, StdinWatcher};
 
 /// Lay out a sequence of per-glyph display widths on a `cols`-wide terminal with
 /// autowrap, returning the terminal's physical cursor `(row, col)` after writing
@@ -1846,7 +1847,7 @@ impl ChatSession {
             // select loops below run the blocking browser and respawn it.
             let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
             let (browse_tx, mut browse_rx) = tokio::sync::watch::channel(0u64);
-            let mut stop_tx = spawn_stdin_watcher(cancel_tx.clone(), browse_tx.clone());
+            let mut watcher = spawn_stdin_watcher(cancel_tx.clone(), browse_tx.clone());
 
             let rpc_result = rpc.call_stream(chat_msg);
             let mut interrupted = false;
@@ -1884,7 +1885,7 @@ impl ChatSession {
                         }
                         _ = browse_rx.changed() => {
                             self.browse_history();
-                            stop_tx = spawn_stdin_watcher(cancel_tx.clone(), browse_tx.clone());
+                            watcher = spawn_stdin_watcher(cancel_tx.clone(), browse_tx.clone());
                         }
                         _ = spinner_interval.tick(), if self.thinking_visible => {
                             self.spinner_frame = self.spinner_frame.wrapping_add(1);
@@ -2016,7 +2017,7 @@ impl ChatSession {
                                     }
                                     _ = browse_rx.changed() => {
                                         self.browse_history();
-                                        stop_tx = spawn_stdin_watcher(cancel_tx.clone(), browse_tx.clone());
+                                        watcher = spawn_stdin_watcher(cancel_tx.clone(), browse_tx.clone());
                                     }
                                     _ = wait_cancel(&mut crx) => {
                                         interrupted = true;
@@ -2153,7 +2154,7 @@ impl ChatSession {
                                     }
                                     _ = browse_rx.changed() => {
                                         self.browse_history();
-                                        stop_tx = spawn_stdin_watcher(cancel_tx.clone(), browse_tx.clone());
+                                        watcher = spawn_stdin_watcher(cancel_tx.clone(), browse_tx.clone());
                                     }
                                     _ = wait_cancel(&mut crx2) => {
                                         interrupted = true;
@@ -2194,8 +2195,9 @@ impl ChatSession {
                 }
             }
 
-            // Stop Ctrl-C listener
-            let _ = stop_tx.send(());
+            // Stop the stdin watcher and wait until it has exited: the input
+            // loop must be the only reader of stdin from here on (#696).
+            watcher.stop().await;
 
             if interrupted {
                 if !got_first_output {
@@ -2593,12 +2595,7 @@ impl ChatSession {
             // timeout so the UI never freezes (same as `/resume ?`).
             write_stdout(&format!("{}\r\n", crate::i18n::t("chat.compacting")));
             let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
-            let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-            tokio::task::spawn_blocking(move || {
-                if matches!(wait_for_ctrl_c(stop_rx, false), StdinSignal::CtrlC) {
-                    let _ = cancel_tx.send(true);
-                }
-            });
+            let watcher = spawn_ctrl_c_watcher(cancel_tx);
             let raced = tokio::time::timeout(std::time::Duration::from_secs(180), async {
                 tokio::select! {
                     r = rpc.call(request) => Some(r),
@@ -2606,7 +2603,7 @@ impl ChatSession {
                 }
             })
             .await;
-            let _ = stop_tx.send(()); // stop the Ctrl-C watcher
+            watcher.stop().await;
             match raced {
                 Err(_) => {
                     write_stdout(&display::render_error(crate::i18n::t("error.compact_timed_out")));
@@ -2812,12 +2809,7 @@ impl ChatSession {
         // The daemon runs an LLM call that can stall; race the request against
         // a Ctrl-C signal and a hard timeout so the UI never freezes.
         let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
-        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-        tokio::task::spawn_blocking(move || {
-            if matches!(wait_for_ctrl_c(stop_rx, false), StdinSignal::CtrlC) {
-                let _ = cancel_tx.send(true);
-            }
-        });
+        let watcher = spawn_ctrl_c_watcher(cancel_tx);
         let raced = tokio::time::timeout(std::time::Duration::from_secs(60), async {
             tokio::select! {
                 r = rpc.call(req) => Some(r),
@@ -2825,7 +2817,7 @@ impl ChatSession {
             }
         })
         .await;
-        let _ = stop_tx.send(()); // stop the Ctrl-C watcher
+        watcher.stop().await;
 
         let call_result = match raced {
             Err(_) => {
@@ -4902,29 +4894,16 @@ async fn watch_true(rx: &mut tokio::sync::watch::Receiver<bool>) {
     }
 }
 
-/// Outcome of the background stdin watcher that runs while a chat turn awaits
-/// the daemon.
-enum StdinSignal {
-    /// Ctrl-C: the user wants to interrupt the turn.
-    CtrlC,
-    /// Ctrl-O: the user wants to browse scroll history. The watcher stops
-    /// reading stdin so the caller can run the blocking browser.
-    Browse,
-    /// The watcher was told to stop, hit a read error, or lost its sender.
-    Stopped,
-}
-
 /// Spawn the background stdin watcher for a chat turn. It owns stdin while the
 /// async loop awaits the daemon: Ctrl-C requests cancellation, Ctrl-O requests
 /// browsing scroll history. On Ctrl-O it returns (releasing stdin) so the
-/// caller can run the blocking browser and then respawn the watcher; the
-/// returned `stop_tx` stops it once the turn ends.
+/// caller can run the blocking browser and then respawn the watcher; once the
+/// turn ends the caller must `stop().await` it before reading stdin (#696).
 fn spawn_stdin_watcher(
     cancel_tx: tokio::sync::watch::Sender<bool>,
     browse_tx: tokio::sync::watch::Sender<u64>,
-) -> std::sync::mpsc::Sender<()> {
-    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-    tokio::task::spawn_blocking(move || match wait_for_ctrl_c(stop_rx, true) {
+) -> StdinWatcher {
+    StdinWatcher::spawn(true, move |signal| match signal {
         StdinSignal::CtrlC => {
             let _ = cancel_tx.send(true);
         }
@@ -4932,52 +4911,17 @@ fn spawn_stdin_watcher(
             browse_tx.send_modify(|n| *n = n.wrapping_add(1));
         }
         StdinSignal::Stopped => {}
-    });
-    stop_tx
+    })
 }
 
-fn wait_for_ctrl_c(stop: std::sync::mpsc::Receiver<()>, watch_browse: bool) -> StdinSignal {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::mpsc::TryRecvError;
-    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    crate::event_log::push(format!("wait_for_ctrl_c[{}]: enter", id));
-    let stdin_fd = std::io::stdin().as_raw_fd();
-    let mut byte = [0u8; 1];
-    let mut eaten: u64 = 0;
-    let exit_reason: &str;
-    let result = loop {
-        // Exit on either an explicit stop signal OR a dropped sender. The
-        // `is_ok()` check used previously only matched `Ok(_)`, so a dropped
-        // `stop_tx` (panic unwind, future cancellation, early return) left
-        // this task alive and silently consuming every non-Ctrl-C byte from
-        // stdin.
-        match stop.try_recv() {
-            Ok(_) => { exit_reason = "stop"; break StdinSignal::Stopped; }
-            Err(TryRecvError::Disconnected) => { exit_reason = "disconnect"; break StdinSignal::Stopped; }
-            Err(TryRecvError::Empty) => {}
+/// Watch stdin for Ctrl-C only, while a slow RPC (`/compact`, `/resume ?`)
+/// is in flight. `stop().await` it before reading stdin again.
+fn spawn_ctrl_c_watcher(cancel_tx: tokio::sync::watch::Sender<bool>) -> StdinWatcher {
+    StdinWatcher::spawn(false, move |signal| {
+        if signal == StdinSignal::CtrlC {
+            let _ = cancel_tx.send(true);
         }
-        let mut pfd = libc::pollfd {
-            fd: stdin_fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let ret = unsafe { libc::poll(&mut pfd, 1, 100) };
-        if ret <= 0 {
-            continue;
-        }
-        match nix::unistd::read(stdin_fd, &mut byte) {
-            Ok(1) if byte[0] == 0x03 => { exit_reason = "ctrl-c"; break StdinSignal::CtrlC; }
-            Ok(1) if watch_browse && byte[0] == 0x0f => { exit_reason = "ctrl-o"; break StdinSignal::Browse; }
-            Ok(1) => { eaten += 1; }
-            _ => { exit_reason = "read-err"; break StdinSignal::Stopped; }
-        }
-    };
-    crate::event_log::push(format!(
-        "wait_for_ctrl_c[{}]: exit reason={} ate={}",
-        id, exit_reason, eaten
-    ));
-    result
+    })
 }
 
 /// Show an error in the title line of the open `/config` or test menu

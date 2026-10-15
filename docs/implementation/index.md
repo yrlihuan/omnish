@@ -167,6 +167,7 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **守护进程通信**：connect_daemon 连接/认证/协议版本检查，失败消息缓冲重放（10000 条上限）、SessionUpdate 兼作心跳（10 秒等不到 Ack 即强制重连）
 - **显示函数**：纯函数 ANSI 输出，分隔线/提示符/输入回显/响应渲染/幽灵文本/CJK 感知截断
 - **命令分发**：统一命令注册表，Local/Daemon 命令类型，重定向/管道解析
+- **stdin 监听线程（StdinWatcher）**：聊天等待 daemon 期间独占 stdin 监听 Ctrl-C / Ctrl-O，poll stdin 与停止管道，`stop().await` 等线程退出后输入循环才读 stdin，避免两个读者竞争吞键（#696）
 - **Agent 工具调用循环**：自动工具调用/并行执行/结果反馈，ChatToolCall/ChatToolStatus/ChatToolResult 协议，redraw_tool_section 原地更新状态
 - **OSC 133 与 Shell Hook**：Bash 与 Zsh 双 shell 支持，命令/CWD/readline 实时跟踪
 - **i18n 多语言**：编译期内嵌翻译系统，客户端默认 en，由守护进程按系统语言推送覆盖
