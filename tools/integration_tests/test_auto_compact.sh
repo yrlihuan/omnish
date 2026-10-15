@@ -37,24 +37,23 @@ trap 'cp "$TOML_BACKUP" "$DAEMON_TOML"; rm -f "$TOML_BACKUP"; cleanup' EXIT
 # window up to ~1.4M tokens, and big enough to pass the "messages are at
 # least half the threshold" guard.
 BIG_CMD="seq 100000 104199"
+# Models like to shorten a long-output command (e.g. append `| tail -n 5`),
+# which keeps the context small and nothing compacts.
+VERBATIM="exactly as written, without pipes, head/tail or any other change, since I need its full output"
 
-daemon_log() {
-    local f="$OMNISH_DIR/logs/daemon.log.$(date +%Y-%m-%d)"
-    [[ -f "$f" ]] || f="$OMNISH_DIR/logs/daemon.log"
-    echo "$f"
+now_utc() {
+    date -u +%Y-%m-%dT%H:%M:%S
 }
 
 # set_auto_compact_percent <n> - rewrite the key under [llm] and wait for the
 # daemon's config watcher to pick it up.
 set_auto_compact_percent() {
     local n="$1"
-    local log
-    log="$(daemon_log)"
     if grep -qE "^auto_compact_percent = $n\$" "$DAEMON_TOML"; then
         return 0  # unchanged: the daemon sees no change and logs no reload
     fi
-    local before
-    before=$(grep -c 'config section changed: Llm' "$log" 2>/dev/null || echo 0)
+    local since
+    since=$(now_utc)
     python3 - "$DAEMON_TOML" "$n" <<'PY'
 import re, sys
 path, n = sys.argv[1], sys.argv[2]
@@ -68,12 +67,10 @@ open(path, 'w').write(text)
 PY
     local deadline=$(($(date +%s) + 15))
     while (( $(date +%s) < deadline )); do
-        local now
-        now=$(grep -c 'config section changed: Llm' "$log" 2>/dev/null || echo 0)
-        (( now > before )) && return 0
+        daemon_log_since "$since" 'config section changed: Llm' >/dev/null && return 0
         sleep 0.3
     done
-    echo "  (no config reload seen in $log, continuing)"
+    echo "  (no config reload seen in the daemon log, continuing)"
 }
 
 # ── Test 1: compaction before a turn ─────────────────────────────────────
@@ -84,7 +81,7 @@ test_1() {
     restart_client
     wait_for_client
     enter_chat
-    send_keys "Use the bash tool to run: $BIG_CMD. Then reply with only the word OK." 0.3
+    send_keys "Use the bash tool to run this command $VERBATIM: $BIG_CMD. Then reply with only the word OK." 0.3
     send_enter 1
     if ! wait_for_chat_response; then
         assert_fail "No chat response for the seed turn"
@@ -129,7 +126,9 @@ test_2() {
     restart_client
     wait_for_client
     enter_chat
-    send_keys "Use the bash tool to run: $BIG_CMD. After that, use the bash tool again to run: echo marker-\$((6*7)). Then reply with only the output of the second command." 0.3
+    local since
+    since=$(now_utc)
+    send_keys "Use the bash tool to run this command $VERBATIM: $BIG_CMD. After that, use the bash tool again to run: echo marker-\$((6*7)). Then reply with only the output of the second command." 0.3
     send_enter 1
     if ! wait_for_chat_response 300; then
         show_capture "Mid-turn" "$(capture_pane -60)" 40
@@ -139,11 +138,15 @@ test_2() {
     local content
     content=$(capture_pane -80)
     show_capture "Mid-turn" "$content" 30
+    if ! echo "$content" | grep -qF "Bash($BIG_CMD)"; then
+        assert_fail "The model changed the command (expected 'Bash($BIG_CMD)'), so the context stayed small"
+        return 1
+    fi
     if ! echo "$content" | grep -qE 'Context at [0-9]+% of .* tokens, compacting\.\.\.'; then
         assert_fail "No 'compacting...' note during the turn"
         return 1
     fi
-    if ! grep -q 'Auto compaction (AutoMidTurn)' "$(daemon_log)"; then
+    if ! daemon_log_since "$since" 'Auto compaction \(AutoMidTurn\)' >/dev/null; then
         assert_fail "Daemon log has no mid-turn auto compaction"
         return 1
     fi

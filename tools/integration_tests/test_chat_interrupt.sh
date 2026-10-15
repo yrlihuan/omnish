@@ -40,7 +40,9 @@ test_1() {
     local waited=0
     local tool_started=false
     while [[ $waited -lt 90 ]]; do
-        if capture_pane -30 | grep -qE '● Bash\(sleep'; then
+        # Any status icon: while running the header shows a spinner frame,
+        # and only turns into "●" once the tool has finished.
+        if capture_pane -30 | grep -qE 'Bash\(sleep'; then
             tool_started=true
             break
         fi

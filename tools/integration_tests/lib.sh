@@ -513,6 +513,31 @@ show_capture() {
     echo "$content" | tail -"$lines" | sed 's/^/    /'
 }
 
+# current_daemon_log
+#   Path of the daemon log being written now. The daemon rolls its log daily
+#   by UTC date (tracing_appender), so the local date is wrong for part of the
+#   day when the machine is not on UTC (CI runs at UTC+8). Falls back to the
+#   newest daemon.log* file, then plain daemon.log.
+current_daemon_log() {
+    local dir="${OMNISH_HOME:-$HOME/.omnish}/logs"
+    local f="$dir/daemon.log.$(date -u +%Y-%m-%d)"
+    if [[ ! -f "$f" ]]; then
+        f=$(ls -t "$dir"/daemon.log* 2>/dev/null | head -1)
+        [[ -n "$f" ]] || f="$dir/daemon.log"
+    fi
+    echo "$f"
+}
+
+# daemon_log_since <iso_utc> <regex>
+#   Print daemon log lines written at or after <iso_utc> (as printed by
+#   `date -u +%Y-%m-%dT%H:%M:%S`) that match <regex>, across all daemon.log*
+#   files so a UTC midnight rollover during a test is covered.
+daemon_log_since() {
+    local since="$1" regex="$2"
+    local dir="${OMNISH_HOME:-$HOME/.omnish}/logs"
+    cat "$dir"/daemon.log* 2>/dev/null | awk -v s="$since" '$1 >= s' | grep -E -- "$regex"
+}
+
 # dump_failure_context [pane_lines=200]
 #   Print everything useful for diagnosing a CI-only flake: full pane
 #   (more than show_capture's default), tail of daemon.log + client.log,
@@ -532,13 +557,9 @@ dump_failure_context() {
     echo -e "  Pane (-${pane_lines}):"
     capture_pane "-${pane_lines}" | sed 's/^/    /'
 
-    # Daemon log: today's rotated file (YYYY-MM-DD suffix) is the active
-    # one in normal operation. Fall back to plain daemon.log on the off
-    # chance rotation isn't in effect.
-    local today
-    today=$(date +%Y-%m-%d)
-    local daemon_log="$omnish_dir/logs/daemon.log.$today"
-    [[ -f "$daemon_log" ]] || daemon_log="$omnish_dir/logs/daemon.log"
+    # Daemon log: the file being written now (rolled daily by UTC date).
+    local daemon_log
+    daemon_log=$(current_daemon_log)
     if [[ -f "$daemon_log" ]]; then
         echo -e "  Daemon log tail ($daemon_log):"
         tail -200 "$daemon_log" 2>/dev/null | sed 's/^/    /'
