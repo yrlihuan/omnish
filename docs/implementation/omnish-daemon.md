@@ -2096,8 +2096,10 @@ async fn main() -> anyhow::Result<()> {
 - **API**：
   - `complete(backend, req)` - `backend.complete()` 的直接替代，保持调用方原有的错误处理与超时策略，只增加排队
   - `complete_one(backend, req, timeout)` - 带超时，返回 `LlmOutcome`（`Ok` / `Failed` / `TimedOut`）
+  - `complete_within(backend, req, timeout)` - 带超时，**排队时间也计入**，超时返回 `timed out after Ns` 错误。用于结果过时即无用的请求，超时会丢弃请求（中断 HTTP 调用并释放 permit）
   - `complete_all(backend, requests, timeout)` - 批量并发，**按请求顺序**返回结果，便于把结果与请求对应
-- **超时与排队分离**：permit 在超时计时**之前**获取，因此 `timeout` 只约束调用本身，不会把排队时间算到请求头上。
+- **超时与排队分离**：`complete_one` / `complete_all` 的 permit 在超时计时**之前**获取，因此 `timeout` 只约束调用本身，不会把排队时间算到请求头上。
+- **补全与 KV 预热的短超时**：补全用 `complete_within(.., COMPLETION_TIMEOUT = 10s)`，补全的 KV cache 预热用 `KV_WARMUP_TIMEOUT = 30s`。起因：上游（DeepSeek 经 litellm）排队约 900 秒时，补全请求每个占 permit 10 到 15 分钟，仅补全就占满 16 个 permit，所有聊天、thread_summary、compact 都排在后面无法进行。补全结果几秒后即过时，超时放弃没有损失
 - **已接入的调用点**：chat 智能体循环、补全、`handle_llm_request`、工具结果摘要、KV cache 预热、thread_summary、hourly_summary、daily_notes、`/resume ?` 搜索。
 
 ## 并发与锁设计
@@ -2479,3 +2481,8 @@ async fn main() -> anyhow::Result<()> {
 2. **schema `int_range`**：text 项可声明整数范围，校验后写为 TOML 整数，不合法时报错且不写入
 3. **Accept images**：后端编辑与新增表单增加 `supports_vision` toggle（默认开）；handler 表单内 toggle 改为以 schema `default` 为初始值
 4. 集成测试 `test_config_backend.sh` 新增用例 2（设置阈值、拒绝范围外的值、关闭开关），用例 1 适配编辑表单新增的一项
+
+### 2026-10-15 - 补全请求短超时
+
+- `llm_pool::complete_within()`：含排队时间的超时，超时丢弃请求并释放 permit
+- 补全请求 10 秒、补全 KV cache 预热 30 秒超时，防止慢上游下补全占满 LLM 调用池，导致聊天等全部卡住

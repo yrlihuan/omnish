@@ -69,6 +69,21 @@ where
     backend.complete(req).await
 }
 
+/// Issue one LLM request through the pool, giving up after `timeout`
+/// *including* the time spent waiting for a permit. For requests whose result
+/// is worthless once late (shell completion, its KV cache warmup): a slow
+/// upstream then cannot hold permits that chat and summaries need. Dropping
+/// the request on timeout aborts the HTTP call and releases the permit.
+pub async fn complete_within<B>(backend: &B, req: &LlmRequest, timeout: Duration) -> anyhow::Result<LlmResponse>
+where
+    B: LlmBackend + ?Sized,
+{
+    match tokio::time::timeout(timeout, complete(backend, req)).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!("timed out after {}s", timeout.as_secs_f64())),
+    }
+}
+
 /// Issue one LLM request through the pool, bounded by `timeout`.
 ///
 /// The permit is taken *before* the timeout starts, so `timeout` bounds the
@@ -215,6 +230,21 @@ mod tests {
         // Permit release on the timeout path is guaranteed by `_permit` being
         // an RAII guard; asserting available_permits() here would race the
         // other tests sharing this process-wide pool.
+    }
+
+    #[tokio::test]
+    async fn test_complete_within_times_out() {
+        let backend = SlowBackend;
+        let started = std::time::Instant::now();
+        let err = complete_within(&backend, &req(), Duration::from_millis(30)).await.unwrap_err();
+        assert!(err.to_string().contains("timed out"), "got {err}");
+        assert!(started.elapsed() < Duration::from_secs(5), "returned at the deadline, not after the call");
+    }
+
+    #[tokio::test]
+    async fn test_complete_within_passes_results_through() {
+        let err = complete_within(&FailBackend, &req(), Duration::from_secs(5)).await.unwrap_err();
+        assert!(err.to_string().contains("boom"), "backend errors keep their message: {err}");
     }
 
     struct FailBackend;

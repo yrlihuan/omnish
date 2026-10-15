@@ -2874,7 +2874,7 @@ async fn try_warmup_kv_cache(
         extra_messages,
     };
 
-    match omnish_daemon::llm_pool::complete(backend.as_ref(), &req).await {
+    match omnish_daemon::llm_pool::complete_within(backend.as_ref(), &req, KV_WARMUP_TIMEOUT).await {
         Ok(_) => tracing::debug!("KV cache warmup completed for session {}", session_id),
         Err(e) => tracing::debug!("KV cache warmup failed for session {}: {}", session_id, e),
     }
@@ -4892,6 +4892,17 @@ async fn handle_llm_request(
     result
 }
 
+/// Upper bound for a completion request, queueing in the LLM pool included.
+/// A suggestion arriving later than this is stale (the user has typed on), and
+/// a slow upstream must not keep pool permits that chat and summaries need:
+/// with DeepSeek queueing requests for ~900s, completions alone filled all
+/// `MAX_CONCURRENT_LLM_CALLS` permits and stalled every chat.
+const COMPLETION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Upper bound for a completion KV cache warmup (same reasoning; the warmup
+/// only primes the provider's prefix cache, so giving up costs little).
+const KV_WARMUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 async fn handle_completion_request(
     req: &omnish_protocol::message::CompletionRequest,
     mgr: &SessionManager,
@@ -4981,7 +4992,7 @@ async fn handle_completion_request(
     );
 
     let start = std::time::Instant::now();
-    let result = omnish_daemon::llm_pool::complete(backend.as_ref(), &llm_req).await;
+    let result = omnish_daemon::llm_pool::complete_within(backend.as_ref(), &llm_req, COMPLETION_TIMEOUT).await;
     let duration = start.elapsed();
 
     // Format duration: use %.3f when > 1s, otherwise show as milliseconds
