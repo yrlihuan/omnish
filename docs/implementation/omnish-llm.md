@@ -185,7 +185,7 @@ Anthropic API后端实现：
 - `max_content_chars`字段：存储该后端的上下文最大字符数（`Option<usize>`），由工厂函数通过`effective_max_content_chars()`计算后传入
 - `supports_vision`字段：来自后端配置（缺省 true）。`request_body()` 在 `build_request_body()` 之后，若不支持看图则对每条消息调用 `omit_images()`；支持时 tool_result 内的图片块原样发送（DeepSeek 的 Anthropic 兼容接口实测：图片放在 tool_result 内模型能正确识别，放在 tool_result 之后虽被接受但模型并未真正看到图片，#690）
 - `model_name()`：返回模型名称（`&self.model`）
-- 使用Anthropic Messages API (v1/messages，API版本2024-04-04）
+- 使用Anthropic Messages API (v1/messages，API版本2023-06-01）
 - 支持`base_url`配置（默认api.anthropic.com），可用于代理或自托管
 - `max_tokens`固定为32768
 - 多轮对话支持：conversation历史映射为messages数组，上下文注入第一条user消息

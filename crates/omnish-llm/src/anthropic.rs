@@ -277,7 +277,7 @@ impl LlmBackend for AnthropicBackend {
             let resp = match client
                 .post(format!("{}/v1/messages", self.base_url))
                 .header("x-api-key", &self.api_key)
-                .header("anthropic-version", "2024-04-04")
+                .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json")
                 .json(&body)
                 .send()
