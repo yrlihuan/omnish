@@ -30,6 +30,16 @@ pub fn push(event: impl std::fmt::Display) {
     log.events.push_back(line);
 }
 
+/// Like [`recent`], but empty instead of blocking when the log is locked or
+/// poisoned. For the panic hook, which may run while this thread holds it.
+pub fn try_recent(n: usize) -> Vec<String> {
+    let Ok(log) = LOG.try_lock() else {
+        return Vec::new();
+    };
+    let skip = log.events.len().saturating_sub(n);
+    log.events.iter().skip(skip).cloned().collect()
+}
+
 /// Return the last `n` events (oldest first).
 pub fn recent(n: usize) -> Vec<String> {
     let log = LOG.lock().unwrap();

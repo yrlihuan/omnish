@@ -1690,6 +1690,13 @@ impl ChatSession {
                         write_stdout(&format!("{DIM}  /test lock on|off         - toggle Landlock sandbox for shell{RESET}{NEWLINE}"));
                         write_stdout(&format!("{DIM}  /test disconnect N1 [N2]  - daemon disconnects after N1s, reconnect delay N2s{RESET}{NEWLINE}"));
                         write_stdout(&format!("{DIM}  /test capture [N]         - dump current screen, or last N rows of history{RESET}{NEWLINE}"));
+                        write_stdout(&format!("{DIM}  /test panic [task]        - panic on the main thread (exits) or in a task{RESET}{NEWLINE}"));
+                    }
+                    // Exercise the panic hook: the main thread panic ends the
+                    // client, a task panic is only logged.
+                    "panic" => panic!("/test panic"),
+                    "panic task" => {
+                        tokio::spawn(async { panic!("/test panic task") });
                     }
                     "multi_level_picker" => self.handle_test_multi_level_picker(),
                     "menu" => self.handle_test_menu(),

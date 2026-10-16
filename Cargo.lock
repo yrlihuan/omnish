@@ -1199,6 +1199,7 @@ name = "omnish-client"
 version = "0.9.1"
 dependencies = [
  "anyhow",
+ "chrono",
  "dirs",
  "flate2",
  "fs2",

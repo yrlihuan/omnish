@@ -59,6 +59,7 @@ test:
   - bash tools/integration_tests/test_read_image.sh
   - bash tools/integration_tests/test_auto_compact.sh
   - bash tools/integration_tests/verify_issue_697.sh
+  - bash tools/integration_tests/test_panic_hook.sh
 
 .setup_daemon: &setup_daemon
   - cargo build --release

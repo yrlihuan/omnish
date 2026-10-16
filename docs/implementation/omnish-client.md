@@ -1419,6 +1419,7 @@ omnish-client 包含客户端事件日志系统，用于调试和监控异步事
 **函数:**
 - `push(event: impl Display)` - 记录事件（自动添加时间戳前缀）
 - `recent(n: usize) -> Vec<String>` - 获取最近n条事件
+- `try_recent(n: usize) -> Vec<String>` - 同上，但锁被占用或中毒时返回空，供 panic hook 使用
 
 **记录的事件类型:**
 - OSC 133状态转换: `PromptStart`, `CommandStart(cmd, orig)`, `CommandEnd(exit_code)`, `OutputStart`
@@ -1430,6 +1431,16 @@ omnish-client 包含客户端事件日志系统，用于调试和监控异步事
 - 输入延迟: `input lag Nms (Nbytes)`（处理超过50ms时记录，issue #106）
 - isearch模式: `ctrl+r (isearch mode)`
 - Readline触发跳过: `readline trigger skipped (seq mismatch: cur=N resp=N)`
+
+### `panic_hook` 模块
+客户端 panic 时把现场写进 `client.log`。以前 panic 信息只打到 stderr，也就是客户端所在的 tmux pane，进程退出后 pane 随之关闭，崩溃原因就丢了。
+
+- `install()` - 在 `main` 开头、日志初始化之后安装，之后仍调用默认 hook（信息也打到 stderr）
+- 报告格式：`<UTC 时间> PANIC thread=<线程名> fatal=<bool> version=<版本>`，随后是 panic 信息、`backtrace:`（`Backtrace::force_capture()`）、`recent events (N):`（事件日志最近 200 条），以 `END PANIC` 结尾
+- 直接追加写 `client.log`，不经过 `tracing`；事件日志用 `try_recent`，避免 panic 发生在持锁期间时 hook 死锁
+- `fatal` 仅当线程名为 `main`：tokio task 和辅助线程里的 panic 被就地捕获，客户端继续运行，只记录
+- 致命 panic 额外处理：`remember_terminal()` 在进入 raw 模式前保存的 termios 被恢复（栈展开时 `RawModeGuard` 也会恢复，这里兜底 abort 等不展开的情况）；`set_session()` 登记的连接在辅助线程上 `block_on` 发送 `SessionEnd`（500ms 超时，再等 200ms 让写任务发出），daemon 因此能看到会话正常结束
+- `/test panic` 在主线程 panic（客户端退出，退出码 101），`/test panic task` 在 tokio task 中 panic，供集成测试 `test_panic_hook.sh` 使用
 
 ### `connect_daemon()`
 连接守护进程，支持优雅降级（守护进程不可用时进入直通模式）。

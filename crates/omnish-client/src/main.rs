@@ -6,6 +6,7 @@ mod completion;
 pub mod debug_log;
 pub mod event_log;
 pub mod pending_notices;
+mod panic_hook;
 mod project_instructions;
 mod ghost_complete;
 mod display;
@@ -746,6 +747,7 @@ async fn main() -> Result<()> {
                 .try_init();
         }
     }
+    panic_hook::install();
 
     let config = load_client_config().unwrap_or_default();
     let lang = std::env::var("OMNISH_LANG").unwrap_or_else(|_| config.shell.language.clone());
@@ -834,6 +836,9 @@ async fn main() -> Result<()> {
     let update_needed = Arc::new(AtomicBool::new(false));
     let client_addr_opt = config.client_addr.clone();
     let daemon_conn = connect_daemon(&daemon_addr, &session_id, parent_session_id, proxy.child_pid() as u32, client_addr_opt.clone(), pending_buffer.clone(), update_needed.clone()).await;
+    if let Some(ref rpc) = daemon_conn {
+        panic_hook::set_session(rpc, &session_id);
+    }
 
     // Shared map of thread_id -> latest pushed title, awaiting application by
     // the chat render thread. Filled by the push dispatcher, consumed by
@@ -945,6 +950,7 @@ async fn main() -> Result<()> {
     }
 
     // Enter raw mode
+    panic_hook::remember_terminal(std::io::stdin().as_raw_fd());
     let _raw_guard = RawModeGuard::enter(std::io::stdin().as_raw_fd())?;
 
     // Sync initial window size

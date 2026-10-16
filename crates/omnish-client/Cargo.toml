@@ -22,6 +22,7 @@ uuid = { workspace = true }
 nix = { workspace = true }
 dirs = "5"
 libc = "0.2"
+chrono = { workspace = true }
 unicode-width = "0.2"
 serde = { workspace = true }
 pulldown-cmark = { version = "0.13", default-features = false }

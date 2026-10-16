@@ -389,6 +389,7 @@ pub const CHAT_ONLY_COMMANDS: &[&str] = &[
     "/test lock",
     "/test disconnect",
     "/test capture",
+    "/test panic",
 ];
 
 /// Priority order for ghost-text completion (first match wins).

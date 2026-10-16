@@ -164,6 +164,7 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **主事件循环**：poll I/O 多路复用，stdin/PTY master 监控，DSR 过滤，前缀匹配计时，OSC 133 命令跟踪
 - **Polling 机制**：渐进式间隔（1-30s）后台探测任务，兼作连接心跳，差异更新 SessionUpdate，tmux/screen 窗口标题自动更新
 - **事件日志**：全局环形缓冲区（200 条），记录 OSC 转换/补全/聊天/更新/连接/延迟等事件
+- **panic hook**：panic 时把信息、backtrace 与最近事件写入 client.log；主线程 panic 额外恢复终端并发送 SessionEnd；`/test panic [task]` 触发
 - **守护进程通信**：connect_daemon 连接/认证/协议版本检查，失败消息缓冲重放（10000 条上限）、SessionUpdate 兼作心跳（10 秒等不到 Ack 即强制重连）
 - **显示函数**：纯函数 ANSI 输出，分隔线/提示符/输入回显/响应渲染/幽灵文本/CJK 感知截断
 - **命令分发**：统一命令注册表，Local/Daemon 命令类型，重定向/管道解析
