@@ -75,6 +75,14 @@ pub struct ThreadMeta {
     /// of memory and therefore out of every listing/resume path (issue #684).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<u64>,
+    /// When the `thread_summary` task last failed on every candidate model
+    /// (epoch ms). The thread is retried only after 24 hours and once it has
+    /// more rounds than `summary_failed_rounds`; cleared on success (#698).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_failed_at: Option<u64>,
+    /// Round count of the thread when `summary_failed_at` was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_failed_rounds: Option<u32>,
 }
 
 impl ThreadMeta {

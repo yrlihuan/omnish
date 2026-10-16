@@ -203,6 +203,7 @@ omnish-daemon 是omnish系统的核心守护进程，负责：
   - `usage_last`: `Option<ThreadUsage>` - 最近一次 LLM API 调用的 token 用量（用于 `/thread stats` 的 context 列）
   - `usage_total`: `Option<ThreadUsage>` - 当前模型的累计 token 用量（切换模型时重置）
   - `last_model`: `Option<String>` - 产生 `usage_last`/`usage_total` 的模型名称（用于检测模型切换）
+  - `summary_failed_at` / `summary_failed_rounds`: `Option<u64>` / `Option<u32>` - `thread_summary` 在所有候选模型上都失败的时间（epoch ms）与当时的轮次数，用于失败回避；成功后清空（#698）
   - `sandbox_disabled`: `bool`（`#[serde(default)]`）- 线程级沙箱覆盖。为 `true` 时 `ChatToolCall.sandboxed` 强制置 `false`，对应 `/thread sandbox on|off` 命令。通过 `set_sandbox_disabled()` 修改并持久化；`ChatReady.sandbox_disabled` 同步回客户端以支持 resume 路径显示警告
   - `title_override`: `Option<String>` - 用户通过 `/thread rename <name>` 设置的标题覆盖（优先级高于 `title_word`），`effective_title_label()` 返回有效标签；空参数清除恢复自动命名
   - `pending_event`: `Option<String>` - 带外状态变化排队的一次性 `<event>` 标记，在下一条用户消息前拼接后清除，使 LLM 得知变化。`ThreadMeta::queue_event()` 将新标记换行追加到已有标记之后，并先删除与 `event` 完全相同的旧行，使重复切换保持有界且最新状态始终在末尾（sandbox off -> on -> off 得到 `on\noff`）：sandbox 切换（#659）与 resume 时主机切换（#679）共用；`handle_chat_message` 通过 `meta.pending_event.take()` 消费
@@ -1292,7 +1293,9 @@ schedule = "0 10 0 * * *" # 每天 00:10 生成
 **功能:** 扫描所有对话线程，为有新对话轮次的线程生成或更新摘要以及 `title_word`，存储到线程的 `.meta.json` sidecar 文件中（`ThreadMeta.summary` / `ThreadMeta.title_word` 字段）
 **特点:**
 - 只对有内容（`rounds > 0`）且摘要已过期（新增轮次超过阈值）的线程生成摘要
-- 调用 LLM 后端生成简短摘要文本，使用 `SharedLlmBackend` 和 `max_content_chars()`；LLM 响应经 `strip_thinking_block()` 去除 `<thinking>` 标签（#527）
+- 调用 LLM 后端生成简短摘要文本，使用 `SharedLlmBackend` 和各后端的 `max_content_chars()`；LLM 响应经 `strip_thinking_block()` 去除 `<thinking>` 标签（#527）
+- **模型选择与回退（#698）**：`candidate_backends()` 按顺序给出候选：线程上一次成功 LLM 调用的后端（`last_model`，其消息与该模型兼容，如 thinking signature），该后端已不在配置中时用线程选定的 `model`，再依次是 chat 与 summarize 后端，同名只试一次。`complete_with_fallback()` 逐个尝试，出错或回复不可用（如 title_word 不是英文单词）就换下一个
+- **失败回避（#698）**：summary 或 title_word 在所有候选上都失败时记录 `summary_failed_at` 与 `summary_failed_rounds`；此后只有满 24 小时（`RETRY_AFTER_MS`）且线程轮次数大于失败时的轮次数才重试，否则保持无摘要状态，避免每次 tick 重复请求失败的模型
 - `summary` 变化时用第二次 LLM 调用（`TITLE_WORD_PROMPT`）推导出单个小写英文单词 `title_word`，用作聊天模式的 tmux 窗口标签（通过 `ChatReady.thread_title_word` 推送给客户端）。既有线程无需重跑 summary，本任务下次 tick 会补全 `title_word`
 - 派生出新 `title_word` 时通过 `broadcast_server_push`（`push.rs`）向所有已连接客户端广播 `ServerPush { kind: "thread_title_update" }`，使正处于该线程聊天中的客户端无需等待 resume 即可更新 tmux 标签
 - 无 LLM 后端时自动跳过
