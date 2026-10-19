@@ -94,10 +94,12 @@ test_2() {
     send_keys ":" 0.5
     wait_for_prompt
 
-    local cmd="Run this bash command and show the output: for i in {1..40}; do echo \$i; done"
-
+    # A different command per round, asked to run verbatim: with the same
+    # command three times the model may skip a repeat as redundant.
+    local cmd
     for round in 1 2 3; do
         echo -e "  ${YELLOW}--- Round $round ---${NC}"
+        cmd="Use the Bash tool to run exactly this command, even if a similar one ran before, and show the output: for i in {1..40}; do echo r$round-\$i; done"
         send_keys "$cmd" 0.3
         send_enter 0.3
         if ! wait_for_chat_response; then
@@ -166,10 +168,11 @@ test_3() {
     send_keys ":" 0.5
     wait_for_prompt
 
-    local cmd="Use the Bash tool to run: echo hello"
-
+    # See test 2: vary the command so the model does not skip a repeat.
+    local cmd
     for round in 1 2 3; do
         echo -e "  ${YELLOW}--- Round $round ---${NC}"
+        cmd="Use the Bash tool to run exactly this command, even if a similar one ran before: echo hello-$round"
         send_keys "$cmd" 0.3
         send_enter 0.3
         if ! wait_for_chat_response; then
