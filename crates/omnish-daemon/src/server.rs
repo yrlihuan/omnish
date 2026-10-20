@@ -106,6 +106,10 @@ struct AgentLoopState {
     effective_backend: Arc<dyn LlmBackend>,
     /// Number of LLM connection retries used in this agent loop.
     llm_retries: u32,
+    /// Set when the previous LLM call ended its turn with no text and no
+    /// tool call, so the request was sent again once. Only the call right
+    /// after it sees the flag; it is cleared on every response.
+    empty_retried: bool,
     /// Cumulative token usage across all LLM calls in this agent loop.
     cumulative_usage: omnish_llm::backend::Usage,
     /// Token usage from the most recent single LLM API call.
@@ -1653,6 +1657,13 @@ fn should_execute_tools(response: &omnish_llm::backend::LlmResponse) -> bool {
 /// thinking, stores the bare marker string. tool_use blocks are intentionally
 /// excluded: a stored tool_use without a matching tool_result would brick the
 /// thread.
+/// Whether a chat response with no visible text should be requested again:
+/// once per LLM call, and not when the output limit cut it (MaxTokens), which
+/// a resend would most likely hit again.
+fn should_retry_empty_response(stop_reason: &StopReason, already_retried: bool) -> bool {
+    !already_retried && *stop_reason != StopReason::MaxTokens
+}
+
 fn build_empty_response_message(content: &[ContentBlock], marker: &str) -> serde_json::Value {
     let mut blocks: Vec<serde_json::Value> = content
         .iter()
@@ -1891,6 +1902,7 @@ async fn handle_chat_message(
         command_query_tool,
         effective_backend,
         llm_retries: 0,
+        empty_retried: false,
         cumulative_usage: Default::default(),
         last_response_usage: Default::default(),
         last_model: String::new(),
@@ -2324,6 +2336,7 @@ async fn run_agent_loop(
         match omnish_daemon::llm_pool::complete(backend.as_ref(), &state.llm_req).await {
             Ok(response) => {
                 state.llm_retries = 0;
+                let empty_retried = std::mem::take(&mut state.empty_retried);
                 // Track last response and accumulate totals across iterations
                 if let Some(ref u) = response.usage {
                     state.last_response_usage = omnish_llm::backend::Usage {
@@ -2668,6 +2681,19 @@ async fn run_agent_loop(
                 // `content: null`, which the API rejects, permanently bricking
                 // the thread. Degrade to a sendable `<event>` marker instead.
                 if text.trim().is_empty() {
+                    // Some models (seen with qwen via litellm) now and then end
+                    // the turn right after thinking. Send the same request
+                    // once more before giving up; a truncated response
+                    // (MaxTokens) would most likely be truncated again.
+                    if should_retry_empty_response(&response.stop_reason, empty_retried) {
+                        tracing::warn!(
+                            "Chat LLM returned empty text (stop_reason={:?}, thread={}); retrying once",
+                            response.stop_reason,
+                            state.cm.thread_id
+                        );
+                        state.empty_retried = true;
+                        continue;
+                    }
                     let (marker, notice) = if response.stop_reason == StopReason::MaxTokens {
                         (
                             "<event>response truncated (max tokens)</event>",
@@ -5495,6 +5521,16 @@ mod tests {
         assert!(blocks.iter().all(|b| b["type"] != "tool_use"));
         assert_eq!(blocks[0]["type"], "thinking");
         assert_eq!(blocks[1]["type"], "text");
+    }
+
+    #[test]
+    fn test_should_retry_empty_response() {
+        // First empty answer: retried once.
+        assert!(should_retry_empty_response(&StopReason::EndTurn, false));
+        // Still empty after the retry: give up (placeholder).
+        assert!(!should_retry_empty_response(&StopReason::EndTurn, true));
+        // Truncated by the output limit: never retried.
+        assert!(!should_retry_empty_response(&StopReason::MaxTokens, false));
     }
 
     #[test]

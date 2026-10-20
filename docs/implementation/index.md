@@ -192,7 +192,7 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **FormatterManager**：工具结果格式化注册表，内置格式化器+ 外部格式化器子进程
 - **PromptManager**：可组合系统提示词片段管理，基础 chat.json + 用户 chat.override.json 覆盖/追加合并
 - **system-reminder**：环境上下文附加到系统提示词（非用户消息），ThreadMeta 记录上次 system-reminder 用于变更检测
-- **智能体循环（Agent Loop）**：多轮工具调用循环，DaemonTool 直接执行+ClientTool 暂停/恢复转发，persist_unsaved() 增量持久化（早退路径消毒孤立 tool_use），超时与断开时保存进度，thinking 标签处理
+- **智能体循环（Agent Loop）**：多轮工具调用循环，DaemonTool 直接执行+ClientTool 暂停/恢复转发，persist_unsaved() 增量持久化（早退路径消毒孤立 tool_use），超时与断开时保存进度，thinking 标签处理，无正文无 tool call 的空响应自动重试一次
 - **聊天消息流程**：ChatStart 创建/恢复线程→ChatMessage→工具转发→ChatResponse→ChatInterrupt 中断处理
 - **配置管理**：ConfigSchema 基于 config_schema.toml 的 TUI 配置菜单构建器，即时保存，api_key 自动转换为 api_key_cmd，text 项可声明 int_range 整数范围校验，LLM > Auto compact 子菜单与后端 Accept images 开关，支持动态占位符和客户端侧占位符展开，后端编辑/删除，沙箱规则增删改，从 URL 或本地 tar.gz/zip 安装插件
 - **UpdateCache 与客户端更新**：更新包缓存管理器（多平台包缓存、版本比较、传输锁），UpdateCheck 版本检查，UpdateRequest 流式包分发

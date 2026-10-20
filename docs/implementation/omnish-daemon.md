@@ -2489,3 +2489,15 @@ async fn main() -> anyhow::Result<()> {
 
 - `llm_pool::complete_within()`：含排队时间的超时，超时丢弃请求并释放 permit
 - 补全请求 10 秒、补全 KV cache 预热 30 秒超时，防止慢上游下补全占满 LLM 调用池，导致聊天等全部卡住
+
+### 2026-10-20 - 空响应自动重试一次
+
+**背景:** CI 的 chat 模型 `qwen38-flash-next`（经 litellm）偶发在 thinking 之后直接 end_turn，没有正文也没有 tool call，用户只看到 "The AI returned an empty response"。CI job 10326（`verify_issue_286`）和 10489（`test_auto_compact`）都因此失败。
+
+**主要变更:**
+
+1. **空文本守卫先重试** (`server.rs`):
+   - 纯函数 `should_retry_empty_response(stop_reason, already_retried)`：本次调用尚未重试且 stop_reason 不是 MaxTokens 时返回 true
+   - 命中时打 `WARN ... returned empty text ...; retrying once`，置 `AgentLoopState.empty_retried` 并 `continue`，用同一个 `llm_req` 重发（不追加任何消息）
+   - `empty_retried` 在每次收到响应时取出清零，只对紧接着的那次调用生效；重试仍为空则走原有占位逻辑（保留 thinking + `<event>empty response</event>`）
+   - MaxTokens 截断不重试：重发大概率再次截断
