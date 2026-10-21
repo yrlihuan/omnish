@@ -152,6 +152,12 @@ test_2() {
 # swallowed the next key typed, however much later ("hello world" became
 # "ello world"). Hitting the window needs the key at the very moment the
 # reply is drawn, so poll fast for it and repeat a few rounds.
+# Number of finished chat turns on screen: each ends with the
+# "── ctrl+o to expand ──" separator.
+turn_end_count() {
+    capture_pane -500 | grep -c 'ctrl+o to expand' || true
+}
+
 test_3() {
     echo -e "\n${YELLOW}=== Test 3: Ctrl-C at the end of a turn keeps the next key (#696) ===${NC}"
     local rounds=4 round
@@ -160,16 +166,19 @@ test_3() {
     enter_chat
     for round in $(seq 1 $rounds); do
         local word="DONE$round"
+        local ended; ended=$(turn_end_count)
         send_keys "Use the bash tool to run: sleep 1. Then reply with only the word $word." 0.3
         send_enter 0.1
+        # Wait for the turn to end by its separator, not by the reply text:
+        # the model may not echo the word exactly (e.g. "DONE" for "DONE2").
         local seen=false i
         for i in $(seq 1 3000); do   # up to ~60s
-            if capture_pane -40 | grep -qE "^● $word\b"; then seen=true; break; fi
+            if (( $(turn_end_count) > ended )); then seen=true; break; fi
             sleep 0.02
         done
         if ! $seen; then
             show_capture "Round $round" "$(capture_pane -40)" 20
-            assert_fail "Round $round: reply '$word' never appeared"
+            assert_fail "Round $round: the turn never ended"
             return 1
         fi
         send_special C-c 2
