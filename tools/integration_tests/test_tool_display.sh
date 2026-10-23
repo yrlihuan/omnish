@@ -47,30 +47,39 @@ test_1() {
     fi
 
     local content
-    content=$(capture_pane -100)
+    content=$(capture_pane -300)
     show_capture "Tool display output" "$content" 50
 
     # Strip ANSI codes for reliable matching
     local stripped
     stripped=$(echo "$content" | sed 's/\x1b\[[0-9;]*m//g')
 
-    # Count "● Bash(" occurrences - each tool execution should have exactly one
-    local header_count
-    header_count=$(echo "$stripped" | grep -cE '● Bash\(' || true)
+    # #386 left orphaned headers: a "● Bash(" redrawn without the cursor
+    # going back far enough stays on screen with no result line of its own.
+    # Every real call has its header followed by a result line (└ or ⎿)
+    # before the next header. Checking that pairing instead of a fixed count
+    # keeps the test independent of how many calls the model makes (CI job
+    # 10521 ran 10).
+    local counts header_count result_count orphans
+    counts=$(echo "$stripped" | awk '
+        /● Bash\(/                { if (pending) orphans++; headers++; pending = 1; next }
+        /^[[:space:]]*(└|⎿)/       { if (pending) results++; pending = 0 }
+        END { if (pending) orphans++; print headers + 0, results + 0, orphans + 0 }')
+    read -r header_count result_count orphans <<<"$counts"
 
-    echo -e "  Bash tool headers: $header_count"
+    echo -e "  Bash tool headers: $header_count, result lines: $result_count, orphaned headers: $orphans"
 
-    if [[ $header_count -eq 5 ]]; then
-        assert_pass "Correct: exactly 5 '● Bash(' headers"
-        return 0
-    elif [[ $header_count -gt 5 ]]; then
-        assert_fail "Duplicate tool headers: found $header_count '● Bash(' headers, expected 5 (#386)"
-        return 1
-    else
-        echo -e "  ${YELLOW}LLM produced $header_count tool calls instead of 5${NC}"
-        assert_fail "Expected 5 '● Bash(' headers, found $header_count"
+    if [[ $header_count -eq 0 ]]; then
+        assert_fail "No '● Bash(' header: the LLM made no tool call"
         return 1
     fi
+    [[ $header_count -ne 5 ]] && echo -e "  ${YELLOW}LLM made $header_count tool calls instead of 5${NC}"
+    if [[ $orphans -eq 0 && $header_count -eq $result_count ]]; then
+        assert_pass "Every '● Bash(' header has its result line ($header_count calls)"
+        return 0
+    fi
+    assert_fail "Duplicate tool headers: $orphans of $header_count '● Bash(' headers have no result line (#386)"
+    return 1
 }
 
 # ── Test 2: Long output truncated to max 3 rows (#386) ───────────────────
