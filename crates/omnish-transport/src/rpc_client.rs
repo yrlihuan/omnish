@@ -73,6 +73,8 @@ type ReconnectFn = Arc<
 >;
 
 type NotifyFn = Arc<dyn Fn() + Send + Sync>;
+/// Called with a description of each failed reconnect attempt.
+type ErrorFn = Arc<dyn Fn(&str) + Send + Sync>;
 
 fn make_connector(addr: &str, tls_connector: Option<TlsConnector>) -> ConnectorFn {
     let addr = addr.to_string();
@@ -80,37 +82,47 @@ fn make_connector(addr: &str, tls_connector: Option<TlsConnector>) -> ConnectorF
         let addr = addr.clone();
         let tls = tls_connector.clone();
         Box::pin(async move {
-            match parse_addr(&addr) {
-                TransportAddr::Unix(path) => {
-                    let stream = UnixStream::connect(&path).await?;
-                    let (r, w) = stream.into_split();
-                    Ok((
-                        Box::new(r) as Box<dyn AsyncRead + Unpin + Send>,
-                        Box::new(w) as Box<dyn AsyncWrite + Unpin + Send>,
-                    ))
-                }
-                TransportAddr::Tcp(hp) => {
-                    let stream = TcpStream::connect(&hp).await?;
-                    stream.set_nodelay(true)?;
-                    if let Some(ref tls) = tls {
-                        let domain = rustls::pki_types::ServerName::try_from("localhost")
-                            .unwrap()
-                            .to_owned();
-                        let tls_stream = tls.connect(domain, stream).await?;
-                        let (r, w) = tokio::io::split(tls_stream);
-                        Ok((
-                            Box::new(r) as Box<dyn AsyncRead + Unpin + Send>,
-                            Box::new(w) as Box<dyn AsyncWrite + Unpin + Send>,
-                        ))
-                    } else {
+            tokio::time::timeout(crate::CONNECT_TIMEOUT, async move {
+                match parse_addr(&addr) {
+                    TransportAddr::Unix(path) => {
+                        let stream = UnixStream::connect(&path).await?;
                         let (r, w) = stream.into_split();
                         Ok((
                             Box::new(r) as Box<dyn AsyncRead + Unpin + Send>,
                             Box::new(w) as Box<dyn AsyncWrite + Unpin + Send>,
                         ))
                     }
+                    TransportAddr::Tcp(hp) => {
+                        let stream = TcpStream::connect(&hp).await?;
+                        stream.set_nodelay(true)?;
+                        crate::set_keepalive(&stream);
+                        if let Some(ref tls) = tls {
+                            let domain = rustls::pki_types::ServerName::try_from("localhost")
+                                .unwrap()
+                                .to_owned();
+                            let tls_stream = tls.connect(domain, stream).await?;
+                            let (r, w) = tokio::io::split(tls_stream);
+                            Ok((
+                                Box::new(r) as Box<dyn AsyncRead + Unpin + Send>,
+                                Box::new(w) as Box<dyn AsyncWrite + Unpin + Send>,
+                            ))
+                        } else {
+                            let (r, w) = stream.into_split();
+                            Ok((
+                                Box::new(r) as Box<dyn AsyncRead + Unpin + Send>,
+                                Box::new(w) as Box<dyn AsyncWrite + Unpin + Send>,
+                            ))
+                        }
+                    }
                 }
-            }
+            })
+            .await
+            .unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "connect timed out after {}s",
+                    crate::CONNECT_TIMEOUT.as_secs()
+                ))
+            })
         })
     })
 }
@@ -231,7 +243,15 @@ impl RpcClient {
             + 'static,
         on_reconnect_notify: Option<impl Fn() + Send + Sync + 'static>,
     ) -> Result<Self> {
-        Self::connect_with_reconnect_full(addr, tls_connector, on_reconnect, on_reconnect_notify, None::<fn()>).await
+        Self::connect_with_reconnect_full(
+            addr,
+            tls_connector,
+            on_reconnect,
+            on_reconnect_notify,
+            None::<fn()>,
+            None::<fn(&str)>,
+        )
+        .await
     }
 
     pub async fn connect_with_reconnect_full(
@@ -243,9 +263,11 @@ impl RpcClient {
             + 'static,
         on_reconnect_notify: Option<impl Fn() + Send + Sync + 'static>,
         on_disconnect: Option<impl Fn() + Send + Sync + 'static>,
+        on_reconnect_error: Option<impl Fn(&str) + Send + Sync + 'static>,
     ) -> Result<Self> {
         let notify_fn: Option<NotifyFn> = on_reconnect_notify.map(|f| Arc::new(f) as NotifyFn);
         let disconnect_fn: Option<NotifyFn> = on_disconnect.map(|f| Arc::new(f) as NotifyFn);
+        let error_fn: Option<ErrorFn> = on_reconnect_error.map(|f| Arc::new(f) as ErrorFn);
         let connector = make_connector(addr, tls_connector);
 
         // Try initial connection
@@ -282,6 +304,7 @@ impl RpcClient {
                     on_reconnect,
                     notify_fn.clone(),
                     disconnect_fn.clone(),
+                    error_fn.clone(),
                     disc_rx,
                     push_rx,
                     suppress_until,
@@ -334,6 +357,7 @@ impl RpcClient {
                     on_reconnect,
                     notify_fn,
                     disconnect_fn,
+                    error_fn,
                     disc_rx,
                     push_rx,
                     suppress_until,
@@ -352,6 +376,7 @@ impl RpcClient {
         on_reconnect: ReconnectFn,
         on_notify: Option<NotifyFn>,
         on_disconnect: Option<NotifyFn>,
+        on_error: Option<ErrorFn>,
         mut disc_rx: oneshot::Receiver<()>,
         push_rx: Arc<Mutex<mpsc::Receiver<Message>>>,
         suppress_until: SuppressUntil,
@@ -391,14 +416,26 @@ impl RpcClient {
             let max_backoff_ms: u64 = 30_000;
             let mut consecutive_auth_failures: u32 = 0;
             const MAX_AUTH_FAILURES: u32 = 5;
+            let mut attempt: u32 = 0;
+            // Each failed attempt is logged and reported, so a client that
+            // stays disconnected shows why (it used to retry silently).
+            let report = |attempt: u32, what: &str, e: &anyhow::Error| {
+                let msg = format!("reconnect attempt {} failed ({}): {}", attempt, what, e);
+                tracing::warn!("{}", msg);
+                if let Some(ref f) = on_error {
+                    f(&msg);
+                }
+            };
 
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                attempt += 1;
 
                 // Try to connect
                 let (reader, writer) = match connector().await {
                     Ok(rw) => rw,
-                    Err(_) => {
+                    Err(e) => {
+                        report(attempt, "connect", &e);
                         // Connection failure resets auth failure counter (daemon may be down)
                         consecutive_auth_failures = 0;
                         backoff_ms = (backoff_ms * 2).min(max_backoff_ms);
@@ -421,6 +458,7 @@ impl RpcClient {
 
                 // Call on_reconnect with the temp client
                 if let Err(e) = on_reconnect(&temp_client).await {
+                    report(attempt, "register", &e);
                     if e.downcast_ref::<PermanentFailure>().is_some() {
                         consecutive_auth_failures += 1;
                         if consecutive_auth_failures >= MAX_AUTH_FAILURES {

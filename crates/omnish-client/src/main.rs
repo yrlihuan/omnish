@@ -2272,6 +2272,20 @@ fn save_client_config_cache(changes: &[omnish_protocol::message::ConfigChange]) 
     Ok(())
 }
 
+/// `rpc.call` bounded by [`omnish_transport::CONNECT_TIMEOUT`], for the
+/// (re)registration steps: a new connection that goes silent right after the
+/// handshake would otherwise block the reconnect loop for good, since a call
+/// waits for its reply without any limit.
+async fn call_bounded(rpc: &RpcClient, msg: Message) -> anyhow::Result<Message> {
+    match tokio::time::timeout(omnish_transport::CONNECT_TIMEOUT, rpc.call(msg)).await {
+        Ok(r) => r,
+        Err(_) => anyhow::bail!(
+            "no reply within {}s",
+            omnish_transport::CONNECT_TIMEOUT.as_secs()
+        ),
+    }
+}
+
 async fn connect_daemon(
     daemon_addr: &str,
     session_id: &str,
@@ -2327,7 +2341,7 @@ async fn connect_daemon(
             Box::pin(async move {
                 event_log::push("reconnect_cb: authenticating");
                 // Authenticate first
-                let auth_resp = rpc.call(Message::Auth(Auth {
+                let auth_resp = call_bounded(&rpc, Message::Auth(Auth {
                     token,
                     protocol_version: omnish_protocol::message::PROTOCOL_VERSION,
                 })).await;
@@ -2383,7 +2397,7 @@ async fn connect_daemon(
                 // Then register session (only if auth succeeded)
                 let attrs = probe::default_session_probes(child_pid, caddr).collect_all();
                 event_log::push("reconnect_cb: sending SessionStart");
-                rpc.call(Message::SessionStart(SessionStart {
+                call_bounded(&rpc, Message::SessionStart(SessionStart {
                     session_id: sid,
                     parent_session_id: psid,
                     timestamp_ms: timestamp_ms(),
@@ -2398,7 +2412,7 @@ async fn connect_daemon(
                     event_log::push(format!("reconnect_cb: replaying {} buffered msgs", buffered.len()));
                 }
                 for msg in buffered {
-                    if rpc.call(msg).await.is_err() {
+                    if call_bounded(&rpc, msg).await.is_err() {
                         event_log::push("reconnect_cb: replay failed");
                         break; // Connection broke again during replay
                     }
@@ -2413,6 +2427,9 @@ async fn connect_daemon(
         }),
         Some(|| {
             event_log::push("disconnect: connection lost to daemon");
+        }),
+        Some(|msg: &str| {
+            event_log::push(msg);
         }),
     ).await {
         Ok(client) => {

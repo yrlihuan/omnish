@@ -2,6 +2,27 @@ pub mod rpc_client;
 pub mod rpc_server;
 pub mod tls;
 
+use std::time::Duration;
+
+/// Bound on setting up a connection: TCP connect plus TLS handshake on the
+/// client, TLS handshake on the server. A handshake whose packets are
+/// silently dropped (e.g. across a network change) otherwise waits until TCP
+/// gives up, which on macOS kept a client from reconnecting for over 12
+/// minutes after the network was back.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Turn on TCP keepalive so a peer that vanished without closing (network
+/// change, sleep) is noticed in about a minute instead of never: an idle
+/// connection with no pending writes otherwise stays ESTABLISHED forever.
+pub fn set_keepalive(stream: &tokio::net::TcpStream) {
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(30))
+        .with_interval(Duration::from_secs(10));
+    if let Err(e) = socket2::SockRef::from(stream).set_tcp_keepalive(&ka) {
+        tracing::debug!("set_tcp_keepalive failed: {}", e);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TransportAddr {
     Unix(String),

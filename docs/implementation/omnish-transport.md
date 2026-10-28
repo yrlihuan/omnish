@@ -149,6 +149,7 @@ pub struct Frame {
 - `on_reconnect: Fn(&RpcClient) -> Future<Output = Result<()>>`: 重连回调函数
 - `on_reconnect_notify: Option<impl Fn() + Send + Sync + 'static>`: 重连成功通知回调（可选）
 - `on_disconnect: Option<impl Fn() + Send + Sync + 'static>`: 断开连接通知回调（可选）
+- `on_reconnect_error: Option<impl Fn(&str) + Send + Sync + 'static>`: 每次重连尝试失败时以失败描述调用（可选），客户端把它写进事件日志
 
 **返回:** `Result<RpcClient>`
 **用途:** 在`connect_with_reconnect_notify`基础上增加断开连接即时通知。当连接断开时，先调用`on_disconnect`通知调用方，然后开始重连循环。典型用途是在UI层显示连接断开提示和重连成功提示。
@@ -540,6 +541,16 @@ omnish-transport在认证握手阶段进行协议版本兼容性检查，使用 
 
 **用途:**
 解决旧版客户端（协议版本不匹配）在连接被拒后无限重试的问题。服务器拒绝后，客户端的`on_reconnect`回调返回`PermanentFailure`，5次后客户端放弃重连。
+
+**超时与失败上报（防止重连循环卡死）:**
+- `CONNECT_TIMEOUT`（10 秒，`lib.rs`）：`make_connector` 的 TCP 连接加 TLS 握手整体限时。此前握手没有超时，网络切换时握手包被静默丢弃会让某一次尝试一直挂起，直到 TCP 放弃；macOS 上实测网络恢复后 12 分钟以上仍未重连
+- 客户端 `on_reconnect` 回调中的 Auth、SessionStart 和缓存消息重放都经 `call_bounded()` 限时 `CONNECT_TIMEOUT`，新连接在握手后立即失联也不会卡住
+- 每次失败（`connect` 或 `register` 阶段）都 `tracing::warn!` 并调用 `on_reconnect_error`，格式 `reconnect attempt N failed (<阶段>): <错误>`，`/debug events` 可见
+- `set_keepalive()`：客户端与服务端的 TCP socket 都开启 keepalive（空闲 30 秒开始探测，间隔 10 秒），对端掉线后半开连接能被发现，不再一直保持 ESTABLISHED
+
+### TLS 握手不阻塞 accept
+
+服务端 TCP 监听循环接受连接后，TLS 握手放到独立任务中执行并限时 `CONNECT_TIMEOUT`，超时或失败只记 warning。此前握手在 accept 循环里直接 await，一个握手中途失联的客户端会阻塞所有其他远程客户端的连接。accept 后 `set_nodelay` 失败也只跳过该连接，不再让 `serve` 返回错误。
 
 ### EMFILE（文件描述符耗尽）处理
 

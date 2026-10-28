@@ -200,26 +200,44 @@ impl RpcServer {
                         }
                         Err(e) => return Err(e.into()),
                     };
-                    stream.set_nodelay(true)?;
+                    // A socket the peer already reset can fail here; that is
+                    // this connection's problem, not the listener's.
+                    if let Err(e) = stream.set_nodelay(true) {
+                        tracing::warn!("set_nodelay on accepted connection failed: {}", e);
+                        continue;
+                    }
+                    crate::set_keepalive(&stream);
                     if let Some(ref acceptor) = tls_acceptor {
-                        match acceptor.accept(stream).await {
-                            Ok(tls_stream) => {
-                                let (reader, writer) = tokio::io::split(tls_stream);
-                                spawn_connection(
-                                    reader,
-                                    writer,
-                                    handler.clone(),
-                                    auth_token.clone(),
-                                    push_registry.clone(),
-                                    on_push_connect.clone(),
-                                    on_disconnect.clone(),
-                                );
+                        // Handshake in its own task, bounded: awaited here, one
+                        // client whose handshake stalls (network dropped midway)
+                        // blocked every other remote client from connecting.
+                        let acceptor = acceptor.clone();
+                        let handler = handler.clone();
+                        let auth_token = auth_token.clone();
+                        let push_registry = push_registry.clone();
+                        let on_push_connect = on_push_connect.clone();
+                        let on_disconnect = on_disconnect.clone();
+                        tokio::spawn(async move {
+                            match tokio::time::timeout(crate::CONNECT_TIMEOUT, acceptor.accept(stream)).await {
+                                Ok(Ok(tls_stream)) => {
+                                    let (reader, writer) = tokio::io::split(tls_stream);
+                                    spawn_connection(
+                                        reader,
+                                        writer,
+                                        handler,
+                                        auth_token,
+                                        push_registry,
+                                        on_push_connect,
+                                        on_disconnect,
+                                    );
+                                }
+                                Ok(Err(e)) => tracing::warn!("TLS handshake failed: {}", e),
+                                Err(_) => tracing::warn!(
+                                    "TLS handshake timed out after {}s",
+                                    crate::CONNECT_TIMEOUT.as_secs()
+                                ),
                             }
-                            Err(e) => {
-                                tracing::warn!("TLS handshake failed: {}", e);
-                                continue;
-                            }
-                        }
+                        });
                     } else {
                         let (reader, writer) = stream.into_split();
                         spawn_connection(reader, writer, handler.clone(), auth_token.clone(), push_registry.clone(), on_push_connect.clone(), on_disconnect.clone());
