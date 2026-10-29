@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.9.2 (2026-10-29)
+
+### Features
+- **chat**: Auto compact threads near the context window (#691). When the context reaches `auto_compact_percent` (default 90%) of the backend's `context_window`, the thread is fully compacted before the turn, or between two LLM calls of an agent loop, in which case the model is told to continue the pending work. Usage is estimated from the last call's tokens plus the messages added since. The summary prompts follow opencode's template (objective, decisions, work state, next move, relevant files) and the instruction is wrapped in `<system-compaction>` so the summary no longer reads the compaction as a user interrupt. Auto summaries show as "/compact (auto)" on `/resume`.
+- **tools**: `read_image` lets the model view image files (#690). PNG, JPEG, GIF and WebP are detected by magic bytes; images over 1568 px or 3.75 MB are downscaled, keeping PNG sources as PNG. Backends that cannot take images get a text placeholder (`supports_vision`).
+- **config**: `/config` gains an LLM > Auto compact submenu (switch plus a threshold limited to 80-95) and an "Accept images" toggle per backend (#692). Text items can declare an integer range; values out of range are rejected without touching daemon.toml.
+- **menu**: Notices show in the menu title line as a colored bar that fades out, so a rejected `/config` save is visible instead of being overwritten by the redraw; daemon notices that arrive while `/config` is open show there too (#693)
+- **client**: Log panics to `client.log` with the message, a backtrace and the last 200 event-log entries. A main-thread panic also restores the terminal and sends `SessionEnd`. `/test panic [task]` triggers one.
+
+### Fixes
+- **transport**: Bound the TCP connect plus TLS handshake (10s) and the re-registration calls of a reconnect. A handshake stalled across a network change used to block the reconnect loop for good; a macOS client stayed disconnected for over 12 minutes after its network came back. Each failed reconnect attempt is now logged to the event log. The daemon runs TLS handshakes in their own bounded task, so one stalled client no longer keeps every other remote client from connecting, and both ends enable TCP keepalive.
+- **client,transport**: Detect silently dead daemon connections with a heartbeat timeout and keep chat entry responsive while the connection is down (#689)
+- **daemon**: Bound completion and KV warmup LLM calls (10s and 30s, queue time included). A slow upstream let completion requests fill every LLM pool permit, so chat stalled behind them.
+- **daemon**: Retry a chat turn once when the model ends it with no text and no tool call, before falling back to the empty-response placeholder
+- **daemon**: Summarize threads with the model of their last successful call, falling back to the chat and summarize backends; after every model fails, retry only after 24 hours and once the thread has new messages (#698)
+- **llm**: Send `anthropic-version: 2023-06-01`; `2024-04-04` was never a valid version
+- **chat**: Run tools in the directory chosen on resume instead of the shell's not-yet-changed cwd (#688)
+- **chat**: Keep the next key when it arrives as a turn ends; the stdin watcher is now the only stdin reader while it runs (#696)
+- **client**: Do not inject the readline trigger right after a lone ESC, which turned it into `[13337~` on the command line (#697)
+
+### Tests
+- **integration**: New tests for auto compaction, `read_image`, the panic hook and the lone-ESC readline trigger (#697); stalled TLS handshake tests in omnish-transport
+- **integration**: Make LLM-driven checks independent of the model's wording: vary repeated commands, detect turn ends by the separator, check tool headers for orphans instead of a fixed count
+
 ## v0.9.1 (2026-10-09)
 
 ### Features
