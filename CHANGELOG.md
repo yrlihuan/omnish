@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.3 (2026-10-30)
+
+### Fixes
+- **client**: Stop the screen emulator from crashing the client on a resize. vt100 0.16.2 panicked (`screen.rs:870`) when a resize left a wide character in the last column and it was then overwritten, which took down long-running sessions printing CJK text. vt100 is upgraded to 0.18, which fixes it, and `ScreenCapture` now runs the emulator under `panic_hook::catch()`: if it panics anyway it is rebuilt at the current size and the client keeps running. Caught panics are still reported to `client.log` (`caught=true`) but no longer reset the terminal or end the session.
+
 ## v0.9.2 (2026-10-29)
 
 ### Features
