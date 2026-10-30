@@ -154,7 +154,7 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **ChatAction / OutputLimit 命令解析**：聊天动作分类（本地命令/LLM 查询/守护进程查询），管道限制支持
 - **Widgets 系统**：交互式 UI 组件集，包含 LineEditor、LineStatus、InlineNotice、ScrollView、ChatLayout、Picker、Menu（含 MenuChangeHandler 即时变更回调、失败自动回滚、标题行通知与渐隐、Select prefills 预填充、Button）、TextView、Common
 - **Markdown 渲染**：pulldown-cmark 解析，标题/粗体/代码块/列表/引用/链接/表格等 ANSI 终端样式输出
-- **屏幕捕获（screen_capture）**：内嵌 vt100 模拟器，供 `/test capture [N]` 获取可见屏幕或最近 N 行
+- **屏幕捕获（screen_capture）**：内嵌 vt100 0.18 模拟器，供 `/test capture [N]` 获取可见屏幕或最近 N 行；模拟器 panic 时经 `panic_hook::catch` 重建，不影响客户端
 - **粘贴支持**：括号粘贴模式、快速粘贴检测、多行折叠显示
 - **客户端插件系统**：ClientPluginManager 通过子进程执行工具，统一多后端沙箱（bwrap/landlock/seatbelt）、运行时可用性检测、`/test lock on/off` 命令、JSON 协议；execute_tool 返回 `(content, is_error, needs_summarization)` 三元组
 - **自更新系统**：`/update` 透明自重启（execvp 恢复 PTY/session）、mtime 自动检测、协议级 UpdateCheck 轮询+后台下载+缓存机制
@@ -164,7 +164,7 @@ LLM 后端抽象和实现，支持多种 LLM 提供商，提供统一的补全�
 - **主事件循环**：poll I/O 多路复用，stdin/PTY master 监控，DSR 过滤，前缀匹配计时，OSC 133 命令跟踪
 - **Polling 机制**：渐进式间隔（1-30s）后台探测任务，兼作连接心跳，差异更新 SessionUpdate，tmux/screen 窗口标题自动更新
 - **事件日志**：全局环形缓冲区（200 条），记录 OSC 转换/补全/聊天/更新/连接/延迟等事件
-- **panic hook**：panic 时把信息、backtrace 与最近事件写入 client.log；主线程 panic 额外恢复终端并发送 SessionEnd；`/test panic [task]` 触发
+- **panic hook**：panic 时把信息、backtrace 与最近事件写入 client.log；主线程 panic 额外恢复终端并发送 SessionEnd；`catch()` 包住的 panic 只记录（caught=true）；`/test panic [task]` 触发
 - **守护进程通信**：connect_daemon 连接/认证/协议版本检查，失败消息缓冲重放（10000 条上限）、SessionUpdate 兼作心跳（10 秒等不到 Ack 即强制重连）
 - **显示函数**：纯函数 ANSI 输出，分隔线/提示符/输入回显/响应渲染/幽灵文本/CJK 感知截断
 - **命令分发**：统一命令注册表，Local/Daemon 命令类型，重定向/管道解析

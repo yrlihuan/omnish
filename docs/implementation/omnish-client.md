@@ -244,6 +244,9 @@ DSR（Device Status Report）响应检测器，检测stdin中的光标位置报�
 - PTY 输出实时喂入 vt100 解析器，瞬时写入（CR 进度条、原地重绘、清屏）折叠为最终状态
 - `/test capture` 返回当前可见屏幕，`/test capture N` 返回最近 N 行（含 scrollback，类似 `tmux capture-pane`）
 - 流程经现有 slash-command pipe/redirect 语法（`| head/tail`、`> file`）
+- 使用 vt100 0.18（尺寸参数为 `NonZeroU16`）。0.16.2 在窗口变窄后改写落在最后一列的宽字符时 panic（`screen.rs:870`），主线程随之崩溃，长时间输出中文的会话（如 game-player）会被带掉；0.18 已修复
+- `feed()` / `resize()` 经 `panic_hook::catch` 执行：模拟器 panic 时记一条事件日志，丢弃当前解析器并按当前尺寸重建，客户端继续运行，只影响 `/test capture` 的内容
+- 测试用 `test_parser(rows, cols)` 创建无 scrollback 的解析器
 
 ## Widgets 系统
 
@@ -1441,6 +1444,7 @@ omnish-client 包含客户端事件日志系统，用于调试和监控异步事
 - `fatal` 仅当线程名为 `main`：tokio task 和辅助线程里的 panic 被就地捕获，客户端继续运行，只记录
 - 致命 panic 额外处理：`remember_terminal()` 在进入 raw 模式前保存的 termios 被恢复（栈展开时 `RawModeGuard` 也会恢复，这里兜底 abort 等不展开的情况）；`set_session()` 登记的连接在辅助线程上 `block_on` 发送 `SessionEnd`（500ms 超时，再等 200ms 让写任务发出），daemon 因此能看到会话正常结束
 - `/test panic` 在主线程 panic（客户端退出，退出码 101），`/test panic task` 在 tokio task 中 panic，供集成测试 `test_panic_hook.sh` 使用
+- `catch(f)`：在 `catch_unwind` 中执行 `f` 并返回 `Result`，供可从 panic 恢复的调用方使用（如 `screen_capture`）。执行期间设置线程局部标志，hook 仍写报告（`fatal=false caught=true`），但不恢复终端、不发 `SessionEnd`、不向终端打印
 
 ### `connect_daemon()`
 连接守护进程，支持优雅降级（守护进程不可用时进入直通模式）。

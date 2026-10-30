@@ -11,10 +11,16 @@
 
 use omnish_protocol::message::{Message, SessionEnd};
 use omnish_transport::rpc_client::RpcClient;
+use std::cell::Cell;
 use std::io::Write;
 use std::os::fd::RawFd;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+thread_local! {
+    /// Set while `catch` runs its closure on this thread.
+    static CATCHING: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Terminal settings from before raw mode, restored on a fatal panic.
 static TERMINAL: OnceLock<(RawFd, libc::termios)> = OnceLock::new();
@@ -36,12 +42,15 @@ pub fn install() {
         let thread = std::thread::current();
         let name = thread.name().unwrap_or("<unnamed>").to_string();
         // Panics in tokio tasks and helper threads are caught there and the
-        // client keeps running; only a main thread panic ends the process.
-        let fatal = name == "main";
+        // client keeps running; only a main thread panic ends the process,
+        // unless `catch` is about to recover from it.
+        let caught = CATCHING.with(|c| c.get());
+        let fatal = name == "main" && !caught;
         let backtrace = std::backtrace::Backtrace::force_capture();
         write_report(&format_report(
             &name,
             fatal,
+            caught,
             &info.to_string(),
             &backtrace.to_string(),
             &crate::event_log::try_recent(200),
@@ -50,8 +59,22 @@ pub fn install() {
             restore_terminal();
             send_session_end();
         }
-        default_hook(info);
+        // A caught panic is recovered from: printing it would only scribble
+        // over the user's terminal.
+        if !caught {
+            default_hook(info);
+        }
     }));
+}
+
+/// Run `f`, turning a panic into `Err` so the caller can recover. The hook
+/// still writes the report to client.log (marked `caught=true`) but does not
+/// end the session or print to the terminal.
+pub fn catch<R>(f: impl FnOnce() -> R) -> std::thread::Result<R> {
+    let prev = CATCHING.with(|c| c.replace(true));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    CATCHING.with(|c| c.set(prev));
+    result
 }
 
 /// Remember the terminal settings of `fd`. Call just before entering raw mode.
@@ -73,12 +96,20 @@ pub fn set_session(rpc: &RpcClient, session_id: &str) {
     }
 }
 
-fn format_report(thread: &str, fatal: bool, message: &str, backtrace: &str, events: &[String]) -> String {
+fn format_report(
+    thread: &str,
+    fatal: bool,
+    caught: bool,
+    message: &str,
+    backtrace: &str,
+    events: &[String],
+) -> String {
     let mut out = format!(
-        "{} PANIC thread={} fatal={} version={}\n{}\nbacktrace:\n{}\n",
+        "{} PANIC thread={} fatal={}{} version={}\n{}\nbacktrace:\n{}\n",
         chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
         thread,
         fatal,
+        if caught { " caught=true" } else { "" },
         omnish_common::VERSION,
         message,
         backtrace.trim_end(),
@@ -142,6 +173,7 @@ mod tests {
         let r = format_report(
             "main",
             true,
+            false,
             "panicked at src/x.rs:1:2:\nboom",
             "   0: foo\n   1: bar\n",
             &["+    1.000 a".to_string(), "+    2.000 b".to_string()],
@@ -155,8 +187,22 @@ mod tests {
 
     #[test]
     fn report_without_events() {
-        let r = format_report("tokio-rt-worker", false, "boom", "", &[]);
-        assert!(r.contains("thread=tokio-rt-worker fatal=false"));
+        let r = format_report("tokio-rt-worker", false, false, "boom", "", &[]);
+        assert!(r.contains("thread=tokio-rt-worker fatal=false version="));
         assert!(r.contains("recent events: <unavailable>\n"));
+    }
+
+    #[test]
+    fn report_marks_caught_panics() {
+        let r = format_report("main", false, true, "boom", "", &[]);
+        assert!(r.contains("thread=main fatal=false caught=true version="));
+    }
+
+    #[test]
+    fn catch_returns_err_and_restores_flag() {
+        let r = catch(|| -> u32 { panic!("inside catch") });
+        assert!(r.is_err());
+        assert!(!CATCHING.with(|c| c.get()), "flag cleared after catch");
+        assert_eq!(catch(|| 7).unwrap(), 7);
     }
 }

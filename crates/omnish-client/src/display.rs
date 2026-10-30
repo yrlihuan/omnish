@@ -406,7 +406,7 @@ mod tests {
 
     /// Helper: feed bytes into a vt100 parser and return the parser for inspection.
     fn parse_ansi(input: &str, cols: u16, rows: u16) -> vt100::Parser {
-        let mut parser = vt100::Parser::new(rows, cols, 0);
+        let mut parser = crate::screen_capture::test_parser(rows, cols);
         parser.process(input.as_bytes());
         parser
     }
@@ -937,7 +937,7 @@ mod tests {
     #[test]
     fn vt100_erase_lines_clears_all_rows() {
         let cols = 40u16;
-        let mut parser = vt100::Parser::new(10, cols, 0);
+        let mut parser = crate::screen_capture::test_parser(10, cols);
         // Render 3 lines below cursor (matching render_seq pattern)
         parser.process(b"\r\n\x1b[Kline one");
         parser.process(b"\r\n\x1b[Kline two");

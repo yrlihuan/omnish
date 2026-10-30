@@ -165,7 +165,7 @@ mod tests {
     use super::*;
 
     fn parse_ansi(s: &str) -> vt100::Parser {
-        let mut p = vt100::Parser::new(24, 80, 0);
+        let mut p = crate::screen_capture::test_parser(24, 80);
         p.process(s.as_bytes());
         p
     }
@@ -344,7 +344,7 @@ mod tests {
         layout.push_region("ed");
         layout.push_region("st");
 
-        let mut p = vt100::Parser::new(24, 80, 0);
+        let mut p = crate::screen_capture::test_parser(24, 80);
 
         let s1 = layout.update("sv", vec!["Response line 1".into(), "Response line 2".into()]);
         p.process(s1.as_bytes());
@@ -374,7 +374,7 @@ mod tests {
         layout.push_region("sv");
         layout.push_region("ed");
 
-        let mut p = vt100::Parser::new(24, 80, 0);
+        let mut p = crate::screen_capture::test_parser(24, 80);
 
         let s1 = layout.update("sv", vec!["line 1".into()]);
         p.process(s1.as_bytes());
@@ -399,7 +399,7 @@ mod tests {
         layout.push_region("a");
         layout.push_region("b");
 
-        let mut p = vt100::Parser::new(24, 80, 0);
+        let mut p = crate::screen_capture::test_parser(24, 80);
         p.process(layout.update("a", vec!["first".into()]).as_bytes());
         p.process(layout.update("b", vec!["second".into()]).as_bytes());
 
@@ -420,7 +420,7 @@ mod tests {
         layout.push_region("sv");
         layout.push_region("ed");
 
-        let mut p = vt100::Parser::new(24, 80, 0);
+        let mut p = crate::screen_capture::test_parser(24, 80);
 
         // Initial state: scroll_view has content, editor prompt via layout.update
         p.process(layout.update("sv", vec![
@@ -471,7 +471,7 @@ mod tests {
         layout.push_region("sv");
         layout.push_region("ed");
 
-        let mut p = vt100::Parser::new(24, cols as u16, 0);
+        let mut p = crate::screen_capture::test_parser(24, cols as u16);
 
         // Setup: scroll_view + initial editor prompt
         p.process(layout.update("sv", vec!["hello".into()]).as_bytes());
@@ -550,7 +550,7 @@ mod tests {
         let mut layout = ChatLayout::new(cols);
         layout.push_region("ed");
 
-        let mut p = vt100::Parser::new(24, cols as u16, 0);
+        let mut p = crate::screen_capture::test_parser(24, cols as u16);
         p.process(layout.update("ed", vec!["> ".into()]).as_bytes());
         let ct = layout.cursor_to("ed");
         p.process(ct.as_bytes());

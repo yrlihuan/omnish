@@ -5007,7 +5007,7 @@ mod tests {
         assert!(seq.starts_with(' '), "forces the pending wrap with a space");
 
         // Drive through vt100: cursor ends physically at row 1, col 0.
-        let mut p = vt100::Parser::new(6, 12, 0);
+        let mut p = crate::screen_capture::test_parser(6, 12);
         p.process(b"\r> ");
         p.process("中中中中中".as_bytes());
         p.process(b"\x1b[J");
@@ -5027,7 +5027,7 @@ mod tests {
         assert_eq!(tcr, 1, "cursor is on the wrapped row");
         assert!(!seq.starts_with(' '), "no forced wrap: content already wrapped");
 
-        let mut p = vt100::Parser::new(6, 12, 0);
+        let mut p = crate::screen_capture::test_parser(6, 12);
         p.process(b"\r> ");
         p.process("中中中中中中".as_bytes());
         p.process(b"\x1b[J");
@@ -5047,7 +5047,7 @@ mod tests {
         assert_eq!(tcr, 1);
         assert!(!seq.starts_with(' '), "no forced wrap: the CJK already wrapped");
 
-        let mut p = vt100::Parser::new(6, 10, 0);
+        let mut p = crate::screen_capture::test_parser(6, 10);
         p.process(b"\r> abcdefg");
         p.process("中".as_bytes());
         p.process(b"\x1b[J");
@@ -5068,7 +5068,7 @@ mod tests {
         // Regression: as CJK input grows through the wrap boundary (including the
         // exact-fill point), the display lines above the input must survive.
         let cols = 12usize;
-        let mut p = vt100::Parser::new(8, cols as u16, 0);
+        let mut p = crate::screen_capture::test_parser(8, cols as u16);
         p.process(b"previous1\r\nprevious2\r\n");
         assert_eq!(p.screen().cursor_position().0, 2, "input starts at row 2");
 

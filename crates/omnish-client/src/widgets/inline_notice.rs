@@ -130,7 +130,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_parser(cols: u16, rows: u16) -> vt100::Parser {
-        vt100::Parser::new(rows, cols, 0)
+        crate::screen_capture::test_parser(rows, cols)
     }
 
     fn get_row(screen: &vt100::Screen, row: u16, cols: u16) -> String {

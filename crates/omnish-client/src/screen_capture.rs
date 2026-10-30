@@ -1,3 +1,4 @@
+use std::num::NonZeroU16;
 use std::sync::{Arc, Mutex};
 
 /// In-memory terminal emulator that mirrors what the shell writes to the user's
@@ -14,11 +15,25 @@ pub struct ScreenCapture {
 
 const SCROLLBACK_ROWS: usize = 5_000;
 
+fn new_parser(rows: u16, cols: u16) -> vt100::Parser {
+    vt100::Parser::new(nonzero(rows), nonzero(cols), SCROLLBACK_ROWS)
+}
+
+fn nonzero(n: u16) -> NonZeroU16 {
+    NonZeroU16::new(n).unwrap_or(NonZeroU16::MIN)
+}
+
+/// A scrollback-less vt100 parser for tests that check rendered output.
+#[cfg(test)]
+pub fn test_parser(rows: u16, cols: u16) -> vt100::Parser {
+    vt100::Parser::new(nonzero(rows), nonzero(cols), 0)
+}
+
 impl ScreenCapture {
     pub fn new(rows: u16, cols: u16) -> Self {
         let (rows, cols) = clamp_size(rows, cols);
         Self {
-            parser: vt100::Parser::new(rows, cols, SCROLLBACK_ROWS),
+            parser: new_parser(rows, cols),
             rows,
             cols,
         }
@@ -30,14 +45,37 @@ impl ScreenCapture {
         if rows == self.rows && cols == self.cols {
             return;
         }
-        self.parser.screen_mut().set_size(rows, cols);
         self.rows = rows;
         self.cols = cols;
+        let parser = &mut self.parser;
+        if crate::panic_hook::catch(|| parser.screen_mut().set_size(nonzero(rows), nonzero(cols)))
+            .is_err()
+        {
+            self.reset("resize");
+        }
     }
 
     /// Feed PTY output bytes into the emulator.
+    ///
+    /// The emulator only mirrors the screen for `/test capture`, so a bug in
+    /// it must not take the shell down: vt100 0.16 panicked when a wide
+    /// character left in the last column by a resize was overwritten, which
+    /// crashed long-running clients. A panic resets the emulator instead.
     pub fn feed(&mut self, data: &[u8]) {
-        self.parser.process(data);
+        let parser = &mut self.parser;
+        if crate::panic_hook::catch(|| parser.process(data)).is_err() {
+            self.reset("feed");
+        }
+    }
+
+    /// Replace a parser that panicked (its state may be inconsistent) with a
+    /// blank one of the current size.
+    fn reset(&mut self, during: &str) {
+        crate::event_log::push(format!(
+            "screen_capture: vt100 panicked in {}, emulator reset",
+            during
+        ));
+        self.parser = new_parser(self.rows, self.cols);
     }
 
     /// Capture the currently visible screen as plain text. Trailing blank rows
@@ -233,6 +271,30 @@ mod tests {
         c.feed(b"hello\r\n");
         c.resize(10, 20);
         assert!(c.capture_visible().contains("hello"));
+    }
+
+    /// Writing over a wide character that a resize left in the last column
+    /// panicked in vt100 0.16.2 (screen.rs:870) and crashed the client.
+    #[test]
+    fn wide_char_in_last_column_after_resize() {
+        let mut c = ScreenCapture::new(5, 10);
+        c.feed("abcdefgh中".as_bytes());
+        c.resize(5, 9);
+        c.feed(b"\x1b[1;9HX");
+        assert!(c.capture_visible().starts_with("abcdefghX"));
+    }
+
+    /// A panic inside the emulator resets it rather than propagating.
+    #[test]
+    fn reset_after_panic_keeps_working() {
+        let mut c = ScreenCapture::new(5, 20);
+        c.feed(b"before\r\n");
+        assert!(crate::panic_hook::catch(|| panic!("simulated vt100 bug")).is_err());
+        c.reset("test");
+        assert_eq!(c.capture_visible(), "");
+        c.feed(b"after\r\n");
+        assert_eq!(c.capture_visible(), "after\n");
+        assert_eq!(c.size(), (5, 20));
     }
 
     #[test]

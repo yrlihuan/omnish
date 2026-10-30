@@ -382,7 +382,7 @@ mod tests {
 
     /// Helper: feed bytes into a vt100 parser and return the parser for inspection.
     fn parse_ansi(input: &str, cols: u16, rows: u16) -> vt100::Parser {
-        let mut parser = vt100::Parser::new(rows, cols, 0);
+        let mut parser = crate::screen_capture::test_parser(rows, cols);
         parser.process(input.as_bytes());
         parser
     }
